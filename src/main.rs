@@ -11,6 +11,7 @@ mod setup;
 mod ship;
 mod technology;
 mod time_system;
+mod ui;
 mod visualization;
 
 use bevy::prelude::*;
@@ -38,6 +39,7 @@ fn main() {
             technology::TechnologyPlugin,
             events::EventsPlugin,
             setup::GameSetupPlugin,
+            ui::UiPlugin,
         ))
         .run();
 }
