@@ -1,9 +1,13 @@
+mod components;
 mod galaxy;
 mod player;
 mod communication;
 mod time_system;
 mod physics;
 mod visualization;
+mod knowledge;
+mod ship;
+mod colony;
 
 use bevy::prelude::*;
 
@@ -23,6 +27,9 @@ fn main() {
             player::PlayerPlugin,
             communication::CommunicationPlugin,
             visualization::VisualizationPlugin,
+            knowledge::KnowledgePlugin,
+            ship::ShipPlugin,
+            colony::ColonyPlugin,
         ))
         .run();
 }
