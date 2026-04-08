@@ -535,6 +535,7 @@ fn all_systems_no_query_conflict() {
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
+        CommandQueue::default(),
     ));
 
     // Colony ship docked at capital
@@ -551,6 +552,7 @@ fn all_systems_no_query_conflict() {
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
+        CommandQueue::default(),
     ));
 
     // Courier docked at capital
@@ -567,6 +569,7 @@ fn all_systems_no_query_conflict() {
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
+        CommandQueue::default(),
     ));
 
     // Run several frames. If any Query conflicts exist, Bevy will panic here.

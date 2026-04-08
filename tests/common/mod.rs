@@ -7,7 +7,7 @@ use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::ship::*;
-use macrocosmo::technology;
+use macrocosmo::technology::{self, TechTree};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
 
@@ -31,6 +31,7 @@ pub fn test_app() -> App {
             process_surveys,
             process_settling,
             process_pending_ship_commands,
+            process_command_queue,
         )
             .chain(),
     );
@@ -84,6 +85,9 @@ pub fn full_test_app() -> App {
     app.insert_resource(technology::ResearchPool::default());
     app.insert_resource(technology::LastResearchTick(0));
 
+    // --- Research panel resource ---
+    app.insert_resource(visualization::ResearchPanelOpen::default());
+
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(
         Update,
@@ -93,6 +97,7 @@ pub fn full_test_app() -> App {
             process_surveys,
             process_settling,
             process_pending_ship_commands,
+            process_command_queue,
         ),
     );
 
@@ -161,6 +166,9 @@ pub fn full_test_app() -> App {
             visualization::update_hud,
             visualization::update_info_panel,
             visualization::update_event_log,
+            visualization::update_research_panel,
+            visualization::handle_research_selection,
+            visualization::toggle_research_panel,
             visualization::handle_ship_commands,
             visualization::handle_build_commands,
             visualization::handle_building_commands,

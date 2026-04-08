@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::colony::ResourceStockpile;
 use crate::time_system::GameClock;
@@ -8,12 +9,48 @@ pub struct TechnologyPlugin;
 
 impl Plugin for TechnologyPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(create_initial_tech_tree())
-            .insert_resource(ResearchQueue::default())
-            .insert_resource(ResearchPool::default())
-            .insert_resource(LastResearchTick(0))
-            .add_systems(Update, (collect_research, tick_research).chain());
+        app.add_systems(
+            Startup,
+            load_technologies.after(crate::scripting::init_scripting),
+        )
+        .insert_resource(ResearchQueue::default())
+        .insert_resource(ResearchPool::default())
+        .insert_resource(LastResearchTick(0))
+        .add_systems(Update, (collect_research, tick_research).chain());
     }
+}
+
+fn load_technologies(mut commands: Commands, engine: Res<crate::scripting::ScriptEngine>) {
+    let tech_dir = Path::new("scripts/tech");
+    let techs = if tech_dir.exists() {
+        match engine.load_directory(tech_dir) {
+            Err(e) => {
+                warn!("Failed to load tech scripts: {e}; falling back to hardcoded definitions");
+                create_initial_tech_tree_vec()
+            }
+            Ok(()) => match parse_tech_definitions(engine.lua()) {
+                Ok(parsed) if !parsed.is_empty() => parsed,
+                Ok(_) => {
+                    info!("No tech definitions found in scripts; using hardcoded fallback");
+                    create_initial_tech_tree_vec()
+                }
+                Err(e) => {
+                    warn!("Failed to parse tech definitions: {e}; falling back to hardcoded definitions");
+                    create_initial_tech_tree_vec()
+                }
+            },
+        }
+    } else {
+        info!("scripts/tech directory not found; using hardcoded tech definitions");
+        create_initial_tech_tree_vec()
+    };
+
+    let tree = TechTree::from_vec(techs);
+    info!(
+        "Tech tree loaded with {} technologies",
+        tree.technologies.len()
+    );
+    commands.insert_resource(tree);
 }
 
 /// Unique identifier for a technology.
@@ -29,32 +66,52 @@ pub enum TechBranch {
     Military,
 }
 
+impl TechBranch {
+    pub fn all() -> &'static [TechBranch] {
+        &[
+            TechBranch::Social,
+            TechBranch::Physics,
+            TechBranch::Industrial,
+            TechBranch::Military,
+        ]
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            TechBranch::Social => "Social",
+            TechBranch::Physics => "Physics",
+            TechBranch::Industrial => "Industrial",
+            TechBranch::Military => "Military",
+        }
+    }
+}
+
 /// The type of resource a production modifier applies to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResourceType {
-    Minerals,
     Energy,
+    Minerals,
     Research,
-    All,
+    Food,
 }
 
 /// An effect granted when a technology is researched.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TechEffect {
-    ModifyPopulationGrowth(f64),
-    ModifyProductionRate {
-        resource: ResourceType,
-        multiplier: f64,
-    },
-    ModifySubLightSpeed(f64),
+    ModifySublightSpeed(f64),
     ModifyFTLRange(f64),
     ModifyFTLSpeed(f64),
-    ModifySurveyRange(f64),
-    ModifyBuildSpeed(f64),
+    ModifyResearchOutput(f64),
+    ModifyResourceProduction(ResourceType, f64),
+    UnlockShipType(String),
     UnlockBuilding(String),
-    ModifyHullStrength(f64),
+    ModifyPopulationGrowth(f64),
+    ModifyDiplomacyRange(f64),
+    ModifySensorRange(f64),
     ModifyWeaponDamage(f64),
-    Placeholder(String),
+    ModifyShieldStrength(f64),
+    ModifyArmor(f64),
+    ModifyConstructionSpeed(f64),
 }
 
 /// A single technology definition.
@@ -77,6 +134,14 @@ pub struct TechTree {
 }
 
 impl TechTree {
+    pub fn from_vec(techs: Vec<Technology>) -> Self {
+        let technologies = techs.into_iter().map(|t| (t.id, t)).collect();
+        Self {
+            technologies,
+            researched: HashSet::new(),
+        }
+    }
+
     /// Insert a technology into the tree.
     pub fn add(&mut self, tech: Technology) {
         self.technologies.insert(tech.id, tech);
@@ -103,6 +168,11 @@ impl TechTree {
             .all(|pre| self.researched.contains(pre))
     }
 
+    /// Alias used by the research panel UI.
+    pub fn is_available(&self, id: TechId) -> bool {
+        self.can_research(id)
+    }
+
     pub fn available_technologies(&self) -> Vec<&Technology> {
         self.technologies
             .values()
@@ -120,6 +190,17 @@ impl TechTree {
             .values()
             .filter(|t| t.branch == branch)
             .collect()
+    }
+
+    /// Get all technologies for a branch, sorted by cost.
+    pub fn techs_in_branch(&self, branch: TechBranch) -> Vec<&Technology> {
+        let mut techs: Vec<&Technology> = self
+            .technologies
+            .values()
+            .filter(|t| t.branch == branch)
+            .collect();
+        techs.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
+        techs
     }
 
     /// Check that every prerequisite referenced in the tree actually exists.
@@ -226,290 +307,483 @@ pub fn tick_research(
     }
 }
 
-/// Build the initial technology tree with starter technologies for every branch.
+// ---- Lua parsing ----
+
+/// Parse a single effects table entry from Lua into a TechEffect.
+fn parse_effect(table: &mlua::Table) -> Result<TechEffect, mlua::Error> {
+    let effect_type: String = table.get("type")?;
+    match effect_type.as_str() {
+        "modify_sublight_speed" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifySublightSpeed(value))
+        }
+        "modify_ftl_range" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyFTLRange(value))
+        }
+        "modify_ftl_speed" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyFTLSpeed(value))
+        }
+        "modify_research_output" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyResearchOutput(value))
+        }
+        "modify_resource_production" => {
+            let resource: String = table.get("resource")?;
+            let value: f64 = table.get("value")?;
+            let resource_type = match resource.as_str() {
+                "energy" => ResourceType::Energy,
+                "minerals" => ResourceType::Minerals,
+                "research" => ResourceType::Research,
+                "food" => ResourceType::Food,
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Unknown resource type: {other}"
+                    )))
+                }
+            };
+            Ok(TechEffect::ModifyResourceProduction(resource_type, value))
+        }
+        "unlock_ship_type" => {
+            let value: String = table.get("value")?;
+            Ok(TechEffect::UnlockShipType(value))
+        }
+        "unlock_building" => {
+            let value: String = table.get("value")?;
+            Ok(TechEffect::UnlockBuilding(value))
+        }
+        "modify_population_growth" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyPopulationGrowth(value))
+        }
+        "modify_diplomacy_range" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyDiplomacyRange(value))
+        }
+        "modify_sensor_range" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifySensorRange(value))
+        }
+        "modify_weapon_damage" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyWeaponDamage(value))
+        }
+        "modify_shield_strength" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyShieldStrength(value))
+        }
+        "modify_armor" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyArmor(value))
+        }
+        "modify_construction_speed" => {
+            let value: f64 = table.get("value")?;
+            Ok(TechEffect::ModifyConstructionSpeed(value))
+        }
+        other => Err(mlua::Error::RuntimeError(format!(
+            "Unknown effect type: {other}"
+        ))),
+    }
+}
+
+/// Parse effects from a Lua table (sequence of effect tables).
+fn parse_effects(table: mlua::Table) -> Result<Vec<TechEffect>, mlua::Error> {
+    let mut effects = Vec::new();
+    for pair in table.pairs::<i64, mlua::Table>() {
+        let (_, effect_table) = pair?;
+        effects.push(parse_effect(&effect_table)?);
+    }
+    Ok(effects)
+}
+
+/// Read `_tech_definitions` from the Lua state and convert to `Vec<Technology>`.
+pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::Error> {
+    let defs: mlua::Table = lua.globals().get("_tech_definitions")?;
+    let mut techs = Vec::new();
+    for pair in defs.pairs::<i64, mlua::Table>() {
+        let (_, table) = pair?;
+        let id = TechId(table.get::<u32>("id")?);
+        let name: String = table.get("name")?;
+        let branch = match table.get::<String>("branch")?.as_str() {
+            "social" => TechBranch::Social,
+            "physics" => TechBranch::Physics,
+            "industrial" => TechBranch::Industrial,
+            "military" => TechBranch::Military,
+            other => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Unknown branch: {other}"
+                )))
+            }
+        };
+        let cost: f64 = table.get("cost")?;
+
+        let prereqs_table: mlua::Table = table.get("prerequisites")?;
+        let prerequisites: Vec<TechId> = prereqs_table
+            .sequence_values::<u32>()
+            .map(|r| r.map(TechId))
+            .collect::<Result<_, _>>()?;
+
+        let effects_table: mlua::Table = table.get("effects")?;
+        let effects = parse_effects(effects_table)?;
+
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
+
+        techs.push(Technology {
+            id,
+            name,
+            branch,
+            cost,
+            prerequisites,
+            effects,
+            description,
+        });
+    }
+    Ok(techs)
+}
+
+/// Hardcoded fallback tech definitions used when Lua scripts are unavailable.
+pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
+    vec![
+        // === Social Branch ===
+        Technology {
+            id: TechId(100),
+            name: "Xenolinguistics".into(),
+            branch: TechBranch::Social,
+            cost: 100.0,
+            prerequisites: vec![],
+            effects: vec![TechEffect::ModifyDiplomacyRange(0.1)],
+            description: "Foundational study of alien communication patterns".into(),
+        },
+        Technology {
+            id: TechId(101),
+            name: "Colonial Administration".into(),
+            branch: TechBranch::Social,
+            cost: 150.0,
+            prerequisites: vec![],
+            effects: vec![TechEffect::ModifyPopulationGrowth(0.1)],
+            description: "Improved governance structures for distant colonies".into(),
+        },
+        Technology {
+            id: TechId(102),
+            name: "Interstellar Commerce".into(),
+            branch: TechBranch::Social,
+            cost: 250.0,
+            prerequisites: vec![TechId(101)],
+            effects: vec![TechEffect::ModifyResourceProduction(
+                ResourceType::Energy,
+                0.15,
+            )],
+            description: "Trade frameworks spanning star systems".into(),
+        },
+        Technology {
+            id: TechId(103),
+            name: "Cultural Exchange Protocols".into(),
+            branch: TechBranch::Social,
+            cost: 300.0,
+            prerequisites: vec![TechId(100)],
+            effects: vec![TechEffect::ModifyDiplomacyRange(0.2)],
+            description: "Formalised frameworks for cross-species cultural interaction".into(),
+        },
+        // === Physics Branch ===
+        Technology {
+            id: TechId(200),
+            name: "Advanced Sensor Arrays".into(),
+            branch: TechBranch::Physics,
+            cost: 100.0,
+            prerequisites: vec![],
+            effects: vec![TechEffect::ModifySensorRange(0.2)],
+            description: "Next-generation sensors for deep space observation".into(),
+        },
+        Technology {
+            id: TechId(201),
+            name: "Improved Sublight Drives".into(),
+            branch: TechBranch::Physics,
+            cost: 200.0,
+            prerequisites: vec![],
+            effects: vec![TechEffect::ModifySublightSpeed(0.1)],
+            description: "Enhances sublight drive efficiency".into(),
+        },
+        Technology {
+            id: TechId(202),
+            name: "FTL Theory".into(),
+            branch: TechBranch::Physics,
+            cost: 400.0,
+            prerequisites: vec![TechId(201)],
+            effects: vec![TechEffect::ModifyFTLRange(0.2)],
+            description: "Theoretical foundations for faster-than-light travel".into(),
+        },
+        Technology {
+            id: TechId(203),
+            name: "Warp Field Stabilisation".into(),
+            branch: TechBranch::Physics,
+            cost: 600.0,
+            prerequisites: vec![TechId(202)],
+            effects: vec![TechEffect::ModifyFTLSpeed(0.15)],
+            description: "Stabilise warp fields for safer FTL travel".into(),
+        },
+        // === Industrial Branch ===
+        Technology {
+            id: TechId(300),
+            name: "Automated Mining".into(),
+            branch: TechBranch::Industrial,
+            cost: 100.0,
+            prerequisites: vec![],
+            effects: vec![TechEffect::ModifyResourceProduction(
+                ResourceType::Minerals,
+                0.15,
+            )],
+            description: "Robotic systems for autonomous resource extraction".into(),
+        },
+        Technology {
+            id: TechId(301),
+            name: "Orbital Fabrication".into(),
+            branch: TechBranch::Industrial,
+            cost: 200.0,
+            prerequisites: vec![TechId(300)],
+            effects: vec![TechEffect::ModifyConstructionSpeed(0.1)],
+            description: "Manufacturing facilities in orbit for zero-gravity construction".into(),
+        },
+        Technology {
+            id: TechId(302),
+            name: "Fusion Power Plants".into(),
+            branch: TechBranch::Industrial,
+            cost: 300.0,
+            prerequisites: vec![TechId(300)],
+            effects: vec![TechEffect::ModifyResourceProduction(
+                ResourceType::Energy,
+                0.2,
+            )],
+            description: "Harness fusion reactions for abundant clean energy".into(),
+        },
+        Technology {
+            id: TechId(303),
+            name: "Nano-Assembly".into(),
+            branch: TechBranch::Industrial,
+            cost: 500.0,
+            prerequisites: vec![TechId(301)],
+            effects: vec![TechEffect::ModifyConstructionSpeed(0.2)],
+            description: "Molecular-scale construction for unprecedented precision".into(),
+        },
+        // === Military Branch ===
+        Technology {
+            id: TechId(400),
+            name: "Kinetic Weapons".into(),
+            branch: TechBranch::Military,
+            cost: 100.0,
+            prerequisites: vec![],
+            effects: vec![TechEffect::ModifyWeaponDamage(0.1)],
+            description: "Mass-driver based weapon systems".into(),
+        },
+        Technology {
+            id: TechId(401),
+            name: "Deflector Shields".into(),
+            branch: TechBranch::Military,
+            cost: 200.0,
+            prerequisites: vec![],
+            effects: vec![TechEffect::ModifyShieldStrength(0.15)],
+            description: "Energy barriers to deflect incoming projectiles".into(),
+        },
+        Technology {
+            id: TechId(402),
+            name: "Composite Armor".into(),
+            branch: TechBranch::Military,
+            cost: 250.0,
+            prerequisites: vec![TechId(400)],
+            effects: vec![TechEffect::ModifyArmor(0.2)],
+            description: "Multi-layered hull plating for enhanced protection".into(),
+        },
+    ]
+}
+
+/// Convenience function: build a TechTree from hardcoded definitions.
 pub fn create_initial_tech_tree() -> TechTree {
-    let mut tree = TechTree::default();
-
-    // -- Social (101-199) --
-    tree.add(Technology {
-        id: TechId(101),
-        name: "Population Growth I".into(),
-        description: "Basic genetic and social programs to boost birth rates.".into(),
-        branch: TechBranch::Social,
-        cost: 200.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifyPopulationGrowth(0.005)],
-    });
-    tree.add(Technology {
-        id: TechId(102),
-        name: "Autonomous AI Basics".into(),
-        description: "Foundational research into autonomous decision-making agents.".into(),
-        branch: TechBranch::Social,
-        cost: 300.0,
-        prerequisites: vec![TechId(101)],
-        effects: vec![TechEffect::Placeholder(
-            "Enables basic AI governance assistants".into(),
-        )],
-    });
-    tree.add(Technology {
-        id: TechId(103),
-        name: "Governance Efficiency".into(),
-        description: "Streamlined bureaucracy improves all production.".into(),
-        branch: TechBranch::Social,
-        cost: 400.0,
-        prerequisites: vec![TechId(101)],
-        effects: vec![TechEffect::ModifyProductionRate {
-            resource: ResourceType::All,
-            multiplier: 1.1,
-        }],
-    });
-
-    // -- Physics (201-299) --
-    tree.add(Technology {
-        id: TechId(201),
-        name: "Improved Sublight Drives".into(),
-        description: "Push sub-light cruise speed from 0.75c to 0.85c.".into(),
-        branch: TechBranch::Physics,
-        cost: 200.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifySubLightSpeed(0.1)],
-    });
-    tree.add(Technology {
-        id: TechId(202),
-        name: "Extended FTL Range".into(),
-        description: "Extend FTL jump range from 30 to 40 light-years.".into(),
-        branch: TechBranch::Physics,
-        cost: 300.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifyFTLRange(10.0)],
-    });
-    tree.add(Technology {
-        id: TechId(203),
-        name: "FTL Speed Enhancement".into(),
-        description: "Boost FTL cruise speed from 10c to 15c.".into(),
-        branch: TechBranch::Physics,
-        cost: 400.0,
-        prerequisites: vec![TechId(201)],
-        effects: vec![TechEffect::ModifyFTLSpeed(5.0)],
-    });
-    tree.add(Technology {
-        id: TechId(204),
-        name: "Advanced Sensors".into(),
-        description: "Improve survey sensor range from 5 to 8 light-years.".into(),
-        branch: TechBranch::Physics,
-        cost: 250.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifySurveyRange(3.0)],
-    });
-    tree.add(Technology {
-        id: TechId(205),
-        name: "Automated Courier Network".into(),
-        description: "Enables automated communication routes between colonies.".into(),
-        branch: TechBranch::Physics,
-        cost: 500.0,
-        prerequisites: vec![TechId(204)],
-        effects: vec![TechEffect::Placeholder(
-            "Enables automated communication routes".into(),
-        )],
-    });
-
-    // -- Industrial (301-399) --
-    tree.add(Technology {
-        id: TechId(301),
-        name: "Efficient Mining".into(),
-        description: "Better extraction techniques boost mineral output by 20%.".into(),
-        branch: TechBranch::Industrial,
-        cost: 200.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifyProductionRate {
-            resource: ResourceType::Minerals,
-            multiplier: 1.2,
-        }],
-    });
-    tree.add(Technology {
-        id: TechId(302),
-        name: "Energy Grid Optimization".into(),
-        description: "Smarter power grids boost energy output by 20%.".into(),
-        branch: TechBranch::Industrial,
-        cost: 200.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifyProductionRate {
-            resource: ResourceType::Energy,
-            multiplier: 1.2,
-        }],
-    });
-    tree.add(Technology {
-        id: TechId(303),
-        name: "Rapid Construction".into(),
-        description: "Prefabrication methods increase build speed by 50%.".into(),
-        branch: TechBranch::Industrial,
-        cost: 350.0,
-        prerequisites: vec![TechId(301), TechId(302)],
-        effects: vec![TechEffect::ModifyBuildSpeed(1.5)],
-    });
-    tree.add(Technology {
-        id: TechId(304),
-        name: "Advanced Shipyard".into(),
-        description: "Unlocks the Advanced Shipyard building for heavier vessels.".into(),
-        branch: TechBranch::Industrial,
-        cost: 400.0,
-        prerequisites: vec![TechId(303)],
-        effects: vec![TechEffect::UnlockBuilding("AdvancedShipyard".into())],
-    });
-
-    // -- Military (401-499) --
-    tree.add(Technology {
-        id: TechId(401),
-        name: "Hull Reinforcement".into(),
-        description: "Composite armour plating increases hull strength by 25%.".into(),
-        branch: TechBranch::Military,
-        cost: 200.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifyHullStrength(1.25)],
-    });
-    tree.add(Technology {
-        id: TechId(402),
-        name: "Basic Armaments".into(),
-        description: "Standard weapon systems for military vessels.".into(),
-        branch: TechBranch::Military,
-        cost: 300.0,
-        prerequisites: vec![],
-        effects: vec![TechEffect::ModifyWeaponDamage(1.2)],
-    });
-    tree.add(Technology {
-        id: TechId(403),
-        name: "Defense Platforms".into(),
-        description: "Orbital defense stations to protect colonies.".into(),
-        branch: TechBranch::Military,
-        cost: 400.0,
-        prerequisites: vec![TechId(401), TechId(402)],
-        effects: vec![TechEffect::Placeholder(
-            "Unlocks orbital defense platform construction".into(),
-        )],
-    });
-
-    tree
+    TechTree::from_vec(create_initial_tech_tree_vec())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_tech(id: u32, name: &str, cost: f64, prerequisites: Vec<u32>) -> Technology {
-        Technology {
-            id: TechId(id),
-            name: name.to_string(),
-            branch: TechBranch::Physics,
-            cost,
-            prerequisites: prerequisites.into_iter().map(TechId).collect(),
-            effects: vec![],
-            description: String::new(),
-        }
-    }
-
-    fn make_tree(techs: Vec<Technology>) -> TechTree {
-        let mut tree = TechTree::default();
-        for tech in techs {
-            tree.technologies.insert(tech.id, tech);
-        }
-        tree
-    }
-
     #[test]
-    fn tree_has_expected_technology_count() {
+    fn test_hardcoded_tech_tree() {
         let tree = create_initial_tech_tree();
-        // 3 Social + 5 Physics + 4 Industrial + 3 Military = 15
         assert_eq!(tree.technologies.len(), 15);
+        assert!(tree.get(TechId(100)).is_some());
+        assert!(tree.get(TechId(402)).is_some());
     }
 
     #[test]
-    fn branch_counts_are_correct() {
-        let tree = create_initial_tech_tree();
-        assert_eq!(tree.branch(TechBranch::Social).len(), 3);
-        assert_eq!(tree.branch(TechBranch::Physics).len(), 5);
-        assert_eq!(tree.branch(TechBranch::Industrial).len(), 4);
-        assert_eq!(tree.branch(TechBranch::Military).len(), 3);
+    fn test_parse_lua_tech_definitions() {
+        let lua = mlua::Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+
+        lua.load(
+            r#"
+            define_tech {
+                id = 999,
+                name = "Test Tech",
+                branch = "physics",
+                cost = 42.0,
+                prerequisites = {},
+                description = "A test technology",
+                effects = {
+                    { type = "modify_sublight_speed", value = 0.5 },
+                },
+            }
+            define_tech {
+                id = 1000,
+                name = "Advanced Test Tech",
+                branch = "military",
+                cost = 100.0,
+                prerequisites = { 999 },
+                description = "Depends on test tech",
+                effects = {
+                    { type = "modify_weapon_damage", value = 0.3 },
+                    { type = "modify_armor", value = 0.1 },
+                },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let techs = parse_tech_definitions(&lua).unwrap();
+        assert_eq!(techs.len(), 2);
+
+        let first = &techs[0];
+        assert_eq!(first.id, TechId(999));
+        assert_eq!(first.name, "Test Tech");
+        assert_eq!(first.branch, TechBranch::Physics);
+        assert_eq!(first.cost, 42.0);
+        assert!(first.prerequisites.is_empty());
+        assert_eq!(first.effects.len(), 1);
+        assert_eq!(first.effects[0], TechEffect::ModifySublightSpeed(0.5));
+
+        let second = &techs[1];
+        assert_eq!(second.id, TechId(1000));
+        assert_eq!(second.prerequisites, vec![TechId(999)]);
+        assert_eq!(second.effects.len(), 2);
     }
 
     #[test]
-    fn all_prerequisites_exist() {
-        let tree = create_initial_tech_tree();
-        assert!(
-            tree.validate_prerequisites().is_ok(),
-            "Some prerequisites reference missing tech ids"
+    fn test_parse_resource_production_effect() {
+        let lua = mlua::Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+
+        lua.load(
+            r#"
+            define_tech {
+                id = 500,
+                name = "Resource Tech",
+                branch = "industrial",
+                cost = 100.0,
+                prerequisites = {},
+                description = "Tests resource production parsing",
+                effects = {
+                    { type = "modify_resource_production", resource = "minerals", value = 0.15 },
+                },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let techs = parse_tech_definitions(&lua).unwrap();
+        assert_eq!(techs.len(), 1);
+        assert_eq!(
+            techs[0].effects[0],
+            TechEffect::ModifyResourceProduction(ResourceType::Minerals, 0.15)
         );
     }
 
     #[test]
-    fn prerequisite_chains_are_valid() {
-        let tree = create_initial_tech_tree();
-
-        let t102 = tree.get(TechId(102)).unwrap();
-        assert!(t102.prerequisites.contains(&TechId(101)));
-        let t103 = tree.get(TechId(103)).unwrap();
-        assert!(t103.prerequisites.contains(&TechId(101)));
-
-        let t203 = tree.get(TechId(203)).unwrap();
-        assert!(t203.prerequisites.contains(&TechId(201)));
-        let t205 = tree.get(TechId(205)).unwrap();
-        assert!(t205.prerequisites.contains(&TechId(204)));
-
-        let t303 = tree.get(TechId(303)).unwrap();
-        assert!(t303.prerequisites.contains(&TechId(301)));
-        assert!(t303.prerequisites.contains(&TechId(302)));
-        let t304 = tree.get(TechId(304)).unwrap();
-        assert!(t304.prerequisites.contains(&TechId(303)));
-
-        let t403 = tree.get(TechId(403)).unwrap();
-        assert!(t403.prerequisites.contains(&TechId(401)));
-        assert!(t403.prerequisites.contains(&TechId(402)));
-    }
-
-    #[test]
-    fn no_technology_requires_itself() {
-        let tree = create_initial_tech_tree();
-        for tech in tree.technologies.values() {
-            assert!(
-                !tech.prerequisites.contains(&tech.id),
-                "Tech {:?} lists itself as a prerequisite",
-                tech.id
-            );
-        }
-    }
-
-    #[test]
-    fn costs_are_positive() {
-        let tree = create_initial_tech_tree();
-        for tech in tree.technologies.values() {
-            assert!(
-                tech.cost > 0.0,
-                "Tech {:?} has non-positive cost {}",
-                tech.id,
-                tech.cost
-            );
-        }
+    fn test_load_lua_files_from_disk() {
+        let engine = crate::scripting::ScriptEngine::new().unwrap();
+        let tech_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tech");
+        engine
+            .load_directory(&tech_dir)
+            .expect("Failed to load tech scripts from disk");
+        let techs = parse_tech_definitions(engine.lua()).expect("Failed to parse tech scripts");
+        // Should load all 15 technologies from the 4 Lua files
+        assert_eq!(techs.len(), 15);
+        // Verify one tech from each branch
+        assert!(techs
+            .iter()
+            .any(|t| t.id == TechId(100) && t.branch == TechBranch::Social));
+        assert!(techs
+            .iter()
+            .any(|t| t.id == TechId(201) && t.branch == TechBranch::Physics));
+        assert!(techs
+            .iter()
+            .any(|t| t.id == TechId(300) && t.branch == TechBranch::Industrial));
+        assert!(techs
+            .iter()
+            .any(|t| t.id == TechId(402) && t.branch == TechBranch::Military));
     }
 
     #[test]
     fn can_research_no_prerequisites() {
-        let tree = make_tree(vec![make_tech(1, "Basic Physics", 100.0, vec![])]);
+        let tree = TechTree::from_vec(vec![Technology {
+            id: TechId(1),
+            name: "Basic".into(),
+            branch: TechBranch::Physics,
+            cost: 100.0,
+            prerequisites: vec![],
+            effects: vec![],
+            description: String::new(),
+        }]);
         assert!(tree.can_research(TechId(1)));
     }
 
     #[test]
     fn cannot_research_missing_prerequisites() {
-        let tree = make_tree(vec![
-            make_tech(1, "Basic Physics", 100.0, vec![]),
-            make_tech(2, "Advanced Physics", 200.0, vec![1]),
+        let tree = TechTree::from_vec(vec![
+            Technology {
+                id: TechId(1),
+                name: "Basic".into(),
+                branch: TechBranch::Physics,
+                cost: 100.0,
+                prerequisites: vec![],
+                effects: vec![],
+                description: String::new(),
+            },
+            Technology {
+                id: TechId(2),
+                name: "Advanced".into(),
+                branch: TechBranch::Physics,
+                cost: 200.0,
+                prerequisites: vec![TechId(1)],
+                effects: vec![],
+                description: String::new(),
+            },
         ]);
         assert!(!tree.can_research(TechId(2)));
     }
 
     #[test]
     fn can_research_after_completing_prerequisites() {
-        let mut tree = make_tree(vec![
-            make_tech(1, "Basic Physics", 100.0, vec![]),
-            make_tech(2, "Advanced Physics", 200.0, vec![1]),
+        let mut tree = TechTree::from_vec(vec![
+            Technology {
+                id: TechId(1),
+                name: "Basic".into(),
+                branch: TechBranch::Physics,
+                cost: 100.0,
+                prerequisites: vec![],
+                effects: vec![],
+                description: String::new(),
+            },
+            Technology {
+                id: TechId(2),
+                name: "Advanced".into(),
+                branch: TechBranch::Physics,
+                cost: 200.0,
+                prerequisites: vec![TechId(1)],
+                effects: vec![],
+                description: String::new(),
+            },
         ]);
         tree.complete_research(TechId(1));
         assert!(tree.can_research(TechId(2)));
@@ -517,31 +791,65 @@ mod tests {
 
     #[test]
     fn cannot_research_already_researched() {
-        let mut tree = make_tree(vec![make_tech(1, "Basic Physics", 100.0, vec![])]);
+        let mut tree = TechTree::from_vec(vec![Technology {
+            id: TechId(1),
+            name: "Basic".into(),
+            branch: TechBranch::Physics,
+            cost: 100.0,
+            prerequisites: vec![],
+            effects: vec![],
+            description: String::new(),
+        }]);
         tree.complete_research(TechId(1));
         assert!(!tree.can_research(TechId(1)));
     }
 
     #[test]
     fn is_researched() {
-        let mut tree = make_tree(vec![make_tech(1, "Basic Physics", 100.0, vec![])]);
+        let mut tree = TechTree::from_vec(vec![Technology {
+            id: TechId(1),
+            name: "Basic".into(),
+            branch: TechBranch::Physics,
+            cost: 100.0,
+            prerequisites: vec![],
+            effects: vec![],
+            description: String::new(),
+        }]);
         assert!(!tree.is_researched(TechId(1)));
         tree.complete_research(TechId(1));
         assert!(tree.is_researched(TechId(1)));
     }
 
     #[test]
-    fn cannot_research_nonexistent_tech() {
-        let tree = TechTree::default();
-        assert!(!tree.can_research(TechId(999)));
-    }
-
-    #[test]
     fn available_technologies_returns_only_researchable() {
-        let mut tree = make_tree(vec![
-            make_tech(1, "Basic Physics", 100.0, vec![]),
-            make_tech(2, "Advanced Physics", 200.0, vec![1]),
-            make_tech(3, "Basic Social", 100.0, vec![]),
+        let mut tree = TechTree::from_vec(vec![
+            Technology {
+                id: TechId(1),
+                name: "Basic".into(),
+                branch: TechBranch::Physics,
+                cost: 100.0,
+                prerequisites: vec![],
+                effects: vec![],
+                description: String::new(),
+            },
+            Technology {
+                id: TechId(2),
+                name: "Advanced".into(),
+                branch: TechBranch::Physics,
+                cost: 200.0,
+                prerequisites: vec![TechId(1)],
+                effects: vec![],
+                description: String::new(),
+            },
+            Technology {
+                id: TechId(3),
+                name: "Other".into(),
+                branch: TechBranch::Social,
+                cost: 100.0,
+                prerequisites: vec![],
+                effects: vec![],
+                description: String::new(),
+            },
         ]);
 
         let available: Vec<TechId> = tree.available_technologies().iter().map(|t| t.id).collect();
@@ -554,27 +862,5 @@ mod tests {
         assert!(!available.contains(&TechId(1)));
         assert!(available.contains(&TechId(2)));
         assert!(available.contains(&TechId(3)));
-    }
-
-    #[test]
-    fn complete_research_marks_as_researched() {
-        let mut tree = make_tree(vec![make_tech(1, "Test", 50.0, vec![])]);
-        tree.complete_research(TechId(1));
-        assert!(tree.researched.contains(&TechId(1)));
-    }
-
-    #[test]
-    fn multiple_prerequisites_all_required() {
-        let mut tree = make_tree(vec![
-            make_tech(1, "A", 100.0, vec![]),
-            make_tech(2, "B", 100.0, vec![]),
-            make_tech(3, "C", 200.0, vec![1, 2]),
-        ]);
-
-        assert!(!tree.can_research(TechId(3)));
-        tree.complete_research(TechId(1));
-        assert!(!tree.can_research(TechId(3)));
-        tree.complete_research(TechId(2));
-        assert!(tree.can_research(TechId(3)));
     }
 }

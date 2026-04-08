@@ -11,6 +11,21 @@ use crate::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_sexadies};
 use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
 
+// --- #34: Command queue ---
+
+#[derive(Component, Default)]
+pub struct CommandQueue {
+    pub commands: Vec<QueuedCommand>,
+}
+
+#[derive(Clone, Debug)]
+pub enum QueuedCommand {
+    MoveTo(Entity),
+    FTLTo(Entity),
+    Survey(Entity),
+    Colonize,
+}
+
 /// Result of an exploration event rolled when a survey completes.
 #[derive(Clone, Debug)]
 pub enum ExplorationEvent {
@@ -85,6 +100,10 @@ impl Plugin for ShipPlugin {
             process_surveys,
             process_settling,
             process_pending_ship_commands,
+            process_command_queue
+                .after(sublight_movement_system)
+                .after(process_ftl_travel)
+                .after(process_surveys),
         ));
     }
 }
@@ -208,6 +227,7 @@ pub fn spawn_ship(
             },
             ShipState::Docked { system },
             initial_position,
+            CommandQueue::default(),
         ))
         .id()
 }
@@ -750,6 +770,105 @@ pub fn process_pending_ship_commands(
         }
 
         commands.entity(cmd_entity).despawn();
+    }
+}
+
+// --- Command queue processing (#34) ---
+
+pub fn process_command_queue(
+    clock: Res<GameClock>,
+    mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position)>,
+    systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
+) {
+    for (_entity, ship, mut state, mut queue, ship_pos) in ships.iter_mut() {
+        // Only process queue when ship is Docked (current command finished)
+        let ShipState::Docked { system: docked_system } = *state else {
+            continue;
+        };
+
+        if queue.commands.is_empty() {
+            continue;
+        }
+
+        let next = queue.commands.remove(0);
+
+        match next {
+            QueuedCommand::MoveTo(target) => {
+                let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
+                    warn!("Queued MoveTo target no longer exists");
+                    continue;
+                };
+                start_sublight_travel(
+                    &mut state,
+                    ship_pos,
+                    ship,
+                    *target_pos,
+                    Some(target),
+                    clock.elapsed,
+                );
+                info!("Queue: Ship {} moving to {}", ship.name, target_star.name);
+            }
+            QueuedCommand::FTLTo(target) => {
+                let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
+                    warn!("Queued FTLTo target no longer exists");
+                    continue;
+                };
+                let Ok((_dock_entity, _dock_star, dock_pos)) = systems.get(docked_system) else {
+                    continue;
+                };
+                match start_ftl_travel(
+                    &mut state,
+                    ship,
+                    docked_system,
+                    target,
+                    dock_pos,
+                    target_pos,
+                    clock.elapsed,
+                ) {
+                    Ok(()) => {
+                        info!(
+                            "Queue: Ship {} FTL jumping to {}",
+                            ship.name, target_star.name
+                        );
+                    }
+                    Err(e) => {
+                        warn!("Queue: FTL failed for {}: {}", ship.name, e);
+                    }
+                }
+            }
+            QueuedCommand::Survey(target) => {
+                let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
+                    warn!("Queued Survey target no longer exists");
+                    continue;
+                };
+                match start_survey(
+                    &mut state,
+                    ship,
+                    target,
+                    ship_pos,
+                    target_pos,
+                    clock.elapsed,
+                ) {
+                    Ok(()) => {
+                        info!(
+                            "Queue: Ship {} surveying {}",
+                            ship.name, target_star.name
+                        );
+                    }
+                    Err(e) => {
+                        warn!("Queue: Survey failed for {}: {}", ship.name, e);
+                    }
+                }
+            }
+            QueuedCommand::Colonize => {
+                // Colonization is handled automatically by process_settling
+                // when a colony ship docks. No explicit action needed here.
+                info!(
+                    "Queue: Ship {} colonize command (handled on dock)",
+                    ship.name
+                );
+            }
+        }
     }
 }
 

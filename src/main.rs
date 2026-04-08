@@ -1,16 +1,17 @@
-mod components;
-mod galaxy;
-mod player;
-mod communication;
-mod time_system;
-mod physics;
-mod visualization;
-mod knowledge;
-mod ship;
 mod colony;
+mod communication;
+mod components;
 mod events;
-mod technology;
+mod galaxy;
+mod knowledge;
+mod physics;
+mod player;
+mod scripting;
 mod setup;
+mod ship;
+mod technology;
+mod time_system;
+mod visualization;
 
 use bevy::prelude::*;
 
@@ -33,6 +34,7 @@ fn main() {
             knowledge::KnowledgePlugin,
             ship::ShipPlugin,
             colony::ColonyPlugin,
+            scripting::ScriptingPlugin,
             technology::TechnologyPlugin,
             events::EventsPlugin,
             setup::GameSetupPlugin,

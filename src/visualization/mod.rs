@@ -14,9 +14,10 @@ use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::ship::{
-    PendingShipCommand, Ship, ShipCommand, ShipState, ShipType, SETTLING_DURATION_SEXADIES,
-    SURVEY_DURATION_SEXADIES,
+    CommandQueue, PendingShipCommand, QueuedCommand, Ship, ShipCommand, ShipState, ShipType,
+    SETTLING_DURATION_SEXADIES, SURVEY_DURATION_SEXADIES,
 };
+use crate::technology::{ResearchPool, ResearchQueue, TechBranch, TechTree};
 use crate::time_system::{GameClock, GameSpeed, SEXADIES_PER_MONTH, SEXADIES_PER_YEAR};
 
 pub struct VisualizationPlugin;
@@ -28,9 +29,11 @@ impl Plugin for VisualizationPlugin {
         })
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedShip::default())
+        .insert_resource(ResearchPanelOpen::default())
         .add_systems(Startup, setup_camera)
         .add_systems(PostStartup, spawn_star_visuals)
         .add_systems(Update, (
+            toggle_research_panel,
             click_select_system,
             camera_controls,
             update_star_colors,
@@ -39,12 +42,21 @@ impl Plugin for VisualizationPlugin {
             update_hud,
             update_info_panel,
             update_event_log,
-            handle_ship_commands,
-            handle_build_commands,
-            handle_building_commands,
-            handle_focus_commands,
+            update_research_panel,
+            handle_research_selection,
+            handle_ship_commands.run_if(research_panel_closed),
+            handle_build_commands.run_if(research_panel_closed),
+            handle_building_commands.run_if(research_panel_closed),
+            handle_focus_commands.run_if(research_panel_closed),
         ));
     }
+}
+
+#[derive(Resource, Default)]
+pub struct ResearchPanelOpen(pub bool);
+
+fn research_panel_closed(panel: Res<ResearchPanelOpen>) -> bool {
+    !panel.0
 }
 
 #[derive(Resource, Default)]
@@ -71,6 +83,9 @@ pub struct InfoPanel;
 
 #[derive(Component)]
 pub struct EventLogPanel;
+
+#[derive(Component)]
+pub struct ResearchPanel;
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
@@ -121,6 +136,26 @@ fn setup_camera(mut commands: Commands) {
             left: Val::Px(10.0),
             ..default()
         },
+    ));
+
+    commands.spawn((
+        ResearchPanel,
+        Text::new(""),
+        TextFont {
+            font_size: 15.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.85, 0.9, 1.0)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Percent(10.0),
+            left: Val::Percent(15.0),
+            width: Val::Percent(70.0),
+            height: Val::Percent(80.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.05, 0.05, 0.15, 0.92)),
+        Visibility::Hidden,
     ));
 }
 
@@ -625,8 +660,9 @@ pub fn draw_ships(
     }
 }
 
-// #14: Helper to collect ships docked at a given system
-fn ships_docked_at(
+// #14: Helper to collect ships docked at a given system (basic, no CommandQueue)
+#[allow(dead_code)]
+fn ships_docked_at_basic(
     system: Entity,
     ships: &Query<(Entity, &Ship, &ShipState)>,
 ) -> Vec<(Entity, String, ShipType)> {
@@ -645,16 +681,37 @@ fn ships_docked_at(
     result
 }
 
+// #34: Helper to collect ships docked at a given system (with CommandQueue)
+fn ships_docked_at(
+    system: Entity,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+) -> Vec<(Entity, String, ShipType)> {
+    let mut result: Vec<(Entity, String, ShipType)> = ships
+        .iter()
+        .filter_map(|(e, ship, state, _queue)| {
+            if let ShipState::Docked { system: s } = state {
+                if *s == system {
+                    return Some((e, ship.name.clone(), ship.ship_type));
+                }
+            }
+            None
+        })
+        .collect();
+    result.sort_by(|a, b| a.1.cmp(&b.1));
+    result
+}
+
 pub fn update_hud(
     clock: Res<GameClock>,
     speed: Res<GameSpeed>,
     player_q: Query<&StationedAt, With<Player>>,
     stars: Query<(&StarSystem, &Position, Option<&SystemAttributes>)>,
-    ships: Query<(Entity, &Ship, &ShipState)>,
+    ships: Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     colonies: Query<(&Colony, &ResourceStockpile, &BuildQueue)>,
     selected_system: Res<SelectedSystem>,
     selected_ship: Res<SelectedShip>,
     knowledge: Res<KnowledgeStore>,
+    all_stars: Query<(Entity, &StarSystem)>,
     mut hud: Query<(&mut Text, &mut TextColor), With<HudText>>,
 ) {
     let Ok((mut text, mut text_color)) = hud.single_mut() else {
@@ -716,7 +773,7 @@ pub fn update_hud(
     *text_color = TextColor(hud_color);
 
     let mut hud_text = format!(
-        "Year {} Month {} Sexadie {} [{}]\nLocation: {}{}\n\nWASD: Pan | Scroll: Zoom | Space: Pause\n+/-: Speed | I: System Info | Home: Reset View\nClick: Select system | Esc: Deselect",
+        "Year {} Month {} Sexadie {} [{}]\nLocation: {}{}\n\nWASD: Pan | Scroll: Zoom | Space: Pause\n+/-: Speed | Home: Reset View | R: Research\nClick: Select system | Esc: Deselect",
         clock.year(),
         clock.month(),
         clock.sexadie(),
@@ -787,7 +844,7 @@ pub fn update_hud(
 
             // If a ship is selected, show ship details instead of ship list
             if let Some(ship_entity) = selected_ship.0 {
-                if let Ok((_, ship, state)) = ships.get(ship_entity) {
+                if let Ok((_, ship, state, cmd_queue)) = ships.get(ship_entity) {
                     hud_text.push_str(&format!(
                         "\n\n--- Ship: {} ---\nType: {:?} | HP: {:.0}/{:.0}",
                         ship.name, ship.ship_type, ship.hp, ship.max_hp,
@@ -840,6 +897,7 @@ pub fn update_hud(
                         if ship.ship_type == ShipType::ColonyShip {
                             hud_text.push_str("\n  C: Colonize (begin settling)");
                         }
+                        hud_text.push_str("\n  Hold Shift + command: Queue instead of execute");
 
                         // If the selected system is different from where ship is docked,
                         // show what the target would be
@@ -864,6 +922,40 @@ pub fn update_hud(
                             }
                         }
                     }
+
+                    // #34: Show command queue
+                    if !cmd_queue.commands.is_empty() {
+                        hud_text.push_str("\n\nCommand Queue:");
+                        for (i, cmd) in cmd_queue.commands.iter().enumerate() {
+                            let cmd_str = match cmd {
+                                QueuedCommand::MoveTo(target) => {
+                                    if let Ok((_, star)) = all_stars.get(*target) {
+                                        format!("Move to {}", star.name)
+                                    } else {
+                                        "Move to [unknown]".to_string()
+                                    }
+                                }
+                                QueuedCommand::FTLTo(target) => {
+                                    if let Ok((_, star)) = all_stars.get(*target) {
+                                        format!("FTL to {}", star.name)
+                                    } else {
+                                        "FTL to [unknown]".to_string()
+                                    }
+                                }
+                                QueuedCommand::Survey(target) => {
+                                    if let Ok((_, star)) = all_stars.get(*target) {
+                                        format!("Survey {}", star.name)
+                                    } else {
+                                        "Survey [unknown]".to_string()
+                                    }
+                                }
+                                QueuedCommand::Colonize => "Colonize".to_string(),
+                            };
+                            hud_text.push_str(&format!("\n  {}. {}", i + 1, cmd_str));
+                        }
+                        hud_text.push_str("\n  X: Clear queue");
+                    }
+
                     hud_text.push_str("\n  Esc: Back to system view");
                 } else {
                     hud_text.push_str("\n\n[Selected ship no longer exists]");
@@ -1132,13 +1224,13 @@ pub fn update_info_panel(
     **text = info;
 }
 
-// #14: Ship command handling (merged #32 settling, #33 local/remote)
+// #14: Ship command handling (merged #32 settling, #33 local/remote, #34 command queue)
 pub fn handle_ship_commands(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     selected_system: Res<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
-    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState)>,
+    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, &mut CommandQueue)>,
     stars: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     clock: Res<GameClock>,
     player_q: Query<&StationedAt, With<Player>>,
@@ -1163,7 +1255,7 @@ pub fn handle_ship_commands(
         // Collect docked ships (immutable iteration over the mutable query)
         let mut docked: Vec<(Entity, String, ShipType)> = ships_query
             .iter()
-            .filter_map(|(e, ship, state)| {
+            .filter_map(|(e, ship, state, _)| {
                 if let ShipState::Docked { system: s } = &*state {
                     if *s == sel_system {
                         return Some((e, ship.name.clone(), ship.ship_type));
@@ -1191,20 +1283,32 @@ pub fn handle_ship_commands(
 
     // Read ship data for validation first
     let (ship_name, ship_type, ftl_range, sublight_speed, docked_system) = {
-        let Ok((_, ship, state)) = ships_query.get(ship_entity) else {
+        let Ok((_, ship, state, _)) = ships_query.get(ship_entity) else {
             selected_ship.0 = None;
             return;
         };
-        let ShipState::Docked { system: docked_system } = *state else {
-            // Ship is not docked, no commands available
-            return;
+        let docked = if let ShipState::Docked { system: ds } = *state {
+            Some(ds)
+        } else {
+            None
         };
-        (ship.name.clone(), ship.ship_type, ship.ftl_range, ship.sublight_speed, docked_system)
+        (ship.name.clone(), ship.ship_type, ship.ftl_range, ship.sublight_speed, docked)
     };
+
+    let shift_held = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
 
     // #33: Determine if the ship is local (at player's system) or remote
     let player_system = player_q.single().map(|s| s.system).unwrap_or(Entity::PLACEHOLDER);
-    let is_local = docked_system == player_system;
+    let is_local = docked_system.map_or(false, |ds| ds == player_system);
+
+    // #34: X: Clear command queue
+    if keys.just_pressed(KeyCode::KeyX) {
+        let Ok((_, _, _, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+        let count = queue.commands.len();
+        queue.commands.clear();
+        info!("Cleared {} queued commands for ship {}", count, ship_name);
+        return;
+    }
 
     // F: FTL jump
     if keys.just_pressed(KeyCode::KeyF) {
@@ -1212,6 +1316,22 @@ pub fn handle_ship_commands(
             info!("Ship {} has no FTL capability", ship_name);
             return;
         }
+
+        // #34: Shift+F queues the command
+        if shift_held {
+            let Ok((_, _, _, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+            queue.commands.push(QueuedCommand::FTLTo(sel_system));
+            if let Ok((_, target_star, _)) = stars.get(sel_system) {
+                info!("Queued FTL to {} for ship {}", target_star.name, ship_name);
+            }
+            return;
+        }
+
+        let Some(docked_system) = docked_system else {
+            info!("Ship is not docked, cannot execute immediate command");
+            return;
+        };
+
         if sel_system == docked_system {
             info!("Select a different system as FTL target");
             return;
@@ -1235,9 +1355,9 @@ pub fn handle_ship_commands(
         }
 
         if is_local {
-            // Execute FTL immediately
             let travel_time = physics::sublight_travel_sexadies(dist, 10.0).max(1);
-            let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
+            let Ok((_, ship_mut, mut state_mut, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+            queue.commands.clear();
             *state_mut = ShipState::InFTL {
                 origin_system: docked_system,
                 destination_system: sel_system,
@@ -1249,7 +1369,6 @@ pub fn handle_ship_commands(
                 ship_mut.name, target_star.name, travel_time,
             );
         } else {
-            // #33: Remote: queue command with communication delay
             let Ok((_, _, player_pos)) = stars.get(player_system) else { return };
             let delay = physics::light_delay_sexadies(physics::distance_ly(player_pos, dock_pos));
             commands.spawn(PendingShipCommand {
@@ -1268,6 +1387,21 @@ pub fn handle_ship_commands(
 
     // M: Sub-light move
     if keys.just_pressed(KeyCode::KeyM) {
+        // #34: Shift+M queues the command
+        if shift_held {
+            let Ok((_, _, _, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+            queue.commands.push(QueuedCommand::MoveTo(sel_system));
+            if let Ok((_, target_star, _)) = stars.get(sel_system) {
+                info!("Queued move to {} for ship {}", target_star.name, ship_name);
+            }
+            return;
+        }
+
+        let Some(docked_system) = docked_system else {
+            info!("Ship is not docked, cannot execute immediate command");
+            return;
+        };
+
         if sel_system == docked_system {
             info!("Select a different system as move target");
             return;
@@ -1280,7 +1414,8 @@ pub fn handle_ship_commands(
             let dist = physics::distance_ly(dock_pos, target_pos);
             let travel_time = physics::sublight_travel_sexadies(dist, sublight_speed);
 
-            let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
+            let Ok((_, ship_mut, mut state_mut, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+            queue.commands.clear();
             *state_mut = ShipState::SubLight {
                 origin: dock_pos.as_array(),
                 destination: target_pos.as_array(),
@@ -1315,6 +1450,22 @@ pub fn handle_ship_commands(
             info!("Only Explorers can survey systems");
             return;
         }
+
+        // #34: Shift+V queues the command
+        if shift_held {
+            let Ok((_, _, _, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+            queue.commands.push(QueuedCommand::Survey(sel_system));
+            if let Ok((_, target_star, _)) = stars.get(sel_system) {
+                info!("Queued survey of {} for ship {}", target_star.name, ship_name);
+            }
+            return;
+        }
+
+        let Some(docked_system) = docked_system else {
+            info!("Ship is not docked, cannot execute immediate command");
+            return;
+        };
+
         if sel_system == docked_system {
             info!("Select a target system to survey");
             return;
@@ -1332,7 +1483,8 @@ pub fn handle_ship_commands(
             let dist = physics::distance_ly(dock_pos, target_pos);
             let survey_time = physics::light_delay_sexadies(dist) * 2 + SURVEY_DURATION_SEXADIES;
 
-            let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
+            let Ok((_, ship_mut, mut state_mut, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+            queue.commands.clear();
             *state_mut = ShipState::Surveying {
                 target_system: sel_system,
                 started_at: clock.elapsed,
@@ -1366,6 +1518,11 @@ pub fn handle_ship_commands(
             return;
         }
 
+        let Some(docked_system) = docked_system else {
+            info!("Ship is not docked, cannot colonize");
+            return;
+        };
+
         // Colonize the system where the ship is docked
         let Ok((_, docked_star, _)) = stars.get(docked_system) else { return };
 
@@ -1379,7 +1536,8 @@ pub fn handle_ship_commands(
             return;
         }
 
-        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
+        let Ok((_, ship_mut, mut state_mut, mut queue)) = ships_query.get_mut(ship_entity) else { return };
+        queue.commands.clear();
         *state_mut = ShipState::Settling {
             system: docked_system,
             started_at: clock.elapsed,
@@ -1594,4 +1752,170 @@ pub fn update_event_log(
     }
 
     **text = lines.join("\n");
+}
+
+// #24: Research panel toggle
+pub fn toggle_research_panel(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut panel_open: ResMut<ResearchPanelOpen>,
+    mut panel_vis: Query<&mut Visibility, With<ResearchPanel>>,
+) {
+    if keys.just_pressed(KeyCode::KeyR) {
+        panel_open.0 = !panel_open.0;
+        if let Ok(mut vis) = panel_vis.single_mut() {
+            *vis = if panel_open.0 {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
+}
+
+// #24: Update research panel display
+pub fn update_research_panel(
+    panel_open: Res<ResearchPanelOpen>,
+    tech_tree: Res<TechTree>,
+    research_queue: Res<ResearchQueue>,
+    research_pool: Res<ResearchPool>,
+    mut panel: Query<&mut Text, With<ResearchPanel>>,
+) {
+    let Ok(mut text) = panel.single_mut() else {
+        return;
+    };
+
+    if !panel_open.0 {
+        **text = String::new();
+        return;
+    }
+
+    let mut display = String::from("=== RESEARCH ===\n");
+
+    // Current research status
+    if let Some(current_id) = research_queue.current {
+        if let Some(tech) = tech_tree.get(current_id) {
+            let pct = if tech.cost > 0.0 {
+                (research_queue.accumulated / tech.cost * 100.0).min(100.0)
+            } else {
+                100.0
+            };
+            display.push_str(&format!(
+                "Current: {} ({:.0}/{:.0} RP, {:.0}%)\n",
+                tech.name, research_queue.accumulated, tech.cost, pct,
+            ));
+        }
+    } else {
+        display.push_str("Current: None\n");
+    }
+    display.push_str(&format!(
+        "Research Pool: {:.1} RP\n",
+        research_pool.points,
+    ));
+
+    // Number techs sequentially across all branches
+    let mut tech_index: usize = 0;
+
+    for branch in TechBranch::all() {
+        display.push_str(&format!("\n--- {} ---\n", branch.name()));
+
+        let techs = tech_tree.techs_in_branch(*branch);
+        for tech in &techs {
+            tech_index += 1;
+            let label = if tech_index <= 9 {
+                format!("{}", tech_index)
+            } else if tech_index == 10 {
+                "0".to_string()
+            } else {
+                format!("{}", tech_index)
+            };
+
+            let status = if tech_tree.is_researched(tech.id) {
+                "[RESEARCHED]".to_string()
+            } else if research_queue.current == Some(tech.id) {
+                "[RESEARCHING]".to_string()
+            } else if tech_tree.is_available(tech.id) {
+                "[AVAILABLE]".to_string()
+            } else {
+                // Show missing prerequisites
+                let missing: Vec<String> = tech
+                    .prerequisites
+                    .iter()
+                    .filter(|pre| !tech_tree.is_researched(**pre))
+                    .filter_map(|pre| tech_tree.get(*pre).map(|t| t.name.clone()))
+                    .collect();
+                if missing.is_empty() {
+                    "[LOCKED]".to_string()
+                } else {
+                    format!("[LOCKED - requires: {}]", missing.join(", "))
+                }
+            };
+
+            display.push_str(&format!(
+                "[{}] {} ({:.0} RP) {}\n",
+                label, tech.name, tech.cost, status,
+            ));
+        }
+    }
+
+    display.push_str("\nPress number to start research. R to close.");
+
+    **text = display;
+}
+
+// #24: Handle tech selection via number keys
+pub fn handle_research_selection(
+    keys: Res<ButtonInput<KeyCode>>,
+    panel_open: Res<ResearchPanelOpen>,
+    tech_tree: Res<TechTree>,
+    mut research_queue: ResMut<ResearchQueue>,
+) {
+    if !panel_open.0 {
+        return;
+    }
+
+    let digit_keys = [
+        (KeyCode::Digit1, 1usize),
+        (KeyCode::Digit2, 2),
+        (KeyCode::Digit3, 3),
+        (KeyCode::Digit4, 4),
+        (KeyCode::Digit5, 5),
+        (KeyCode::Digit6, 6),
+        (KeyCode::Digit7, 7),
+        (KeyCode::Digit8, 8),
+        (KeyCode::Digit9, 9),
+        (KeyCode::Digit0, 10),
+    ];
+
+    let mut pressed_index: Option<usize> = None;
+    for (key, index) in &digit_keys {
+        if keys.just_pressed(*key) {
+            pressed_index = Some(*index);
+            break;
+        }
+    }
+
+    let Some(target_index) = pressed_index else {
+        return;
+    };
+
+    // Build the same sequential numbering as the display
+    let mut tech_index: usize = 0;
+    for branch in TechBranch::all() {
+        let techs = tech_tree.techs_in_branch(*branch);
+        for tech in &techs {
+            tech_index += 1;
+            if tech_index == target_index {
+                if tech_tree.is_available(tech.id) {
+                    research_queue.current = Some(tech.id);
+                    research_queue.accumulated = 0.0;
+                    info!("Now researching: {}", tech.name);
+                } else if tech_tree.is_researched(tech.id) {
+                    info!("{} is already researched", tech.name);
+                } else {
+                    info!("{} is locked - prerequisites not met", tech.name);
+                }
+                return;
+            }
+        }
+    }
 }
