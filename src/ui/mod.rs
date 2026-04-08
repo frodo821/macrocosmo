@@ -4,7 +4,7 @@ pub mod side_panel;
 pub mod top_bar;
 
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPlugin};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
 use crate::colony::{BuildQueue, Colony, Production, ResourceStockpile};
 use crate::communication::CommandLog;
@@ -26,7 +26,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
             .init_resource::<ResearchPanelOpen>()
-            .add_systems(Update, draw_all_ui);
+            .add_systems(EguiPrimaryContextPass, draw_all_ui);
     }
 }
 
