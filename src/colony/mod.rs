@@ -54,6 +54,68 @@ pub struct Production {
     pub research_per_sexadie: f64,
 }
 
+/// #29: Production focus weights for colony output
+#[derive(Component)]
+pub struct ProductionFocus {
+    pub minerals_weight: f64,
+    pub energy_weight: f64,
+    pub research_weight: f64,
+}
+
+impl Default for ProductionFocus {
+    fn default() -> Self {
+        Self {
+            minerals_weight: 1.0,
+            energy_weight: 1.0,
+            research_weight: 1.0,
+        }
+    }
+}
+
+impl ProductionFocus {
+    pub fn balanced() -> Self {
+        Self::default()
+    }
+    pub fn minerals() -> Self {
+        Self {
+            minerals_weight: 2.0,
+            energy_weight: 0.5,
+            research_weight: 0.5,
+        }
+    }
+    pub fn energy() -> Self {
+        Self {
+            minerals_weight: 0.5,
+            energy_weight: 2.0,
+            research_weight: 0.5,
+        }
+    }
+    pub fn research() -> Self {
+        Self {
+            minerals_weight: 0.5,
+            energy_weight: 0.5,
+            research_weight: 2.0,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        if (self.minerals_weight - 1.0).abs() < 0.01
+            && (self.energy_weight - 1.0).abs() < 0.01
+            && (self.research_weight - 1.0).abs() < 0.01
+        {
+            "Balanced"
+        } else if self.minerals_weight > 1.5 {
+            "Minerals"
+        } else if self.energy_weight > 1.5 {
+            "Energy"
+        } else if self.research_weight > 1.5 {
+            "Research"
+        } else {
+            "Custom"
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct BuildQueue {
     pub queue: Vec<BuildOrder>,
@@ -65,11 +127,27 @@ pub struct BuildOrder {
     pub minerals_invested: f64,
     pub energy_cost: f64,
     pub energy_invested: f64,
+    /// #32: Total build time in sexadies
+    pub build_time_total: i64,
+    /// #32: Remaining build time in sexadies
+    pub build_time_remaining: i64,
 }
 
 impl BuildOrder {
     pub fn is_complete(&self) -> bool {
-        self.minerals_invested >= self.minerals_cost && self.energy_invested >= self.energy_cost
+        self.minerals_invested >= self.minerals_cost
+            && self.energy_invested >= self.energy_cost
+            && self.build_time_remaining <= 0
+    }
+
+    /// Returns the build time in sexadies for a given ship type name.
+    pub fn build_time_for(ship_type_name: &str) -> i64 {
+        match ship_type_name {
+            "Explorer" => 60,
+            "Colony Ship" => 120,
+            "Courier" => 30,
+            _ => 60,
+        }
     }
 }
 
@@ -111,11 +189,28 @@ impl BuildingType {
             BuildingType::Shipyard => 30,
         }
     }
+
+    /// Display name for the building type.
+    pub fn name(&self) -> &'static str {
+        match self {
+            BuildingType::Mine => "Mine",
+            BuildingType::PowerPlant => "PowerPlant",
+            BuildingType::ResearchLab => "ResearchLab",
+            BuildingType::Shipyard => "Shipyard",
+        }
+    }
 }
 
 #[derive(Component)]
 pub struct Buildings {
     pub slots: Vec<Option<BuildingType>>, // None = empty slot
+}
+
+impl Buildings {
+    /// #35: Check if any slot contains a Shipyard
+    pub fn has_shipyard(&self) -> bool {
+        self.slots.iter().any(|s| *s == Some(BuildingType::Shipyard))
+    }
 }
 
 #[derive(Component, Default)]
@@ -139,12 +234,15 @@ pub fn spawn_capital_colony(
         if system.is_capital {
             let num_slots = attributes.max_building_slots as usize;
             let mut slots = vec![None; num_slots];
-            // Capital starts with 1 Mine and 1 PowerPlant pre-built
+            // Capital starts with 1 Mine, 1 PowerPlant, and 1 Shipyard (#35)
             if num_slots > 0 {
                 slots[0] = Some(BuildingType::Mine);
             }
             if num_slots > 1 {
                 slots[1] = Some(BuildingType::PowerPlant);
+            }
+            if num_slots > 2 {
+                slots[2] = Some(BuildingType::Shipyard);
             }
             commands.spawn((
                 Colony {
@@ -167,6 +265,7 @@ pub fn spawn_capital_colony(
                 },
                 Buildings { slots },
                 BuildingQueue::default(),
+                ProductionFocus::default(),
             ));
             info!("Capital colony spawned on {}", system.name);
             return;
@@ -175,17 +274,18 @@ pub fn spawn_capital_colony(
     warn!("No capital star system found; capital colony not created");
 }
 
+/// #29: tick_production uses ProductionFocus weights and building bonuses
 pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(&Production, &mut ResourceStockpile, Option<&Buildings>)>,
+    mut query: Query<(&Production, &mut ResourceStockpile, Option<&Buildings>, Option<&ProductionFocus>)>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
     let d = delta as f64;
-    for (prod, mut stockpile, buildings) in &mut query {
+    for (prod, mut stockpile, buildings, focus) in &mut query {
         let (mut bonus_m, mut bonus_e, mut bonus_r) = (0.0, 0.0, 0.0);
         if let Some(buildings) = buildings {
             for slot in &buildings.slots {
@@ -197,9 +297,13 @@ pub fn tick_production(
                 }
             }
         }
-        stockpile.minerals += (prod.minerals_per_sexadie + bonus_m) * d;
-        stockpile.energy += (prod.energy_per_sexadie + bonus_e) * d;
-        stockpile.research += (prod.research_per_sexadie + bonus_r) * d;
+        let (mw, ew, rw) = match focus {
+            Some(f) => (f.minerals_weight, f.energy_weight, f.research_weight),
+            None => (1.0, 1.0, 1.0),
+        };
+        stockpile.minerals += (prod.minerals_per_sexadie + bonus_m) * mw * d;
+        stockpile.energy += (prod.energy_per_sexadie + bonus_e) * ew * d;
+        stockpile.research += (prod.research_per_sexadie + bonus_r) * rw * d;
     }
 }
 
@@ -218,11 +322,12 @@ pub fn tick_population_growth(
     }
 }
 
+/// #32: build_time_remaining countdown, #35: shipyard check
 pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(&Colony, &mut BuildQueue, &mut ResourceStockpile)>,
+    mut query: Query<(&Colony, &mut BuildQueue, &mut ResourceStockpile, Option<&Buildings>)>,
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     mut events: MessageWriter<GameEvent>,
@@ -231,7 +336,14 @@ pub fn tick_build_queue(
     if delta <= 0 {
         return;
     }
-    for (colony, mut build_queue, mut stockpile) in &mut query {
+    for (colony, mut build_queue, mut stockpile, buildings) in &mut query {
+        // #35: Skip ship construction if colony has no shipyard
+        let has_shipyard = buildings.is_some_and(|b| b.has_shipyard());
+        if !build_queue.queue.is_empty() && !has_shipyard {
+            warn!("Colony lacks a Shipyard; skipping ship construction");
+            continue;
+        }
+
         for _ in 0..delta {
             if build_queue.queue.is_empty() {
                 break;
@@ -247,6 +359,9 @@ pub fn tick_build_queue(
             let energy_transfer = energy_needed.min(stockpile.energy).max(0.0);
             order.energy_invested += energy_transfer;
             stockpile.energy -= energy_transfer;
+
+            // #32: Decrement build time
+            order.build_time_remaining -= 1;
 
             if build_queue.queue[0].is_complete() {
                 let completed = build_queue.queue.remove(0);
@@ -297,7 +412,6 @@ pub fn tick_building_queue(
             }
             let order = &mut bq.queue[0];
 
-            // Deduct resources toward the order
             let minerals_transfer = order.minerals_remaining.min(stockpile.minerals).max(0.0);
             order.minerals_remaining -= minerals_transfer;
             stockpile.minerals -= minerals_transfer;
@@ -306,10 +420,8 @@ pub fn tick_building_queue(
             order.energy_remaining -= energy_transfer;
             stockpile.energy -= energy_transfer;
 
-            // Decrement build time
             order.build_time_remaining -= 1;
 
-            // Check completion: resources fully paid AND time elapsed
             if bq.queue[0].minerals_remaining <= 0.0
                 && bq.queue[0].energy_remaining <= 0.0
                 && bq.queue[0].build_time_remaining <= 0
@@ -364,12 +476,15 @@ mod tests {
     use super::*;
 
     fn make_order(minerals_cost: f64, minerals_invested: f64, energy_cost: f64, energy_invested: f64) -> BuildOrder {
+        let build_time = 60;
         BuildOrder {
             ship_type_name: "Explorer".to_string(),
             minerals_cost,
             minerals_invested,
             energy_cost,
             energy_invested,
+            build_time_total: build_time,
+            build_time_remaining: 0, // for is_complete tests, set to 0
         }
     }
 
@@ -388,6 +503,13 @@ mod tests {
     #[test]
     fn build_order_incomplete_energy_short() {
         let order = make_order(100.0, 100.0, 50.0, 30.0);
+        assert!(!order.is_complete());
+    }
+
+    #[test]
+    fn build_order_incomplete_time_remaining() {
+        let mut order = make_order(100.0, 100.0, 50.0, 50.0);
+        order.build_time_remaining = 5;
         assert!(!order.is_complete());
     }
 
@@ -493,8 +615,40 @@ mod tests {
                 r += br;
             }
         }
-        assert_eq!(m, 6.0); // 2 mines * 3.0
-        assert_eq!(e, 3.0); // 1 power plant * 3.0
-        assert_eq!(r, 2.0); // 1 research lab * 2.0
+        assert_eq!(m, 6.0);
+        assert_eq!(e, 3.0);
+        assert_eq!(r, 2.0);
+    }
+
+    #[test]
+    fn has_shipyard_true() {
+        let buildings = Buildings {
+            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard), None],
+        };
+        assert!(buildings.has_shipyard());
+    }
+
+    #[test]
+    fn has_shipyard_false() {
+        let buildings = Buildings {
+            slots: vec![Some(BuildingType::Mine), Some(BuildingType::PowerPlant), None],
+        };
+        assert!(!buildings.has_shipyard());
+    }
+
+    #[test]
+    fn production_focus_labels() {
+        assert_eq!(ProductionFocus::balanced().label(), "Balanced");
+        assert_eq!(ProductionFocus::minerals().label(), "Minerals");
+        assert_eq!(ProductionFocus::energy().label(), "Energy");
+        assert_eq!(ProductionFocus::research().label(), "Research");
+    }
+
+    #[test]
+    fn build_order_build_time_for() {
+        assert_eq!(BuildOrder::build_time_for("Explorer"), 60);
+        assert_eq!(BuildOrder::build_time_for("Colony Ship"), 120);
+        assert_eq!(BuildOrder::build_time_for("Courier"), 30);
+        assert_eq!(BuildOrder::build_time_for("Unknown"), 60);
     }
 }

@@ -26,6 +26,8 @@ pub fn test_app() -> App {
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
+            process_settling,
+            process_pending_ship_commands,
         )
             .chain(),
     );
@@ -35,6 +37,7 @@ pub fn test_app() -> App {
             tick_production,
             tick_population_growth,
             tick_build_queue,
+            tick_building_queue,
             advance_production_tick,
         )
             .chain(),

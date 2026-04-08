@@ -1,9 +1,13 @@
 use bevy::prelude::*;
 use rand::Rng;
 
+use crate::colony::{
+    BuildQueue, Buildings, BuildingQueue, Colony, Production, ProductionFocus,
+    ResourceStockpile,
+};
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{ResourceLevel, StarSystem, SystemAttributes};
+use crate::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_sexadies};
 use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
 
@@ -62,8 +66,11 @@ fn resource_level_name(level: ResourceLevel) -> &'static str {
 /// Initial FTL speed as a multiple of light speed
 pub const INITIAL_FTL_SPEED_C: f64 = 10.0;
 
-/// Duration of a survey operation in sexadies (5 sexadies = 1 month)
-pub const SURVEY_DURATION_SEXADIES: i64 = 5;
+/// Duration of a survey operation in sexadies (30 sexadies = half a year) (#32)
+pub const SURVEY_DURATION_SEXADIES: i64 = 30;
+
+/// Duration of a colonization/settling operation in sexadies (60 sexadies = 1 year) (#32)
+pub const SETTLING_DURATION_SEXADIES: i64 = 60;
 
 /// Maximum distance in light-years from which a survey can be initiated
 pub const SURVEY_RANGE_LY: f64 = 5.0;
@@ -76,8 +83,28 @@ impl Plugin for ShipPlugin {
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
+            process_settling,
+            process_pending_ship_commands,
         ));
     }
+}
+
+// --- #33: Pending ship command system ---
+
+/// A command queued for a remote ship, waiting for light-speed communication delay.
+#[derive(Component)]
+pub struct PendingShipCommand {
+    pub ship: Entity,
+    pub command: ShipCommand,
+    pub arrives_at: i64,
+}
+
+/// The kinds of commands that can be issued to a ship.
+#[derive(Clone, Debug)]
+pub enum ShipCommand {
+    FTLTo { destination: Entity },
+    SubLightTo { destination: Entity },
+    Survey { target: Entity },
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -148,6 +175,12 @@ pub enum ShipState {
     },
     Surveying {
         target_system: Entity,
+        started_at: i64,
+        completes_at: i64,
+    },
+    /// #32: Colony ship settling state
+    Settling {
+        system: Entity,
         started_at: i64,
         completes_at: i64,
     },
@@ -325,9 +358,6 @@ pub fn process_ftl_travel(
 // --- Survey system (#9) ---
 
 /// Attempt to start a survey operation on a target star system.
-///
-/// Validates that the ship is an Explorer, is not in transit, and is within
-/// `SURVEY_RANGE_LY` of the target system.
 pub fn start_survey(
     ship_state: &mut ShipState,
     ship: &Ship,
@@ -336,18 +366,15 @@ pub fn start_survey(
     system_pos: &Position,
     current_time: i64,
 ) -> Result<(), &'static str> {
-    // Ship must be an Explorer
     if ship.ship_type != ShipType::Explorer {
         return Err("Only Explorer ships can perform surveys");
     }
 
-    // Ship must be Docked (not in transit or already surveying)
     match ship_state {
         ShipState::Docked { .. } => {}
         _ => return Err("Ship must be docked to begin a survey"),
     }
 
-    // Target system must be within survey range
     let distance = ship_pos.distance_to(system_pos);
     if distance > SURVEY_RANGE_LY {
         return Err("Target system is beyond survey range");
@@ -412,7 +439,6 @@ pub fn process_surveys(
                 );
             }
 
-            // Transition ship back to docked at the target system
             *state = ShipState::Docked {
                 system: target_system,
             };
@@ -432,12 +458,9 @@ fn apply_exploration_event(
     events: &mut MessageWriter<GameEvent>,
 ) {
     match event {
-        ExplorationEvent::Nothing => {
-            // No discovery -- nothing to log beyond the survey completion.
-        }
+        ExplorationEvent::Nothing => {}
         ExplorationEvent::ResourceBonus { .. } => {
             if let Some(mut attrs) = attrs {
-                // Pick a random resource field to try upgrading
                 let field = rng.random_range(0u8..3);
                 let (name, old_level) = match field {
                     0 => ("minerals", attrs.mineral_richness),
@@ -520,6 +543,93 @@ fn apply_exploration_event(
     }
 }
 
+// --- Settling system (#32) ---
+
+/// System that processes ongoing settling operations. When the timer completes,
+/// establishes a colony and despawns the colony ship.
+pub fn process_settling(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    ships: Query<(Entity, &Ship, &ShipState)>,
+    mut systems: Query<(&mut StarSystem, Option<&SystemAttributes>)>,
+    mut events: MessageWriter<GameEvent>,
+) {
+    for (ship_entity, ship, state) in &ships {
+        let (system_entity, completes_at) = match *state {
+            ShipState::Settling {
+                system,
+                completes_at,
+                ..
+            } => (system, completes_at),
+            _ => continue,
+        };
+
+        if clock.elapsed >= completes_at {
+            let Ok((mut star_system, attrs)) = systems.get_mut(system_entity) else {
+                continue;
+            };
+
+            if star_system.colonized {
+                info!("System {} is already colonized, settling aborted", star_system.name);
+                commands.entity(ship_entity).despawn();
+                continue;
+            }
+
+            if let Some(attrs) = attrs {
+                if attrs.habitability == Habitability::GasGiant {
+                    info!("Colony Ship {} cannot colonize gas giant {}", ship.name, star_system.name);
+                    continue;
+                }
+
+                star_system.colonized = true;
+                let system_name = star_system.name.clone();
+                let minerals_rate = resource_production_rate(attrs.mineral_richness);
+                let energy_rate = resource_production_rate(attrs.energy_potential);
+                let research_rate = resource_production_rate(attrs.research_potential);
+                let num_slots = attrs.max_building_slots as usize;
+
+                commands.spawn((
+                    Colony {
+                        system: system_entity,
+                        population: 10.0,
+                        growth_rate: 0.005,
+                    },
+                    ResourceStockpile {
+                        minerals: 100.0,
+                        energy: 100.0,
+                        research: 0.0,
+                    },
+                    Production {
+                        minerals_per_sexadie: minerals_rate,
+                        energy_per_sexadie: energy_rate,
+                        research_per_sexadie: research_rate,
+                    },
+                    BuildQueue {
+                        queue: Vec::new(),
+                    },
+                    Buildings {
+                        slots: vec![None; num_slots],
+                    },
+                    BuildingQueue::default(),
+                    ProductionFocus::default(),
+                ));
+
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ColonyEstablished,
+                    description: format!("Colony established at {}", system_name),
+                    related_system: Some(system_entity),
+                });
+
+                info!("Colony established at {} (M:{}/E:{}/R:{} per sd)", system_name, minerals_rate, energy_rate, research_rate);
+            }
+
+            // Consume the colony ship
+            commands.entity(ship_entity).despawn();
+        }
+    }
+}
+
 // --- Colony ship arrival (#20) ---
 
 pub fn resource_production_rate(level: ResourceLevel) -> f64 {
@@ -528,6 +638,118 @@ pub fn resource_production_rate(level: ResourceLevel) -> f64 {
         ResourceLevel::Moderate => 5.0,
         ResourceLevel::Poor => 2.0,
         ResourceLevel::None => 0.0,
+    }
+}
+
+// --- Pending ship command processing (#33) ---
+
+/// Processes pending ship commands that have arrived after communication delay.
+pub fn process_pending_ship_commands(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    pending: Query<(Entity, &PendingShipCommand)>,
+    mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
+    systems: Query<(&StarSystem, &Position), Without<Ship>>,
+) {
+    for (cmd_entity, pending_cmd) in &pending {
+        if clock.elapsed < pending_cmd.arrives_at {
+            continue;
+        }
+
+        let Ok((ship, mut state, ship_pos)) = ships.get_mut(pending_cmd.ship) else {
+            commands.entity(cmd_entity).despawn();
+            continue;
+        };
+
+        let docked_system = match *state {
+            ShipState::Docked { system } => system,
+            _ => {
+                info!(
+                    "Remote command for {} discarded: ship is no longer docked",
+                    ship.name,
+                );
+                commands.entity(cmd_entity).despawn();
+                continue;
+            }
+        };
+
+        match &pending_cmd.command {
+            ShipCommand::FTLTo { destination } => {
+                let dest = *destination;
+                let Ok((dest_star, dest_pos)) = systems.get(dest) else {
+                    commands.entity(cmd_entity).despawn();
+                    continue;
+                };
+                let Ok((_, origin_pos)) = systems.get(docked_system) else {
+                    commands.entity(cmd_entity).despawn();
+                    continue;
+                };
+                match start_ftl_travel(
+                    &mut state,
+                    &ship,
+                    docked_system,
+                    dest,
+                    origin_pos,
+                    dest_pos,
+                    clock.elapsed,
+                ) {
+                    Ok(()) => {
+                        info!(
+                            "Remote FTL command executed: {} jumping to {}",
+                            ship.name, dest_star.name,
+                        );
+                    }
+                    Err(e) => {
+                        info!(
+                            "Remote FTL command for {} failed: {}",
+                            ship.name, e,
+                        );
+                    }
+                }
+            }
+            ShipCommand::SubLightTo { destination } => {
+                let dest = *destination;
+                let Ok((dest_star, dest_pos)) = systems.get(dest) else {
+                    commands.entity(cmd_entity).despawn();
+                    continue;
+                };
+                start_sublight_travel(
+                    &mut state,
+                    ship_pos,
+                    &ship,
+                    *dest_pos,
+                    Some(dest),
+                    clock.elapsed,
+                );
+                info!(
+                    "Remote sub-light command executed: {} heading to {}",
+                    ship.name, dest_star.name,
+                );
+            }
+            ShipCommand::Survey { target } => {
+                let tgt = *target;
+                let Ok((tgt_star, tgt_pos)) = systems.get(tgt) else {
+                    commands.entity(cmd_entity).despawn();
+                    continue;
+                };
+                match start_survey(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed) {
+                    Ok(()) => {
+                        info!(
+                            "Remote survey command executed: {} surveying {}",
+                            ship.name, tgt_star.name,
+                        );
+                    }
+                    Err(e) => {
+                        info!(
+                            "Remote survey command for {} failed: {}",
+                            ship.name, e,
+                        );
+                    }
+                }
+            }
+        }
+
+        commands.entity(cmd_entity).despawn();
     }
 }
 
@@ -560,7 +782,6 @@ mod tests {
         start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100);
         match state {
             ShipState::SubLight { arrival_at, departed_at, .. } => {
-                // 1 LY at 0.5c → 120 sd
                 assert_eq!(departed_at, 100);
                 assert_eq!(arrival_at, 220);
             }
@@ -573,7 +794,7 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::Explorer); // ftl_range = 0
+        let ship = make_ship(ShipType::Explorer);
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 1.0, y: 0.0, z: 0.0 };
@@ -586,10 +807,10 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip); // ftl_range = 30
+        let ship = make_ship(ShipType::ColonyShip);
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest_pos = Position { x: 50.0, y: 0.0, z: 0.0 }; // 50 LY > 30
+        let dest_pos = Position { x: 50.0, y: 0.0, z: 0.0 };
         let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
         assert_eq!(result, Err("Destination is beyond FTL range"));
     }
@@ -599,13 +820,12 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip); // ftl_range = 30
+        let ship = make_ship(ShipType::ColonyShip);
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 }; // 10 LY
+        let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
         let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
         assert!(result.is_ok());
-        // 10 LY at 10c → 10/10 = 1 year = 60 sd
         match state {
             ShipState::InFTL { arrival_at, .. } => assert_eq!(arrival_at, 60),
             _ => panic!("Expected InFTL state"),
@@ -647,7 +867,7 @@ mod tests {
         let ship = make_ship(ShipType::Explorer);
         let mut state = ShipState::Docked { system };
         let ship_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let target_pos = Position { x: 10.0, y: 0.0, z: 0.0 }; // 10 LY > 5 LY
+        let target_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
         let result = start_survey(&mut state, &ship, system, &ship_pos, &target_pos, 0);
         assert_eq!(result, Err("Target system is beyond survey range"));
     }
@@ -664,7 +884,7 @@ mod tests {
         match state {
             ShipState::Surveying { completes_at, started_at, .. } => {
                 assert_eq!(started_at, 50);
-                assert_eq!(completes_at, 55); // 50 + SURVEY_DURATION_SEXADIES (5)
+                assert_eq!(completes_at, 80); // 50 + SURVEY_DURATION_SEXADIES (30)
             }
             _ => panic!("Expected Surveying state"),
         }

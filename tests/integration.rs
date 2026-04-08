@@ -308,7 +308,12 @@ fn test_build_queue_spawns_ship() {
                 minerals_invested: 0.0,
                 energy_cost: 30.0,
                 energy_invested: 0.0,
+                build_time_total: 60,
+                build_time_remaining: 0, // set to 0 so it completes with resources
             }],
+        },
+        Buildings {
+            slots: vec![Some(BuildingType::Shipyard), None, None, None],
         },
     ));
 
