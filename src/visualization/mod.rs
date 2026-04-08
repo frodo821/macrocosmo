@@ -809,7 +809,7 @@ pub fn handle_ship_commands(
             return;
         }
 
-        let travel_time = physics::sublight_travel_sexadies(dist, 10.0).max(1);
+        let travel_time = physics::sublight_travel_hexadies(dist, 10.0).max(1);
         let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
         *state_mut = ShipState::InFTL {
             origin_system: docked_system,
@@ -833,7 +833,7 @@ pub fn handle_ship_commands(
         let Ok((_, _, dock_pos)) = stars.get(docked_system) else { return };
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        let travel_time = physics::sublight_travel_sexadies(dist, sublight_speed);
+        let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
 
         let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
         *state_mut = ShipState::SubLight {
@@ -868,7 +868,7 @@ pub fn handle_ship_commands(
         }
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        let survey_time = physics::light_delay_sexadies(dist) * 2 + 5;
+        let survey_time = physics::light_delay_hexadies(dist) * 2 + 5;
 
         let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
         *state_mut = ShipState::Surveying {

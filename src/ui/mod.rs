@@ -1,4 +1,5 @@
 pub mod bottom_bar;
+pub mod outline;
 pub mod overlays;
 pub mod side_panel;
 pub mod top_bar;
@@ -40,7 +41,7 @@ pub fn draw_all_ui(
     mut speed: ResMut<GameSpeed>,
     stockpiles: Query<&ResourceStockpile>,
     mut research_open: ResMut<ResearchPanelOpen>,
-    selected_system: Res<SelectedSystem>,
+    mut selected_system: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<&StationedAt, With<Player>>,
@@ -60,7 +61,16 @@ pub fn draw_all_ui(
 
     top_bar::draw_top_bar(ctx, &clock, &mut speed, &stockpiles, &mut research_open);
 
-    side_panel::draw_side_panel(
+    outline::draw_outline(
+        ctx,
+        &stars,
+        &colonies,
+        &ships_query,
+        &mut selected_system,
+        &mut selected_ship,
+    );
+
+    side_panel::draw_system_panel(
         ctx,
         &selected_system,
         &mut selected_ship,
@@ -70,6 +80,16 @@ pub fn draw_all_ui(
         &mut ships_query,
         &positions,
         &knowledge,
+        &clock,
+    );
+
+    side_panel::draw_ship_panel(
+        ctx,
+        &selected_system,
+        &mut selected_ship,
+        &stars,
+        &mut ships_query,
+        &positions,
         &clock,
     );
 

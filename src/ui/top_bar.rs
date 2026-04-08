@@ -18,10 +18,10 @@ pub fn draw_top_bar(
             // Game time
             ui.label(
                 egui::RichText::new(format!(
-                    "Year {} Month {} Sexadie {}",
+                    "Year {} Month {} Hexadies {}",
                     clock.year(),
                     clock.month(),
-                    clock.sexadie(),
+                    clock.hexadies(),
                 ))
                 .strong(),
             );
@@ -30,19 +30,19 @@ pub fn draw_top_bar(
 
             // Speed controls
             if ui.button("\u{23F8}").on_hover_text("Pause").clicked() {
-                speed.sexadies_per_second = 0.0;
+                speed.hexadies_per_second = 0.0;
             }
             if ui.button("\u{25B6}").on_hover_text("Normal speed").clicked() {
-                speed.sexadies_per_second = 1.0;
+                speed.hexadies_per_second = 1.0;
             }
             if ui.button("\u{23E9}").on_hover_text("Fast forward").clicked() {
-                speed.sexadies_per_second = (speed.sexadies_per_second * 2.0).max(1.0);
+                speed.hexadies_per_second = (speed.hexadies_per_second * 2.0).max(1.0);
             }
 
-            let speed_text = if speed.sexadies_per_second <= 0.0 {
+            let speed_text = if speed.hexadies_per_second <= 0.0 {
                 "PAUSED".to_string()
             } else {
-                format!("x{:.0} sd/s", speed.sexadies_per_second)
+                format!("x{:.0} sd/s", speed.hexadies_per_second)
             };
             ui.label(&speed_text);
 
