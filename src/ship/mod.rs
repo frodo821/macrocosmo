@@ -8,11 +8,17 @@ use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
 /// Initial FTL speed as a multiple of light speed
 pub const INITIAL_FTL_SPEED_C: f64 = 10.0;
 
+/// Duration of a survey operation in sexadies (5 sexadies = 1 month)
+pub const SURVEY_DURATION_SEXADIES: i64 = 5;
+
+/// Maximum distance in light-years from which a survey can be initiated
+pub const SURVEY_RANGE_LY: f64 = 5.0;
+
 pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (sublight_movement_system, process_ftl_travel));
+        app.add_systems(Update, (sublight_movement_system, process_ftl_travel, process_surveys));
     }
 }
 
@@ -231,6 +237,80 @@ fn process_ftl_travel(
             } else {
                 warn!("Ship {} FTL destination entity no longer exists", ship.name);
             }
+        }
+    }
+}
+
+// --- Survey system (#9) ---
+
+/// Attempt to start a survey operation on a target star system.
+///
+/// Validates that the ship is an Explorer, is not in transit, and is within
+/// `SURVEY_RANGE_LY` of the target system.
+pub fn start_survey(
+    ship_state: &mut ShipState,
+    ship: &Ship,
+    target_system: Entity,
+    ship_pos: &Position,
+    system_pos: &Position,
+    current_time: i64,
+) -> Result<(), &'static str> {
+    // Ship must be an Explorer
+    if ship.ship_type != ShipType::Explorer {
+        return Err("Only Explorer ships can perform surveys");
+    }
+
+    // Ship must be Docked (not in transit or already surveying)
+    match ship_state {
+        ShipState::Docked { .. } => {}
+        _ => return Err("Ship must be docked to begin a survey"),
+    }
+
+    // Target system must be within survey range
+    let distance = ship_pos.distance_to(system_pos);
+    if distance > SURVEY_RANGE_LY {
+        return Err("Target system is beyond survey range");
+    }
+
+    *ship_state = ShipState::Surveying {
+        target_system,
+        started_at: current_time,
+        completes_at: current_time + SURVEY_DURATION_SEXADIES,
+    };
+
+    Ok(())
+}
+
+/// System that processes ongoing surveys and marks star systems as surveyed
+/// when the survey duration has elapsed.
+fn process_surveys(
+    clock: Res<GameClock>,
+    mut ships: Query<(&Ship, &mut ShipState)>,
+    mut systems: Query<&mut StarSystem>,
+) {
+    for (_ship, mut state) in ships.iter_mut() {
+        let (target_system, completes_at) = match *state {
+            ShipState::Surveying {
+                target_system,
+                completes_at,
+                ..
+            } => (target_system, completes_at),
+            _ => continue,
+        };
+
+        if clock.elapsed >= completes_at {
+            if let Ok(mut star_system) = systems.get_mut(target_system) {
+                star_system.surveyed = true;
+                info!(
+                    "Survey complete: {} has been surveyed",
+                    star_system.name
+                );
+            }
+
+            // Transition ship back to docked at the target system
+            *state = ShipState::Docked {
+                system: target_system,
+            };
         }
     }
 }

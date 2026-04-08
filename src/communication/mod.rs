@@ -7,7 +7,11 @@ pub struct CommunicationPlugin;
 
 impl Plugin for CommunicationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (process_messages, process_courier_ships));
+        app.init_resource::<CommandLog>()
+            .add_systems(
+                Update,
+                (process_messages, process_courier_ships, process_pending_commands),
+            );
     }
 }
 
@@ -111,6 +115,107 @@ fn process_courier_ships(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Remote commands with delay tracking
+// ---------------------------------------------------------------------------
+
+/// A command the player has issued to a remote system that hasn't arrived yet.
+#[derive(Component)]
+pub struct PendingCommand {
+    pub target_system: Entity,
+    pub command: RemoteCommand,
+    pub sent_at: i64,
+    pub arrives_at: i64,
+    pub origin_pos: [f64; 3],
+    pub destination_pos: [f64; 3],
+}
+
+/// The kinds of remote commands a player can issue.
+#[derive(Clone, Debug)]
+pub enum RemoteCommand {
+    BuildShip { ship_type_name: String },
+    SetProductionFocus { minerals: f64, energy: f64, research: f64 },
+}
+
+/// Tracks command status for UI display.
+#[derive(Resource, Default)]
+pub struct CommandLog {
+    pub entries: Vec<CommandLogEntry>,
+}
+
+pub struct CommandLogEntry {
+    pub description: String,
+    pub sent_at: i64,
+    pub arrives_at: i64,
+    pub arrived: bool,
+}
+
+/// Send a remote command from `origin` to `destination`. The command will
+/// travel at light-speed and arrive after the corresponding delay.
+pub fn send_remote_command(
+    commands: &mut Commands,
+    origin: [f64; 3],
+    destination: [f64; 3],
+    sent_at: i64,
+    command: RemoteCommand,
+    target_system: Entity,
+    command_log: &mut CommandLog,
+) {
+    let distance = physics::distance_ly_arr(origin, destination);
+    let delay = physics::light_delay_sexadies(distance);
+    let arrives_at = sent_at + delay;
+
+    command_log.entries.push(CommandLogEntry {
+        description: format!("{:?}", command),
+        sent_at,
+        arrives_at,
+        arrived: false,
+    });
+
+    commands.spawn(PendingCommand {
+        target_system,
+        command,
+        sent_at,
+        arrives_at,
+        origin_pos: origin,
+        destination_pos: destination,
+    });
+}
+
+fn process_pending_commands(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    pending: Query<(Entity, &PendingCommand)>,
+    mut command_log: ResMut<CommandLog>,
+) {
+    for (entity, cmd) in &pending {
+        if clock.elapsed >= cmd.arrives_at {
+            let delay = cmd.arrives_at - cmd.sent_at;
+            info!(
+                "Remote command arrived at target (delay: {} sd): {:?}",
+                delay, cmd.command
+            );
+
+            // Mark the matching log entry as arrived.
+            for entry in command_log.entries.iter_mut() {
+                if entry.sent_at == cmd.sent_at
+                    && entry.arrives_at == cmd.arrives_at
+                    && !entry.arrived
+                {
+                    entry.arrived = true;
+                    break;
+                }
+            }
+
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Existing helpers
+// ---------------------------------------------------------------------------
 
 /// Helper: send a light-speed message between two points
 pub fn send_light_message(
