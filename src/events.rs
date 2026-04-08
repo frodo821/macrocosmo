@@ -14,6 +14,7 @@ pub struct GameEvent {
 pub enum GameEventKind {
     ShipArrived,
     SurveyComplete,
+    SurveyDiscovery,
     ColonyEstablished,
     ShipBuilt,
 }

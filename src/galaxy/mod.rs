@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::components::Position;
+use crate::ship::Owner;
 
 pub struct GalaxyPlugin;
 
@@ -48,6 +49,13 @@ pub enum ResourceLevel {
     Moderate,
     Poor,
     None,
+}
+
+/// Sovereignty status of a star system
+#[derive(Component, Default)]
+pub struct Sovereignty {
+    pub owner: Option<Owner>,
+    pub control_score: f64,
 }
 
 /// Marker for systems obscured by interstellar gas
@@ -193,7 +201,16 @@ pub fn generate_galaxy(mut commands: Commands) {
             is_capital,
         };
 
-        let entity = commands.spawn((star, Position::from(*position), attributes[i].clone()));
+        let sovereignty = if is_capital {
+            Sovereignty {
+                owner: Some(Owner::Player),
+                control_score: 100.0,
+            }
+        } else {
+            Sovereignty::default()
+        };
+
+        let entity = commands.spawn((star, Position::from(*position), attributes[i].clone(), sovereignty));
         let entity_id = entity.id();
 
         if gas_indices.contains(&i) && !is_capital {

@@ -6,11 +6,11 @@ use bevy::input::mouse::AccumulatedMouseScroll;
 use crate::colony::{BuildOrder, BuildQueue, Colony, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::events::EventLog;
-use crate::galaxy::{ObscuredByGas, StarSystem, SystemAttributes};
+use crate::galaxy::{ObscuredByGas, Sovereignty, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
-use crate::ship::{Ship, ShipState, ShipType};
+use crate::ship::{Ship, ShipState, ShipType, resource_production_rate};
 use crate::time_system::{GameClock, GameSpeed, SEXADIES_PER_MONTH, SEXADIES_PER_YEAR};
 
 pub struct VisualizationPlugin;
@@ -237,7 +237,7 @@ fn camera_controls(
 fn draw_galaxy_overlay(
     mut gizmos: Gizmos,
     player_q: Query<&StationedAt, With<Player>>,
-    stars: Query<(&StarSystem, &Position)>,
+    stars: Query<(&StarSystem, &Position, Option<&Sovereignty>)>,
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
     selected: Res<SelectedSystem>,
@@ -245,7 +245,7 @@ fn draw_galaxy_overlay(
     let Ok(stationed) = player_q.single() else {
         return;
     };
-    let Ok((_player_star, player_pos)) = stars.get(stationed.system) else {
+    let Ok((_player_star, player_pos, _)) = stars.get(stationed.system) else {
         return;
     };
 
@@ -284,10 +284,22 @@ fn draw_galaxy_overlay(
         Color::srgba(1.0, 0.6, 0.0, horizon_pulse),
     );
 
-    for (star, star_pos) in &stars {
+    for (star, star_pos, sovereignty) in &stars {
+        let sx = star_pos.x as f32 * view.scale;
+        let sy = star_pos.y as f32 * view.scale;
+
+        // Draw sovereignty glow behind owned systems
+        if let Some(sov) = sovereignty {
+            if sov.owner == Some(crate::ship::Owner::Player) {
+                gizmos.circle_2d(
+                    Vec2::new(sx, sy),
+                    16.0,
+                    Color::srgba(0.2, 0.8, 0.2, 0.15),
+                );
+            }
+        }
+
         if star.surveyed && !star.is_capital {
-            let sx = star_pos.x as f32 * view.scale;
-            let sy = star_pos.y as f32 * view.scale;
             gizmos.line_2d(
                 Vec2::new(px, py),
                 Vec2::new(sx, sy),
@@ -298,7 +310,7 @@ fn draw_galaxy_overlay(
 
     // Selection ring around selected system
     if let Some(selected_entity) = selected.0 {
-        if let Ok((_star, sel_pos)) = stars.get(selected_entity) {
+        if let Ok((_star, sel_pos, _)) = stars.get(selected_entity) {
             let sx = sel_pos.x as f32 * view.scale;
             let sy = sel_pos.y as f32 * view.scale;
             let sel_pulse = (clock.as_years_f64() as f32 * 4.0).sin() * 0.2 + 0.8;
@@ -502,7 +514,7 @@ fn update_hud(
     clock: Res<GameClock>,
     speed: Res<GameSpeed>,
     player_q: Query<&StationedAt, With<Player>>,
-    stars: Query<(&StarSystem, &Position)>,
+    stars: Query<(&StarSystem, &Position, Option<&SystemAttributes>)>,
     ships: Query<(Entity, &Ship, &ShipState)>,
     colonies: Query<(&Colony, &ResourceStockpile, &BuildQueue)>,
     selected_system: Res<SelectedSystem>,
@@ -521,7 +533,7 @@ fn update_hud(
     };
 
     let location = if let Ok(stationed) = player_q.single() {
-        if let Ok((star, _)) = stars.get(stationed.system) {
+        if let Ok((star, _, _)) = stars.get(stationed.system) {
             star.name.clone()
         } else {
             "Unknown".to_string()
@@ -622,7 +634,7 @@ fn update_hud(
 
     // #14: Show selected system info and ship list / ship details in HUD
     if let Some(sel_entity) = selected_system.0 {
-        if let Ok((star, pos)) = stars.get(sel_entity) {
+        if let Ok((star, pos, _)) = stars.get(sel_entity) {
             hud_text.push_str(&format!(
                 "\n\n=== {} ===\nPos: ({:.1}, {:.1}, {:.1}) ly",
                 star.name, pos.x, pos.y, pos.z,
@@ -632,7 +644,7 @@ fn update_hud(
 
             // Show distance from player
             if let Ok(stationed) = player_q.single() {
-                if let Ok((_, player_pos)) = stars.get(stationed.system) {
+                if let Ok((_, player_pos, _)) = stars.get(stationed.system) {
                     let dist = physics::distance_ly(player_pos, pos);
                     hud_text.push_str(&format!("\nDistance: {:.1} ly", dist));
                 }
@@ -672,12 +684,23 @@ fn update_hud(
                         if ship.ship_type == ShipType::Explorer {
                             hud_text.push_str("\n  V: Survey nearby system");
                         }
+                        if ship.ship_type == ShipType::ColonyShip {
+                            if let Ok((docked_star, _, docked_attrs)) = stars.get(*system) {
+                                if !docked_star.colonized {
+                                    if let Some(attrs) = docked_attrs {
+                                        if attrs.habitability != crate::galaxy::Habitability::GasGiant {
+                                            hud_text.push_str("\n  C: Colonize this system");
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         // If the selected system is different from where ship is docked,
                         // show what the target would be
                         if sel_entity != *system {
-                            if let Ok((target_star, target_pos)) = stars.get(sel_entity) {
-                                if let Ok((_, dock_pos)) = stars.get(*system) {
+                            if let Ok((target_star, target_pos, _)) = stars.get(sel_entity) {
+                                if let Ok((_, dock_pos, _)) = stars.get(*system) {
                                     let dist = physics::distance_ly(dock_pos, target_pos);
                                     hud_text.push_str(&format!(
                                         "\n\nTarget: {} ({:.1} ly)",
@@ -773,8 +796,11 @@ fn click_select_system(
     }
 
     if let Some((entity, _)) = best {
+        // If clicking a different system, deselect ship
+        if selected.0 != Some(entity) {
+            selected_ship.0 = None;
+        }
         selected.0 = Some(entity);
-        // Keep ship selected — the clicked system becomes the command target
     } else {
         selected.0 = None;
         selected_ship.0 = None;
@@ -900,11 +926,13 @@ fn update_info_panel(
 
 // #14: Ship command handling
 fn handle_ship_commands(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     selected_system: Res<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
-    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState)>,
-    stars: Query<(Entity, &StarSystem, &Position)>,
+    ships_query: Query<(Entity, &Ship, &ShipState)>,
+    mut ship_writer: Query<(&mut Ship, &mut ShipState)>,
+    mut stars: Query<(Entity, &mut StarSystem, &Position, Option<&SystemAttributes>), Without<Ship>>,
     clock: Res<GameClock>,
 ) {
     // Esc deselects the ship
@@ -924,20 +952,7 @@ fn handle_ship_commands(
             KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6,
             KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
         ];
-        // Collect docked ships at selected system
-        let mut docked: Vec<(Entity, String, ShipType)> = ships_query
-            .iter()
-            .filter_map(|(e, ship, state)| {
-                if let ShipState::Docked { system } = &*state {
-                    if *system == sel_system {
-                        return Some((e, ship.name.clone(), ship.ship_type));
-                    }
-                }
-                None
-            })
-            .collect();
-        docked.sort_by(|a, b| a.1.cmp(&b.1));
-
+        let docked = ships_docked_at(sel_system, &ships_query);
         for (i, key) in digit_keys.iter().enumerate() {
             if keys.just_pressed(*key) {
                 if i < docked.len() {
@@ -950,24 +965,25 @@ fn handle_ship_commands(
         return;
     }
 
-    // A ship is selected - read data for validation first
+    // A ship is selected - handle command keys
     let ship_entity = selected_ship.0.unwrap();
 
-    let (ship_name, ship_type, ftl_range, sublight_speed, docked_system) = {
-        let Ok((_, ship, state)) = ships_query.get(ship_entity) else {
-            selected_ship.0 = None;
-            return;
-        };
-        let ShipState::Docked { system } = &*state else {
-            return; // Ship not docked
-        };
-        (ship.name.clone(), ship.ship_type, ship.ftl_range, ship.sublight_speed, *system)
+    // Get ship data (immutable first for validation)
+    let Ok((_, ship, state)) = ships_query.get(ship_entity) else {
+        selected_ship.0 = None;
+        return;
     };
+
+    let ShipState::Docked { system: docked_system } = *state else {
+        // Ship is not docked, no commands available
+        return;
+    };
+    let docked_system = docked_system;
 
     // F: FTL jump
     if keys.just_pressed(KeyCode::KeyF) {
-        if ftl_range <= 0.0 {
-            info!("Ship {} has no FTL capability", ship_name);
+        if ship.ftl_range <= 0.0 {
+            info!("Ship {} has no FTL capability", ship.name);
             return;
         }
         if sel_system == docked_system {
@@ -975,8 +991,8 @@ fn handle_ship_commands(
             return;
         }
 
-        let Ok((_, target_star, target_pos)) = stars.get(sel_system) else { return };
-        let Ok((_, _, dock_pos)) = stars.get(docked_system) else { return };
+        let Ok((_, target_star, target_pos, _)) = stars.get(sel_system) else { return };
+        let Ok((_, _, dock_pos, _)) = stars.get(docked_system) else { return };
 
         if !target_star.surveyed {
             info!("Cannot FTL to unsurveyed system {}", target_star.name);
@@ -984,20 +1000,28 @@ fn handle_ship_commands(
         }
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        if dist > ftl_range {
-            info!("Target {} is {:.1} ly away, FTL range is {:.1} ly", target_star.name, dist, ftl_range);
+        if dist > ship.ftl_range {
+            info!(
+                "Target {} is {:.1} ly away, FTL range is {:.1} ly",
+                target_star.name, dist, ship.ftl_range,
+            );
             return;
         }
 
+        // Execute FTL
         let travel_time = physics::sublight_travel_sexadies(dist, 10.0).max(1);
-        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
+        let target_name = target_star.name.clone();
+        let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
         *state_mut = ShipState::InFTL {
             origin_system: docked_system,
             destination_system: sel_system,
             departed_at: clock.elapsed,
             arrival_at: clock.elapsed + travel_time,
         };
-        info!("Ship {} jumping to {} (ETA: {} sd)", ship_mut.name, target_star.name, travel_time);
+        info!(
+            "Ship {} jumping to {} (ETA: {} sd)",
+            _ship_mut.name, target_name, travel_time,
+        );
         selected_ship.0 = None;
         return;
     }
@@ -1009,13 +1033,14 @@ fn handle_ship_commands(
             return;
         }
 
-        let Ok((_, target_star, target_pos)) = stars.get(sel_system) else { return };
-        let Ok((_, _, dock_pos)) = stars.get(docked_system) else { return };
+        let Ok((_, target_star, target_pos, _)) = stars.get(sel_system) else { return };
+        let Ok((_, _, dock_pos, _)) = stars.get(docked_system) else { return };
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        let travel_time = physics::sublight_travel_sexadies(dist, sublight_speed);
+        let travel_time = physics::sublight_travel_sexadies(dist, ship.sublight_speed);
+        let target_name = target_star.name.clone();
 
-        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
+        let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
         *state_mut = ShipState::SubLight {
             origin: dock_pos.as_array(),
             destination: target_pos.as_array(),
@@ -1023,14 +1048,17 @@ fn handle_ship_commands(
             departed_at: clock.elapsed,
             arrival_at: clock.elapsed + travel_time,
         };
-        info!("Ship {} departing for {} at {:.0}% c (ETA: {} sd)", ship_mut.name, target_star.name, ship_mut.sublight_speed * 100.0, travel_time);
+        info!(
+            "Ship {} departing for {} at {:.0}% c (ETA: {} sd)",
+            _ship_mut.name, target_name, _ship_mut.sublight_speed * 100.0, travel_time,
+        );
         selected_ship.0 = None;
         return;
     }
 
     // V: Survey (Explorer only)
     if keys.just_pressed(KeyCode::KeyV) {
-        if ship_type != ShipType::Explorer {
+        if ship.ship_type != ShipType::Explorer {
             info!("Only Explorers can survey systems");
             return;
         }
@@ -1039,8 +1067,8 @@ fn handle_ship_commands(
             return;
         }
 
-        let Ok((_, target_star, target_pos)) = stars.get(sel_system) else { return };
-        let Ok((_, _, dock_pos)) = stars.get(docked_system) else { return };
+        let Ok((_, target_star, target_pos, _)) = stars.get(sel_system) else { return };
+        let Ok((_, _, dock_pos, _)) = stars.get(docked_system) else { return };
 
         if target_star.surveyed {
             info!("System {} is already surveyed", target_star.name);
@@ -1049,15 +1077,80 @@ fn handle_ship_commands(
 
         let dist = physics::distance_ly(dock_pos, target_pos);
         let survey_time = physics::light_delay_sexadies(dist) * 2 + 5;
+        let target_name = target_star.name.clone();
 
-        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
+        let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
         *state_mut = ShipState::Surveying {
             target_system: sel_system,
             started_at: clock.elapsed,
             completes_at: clock.elapsed + survey_time,
         };
-        info!("Ship {} surveying {} (ETA: {} sd)", ship_mut.name, target_star.name, survey_time);
+        info!(
+            "Ship {} surveying {} (ETA: {} sd)",
+            _ship_mut.name, target_name, survey_time,
+        );
         selected_ship.0 = None;
+        return;
+    }
+
+    // C: Colonize (ColonyShip only)
+    if keys.just_pressed(KeyCode::KeyC) {
+        if ship.ship_type != ShipType::ColonyShip {
+            info!("Only Colony Ships can establish colonies");
+            return;
+        }
+
+        // Colonize the system the ship is docked at
+        let Ok((_, mut star, _, attrs)) = stars.get_mut(docked_system) else { return };
+
+        if star.colonized {
+            info!("System {} is already colonized", star.name);
+            return;
+        }
+
+        let Some(attrs) = attrs else {
+            info!("System {} has no known attributes; survey it first", star.name);
+            return;
+        };
+
+        if attrs.habitability == crate::galaxy::Habitability::GasGiant {
+            info!("Cannot colonize gas giant {}", star.name);
+            return;
+        }
+
+        // Establish colony
+        star.colonized = true;
+        let minerals_rate = resource_production_rate(attrs.mineral_richness);
+        let energy_rate = resource_production_rate(attrs.energy_potential);
+        let research_rate = resource_production_rate(attrs.research_potential);
+        let system_name = star.name.clone();
+
+        commands.spawn((
+            Colony {
+                system: docked_system,
+                population: 10.0,
+                growth_rate: 0.005,
+            },
+            ResourceStockpile {
+                minerals: 100.0,
+                energy: 100.0,
+                research: 0.0,
+            },
+            Production {
+                minerals_per_sexadie: minerals_rate,
+                energy_per_sexadie: energy_rate,
+                research_per_sexadie: research_rate,
+            },
+            BuildQueue {
+                queue: Vec::new(),
+            },
+        ));
+
+        // Despawn the colony ship
+        commands.entity(ship_entity).despawn();
+        selected_ship.0 = None;
+
+        info!("Colony established at {}", system_name);
     }
 }
 

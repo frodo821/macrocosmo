@@ -8,4 +8,5 @@ pub mod knowledge;
 pub mod ship;
 pub mod colony;
 pub mod events;
+pub mod technology;
 pub mod setup;

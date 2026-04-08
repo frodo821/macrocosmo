@@ -1,11 +1,63 @@
 use bevy::prelude::*;
+use rand::Rng;
 
-use crate::colony::{Colony, BuildQueue, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
+use crate::galaxy::{ResourceLevel, StarSystem, SystemAttributes};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_sexadies};
 use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
+
+/// Result of an exploration event rolled when a survey completes.
+#[derive(Clone, Debug)]
+pub enum ExplorationEvent {
+    ResourceBonus { resource: String, old_level: String, new_level: String },
+    AncientRuins { research_bonus: f64 },
+    Danger { description: String },
+    Special { description: String },
+    Nothing,
+}
+
+/// Roll a random exploration event.
+///
+/// Probabilities: 60% Nothing, 15% ResourceBonus, 10% AncientRuins, 10% Danger, 5% Special.
+pub fn roll_exploration_event(rng: &mut impl Rng) -> ExplorationEvent {
+    let roll: f64 = rng.random_range(0.0..1.0);
+    if roll < 0.60 {
+        ExplorationEvent::Nothing
+    } else if roll < 0.75 {
+        ExplorationEvent::ResourceBonus {
+            resource: String::new(),
+            old_level: String::new(),
+            new_level: String::new(),
+        }
+    } else if roll < 0.85 {
+        ExplorationEvent::AncientRuins { research_bonus: 0.0 }
+    } else if roll < 0.95 {
+        ExplorationEvent::Danger { description: String::new() }
+    } else {
+        ExplorationEvent::Special { description: String::new() }
+    }
+}
+
+/// Attempt to upgrade a ResourceLevel one tier.
+/// Returns the new level, or None if already Rich.
+pub fn upgrade_resource_level(level: ResourceLevel) -> Option<ResourceLevel> {
+    match level {
+        ResourceLevel::None => Some(ResourceLevel::Poor),
+        ResourceLevel::Poor => Some(ResourceLevel::Moderate),
+        ResourceLevel::Moderate => Some(ResourceLevel::Rich),
+        ResourceLevel::Rich => None,
+    }
+}
+
+fn resource_level_name(level: ResourceLevel) -> &'static str {
+    match level {
+        ResourceLevel::Rich => "Rich",
+        ResourceLevel::Moderate => "Moderate",
+        ResourceLevel::Poor => "Poor",
+        ResourceLevel::None => "None",
+    }
+}
 
 /// Initial FTL speed as a multiple of light speed
 pub const INITIAL_FTL_SPEED_C: f64 = 10.0;
@@ -24,7 +76,6 @@ impl Plugin for ShipPlugin {
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
-            handle_colony_ship_arrival,
         ));
     }
 }
@@ -312,14 +363,16 @@ pub fn start_survey(
 }
 
 /// System that processes ongoing surveys and marks star systems as surveyed
-/// when the survey duration has elapsed.
+/// when the survey duration has elapsed. Rolls an exploration event on completion.
 pub fn process_surveys(
     clock: Res<GameClock>,
-    mut ships: Query<(&Ship, &mut ShipState)>,
-    mut systems: Query<&mut StarSystem>,
+    mut ships: Query<(&mut Ship, &mut ShipState)>,
+    mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>)>,
     mut events: MessageWriter<GameEvent>,
 ) {
-    for (ship, mut state) in ships.iter_mut() {
+    let mut rng = rand::rng();
+
+    for (mut ship, mut state) in ships.iter_mut() {
         let (target_system, completes_at) = match *state {
             ShipState::Surveying {
                 target_system,
@@ -330,24 +383,34 @@ pub fn process_surveys(
         };
 
         if clock.elapsed >= completes_at {
-            let sys_name = if let Ok(mut star_system) = systems.get_mut(target_system) {
+            if let Ok((mut star_system, attrs)) = systems.get_mut(target_system) {
                 star_system.surveyed = true;
-                let name = star_system.name.clone();
+                let system_name = star_system.name.clone();
                 info!(
                     "Survey complete: {} has been surveyed",
-                    star_system.name
+                    system_name
                 );
-                name
-            } else {
-                "Unknown".to_string()
-            };
 
-            events.write(GameEvent {
-                timestamp: clock.elapsed,
-                kind: GameEventKind::SurveyComplete,
-                description: format!("{} completed survey of {}", ship.name, sys_name),
-                related_system: Some(target_system),
-            });
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::SurveyComplete,
+                    description: format!("{} completed survey of {}", ship.name, system_name),
+                    related_system: Some(target_system),
+                });
+
+                // Roll an exploration event
+                let event = roll_exploration_event(&mut rng);
+                apply_exploration_event(
+                    &event,
+                    &system_name,
+                    &mut ship,
+                    attrs,
+                    &mut rng,
+                    clock.elapsed,
+                    target_system,
+                    &mut events,
+                );
+            }
 
             // Transition ship back to docked at the target system
             *state = ShipState::Docked {
@@ -357,90 +420,114 @@ pub fn process_surveys(
     }
 }
 
+/// Apply an exploration event's effects and log it.
+fn apply_exploration_event(
+    event: &ExplorationEvent,
+    system_name: &str,
+    ship: &mut Ship,
+    attrs: Option<Mut<SystemAttributes>>,
+    rng: &mut impl Rng,
+    timestamp: i64,
+    target_system: Entity,
+    events: &mut MessageWriter<GameEvent>,
+) {
+    match event {
+        ExplorationEvent::Nothing => {
+            // No discovery -- nothing to log beyond the survey completion.
+        }
+        ExplorationEvent::ResourceBonus { .. } => {
+            if let Some(mut attrs) = attrs {
+                // Pick a random resource field to try upgrading
+                let field = rng.random_range(0u8..3);
+                let (name, old_level) = match field {
+                    0 => ("minerals", attrs.mineral_richness),
+                    1 => ("energy", attrs.energy_potential),
+                    _ => ("research", attrs.research_potential),
+                };
+
+                if let Some(new_level) = upgrade_resource_level(old_level) {
+                    match field {
+                        0 => attrs.mineral_richness = new_level,
+                        1 => attrs.energy_potential = new_level,
+                        _ => attrs.research_potential = new_level,
+                    }
+                    events.write(GameEvent {
+                        timestamp,
+                        kind: GameEventKind::SurveyDiscovery,
+                        description: format!(
+                            "Survey of {} discovered rich {} deposits! {} -> {}",
+                            system_name,
+                            name,
+                            resource_level_name(old_level),
+                            resource_level_name(new_level),
+                        ),
+                        related_system: Some(target_system),
+                    });
+                } else {
+                    events.write(GameEvent {
+                        timestamp,
+                        kind: GameEventKind::SurveyDiscovery,
+                        description: format!(
+                            "Survey of {} found {} deposits already at maximum level",
+                            system_name, name,
+                        ),
+                        related_system: Some(target_system),
+                    });
+                }
+            }
+        }
+        ExplorationEvent::AncientRuins { .. } => {
+            let bonus = rng.random_range(50.0..200.0);
+            events.write(GameEvent {
+                timestamp,
+                kind: GameEventKind::SurveyDiscovery,
+                description: format!(
+                    "Ancient ruins discovered at {}! Research bonus: {:.0} RP",
+                    system_name, bonus,
+                ),
+                related_system: Some(target_system),
+            });
+        }
+        ExplorationEvent::Danger { .. } => {
+            let damage_pct = rng.random_range(0.20..0.50);
+            let damage = ship.max_hp * damage_pct as f32;
+            ship.hp = (ship.hp - damage).max(1.0);
+            events.write(GameEvent {
+                timestamp,
+                kind: GameEventKind::SurveyDiscovery,
+                description: format!(
+                    "Danger at {}! Ship {} took {:.0} damage ({:.0}% HP) from hazardous anomaly",
+                    system_name, ship.name, damage, damage_pct * 100.0,
+                ),
+                related_system: Some(target_system),
+            });
+        }
+        ExplorationEvent::Special { .. } => {
+            if let Some(mut attrs) = attrs {
+                let extra_slots = rng.random_range(1u8..=2);
+                attrs.max_building_slots += extra_slots;
+                events.write(GameEvent {
+                    timestamp,
+                    kind: GameEventKind::SurveyDiscovery,
+                    description: format!(
+                        "Special discovery at {}! Found {} additional building site(s)",
+                        system_name, extra_slots,
+                    ),
+                    related_system: Some(target_system),
+                });
+            }
+        }
+    }
+}
+
 // --- Colony ship arrival (#20) ---
 
-fn resource_production_rate(level: ResourceLevel) -> f64 {
+pub fn resource_production_rate(level: ResourceLevel) -> f64 {
     match level {
         ResourceLevel::Rich => 8.0,
         ResourceLevel::Moderate => 5.0,
         ResourceLevel::Poor => 2.0,
         ResourceLevel::None => 0.0,
-    }
-}
-
-/// When a ColonyShip docks at an uncolonized, habitable system, establish a colony and consume the ship.
-pub fn handle_colony_ship_arrival(
-    mut commands: Commands,
-    ships: Query<(Entity, &Ship, &ShipState, &Position)>,
-    mut systems: Query<(&mut StarSystem, &Position, Option<&SystemAttributes>), Without<Ship>>,
-    clock: Res<GameClock>,
-    mut events: MessageWriter<GameEvent>,
-) {
-    for (ship_entity, ship, state, _ship_pos) in &ships {
-        let system_entity = match state {
-            ShipState::Docked { system } => *system,
-            _ => continue,
-        };
-
-        if ship.ship_type != ShipType::ColonyShip {
-            continue;
-        }
-
-        let Ok((mut star, _sys_pos, attrs)) = systems.get_mut(system_entity) else {
-            continue;
-        };
-
-        // Skip already colonized systems
-        if star.colonized {
-            continue;
-        }
-
-        // Check habitability
-        if let Some(attrs) = attrs {
-            if attrs.habitability == Habitability::GasGiant {
-                info!("Colony Ship {} cannot colonize gas giant {}", ship.name, star.name);
-                continue;
-            }
-
-            // Establish colony
-            star.colonized = true;
-            let minerals_rate = resource_production_rate(attrs.mineral_richness);
-            let energy_rate = resource_production_rate(attrs.energy_potential);
-            let research_rate = resource_production_rate(attrs.research_potential);
-
-            commands.spawn((
-                Colony {
-                    system: system_entity,
-                    population: 10.0,
-                    growth_rate: 0.005,
-                },
-                ResourceStockpile {
-                    minerals: 100.0,
-                    energy: 100.0,
-                    research: 0.0,
-                },
-                Production {
-                    minerals_per_sexadie: minerals_rate,
-                    energy_per_sexadie: energy_rate,
-                    research_per_sexadie: research_rate,
-                },
-                BuildQueue {
-                    queue: Vec::new(),
-                },
-            ));
-
-            events.write(GameEvent {
-                timestamp: clock.elapsed,
-                kind: GameEventKind::ColonyEstablished,
-                description: format!("Colony established at {}", star.name),
-                related_system: Some(system_entity),
-            });
-
-            info!("Colony established at {} (M:{}/E:{}/R:{} per sd)", star.name, minerals_rate, energy_rate, research_rate);
-        }
-
-        // Consume the colony ship
-        commands.entity(ship_entity).despawn();
     }
 }
 
@@ -581,5 +668,68 @@ mod tests {
             }
             _ => panic!("Expected Surveying state"),
         }
+    }
+
+    #[test]
+    fn test_roll_exploration_event_does_not_panic() {
+        let mut rng = rand::rng();
+        for _ in 0..1000 {
+            let event = roll_exploration_event(&mut rng);
+            match event {
+                ExplorationEvent::Nothing
+                | ExplorationEvent::ResourceBonus { .. }
+                | ExplorationEvent::AncientRuins { .. }
+                | ExplorationEvent::Danger { .. }
+                | ExplorationEvent::Special { .. } => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_upgrade_resource_level() {
+        use crate::galaxy::ResourceLevel;
+        assert_eq!(upgrade_resource_level(ResourceLevel::None), Some(ResourceLevel::Poor));
+        assert_eq!(upgrade_resource_level(ResourceLevel::Poor), Some(ResourceLevel::Moderate));
+        assert_eq!(upgrade_resource_level(ResourceLevel::Moderate), Some(ResourceLevel::Rich));
+        assert_eq!(upgrade_resource_level(ResourceLevel::Rich), None);
+    }
+
+    #[test]
+    fn test_resource_level_name() {
+        use crate::galaxy::ResourceLevel;
+        assert_eq!(resource_level_name(ResourceLevel::Rich), "Rich");
+        assert_eq!(resource_level_name(ResourceLevel::Moderate), "Moderate");
+        assert_eq!(resource_level_name(ResourceLevel::Poor), "Poor");
+        assert_eq!(resource_level_name(ResourceLevel::None), "None");
+    }
+
+    #[test]
+    fn test_roll_distribution_roughly_correct() {
+        let mut rng = rand::rng();
+        let mut nothing = 0u32;
+        let mut resource = 0u32;
+        let mut ruins = 0u32;
+        let mut danger = 0u32;
+        let mut special = 0u32;
+
+        let n = 10_000;
+        for _ in 0..n {
+            match roll_exploration_event(&mut rng) {
+                ExplorationEvent::Nothing => nothing += 1,
+                ExplorationEvent::ResourceBonus { .. } => resource += 1,
+                ExplorationEvent::AncientRuins { .. } => ruins += 1,
+                ExplorationEvent::Danger { .. } => danger += 1,
+                ExplorationEvent::Special { .. } => special += 1,
+            }
+        }
+
+        assert!(nothing > 0, "Nothing should appear");
+        assert!(resource > 0, "ResourceBonus should appear");
+        assert!(ruins > 0, "AncientRuins should appear");
+        assert!(danger > 0, "Danger should appear");
+        assert!(special > 0, "Special should appear");
+
+        assert!(nothing > resource, "Nothing should be more common than ResourceBonus");
+        assert!(nothing > ruins, "Nothing should be more common than AncientRuins");
     }
 }

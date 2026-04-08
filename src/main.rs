@@ -9,6 +9,7 @@ mod knowledge;
 mod ship;
 mod colony;
 mod events;
+mod technology;
 mod setup;
 
 use bevy::prelude::*;
@@ -32,6 +33,7 @@ fn main() {
             knowledge::KnowledgePlugin,
             ship::ShipPlugin,
             colony::ColonyPlugin,
+            technology::TechnologyPlugin,
             events::EventsPlugin,
             setup::GameSetupPlugin,
         ))

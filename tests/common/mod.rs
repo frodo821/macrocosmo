@@ -26,7 +26,6 @@ pub fn test_app() -> App {
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
-            handle_colony_ship_arrival,
         )
             .chain(),
     );
