@@ -53,6 +53,14 @@ struct StarVisual {
     system_entity: Entity,
 }
 
+/// Marks a sprite as a glow halo behind a star.
+#[derive(Component)]
+struct StarGlow;
+
+/// Stores the base pixel size of a star sprite so zoom-responsive scaling can reference it.
+#[derive(Component)]
+struct BaseStarSize(f32);
+
 #[derive(Component)]
 struct HudText;
 
@@ -60,7 +68,13 @@ struct HudText;
 struct InfoPanel;
 
 fn setup_camera(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    commands.spawn((
+        Camera2d,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.02, 0.02, 0.05)),
+            ..default()
+        },
+    ));
 
     commands.spawn((
         HudText,
@@ -103,12 +117,47 @@ fn spawn_star_visuals(
     for (entity, star, pos, obscured) in &stars {
         let x = pos.x as f32 * view.scale;
         let y = pos.y as f32 * view.scale;
+        let is_obscured = obscured.is_some();
 
-        let color = star_color(star, obscured.is_some());
-        let size = if star.is_capital { 8.0 } else { 5.0 };
+        let color = star_color(star, is_obscured);
 
+        // Determine base size based on star status
+        let size = if star.is_capital {
+            16.0
+        } else if star.colonized {
+            14.0
+        } else if star.surveyed {
+            12.0
+        } else {
+            10.0
+        };
+
+        // Spawn glow halo behind the star (skip for obscured stars)
+        if !is_obscured {
+            let [r, g, b, _] = color.to_srgba().to_f32_array();
+            let glow_alpha = if star.is_capital || star.colonized {
+                0.2
+            } else {
+                0.15
+            };
+            let glow_size = size * 3.0;
+            commands.spawn((
+                StarVisual { system_entity: entity },
+                StarGlow,
+                BaseStarSize(glow_size),
+                Sprite {
+                    color: Color::srgba(r, g, b, glow_alpha),
+                    custom_size: Some(Vec2::splat(glow_size)),
+                    ..default()
+                },
+                Transform::from_xyz(x, y, -0.1),
+            ));
+        }
+
+        // Spawn main star dot
         commands.spawn((
             StarVisual { system_entity: entity },
+            BaseStarSize(size),
             Sprite {
                 color,
                 custom_size: Some(Vec2::splat(size)),
@@ -117,16 +166,24 @@ fn spawn_star_visuals(
             Transform::from_xyz(x, y, 0.0),
         ));
 
+        // Labels: show for all surveyed stars, not just capital
         if star.is_capital || star.surveyed {
+            let label_alpha = if star.is_capital {
+                1.0
+            } else if star.colonized {
+                0.9
+            } else {
+                0.7
+            };
             commands.spawn((
                 StarVisual { system_entity: entity },
                 Text2d::new(&star.name),
                 TextFont {
-                    font_size: 11.0,
+                    font_size: 14.0,
                     ..default()
                 },
-                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.7)),
-                Transform::from_xyz(x, y + 10.0, 1.0),
+                TextColor(Color::srgba(1.0, 1.0, 1.0, label_alpha)),
+                Transform::from_xyz(x, y + 14.0, 1.0),
             ));
         }
     }
@@ -134,26 +191,43 @@ fn spawn_star_visuals(
 
 fn star_color(star: &StarSystem, obscured: bool) -> Color {
     if obscured {
-        Color::srgba(0.3, 0.3, 0.3, 0.2)
+        Color::srgba(0.2, 0.2, 0.25, 0.15) // Barely visible
     } else if star.is_capital {
-        Color::srgb(1.0, 0.84, 0.0)
+        Color::srgb(1.0, 0.84, 0.0) // Gold
     } else if star.colonized {
-        Color::srgb(0.2, 0.8, 0.2)
+        Color::srgb(0.3, 1.0, 0.3) // Bright green, more saturated
     } else if star.surveyed {
-        Color::srgb(0.4, 0.6, 1.0)
+        Color::srgb(0.5, 0.7, 1.0) // Bright blue
     } else {
-        Color::srgba(0.6, 0.6, 0.6, 0.5)
+        Color::srgba(0.5, 0.5, 0.55, 0.4) // Dim, small, unsurveyed
     }
 }
 
 // #17: Enhanced update_star_colors with KnowledgeStore-based alpha fading
+// #40: Also handles zoom-responsive sizing and glow color updates
 fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
-    mut visuals: Query<(&StarVisual, &mut Sprite)>,
+    mut visuals: Query<(&StarVisual, &mut Sprite, Option<&StarGlow>, Option<&BaseStarSize>)>,
     knowledge: Res<KnowledgeStore>,
     clock: Res<GameClock>,
+    camera_q: Query<&Projection, With<Camera2d>>,
 ) {
-    for (vis, mut sprite) in &mut visuals {
+    // Get the current camera scale for zoom-responsive sizing
+    let camera_scale = camera_q
+        .iter()
+        .find_map(|proj| {
+            if let Projection::Orthographic(ref ortho) = *proj {
+                Some(ortho.scale)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(1.0);
+
+    // Zoom-responsive scale factor: when zoomed out, make stars proportionally larger
+    let zoom_factor = (1.0 + (camera_scale - 1.0) * 0.5).max(1.0);
+
+    for (vis, mut sprite, glow, base_size) in &mut visuals {
         if let Ok((_, star, obscured)) = stars.get(vis.system_entity) {
             let base_color = star_color(star, obscured.is_some());
             let alpha_multiplier = match knowledge.info_age(vis.system_entity, clock.elapsed) {
@@ -162,7 +236,24 @@ fn update_star_colors(
                 Some(age) => (1.0 - (age as f32 - 60.0) / 600.0).clamp(0.3, 1.0),
             };
             let [r, g, b, a] = base_color.to_srgba().to_f32_array();
-            sprite.color = Color::srgba(r, g, b, a * alpha_multiplier);
+
+            if glow.is_some() {
+                // Glow sprites: use base color with low alpha, also apply age fading
+                let glow_alpha = if star.is_capital || star.colonized {
+                    0.2
+                } else {
+                    0.15
+                };
+                sprite.color = Color::srgba(r, g, b, glow_alpha * alpha_multiplier);
+            } else {
+                sprite.color = Color::srgba(r, g, b, a * alpha_multiplier);
+            }
+
+            // Apply zoom-responsive sizing
+            if let Some(base) = base_size {
+                let scaled = base.0 * zoom_factor;
+                sprite.custom_size = Some(Vec2::splat(scaled));
+            }
         }
     }
 }
@@ -231,12 +322,26 @@ fn draw_galaxy_overlay(
     let px = player_pos.x as f32 * view.scale;
     let py = player_pos.y as f32 * view.scale;
 
+    // Capital pulsing ring (larger to match new star sizes)
     let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
     gizmos.circle_2d(
         Vec2::new(px, py),
-        12.0,
+        20.0,
         Color::srgba(1.0, 0.84, 0.0, pulse),
     );
+
+    // Draw rings around colonized stars
+    for (star, star_pos) in &stars {
+        if star.colonized && !star.is_capital {
+            let sx = star_pos.x as f32 * view.scale;
+            let sy = star_pos.y as f32 * view.scale;
+            gizmos.circle_2d(
+                Vec2::new(sx, sy),
+                18.0,
+                Color::srgba(0.3, 1.0, 0.3, 0.6),
+            );
+        }
+    }
 
     for &radius_ly in &[5.0_f32, 10.0, 25.0, 50.0] {
         let radius_px = radius_ly * view.scale;
@@ -283,7 +388,7 @@ fn draw_galaxy_overlay(
             let sel_pulse = (clock.as_years_f64() as f32 * 4.0).sin() * 0.2 + 0.8;
             gizmos.circle_2d(
                 Vec2::new(sx, sy),
-                14.0,
+                22.0,
                 Color::srgba(0.0, 1.0, 1.0, sel_pulse),
             );
         }
