@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 
+use crate::colony::{Colony, BuildQueue, Production, ResourceStockpile};
 use crate::components::Position;
-use crate::galaxy::StarSystem;
+use crate::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_sexadies};
 use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
 
@@ -18,7 +19,12 @@ pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (sublight_movement_system, process_ftl_travel, process_surveys));
+        app.add_systems(Update, (
+            sublight_movement_system,
+            process_ftl_travel,
+            process_surveys,
+            handle_colony_ship_arrival,
+        ));
     }
 }
 
@@ -312,5 +318,83 @@ fn process_surveys(
                 system: target_system,
             };
         }
+    }
+}
+
+// --- Colony ship arrival (#20) ---
+
+fn resource_production_rate(level: ResourceLevel) -> f64 {
+    match level {
+        ResourceLevel::Rich => 8.0,
+        ResourceLevel::Moderate => 5.0,
+        ResourceLevel::Poor => 2.0,
+        ResourceLevel::None => 0.0,
+    }
+}
+
+/// When a ColonyShip docks at an uncolonized, habitable system, establish a colony and consume the ship.
+fn handle_colony_ship_arrival(
+    mut commands: Commands,
+    ships: Query<(Entity, &Ship, &ShipState, &Position)>,
+    mut systems: Query<(&mut StarSystem, &Position, Option<&SystemAttributes>), Without<Ship>>,
+) {
+    for (ship_entity, ship, state, _ship_pos) in &ships {
+        let system_entity = match state {
+            ShipState::Docked { system } => *system,
+            _ => continue,
+        };
+
+        if ship.ship_type != ShipType::ColonyShip {
+            continue;
+        }
+
+        let Ok((mut star, _sys_pos, attrs)) = systems.get_mut(system_entity) else {
+            continue;
+        };
+
+        // Skip already colonized systems
+        if star.colonized {
+            continue;
+        }
+
+        // Check habitability
+        if let Some(attrs) = attrs {
+            if attrs.habitability == Habitability::GasGiant {
+                info!("Colony Ship {} cannot colonize gas giant {}", ship.name, star.name);
+                continue;
+            }
+
+            // Establish colony
+            star.colonized = true;
+            let minerals_rate = resource_production_rate(attrs.mineral_richness);
+            let energy_rate = resource_production_rate(attrs.energy_potential);
+            let research_rate = resource_production_rate(attrs.research_potential);
+
+            commands.spawn((
+                Colony {
+                    system: system_entity,
+                    population: 10.0,
+                    growth_rate: 0.005,
+                },
+                ResourceStockpile {
+                    minerals: 100.0,
+                    energy: 100.0,
+                    research: 0.0,
+                },
+                Production {
+                    minerals_per_sexadie: minerals_rate,
+                    energy_per_sexadie: energy_rate,
+                    research_per_sexadie: research_rate,
+                },
+                BuildQueue {
+                    queue: Vec::new(),
+                },
+            ));
+
+            info!("Colony established at {} (M:{}/E:{}/R:{} per sd)", star.name, minerals_rate, energy_rate, research_rate);
+        }
+
+        // Consume the colony ship
+        commands.entity(ship_entity).despawn();
     }
 }

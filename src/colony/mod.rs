@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
+use crate::components::Position;
 use crate::galaxy::StarSystem;
+use crate::ship::{spawn_ship, ShipType};
 use crate::time_system::GameClock;
 
 pub struct ColonyPlugin;
@@ -131,15 +133,17 @@ fn tick_population_growth(
 }
 
 fn tick_build_queue(
+    mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(&mut BuildQueue, &mut ResourceStockpile)>,
+    mut query: Query<(&Colony, &mut BuildQueue, &mut ResourceStockpile)>,
+    positions: Query<&Position>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
-    for (mut build_queue, mut stockpile) in &mut query {
+    for (colony, mut build_queue, mut stockpile) in &mut query {
         for _ in 0..delta {
             if build_queue.queue.is_empty() {
                 break;
@@ -157,8 +161,26 @@ fn tick_build_queue(
             stockpile.energy -= energy_transfer;
 
             if build_queue.queue[0].is_complete() {
-                let name = build_queue.queue.remove(0).ship_type_name;
-                info!("Ship built: {}", name);
+                let completed = build_queue.queue.remove(0);
+                let ship_type = match completed.ship_type_name.as_str() {
+                    "Explorer" => ShipType::Explorer,
+                    "Colony Ship" => ShipType::ColonyShip,
+                    "Courier" => ShipType::Courier,
+                    _ => {
+                        warn!("Unknown ship type: {}", completed.ship_type_name);
+                        continue;
+                    }
+                };
+                if let Ok(pos) = positions.get(colony.system) {
+                    spawn_ship(
+                        &mut commands,
+                        ship_type,
+                        completed.ship_type_name.clone(),
+                        colony.system,
+                        *pos,
+                    );
+                    info!("Ship built and launched: {}", completed.ship_type_name);
+                }
             }
         }
     }
