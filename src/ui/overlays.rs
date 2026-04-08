@@ -1,23 +1,20 @@
-use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::egui;
 
 use super::ResearchPanelOpen;
 
-/// System that draws modal overlay windows (e.g. the research panel).
+/// Draws modal overlay windows (e.g. the research panel).
 ///
 /// Currently this is a placeholder since the technology/research system
 /// has not been implemented yet. When TechTree, ResearchQueue, and
 /// ResearchPool are added, this will display the full tech tree with
 /// clickable research options.
 pub fn draw_overlays(
-    mut contexts: EguiContexts,
-    mut research_open: ResMut<ResearchPanelOpen>,
+    ctx: &egui::Context,
+    research_open: &mut ResearchPanelOpen,
 ) {
     if !research_open.0 {
         return;
     }
-
-    let Ok(ctx) = contexts.ctx_mut() else { return };
 
     egui::Window::new("Research")
         .open(&mut research_open.0)

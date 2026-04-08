@@ -1,17 +1,14 @@
-use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::egui;
 
 use crate::communication::CommandLog;
 use crate::time_system::GameClock;
 
-/// System that draws the bottom bar showing the command log / event log.
+/// Draws the bottom bar showing the command log / event log.
 pub fn draw_bottom_bar(
-    mut contexts: EguiContexts,
-    command_log: Res<CommandLog>,
-    clock: Res<GameClock>,
+    ctx: &egui::Context,
+    command_log: &CommandLog,
+    clock: &GameClock,
 ) {
-    let Ok(ctx) = contexts.ctx_mut() else { return };
-
     egui::TopBottomPanel::bottom("bottom_bar")
         .max_height(120.0)
         .show(ctx, |ui| {

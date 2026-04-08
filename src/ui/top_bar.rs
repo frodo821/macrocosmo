@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::egui;
 
 use crate::colony::ResourceStockpile;
 use crate::time_system::{GameClock, GameSpeed};
@@ -7,14 +7,12 @@ use crate::time_system::{GameClock, GameSpeed};
 use super::ResearchPanelOpen;
 
 pub fn draw_top_bar(
-    mut contexts: EguiContexts,
-    clock: Res<GameClock>,
-    mut speed: ResMut<GameSpeed>,
-    stockpiles: Query<&ResourceStockpile>,
-    mut research_open: ResMut<ResearchPanelOpen>,
+    ctx: &egui::Context,
+    clock: &GameClock,
+    speed: &mut GameSpeed,
+    stockpiles: &Query<&ResourceStockpile>,
+    research_open: &mut ResearchPanelOpen,
 ) {
-    let Ok(ctx) = contexts.ctx_mut() else { return };
-
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
             // Game time
@@ -54,7 +52,7 @@ pub fn draw_top_bar(
             let mut total_minerals = 0.0_f64;
             let mut total_energy = 0.0_f64;
             let mut total_research = 0.0_f64;
-            for stockpile in &stockpiles {
+            for stockpile in stockpiles {
                 total_minerals += stockpile.minerals;
                 total_energy += stockpile.energy;
                 total_research += stockpile.research;
