@@ -885,8 +885,7 @@ fn handle_ship_commands(
     keys: Res<ButtonInput<KeyCode>>,
     selected_system: Res<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
-    ships_query: Query<(Entity, &Ship, &ShipState)>,
-    mut ship_writer: Query<(&mut Ship, &mut ShipState)>,
+    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState)>,
     stars: Query<(Entity, &StarSystem, &Position)>,
     clock: Res<GameClock>,
 ) {
@@ -903,19 +902,26 @@ fn handle_ship_commands(
     // Number keys 1-9 to select a ship from the docked list
     if selected_ship.0.is_none() {
         let digit_keys = [
-            KeyCode::Digit1,
-            KeyCode::Digit2,
-            KeyCode::Digit3,
-            KeyCode::Digit4,
-            KeyCode::Digit5,
-            KeyCode::Digit6,
-            KeyCode::Digit7,
-            KeyCode::Digit8,
-            KeyCode::Digit9,
+            KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3,
+            KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6,
+            KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
         ];
+        // Collect docked ships at selected system
+        let mut docked: Vec<(Entity, String, ShipType)> = ships_query
+            .iter()
+            .filter_map(|(e, ship, state)| {
+                if let ShipState::Docked { system } = &*state {
+                    if *system == sel_system {
+                        return Some((e, ship.name.clone(), ship.ship_type));
+                    }
+                }
+                None
+            })
+            .collect();
+        docked.sort_by(|a, b| a.1.cmp(&b.1));
+
         for (i, key) in digit_keys.iter().enumerate() {
             if keys.just_pressed(*key) {
-                let docked = ships_docked_at(sel_system, &ships_query);
                 if i < docked.len() {
                     selected_ship.0 = Some(docked[i].0);
                     info!("Selected ship: {}", docked[i].1);
@@ -926,25 +932,24 @@ fn handle_ship_commands(
         return;
     }
 
-    // A ship is selected - handle command keys
+    // A ship is selected - read data for validation first
     let ship_entity = selected_ship.0.unwrap();
 
-    // Get ship data (immutable first for validation)
-    let Ok((_, ship, state)) = ships_query.get(ship_entity) else {
-        selected_ship.0 = None;
-        return;
+    let (ship_name, ship_type, ftl_range, sublight_speed, docked_system) = {
+        let Ok((_, ship, state)) = ships_query.get(ship_entity) else {
+            selected_ship.0 = None;
+            return;
+        };
+        let ShipState::Docked { system } = &*state else {
+            return; // Ship not docked
+        };
+        (ship.name.clone(), ship.ship_type, ship.ftl_range, ship.sublight_speed, *system)
     };
-
-    let ShipState::Docked { system: docked_system } = *state else {
-        // Ship is not docked, no commands available
-        return;
-    };
-    let docked_system = docked_system;
 
     // F: FTL jump
     if keys.just_pressed(KeyCode::KeyF) {
-        if ship.ftl_range <= 0.0 {
-            info!("Ship {} has no FTL capability", ship.name);
+        if ftl_range <= 0.0 {
+            info!("Ship {} has no FTL capability", ship_name);
             return;
         }
         if sel_system == docked_system {
@@ -961,28 +966,20 @@ fn handle_ship_commands(
         }
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        if dist > ship.ftl_range {
-            info!(
-                "Target {} is {:.1} ly away, FTL range is {:.1} ly",
-                target_star.name, dist, ship.ftl_range,
-            );
+        if dist > ftl_range {
+            info!("Target {} is {:.1} ly away, FTL range is {:.1} ly", target_star.name, dist, ftl_range);
             return;
         }
 
-        // Execute FTL
-        let travel_time = physics::sublight_travel_sexadies(dist, 10.0); // FTL is ~10x light speed
-        let travel_time = travel_time.max(1);
-        let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
+        let travel_time = physics::sublight_travel_sexadies(dist, 10.0).max(1);
+        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
         *state_mut = ShipState::InFTL {
             origin_system: docked_system,
             destination_system: sel_system,
             departed_at: clock.elapsed,
             arrival_at: clock.elapsed + travel_time,
         };
-        info!(
-            "Ship {} jumping to {} (ETA: {} sd)",
-            _ship_mut.name, target_star.name, travel_time,
-        );
+        info!("Ship {} jumping to {} (ETA: {} sd)", ship_mut.name, target_star.name, travel_time);
         selected_ship.0 = None;
         return;
     }
@@ -998,9 +995,9 @@ fn handle_ship_commands(
         let Ok((_, _, dock_pos)) = stars.get(docked_system) else { return };
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        let travel_time = physics::sublight_travel_sexadies(dist, ship.sublight_speed);
+        let travel_time = physics::sublight_travel_sexadies(dist, sublight_speed);
 
-        let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
+        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
         *state_mut = ShipState::SubLight {
             origin: dock_pos.as_array(),
             destination: target_pos.as_array(),
@@ -1008,17 +1005,14 @@ fn handle_ship_commands(
             departed_at: clock.elapsed,
             arrival_at: clock.elapsed + travel_time,
         };
-        info!(
-            "Ship {} departing for {} at {:.0}% c (ETA: {} sd)",
-            _ship_mut.name, target_star.name, _ship_mut.sublight_speed * 100.0, travel_time,
-        );
+        info!("Ship {} departing for {} at {:.0}% c (ETA: {} sd)", ship_mut.name, target_star.name, ship_mut.sublight_speed * 100.0, travel_time);
         selected_ship.0 = None;
         return;
     }
 
     // V: Survey (Explorer only)
     if keys.just_pressed(KeyCode::KeyV) {
-        if ship.ship_type != ShipType::Explorer {
+        if ship_type != ShipType::Explorer {
             info!("Only Explorers can survey systems");
             return;
         }
@@ -1036,19 +1030,15 @@ fn handle_ship_commands(
         }
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        // Survey time: light delay there and back + base survey time (5 sd)
         let survey_time = physics::light_delay_sexadies(dist) * 2 + 5;
 
-        let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
+        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
         *state_mut = ShipState::Surveying {
             target_system: sel_system,
             started_at: clock.elapsed,
             completes_at: clock.elapsed + survey_time,
         };
-        info!(
-            "Ship {} surveying {} (ETA: {} sd)",
-            _ship_mut.name, target_star.name, survey_time,
-        );
+        info!("Ship {} surveying {} (ETA: {} sd)", ship_mut.name, target_star.name, survey_time);
         selected_ship.0 = None;
     }
 }
