@@ -121,7 +121,7 @@ pub fn handle_speed_controls(
         changed = true;
     }
     if keys.just_pressed(KeyCode::Equal) {
-        let new_speed = (speed.sexadies_per_second * 2.0).max(1.0);
+        let new_speed = (speed.sexadies_per_second * 2.0).max(1.0).min(16.0);
         speed.sexadies_per_second = new_speed;
         speed.previous_speed = new_speed;
         changed = true;
