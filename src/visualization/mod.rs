@@ -941,11 +941,8 @@ pub fn click_select_system(
     }
 
     if let Some((entity, _)) = best {
-        // If clicking a different system, deselect ship
-        if selected.0 != Some(entity) {
-            selected_ship.0 = None;
-        }
         selected.0 = Some(entity);
+        // Keep ship selected — clicked system becomes command target
     } else {
         selected.0 = None;
         selected_ship.0 = None;
