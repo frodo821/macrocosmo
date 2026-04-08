@@ -19,3 +19,8 @@ target/
 # Environment
 .env
 .env.local
+
+
+# Added by cargo
+
+/target
