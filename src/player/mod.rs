@@ -89,10 +89,10 @@ fn log_player_info(
 
             for (name, dist, surveyed, _) in nearby.iter().take(10) {
                 let survey_mark = if *surveyed { "+" } else { "?" };
-                let delay = physics::light_delay_years(*dist);
+                let delay_sd = physics::light_delay_sexadies(*dist);
                 info!(
-                    "  [{}] {} - {:.1} ly (light delay: {:.1} yr)",
-                    survey_mark, name, dist, delay
+                    "  [{}] {} - {:.1} ly (light delay: {} sd / {:.1} yr)",
+                    survey_mark, name, dist, delay_sd, *dist
                 );
             }
         }

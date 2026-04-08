@@ -10,49 +10,53 @@ impl Plugin for GameTimePlugin {
     }
 }
 
-/// Minimum time unit: ~6 days = 6/365.25 game-years
-const MIN_TIME_UNIT_YEARS: f64 = 6.0 / 365.25;
+/// 1 sexadie = 6 days
+/// 1 month = 5 sexadies = 30 days
+/// 1 year = 12 months = 60 sexadies = 360 days
+pub const SEXADIES_PER_MONTH: i64 = 5;
+pub const MONTHS_PER_YEAR: i64 = 12;
+pub const SEXADIES_PER_YEAR: i64 = SEXADIES_PER_MONTH * MONTHS_PER_YEAR; // 60
 
-/// Game clock tracking elapsed game-years
-#[derive(Resource)]
+/// Game clock based on integer sexadies (6-day units)
+#[derive(Resource, Default)]
 pub struct GameClock {
-    /// Total elapsed game-years
-    pub elapsed_years: f64,
-}
-
-impl Default for GameClock {
-    fn default() -> Self {
-        Self {
-            elapsed_years: 0.0,
-        }
-    }
+    /// Total elapsed sexadies
+    pub elapsed: i64,
+    /// Sub-sexadie accumulator for smooth real-time integration
+    accumulator: f64,
 }
 
 impl GameClock {
-    /// Current game year (integer part)
     pub fn year(&self) -> i64 {
-        self.elapsed_years as i64
+        self.elapsed / SEXADIES_PER_YEAR
     }
 
-    /// Day within the current year (1-based, in 6-day increments)
-    pub fn day(&self) -> u32 {
-        let frac = self.elapsed_years - self.elapsed_years.floor();
-        let day = (frac * 365.25) as u32;
-        // Snap to 6-day increments
-        (day / 6) * 6 + 1
+    /// Month within the current year (1-based)
+    pub fn month(&self) -> i64 {
+        (self.elapsed % SEXADIES_PER_YEAR) / SEXADIES_PER_MONTH + 1
+    }
+
+    /// Sexadie within the current month (1-based)
+    pub fn sexadie(&self) -> i64 {
+        (self.elapsed % SEXADIES_PER_MONTH) + 1
+    }
+
+    /// Convert to fractional years (for physics calculations)
+    pub fn as_years_f64(&self) -> f64 {
+        self.elapsed as f64 / SEXADIES_PER_YEAR as f64
     }
 }
 
 #[derive(Resource)]
 pub struct GameSpeed {
-    /// Game-years per real second. 0 = paused.
-    pub years_per_second: f64,
+    /// Sexadies per real second. 0 = paused.
+    pub sexadies_per_second: f64,
 }
 
 impl Default for GameSpeed {
     fn default() -> Self {
         Self {
-            years_per_second: 0.0, // Start paused
+            sexadies_per_second: 0.0, // Start paused
         }
     }
 }
@@ -62,13 +66,15 @@ fn advance_game_time(
     mut clock: ResMut<GameClock>,
     speed: Res<GameSpeed>,
 ) {
-    if speed.years_per_second <= 0.0 {
+    if speed.sexadies_per_second <= 0.0 {
         return;
     }
-    let dt_years = real_time.delta_secs_f64() * speed.years_per_second;
-    // Snap to minimum time unit
-    let steps = (dt_years / MIN_TIME_UNIT_YEARS).floor();
-    clock.elapsed_years += steps * MIN_TIME_UNIT_YEARS;
+    clock.accumulator += real_time.delta_secs_f64() * speed.sexadies_per_second;
+    let steps = clock.accumulator as i64;
+    if steps > 0 {
+        clock.accumulator -= steps as f64;
+        clock.elapsed += steps;
+    }
 }
 
 fn handle_speed_controls(
@@ -79,32 +85,33 @@ fn handle_speed_controls(
     let mut changed = false;
 
     if keys.just_pressed(KeyCode::Space) {
-        if speed.years_per_second > 0.0 {
-            speed.years_per_second = 0.0;
+        if speed.sexadies_per_second > 0.0 {
+            speed.sexadies_per_second = 0.0;
         } else {
-            speed.years_per_second = 1.0;
+            speed.sexadies_per_second = 1.0;
         }
         changed = true;
     }
     if keys.just_pressed(KeyCode::Equal) {
-        speed.years_per_second = (speed.years_per_second * 2.0).max(0.5);
+        speed.sexadies_per_second = (speed.sexadies_per_second * 2.0).max(1.0);
         changed = true;
     }
     if keys.just_pressed(KeyCode::Minus) {
-        speed.years_per_second = (speed.years_per_second / 2.0).max(0.0);
+        speed.sexadies_per_second = (speed.sexadies_per_second / 2.0).max(0.0);
         changed = true;
     }
 
     if changed {
-        let status = if speed.years_per_second <= 0.0 {
+        let status = if speed.sexadies_per_second <= 0.0 {
             "PAUSED".to_string()
         } else {
-            format!("x{:.1} yr/s", speed.years_per_second)
+            format!("x{:.0} sd/s", speed.sexadies_per_second)
         };
         info!(
-            "Year {} Day {} [{}]",
+            "Year {} Month {} Sexadie {} [{}]",
             clock.year(),
-            clock.day(),
+            clock.month(),
+            clock.sexadie(),
             status
         );
     }

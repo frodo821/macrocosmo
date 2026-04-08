@@ -193,7 +193,7 @@ fn draw_galaxy_overlay(
     let py = player_star.position[1] as f32 * view.scale;
 
     // Player position indicator: pulsing ring
-    let pulse = (clock.elapsed_years as f32 * 3.0).sin() * 0.3 + 0.7;
+    let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
     gizmos.circle_2d(
         Vec2::new(px, py),
         12.0,
@@ -242,10 +242,10 @@ fn update_hud(
         return;
     };
 
-    let speed_str = if speed.years_per_second <= 0.0 {
+    let speed_str = if speed.sexadies_per_second <= 0.0 {
         "PAUSED".to_string()
     } else {
-        format!("x{:.1}", speed.years_per_second)
+        format!("x{:.0} sd/s", speed.sexadies_per_second)
     };
 
     let location = if let Ok(stationed) = player_q.single() {
@@ -259,9 +259,10 @@ fn update_hud(
     };
 
     **text = format!(
-        "Year {} Day {} [{}]\nLocation: {}\n\nWASD: Pan | Scroll: Zoom | Space: Pause\n+/-: Speed | I: System Info | Home: Reset View",
+        "Year {} Month {} Sexadie {} [{}]\nLocation: {}\n\nWASD: Pan | Scroll: Zoom | Space: Pause\n+/-: Speed | I: System Info | Home: Reset View",
         clock.year(),
-        clock.day(),
+        clock.month(),
+        clock.sexadie(),
         speed_str,
         location,
     );
