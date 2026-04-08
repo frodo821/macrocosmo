@@ -25,8 +25,7 @@ pub fn draw_side_panel(
         Option<&ResourceStockpile>,
         Option<&mut BuildQueue>,
     )>,
-    ships_query: Query<(Entity, &Ship, &ShipState)>,
-    mut ship_writer: Query<(&mut Ship, &mut ShipState)>,
+    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState)>,
     positions: Query<&Position>,
     knowledge: Res<KnowledgeStore>,
     clock: Res<GameClock>,
@@ -237,170 +236,104 @@ pub fn draw_side_panel(
             }
 
             // Selected ship details
-            if let Some(ship_entity) = selected_ship.0 {
-                if let Ok((_, ship, state)) = ships_query.get(ship_entity) {
+            // Collect ship data into locals first, then draw UI, then apply mutations
+            let ship_data = selected_ship.0.and_then(|ship_entity| {
+                let (_, ship, state) = ships_query.get(ship_entity).ok()?;
+                let docked_system = if let ShipState::Docked { system } = &*state {
+                    Some(*system)
+                } else {
+                    None
+                };
+                Some((ship_entity, ship.name.clone(), ship.ship_type, ship.hp, ship.max_hp,
+                      ship.ftl_range, ship.sublight_speed,
+                      match &*state {
+                          ShipState::Docked { .. } => "Docked",
+                          ShipState::SubLight { .. } => "Sub-light travel",
+                          ShipState::InFTL { .. } => "FTL travel",
+                          ShipState::Surveying { .. } => "Surveying",
+                          ShipState::Settling { .. } => "Settling",
+                      }.to_string(),
+                      docked_system))
+            });
+
+            if let Some((ship_entity, name, ship_type, hp, max_hp, ftl_range, sublight_speed, status, docked_system)) = ship_data {
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Ship: {}", name)).strong().color(egui::Color32::from_rgb(100, 200, 255)));
+                ui.label(format!("Type: {:?}", ship_type));
+                ui.label(format!("HP: {:.0}/{:.0}", hp, max_hp));
+                ui.label(format!("Status: {}", status));
+                if ftl_range > 0.0 {
+                    ui.label(format!("FTL range: {:.1} ly", ftl_range));
+                }
+                ui.label(format!("Sub-light speed: {:.0}% c", sublight_speed * 100.0));
+
+                // Track which command the user clicked
+                let mut command: Option<ShipState> = None;
+
+                if let Some(docked_system) = docked_system {
                     ui.separator();
-                    ui.label(
-                        egui::RichText::new(format!("Ship: {}", ship.name))
-                            .strong()
-                            .color(egui::Color32::from_rgb(100, 200, 255)),
-                    );
-                    ui.label(format!("Type: {:?}", ship.ship_type));
-                    ui.label(format!("HP: {:.0}/{:.0}", ship.hp, ship.max_hp));
+                    ui.label(egui::RichText::new("Commands").strong());
 
-                    let status = match state {
-                        ShipState::Docked { .. } => "Docked".to_string(),
-                        ShipState::SubLight { .. } => "Sub-light travel".to_string(),
-                        ShipState::InFTL { .. } => "FTL travel".to_string(),
-                        ShipState::Surveying { .. } => "Surveying".to_string(),
-                        ShipState::Settling { .. } => "Settling".to_string(),
-                    };
-                    ui.label(format!("Status: {}", status));
+                    let target_info = if sel_entity != docked_system {
+                        if let Ok((_, target_star, target_pos, _)) = stars.get(sel_entity) {
+                            if let Ok(dock_pos) = positions.get(docked_system) {
+                                let dist = physics::distance_ly(dock_pos, target_pos);
+                                ui.label(format!("Target: {} ({:.1} ly)", target_star.name, dist));
+                                Some((sel_entity, dist, target_star.name.clone(), target_star.surveyed, dock_pos.as_array(), target_pos.as_array()))
+                            } else { None }
+                        } else { None }
+                    } else { None };
 
-                    if ship.ftl_range > 0.0 {
-                        ui.label(format!("FTL range: {:.1} ly", ship.ftl_range));
+                    // FTL button
+                    if ftl_range > 0.0 {
+                        let can_ftl = target_info.as_ref().is_some_and(|(_, dist, _, surveyed, _, _)| *dist <= ftl_range && *surveyed);
+                        if ui.add_enabled(can_ftl, egui::Button::new("FTL Jump")).on_disabled_hover_text("Select a surveyed system within FTL range").clicked() {
+                            if let Some((target, dist, _, _, _, _)) = &target_info {
+                                let travel_time = physics::sublight_travel_sexadies(*dist, 10.0).max(1);
+                                command = Some(ShipState::InFTL {
+                                    origin_system: docked_system, destination_system: *target,
+                                    departed_at: clock.elapsed, arrival_at: clock.elapsed + travel_time,
+                                });
+                            }
+                        }
                     }
-                    ui.label(format!(
-                        "Sub-light speed: {:.0}% c",
-                        ship.sublight_speed * 100.0
-                    ));
 
-                    // Commands (only when docked)
-                    if let ShipState::Docked { system: docked_system } = state {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Commands").strong());
-
-                        let docked_system = *docked_system;
-
-                        // We need to know what the selected system is for targeting
-                        let target_system = if sel_entity != docked_system {
-                            // Show target info
-                            if let Ok((_, target_star, target_pos, _)) = stars.get(sel_entity) {
-                                if let Ok(dock_pos) = positions.get(docked_system) {
-                                    let dist = physics::distance_ly(dock_pos, target_pos);
-                                    ui.label(format!(
-                                        "Target: {} ({:.1} ly)",
-                                        target_star.name, dist
-                                    ));
-                                    Some((sel_entity, dist))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
-                        // FTL button
-                        if ship.ftl_range > 0.0 {
-                            let can_ftl = target_system.is_some_and(|(target, dist)| {
-                                dist <= ship.ftl_range
-                                    && stars
-                                        .get(target)
-                                        .map(|(_, s, _, _)| s.surveyed)
-                                        .unwrap_or(false)
+                    // Sub-light button
+                    let can_move = target_info.is_some();
+                    if ui.add_enabled(can_move, egui::Button::new("Move (Sub-light)")).on_disabled_hover_text("Select a different system as target").clicked() {
+                        if let Some((target, dist, _, _, origin, dest)) = &target_info {
+                            let travel_time = physics::sublight_travel_sexadies(*dist, sublight_speed);
+                            command = Some(ShipState::SubLight {
+                                origin: *origin, destination: *dest,
+                                target_system: Some(*target),
+                                departed_at: clock.elapsed, arrival_at: clock.elapsed + travel_time,
                             });
-                            if ui
-                                .add_enabled(can_ftl, egui::Button::new("FTL Jump"))
-                                .on_disabled_hover_text(
-                                    "Select a surveyed system within FTL range",
-                                )
-                                .clicked()
-                            {
-                                if let Some((target, dist)) = target_system {
-                                    let travel_time =
-                                        physics::sublight_travel_sexadies(dist, 10.0).max(1);
-                                    if let Ok((ref _s, ref mut state_mut)) =
-                                        ship_writer.get_mut(ship_entity)
-                                    {
-                                        **state_mut = ShipState::InFTL {
-                                            origin_system: docked_system,
-                                            destination_system: target,
-                                            departed_at: clock.elapsed,
-                                            arrival_at: clock.elapsed + travel_time,
-                                        };
-                                        info!("Ship {} jumping via FTL (ETA: {} sd)", ship.name, travel_time);
-                                        selected_ship.0 = None;
-                                    }
-                                }
+                        }
+                    }
+
+                    // Survey button
+                    if ship_type == ShipType::Explorer {
+                        let can_survey = target_info.as_ref().is_some_and(|(_, _, _, surveyed, _, _)| !surveyed);
+                        if ui.add_enabled(can_survey, egui::Button::new("Survey")).on_disabled_hover_text("Select an unsurveyed system as target").clicked() {
+                            if let Some((target, dist, _, _, _, _)) = &target_info {
+                                let survey_time = physics::light_delay_sexadies(*dist) * 2 + 5;
+                                command = Some(ShipState::Surveying {
+                                    target_system: *target, started_at: clock.elapsed, completes_at: clock.elapsed + survey_time,
+                                });
                             }
                         }
+                    }
 
-                        // Sub-light move button
-                        let can_move = target_system.is_some();
-                        if ui
-                            .add_enabled(can_move, egui::Button::new("Move (Sub-light)"))
-                            .on_disabled_hover_text("Select a different system as target")
-                            .clicked()
-                        {
-                            if let Some((target, dist)) = target_system {
-                                let travel_time =
-                                    physics::sublight_travel_sexadies(dist, ship.sublight_speed);
-                                if let Ok((_, target_star, target_pos, _)) = stars.get(target) {
-                                    if let Ok(dock_pos) = positions.get(docked_system) {
-                                        if let Ok((ref _s, ref mut state_mut)) =
-                                            ship_writer.get_mut(ship_entity)
-                                        {
-                                            **state_mut = ShipState::SubLight {
-                                                origin: dock_pos.as_array(),
-                                                destination: target_pos.as_array(),
-                                                target_system: Some(target),
-                                                departed_at: clock.elapsed,
-                                                arrival_at: clock.elapsed + travel_time,
-                                            };
-                                            info!(
-                                                "Ship {} departing for {} (ETA: {} sd)",
-                                                ship.name, target_star.name, travel_time
-                                            );
-                                            selected_ship.0 = None;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if ui.button("Deselect ship").clicked() {
+                        selected_ship.0 = None;
+                    }
+                }
 
-                        // Survey button (Explorer only)
-                        if ship.ship_type == ShipType::Explorer {
-                            let can_survey = target_system.is_some_and(|(target, _dist)| {
-                                stars
-                                    .get(target)
-                                    .map(|(_, s, _, _)| !s.surveyed)
-                                    .unwrap_or(false)
-                            });
-                            if ui
-                                .add_enabled(can_survey, egui::Button::new("Survey"))
-                                .on_disabled_hover_text(
-                                    "Select an unsurveyed system as target",
-                                )
-                                .clicked()
-                            {
-                                if let Some((target, dist)) = target_system {
-                                    let survey_time =
-                                        physics::light_delay_sexadies(dist) * 2 + 5;
-                                    if let Ok((ref _s, ref mut state_mut)) =
-                                        ship_writer.get_mut(ship_entity)
-                                    {
-                                        **state_mut = ShipState::Surveying {
-                                            target_system: target,
-                                            started_at: clock.elapsed,
-                                            completes_at: clock.elapsed + survey_time,
-                                        };
-                                        info!(
-                                            "Ship {} surveying (ETA: {} sd)",
-                                            ship.name, survey_time
-                                        );
-                                        selected_ship.0 = None;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Deselect ship button
-                        if ui.button("Deselect ship").clicked() {
-                            selected_ship.0 = None;
-                        }
+                // Apply command mutation AFTER UI drawing (no borrow conflict)
+                if let Some(new_state) = command {
+                    if let Ok((_, _, mut state)) = ships_query.get_mut(ship_entity) {
+                        *state = new_state;
+                        selected_ship.0 = None;
                     }
                 }
             }
@@ -410,12 +343,12 @@ pub fn draw_side_panel(
 /// Helper to collect ships docked at a given system.
 fn ships_docked_at(
     system: Entity,
-    ships: &Query<(Entity, &Ship, &ShipState)>,
+    ships: &Query<(Entity, &mut Ship, &mut ShipState)>,
 ) -> Vec<(Entity, String, ShipType)> {
     let mut result: Vec<(Entity, String, ShipType)> = ships
         .iter()
         .filter_map(|(e, ship, state)| {
-            if let ShipState::Docked { system: s } = state {
+            if let ShipState::Docked { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.ship_type));
                 }
