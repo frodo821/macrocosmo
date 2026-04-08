@@ -150,7 +150,7 @@ pub fn start_sublight_travel(
     };
 }
 
-fn sublight_movement_system(
+pub fn sublight_movement_system(
     clock: Res<GameClock>,
     mut query: Query<(&mut ShipState, &mut Position, &Ship)>,
 ) {
@@ -222,7 +222,7 @@ pub fn start_ftl_travel(
     Ok(())
 }
 
-fn process_ftl_travel(
+pub fn process_ftl_travel(
     clock: Res<GameClock>,
     mut ships: Query<(&Ship, &mut ShipState, &mut Position)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
@@ -289,7 +289,7 @@ pub fn start_survey(
 
 /// System that processes ongoing surveys and marks star systems as surveyed
 /// when the survey duration has elapsed.
-fn process_surveys(
+pub fn process_surveys(
     clock: Res<GameClock>,
     mut ships: Query<(&Ship, &mut ShipState)>,
     mut systems: Query<&mut StarSystem>,
@@ -333,7 +333,7 @@ fn resource_production_rate(level: ResourceLevel) -> f64 {
 }
 
 /// When a ColonyShip docks at an uncolonized, habitable system, establish a colony and consume the ship.
-fn handle_colony_ship_arrival(
+pub fn handle_colony_ship_arrival(
     mut commands: Commands,
     ships: Query<(Entity, &Ship, &ShipState, &Position)>,
     mut systems: Query<(&mut StarSystem, &Position, Option<&SystemAttributes>), Without<Ship>>,
@@ -396,5 +396,145 @@ fn handle_colony_ship_arrival(
 
         // Consume the colony ship
         commands.entity(ship_entity).despawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::world::World;
+
+    fn make_ship(ship_type: ShipType) -> Ship {
+        Ship {
+            name: "Test Ship".to_string(),
+            ship_type,
+            owner: Owner::Player,
+            sublight_speed: ship_type.default_sublight_speed(),
+            ftl_range: ship_type.default_ftl_range(),
+            hp: ship_type.default_hp(),
+            max_hp: ship_type.default_hp(),
+            player_aboard: false,
+        }
+    }
+
+    #[test]
+    fn start_sublight_sets_correct_arrival_time() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let ship = make_ship(ShipType::ColonyShip); // 0.5c
+        let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest = Position { x: 1.0, y: 0.0, z: 0.0 }; // 1 LY away
+        let mut state = ShipState::Docked { system };
+        start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100);
+        match state {
+            ShipState::SubLight { arrival_at, departed_at, .. } => {
+                // 1 LY at 0.5c → 120 sd
+                assert_eq!(departed_at, 100);
+                assert_eq!(arrival_at, 220);
+            }
+            _ => panic!("Expected SubLight state"),
+        }
+    }
+
+    #[test]
+    fn start_ftl_rejects_no_ftl_ship() {
+        let mut world = World::new();
+        let origin = world.spawn_empty().id();
+        let dest = world.spawn_empty().id();
+        let ship = make_ship(ShipType::Explorer); // ftl_range = 0
+        let mut state = ShipState::Docked { system: origin };
+        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest_pos = Position { x: 1.0, y: 0.0, z: 0.0 };
+        let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
+        assert_eq!(result, Err("Ship has no FTL capability"));
+    }
+
+    #[test]
+    fn start_ftl_rejects_out_of_range() {
+        let mut world = World::new();
+        let origin = world.spawn_empty().id();
+        let dest = world.spawn_empty().id();
+        let ship = make_ship(ShipType::ColonyShip); // ftl_range = 30
+        let mut state = ShipState::Docked { system: origin };
+        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest_pos = Position { x: 50.0, y: 0.0, z: 0.0 }; // 50 LY > 30
+        let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
+        assert_eq!(result, Err("Destination is beyond FTL range"));
+    }
+
+    #[test]
+    fn start_ftl_correct_travel_time() {
+        let mut world = World::new();
+        let origin = world.spawn_empty().id();
+        let dest = world.spawn_empty().id();
+        let ship = make_ship(ShipType::ColonyShip); // ftl_range = 30
+        let mut state = ShipState::Docked { system: origin };
+        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 }; // 10 LY
+        let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
+        assert!(result.is_ok());
+        // 10 LY at 10c → 10/10 = 1 year = 60 sd
+        match state {
+            ShipState::InFTL { arrival_at, .. } => assert_eq!(arrival_at, 60),
+            _ => panic!("Expected InFTL state"),
+        }
+    }
+
+    #[test]
+    fn start_survey_rejects_non_explorer() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let ship = make_ship(ShipType::ColonyShip);
+        let mut state = ShipState::Docked { system };
+        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0);
+        assert_eq!(result, Err("Only Explorer ships can perform surveys"));
+    }
+
+    #[test]
+    fn start_survey_rejects_non_docked() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let ship = make_ship(ShipType::Explorer);
+        let mut state = ShipState::SubLight {
+            origin: [0.0; 3],
+            destination: [1.0, 0.0, 0.0],
+            target_system: Some(system),
+            departed_at: 0,
+            arrival_at: 100,
+        };
+        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0);
+        assert_eq!(result, Err("Ship must be docked to begin a survey"));
+    }
+
+    #[test]
+    fn start_survey_rejects_out_of_range() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let ship = make_ship(ShipType::Explorer);
+        let mut state = ShipState::Docked { system };
+        let ship_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let target_pos = Position { x: 10.0, y: 0.0, z: 0.0 }; // 10 LY > 5 LY
+        let result = start_survey(&mut state, &ship, system, &ship_pos, &target_pos, 0);
+        assert_eq!(result, Err("Target system is beyond survey range"));
+    }
+
+    #[test]
+    fn start_survey_sets_correct_completion_time() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let ship = make_ship(ShipType::Explorer);
+        let mut state = ShipState::Docked { system };
+        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 50);
+        assert!(result.is_ok());
+        match state {
+            ShipState::Surveying { completes_at, started_at, .. } => {
+                assert_eq!(started_at, 50);
+                assert_eq!(completes_at, 55); // 50 + SURVEY_DURATION_SEXADIES (5)
+            }
+            _ => panic!("Expected Surveying state"),
+        }
     }
 }

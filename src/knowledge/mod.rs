@@ -113,7 +113,7 @@ fn initialize_capital_knowledge(
     info!("Player knowledge initialized: capital '{}'", capital.name);
 }
 
-fn propagate_knowledge(
+pub fn propagate_knowledge(
     clock: Res<GameClock>,
     player_q: Query<&StationedAt, With<Player>>,
     systems: Query<(Entity, &StarSystem, &Position)>,
@@ -161,5 +161,67 @@ fn propagate_knowledge(
             received_at: clock.elapsed,
             data: snapshot,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::world::World;
+
+    fn make_knowledge(system: Entity, observed_at: i64) -> SystemKnowledge {
+        SystemKnowledge {
+            system,
+            observed_at,
+            received_at: observed_at,
+            data: SystemSnapshot::default(),
+        }
+    }
+
+    #[test]
+    fn update_inserts_new_knowledge() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        let mut store = KnowledgeStore::default();
+        store.update(make_knowledge(entity, 10));
+        assert!(store.get(entity).is_some());
+        assert_eq!(store.get(entity).unwrap().observed_at, 10);
+    }
+
+    #[test]
+    fn newer_observation_replaces_older() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        let mut store = KnowledgeStore::default();
+        store.update(make_knowledge(entity, 10));
+        store.update(make_knowledge(entity, 20));
+        assert_eq!(store.get(entity).unwrap().observed_at, 20);
+    }
+
+    #[test]
+    fn older_observation_does_not_replace_newer() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        let mut store = KnowledgeStore::default();
+        store.update(make_knowledge(entity, 20));
+        store.update(make_knowledge(entity, 10));
+        assert_eq!(store.get(entity).unwrap().observed_at, 20);
+    }
+
+    #[test]
+    fn info_age_returns_correct_value() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        let mut store = KnowledgeStore::default();
+        store.update(make_knowledge(entity, 10));
+        assert_eq!(store.info_age(entity, 25), Some(15));
+    }
+
+    #[test]
+    fn info_age_returns_none_for_unknown() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        let store = KnowledgeStore::default();
+        assert_eq!(store.info_age(entity, 100), None);
     }
 }

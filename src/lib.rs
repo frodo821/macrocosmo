@@ -1,0 +1,10 @@
+pub mod components;
+pub mod galaxy;
+pub mod player;
+pub mod communication;
+pub mod time_system;
+pub mod physics;
+pub mod knowledge;
+pub mod ship;
+pub mod colony;
+pub mod setup;

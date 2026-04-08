@@ -52,3 +52,29 @@ pub enum MovementState {
         arrives_at: i64,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distance_to_same_point_is_zero() {
+        let p = Position { x: 5.0, y: 3.0, z: -1.0 };
+        assert_eq!(p.distance_to(&p), 0.0);
+    }
+
+    #[test]
+    fn distance_to_known_value() {
+        let a = Position { x: 3.0, y: 4.0, z: 0.0 };
+        let b = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let d = a.distance_to(&b);
+        assert!((d - 5.0).abs() < 1e-10, "expected 5.0, got {d}");
+    }
+
+    #[test]
+    fn as_array_round_trip() {
+        let arr = [1.5, -2.3, 7.0];
+        let pos = Position::from(arr);
+        assert_eq!(pos.as_array(), arr);
+    }
+}

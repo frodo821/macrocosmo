@@ -100,7 +100,7 @@ pub fn spawn_capital_colony(mut commands: Commands, query: Query<(Entity, &StarS
     warn!("No capital star system found; capital colony not created");
 }
 
-fn tick_production(
+pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     mut query: Query<(&Production, &mut ResourceStockpile)>,
@@ -117,7 +117,7 @@ fn tick_production(
     }
 }
 
-fn tick_population_growth(
+pub fn tick_population_growth(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     mut query: Query<&mut Colony>,
@@ -132,7 +132,7 @@ fn tick_population_growth(
     }
 }
 
-fn tick_build_queue(
+pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
@@ -186,6 +186,39 @@ fn tick_build_queue(
     }
 }
 
-fn advance_production_tick(clock: Res<GameClock>, mut last_tick: ResMut<LastProductionTick>) {
+pub fn advance_production_tick(clock: Res<GameClock>, mut last_tick: ResMut<LastProductionTick>) {
     last_tick.0 = clock.elapsed;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_order(minerals_cost: f64, minerals_invested: f64, energy_cost: f64, energy_invested: f64) -> BuildOrder {
+        BuildOrder {
+            ship_type_name: "Explorer".to_string(),
+            minerals_cost,
+            minerals_invested,
+            energy_cost,
+            energy_invested,
+        }
+    }
+
+    #[test]
+    fn build_order_complete_when_both_met() {
+        let order = make_order(100.0, 100.0, 50.0, 50.0);
+        assert!(order.is_complete());
+    }
+
+    #[test]
+    fn build_order_incomplete_minerals_short() {
+        let order = make_order(100.0, 80.0, 50.0, 50.0);
+        assert!(!order.is_complete());
+    }
+
+    #[test]
+    fn build_order_incomplete_energy_short() {
+        let order = make_order(100.0, 100.0, 50.0, 30.0);
+        assert!(!order.is_complete());
+    }
 }

@@ -70,7 +70,7 @@ pub struct CourierShip {
     pub carrying: Vec<MessageContent>,
 }
 
-fn process_messages(
+pub fn process_messages(
     mut commands: Commands,
     clock: Res<GameClock>,
     messages: Query<(Entity, &Message)>,
@@ -98,7 +98,7 @@ fn process_messages(
     }
 }
 
-fn process_courier_ships(
+pub fn process_courier_ships(
     mut commands: Commands,
     clock: Res<GameClock>,
     couriers: Query<(Entity, &CourierShip)>,
@@ -183,7 +183,7 @@ pub fn send_remote_command(
     });
 }
 
-fn process_pending_commands(
+pub fn process_pending_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
     pending: Query<(Entity, &PendingCommand)>,

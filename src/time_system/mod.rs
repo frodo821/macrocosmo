@@ -27,6 +27,10 @@ pub struct GameClock {
 }
 
 impl GameClock {
+    pub fn new(elapsed: i64) -> Self {
+        Self { elapsed, accumulator: 0.0 }
+    }
+
     pub fn year(&self) -> i64 {
         self.elapsed / SEXADIES_PER_YEAR
     }
@@ -114,5 +118,40 @@ fn handle_speed_controls(
             clock.sexadie(),
             status
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elapsed_zero() {
+        let clock = GameClock::new(0);
+        assert_eq!(clock.year(), 0);
+        assert_eq!(clock.month(), 1);
+        assert_eq!(clock.sexadie(), 1);
+    }
+
+    #[test]
+    fn elapsed_59() {
+        let clock = GameClock::new(59);
+        assert_eq!(clock.year(), 0);
+        assert_eq!(clock.month(), 12);
+        assert_eq!(clock.sexadie(), 5);
+    }
+
+    #[test]
+    fn elapsed_60_is_year_1() {
+        let clock = GameClock::new(60);
+        assert_eq!(clock.year(), 1);
+        assert_eq!(clock.month(), 1);
+        assert_eq!(clock.sexadie(), 1);
+    }
+
+    #[test]
+    fn as_years_f64_half_year() {
+        let clock = GameClock::new(30);
+        assert!((clock.as_years_f64() - 0.5).abs() < 1e-10);
     }
 }
