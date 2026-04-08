@@ -1,26 +1,29 @@
 use bevy::prelude::*;
 
+use crate::components::Position;
+use crate::galaxy::StarSystem;
+use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_sexadies};
+use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
+
+/// Initial FTL speed as a multiple of light speed
+pub const INITIAL_FTL_SPEED_C: f64 = 10.0;
+
 pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
-    fn build(&self, _app: &mut App) {
-        // No systems yet — data model only
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, (sublight_movement_system, process_ftl_travel));
     }
 }
 
-/// Ship type determines capabilities
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ShipType {
-    /// Can survey unsurveyed star systems
     Explorer,
-    /// Consumed on arrival to establish a colony
     ColonyShip,
-    /// High sub-light speed, carries messages
     Courier,
 }
 
 impl ShipType {
-    /// Default sub-light speed as a fraction of light speed
     pub fn default_sublight_speed(&self) -> f64 {
         match self {
             ShipType::Explorer => 0.75,
@@ -29,7 +32,6 @@ impl ShipType {
         }
     }
 
-    /// Default FTL range in light-years (0.0 means no FTL capability)
     pub fn default_ftl_range(&self) -> f64 {
         match self {
             ShipType::Explorer => 0.0,
@@ -38,7 +40,6 @@ impl ShipType {
         }
     }
 
-    /// Default hit points
     pub fn default_hp(&self) -> f32 {
         match self {
             ShipType::Explorer => 50.0,
@@ -48,70 +49,52 @@ impl ShipType {
     }
 }
 
-/// Ship ownership
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Owner {
     Player,
-    // Future: AI nations
 }
 
-/// Core ship component
 #[derive(Component)]
 pub struct Ship {
     pub name: String,
     pub ship_type: ShipType,
     pub owner: Owner,
-    /// Sub-light speed as fraction of light speed (e.g., 0.75)
     pub sublight_speed: f64,
-    /// Maximum FTL range in light-years
     pub ftl_range: f64,
-    /// Hit points
     pub hp: f32,
     pub max_hp: f32,
-    /// Whether the player is aboard this ship
     pub player_aboard: bool,
 }
 
-/// Ship's current movement/location state
 #[derive(Component)]
 pub enum ShipState {
-    /// Docked at a star system
     Docked { system: Entity },
-    /// Traveling at sub-light speed
     SubLight {
         origin: [f64; 3],
         destination: [f64; 3],
         target_system: Option<Entity>,
-        /// Departure time in sexadies
         departed_at: i64,
-        /// Arrival time in sexadies
         arrival_at: i64,
     },
-    /// In FTL ballistic flight (no communication possible)
     InFTL {
         origin_system: Entity,
         destination_system: Entity,
-        /// Departure time in sexadies
         departed_at: i64,
-        /// Arrival time in sexadies
         arrival_at: i64,
     },
-    /// Performing survey of a nearby system
     Surveying {
         target_system: Entity,
-        /// Survey start time in sexadies
         started_at: i64,
-        /// Survey completion time in sexadies
         completes_at: i64,
     },
 }
 
-/// Spawn a new ship docked at the given star system with default stats for its type.
 pub fn spawn_ship(
     commands: &mut Commands,
     ship_type: ShipType,
     name: String,
     system: Entity,
+    initial_position: Position,
 ) -> Entity {
     let hp = ship_type.default_hp();
     commands
@@ -127,6 +110,127 @@ pub fn spawn_ship(
                 player_aboard: false,
             },
             ShipState::Docked { system },
+            initial_position,
         ))
         .id()
+}
+
+// --- Sub-light travel ---
+
+pub fn start_sublight_travel(
+    ship_state: &mut ShipState,
+    ship_pos: &Position,
+    ship: &Ship,
+    destination: Position,
+    target_system: Option<Entity>,
+    current_time: i64,
+) {
+    let origin = ship_pos.as_array();
+    let dest = destination.as_array();
+    let dist = distance_ly_arr(origin, dest);
+    let travel_time = sublight_travel_sexadies(dist, ship.sublight_speed);
+    *ship_state = ShipState::SubLight {
+        origin,
+        destination: dest,
+        target_system,
+        departed_at: current_time,
+        arrival_at: current_time + travel_time,
+    };
+}
+
+fn sublight_movement_system(
+    clock: Res<GameClock>,
+    mut query: Query<(&mut ShipState, &mut Position, &Ship)>,
+) {
+    for (mut state, mut pos, _ship) in query.iter_mut() {
+        let (origin, destination, target_system, departed_at, arrival_at) = match *state {
+            ShipState::SubLight {
+                origin, destination, target_system, departed_at, arrival_at,
+            } => (origin, destination, target_system, departed_at, arrival_at),
+            _ => continue,
+        };
+
+        let total = (arrival_at - departed_at) as f64;
+        if total <= 0.0 {
+            pos.x = destination[0];
+            pos.y = destination[1];
+            pos.z = destination[2];
+            if let Some(system) = target_system {
+                *state = ShipState::Docked { system };
+            }
+            continue;
+        }
+
+        let progress = (clock.elapsed - departed_at) as f64 / total;
+
+        if progress >= 1.0 {
+            pos.x = destination[0];
+            pos.y = destination[1];
+            pos.z = destination[2];
+            if let Some(system) = target_system {
+                *state = ShipState::Docked { system };
+            }
+        } else {
+            pos.x = origin[0] + (destination[0] - origin[0]) * progress;
+            pos.y = origin[1] + (destination[1] - origin[1]) * progress;
+            pos.z = origin[2] + (destination[2] - origin[2]) * progress;
+        }
+    }
+}
+
+// --- FTL travel ---
+
+pub fn start_ftl_travel(
+    ship_state: &mut ShipState,
+    ship: &Ship,
+    origin_system: Entity,
+    destination_system: Entity,
+    origin_pos: &Position,
+    dest_pos: &Position,
+    current_time: i64,
+) -> Result<(), &'static str> {
+    if ship.ftl_range <= 0.0 {
+        return Err("Ship has no FTL capability");
+    }
+
+    let dist = distance_ly(origin_pos, dest_pos);
+    if dist > ship.ftl_range {
+        return Err("Destination is beyond FTL range");
+    }
+
+    let travel_sexadies = (dist * SEXADIES_PER_YEAR as f64 / INITIAL_FTL_SPEED_C).ceil() as i64;
+
+    *ship_state = ShipState::InFTL {
+        origin_system,
+        destination_system,
+        departed_at: current_time,
+        arrival_at: current_time + travel_sexadies,
+    };
+
+    Ok(())
+}
+
+fn process_ftl_travel(
+    clock: Res<GameClock>,
+    mut ships: Query<(&Ship, &mut ShipState, &mut Position)>,
+    systems: Query<(&StarSystem, &Position), Without<Ship>>,
+) {
+    for (ship, mut state, mut ship_pos) in ships.iter_mut() {
+        let (destination_system, arrival_at) = match *state {
+            ShipState::InFTL { destination_system, arrival_at, .. } => {
+                (destination_system, arrival_at)
+            }
+            _ => continue,
+        };
+
+        if clock.elapsed >= arrival_at {
+            if let Ok((star, dest_pos)) = systems.get(destination_system) {
+                *ship_pos = *dest_pos;
+                *state = ShipState::Docked { system: destination_system };
+                info!("Ship {} arrived at {} via FTL", ship.name, star.name);
+            } else {
+                warn!("Ship {} FTL destination entity no longer exists", ship.name);
+            }
+        }
+    }
 }

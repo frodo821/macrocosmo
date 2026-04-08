@@ -3,7 +3,9 @@ use std::collections::HashMap;
 
 use crate::components::Position;
 use crate::galaxy::StarSystem;
+use crate::physics;
 use crate::player::{Player, StationedAt};
+use crate::time_system::GameClock;
 
 pub struct KnowledgePlugin;
 
@@ -20,18 +22,14 @@ impl Plugin for KnowledgePlugin {
     }
 }
 
-/// A snapshot of what the player knows about a star system.
 #[derive(Clone, Debug)]
 pub struct SystemKnowledge {
     pub system: Entity,
-    /// Sexadie when this information was generated at the source.
     pub observed_at: i64,
-    /// Sexadie when this information reached the player.
     pub received_at: i64,
     pub data: SystemSnapshot,
 }
 
-/// Snapshot of a star system's observable state at a point in time.
 #[derive(Clone, Debug, Default)]
 pub struct SystemSnapshot {
     pub name: String,
@@ -42,7 +40,6 @@ pub struct SystemSnapshot {
     pub production: f64,
 }
 
-/// Central store of everything the player knows about star systems.
 #[derive(Resource, Default)]
 pub struct KnowledgeStore {
     entries: HashMap<Entity, SystemKnowledge>,
@@ -53,7 +50,6 @@ impl KnowledgeStore {
         self.entries.get(&system)
     }
 
-    /// Update knowledge. Only accepts newer observations.
     pub fn update(&mut self, knowledge: SystemKnowledge) {
         let dominated = self
             .entries
@@ -65,7 +61,6 @@ impl KnowledgeStore {
         }
     }
 
-    /// Age of knowledge in sexadies.
     pub fn info_age(&self, system: Entity, current_time: i64) -> Option<i64> {
         self.entries
             .get(&system)
@@ -118,5 +113,53 @@ fn initialize_capital_knowledge(
     info!("Player knowledge initialized: capital '{}'", capital.name);
 }
 
-/// Placeholder for future light-speed information propagation.
-fn propagate_knowledge() {}
+fn propagate_knowledge(
+    clock: Res<GameClock>,
+    player_q: Query<&StationedAt, With<Player>>,
+    systems: Query<(Entity, &StarSystem, &Position)>,
+    positions: Query<&Position>,
+    mut store: ResMut<KnowledgeStore>,
+) {
+    let stationed = match player_q.iter().next() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let player_pos = match positions.get(stationed.system) {
+        Ok(pos) => pos,
+        Err(_) => return,
+    };
+
+    for (entity, star, sys_pos) in &systems {
+        let distance = physics::distance_ly(player_pos, sys_pos);
+        let delay = physics::light_delay_sexadies(distance);
+        let observed_at = clock.elapsed - delay;
+
+        if observed_at < 0 {
+            continue;
+        }
+
+        let dominated = store
+            .get(entity)
+            .is_some_and(|existing| existing.observed_at >= observed_at);
+
+        if dominated {
+            continue;
+        }
+
+        let snapshot = SystemSnapshot {
+            name: star.name.clone(),
+            position: sys_pos.as_array(),
+            surveyed: star.surveyed,
+            colonized: star.colonized,
+            ..default()
+        };
+
+        store.update(SystemKnowledge {
+            system: entity,
+            observed_at,
+            received_at: clock.elapsed,
+            data: snapshot,
+        });
+    }
+}

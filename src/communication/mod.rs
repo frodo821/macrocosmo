@@ -120,7 +120,7 @@ pub fn send_light_message(
     sent_at: i64,
     content: MessageContent,
 ) {
-    let distance = physics::distance_ly(origin, destination);
+    let distance = physics::distance_ly_arr(origin, destination);
     let delay = physics::light_delay_sexadies(distance);
 
     commands.spawn(Message {
@@ -141,7 +141,7 @@ pub fn dispatch_courier(
     departed_at: i64,
     messages: Vec<MessageContent>,
 ) {
-    let distance = physics::distance_ly(origin, destination);
+    let distance = physics::distance_ly_arr(origin, destination);
     let travel_time = physics::sublight_travel_sexadies(distance, speed_fraction);
 
     commands.spawn(CourierShip {

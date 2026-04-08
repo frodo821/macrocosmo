@@ -1,27 +1,40 @@
 use bevy::prelude::*;
 
 use crate::galaxy::StarSystem;
+use crate::time_system::GameClock;
 
 pub struct ColonyPlugin;
 
+#[derive(Resource, Default)]
+pub struct LastProductionTick(pub i64);
+
 impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_capital_colony.after(crate::galaxy::generate_galaxy));
+        app.init_resource::<LastProductionTick>()
+            .add_systems(
+                Startup,
+                spawn_capital_colony.after(crate::galaxy::generate_galaxy),
+            )
+            .add_systems(
+                Update,
+                (
+                    tick_production,
+                    tick_population_growth,
+                    tick_build_queue,
+                    advance_production_tick,
+                )
+                    .chain(),
+            );
     }
 }
 
-/// A colony on a star system
 #[derive(Component)]
 pub struct Colony {
-    /// The star system entity this colony is in
     pub system: Entity,
-    /// Population (abstract units)
     pub population: f64,
-    /// Base growth rate per sexadie
     pub growth_rate: f64,
 }
 
-/// Resource stockpile for a colony
 #[derive(Component)]
 pub struct ResourceStockpile {
     pub minerals: f64,
@@ -29,7 +42,6 @@ pub struct ResourceStockpile {
     pub research: f64,
 }
 
-/// Production rates per sexadie
 #[derive(Component)]
 pub struct Production {
     pub minerals_per_sexadie: f64,
@@ -37,7 +49,6 @@ pub struct Production {
     pub research_per_sexadie: f64,
 }
 
-/// Ship construction queue
 #[derive(Component)]
 pub struct BuildQueue {
     pub queue: Vec<BuildOrder>,
@@ -53,15 +64,11 @@ pub struct BuildOrder {
 
 impl BuildOrder {
     pub fn is_complete(&self) -> bool {
-        self.minerals_invested >= self.minerals_cost
-            && self.energy_invested >= self.energy_cost
+        self.minerals_invested >= self.minerals_cost && self.energy_invested >= self.energy_cost
     }
 }
 
-fn spawn_capital_colony(
-    mut commands: Commands,
-    query: Query<(Entity, &StarSystem)>,
-) {
+pub fn spawn_capital_colony(mut commands: Commands, query: Query<(Entity, &StarSystem)>) {
     for (entity, system) in query.iter() {
         if system.is_capital {
             commands.spawn((
@@ -89,4 +96,74 @@ fn spawn_capital_colony(
         }
     }
     warn!("No capital star system found; capital colony not created");
+}
+
+fn tick_production(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    mut query: Query<(&Production, &mut ResourceStockpile)>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    let d = delta as f64;
+    for (prod, mut stockpile) in &mut query {
+        stockpile.minerals += prod.minerals_per_sexadie * d;
+        stockpile.energy += prod.energy_per_sexadie * d;
+        stockpile.research += prod.research_per_sexadie * d;
+    }
+}
+
+fn tick_population_growth(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    mut query: Query<&mut Colony>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    for mut colony in &mut query {
+        let growth_factor = (1.0 + colony.growth_rate).powi(delta as i32);
+        colony.population *= growth_factor;
+    }
+}
+
+fn tick_build_queue(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    mut query: Query<(&mut BuildQueue, &mut ResourceStockpile)>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    for (mut build_queue, mut stockpile) in &mut query {
+        for _ in 0..delta {
+            if build_queue.queue.is_empty() {
+                break;
+            }
+            let order = &mut build_queue.queue[0];
+
+            let minerals_needed = order.minerals_cost - order.minerals_invested;
+            let minerals_transfer = minerals_needed.min(stockpile.minerals).max(0.0);
+            order.minerals_invested += minerals_transfer;
+            stockpile.minerals -= minerals_transfer;
+
+            let energy_needed = order.energy_cost - order.energy_invested;
+            let energy_transfer = energy_needed.min(stockpile.energy).max(0.0);
+            order.energy_invested += energy_transfer;
+            stockpile.energy -= energy_transfer;
+
+            if build_queue.queue[0].is_complete() {
+                let name = build_queue.queue.remove(0).ship_type_name;
+                info!("Ship built: {}", name);
+            }
+        }
+    }
+}
+
+fn advance_production_tick(clock: Res<GameClock>, mut last_tick: ResMut<LastProductionTick>) {
+    last_tick.0 = clock.elapsed;
 }

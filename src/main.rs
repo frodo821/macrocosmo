@@ -8,6 +8,7 @@ mod visualization;
 mod knowledge;
 mod ship;
 mod colony;
+mod setup;
 
 use bevy::prelude::*;
 
@@ -30,6 +31,7 @@ fn main() {
             knowledge::KnowledgePlugin,
             ship::ShipPlugin,
             colony::ColonyPlugin,
+            setup::GameSetupPlugin,
         ))
         .run();
 }
