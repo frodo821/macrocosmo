@@ -562,7 +562,10 @@ pub fn click_select_system(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     stars: Query<(Entity, &Position, Option<&ObscuredByGas>), With<StarSystem>>,
+    ship_q: Query<(Entity, &Ship, &ShipState)>,
+    star_positions: Query<&Position, With<StarSystem>>,
     view: Res<GalaxyView>,
+    clock: Res<GameClock>,
     mut selected: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
     mut egui_contexts: EguiContexts,
@@ -599,6 +602,96 @@ pub fn click_select_system(
         return;
     };
 
+    // First check ships (higher priority — they're drawn on top and are smaller targets)
+    let ship_click_radius = 12.0;
+
+    // Build docked ship offset positions (must match draw_ships layout)
+    let mut docked_counts: HashMap<Entity, Vec<(Entity, ShipType)>> = HashMap::new();
+    for (entity, ship, state) in &ship_q {
+        if let ShipState::Docked { system } = state {
+            docked_counts
+                .entry(*system)
+                .or_default()
+                .push((entity, ship.ship_type));
+        }
+    }
+
+    let mut best_ship: Option<(Entity, f32)> = None;
+
+    // Check docked ships (positioned with angular offset around their system)
+    for (system_entity, ships) in &docked_counts {
+        let Ok(sys_pos) = star_positions.get(*system_entity) else {
+            continue;
+        };
+        let sx = sys_pos.x as f32 * view.scale;
+        let sy = sys_pos.y as f32 * view.scale;
+        let count = ships.len();
+
+        for (i, (ship_entity, _ship_type)) in ships.iter().enumerate() {
+            let angle = if count == 1 {
+                0.0
+            } else {
+                std::f32::consts::TAU * (i as f32) / (count as f32)
+            };
+            let offset_radius = 8.0;
+            let ox = sx + angle.cos() * offset_radius;
+            let oy = sy + angle.sin() * offset_radius;
+
+            let dist = world_pos.distance(Vec2::new(ox, oy));
+            if dist < ship_click_radius {
+                if best_ship.is_none() || dist < best_ship.unwrap().1 {
+                    best_ship = Some((*ship_entity, dist));
+                }
+            }
+        }
+    }
+
+    // Check in-transit and active ships
+    for (entity, _ship, state) in &ship_q {
+        let ship_px = match state {
+            ShipState::SubLight {
+                origin,
+                destination,
+                departed_at,
+                arrival_at,
+                ..
+            } => {
+                let total = (*arrival_at - *departed_at) as f64;
+                let elapsed = (clock.elapsed - *departed_at) as f64;
+                let t = if total > 0.0 {
+                    (elapsed / total).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
+                let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
+                Vec2::new(cx, cy)
+            }
+            ShipState::Settling { system, .. } | ShipState::Surveying { target_system: system, .. } => {
+                let Ok(sys_pos) = star_positions.get(*system) else {
+                    continue;
+                };
+                Vec2::new(sys_pos.x as f32 * view.scale, sys_pos.y as f32 * view.scale)
+            }
+            // Docked ships handled above; InFTL ships are invisible
+            _ => continue,
+        };
+
+        let dist = world_pos.distance(ship_px);
+        if dist < ship_click_radius {
+            if best_ship.is_none() || dist < best_ship.unwrap().1 {
+                best_ship = Some((entity, dist));
+            }
+        }
+    }
+
+    if let Some((ship_entity, _)) = best_ship {
+        selected_ship.0 = Some(ship_entity);
+        // Don't change selected_system — keep current system selection
+        return;
+    }
+
+    // Then check stars (existing logic)
     let click_radius = 15.0; // pixels
     let mut best: Option<(Entity, f32)> = None;
 
