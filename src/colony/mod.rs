@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::components::Position;
+use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::StarSystem;
 use crate::ship::{spawn_ship, ShipType};
 use crate::time_system::GameClock;
@@ -138,6 +139,8 @@ pub fn tick_build_queue(
     last_tick: Res<LastProductionTick>,
     mut query: Query<(&Colony, &mut BuildQueue, &mut ResourceStockpile)>,
     positions: Query<&Position>,
+    stars: Query<&StarSystem>,
+    mut events: MessageWriter<GameEvent>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -179,6 +182,13 @@ pub fn tick_build_queue(
                         colony.system,
                         *pos,
                     );
+                    let sys_name = stars.get(colony.system).map(|s| s.name.clone()).unwrap_or_default();
+                    events.write(GameEvent {
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::ShipBuilt,
+                        description: format!("{} built at {}", completed.ship_type_name, sys_name),
+                        related_system: Some(colony.system),
+                    });
                     info!("Ship built and launched: {}", completed.ship_type_name);
                 }
             }

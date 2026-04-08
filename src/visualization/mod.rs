@@ -5,12 +5,13 @@ use bevy::input::mouse::AccumulatedMouseScroll;
 
 use crate::colony::{BuildOrder, BuildQueue, Colony, Production, ResourceStockpile};
 use crate::components::Position;
+use crate::events::EventLog;
 use crate::galaxy::{ObscuredByGas, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::ship::{Ship, ShipState, ShipType};
-use crate::time_system::{GameClock, GameSpeed, SEXADIES_PER_YEAR};
+use crate::time_system::{GameClock, GameSpeed, SEXADIES_PER_MONTH, SEXADIES_PER_YEAR};
 
 pub struct VisualizationPlugin;
 
@@ -31,6 +32,7 @@ impl Plugin for VisualizationPlugin {
             draw_ships,
             update_hud,
             update_info_panel,
+            update_event_log,
             handle_ship_commands,
             handle_build_commands,
         ));
@@ -58,6 +60,9 @@ struct HudText;
 
 #[derive(Component)]
 struct InfoPanel;
+
+#[derive(Component)]
+struct EventLogPanel;
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
@@ -90,6 +95,22 @@ fn setup_camera(mut commands: Commands) {
             position_type: PositionType::Absolute,
             top: Val::Px(10.0),
             right: Val::Px(10.0),
+            ..default()
+        },
+    ));
+
+    commands.spawn((
+        EventLogPanel,
+        Text::new(""),
+        TextFont {
+            font_size: 13.0,
+            ..default()
+        },
+        TextColor(Color::srgba(0.8, 0.9, 1.0, 0.9)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(10.0),
+            left: Val::Px(10.0),
             ..default()
         },
     ));
@@ -1077,4 +1098,32 @@ fn handle_build_commands(
             return;
         }
     }
+}
+
+fn format_event_timestamp(timestamp: i64) -> String {
+    let year = timestamp / SEXADIES_PER_YEAR;
+    let month = (timestamp % SEXADIES_PER_YEAR) / SEXADIES_PER_MONTH + 1;
+    let sexadie = (timestamp % SEXADIES_PER_MONTH) + 1;
+    format!("[Y{} M{} S{}]", year, month, sexadie)
+}
+
+fn update_event_log(
+    event_log: Res<EventLog>,
+    mut panel: Query<&mut Text, With<EventLogPanel>>,
+) {
+    let Ok(mut text) = panel.single_mut() else {
+        return;
+    };
+
+    let entries = &event_log.entries;
+    let start = if entries.len() > 6 { entries.len() - 6 } else { 0 };
+    let display_entries = &entries[start..];
+
+    let mut lines: Vec<String> = Vec::new();
+    for entry in display_entries {
+        let ts = format_event_timestamp(entry.timestamp);
+        lines.push(format!("{} {}", ts, entry.description));
+    }
+
+    **text = lines.join("\n");
 }

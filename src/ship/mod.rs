@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::colony::{Colony, BuildQueue, Production, ResourceStockpile};
 use crate::components::Position;
+use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_sexadies};
 use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
@@ -153,8 +154,10 @@ pub fn start_sublight_travel(
 pub fn sublight_movement_system(
     clock: Res<GameClock>,
     mut query: Query<(&mut ShipState, &mut Position, &Ship)>,
+    systems: Query<&StarSystem, Without<Ship>>,
+    mut events: MessageWriter<GameEvent>,
 ) {
-    for (mut state, mut pos, _ship) in query.iter_mut() {
+    for (mut state, mut pos, ship) in query.iter_mut() {
         let (origin, destination, target_system, departed_at, arrival_at) = match *state {
             ShipState::SubLight {
                 origin, destination, target_system, departed_at, arrival_at,
@@ -169,6 +172,13 @@ pub fn sublight_movement_system(
             pos.z = destination[2];
             if let Some(system) = target_system {
                 *state = ShipState::Docked { system };
+                let sys_name = systems.get(system).map(|s| s.name.clone()).unwrap_or_default();
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ShipArrived,
+                    description: format!("{} arrived at {}", ship.name, sys_name),
+                    related_system: Some(system),
+                });
             }
             continue;
         }
@@ -181,6 +191,13 @@ pub fn sublight_movement_system(
             pos.z = destination[2];
             if let Some(system) = target_system {
                 *state = ShipState::Docked { system };
+                let sys_name = systems.get(system).map(|s| s.name.clone()).unwrap_or_default();
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ShipArrived,
+                    description: format!("{} arrived at {}", ship.name, sys_name),
+                    related_system: Some(system),
+                });
             }
         } else {
             pos.x = origin[0] + (destination[0] - origin[0]) * progress;
@@ -226,6 +243,7 @@ pub fn process_ftl_travel(
     clock: Res<GameClock>,
     mut ships: Query<(&Ship, &mut ShipState, &mut Position)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
+    mut events: MessageWriter<GameEvent>,
 ) {
     for (ship, mut state, mut ship_pos) in ships.iter_mut() {
         let (destination_system, arrival_at) = match *state {
@@ -239,6 +257,12 @@ pub fn process_ftl_travel(
             if let Ok((star, dest_pos)) = systems.get(destination_system) {
                 *ship_pos = *dest_pos;
                 *state = ShipState::Docked { system: destination_system };
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ShipArrived,
+                    description: format!("{} arrived at {} via FTL", ship.name, star.name),
+                    related_system: Some(destination_system),
+                });
                 info!("Ship {} arrived at {} via FTL", ship.name, star.name);
             } else {
                 warn!("Ship {} FTL destination entity no longer exists", ship.name);
@@ -293,8 +317,9 @@ pub fn process_surveys(
     clock: Res<GameClock>,
     mut ships: Query<(&Ship, &mut ShipState)>,
     mut systems: Query<&mut StarSystem>,
+    mut events: MessageWriter<GameEvent>,
 ) {
-    for (_ship, mut state) in ships.iter_mut() {
+    for (ship, mut state) in ships.iter_mut() {
         let (target_system, completes_at) = match *state {
             ShipState::Surveying {
                 target_system,
@@ -305,13 +330,24 @@ pub fn process_surveys(
         };
 
         if clock.elapsed >= completes_at {
-            if let Ok(mut star_system) = systems.get_mut(target_system) {
+            let sys_name = if let Ok(mut star_system) = systems.get_mut(target_system) {
                 star_system.surveyed = true;
+                let name = star_system.name.clone();
                 info!(
                     "Survey complete: {} has been surveyed",
                     star_system.name
                 );
-            }
+                name
+            } else {
+                "Unknown".to_string()
+            };
+
+            events.write(GameEvent {
+                timestamp: clock.elapsed,
+                kind: GameEventKind::SurveyComplete,
+                description: format!("{} completed survey of {}", ship.name, sys_name),
+                related_system: Some(target_system),
+            });
 
             // Transition ship back to docked at the target system
             *state = ShipState::Docked {
@@ -337,6 +373,8 @@ pub fn handle_colony_ship_arrival(
     mut commands: Commands,
     ships: Query<(Entity, &Ship, &ShipState, &Position)>,
     mut systems: Query<(&mut StarSystem, &Position, Option<&SystemAttributes>), Without<Ship>>,
+    clock: Res<GameClock>,
+    mut events: MessageWriter<GameEvent>,
 ) {
     for (ship_entity, ship, state, _ship_pos) in &ships {
         let system_entity = match state {
@@ -390,6 +428,13 @@ pub fn handle_colony_ship_arrival(
                     queue: Vec::new(),
                 },
             ));
+
+            events.write(GameEvent {
+                timestamp: clock.elapsed,
+                kind: GameEventKind::ColonyEstablished,
+                description: format!("Colony established at {}", star.name),
+                related_system: Some(system_entity),
+            });
 
             info!("Colony established at {} (M:{}/E:{}/R:{} per sd)", star.name, minerals_rate, energy_rate, research_rate);
         }

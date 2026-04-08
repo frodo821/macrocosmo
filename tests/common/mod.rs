@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use macrocosmo::colony::*;
 use macrocosmo::communication::CommandLog;
 use macrocosmo::components::Position;
+use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::ship::*;
@@ -16,6 +17,8 @@ pub fn test_app() -> App {
     app.insert_resource(KnowledgeStore::default());
     app.insert_resource(CommandLog::default());
     app.insert_resource(LastProductionTick(0));
+    app.insert_resource(EventLog::default());
+    app.add_message::<GameEvent>();
     // Register Update systems in correct order
     app.add_systems(
         Update,

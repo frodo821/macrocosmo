@@ -7,4 +7,5 @@ pub mod physics;
 pub mod knowledge;
 pub mod ship;
 pub mod colony;
+pub mod events;
 pub mod setup;
