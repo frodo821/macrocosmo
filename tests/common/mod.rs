@@ -158,19 +158,12 @@ pub fn full_test_app() -> App {
     // their Query parameters don't conflict with each other.
     // NOTE: UI systems (egui) are excluded from tests because they require
     // EguiPlugin which is heavy and needs rendering context.
-    // NOTE: handle_ship_commands is excluded because it has overlapping
-    // Ship/ShipState queries (read + write) that trigger Bevy's B0001
-    // conflict detection. It works at runtime because accesses are
-    // sequential, but Bevy's schedule builder rejects the pair.
     app.add_systems(
         Update,
         (
-            // click_select_system queries Window and Camera but does not need
-            // Gizmos -- it will early-return if no window/camera exists.
             visualization::click_select_system,
-            // camera_controls queries Camera2d and uses AccumulatedMouseScroll.
-            // It will early-return with no camera entities.
             visualization::camera_controls,
+            visualization::handle_ship_commands,
         ),
     );
     // NOTE: draw_galaxy_overlay and draw_ships are excluded because they
