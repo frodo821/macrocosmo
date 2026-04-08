@@ -3,11 +3,12 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{Habitability, StarSystem};
+use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::physics::sublight_travel_sexadies;
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
+use macrocosmo::time_system::GameClock;
 
 use common::{advance_time, spawn_test_system, test_app};
 
@@ -397,5 +398,185 @@ fn test_knowledge_propagation_light_delay() {
         );
         let k = knowledge.unwrap();
         assert_eq!(k.data.name, "Distant");
+    }
+}
+
+// =========================================================================
+// Query conflict detection (B0001)
+// =========================================================================
+
+/// Runs ALL game systems together (ship, colony, knowledge, communication,
+/// technology, events, time, player, and visualization) and verifies that no
+/// Bevy Query conflicts (B0001) cause a panic.
+///
+/// If a Query conflict exists, Bevy panics during schedule initialization or
+/// the first update. This test catches that by simply running several frames
+/// with a realistic world state.
+#[test]
+fn all_systems_no_query_conflict() {
+    let mut app = common::full_test_app();
+
+    let world = app.world_mut();
+
+    // Capital star system with all components
+    let capital = world
+        .spawn((
+            StarSystem {
+                name: "Capital".into(),
+                surveyed: true,
+                colonized: true,
+                is_capital: true,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+            SystemAttributes {
+                habitability: Habitability::Ideal,
+                mineral_richness: ResourceLevel::Moderate,
+                energy_potential: ResourceLevel::Moderate,
+                research_potential: ResourceLevel::Moderate,
+                max_building_slots: 6,
+            },
+            Sovereignty {
+                owner: Some(Owner::Player),
+                control_score: 100.0,
+            },
+        ))
+        .id();
+
+    // Second star system (unsurveyed target)
+    let _target = world
+        .spawn((
+            StarSystem {
+                name: "Target".into(),
+                surveyed: false,
+                colonized: false,
+                is_capital: false,
+            },
+            Position::from([5.0, 0.0, 0.0]),
+            SystemAttributes {
+                habitability: Habitability::Adequate,
+                mineral_richness: ResourceLevel::Rich,
+                energy_potential: ResourceLevel::Poor,
+                research_potential: ResourceLevel::Moderate,
+                max_building_slots: 4,
+            },
+            Sovereignty::default(),
+        ))
+        .id();
+
+    // Third star system (surveyed, not colonized)
+    let _surveyed = world
+        .spawn((
+            StarSystem {
+                name: "Surveyed".into(),
+                surveyed: true,
+                colonized: false,
+                is_capital: false,
+            },
+            Position::from([10.0, 3.0, 0.0]),
+            SystemAttributes {
+                habitability: Habitability::Marginal,
+                mineral_richness: ResourceLevel::Poor,
+                energy_potential: ResourceLevel::Rich,
+                research_potential: ResourceLevel::None,
+                max_building_slots: 3,
+            },
+            Sovereignty::default(),
+        ))
+        .id();
+
+    // Player stationed at capital
+    world.spawn((Player, StationedAt { system: capital }));
+
+    // Colony at capital
+    world.spawn((
+        Colony {
+            system: capital,
+            population: 100.0,
+            growth_rate: 0.01,
+        },
+        ResourceStockpile {
+            minerals: 500.0,
+            energy: 500.0,
+            research: 0.0,
+        },
+        Production {
+            minerals_per_sexadie: 5.0,
+            energy_per_sexadie: 5.0,
+            research_per_sexadie: 1.0,
+        },
+        BuildQueue {
+            queue: vec![],
+        },
+        Buildings {
+            slots: vec![
+                Some(BuildingType::Mine),
+                Some(BuildingType::Shipyard),
+                None,
+                None,
+                None,
+                None,
+            ],
+        },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    ));
+
+    // Explorer docked at capital
+    world.spawn((
+        Ship {
+            name: "Explorer-1".into(),
+            ship_type: ShipType::Explorer,
+            owner: Owner::Player,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            hp: 50.0,
+            max_hp: 50.0,
+            player_aboard: false,
+        },
+        ShipState::Docked { system: capital },
+        Position::from([0.0, 0.0, 0.0]),
+    ));
+
+    // Colony ship docked at capital
+    world.spawn((
+        Ship {
+            name: "Colony Ship-1".into(),
+            ship_type: ShipType::ColonyShip,
+            owner: Owner::Player,
+            sublight_speed: 0.5,
+            ftl_range: 30.0,
+            hp: 100.0,
+            max_hp: 100.0,
+            player_aboard: false,
+        },
+        ShipState::Docked { system: capital },
+        Position::from([0.0, 0.0, 0.0]),
+    ));
+
+    // Courier docked at capital
+    world.spawn((
+        Ship {
+            name: "Courier-1".into(),
+            ship_type: ShipType::Courier,
+            owner: Owner::Player,
+            sublight_speed: 0.85,
+            ftl_range: 0.0,
+            hp: 20.0,
+            max_hp: 20.0,
+            player_aboard: false,
+        },
+        ShipState::Docked { system: capital },
+        Position::from([0.0, 0.0, 0.0]),
+    ));
+
+    // Run several frames. If any Query conflicts exist, Bevy will panic here.
+    for _ in 0..5 {
+        app.update();
+    }
+
+    // Advance game clock and run again to exercise systems that check time deltas
+    app.world_mut().resource_mut::<GameClock>().elapsed += 10;
+    for _ in 0..3 {
+        app.update();
     }
 }

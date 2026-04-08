@@ -89,7 +89,7 @@ impl GameSpeed {
     }
 }
 
-fn advance_game_time(
+pub fn advance_game_time(
     real_time: Res<Time>,
     mut clock: ResMut<GameClock>,
     speed: Res<GameSpeed>,
@@ -105,7 +105,7 @@ fn advance_game_time(
     }
 }
 
-fn handle_speed_controls(
+pub fn handle_speed_controls(
     clock: Res<GameClock>,
     keys: Res<ButtonInput<KeyCode>>,
     mut speed: ResMut<GameSpeed>,

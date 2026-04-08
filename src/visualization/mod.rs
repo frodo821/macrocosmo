@@ -48,29 +48,29 @@ impl Plugin for VisualizationPlugin {
 }
 
 #[derive(Resource, Default)]
-struct SelectedSystem(Option<Entity>);
+pub struct SelectedSystem(pub Option<Entity>);
 
 #[derive(Resource, Default)]
-struct SelectedShip(Option<Entity>);
+pub struct SelectedShip(pub Option<Entity>);
 
 #[derive(Resource)]
-struct GalaxyView {
-    scale: f32,
+pub struct GalaxyView {
+    pub scale: f32,
 }
 
 #[derive(Component)]
-struct StarVisual {
-    system_entity: Entity,
+pub struct StarVisual {
+    pub system_entity: Entity,
 }
 
 #[derive(Component)]
-struct HudText;
+pub struct HudText;
 
 #[derive(Component)]
-struct InfoPanel;
+pub struct InfoPanel;
 
 #[derive(Component)]
-struct EventLogPanel;
+pub struct EventLogPanel;
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
@@ -176,7 +176,7 @@ fn star_color(star: &StarSystem, obscured: bool) -> Color {
 }
 
 // #17: Enhanced update_star_colors with KnowledgeStore-based alpha fading
-fn update_star_colors(
+pub fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
     mut visuals: Query<(&StarVisual, &mut Sprite)>,
     knowledge: Res<KnowledgeStore>,
@@ -196,7 +196,7 @@ fn update_star_colors(
     }
 }
 
-fn camera_controls(
+pub fn camera_controls(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut camera_q: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
@@ -242,7 +242,7 @@ fn camera_controls(
     }
 }
 
-fn draw_galaxy_overlay(
+pub fn draw_galaxy_overlay(
     mut gizmos: Gizmos,
     player_q: Query<&StationedAt, With<Player>>,
     stars: Query<(&StarSystem, &Position, Option<&Sovereignty>)>,
@@ -346,7 +346,7 @@ fn ship_color(ship_type: ShipType) -> Color {
     Color::srgb(r, g, b)
 }
 
-fn draw_ships(
+pub fn draw_ships(
     mut gizmos: Gizmos,
     ships: Query<(&Ship, &ShipState)>,
     stars: Query<&Position, With<StarSystem>>,
@@ -645,7 +645,7 @@ fn ships_docked_at(
     result
 }
 
-fn update_hud(
+pub fn update_hud(
     clock: Res<GameClock>,
     speed: Res<GameSpeed>,
     player_q: Query<&StationedAt, With<Player>>,
@@ -889,7 +889,7 @@ fn update_hud(
     **text = hud_text;
 }
 
-fn click_select_system(
+pub fn click_select_system(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
@@ -952,7 +952,7 @@ fn click_select_system(
     }
 }
 
-fn update_info_panel(
+pub fn update_info_panel(
     selected: Res<SelectedSystem>,
     stars: Query<(&StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<&StationedAt, With<Player>>,
@@ -1136,13 +1136,12 @@ fn update_info_panel(
 }
 
 // #14: Ship command handling (merged #32 settling, #33 local/remote)
-fn handle_ship_commands(
+pub fn handle_ship_commands(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     selected_system: Res<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
-    ships_query: Query<(Entity, &Ship, &ShipState)>,
-    mut ship_writer: Query<(&mut Ship, &mut ShipState)>,
+    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState)>,
     stars: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     clock: Res<GameClock>,
     player_q: Query<&StationedAt, With<Player>>,
@@ -1164,7 +1163,20 @@ fn handle_ship_commands(
             KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6,
             KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
         ];
-        let docked = ships_docked_at(sel_system, &ships_query);
+        // Collect docked ships (immutable iteration over the mutable query)
+        let mut docked: Vec<(Entity, String, ShipType)> = ships_query
+            .iter()
+            .filter_map(|(e, ship, state)| {
+                if let ShipState::Docked { system: s } = &*state {
+                    if *s == sel_system {
+                        return Some((e, ship.name.clone(), ship.ship_type));
+                    }
+                }
+                None
+            })
+            .collect();
+        docked.sort_by(|a, b| a.1.cmp(&b.1));
+
         for (i, key) in digit_keys.iter().enumerate() {
             if keys.just_pressed(*key) {
                 if i < docked.len() {
@@ -1180,17 +1192,18 @@ fn handle_ship_commands(
     // A ship is selected - handle command keys
     let ship_entity = selected_ship.0.unwrap();
 
-    // Get ship data (immutable first for validation)
-    let Ok((_, ship, state)) = ships_query.get(ship_entity) else {
-        selected_ship.0 = None;
-        return;
+    // Read ship data for validation first
+    let (ship_name, ship_type, ftl_range, sublight_speed, docked_system) = {
+        let Ok((_, ship, state)) = ships_query.get(ship_entity) else {
+            selected_ship.0 = None;
+            return;
+        };
+        let ShipState::Docked { system: docked_system } = *state else {
+            // Ship is not docked, no commands available
+            return;
+        };
+        (ship.name.clone(), ship.ship_type, ship.ftl_range, ship.sublight_speed, docked_system)
     };
-
-    let ShipState::Docked { system: docked_system } = *state else {
-        // Ship is not docked, no commands available
-        return;
-    };
-    let docked_system = docked_system;
 
     // #33: Determine if the ship is local (at player's system) or remote
     let player_system = player_q.single().map(|s| s.system).unwrap_or(Entity::PLACEHOLDER);
@@ -1198,8 +1211,8 @@ fn handle_ship_commands(
 
     // F: FTL jump
     if keys.just_pressed(KeyCode::KeyF) {
-        if ship.ftl_range <= 0.0 {
-            info!("Ship {} has no FTL capability", ship.name);
+        if ftl_range <= 0.0 {
+            info!("Ship {} has no FTL capability", ship_name);
             return;
         }
         if sel_system == docked_system {
@@ -1216,10 +1229,10 @@ fn handle_ship_commands(
         }
 
         let dist = physics::distance_ly(dock_pos, target_pos);
-        if dist > ship.ftl_range {
+        if dist > ftl_range {
             info!(
                 "Target {} is {:.1} ly away, FTL range is {:.1} ly",
-                target_star.name, dist, ship.ftl_range,
+                target_star.name, dist, ftl_range,
             );
             return;
         }
@@ -1227,7 +1240,7 @@ fn handle_ship_commands(
         if is_local {
             // Execute FTL immediately
             let travel_time = physics::sublight_travel_sexadies(dist, 10.0).max(1);
-            let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
+            let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
             *state_mut = ShipState::InFTL {
                 origin_system: docked_system,
                 destination_system: sel_system,
@@ -1236,7 +1249,7 @@ fn handle_ship_commands(
             };
             info!(
                 "Ship {} jumping to {} (ETA: {} sd)",
-                _ship_mut.name, target_star.name, travel_time,
+                ship_mut.name, target_star.name, travel_time,
             );
         } else {
             // #33: Remote: queue command with communication delay
@@ -1249,7 +1262,7 @@ fn handle_ship_commands(
             });
             info!(
                 "FTL command sent to {}. Arrival in {} sd.",
-                ship.name, delay,
+                ship_name, delay,
             );
         }
         selected_ship.0 = None;
@@ -1268,9 +1281,9 @@ fn handle_ship_commands(
 
         if is_local {
             let dist = physics::distance_ly(dock_pos, target_pos);
-            let travel_time = physics::sublight_travel_sexadies(dist, ship.sublight_speed);
+            let travel_time = physics::sublight_travel_sexadies(dist, sublight_speed);
 
-            let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
+            let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
             *state_mut = ShipState::SubLight {
                 origin: dock_pos.as_array(),
                 destination: target_pos.as_array(),
@@ -1280,7 +1293,7 @@ fn handle_ship_commands(
             };
             info!(
                 "Ship {} departing for {} at {:.0}% c (ETA: {} sd)",
-                _ship_mut.name, target_star.name, _ship_mut.sublight_speed * 100.0, travel_time,
+                ship_mut.name, target_star.name, ship_mut.sublight_speed * 100.0, travel_time,
             );
         } else {
             let Ok((_, _, player_pos)) = stars.get(player_system) else { return };
@@ -1292,7 +1305,7 @@ fn handle_ship_commands(
             });
             info!(
                 "Move command sent to {}. Arrival in {} sd.",
-                ship.name, delay,
+                ship_name, delay,
             );
         }
         selected_ship.0 = None;
@@ -1301,7 +1314,7 @@ fn handle_ship_commands(
 
     // V: Survey (Explorer only)
     if keys.just_pressed(KeyCode::KeyV) {
-        if ship.ship_type != ShipType::Explorer {
+        if ship_type != ShipType::Explorer {
             info!("Only Explorers can survey systems");
             return;
         }
@@ -1322,7 +1335,7 @@ fn handle_ship_commands(
             let dist = physics::distance_ly(dock_pos, target_pos);
             let survey_time = physics::light_delay_sexadies(dist) * 2 + SURVEY_DURATION_SEXADIES;
 
-            let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
+            let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
             *state_mut = ShipState::Surveying {
                 target_system: sel_system,
                 started_at: clock.elapsed,
@@ -1330,7 +1343,7 @@ fn handle_ship_commands(
             };
             info!(
                 "Ship {} surveying {} (ETA: {} sd)",
-                _ship_mut.name, target_star.name, survey_time,
+                ship_mut.name, target_star.name, survey_time,
             );
         } else {
             let Ok((_, _, player_pos)) = stars.get(player_system) else { return };
@@ -1342,7 +1355,7 @@ fn handle_ship_commands(
             });
             info!(
                 "Survey command sent to {}. Arrival in {} sd.",
-                ship.name, delay,
+                ship_name, delay,
             );
         }
         selected_ship.0 = None;
@@ -1351,7 +1364,7 @@ fn handle_ship_commands(
 
     // #32: C: Colonize (begin settling, ColonyShip only)
     if keys.just_pressed(KeyCode::KeyC) {
-        if ship.ship_type != ShipType::ColonyShip {
+        if ship_type != ShipType::ColonyShip {
             info!("Only Colony Ships can colonize systems");
             return;
         }
@@ -1369,7 +1382,7 @@ fn handle_ship_commands(
             return;
         }
 
-        let Ok((mut _ship_mut, mut state_mut)) = ship_writer.get_mut(ship_entity) else { return };
+        let Ok((_, mut ship_mut, mut state_mut)) = ships_query.get_mut(ship_entity) else { return };
         *state_mut = ShipState::Settling {
             system: docked_system,
             started_at: clock.elapsed,
@@ -1377,14 +1390,14 @@ fn handle_ship_commands(
         };
         info!(
             "Ship {} beginning colonization of {} (ETA: {} sd)",
-            _ship_mut.name, docked_star.name, SETTLING_DURATION_SEXADIES,
+            ship_mut.name, docked_star.name, SETTLING_DURATION_SEXADIES,
         );
         selected_ship.0 = None;
     }
 }
 
 // #15: Build command handling (merged #32 build times, #35 shipyard check)
-fn handle_build_commands(
+pub fn handle_build_commands(
     keys: Res<ButtonInput<KeyCode>>,
     player_q: Query<&StationedAt, With<Player>>,
     mut colonies: Query<(&Colony, &mut BuildQueue, Option<&Buildings>)>,
@@ -1432,7 +1445,7 @@ fn handle_build_commands(
 }
 
 // #28: Building command handling (planet development)
-fn handle_building_commands(
+pub fn handle_building_commands(
     keys: Res<ButtonInput<KeyCode>>,
     selected_system: Res<SelectedSystem>,
     mut colonies: Query<(
@@ -1514,7 +1527,7 @@ fn handle_building_commands(
 }
 
 // #29: Production focus command handling
-fn handle_focus_commands(
+pub fn handle_focus_commands(
     keys: Res<ButtonInput<KeyCode>>,
     selected_system: Res<SelectedSystem>,
     stars: Query<&StarSystem>,
@@ -1565,7 +1578,7 @@ fn format_event_timestamp(timestamp: i64) -> String {
     format!("[Y{} M{} S{}]", year, month, sexadie)
 }
 
-fn update_event_log(
+pub fn update_event_log(
     event_log: Res<EventLog>,
     mut panel: Query<&mut Text, With<EventLogPanel>>,
 ) {

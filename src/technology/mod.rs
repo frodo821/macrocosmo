@@ -158,7 +158,7 @@ pub struct ResearchPool {
 pub struct LastResearchTick(pub i64);
 
 /// Drains research from colony stockpiles into the global ResearchPool.
-fn collect_research(
+pub fn collect_research(
     clock: Res<GameClock>,
     last_tick: Res<LastResearchTick>,
     mut pool: ResMut<ResearchPool>,
@@ -177,7 +177,7 @@ fn collect_research(
 }
 
 /// Processes research each tick: transfers points from pool to current project.
-fn tick_research(
+pub fn tick_research(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastResearchTick>,
     mut tech_tree: ResMut<TechTree>,

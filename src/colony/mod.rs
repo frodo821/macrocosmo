@@ -447,7 +447,7 @@ pub fn tick_building_queue(
 }
 
 /// Updates sovereignty of star systems based on colony presence.
-fn update_sovereignty(
+pub fn update_sovereignty(
     colonies: Query<&Colony>,
     mut sovereignties: Query<(Entity, &mut Sovereignty)>,
 ) {

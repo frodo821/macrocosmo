@@ -54,7 +54,7 @@ impl Plugin for EventsPlugin {
 }
 
 /// Collect GameEvents from the Bevy message queue into the EventLog
-fn collect_events(
+pub fn collect_events(
     mut reader: MessageReader<GameEvent>,
     mut log: ResMut<EventLog>,
 ) {
@@ -64,7 +64,7 @@ fn collect_events(
 }
 
 /// Auto-pause when a GameEvent fires
-fn auto_pause_on_event(
+pub fn auto_pause_on_event(
     mut reader: MessageReader<GameEvent>,
     mut speed: ResMut<GameSpeed>,
 ) {

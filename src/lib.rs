@@ -10,3 +10,4 @@ pub mod colony;
 pub mod events;
 pub mod technology;
 pub mod setup;
+pub mod visualization;

@@ -43,7 +43,7 @@ pub fn spawn_player(
     warn!("No capital system found!");
 }
 
-fn log_player_info(
+pub fn log_player_info(
     keys: Res<ButtonInput<KeyCode>>,
     player_q: Query<&StationedAt, With<Player>>,
     systems: Query<(&StarSystem, &Position)>,
