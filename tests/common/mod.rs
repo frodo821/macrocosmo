@@ -158,10 +158,11 @@ pub fn full_test_app() -> App {
     // their Query parameters don't conflict with each other.
     // NOTE: UI systems (egui) are excluded from tests because they require
     // EguiPlugin which is heavy and needs rendering context.
+    // NOTE: click_select_system requires EguiContexts (from EguiPlugin) which
+    // is not available in headless tests. Excluded from conflict testing.
     app.add_systems(
         Update,
         (
-            visualization::click_select_system,
             visualization::camera_controls,
             visualization::handle_ship_commands,
         ),

@@ -143,16 +143,33 @@ pub fn generate_galaxy(mut commands: Commands) {
     let mut rng = rand::rng();
     let num_systems = 50;
 
+    let min_distance = 3.0_f64; // Minimum distance between star systems in light-years
     let mut systems: Vec<(String, [f64; 3])> = Vec::new();
-    for i in 0..num_systems {
+    let mut attempts = 0;
+    let max_attempts = num_systems * 20;
+    let mut i = 0;
+    while systems.len() < num_systems && attempts < max_attempts {
+        attempts += 1;
         let r = rng.random_range(1.0_f64..100.0).sqrt() * 10.0;
         let theta = rng.random_range(0.0..std::f64::consts::TAU);
         let z = rng.random_range(-2.0_f64..2.0);
 
         let x = r * theta.cos();
         let y = r * theta.sin();
-        let name = format!("System-{:03}", i);
 
+        // Check minimum distance to all existing systems
+        let too_close = systems.iter().any(|(_, pos)| {
+            let dx = pos[0] - x;
+            let dy = pos[1] - y;
+            let dz = pos[2] - z;
+            (dx * dx + dy * dy + dz * dz).sqrt() < min_distance
+        });
+        if too_close {
+            continue;
+        }
+
+        let name = format!("System-{:03}", i);
+        i += 1;
         systems.push((name, [x, y, z]));
     }
 

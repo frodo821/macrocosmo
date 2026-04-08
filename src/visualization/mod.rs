@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
+use bevy_egui::EguiContexts;
 
 use crate::components::Position;
 use crate::galaxy::{ObscuredByGas, StarSystem};
@@ -564,6 +565,7 @@ pub fn click_select_system(
     view: Res<GalaxyView>,
     mut selected: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
+    mut egui_contexts: EguiContexts,
 ) {
     // Deselect on Escape (if no ship is selected; ship Esc is handled in handle_ship_commands)
     if keys.just_pressed(KeyCode::Escape) && selected_ship.0.is_none() {
@@ -573,6 +575,13 @@ pub fn click_select_system(
 
     if !mouse.just_pressed(MouseButton::Left) {
         return;
+    }
+
+    // Don't process clicks that landed on egui panels
+    if let Ok(ctx) = egui_contexts.ctx_mut() {
+        if ctx.is_pointer_over_area() {
+            return;
+        }
     }
 
     let Ok(window) = windows.single() else {
