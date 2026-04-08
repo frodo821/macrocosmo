@@ -55,13 +55,37 @@ impl GameClock {
 pub struct GameSpeed {
     /// Sexadies per real second. 0 = paused.
     pub sexadies_per_second: f64,
+    /// Speed before pausing (restored on unpause)
+    pub previous_speed: f64,
 }
 
 impl Default for GameSpeed {
     fn default() -> Self {
         Self {
             sexadies_per_second: 0.0, // Start paused
+            previous_speed: 1.0,
         }
+    }
+}
+
+impl GameSpeed {
+    /// Pause the game, remembering current speed.
+    pub fn pause(&mut self) {
+        if self.sexadies_per_second > 0.0 {
+            self.previous_speed = self.sexadies_per_second;
+            self.sexadies_per_second = 0.0;
+        }
+    }
+
+    /// Unpause, restoring previous speed.
+    pub fn unpause(&mut self) {
+        if self.sexadies_per_second <= 0.0 {
+            self.sexadies_per_second = self.previous_speed;
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.sexadies_per_second <= 0.0
     }
 }
 
@@ -89,19 +113,25 @@ fn handle_speed_controls(
     let mut changed = false;
 
     if keys.just_pressed(KeyCode::Space) {
-        if speed.sexadies_per_second > 0.0 {
-            speed.sexadies_per_second = 0.0;
+        if speed.is_paused() {
+            speed.unpause();
         } else {
-            speed.sexadies_per_second = 1.0;
+            speed.pause();
         }
         changed = true;
     }
     if keys.just_pressed(KeyCode::Equal) {
-        speed.sexadies_per_second = (speed.sexadies_per_second * 2.0).max(1.0);
+        let new_speed = (speed.sexadies_per_second * 2.0).max(1.0);
+        speed.sexadies_per_second = new_speed;
+        speed.previous_speed = new_speed;
         changed = true;
     }
     if keys.just_pressed(KeyCode::Minus) {
-        speed.sexadies_per_second = (speed.sexadies_per_second / 2.0).max(0.0);
+        let new_speed = speed.sexadies_per_second / 2.0;
+        if new_speed >= 0.5 {
+            speed.sexadies_per_second = new_speed;
+            speed.previous_speed = new_speed;
+        }
         changed = true;
     }
 

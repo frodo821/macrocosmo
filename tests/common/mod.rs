@@ -12,9 +12,7 @@ pub fn test_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.insert_resource(GameClock::new(0));
-    app.insert_resource(GameSpeed {
-        sexadies_per_second: 0.0,
-    });
+    app.insert_resource(GameSpeed::default());
     app.insert_resource(KnowledgeStore::default());
     app.insert_resource(CommandLog::default());
     app.insert_resource(LastProductionTick(0));
