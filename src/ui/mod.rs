@@ -39,7 +39,6 @@ pub fn draw_all_ui(
     mut contexts: EguiContexts,
     clock: Res<GameClock>,
     mut speed: ResMut<GameSpeed>,
-    stockpiles: Query<&ResourceStockpile>,
     mut research_open: ResMut<ResearchPanelOpen>,
     mut selected_system: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
@@ -59,7 +58,7 @@ pub fn draw_all_ui(
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
-    top_bar::draw_top_bar(ctx, &clock, &mut speed, &stockpiles, &mut research_open);
+    top_bar::draw_top_bar(ctx, &clock, &mut speed, &colonies, &mut research_open);
 
     outline::draw_outline(
         ctx,
