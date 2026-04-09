@@ -21,6 +21,7 @@ impl Plugin for ColonyPlugin {
             .add_systems(
                 Update,
                 (
+                    tick_authority,
                     tick_production,
                     tick_maintenance,
                     tick_population_growth,
@@ -47,6 +48,8 @@ pub struct ResourceStockpile {
     pub minerals: f64,
     pub energy: f64,
     pub research: f64,
+    pub food: f64,
+    pub authority: f64,
 }
 
 #[derive(Component)]
@@ -54,7 +57,18 @@ pub struct Production {
     pub minerals_per_hexadies: f64,
     pub energy_per_hexadies: f64,
     pub research_per_hexadies: f64,
+    pub food_per_hexadies: f64,
 }
+
+/// Base authority produced per hexady by the capital colony.
+pub const BASE_AUTHORITY_PER_HEXADIES: f64 = 1.0;
+
+/// Authority cost per hexady for each non-capital colony (empire scale cost).
+pub const AUTHORITY_COST_PER_COLONY: f64 = 0.5;
+
+/// Production efficiency multiplier applied to non-capital colonies when
+/// the capital's authority stockpile is depleted.
+pub const AUTHORITY_DEFICIT_PENALTY: f64 = 0.5;
 
 /// #29: Production focus weights for colony output
 #[derive(Component)]
@@ -277,11 +291,14 @@ pub fn spawn_capital_colony(
                     minerals: 500.0,
                     energy: 500.0,
                     research: 0.0,
+                    food: 0.0,
+                    authority: 0.0,
                 },
                 Production {
                     minerals_per_hexadies: 5.0,
                     energy_per_hexadies: 5.0,
                     research_per_hexadies: 1.0,
+                    food_per_hexadies: 0.0,
                 },
                 BuildQueue {
                     queue: Vec::new(),
@@ -300,18 +317,35 @@ pub fn spawn_capital_colony(
 /// #29: tick_production uses ProductionFocus weights and building bonuses
 /// #45: Multiplies output by GlobalParams production multipliers
 /// #44: Research is no longer accumulated in the stockpile; emitted via emit_research
+/// #73: Non-capital colonies have production reduced when capital authority is depleted
 pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     global_params: Res<crate::technology::GlobalParams>,
-    mut query: Query<(&Production, &mut ResourceStockpile, Option<&Buildings>, Option<&ProductionFocus>)>,
+    mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&Buildings>, Option<&ProductionFocus>)>,
+    stars: Query<&StarSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
     let d = delta as f64;
-    for (prod, mut stockpile, buildings, focus) in &mut query {
+
+    // #73: Check if the capital has an authority deficit.
+    // Collect capital authority level first to avoid borrow conflicts.
+    // If no capital colony exists, there is no deficit (no penalty applied).
+    let capital_authority = query.iter().find_map(|(colony, _, stockpile, _, _)| {
+        stars.get(colony.system).ok().and_then(|star| {
+            if star.is_capital {
+                Some(stockpile.authority)
+            } else {
+                None
+            }
+        })
+    });
+    let authority_deficit = matches!(capital_authority, Some(a) if a <= 0.0);
+
+    for (colony, prod, mut stockpile, buildings, focus) in &mut query {
         let (mut bonus_m, mut bonus_e) = (0.0, 0.0);
         if let Some(buildings) = buildings {
             for slot in &buildings.slots {
@@ -326,8 +360,17 @@ pub fn tick_production(
             Some(f) => (f.minerals_weight, f.energy_weight),
             None => (1.0, 1.0),
         };
-        stockpile.minerals += (prod.minerals_per_hexadies + bonus_m) * mw * d * global_params.production_multiplier_minerals;
-        stockpile.energy += (prod.energy_per_hexadies + bonus_e) * ew * d * global_params.production_multiplier_energy;
+
+        // #73: Apply authority deficit penalty to non-capital colonies
+        let is_capital = stars.get(colony.system).is_ok_and(|s| s.is_capital);
+        let authority_multiplier = if authority_deficit && !is_capital {
+            AUTHORITY_DEFICIT_PENALTY
+        } else {
+            1.0
+        };
+
+        stockpile.minerals += (prod.minerals_per_hexadies + bonus_m) * mw * d * global_params.production_multiplier_minerals * authority_multiplier;
+        stockpile.energy += (prod.energy_per_hexadies + bonus_e) * ew * d * global_params.production_multiplier_energy * authority_multiplier;
         // Research is no longer accumulated in the stockpile; it is emitted
         // directly via emit_research in the technology module.
     }
@@ -576,6 +619,68 @@ pub fn tick_maintenance(
         if stockpile.energy < 0.0 {
             stockpile.energy = 0.0;
             // TODO: apply penalties (production halt, etc.)
+        }
+    }
+}
+
+/// #73: Authority production and empire-scale consumption.
+///
+/// - The capital colony produces `BASE_AUTHORITY_PER_HEXADIES` authority per hexady.
+/// - Each non-capital colony costs `AUTHORITY_COST_PER_COLONY` authority per hexady,
+///   deducted from the capital's stockpile.
+/// - When the capital's authority reaches 0, non-capital colonies suffer a production
+///   efficiency penalty (applied in `tick_production`).
+///
+/// NOTE: Remote command costs (one-time authority cost when issuing commands to
+/// distant colonies) are not implemented here -- they belong in the communication
+/// module and will be handled separately.
+pub fn tick_authority(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    mut colonies: Query<(&Colony, &mut ResourceStockpile)>,
+    stars: Query<&StarSystem>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    let d = delta as f64;
+
+    // First pass: find capital system and count non-capital colonies
+    let mut capital_system: Option<Entity> = None;
+    let mut non_capital_count: u32 = 0;
+    for (colony, _) in colonies.iter() {
+        if let Ok(star) = stars.get(colony.system) {
+            if star.is_capital {
+                capital_system = Some(colony.system);
+            } else {
+                non_capital_count += 1;
+            }
+        } else {
+            non_capital_count += 1;
+        }
+    }
+
+    let Some(cap_sys) = capital_system else {
+        return; // No capital found
+    };
+
+    // Second pass: produce authority at capital and deduct empire scale cost
+    for (colony, mut stockpile) in &mut colonies {
+        if colony.system == cap_sys {
+            // Capital produces authority
+            // TODO: Technology bonuses can increase authority production
+            stockpile.authority += BASE_AUTHORITY_PER_HEXADIES * d;
+
+            // Deduct empire scale cost for non-capital colonies
+            let scale_cost = AUTHORITY_COST_PER_COLONY * non_capital_count as f64 * d;
+            stockpile.authority -= scale_cost;
+
+            // Cap at 0
+            if stockpile.authority < 0.0 {
+                stockpile.authority = 0.0;
+            }
+            break;
         }
     }
 }
