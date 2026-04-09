@@ -88,13 +88,11 @@ fn parse_mtth_trigger(
     let sd: i64 = table.get::<Option<i64>>("sd")?.unwrap_or(0);
     let mean_hexadies = time_to_hexadies(years, months, sd);
 
-    let activate_condition = parse_lua_function_ref(lua, table, "activate_condition")?;
     let fire_condition = parse_lua_function_ref(lua, table, "fire_condition")?;
     let max_times: Option<u32> = table.get("max_times")?;
 
     Ok(EventTrigger::Mtth {
         mean_hexadies,
-        activate_condition,
         fire_condition,
         max_times,
         times_triggered: 0,
@@ -421,7 +419,6 @@ mod tests {
                 name = "Conditional",
                 trigger = mtth_trigger {
                     years = 5,
-                    activate_condition = function() return true end,
                     fire_condition = function() return true end,
                 },
             }
@@ -433,11 +430,9 @@ mod tests {
         let defs = parse_event_definitions(lua).unwrap();
         match &defs[0].trigger {
             EventTrigger::Mtth {
-                activate_condition,
                 fire_condition,
                 ..
             } => {
-                assert!(activate_condition.is_some());
                 assert!(fire_condition.is_some());
             }
             other => panic!("Expected Mtth trigger, got {:?}", other),

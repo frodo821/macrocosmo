@@ -19,10 +19,9 @@ pub fn time_to_hexadies(years: i64, months: i64, sd: i64) -> i64 {
 pub enum EventTrigger {
     /// Fired explicitly by fire_event() or on_expire_event.
     Manual,
-    /// Mean Time To Happen -- activated periodically, fires after random delay.
+    /// Mean Time To Happen -- fires after random delay when fire_event is called.
     Mtth {
         mean_hexadies: i64,
-        activate_condition: Option<LuaFunctionRef>,
         fire_condition: Option<LuaFunctionRef>,
         max_times: Option<u32>,
         times_triggered: u32,
@@ -68,7 +67,6 @@ pub struct FiredEvent {
 pub struct EventSystem {
     pub definitions: HashMap<String, EventDefinition>,
     pub pending: Vec<PendingEvent>,
-    pub last_activation_check: i64,
     pub fired_log: Vec<FiredEvent>,
 }
 
@@ -78,16 +76,33 @@ impl EventSystem {
         self.definitions.insert(def.id.clone(), def);
     }
 
-    /// Queue a manual event to fire immediately (next tick).
+    /// Queue an event. Behavior depends on trigger type:
+    /// - Manual: fires immediately (fires_at = now)
+    /// - Mtth: fires after random delay based on mean_hexadies
+    /// - Periodic: fires immediately (periodic auto-fire is handled by tick_events)
     pub fn fire_event(&mut self, event_id: &str, target: Option<Entity>, now: i64) {
+        let fires_at = match self.definitions.get(event_id) {
+            Some(def) => match &def.trigger {
+                EventTrigger::Mtth { mean_hexadies, max_times, times_triggered, .. } => {
+                    if let Some(max) = max_times {
+                        if *times_triggered >= *max {
+                            return; // max reached, don't queue
+                        }
+                    }
+                    now + random_mtth_delay(*mean_hexadies)
+                }
+                _ => now,
+            },
+            None => now, // unknown event, fire immediately
+        };
         self.pending.push(PendingEvent {
             event_id: event_id.to_string(),
             target,
-            fires_at: now,
+            fires_at,
         });
     }
 
-    /// Queue an event to fire after a delay.
+    /// Queue an event to fire at a specific time (bypasses trigger logic).
     pub fn fire_event_delayed(&mut self, event_id: &str, target: Option<Entity>, fires_at: i64) {
         self.pending.push(PendingEvent {
             event_id: event_id.to_string(),
@@ -107,60 +122,11 @@ fn random_mtth_delay(mean_hexadies: i64) -> i64 {
     (delay as i64).max(1)
 }
 
-/// Bevy system that processes MTTH activations, periodic triggers,
+/// Bevy system that processes periodic triggers
 /// and pending events whose fire time has been reached.
-/// Lua callback execution will come in a follow-up.
+/// MTTH events are queued via fire_event() from Lua hooks, not auto-activated.
 pub fn tick_events(clock: Res<GameClock>, mut event_system: ResMut<EventSystem>) {
     let now = clock.elapsed;
-
-    // --- MTTH activation check (every HEXADIES_PER_MONTH) ---
-    if now - event_system.last_activation_check >= HEXADIES_PER_MONTH {
-        event_system.last_activation_check = now;
-
-        // Collect IDs of MTTH events that need activation
-        let activations: Vec<(String, i64)> = event_system
-            .definitions
-            .iter()
-            .filter_map(|(id, def)| {
-                if let EventTrigger::Mtth {
-                    mean_hexadies,
-                    activate_condition: _, // Lua call not implemented yet; None = always activate
-                    max_times,
-                    times_triggered,
-                    ..
-                } = &def.trigger
-                {
-                    // Check max_times
-                    if let Some(max) = max_times {
-                        if *times_triggered >= *max {
-                            return None;
-                        }
-                    }
-                    // Check that we don't already have a pending event for this ID
-                    // (prevent multiple activations)
-                    let already_pending = event_system
-                        .pending
-                        .iter()
-                        .any(|pe| pe.event_id == *id);
-                    if already_pending {
-                        return None;
-                    }
-                    Some((id.clone(), *mean_hexadies))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for (id, mean) in activations {
-            let delay = random_mtth_delay(mean);
-            event_system.pending.push(PendingEvent {
-                event_id: id,
-                target: None,
-                fires_at: now + delay,
-            });
-        }
-    }
 
     // --- Periodic trigger check ---
     {
@@ -317,8 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mtth_activation() {
-        // Register an MTTH event, simulate activation check
+    fn test_mtth_fire_event_adds_delayed_pending() {
         let mut system = EventSystem::default();
         system.register(EventDefinition {
             id: "mtth_test".to_string(),
@@ -326,59 +291,22 @@ mod tests {
             description: "Test MTTH event.".to_string(),
             trigger: EventTrigger::Mtth {
                 mean_hexadies: 60,
-                activate_condition: None,
                 fire_condition: None,
                 max_times: None,
                 times_triggered: 0,
             },
         });
 
-        // Simulate what tick_events does for MTTH activation
-        let now = HEXADIES_PER_MONTH; // enough to trigger first check
-        system.last_activation_check = 0;
-
-        // Manually run activation logic
-        let activations: Vec<(String, i64)> = system
-            .definitions
-            .iter()
-            .filter_map(|(id, def)| {
-                if let EventTrigger::Mtth {
-                    mean_hexadies,
-                    max_times,
-                    times_triggered,
-                    ..
-                } = &def.trigger
-                {
-                    if let Some(max) = max_times {
-                        if *times_triggered >= *max {
-                            return None;
-                        }
-                    }
-                    Some((id.clone(), *mean_hexadies))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        assert_eq!(activations.len(), 1);
-        assert_eq!(activations[0].0, "mtth_test");
-
-        // Create the pending event
-        let delay = random_mtth_delay(60);
-        system.pending.push(PendingEvent {
-            event_id: "mtth_test".to_string(),
-            target: None,
-            fires_at: now + delay,
-        });
+        let now = 100;
+        system.fire_event("mtth_test", None, now);
 
         assert_eq!(system.pending.len(), 1);
-        assert!(system.pending[0].fires_at > now);
+        assert!(system.pending[0].fires_at > now); // MTTH adds random delay
         assert!(system.pending[0].fires_at >= now + 1); // delay is at least 1
     }
 
     #[test]
-    fn test_mtth_max_times() {
+    fn test_mtth_max_times_prevents_fire() {
         let mut system = EventSystem::default();
         system.register(EventDefinition {
             id: "mtth_limited".to_string(),
@@ -386,37 +314,15 @@ mod tests {
             description: "Fires at most once.".to_string(),
             trigger: EventTrigger::Mtth {
                 mean_hexadies: 10,
-                activate_condition: None,
                 fire_condition: None,
                 max_times: Some(1),
                 times_triggered: 1, // already fired once
             },
         });
 
-        // Should not activate because times_triggered >= max_times
-        let activations: Vec<String> = system
-            .definitions
-            .iter()
-            .filter_map(|(id, def)| {
-                if let EventTrigger::Mtth {
-                    max_times,
-                    times_triggered,
-                    ..
-                } = &def.trigger
-                {
-                    if let Some(max) = max_times {
-                        if *times_triggered >= *max {
-                            return None;
-                        }
-                    }
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        assert!(activations.is_empty());
+        // fire_event should not queue because max_times reached
+        system.fire_event("mtth_limited", None, 100);
+        assert!(system.pending.is_empty());
     }
 
     #[test]
