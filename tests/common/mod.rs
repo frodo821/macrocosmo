@@ -21,6 +21,7 @@ pub fn test_app() -> App {
     app.insert_resource(CommandLog::default());
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
+    app.insert_resource(technology::GlobalParams::default());
     app.add_message::<GameEvent>();
     // Register Update systems in correct order
     app.add_systems(
@@ -84,6 +85,8 @@ pub fn full_test_app() -> App {
     app.insert_resource(technology::ResearchQueue::default());
     app.insert_resource(technology::ResearchPool::default());
     app.insert_resource(technology::LastResearchTick(0));
+    app.insert_resource(technology::GlobalParams::default());
+    app.insert_resource(technology::GameFlags::default());
 
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(
@@ -128,7 +131,13 @@ pub fn full_test_app() -> App {
     // --- Technology systems (from TechnologyPlugin) ---
     app.add_systems(
         Update,
-        (technology::collect_research, technology::tick_research).chain(),
+        (
+            technology::emit_research,
+            technology::receive_research,
+            technology::tick_research,
+            technology::flush_research,
+        )
+            .chain(),
     );
 
     // --- Events systems (from EventsPlugin) ---
@@ -153,13 +162,6 @@ pub fn full_test_app() -> App {
     app.add_systems(Update, macrocosmo::player::log_player_info);
 
     // --- Visualization systems (excluding Gizmos-dependent ones) ---
-    // These systems use standard Res/Query params and will early-return
-    // when no matching entities exist. The key purpose is Bevy validating
-    // their Query parameters don't conflict with each other.
-    // NOTE: UI systems (egui) are excluded from tests because they require
-    // EguiPlugin which is heavy and needs rendering context.
-    // NOTE: click_select_system requires EguiContexts (from EguiPlugin) which
-    // is not available in headless tests. Excluded from conflict testing.
     app.add_systems(
         Update,
         (
@@ -167,15 +169,13 @@ pub fn full_test_app() -> App {
             visualization::handle_ship_commands,
         ),
     );
-    // NOTE: draw_galaxy_overlay and draw_ships are excluded because they
-    // require the Gizmos system parameter which needs GizmoPlugin.
 
     app
 }
 
-/// Advance the game clock by `sexadies` and run one update cycle.
-pub fn advance_time(app: &mut App, sexadies: i64) {
-    app.world_mut().resource_mut::<GameClock>().elapsed += sexadies;
+/// Advance the game clock by `hexadies` and run one update cycle.
+pub fn advance_time(app: &mut App, hexadies: i64) {
+    app.world_mut().resource_mut::<GameClock>().elapsed += hexadies;
     app.update();
 }
 

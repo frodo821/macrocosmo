@@ -74,7 +74,7 @@ pub fn log_player_info(
 
             for (name, dist, surveyed) in nearby.iter().take(10) {
                 let survey_mark = if *surveyed { "+" } else { "?" };
-                let delay_sd = physics::light_delay_sexadies(*dist);
+                let delay_sd = physics::light_delay_hexadies(*dist);
                 info!(
                     "  [{}] {} - {:.1} ly (light delay: {} sd / {:.1} yr)",
                     survey_mark, name, dist, delay_sd, dist

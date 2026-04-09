@@ -49,9 +49,9 @@ pub struct ResourceStockpile {
 
 #[derive(Component)]
 pub struct Production {
-    pub minerals_per_sexadie: f64,
-    pub energy_per_sexadie: f64,
-    pub research_per_sexadie: f64,
+    pub minerals_per_hexadies: f64,
+    pub energy_per_hexadies: f64,
+    pub research_per_hexadies: f64,
 }
 
 /// #29: Production focus weights for colony output
@@ -127,9 +127,9 @@ pub struct BuildOrder {
     pub minerals_invested: f64,
     pub energy_cost: f64,
     pub energy_invested: f64,
-    /// #32: Total build time in sexadies
+    /// #32: Total build time in hexadies
     pub build_time_total: i64,
-    /// #32: Remaining build time in sexadies
+    /// #32: Remaining build time in hexadies
     pub build_time_remaining: i64,
 }
 
@@ -140,7 +140,7 @@ impl BuildOrder {
             && self.build_time_remaining <= 0
     }
 
-    /// Returns the build time in sexadies for a given ship type name.
+    /// Returns the build time in hexadies for a given ship type name.
     pub fn build_time_for(ship_type_name: &str) -> i64 {
         match ship_type_name {
             "Explorer" => 60,
@@ -161,7 +161,7 @@ pub enum BuildingType {
 
 impl BuildingType {
     pub fn production_bonus(&self) -> (f64, f64, f64) {
-        // (minerals, energy, research) per sexadie
+        // (minerals, energy, research) per hexadies
         match self {
             BuildingType::Mine => (3.0, 0.0, 0.0),
             BuildingType::PowerPlant => (0.0, 3.0, 0.0),
@@ -181,7 +181,7 @@ impl BuildingType {
     }
 
     pub fn build_time(&self) -> i64 {
-        // sexadies to build
+        // hexadies to build
         match self {
             BuildingType::Mine => 10,
             BuildingType::PowerPlant => 10,
@@ -256,9 +256,9 @@ pub fn spawn_capital_colony(
                     research: 0.0,
                 },
                 Production {
-                    minerals_per_sexadie: 5.0,
-                    energy_per_sexadie: 5.0,
-                    research_per_sexadie: 1.0,
+                    minerals_per_hexadies: 5.0,
+                    energy_per_hexadies: 5.0,
+                    research_per_hexadies: 1.0,
                 },
                 BuildQueue {
                     queue: Vec::new(),
@@ -275,9 +275,12 @@ pub fn spawn_capital_colony(
 }
 
 /// #29: tick_production uses ProductionFocus weights and building bonuses
+/// #45: Multiplies output by GlobalParams production multipliers
+/// #44: Research is no longer accumulated in the stockpile; emitted via emit_research
 pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
+    global_params: Res<crate::technology::GlobalParams>,
     mut query: Query<(&Production, &mut ResourceStockpile, Option<&Buildings>, Option<&ProductionFocus>)>,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -286,30 +289,32 @@ pub fn tick_production(
     }
     let d = delta as f64;
     for (prod, mut stockpile, buildings, focus) in &mut query {
-        let (mut bonus_m, mut bonus_e, mut bonus_r) = (0.0, 0.0, 0.0);
+        let (mut bonus_m, mut bonus_e) = (0.0, 0.0);
         if let Some(buildings) = buildings {
             for slot in &buildings.slots {
                 if let Some(bt) = slot {
-                    let (m, e, r) = bt.production_bonus();
+                    let (m, e, _r) = bt.production_bonus();
                     bonus_m += m;
                     bonus_e += e;
-                    bonus_r += r;
                 }
             }
         }
-        let (mw, ew, rw) = match focus {
-            Some(f) => (f.minerals_weight, f.energy_weight, f.research_weight),
-            None => (1.0, 1.0, 1.0),
+        let (mw, ew) = match focus {
+            Some(f) => (f.minerals_weight, f.energy_weight),
+            None => (1.0, 1.0),
         };
-        stockpile.minerals += (prod.minerals_per_sexadie + bonus_m) * mw * d;
-        stockpile.energy += (prod.energy_per_sexadie + bonus_e) * ew * d;
-        stockpile.research += (prod.research_per_sexadie + bonus_r) * rw * d;
+        stockpile.minerals += (prod.minerals_per_hexadies + bonus_m) * mw * d * global_params.production_multiplier_minerals;
+        stockpile.energy += (prod.energy_per_hexadies + bonus_e) * ew * d * global_params.production_multiplier_energy;
+        // Research is no longer accumulated in the stockpile; it is emitted
+        // directly via emit_research in the technology module.
     }
 }
 
+/// #45: Population growth uses GlobalParams bonus
 pub fn tick_population_growth(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
+    global_params: Res<crate::technology::GlobalParams>,
     mut query: Query<&mut Colony>,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -317,7 +322,8 @@ pub fn tick_population_growth(
         return;
     }
     for mut colony in &mut query {
-        let growth_factor = (1.0 + colony.growth_rate).powi(delta as i32);
+        let effective_growth = colony.growth_rate + global_params.population_growth_bonus;
+        let growth_factor = (1.0 + effective_growth).powi(delta as i32);
         colony.population *= growth_factor;
     }
 }

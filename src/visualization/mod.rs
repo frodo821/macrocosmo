@@ -22,7 +22,7 @@ impl Plugin for VisualizationPlugin {
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedShip::default())
         .add_systems(Startup, setup_camera)
-        .add_systems(PostStartup, spawn_star_visuals)
+        .add_systems(PostStartup, (spawn_star_visuals, center_camera_on_capital))
         .add_systems(Update, (
             click_select_system,
             camera_controls,
@@ -66,6 +66,22 @@ fn setup_camera(mut commands: Commands) {
             ..default()
         },
     ));
+}
+
+fn center_camera_on_capital(
+    mut camera_q: Query<&mut Transform, With<Camera2d>>,
+    capitals: Query<(&StarSystem, &Position)>,
+    view: Res<GalaxyView>,
+) {
+    for (star, pos) in &capitals {
+        if star.is_capital {
+            for mut transform in &mut camera_q {
+                transform.translation.x = pos.x as f32 * view.scale;
+                transform.translation.y = pos.y as f32 * view.scale;
+            }
+            break;
+        }
+    }
 }
 
 fn spawn_star_visuals(
@@ -536,26 +552,6 @@ fn draw_ships(
     }
 }
 
-// #14: Helper to collect ships docked at a given system
-fn ships_docked_at(
-    system: Entity,
-    ships: &Query<(Entity, &Ship, &ShipState)>,
-) -> Vec<(Entity, String, ShipType)> {
-    let mut result: Vec<(Entity, String, ShipType)> = ships
-        .iter()
-        .filter_map(|(e, ship, state)| {
-            if let ShipState::Docked { system: s } = state {
-                if *s == system {
-                    return Some((e, ship.name.clone(), ship.ship_type));
-                }
-            }
-            None
-        })
-        .collect();
-    result.sort_by(|a, b| a.1.cmp(&b.1));
-    result
-}
-
 pub fn click_select_system(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -602,51 +598,9 @@ pub fn click_select_system(
         return;
     };
 
-    // First check ships (higher priority — they're drawn on top and are smaller targets)
+    // Check in-transit and active ships (docked ships are selected via the outline panel)
     let ship_click_radius = 12.0;
-
-    // Build docked ship offset positions (must match draw_ships layout)
-    let mut docked_counts: HashMap<Entity, Vec<(Entity, ShipType)>> = HashMap::new();
-    for (entity, ship, state) in &ship_q {
-        if let ShipState::Docked { system } = state {
-            docked_counts
-                .entry(*system)
-                .or_default()
-                .push((entity, ship.ship_type));
-        }
-    }
-
     let mut best_ship: Option<(Entity, f32)> = None;
-
-    // Check docked ships (positioned with angular offset around their system)
-    for (system_entity, ships) in &docked_counts {
-        let Ok(sys_pos) = star_positions.get(*system_entity) else {
-            continue;
-        };
-        let sx = sys_pos.x as f32 * view.scale;
-        let sy = sys_pos.y as f32 * view.scale;
-        let count = ships.len();
-
-        for (i, (ship_entity, _ship_type)) in ships.iter().enumerate() {
-            let angle = if count == 1 {
-                0.0
-            } else {
-                std::f32::consts::TAU * (i as f32) / (count as f32)
-            };
-            let offset_radius = 8.0;
-            let ox = sx + angle.cos() * offset_radius;
-            let oy = sy + angle.sin() * offset_radius;
-
-            let dist = world_pos.distance(Vec2::new(ox, oy));
-            if dist < ship_click_radius {
-                if best_ship.is_none() || dist < best_ship.unwrap().1 {
-                    best_ship = Some((*ship_entity, dist));
-                }
-            }
-        }
-    }
-
-    // Check in-transit and active ships
     for (entity, _ship, state) in &ship_q {
         let ship_px = match state {
             ShipState::SubLight {
@@ -673,7 +627,7 @@ pub fn click_select_system(
                 };
                 Vec2::new(sys_pos.x as f32 * view.scale, sys_pos.y as f32 * view.scale)
             }
-            // Docked ships handled above; InFTL ships are invisible
+            // Docked ships selected via outline panel; InFTL ships are invisible
             _ => continue,
         };
 

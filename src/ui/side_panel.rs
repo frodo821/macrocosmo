@@ -7,7 +7,7 @@ use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
-use crate::ship::{Ship, ShipState, ShipType};
+use crate::ship::{Cargo, Ship, ShipState, ShipType};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedShip, SelectedSystem};
 
@@ -23,10 +23,10 @@ pub fn draw_system_panel(
         Entity,
         &Colony,
         Option<&Production>,
-        Option<&ResourceStockpile>,
+        Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
     )>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState)>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     positions: &Query<&Position>,
     knowledge: &KnowledgeStore,
     clock: &GameClock,
@@ -232,18 +232,26 @@ pub fn draw_ship_panel(
     selected_system: &SelectedSystem,
     selected_ship: &mut SelectedShip,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState)>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     positions: &Query<&Position>,
     clock: &GameClock,
+    colonies: &mut Query<(
+        Entity,
+        &Colony,
+        Option<&Production>,
+        Option<&mut ResourceStockpile>,
+        Option<&mut BuildQueue>,
+    )>,
 ) {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
-        let (_, ship, state) = ships_query.get(ship_entity).ok()?;
+        let (_, ship, state, cargo) = ships_query.get(ship_entity).ok()?;
         let docked_system = if let ShipState::Docked { system } = &*state {
             Some(*system)
         } else {
             None
         };
+        let cargo_data = cargo.map(|c| (c.minerals, c.energy));
         Some((
             ship_entity,
             ship.name.clone(),
@@ -261,6 +269,7 @@ pub fn draw_ship_panel(
             }
             .to_string(),
             docked_system,
+            cargo_data,
         ))
     });
 
@@ -274,6 +283,7 @@ pub fn draw_ship_panel(
         sublight_speed,
         status,
         docked_system,
+        cargo_data,
     )) = ship_data
     else {
         return;
@@ -283,6 +293,22 @@ pub fn draw_ship_panel(
 
     let mut command: Option<ShipState> = None;
     let mut deselect_ship = false;
+
+    // Cargo load/unload actions to apply after UI drawing
+    #[derive(Default)]
+    struct CargoAction {
+        load_minerals: f64,
+        load_energy: f64,
+        unload_minerals: f64,
+        unload_energy: f64,
+    }
+    let mut cargo_action = CargoAction::default();
+    // Entity of the colony at the docked system (for cargo transfers)
+    let colony_entity_at_dock: Option<Entity> = docked_system.and_then(|dock_sys| {
+        colonies.iter().find_map(|(e, col, _, _, _)| {
+            if col.system == dock_sys { Some(e) } else { None }
+        })
+    });
 
     egui::Window::new("Selected Ship")
         .anchor(egui::Align2::RIGHT_BOTTOM, [-270.0, -130.0])
@@ -399,6 +425,35 @@ pub fn draw_ship_panel(
                     }
                 }
 
+                // Cargo section for Courier ships docked at a colony
+                if ship_type == ShipType::Courier {
+                    if let Some((cargo_m, cargo_e)) = cargo_data {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Cargo").strong());
+                        ui.label(format!("Minerals: {:.0}", cargo_m));
+                        ui.label(format!("Energy: {:.0}", cargo_e));
+
+                        if colony_entity_at_dock.is_some() {
+                            ui.horizontal(|ui| {
+                                if ui.button("Load M +100").clicked() {
+                                    cargo_action.load_minerals = 100.0;
+                                }
+                                if ui.button("Load E +100").clicked() {
+                                    cargo_action.load_energy = 100.0;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Unload M").clicked() {
+                                    cargo_action.unload_minerals = cargo_m;
+                                }
+                                if ui.button("Unload E").clicked() {
+                                    cargo_action.unload_energy = cargo_e;
+                                }
+                            });
+                        }
+                    }
+                }
+
                 if ui.button("Deselect ship").clicked() {
                     deselect_ship = true;
                 }
@@ -412,9 +467,48 @@ pub fn draw_ship_panel(
 
     // Apply command mutation AFTER UI drawing (no borrow conflict)
     if let Some(new_state) = command {
-        if let Ok((_, _, mut state)) = ships_query.get_mut(ship_entity) {
+        if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
             *state = new_state;
             selected_ship.0 = None;
+        }
+    }
+
+    // Apply cargo load/unload actions
+    let has_cargo_action = cargo_action.load_minerals > 0.0
+        || cargo_action.load_energy > 0.0
+        || cargo_action.unload_minerals > 0.0
+        || cargo_action.unload_energy > 0.0;
+    if has_cargo_action {
+        if let Some(colony_e) = colony_entity_at_dock {
+            // Get mutable access to the colony stockpile
+            if let Ok((_, _, _, Some(mut stockpile), _)) = colonies.get_mut(colony_e) {
+                if let Ok((_, _, _, Some(mut cargo))) = ships_query.get_mut(ship_entity) {
+                    // Load minerals
+                    if cargo_action.load_minerals > 0.0 {
+                        let transfer = cargo_action.load_minerals.min(stockpile.minerals);
+                        stockpile.minerals -= transfer;
+                        cargo.minerals += transfer;
+                    }
+                    // Load energy
+                    if cargo_action.load_energy > 0.0 {
+                        let transfer = cargo_action.load_energy.min(stockpile.energy);
+                        stockpile.energy -= transfer;
+                        cargo.energy += transfer;
+                    }
+                    // Unload minerals
+                    if cargo_action.unload_minerals > 0.0 {
+                        let transfer = cargo_action.unload_minerals.min(cargo.minerals);
+                        cargo.minerals -= transfer;
+                        stockpile.minerals += transfer;
+                    }
+                    // Unload energy
+                    if cargo_action.unload_energy > 0.0 {
+                        let transfer = cargo_action.unload_energy.min(cargo.energy);
+                        cargo.energy -= transfer;
+                        stockpile.energy += transfer;
+                    }
+                }
+            }
         }
     }
 }
@@ -422,11 +516,11 @@ pub fn draw_ship_panel(
 /// Helper to collect ships docked at a given system.
 fn ships_docked_at(
     system: Entity,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState)>,
+    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
 ) -> Vec<(Entity, String, ShipType)> {
     let mut result: Vec<(Entity, String, ShipType)> = ships
         .iter()
-        .filter_map(|(e, ship, state)| {
+        .filter_map(|(e, ship, state, _)| {
             if let ShipState::Docked { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.ship_type));

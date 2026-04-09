@@ -50,6 +50,51 @@ impl ScriptEngine {
         })?;
         globals.set("define_tech", define_tech)?;
 
+        // --- #45: Global param / flag Lua bindings ---
+
+        // Pending modifications table: scripts call modify_global/set_flag/check_flag
+        // and these are buffered for the Rust side to apply.
+        let pending_mods = lua.create_table()?;
+        globals.set("_pending_global_mods", pending_mods)?;
+
+        let pending_flags = lua.create_table()?;
+        globals.set("_pending_flags", pending_flags)?;
+
+        let flag_store = lua.create_table()?;
+        globals.set("_flag_store", flag_store)?;
+
+        // modify_global(param_name, value) -- buffers a global param modification
+        let modify_global = lua.create_function(|lua, (param_name, value): (String, f64)| {
+            let mods: mlua::Table = lua.globals().get("_pending_global_mods")?;
+            let len = mods.len()?;
+            let entry = lua.create_table()?;
+            entry.set("param", param_name)?;
+            entry.set("value", value)?;
+            mods.set(len + 1, entry)?;
+            Ok(())
+        })?;
+        globals.set("modify_global", modify_global)?;
+
+        // set_flag(name) -- sets a game flag
+        let set_flag = lua.create_function(|lua, name: String| {
+            let flags: mlua::Table = lua.globals().get("_pending_flags")?;
+            let len = flags.len()?;
+            flags.set(len + 1, name.clone())?;
+            // Also store in _flag_store so check_flag works immediately
+            let store: mlua::Table = lua.globals().get("_flag_store")?;
+            store.set(name, true)?;
+            Ok(())
+        })?;
+        globals.set("set_flag", set_flag)?;
+
+        // check_flag(name) -- returns true if the flag is set
+        let check_flag = lua.create_function(|lua, name: String| {
+            let store: mlua::Table = lua.globals().get("_flag_store")?;
+            let result: bool = store.get::<Option<bool>>(name)?.unwrap_or(false);
+            Ok(result)
+        })?;
+        globals.set("check_flag", check_flag)?;
+
         Ok(())
     }
 
@@ -134,5 +179,60 @@ mod tests {
         engine
             .load_directory(Path::new("/nonexistent/path"))
             .unwrap();
+    }
+
+    // --- #45: Lua binding tests ---
+
+    #[test]
+    fn test_modify_global_lua() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"modify_global("sublight_speed_bonus", 0.5)"#)
+            .exec()
+            .unwrap();
+
+        let mods: mlua::Table = lua.globals().get("_pending_global_mods").unwrap();
+        assert_eq!(mods.len().unwrap(), 1);
+        let entry: mlua::Table = mods.get(1).unwrap();
+        let param: String = entry.get("param").unwrap();
+        let value: f64 = entry.get("value").unwrap();
+        assert_eq!(param, "sublight_speed_bonus");
+        assert!((value - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_set_flag_lua() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"set_flag("building_Starbase")"#)
+            .exec()
+            .unwrap();
+
+        let flags: mlua::Table = lua.globals().get("_pending_flags").unwrap();
+        assert_eq!(flags.len().unwrap(), 1);
+        let flag: String = flags.get(1).unwrap();
+        assert_eq!(flag, "building_Starbase");
+    }
+
+    #[test]
+    fn test_check_flag_lua() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let result: bool = lua
+            .load(r#"return check_flag("nonexistent")"#)
+            .eval()
+            .unwrap();
+        assert!(!result);
+
+        lua.load(r#"set_flag("my_flag")"#).exec().unwrap();
+
+        let result: bool = lua
+            .load(r#"return check_flag("my_flag")"#)
+            .eval()
+            .unwrap();
+        assert!(result);
     }
 }

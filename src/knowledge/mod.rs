@@ -132,7 +132,7 @@ pub fn propagate_knowledge(
 
     for (entity, star, sys_pos) in &systems {
         let distance = physics::distance_ly(player_pos, sys_pos);
-        let delay = physics::light_delay_sexadies(distance);
+        let delay = physics::light_delay_hexadies(distance);
         let observed_at = clock.elapsed - delay;
 
         if observed_at < 0 {

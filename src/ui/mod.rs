@@ -13,7 +13,7 @@ use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, StationedAt};
-use crate::ship::{Ship, ShipState};
+use crate::ship::{Cargo, Ship, ShipState};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{SelectedShip, SelectedSystem};
 
@@ -49,10 +49,10 @@ pub fn draw_all_ui(
         Entity,
         &Colony,
         Option<&Production>,
-        Option<&ResourceStockpile>,
+        Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
     )>,
-    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState)>,
+    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     positions: Query<&Position>,
     knowledge: Res<KnowledgeStore>,
     command_log: Res<CommandLog>,
@@ -91,6 +91,7 @@ pub fn draw_all_ui(
         &mut ships_query,
         &positions,
         &clock,
+        &mut colonies,
     );
 
     bottom_bar::draw_bottom_bar(ctx, &command_log, &clock);

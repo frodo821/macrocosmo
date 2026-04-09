@@ -2,7 +2,10 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::colony::ResourceStockpile;
+use crate::colony::{Buildings, Colony, Production, ProductionFocus};
+use crate::components::Position;
+use crate::physics;
+use crate::player::{Player, StationedAt};
 use crate::time_system::GameClock;
 
 pub struct TechnologyPlugin;
@@ -16,7 +19,68 @@ impl Plugin for TechnologyPlugin {
         .insert_resource(ResearchQueue::default())
         .insert_resource(ResearchPool::default())
         .insert_resource(LastResearchTick(0))
-        .add_systems(Update, (collect_research, tick_research).chain());
+        .insert_resource(GlobalParams::default())
+        .insert_resource(GameFlags::default())
+        .add_systems(
+            Update,
+            (emit_research, receive_research, tick_research, flush_research).chain(),
+        );
+    }
+}
+
+/// Global parameters modified by researched technologies.
+/// Systems read these to apply tech bonuses to gameplay mechanics.
+#[derive(Resource, Debug, Clone)]
+pub struct GlobalParams {
+    /// Added to base sublight speed
+    pub sublight_speed_bonus: f64,
+    /// Multiplied with base FTL speed
+    pub ftl_speed_multiplier: f64,
+    /// Added to base FTL range
+    pub ftl_range_bonus: f64,
+    /// Added to base survey range
+    pub survey_range_bonus: f64,
+    /// Multiplied with build time (lower = faster)
+    pub build_speed_multiplier: f64,
+    /// Multiplied with mineral production rate
+    pub production_multiplier_minerals: f64,
+    /// Multiplied with energy production rate
+    pub production_multiplier_energy: f64,
+    /// Multiplied with research production rate
+    pub production_multiplier_research: f64,
+    /// Added to base population growth rate
+    pub population_growth_bonus: f64,
+}
+
+impl Default for GlobalParams {
+    fn default() -> Self {
+        Self {
+            sublight_speed_bonus: 0.0,
+            ftl_speed_multiplier: 1.0,
+            ftl_range_bonus: 0.0,
+            survey_range_bonus: 0.0,
+            build_speed_multiplier: 1.0,
+            production_multiplier_minerals: 1.0,
+            production_multiplier_energy: 1.0,
+            production_multiplier_research: 1.0,
+            population_growth_bonus: 0.0,
+        }
+    }
+}
+
+/// Tracks boolean flags set by technology effects (e.g. unlocked buildings).
+#[derive(Resource, Default, Debug, Clone)]
+pub struct GameFlags {
+    pub flags: HashSet<String>,
+}
+
+impl GameFlags {
+    pub fn set(&mut self, flag: &str) {
+        self.flags.insert(flag.to_string());
+    }
+
+    pub fn check(&self, flag: &str) -> bool {
+        self.flags.contains(flag)
     }
 }
 
@@ -238,22 +302,116 @@ pub struct ResearchPool {
 #[derive(Resource)]
 pub struct LastResearchTick(pub i64);
 
-/// Drains research from colony stockpiles into the global ResearchPool.
-pub fn collect_research(
+/// A research packet in transit from a colony to the capital at light speed.
+#[derive(Component)]
+pub struct PendingResearch {
+    pub amount: f64,
+    pub arrives_at: i64,
+}
+
+/// Each tick, colonies emit research points as PendingResearch entities that
+/// travel at light speed to the capital. Capital colonies contribute instantly.
+pub fn emit_research(
+    mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastResearchTick>,
-    mut pool: ResMut<ResearchPool>,
-    mut stockpiles: Query<&mut ResourceStockpile>,
+    global_params: Res<GlobalParams>,
+    colonies: Query<(&Colony, &Production, Option<&Buildings>, Option<&ProductionFocus>)>,
+    player_q: Query<&StationedAt, With<Player>>,
+    positions: Query<&Position>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
-    for mut stockpile in &mut stockpiles {
-        if stockpile.research > 0.0 {
-            pool.points += stockpile.research;
-            stockpile.research = 0.0;
+    let d = delta as f64;
+
+    // Find capital system position
+    let capital_system = player_q.single().ok().map(|s| s.system);
+    let capital_pos = capital_system.and_then(|sys| positions.get(sys).ok());
+
+    for (colony, prod, buildings, focus) in &colonies {
+        let mut bonus_r = 0.0;
+        if let Some(buildings) = buildings {
+            for slot in &buildings.slots {
+                if let Some(bt) = slot {
+                    let (_, _, r) = bt.production_bonus();
+                    bonus_r += r;
+                }
+            }
         }
+        let rw = match focus {
+            Some(f) => f.research_weight,
+            None => 1.0,
+        };
+        let amount = (prod.research_per_hexadies + bonus_r) * rw * d * global_params.production_multiplier_research;
+        if amount <= 0.0 {
+            continue;
+        }
+
+        // Calculate light delay from colony to capital
+        let delay = match (capital_system, capital_pos) {
+            (Some(cap_sys), Some(_)) if colony.system == cap_sys => 0,
+            (Some(_), Some(cap_pos)) => {
+                if let Ok(colony_pos) = positions.get(colony.system) {
+                    let dist = physics::distance_ly(colony_pos, cap_pos);
+                    physics::light_delay_hexadies(dist)
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
+
+        commands.spawn(PendingResearch {
+            amount,
+            arrives_at: clock.elapsed + delay,
+        });
+    }
+}
+
+/// Receives PendingResearch entities that have arrived and adds them to the pool.
+pub fn receive_research(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    mut pool: ResMut<ResearchPool>,
+    pending: Query<(Entity, &PendingResearch)>,
+) {
+    for (entity, pr) in &pending {
+        if clock.elapsed >= pr.arrives_at {
+            pool.points += pr.amount;
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Apply a single technology effect to global parameters and flags.
+pub fn apply_tech_effect(effect: &TechEffect, params: &mut GlobalParams, flags: &mut GameFlags) {
+    match effect {
+        TechEffect::ModifySublightSpeed(v) => params.sublight_speed_bonus += v,
+        TechEffect::ModifyFTLSpeed(v) => params.ftl_speed_multiplier += v,
+        TechEffect::ModifyFTLRange(v) => params.ftl_range_bonus += v,
+        TechEffect::ModifySensorRange(v) => params.survey_range_bonus += v,
+        TechEffect::ModifyConstructionSpeed(v) => params.build_speed_multiplier *= 1.0 + v,
+        TechEffect::ModifyPopulationGrowth(v) => params.population_growth_bonus += v,
+        TechEffect::ModifyResearchOutput(v) => params.production_multiplier_research *= 1.0 + v,
+        TechEffect::ModifyResourceProduction(resource, multiplier) => match resource {
+            ResourceType::Minerals => params.production_multiplier_minerals *= 1.0 + multiplier,
+            ResourceType::Energy => params.production_multiplier_energy *= 1.0 + multiplier,
+            ResourceType::Research => params.production_multiplier_research *= 1.0 + multiplier,
+            ResourceType::Food => {} // not yet tracked in GlobalParams
+        },
+        TechEffect::UnlockBuilding(name) => {
+            flags.set(&format!("building_{}", name));
+        }
+        TechEffect::UnlockShipType(name) => {
+            flags.set(&format!("ship_type_{}", name));
+        }
+        // Effects that don't yet map to GlobalParams (combat, diplomacy)
+        TechEffect::ModifyDiplomacyRange(_)
+        | TechEffect::ModifyWeaponDamage(_)
+        | TechEffect::ModifyShieldStrength(_)
+        | TechEffect::ModifyArmor(_) => {}
     }
 }
 
@@ -264,6 +422,8 @@ pub fn tick_research(
     mut tech_tree: ResMut<TechTree>,
     mut queue: ResMut<ResearchQueue>,
     mut pool: ResMut<ResearchPool>,
+    mut global_params: ResMut<GlobalParams>,
+    mut game_flags: ResMut<GameFlags>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -295,16 +455,30 @@ pub fn tick_research(
 
     // Check completion
     if queue.accumulated >= tech_cost {
-        let tech_name = tech_tree
-            .technologies
-            .get(&current_tech_id)
-            .map(|t| t.name.clone())
-            .unwrap_or_default();
+        // Collect effects before mutating tree
+        let (tech_name, effects) = {
+            let tech = tech_tree.technologies.get(&current_tech_id);
+            let name = tech.map(|t| t.name.clone()).unwrap_or_default();
+            let effects = tech.map(|t| t.effects.clone()).unwrap_or_default();
+            (name, effects)
+        };
+
         tech_tree.complete_research(current_tech_id);
+
+        // Apply tech effects to global params and flags
+        for effect in &effects {
+            apply_tech_effect(effect, &mut global_params, &mut game_flags);
+        }
+
         queue.current = None;
         queue.accumulated = 0.0;
         info!("Research complete: {}", tech_name);
     }
+}
+
+/// Flush unused research points at the end of each tick (use it or lose it).
+pub fn flush_research(mut pool: ResMut<ResearchPool>) {
+    pool.points = 0.0;
 }
 
 // ---- Lua parsing ----

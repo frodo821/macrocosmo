@@ -22,9 +22,9 @@ pub struct Message {
     pub origin: [f64; 3],
     /// Destination position
     pub destination: [f64; 3],
-    /// Sexadie when the message was sent
+    /// Hexadies when the message was sent
     pub sent_at: i64,
-    /// Sexadie when the message will arrive
+    /// Hexadies when the message will arrive
     pub arrives_at: i64,
     /// Content of the message
     pub content: MessageContent,
@@ -55,7 +55,7 @@ pub enum CommandType {
 #[derive(Clone, Debug)]
 pub struct ReportPayload {
     pub source_system: Entity,
-    /// Sexadie when this information was current
+    /// Hexadies when this information was current
     pub info_timestamp: i64,
 }
 
@@ -163,7 +163,7 @@ pub fn send_remote_command(
     command_log: &mut CommandLog,
 ) {
     let distance = physics::distance_ly_arr(origin, destination);
-    let delay = physics::light_delay_sexadies(distance);
+    let delay = physics::light_delay_hexadies(distance);
     let arrives_at = sent_at + delay;
 
     command_log.entries.push(CommandLogEntry {
@@ -226,7 +226,7 @@ pub fn send_light_message(
     content: MessageContent,
 ) {
     let distance = physics::distance_ly_arr(origin, destination);
-    let delay = physics::light_delay_sexadies(distance);
+    let delay = physics::light_delay_hexadies(distance);
 
     commands.spawn(Message {
         origin,
@@ -247,7 +247,7 @@ pub fn dispatch_courier(
     messages: Vec<MessageContent>,
 ) {
     let distance = physics::distance_ly_arr(origin, destination);
-    let travel_time = physics::sublight_travel_sexadies(distance, speed_fraction);
+    let travel_time = physics::sublight_travel_hexadies(distance, speed_fraction);
 
     commands.spawn(CourierShip {
         origin,

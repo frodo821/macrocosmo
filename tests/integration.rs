@@ -5,7 +5,7 @@ use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
-use macrocosmo::physics::sublight_travel_sexadies;
+use macrocosmo::physics::sublight_travel_hexadies;
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::time_system::GameClock;
@@ -39,7 +39,7 @@ fn test_sublight_travel_and_arrival() {
     );
 
     // Explorer speed is 0.75c. Travel time for 1 LY = ceil(1.0 / (1/60 * 0.75)) = 80 sd
-    let travel_time = sublight_travel_sexadies(1.0, 0.75);
+    let travel_time = sublight_travel_hexadies(1.0, 0.75);
     assert_eq!(travel_time, 80);
 
     // Spawn explorer docked at System-A
@@ -119,13 +119,13 @@ fn test_survey_completes_and_marks_system() {
         ShipState::Surveying {
             target_system: sys_b,
             started_at: 0,
-            completes_at: SURVEY_DURATION_SEXADIES, // 5 sd
+            completes_at: SURVEY_DURATION_HEXADIES,
         },
         Position::from([0.0, 0.0, 0.0]),
     )).id();
 
-    // Advance by survey duration (5 sd)
-    advance_time(&mut app, SURVEY_DURATION_SEXADIES);
+    // Advance by survey duration
+    advance_time(&mut app, SURVEY_DURATION_HEXADIES);
 
     // System-B should now be surveyed
     let star = app.world().get::<StarSystem>(sys_b).unwrap();
@@ -239,16 +239,16 @@ fn test_production_accumulates_resources() {
             research: 0.0,
         },
         Production {
-            minerals_per_sexadie: 5.0,
-            energy_per_sexadie: 3.0,
-            research_per_sexadie: 1.0,
+            minerals_per_hexadies: 5.0,
+            energy_per_hexadies: 3.0,
+            research_per_hexadies: 1.0,
         },
         BuildQueue {
             queue: Vec::new(),
         },
     ));
 
-    // Advance 10 sexadies
+    // Advance 10 hexadies
     advance_time(&mut app, 10);
 
     let mut stockpile_query = app.world_mut().query::<&ResourceStockpile>();
@@ -264,9 +264,11 @@ fn test_production_accumulates_resources() {
         "Expected 30 energy, got {}",
         stockpile.energy
     );
+    // Research is no longer accumulated in the stockpile; it is emitted
+    // as PendingResearch entities via emit_research instead.
     assert!(
-        (stockpile.research - 10.0).abs() < 1e-6,
-        "Expected 10 research, got {}",
+        stockpile.research.abs() < 1e-6,
+        "Expected 0 research in stockpile (emitted as PendingResearch), got {}",
         stockpile.research
     );
 }
@@ -298,9 +300,9 @@ fn test_build_queue_spawns_ship() {
             research: 0.0,
         },
         Production {
-            minerals_per_sexadie: 0.0,
-            energy_per_sexadie: 0.0,
-            research_per_sexadie: 0.0,
+            minerals_per_hexadies: 0.0,
+            energy_per_hexadies: 0.0,
+            research_per_hexadies: 0.0,
         },
         BuildQueue {
             queue: vec![BuildOrder {
@@ -322,7 +324,7 @@ fn test_build_queue_spawns_ship() {
     let mut ship_query = app.world_mut().query::<&Ship>();
     let ships_before = ship_query.iter(app.world()).count();
 
-    // Advance 1 sexadie (enough resources to complete the order in one tick)
+    // Advance 1 hexadies (enough resources to complete the order in one tick)
     advance_time(&mut app, 1);
     // Need another update to flush deferred spawn commands
     app.update();
@@ -500,9 +502,9 @@ fn all_systems_no_query_conflict() {
             research: 0.0,
         },
         Production {
-            minerals_per_sexadie: 5.0,
-            energy_per_sexadie: 5.0,
-            research_per_sexadie: 1.0,
+            minerals_per_hexadies: 5.0,
+            energy_per_hexadies: 5.0,
+            research_per_hexadies: 1.0,
         },
         BuildQueue {
             queue: vec![],
@@ -536,6 +538,7 @@ fn all_systems_no_query_conflict() {
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
         CommandQueue::default(),
+        Cargo::default(),
     ));
 
     // Colony ship docked at capital
@@ -553,6 +556,7 @@ fn all_systems_no_query_conflict() {
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
         CommandQueue::default(),
+        Cargo::default(),
     ));
 
     // Courier docked at capital
@@ -570,6 +574,7 @@ fn all_systems_no_query_conflict() {
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
         CommandQueue::default(),
+        Cargo::default(),
     ));
 
     // Run several frames. If any Query conflicts exist, Bevy will panic here.

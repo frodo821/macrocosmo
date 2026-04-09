@@ -8,8 +8,8 @@ use crate::colony::{
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
-use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_sexadies};
-use crate::time_system::{GameClock, SEXADIES_PER_YEAR};
+use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
+use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 // --- #34: Command queue ---
 
@@ -81,11 +81,11 @@ fn resource_level_name(level: ResourceLevel) -> &'static str {
 /// Initial FTL speed as a multiple of light speed
 pub const INITIAL_FTL_SPEED_C: f64 = 10.0;
 
-/// Duration of a survey operation in sexadies (30 sexadies = half a year) (#32)
-pub const SURVEY_DURATION_SEXADIES: i64 = 30;
+/// Duration of a survey operation in hexadies (30 hexadies = half a year) (#32)
+pub const SURVEY_DURATION_HEXADIES: i64 = 30;
 
-/// Duration of a colonization/settling operation in sexadies (60 sexadies = 1 year) (#32)
-pub const SETTLING_DURATION_SEXADIES: i64 = 60;
+/// Duration of a colonization/settling operation in hexadies (60 hexadies = 1 year) (#32)
+pub const SETTLING_DURATION_HEXADIES: i64 = 60;
 
 /// Maximum distance in light-years from which a survey can be initiated
 pub const SURVEY_RANGE_LY: f64 = 5.0;
@@ -205,6 +205,13 @@ pub enum ShipState {
     },
 }
 
+/// Cargo hold for Courier ships (and potentially others).
+#[derive(Component, Default, Debug, Clone)]
+pub struct Cargo {
+    pub minerals: f64,
+    pub energy: f64,
+}
+
 pub fn spawn_ship(
     commands: &mut Commands,
     ship_type: ShipType,
@@ -228,12 +235,14 @@ pub fn spawn_ship(
             ShipState::Docked { system },
             initial_position,
             CommandQueue::default(),
+            Cargo::default(),
         ))
         .id()
 }
 
 // --- Sub-light travel ---
 
+/// #45: Accepts optional sublight_speed_bonus from GlobalParams
 pub fn start_sublight_travel(
     ship_state: &mut ShipState,
     ship_pos: &Position,
@@ -242,10 +251,23 @@ pub fn start_sublight_travel(
     target_system: Option<Entity>,
     current_time: i64,
 ) {
+    start_sublight_travel_with_bonus(ship_state, ship_pos, ship, destination, target_system, current_time, 0.0);
+}
+
+pub fn start_sublight_travel_with_bonus(
+    ship_state: &mut ShipState,
+    ship_pos: &Position,
+    ship: &Ship,
+    destination: Position,
+    target_system: Option<Entity>,
+    current_time: i64,
+    sublight_speed_bonus: f64,
+) {
     let origin = ship_pos.as_array();
     let dest = destination.as_array();
     let dist = distance_ly_arr(origin, dest);
-    let travel_time = sublight_travel_sexadies(dist, ship.sublight_speed);
+    let effective_speed = ship.sublight_speed + sublight_speed_bonus;
+    let travel_time = sublight_travel_hexadies(dist, effective_speed);
     *ship_state = ShipState::SubLight {
         origin,
         destination: dest,
@@ -313,6 +335,7 @@ pub fn sublight_movement_system(
 
 // --- FTL travel ---
 
+/// #45: Accepts optional ftl_range_bonus and ftl_speed_multiplier from GlobalParams
 pub fn start_ftl_travel(
     ship_state: &mut ShipState,
     ship: &Ship,
@@ -322,22 +345,38 @@ pub fn start_ftl_travel(
     dest_pos: &Position,
     current_time: i64,
 ) -> Result<(), &'static str> {
+    start_ftl_travel_with_bonus(ship_state, ship, origin_system, destination_system, origin_pos, dest_pos, current_time, 0.0, 1.0)
+}
+
+pub fn start_ftl_travel_with_bonus(
+    ship_state: &mut ShipState,
+    ship: &Ship,
+    origin_system: Entity,
+    destination_system: Entity,
+    origin_pos: &Position,
+    dest_pos: &Position,
+    current_time: i64,
+    ftl_range_bonus: f64,
+    ftl_speed_multiplier: f64,
+) -> Result<(), &'static str> {
     if ship.ftl_range <= 0.0 {
         return Err("Ship has no FTL capability");
     }
 
+    let effective_range = ship.ftl_range + ftl_range_bonus;
     let dist = distance_ly(origin_pos, dest_pos);
-    if dist > ship.ftl_range {
+    if dist > effective_range {
         return Err("Destination is beyond FTL range");
     }
 
-    let travel_sexadies = (dist * SEXADIES_PER_YEAR as f64 / INITIAL_FTL_SPEED_C).ceil() as i64;
+    let effective_ftl_speed = INITIAL_FTL_SPEED_C * ftl_speed_multiplier;
+    let travel_hexadies = (dist * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
 
     *ship_state = ShipState::InFTL {
         origin_system,
         destination_system,
         departed_at: current_time,
-        arrival_at: current_time + travel_sexadies,
+        arrival_at: current_time + travel_hexadies,
     };
 
     Ok(())
@@ -378,6 +417,7 @@ pub fn process_ftl_travel(
 // --- Survey system (#9) ---
 
 /// Attempt to start a survey operation on a target star system.
+/// #45: Accepts optional survey_range_bonus from GlobalParams
 pub fn start_survey(
     ship_state: &mut ShipState,
     ship: &Ship,
@@ -385,6 +425,18 @@ pub fn start_survey(
     ship_pos: &Position,
     system_pos: &Position,
     current_time: i64,
+) -> Result<(), &'static str> {
+    start_survey_with_bonus(ship_state, ship, target_system, ship_pos, system_pos, current_time, 0.0)
+}
+
+pub fn start_survey_with_bonus(
+    ship_state: &mut ShipState,
+    ship: &Ship,
+    target_system: Entity,
+    ship_pos: &Position,
+    system_pos: &Position,
+    current_time: i64,
+    survey_range_bonus: f64,
 ) -> Result<(), &'static str> {
     if ship.ship_type != ShipType::Explorer {
         return Err("Only Explorer ships can perform surveys");
@@ -395,15 +447,16 @@ pub fn start_survey(
         _ => return Err("Ship must be docked to begin a survey"),
     }
 
+    let effective_range = SURVEY_RANGE_LY + survey_range_bonus;
     let distance = ship_pos.distance_to(system_pos);
-    if distance > SURVEY_RANGE_LY {
+    if distance > effective_range {
         return Err("Target system is beyond survey range");
     }
 
     *ship_state = ShipState::Surveying {
         target_system,
         started_at: current_time,
-        completes_at: current_time + SURVEY_DURATION_SEXADIES,
+        completes_at: current_time + SURVEY_DURATION_HEXADIES,
     };
 
     Ok(())
@@ -620,9 +673,9 @@ pub fn process_settling(
                         research: 0.0,
                     },
                     Production {
-                        minerals_per_sexadie: minerals_rate,
-                        energy_per_sexadie: energy_rate,
-                        research_per_sexadie: research_rate,
+                        minerals_per_hexadies: minerals_rate,
+                        energy_per_hexadies: energy_rate,
+                        research_per_hexadies: research_rate,
                     },
                     BuildQueue {
                         queue: Vec::new(),
@@ -664,9 +717,11 @@ pub fn resource_production_rate(level: ResourceLevel) -> f64 {
 // --- Pending ship command processing (#33) ---
 
 /// Processes pending ship commands that have arrived after communication delay.
+/// #45: Uses GlobalParams for tech bonuses
 pub fn process_pending_ship_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
+    global_params: Res<crate::technology::GlobalParams>,
     pending: Query<(Entity, &PendingShipCommand)>,
     mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
@@ -704,7 +759,7 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
-                match start_ftl_travel(
+                match start_ftl_travel_with_bonus(
                     &mut state,
                     &ship,
                     docked_system,
@@ -712,6 +767,8 @@ pub fn process_pending_ship_commands(
                     origin_pos,
                     dest_pos,
                     clock.elapsed,
+                    global_params.ftl_range_bonus,
+                    global_params.ftl_speed_multiplier,
                 ) {
                     Ok(()) => {
                         info!(
@@ -733,13 +790,14 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
-                start_sublight_travel(
+                start_sublight_travel_with_bonus(
                     &mut state,
                     ship_pos,
                     &ship,
                     *dest_pos,
                     Some(dest),
                     clock.elapsed,
+                    global_params.sublight_speed_bonus,
                 );
                 info!(
                     "Remote sub-light command executed: {} heading to {}",
@@ -752,7 +810,7 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
-                match start_survey(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed) {
+                match start_survey_with_bonus(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed, global_params.survey_range_bonus) {
                     Ok(()) => {
                         info!(
                             "Remote survey command executed: {} surveying {}",
@@ -775,8 +833,10 @@ pub fn process_pending_ship_commands(
 
 // --- Command queue processing (#34) ---
 
+/// #45: Uses GlobalParams for tech bonuses
 pub fn process_command_queue(
     clock: Res<GameClock>,
+    global_params: Res<crate::technology::GlobalParams>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position)>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
 ) {
@@ -798,13 +858,14 @@ pub fn process_command_queue(
                     warn!("Queued MoveTo target no longer exists");
                     continue;
                 };
-                start_sublight_travel(
+                start_sublight_travel_with_bonus(
                     &mut state,
                     ship_pos,
                     ship,
                     *target_pos,
                     Some(target),
                     clock.elapsed,
+                    global_params.sublight_speed_bonus,
                 );
                 info!("Queue: Ship {} moving to {}", ship.name, target_star.name);
             }
@@ -816,7 +877,7 @@ pub fn process_command_queue(
                 let Ok((_dock_entity, _dock_star, dock_pos)) = systems.get(docked_system) else {
                     continue;
                 };
-                match start_ftl_travel(
+                match start_ftl_travel_with_bonus(
                     &mut state,
                     ship,
                     docked_system,
@@ -824,6 +885,8 @@ pub fn process_command_queue(
                     dock_pos,
                     target_pos,
                     clock.elapsed,
+                    global_params.ftl_range_bonus,
+                    global_params.ftl_speed_multiplier,
                 ) {
                     Ok(()) => {
                         info!(
@@ -841,13 +904,14 @@ pub fn process_command_queue(
                     warn!("Queued Survey target no longer exists");
                     continue;
                 };
-                match start_survey(
+                match start_survey_with_bonus(
                     &mut state,
                     ship,
                     target,
                     ship_pos,
                     target_pos,
                     clock.elapsed,
+                    global_params.survey_range_bonus,
                 ) {
                     Ok(()) => {
                         info!(
@@ -1003,7 +1067,7 @@ mod tests {
         match state {
             ShipState::Surveying { completes_at, started_at, .. } => {
                 assert_eq!(started_at, 50);
-                assert_eq!(completes_at, 80); // 50 + SURVEY_DURATION_SEXADIES (30)
+                assert_eq!(completes_at, 80); // 50 + SURVEY_DURATION_HEXADIES (30)
             }
             _ => panic!("Expected Surveying state"),
         }

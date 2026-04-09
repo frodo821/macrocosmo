@@ -141,23 +141,44 @@ fn is_habitable(h: Habitability) -> bool {
 
 pub fn generate_galaxy(mut commands: Commands) {
     let mut rng = rand::rng();
-    let num_systems = 50;
+    let num_systems = 100;
+    let num_arms = 3;
+    let galaxy_radius = 80.0_f64; // light-years
+    let arm_twist = 2.5; // how tightly the arms spiral
+    let arm_spread = 0.4; // angular spread of each arm
+    let min_distance = 3.0_f64;
 
-    let min_distance = 3.0_f64; // Minimum distance between star systems in light-years
     let mut systems: Vec<(String, [f64; 3])> = Vec::new();
     let mut attempts = 0;
-    let max_attempts = num_systems * 20;
-    let mut i = 0;
-    while systems.len() < num_systems && attempts < max_attempts {
+
+    while systems.len() < num_systems && attempts < num_systems * 50 {
         attempts += 1;
-        let r = rng.random_range(1.0_f64..100.0).sqrt() * 10.0;
-        let theta = rng.random_range(0.0..std::f64::consts::TAU);
-        let z = rng.random_range(-2.0_f64..2.0);
 
-        let x = r * theta.cos();
-        let y = r * theta.sin();
+        // Choose a random arm
+        let arm = rng.random_range(0..num_arms) as f64;
+        let arm_base_angle = arm * std::f64::consts::TAU / num_arms as f64;
 
-        // Check minimum distance to all existing systems
+        // Random radius (biased toward middle, not too close to center)
+        let r = rng.random_range(3.0_f64..galaxy_radius);
+        // Apply sqrt for more uniform radial distribution, but with slight center bias
+        let r = r.sqrt() / galaxy_radius.sqrt() * galaxy_radius;
+
+        // Spiral angle increases with distance
+        let spiral_angle = arm_base_angle + r / galaxy_radius * arm_twist * std::f64::consts::TAU;
+
+        // Add random spread
+        let angle_noise = rng.random_range(-arm_spread..arm_spread);
+        let final_angle = spiral_angle + angle_noise;
+
+        // Some extra noise in radius for natural look
+        let r_noise = rng.random_range(-2.0_f64..2.0);
+        let final_r = (r + r_noise).max(1.0);
+
+        let x = final_r * final_angle.cos();
+        let y = final_r * final_angle.sin();
+        let z = rng.random_range(-1.0_f64..1.0); // thin disk
+
+        // Minimum distance check
         let too_close = systems.iter().any(|(_, pos)| {
             let dx = pos[0] - x;
             let dy = pos[1] - y;
@@ -168,14 +189,33 @@ pub fn generate_galaxy(mut commands: Commands) {
             continue;
         }
 
-        let name = format!("System-{:03}", i);
-        i += 1;
+        let name = format!("System-{:03}", systems.len());
         systems.push((name, [x, y, z]));
     }
 
+    // Choose capital: find system closest to ~27 ly from center (1/3 galaxy radius)
+    let target_capital_radius = 27.0_f64;
+    let capital_idx = systems
+        .iter()
+        .enumerate()
+        .min_by(|(_, (_, a)), (_, (_, b))| {
+            let ra = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+            let rb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+            let da = (ra - target_capital_radius).abs();
+            let db = (rb - target_capital_radius).abs();
+            da.partial_cmp(&db).unwrap()
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    // Swap capital to index 0 so the rest of the code treats systems[0] as capital
+    systems.swap(0, capital_idx);
+
+    let actual_count = systems.len();
+
     // Generate attributes
-    let mut attributes: Vec<SystemAttributes> = Vec::with_capacity(num_systems);
-    for i in 0..num_systems {
+    let mut attributes: Vec<SystemAttributes> = Vec::with_capacity(actual_count);
+    for i in 0..actual_count {
         if i == 0 {
             attributes.push(capital_attributes(&mut rng));
         } else {
@@ -183,29 +223,47 @@ pub fn generate_galaxy(mut commands: Commands) {
         }
     }
 
-    // Ensure at least one habitable neighbour near capital
+    // Ensure at least 2 habitable neighbours within 10 ly of capital
     let capital_pos = systems[0].1;
-    let mut neighbours: Vec<(usize, f64)> = (1..num_systems)
+    let mut neighbours: Vec<(usize, f64)> = (1..actual_count)
         .map(|i| {
             let p = systems[i].1;
             let dx = p[0] - capital_pos[0];
             let dy = p[1] - capital_pos[1];
             let dz = p[2] - capital_pos[2];
-            (i, dx * dx + dy * dy + dz * dz)
+            (i, (dx * dx + dy * dy + dz * dz).sqrt())
         })
         .collect();
     neighbours.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    let nearby: Vec<usize> = neighbours.iter().take(5).map(|(i, _)| *i).collect();
+    let nearby: Vec<usize> = neighbours
+        .iter()
+        .filter(|(_, dist)| *dist <= 10.0)
+        .take(5)
+        .map(|(i, _)| *i)
+        .collect();
 
-    if !nearby.iter().any(|&i| is_habitable(attributes[i].habitability)) {
-        let closest = nearby[0];
-        attributes[closest].habitability = Habitability::Adequate;
-        attributes[closest].max_building_slots =
-            building_slots_for(Habitability::Adequate, &mut rng);
+    let habitable_count = nearby
+        .iter()
+        .filter(|&&i| is_habitable(attributes[i].habitability))
+        .count();
+
+    // Ensure at least 2 habitable neighbours
+    let needed = 2_usize.saturating_sub(habitable_count);
+    let mut fixed = 0;
+    for &idx in &nearby {
+        if fixed >= needed {
+            break;
+        }
+        if !is_habitable(attributes[idx].habitability) {
+            attributes[idx].habitability = Habitability::Adequate;
+            attributes[idx].max_building_slots =
+                building_slots_for(Habitability::Adequate, &mut rng);
+            fixed += 1;
+        }
     }
 
     // Gas obscured systems (15%)
-    let gas_indices: Vec<usize> = (0..num_systems)
+    let gas_indices: Vec<usize> = (0..actual_count)
         .filter(|_| rng.random_range(0.0_f32..1.0) < 0.15)
         .collect();
 
@@ -235,5 +293,5 @@ pub fn generate_galaxy(mut commands: Commands) {
         }
     }
 
-    info!("Galaxy generated: {} star systems", num_systems);
+    info!("Galaxy generated: {} star systems (spiral, {} arms)", actual_count, num_arms);
 }
