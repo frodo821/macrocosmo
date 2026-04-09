@@ -136,7 +136,7 @@ pub fn draw_system_panel(
                         ));
                     }
 
-                    // #51: Maintenance cost summary
+                    // #51/#64: Maintenance cost summary (ships charged via home_port)
                     {
                         let mut building_maintenance = 0.0;
                         if let Some(b) = buildings {
@@ -146,19 +146,25 @@ pub fn draw_system_panel(
                                 }
                             }
                         }
+                        // #64: Count ships whose home_port is this colony's system
                         let mut ship_maintenance = 0.0;
-                        for (_, ship, state, _) in ships_query.iter() {
-                            if let ShipState::Docked { system } = &*state {
-                                if *system == colony.system {
-                                    ship_maintenance += ship.ship_type.maintenance_cost();
-                                }
+                        let mut ships_based_here = 0u32;
+                        for (_, ship, _, _) in ships_query.iter() {
+                            if ship.home_port == colony.system {
+                                ship_maintenance += ship.ship_type.maintenance_cost();
+                                ships_based_here += 1;
                             }
                         }
                         let total_maintenance = building_maintenance + ship_maintenance;
                         if total_maintenance > 0.0 {
                             ui.label(format!("Maintenance: {:.1} E/hd", total_maintenance));
-                            ui.label(format!("  Ships: {:.1} E/hd", ship_maintenance));
                             ui.label(format!("  Buildings: {:.1} E/hd", building_maintenance));
+                        }
+                        if ships_based_here > 0 {
+                            ui.label(format!(
+                                "Ships based here: {} (maintenance: {:.1} E/hd)",
+                                ships_based_here, ship_maintenance
+                            ));
                         }
                     }
 
@@ -505,6 +511,7 @@ pub fn draw_ship_panel(
             docked_system,
             cargo_data,
             queued_cmds,
+            home_port,
             home_port_name,
             maintenance_cost,
             docked_at_colony,
@@ -523,6 +530,7 @@ pub fn draw_ship_panel(
         docked_system,
         cargo_data,
         queued_cmds,
+        _home_port_entity,
         home_port_name,
         maintenance_cost,
         docked_at_colony,
