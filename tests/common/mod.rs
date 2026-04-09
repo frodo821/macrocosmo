@@ -7,7 +7,7 @@ use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::ship::*;
-use macrocosmo::technology::{self, TechTree};
+use macrocosmo::technology::{self};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
 
