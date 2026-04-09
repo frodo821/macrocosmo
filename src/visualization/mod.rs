@@ -672,6 +672,7 @@ pub fn click_select_system(
         return;
     };
 
+    let cmd_held = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
     let shift_held = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
 
     // Check in-transit and active ships (docked ships are selected via the outline panel)
@@ -738,27 +739,25 @@ pub fn click_select_system(
         }
     }
 
-    // When a ship IS selected
-    if selected_ship.0.is_some() {
+    // When a ship IS selected AND Cmd is held: context menu / default action
+    if selected_ship.0.is_some() && cmd_held {
         if let Some((star_entity, _)) = best_star {
             context_menu.open = true;
             context_menu.position = [cursor_pos.x, cursor_pos.y];
             context_menu.target_system = Some(star_entity);
-            context_menu.execute_default = shift_held;
-            // Don't change SelectedSystem or SelectedShip
-            return;
-        } else {
-            // Clicked empty space: deselect ship
-            selected_ship.0 = None;
+            context_menu.execute_default = shift_held; // Cmd+Shift = default action
             return;
         }
     }
 
-    // When NO ship is selected: standard star selection
+    // Normal click: select star system (works whether or not ship is selected)
     if let Some((entity, _)) = best_star {
         selected.0 = Some(entity);
+        // Keep ship selected — star becomes command target
     } else {
+        // Clicked empty space
         selected.0 = None;
+        selected_ship.0 = None;
     }
 }
 
