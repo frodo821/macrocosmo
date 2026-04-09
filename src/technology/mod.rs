@@ -23,7 +23,9 @@ impl Plugin for TechnologyPlugin {
         .insert_resource(GameFlags::default())
         .add_systems(
             Update,
-            (emit_research, receive_research, tick_research, flush_research).chain(),
+            (emit_research, receive_research, tick_research, flush_research)
+                .chain()
+                .after(crate::time_system::advance_game_time),
         );
     }
 }

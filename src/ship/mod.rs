@@ -105,7 +105,7 @@ impl Plugin for ShipPlugin {
                 .after(process_ftl_travel)
                 .after(process_surveys),
             resolve_combat,
-        ));
+        ).after(crate::time_system::advance_game_time));
     }
 }
 

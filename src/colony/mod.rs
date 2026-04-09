@@ -28,7 +28,8 @@ impl Plugin for ColonyPlugin {
                     tick_building_queue,
                     advance_production_tick,
                 )
-                    .chain(),
+                    .chain()
+                    .after(crate::time_system::advance_game_time),
             )
             .add_systems(Update, update_sovereignty);
     }
