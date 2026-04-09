@@ -122,17 +122,18 @@ pub fn draw_system_panel(
 
                     if let Some(prod) = production {
                         ui.label(format!(
-                            "Production: M {:.1} | E {:.1} | R {:.1} /sd",
+                            "Production: M {:.1} | E {:.1} | R {:.1} | F {:.1} /hd",
                             prod.minerals_per_hexadies,
                             prod.energy_per_hexadies,
                             prod.research_per_hexadies,
+                            prod.food_per_hexadies,
                         ));
                     }
 
                     if let Some(stockpile) = stockpile {
                         ui.label(format!(
-                            "Stockpile: M {:.0} | E {:.0} | R {:.0}",
-                            stockpile.minerals, stockpile.energy, stockpile.research,
+                            "Stockpile: M {:.0} | E {:.0} | R {:.0} | F {:.0}",
+                            stockpile.minerals, stockpile.energy, stockpile.research, stockpile.food,
                         ));
                     }
 
@@ -262,6 +263,7 @@ pub fn draw_system_panel(
                                 BuildingType::ResearchLab,
                                 BuildingType::Shipyard,
                                 BuildingType::Port,
+                                BuildingType::Farm,
                             ];
                             let mut build_building_request: Option<BuildingType> = None;
                             for bt in &building_types {

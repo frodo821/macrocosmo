@@ -236,11 +236,14 @@ pub fn spawn_test_colony(
                 minerals,
                 energy,
                 research: 0.0,
+                food: 1000.0,
+                authority: 0.0,
             },
             Production {
                 minerals_per_hexadies: 5.0,
                 energy_per_hexadies: 5.0,
                 research_per_hexadies: 1.0,
+                food_per_hexadies: 5.0,
             },
             BuildQueue {
                 queue: Vec::new(),

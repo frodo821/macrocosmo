@@ -241,11 +241,14 @@ fn test_production_accumulates_resources() {
             minerals: 0.0,
             energy: 0.0,
             research: 0.0,
+            food: 1000.0,
+            authority: 0.0,
         },
         Production {
             minerals_per_hexadies: 5.0,
             energy_per_hexadies: 3.0,
             research_per_hexadies: 1.0,
+            food_per_hexadies: 5.0,
         },
         BuildQueue {
             queue: Vec::new(),
@@ -302,11 +305,14 @@ fn test_build_queue_spawns_ship() {
             minerals: 1000.0,
             energy: 1000.0,
             research: 0.0,
+            food: 1000.0,
+            authority: 0.0,
         },
         Production {
             minerals_per_hexadies: 0.0,
             energy_per_hexadies: 0.0,
             research_per_hexadies: 0.0,
+            food_per_hexadies: 0.0,
         },
         BuildQueue {
             queue: vec![BuildOrder {
@@ -504,11 +510,14 @@ fn all_systems_no_query_conflict() {
             minerals: 500.0,
             energy: 500.0,
             research: 0.0,
+            food: 1000.0,
+            authority: 0.0,
         },
         Production {
             minerals_per_hexadies: 5.0,
             energy_per_hexadies: 5.0,
             research_per_hexadies: 1.0,
+            food_per_hexadies: 5.0,
         },
         BuildQueue {
             queue: vec![],

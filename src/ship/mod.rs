@@ -791,11 +791,14 @@ pub fn process_settling(
                         minerals: 100.0,
                         energy: 100.0,
                         research: 0.0,
+                        food: 50.0,
+                        authority: 0.0,
                     },
                     Production {
                         minerals_per_hexadies: minerals_rate,
                         energy_per_hexadies: energy_rate,
                         research_per_hexadies: research_rate,
+                        food_per_hexadies: 1.0,
                     },
                     BuildQueue {
                         queue: Vec::new(),
