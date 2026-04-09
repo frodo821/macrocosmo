@@ -13,7 +13,7 @@ use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, StationedAt};
-use crate::ship::{Cargo, Ship, ShipState};
+use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedShip, SelectedSystem};
@@ -56,6 +56,7 @@ pub fn draw_all_ui(
         Option<&mut BuildingQueue>,
     )>,
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    mut command_queues: Query<&mut CommandQueue>,
     positions: Query<&Position>,
     knowledge: Res<KnowledgeStore>,
     command_log: Res<CommandLog>,
@@ -113,6 +114,7 @@ pub fn draw_all_ui(
         &mut selected_ship,
         &stars,
         &mut ships_query,
+        &mut command_queues,
         &positions,
         &clock,
         &global_params,

@@ -7,7 +7,7 @@ use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
-use crate::ship::{Cargo, Ship, ShipState, ShipType};
+use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState, ShipType};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedShip, SelectedSystem};
@@ -507,6 +507,7 @@ pub fn draw_context_menu(
     selected_ship: &mut SelectedShip,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    command_queues: &mut Query<&mut CommandQueue>,
     positions: &Query<&Position>,
     clock: &GameClock,
     global_params: &GlobalParams,
@@ -536,24 +537,43 @@ pub fn draw_context_menu(
         } else {
             None
         };
+        // For non-docked ships, determine origin position from current state
+        let current_destination_system = match &*state {
+            ShipState::SubLight { target_system, .. } => *target_system,
+            ShipState::InFTL { destination_system, .. } => Some(*destination_system),
+            ShipState::Surveying { target_system, .. } => Some(*target_system),
+            ShipState::Settling { system, .. } => Some(*system),
+            ShipState::Docked { .. } => None, // handled via docked_system
+        };
         (
             ship.name.clone(),
             ship.ship_type,
             ship.ftl_range,
             ship.sublight_speed,
             docked_system,
+            current_destination_system,
         )
     };
 
-    let (ship_name, ship_type, ftl_range, sublight_speed, docked_system) = ship_data;
+    let (ship_name, ship_type, ftl_range, sublight_speed, docked_system, current_destination_system) = ship_data;
 
-    let Some(docked_system) = docked_system else {
-        // Ship is not docked; close menu
+    let is_docked = docked_system.is_some();
+
+    // For docked ships, the origin is the docked system.
+    // For non-docked ships, the origin is their current destination (where they'll end up).
+    let origin_system = if let Some(ds) = docked_system {
+        Some(ds)
+    } else {
+        current_destination_system
+    };
+
+    let Some(origin_system) = origin_system else {
+        // No origin determinable; close menu
         context_menu.open = false;
         return;
     };
 
-    if target_entity == docked_system {
+    if is_docked && target_entity == origin_system {
         // Clicking the same system the ship is docked at; close menu
         context_menu.open = false;
         return;
@@ -564,12 +584,12 @@ pub fn draw_context_menu(
         context_menu.open = false;
         return;
     };
-    let Ok(dock_pos) = positions.get(docked_system) else {
+    let Ok(origin_pos) = positions.get(origin_system) else {
         context_menu.open = false;
         return;
     };
 
-    let dist = physics::distance_ly(dock_pos, target_pos);
+    let dist = physics::distance_ly(origin_pos, target_pos);
     let target_name = target_star.name.clone();
     let target_surveyed = target_star.surveyed;
     let target_colonized = target_star.colonized;
@@ -583,36 +603,53 @@ pub fn draw_context_menu(
     // #48: Use effective FTL range including tech bonuses
     let effective_ftl_range = ftl_range + global_params.ftl_range_bonus;
     let can_ftl = effective_ftl_range > 0.0 && target_surveyed && dist <= effective_ftl_range;
-    let can_survey = ship_type == ShipType::Explorer && !target_surveyed;
-    let can_colonize = ship_type == ShipType::ColonyShip && target_habitable && !target_colonized && target_surveyed;
+    // Survey and Colonize only available for docked ships (they require being at a system)
+    let can_survey = is_docked && ship_type == ShipType::Explorer && !target_surveyed;
+    let can_colonize = is_docked && ship_type == ShipType::ColonyShip && target_habitable && !target_colonized && target_surveyed;
 
-    let dock_pos_arr = dock_pos.as_array();
+    let origin_pos_arr = origin_pos.as_array();
     let target_pos_arr = target_pos.as_array();
 
     let mut command: Option<ShipState> = None;
+    let mut queued_command: Option<QueuedCommand> = None;
     let mut close_menu = false;
 
     // Shift+click: execute default action immediately without showing menu
     if context_menu.execute_default {
-        if can_ftl {
-            let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
-            let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
-            let travel_time = travel_time.max(1);
-            command = Some(ShipState::InFTL {
-                origin_system: docked_system,
-                destination_system: target_entity,
-                departed_at: clock.elapsed,
-                arrival_at: clock.elapsed + travel_time,
-            });
+        if is_docked {
+            if can_ftl {
+                let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
+                let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+                let travel_time = travel_time.max(1);
+                command = Some(ShipState::InFTL {
+                    origin_system,
+                    destination_system: target_entity,
+                    departed_at: clock.elapsed,
+                    arrival_at: clock.elapsed + travel_time,
+                });
+            } else {
+                let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
+                command = Some(ShipState::SubLight {
+                    origin: origin_pos_arr,
+                    destination: target_pos_arr,
+                    target_system: Some(target_entity),
+                    departed_at: clock.elapsed,
+                    arrival_at: clock.elapsed + travel_time,
+                });
+            }
         } else {
-            let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
-            command = Some(ShipState::SubLight {
-                origin: dock_pos_arr,
-                destination: target_pos_arr,
-                target_system: Some(target_entity),
-                departed_at: clock.elapsed,
-                arrival_at: clock.elapsed + travel_time,
-            });
+            // Non-docked: queue the default action
+            if can_ftl {
+                queued_command = Some(QueuedCommand::FTLTo {
+                    system: target_entity,
+                    expected_position: origin_pos_arr,
+                });
+            } else {
+                queued_command = Some(QueuedCommand::MoveTo {
+                    system: target_entity,
+                    expected_position: origin_pos_arr,
+                });
+            }
         }
         context_menu.open = false;
         context_menu.target_system = None;
@@ -624,10 +661,17 @@ pub fn draw_context_menu(
                 selected_ship.0 = None;
             }
         }
+        if let Some(qc) = queued_command {
+            if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
+                queue.commands.push(qc);
+                selected_ship.0 = None;
+            }
+        }
         return;
     }
 
     let menu_pos = egui::pos2(context_menu.position[0], context_menu.position[1]);
+    let queue_prefix = if is_docked { "" } else { "Queue: " };
 
     egui::Window::new("Ship Commands")
         .fixed_pos(menu_pos)
@@ -640,38 +684,59 @@ pub fn draw_context_menu(
                     .strong(),
             );
             ui.label(format!("Distance: {:.1} ly", dist));
+            if !is_docked {
+                ui.label(
+                    egui::RichText::new("(commands will be queued)")
+                        .weak()
+                        .italics(),
+                );
+            }
             ui.separator();
 
             // Move (Sub-light) -- always available
-            if ui.button("Move (Sub-light)").clicked() {
-                let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
-                command = Some(ShipState::SubLight {
-                    origin: dock_pos_arr,
-                    destination: target_pos_arr,
-                    target_system: Some(target_entity),
-                    departed_at: clock.elapsed,
-                    arrival_at: clock.elapsed + travel_time,
-                });
+            if ui.button(format!("{}Move (Sub-light)", queue_prefix)).clicked() {
+                if is_docked {
+                    let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
+                    command = Some(ShipState::SubLight {
+                        origin: origin_pos_arr,
+                        destination: target_pos_arr,
+                        target_system: Some(target_entity),
+                        departed_at: clock.elapsed,
+                        arrival_at: clock.elapsed + travel_time,
+                    });
+                } else {
+                    queued_command = Some(QueuedCommand::MoveTo {
+                        system: target_entity,
+                        expected_position: origin_pos_arr,
+                    });
+                }
                 close_menu = true;
             }
 
             // FTL Jump -- if ship has FTL + target surveyed + in range
             if can_ftl {
-                if ui.button("FTL Jump").clicked() {
-                    let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
-                    let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
-                    let travel_time = travel_time.max(1);
-                    command = Some(ShipState::InFTL {
-                        origin_system: docked_system,
-                        destination_system: target_entity,
-                        departed_at: clock.elapsed,
-                        arrival_at: clock.elapsed + travel_time,
-                    });
+                if ui.button(format!("{}FTL Jump", queue_prefix)).clicked() {
+                    if is_docked {
+                        let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
+                        let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+                        let travel_time = travel_time.max(1);
+                        command = Some(ShipState::InFTL {
+                            origin_system,
+                            destination_system: target_entity,
+                            departed_at: clock.elapsed,
+                            arrival_at: clock.elapsed + travel_time,
+                        });
+                    } else {
+                        queued_command = Some(QueuedCommand::FTLTo {
+                            system: target_entity,
+                            expected_position: origin_pos_arr,
+                        });
+                    }
                     close_menu = true;
                 }
             }
 
-            // Survey -- if Explorer + target unsurveyed
+            // Survey -- if Explorer + target unsurveyed (docked only)
             if can_survey {
                 if ui.button("Survey").clicked() {
                     let survey_time = physics::light_delay_hexadies(dist) * 2 + 5;
@@ -684,7 +749,7 @@ pub fn draw_context_menu(
                 }
             }
 
-            // Colonize -- if ColonyShip + target habitable + uncolonized
+            // Colonize -- if ColonyShip + target habitable + uncolonized (docked only)
             if can_colonize {
                 if ui.button("Colonize").clicked() {
                     command = Some(ShipState::Settling {
@@ -707,10 +772,18 @@ pub fn draw_context_menu(
         context_menu.target_system = None;
     }
 
-    // Apply command
+    // Apply immediate command (docked ships)
     if let Some(new_state) = command {
         if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
             *state = new_state;
+            selected_ship.0 = None;
+        }
+    }
+
+    // Apply queued command (non-docked ships)
+    if let Some(qc) = queued_command {
+        if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
+            queue.commands.push(qc);
             selected_ship.0 = None;
         }
     }
