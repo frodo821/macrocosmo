@@ -798,10 +798,10 @@ pub fn process_settling(
                     },
                     ResourceCapacity::default(),
                     Production {
-                        minerals_per_hexadies: minerals_rate,
-                        energy_per_hexadies: energy_rate,
-                        research_per_hexadies: research_rate,
-                        food_per_hexadies: Amt::ZERO,
+                        minerals_per_hexadies: crate::modifier::ModifiedValue::new(minerals_rate),
+                        energy_per_hexadies: crate::modifier::ModifiedValue::new(energy_rate),
+                        research_per_hexadies: crate::modifier::ModifiedValue::new(research_rate),
+                        food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                     },
                     BuildQueue {
                         queue: Vec::new(),

@@ -7,6 +7,7 @@ use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
+use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::ship::*;
 use macrocosmo::technology::{self};
 use macrocosmo::time_system::{GameClock, GameSpeed};
@@ -41,10 +42,12 @@ pub fn test_app() -> App {
             .chain()
             .after(macrocosmo::time_system::advance_game_time),
     );
+    app.insert_resource(AuthorityParams::default());
     app.add_systems(
         Update,
         (
             tick_authority,
+            sync_building_modifiers,
             tick_production,
             tick_maintenance,
             tick_population_growth,
@@ -112,10 +115,12 @@ pub fn full_test_app() -> App {
     );
 
     // --- Colony systems (from ColonyPlugin) ---
+    app.insert_resource(AuthorityParams::default());
     app.add_systems(
         Update,
         (
             tick_authority,
+            sync_building_modifiers,
             tick_production,
             tick_maintenance,
             tick_population_growth,
@@ -244,10 +249,10 @@ pub fn spawn_test_colony(
             },
             ResourceCapacity::default(),
             Production {
-                minerals_per_hexadies: Amt::units(5),
-                energy_per_hexadies: Amt::units(5),
-                research_per_hexadies: Amt::units(1),
-                food_per_hexadies: Amt::ZERO,
+                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
             BuildQueue {
                 queue: Vec::new(),

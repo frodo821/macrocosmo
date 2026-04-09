@@ -4,6 +4,7 @@ use crate::amount::Amt;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{StarSystem, SystemAttributes, Sovereignty};
+use crate::modifier::{ModifiedValue, Modifier};
 use crate::ship::{spawn_ship, Owner, Ship, ShipState, ShipType};
 use crate::time_system::GameClock;
 
@@ -15,6 +16,7 @@ pub struct LastProductionTick(pub i64);
 impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LastProductionTick>()
+            .insert_resource(AuthorityParams::default())
             .add_systems(
                 Startup,
                 spawn_capital_colony.after(crate::galaxy::generate_galaxy),
@@ -23,6 +25,7 @@ impl Plugin for ColonyPlugin {
                 Update,
                 (
                     tick_authority,
+                    sync_building_modifiers,
                     tick_production,
                     tick_maintenance,
                     tick_population_growth,
@@ -74,10 +77,10 @@ impl Default for ResourceCapacity {
 
 #[derive(Component)]
 pub struct Production {
-    pub minerals_per_hexadies: Amt,
-    pub energy_per_hexadies: Amt,
-    pub research_per_hexadies: Amt,
-    pub food_per_hexadies: Amt,
+    pub minerals_per_hexadies: ModifiedValue,
+    pub energy_per_hexadies: ModifiedValue,
+    pub research_per_hexadies: ModifiedValue,
+    pub food_per_hexadies: ModifiedValue,
 }
 
 /// Base authority produced per hexady by the capital colony.
@@ -90,6 +93,25 @@ pub const AUTHORITY_COST_PER_COLONY: Amt = Amt::new(0, 500);
 /// the capital's authority stockpile is depleted.
 /// 0.5 as fixed-point: Amt(500) means ×0.500
 pub const AUTHORITY_DEFICIT_PENALTY: Amt = Amt::new(0, 500);
+
+/// Configurable authority parameters. Tech effects can push modifiers to
+/// adjust authority production or cost scaling.
+#[derive(Resource)]
+pub struct AuthorityParams {
+    /// Authority produced per hexady by the capital colony. Base = 1.0
+    pub production: ModifiedValue,
+    /// Authority cost per hexady per non-capital colony. Base = 0.5
+    pub cost_per_colony: ModifiedValue,
+}
+
+impl Default for AuthorityParams {
+    fn default() -> Self {
+        Self {
+            production: ModifiedValue::new(BASE_AUTHORITY_PER_HEXADIES),
+            cost_per_colony: ModifiedValue::new(AUTHORITY_COST_PER_COLONY),
+        }
+    }
+}
 
 /// #29: Production focus weights for colony output
 #[derive(Component)]
@@ -326,10 +348,10 @@ pub fn spawn_capital_colony(
                 },
                 ResourceCapacity::default(),
                 Production {
-                    minerals_per_hexadies: Amt::units(5),
-                    energy_per_hexadies: Amt::units(5),
-                    research_per_hexadies: Amt::units(1),
-                    food_per_hexadies: Amt::units(5),
+                    minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                    energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                    research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+                    food_per_hexadies: ModifiedValue::new(Amt::units(5)),
                 },
                 BuildQueue {
                     queue: Vec::new(),
@@ -345,6 +367,76 @@ pub fn spawn_capital_colony(
     warn!("No capital star system found; capital colony not created");
 }
 
+/// Synchronise building-slot bonuses as modifiers on the Production component.
+/// For each occupied building slot, a `base_add` modifier is pushed.
+/// For empty slots, any previously set modifier is removed.
+/// Runs BEFORE tick_production so that `.final_value()` reflects current buildings.
+pub fn sync_building_modifiers(
+    mut query: Query<(&Buildings, &mut Production)>,
+) {
+    for (buildings, mut prod) in &mut query {
+        for (slot_idx, slot) in buildings.slots.iter().enumerate() {
+            let id_m = format!("building_slot_{}_minerals", slot_idx);
+            let id_e = format!("building_slot_{}_energy", slot_idx);
+            let id_r = format!("building_slot_{}_research", slot_idx);
+            let id_f = format!("building_slot_{}_food", slot_idx);
+            if let Some(bt) = slot {
+                let (m, e, r, f) = bt.production_bonus();
+                let label = format!("{} (slot {})", bt.name(), slot_idx);
+                if m != Amt::ZERO {
+                    prod.minerals_per_hexadies.push_modifier(Modifier {
+                        id: id_m,
+                        label: label.clone(),
+                        base_add: m,
+                        multiplier: Amt::ZERO,
+                        add: Amt::ZERO,
+                    });
+                } else {
+                    prod.minerals_per_hexadies.pop_modifier(&id_m);
+                }
+                if e != Amt::ZERO {
+                    prod.energy_per_hexadies.push_modifier(Modifier {
+                        id: id_e,
+                        label: label.clone(),
+                        base_add: e,
+                        multiplier: Amt::ZERO,
+                        add: Amt::ZERO,
+                    });
+                } else {
+                    prod.energy_per_hexadies.pop_modifier(&id_e);
+                }
+                if r != Amt::ZERO {
+                    prod.research_per_hexadies.push_modifier(Modifier {
+                        id: id_r,
+                        label: label.clone(),
+                        base_add: r,
+                        multiplier: Amt::ZERO,
+                        add: Amt::ZERO,
+                    });
+                } else {
+                    prod.research_per_hexadies.pop_modifier(&id_r);
+                }
+                if f != Amt::ZERO {
+                    prod.food_per_hexadies.push_modifier(Modifier {
+                        id: id_f,
+                        label,
+                        base_add: f,
+                        multiplier: Amt::ZERO,
+                        add: Amt::ZERO,
+                    });
+                } else {
+                    prod.food_per_hexadies.pop_modifier(&id_f);
+                }
+            } else {
+                prod.minerals_per_hexadies.pop_modifier(&id_m);
+                prod.energy_per_hexadies.pop_modifier(&id_e);
+                prod.research_per_hexadies.pop_modifier(&id_r);
+                prod.food_per_hexadies.pop_modifier(&id_f);
+            }
+        }
+    }
+}
+
 /// #29: tick_production uses ProductionFocus weights and building bonuses
 /// #45: Multiplies output by GlobalParams production multipliers
 /// #44: Research is no longer accumulated in the stockpile; emitted via emit_research
@@ -353,7 +445,7 @@ pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     global_params: Res<crate::technology::GlobalParams>,
-    mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&Buildings>, Option<&ProductionFocus>)>,
+    mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&ProductionFocus>)>,
     stars: Query<&StarSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -364,7 +456,7 @@ pub fn tick_production(
     let d_amt = Amt::units(d);
 
     // #73: Check if the capital has an authority deficit.
-    let capital_authority = query.iter().find_map(|(colony, _, stockpile, _, _)| {
+    let capital_authority = query.iter().find_map(|(colony, _, stockpile, _)| {
         stars.get(colony.system).ok().and_then(|star| {
             if star.is_capital {
                 Some(stockpile.authority)
@@ -375,18 +467,7 @@ pub fn tick_production(
     });
     let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
 
-    for (colony, prod, mut stockpile, buildings, focus) in &mut query {
-        let (mut bonus_m, mut bonus_e, mut bonus_f) = (Amt::ZERO, Amt::ZERO, Amt::ZERO);
-        if let Some(buildings) = buildings {
-            for slot in &buildings.slots {
-                if let Some(bt) = slot {
-                    let (m, e, _r, f) = bt.production_bonus();
-                    bonus_m = bonus_m.add(m);
-                    bonus_e = bonus_e.add(e);
-                    bonus_f = bonus_f.add(f);
-                }
-            }
-        }
+    for (colony, prod, mut stockpile, focus) in &mut query {
         let (mw, ew) = match focus {
             Some(f) => (f.minerals_weight, f.energy_weight),
             None => (Amt::units(1), Amt::units(1)),
@@ -400,18 +481,18 @@ pub fn tick_production(
             Amt::units(1)
         };
 
-        // production = (base + bonus) * weight * delta * global_mult * authority_mult
+        // Building bonuses are already included via modifiers on Production
+        // (sync_building_modifiers runs before this system).
         let m_global = Amt::milli((global_params.production_multiplier_minerals * 1000.0) as u64);
         let e_global = Amt::milli((global_params.production_multiplier_energy * 1000.0) as u64);
         stockpile.minerals = stockpile.minerals.add(
-            prod.minerals_per_hexadies.add(bonus_m).mul_amt(mw).mul_amt(d_amt).mul_amt(m_global).mul_amt(authority_multiplier)
+            prod.minerals_per_hexadies.final_value().mul_amt(mw).mul_amt(d_amt).mul_amt(m_global).mul_amt(authority_multiplier)
         );
         stockpile.energy = stockpile.energy.add(
-            prod.energy_per_hexadies.add(bonus_e).mul_amt(ew).mul_amt(d_amt).mul_amt(e_global).mul_amt(authority_multiplier)
+            prod.energy_per_hexadies.final_value().mul_amt(ew).mul_amt(d_amt).mul_amt(e_global).mul_amt(authority_multiplier)
         );
-        // #72: Food production from base rate + Farm building bonuses
         stockpile.food = stockpile.food.add(
-            prod.food_per_hexadies.add(bonus_f).mul_amt(d_amt).mul_amt(authority_multiplier)
+            prod.food_per_hexadies.final_value().mul_amt(d_amt).mul_amt(authority_multiplier)
         );
         // Research is no longer accumulated in the stockpile; it is emitted
         // directly via emit_research in the technology module.
@@ -432,7 +513,6 @@ pub fn tick_population_growth(
         &mut Colony,
         &mut ResourceStockpile,
         &Production,
-        Option<&Buildings>,
     )>,
     stars: Query<(&StarSystem, &crate::galaxy::SystemAttributes)>,
 ) {
@@ -444,7 +524,7 @@ pub fn tick_population_growth(
     }
     let d = delta as u64;
 
-    for (mut colony, mut stockpile, production, buildings) in &mut colonies {
+    for (mut colony, mut stockpile, production) in &mut colonies {
         // #72: Food consumption: pop * 0.1 * delta (bridge f64 pop → Amt food)
         let food_consumed = Amt::from_f64(colony.population).mul_amt(FOOD_PER_POP_PER_HEXADIES).mul_u64(d);
         stockpile.food = stockpile.food.sub(food_consumed);
@@ -460,16 +540,8 @@ pub fn tick_population_growth(
                 .map(|(_, attr)| attr.habitability.base_score())
                 .unwrap_or(0.5);
 
-            // Total food production (Amt domain)
-            let mut food_prod = production.food_per_hexadies;
-            if let Some(b) = buildings {
-                for slot in &b.slots {
-                    if let Some(bt) = slot {
-                        let (_, _, _, f) = bt.production_bonus();
-                        food_prod = food_prod.add(f);
-                    }
-                }
-            }
+            // Total food production from ModifiedValue (includes building bonuses)
+            let food_prod = production.food_per_hexadies.final_value();
 
             // K = min(habitat limit, food-sustainable population)
             let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
@@ -720,6 +792,7 @@ pub fn tick_maintenance(
 pub fn tick_authority(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
+    authority_params: Res<AuthorityParams>,
     mut colonies: Query<(&Colony, &mut ResourceStockpile)>,
     stars: Query<&StarSystem>,
 ) {
@@ -749,13 +822,15 @@ pub fn tick_authority(
     };
 
     // Second pass: produce authority at capital and deduct empire scale cost
+    let auth_production = authority_params.production.final_value();
+    let auth_cost_per_colony = authority_params.cost_per_colony.final_value();
     for (colony, mut stockpile) in &mut colonies {
         if colony.system == cap_sys {
             // Capital produces authority
-            stockpile.authority = stockpile.authority.add(BASE_AUTHORITY_PER_HEXADIES.mul_u64(d));
+            stockpile.authority = stockpile.authority.add(auth_production.mul_u64(d));
 
             // Deduct empire scale cost for non-capital colonies
-            let scale_cost = AUTHORITY_COST_PER_COLONY.mul_u64(non_capital_count).mul_u64(d);
+            let scale_cost = auth_cost_per_colony.mul_u64(non_capital_count).mul_u64(d);
             stockpile.authority = stockpile.authority.sub(scale_cost);
             break;
         }

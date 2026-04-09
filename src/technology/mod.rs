@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::amount::Amt;
-use crate::colony::{Buildings, Colony, Production, ProductionFocus};
+use crate::colony::{Colony, Production, ProductionFocus};
 use crate::components::Position;
 use crate::physics;
 use crate::player::{Player, StationedAt};
@@ -342,7 +342,7 @@ pub fn emit_research(
     clock: Res<GameClock>,
     last_tick: Res<LastResearchTick>,
     global_params: Res<GlobalParams>,
-    colonies: Query<(&Colony, &Production, Option<&Buildings>, Option<&ProductionFocus>)>,
+    colonies: Query<(&Colony, &Production, Option<&ProductionFocus>)>,
     player_q: Query<&StationedAt, With<Player>>,
     positions: Query<&Position>,
 ) {
@@ -356,23 +356,15 @@ pub fn emit_research(
     let capital_system = player_q.single().ok().map(|s| s.system);
     let capital_pos = capital_system.and_then(|sys| positions.get(sys).ok());
 
-    for (colony, prod, buildings, focus) in &colonies {
-        let mut bonus_r = Amt::ZERO;
-        if let Some(buildings) = buildings {
-            for slot in &buildings.slots {
-                if let Some(bt) = slot {
-                    let (_, _, r, _) = bt.production_bonus();
-                    bonus_r = bonus_r.add(r);
-                }
-            }
-        }
+    for (colony, prod, focus) in &colonies {
         let rw = match focus {
             Some(f) => f.research_weight,
             None => Amt::units(1),
         };
         let d_amt = Amt::units(d as u64);
         let r_global = Amt::milli((global_params.production_multiplier_research * 1000.0) as u64);
-        let amount = prod.research_per_hexadies.add(bonus_r).mul_amt(rw).mul_amt(d_amt).mul_amt(r_global).to_f64();
+        // Building bonuses are already included via modifiers on Production
+        let amount = prod.research_per_hexadies.final_value().mul_amt(rw).mul_amt(d_amt).mul_amt(r_global).to_f64();
         if amount <= 0.0 {
             continue;
         }
