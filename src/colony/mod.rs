@@ -379,7 +379,7 @@ pub struct BuildingOrder {
 
 /// Load building definitions from Lua scripts into the BuildingRegistry.
 /// Falls back to an empty registry if scripts are missing or fail to parse.
-fn load_building_registry(
+pub fn load_building_registry(
     engine: Res<crate::scripting::ScriptEngine>,
     mut registry: ResMut<BuildingRegistry>,
 ) {

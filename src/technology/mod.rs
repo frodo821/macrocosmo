@@ -87,7 +87,7 @@ impl GameFlags {
     }
 }
 
-fn load_technologies(mut commands: Commands, engine: Res<crate::scripting::ScriptEngine>) {
+pub fn load_technologies(mut commands: Commands, engine: Res<crate::scripting::ScriptEngine>) {
     let tech_dir = Path::new("scripts/tech");
     let techs = if tech_dir.exists() {
         match engine.load_directory(tech_dir) {

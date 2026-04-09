@@ -1,5 +1,6 @@
 pub mod building_api;
 pub mod event_api;
+pub mod lifecycle;
 pub mod modifier_api;
 
 use bevy::prelude::*;
@@ -10,7 +11,18 @@ pub struct ScriptingPlugin;
 
 impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, init_scripting);
+        app.add_systems(Startup, init_scripting)
+            .add_systems(
+                Startup,
+                lifecycle::run_lifecycle_hooks
+                    .after(init_scripting)
+                    .after(crate::colony::load_building_registry)
+                    .after(crate::technology::load_technologies),
+            )
+            .add_systems(
+                Update,
+                lifecycle::drain_script_events.after(crate::time_system::advance_game_time),
+            );
     }
 }
 
@@ -144,6 +156,40 @@ impl ScriptEngine {
         // Pending script-fired events table
         let pending_script_events = lua.create_table()?;
         globals.set("_pending_script_events", pending_script_events)?;
+
+        // --- Lifecycle hook registration ---
+
+        // Handler tables for lifecycle hooks
+        globals.set("_on_game_start_handlers", lua.create_table()?)?;
+        globals.set("_on_game_load_handlers", lua.create_table()?)?;
+        globals.set("_on_scripts_loaded_handlers", lua.create_table()?)?;
+
+        // on_game_start(fn) -- registers a callback to run when a new game starts
+        let on_game_start = lua.create_function(|lua, func: mlua::Function| {
+            let handlers: mlua::Table = lua.globals().get("_on_game_start_handlers")?;
+            let len = handlers.len()?;
+            handlers.set(len + 1, func)?;
+            Ok(())
+        })?;
+        globals.set("on_game_start", on_game_start)?;
+
+        // on_game_load(fn) -- registers a callback to run when a saved game is loaded
+        let on_game_load = lua.create_function(|lua, func: mlua::Function| {
+            let handlers: mlua::Table = lua.globals().get("_on_game_load_handlers")?;
+            let len = handlers.len()?;
+            handlers.set(len + 1, func)?;
+            Ok(())
+        })?;
+        globals.set("on_game_load", on_game_load)?;
+
+        // on_scripts_loaded(fn) -- registers a callback to run after all scripts have been loaded
+        let on_scripts_loaded = lua.create_function(|lua, func: mlua::Function| {
+            let handlers: mlua::Table = lua.globals().get("_on_scripts_loaded_handlers")?;
+            let len = handlers.len()?;
+            handlers.set(len + 1, func)?;
+            Ok(())
+        })?;
+        globals.set("on_scripts_loaded", on_scripts_loaded)?;
 
         // fire_event(event_id, target?) -- queues an event to be fired from Lua
         let fire_event_fn = lua.create_function(|lua, args: (String, Option<u64>)| {
