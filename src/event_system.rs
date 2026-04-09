@@ -81,17 +81,19 @@ impl EventSystem {
     /// - Mtth: fires after random delay based on mean_hexadies
     /// - Periodic: fires immediately (periodic auto-fire is handled by tick_events)
     pub fn fire_event(&mut self, event_id: &str, target: Option<Entity>, now: i64) {
-        let fires_at = match self.definitions.get(event_id) {
-            Some(def) => match &def.trigger {
+        let fires_at = match self.definitions.get_mut(event_id) {
+            Some(def) => match &mut def.trigger {
+                EventTrigger::Manual => now,
                 EventTrigger::Mtth { mean_hexadies, max_times, times_triggered, .. } => {
-                    if let Some(max) = max_times {
-                        if *times_triggered >= *max {
-                            return; // max reached, don't queue
-                        }
+                    if max_times.is_some_and(|max| *times_triggered >= max) {
+                        return;
                     }
                     now + random_mtth_delay(*mean_hexadies)
                 }
-                _ => now,
+                EventTrigger::Periodic { last_fired, .. } => {
+                    *last_fired = now; // Start the periodic timer
+                    now // First fire is immediate
+                }
             },
             None => now, // unknown event, fire immediately
         };
@@ -453,5 +455,36 @@ mod tests {
 
         // Third time: should NOT fire
         assert!(!check_should_fire(&system, 15));
+    }
+
+    #[test]
+    fn test_fire_event_starts_periodic_timer() {
+        let mut system = EventSystem::default();
+        system.register(EventDefinition {
+            id: "periodic_start".to_string(),
+            name: "Periodic Start".to_string(),
+            description: "Test that fire_event updates last_fired for periodic events.".to_string(),
+            trigger: EventTrigger::Periodic {
+                interval_hexadies: 10,
+                last_fired: 0,
+                fire_condition: None,
+                max_times: None,
+                times_triggered: 0,
+            },
+        });
+
+        system.fire_event("periodic_start", None, 50);
+
+        // Should have 1 pending event firing immediately (fires_at = now)
+        assert_eq!(system.pending.len(), 1);
+        assert_eq!(system.pending[0].fires_at, 50);
+
+        // The definition's last_fired should have been updated to 50
+        let def = system.definitions.get("periodic_start").unwrap();
+        if let EventTrigger::Periodic { last_fired, .. } = &def.trigger {
+            assert_eq!(*last_fired, 50);
+        } else {
+            panic!("Expected Periodic trigger");
+        }
     }
 }
