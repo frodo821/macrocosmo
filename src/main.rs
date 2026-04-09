@@ -2,6 +2,7 @@ mod amount;
 mod colony;
 mod communication;
 mod components;
+mod event_system;
 mod events;
 mod galaxy;
 mod knowledge;
@@ -39,6 +40,7 @@ fn main() {
             colony::ColonyPlugin,
             scripting::ScriptingPlugin,
             technology::TechnologyPlugin,
+            event_system::EventSystemPlugin,
             events::EventsPlugin,
             setup::GameSetupPlugin,
             ui::UiPlugin,
