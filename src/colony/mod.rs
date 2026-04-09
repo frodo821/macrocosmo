@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::amount::Amt;
+use crate::amount::{Amt, SignedAmt};
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{StarSystem, SystemAttributes, Sovereignty};
@@ -446,9 +446,9 @@ pub fn sync_building_modifiers(
                     prod.minerals_per_hexadies.push_modifier(Modifier {
                         id: id_m,
                         label: label.clone(),
-                        base_add: m,
-                        multiplier: Amt::ZERO,
-                        add: Amt::ZERO,
+                        base_add: SignedAmt::from_amt(m),
+                        multiplier: SignedAmt::ZERO,
+                        add: SignedAmt::ZERO,
                     });
                 } else {
                     prod.minerals_per_hexadies.pop_modifier(&id_m);
@@ -457,9 +457,9 @@ pub fn sync_building_modifiers(
                     prod.energy_per_hexadies.push_modifier(Modifier {
                         id: id_e,
                         label: label.clone(),
-                        base_add: e,
-                        multiplier: Amt::ZERO,
-                        add: Amt::ZERO,
+                        base_add: SignedAmt::from_amt(e),
+                        multiplier: SignedAmt::ZERO,
+                        add: SignedAmt::ZERO,
                     });
                 } else {
                     prod.energy_per_hexadies.pop_modifier(&id_e);
@@ -468,9 +468,9 @@ pub fn sync_building_modifiers(
                     prod.research_per_hexadies.push_modifier(Modifier {
                         id: id_r,
                         label: label.clone(),
-                        base_add: r,
-                        multiplier: Amt::ZERO,
-                        add: Amt::ZERO,
+                        base_add: SignedAmt::from_amt(r),
+                        multiplier: SignedAmt::ZERO,
+                        add: SignedAmt::ZERO,
                     });
                 } else {
                     prod.research_per_hexadies.pop_modifier(&id_r);
@@ -479,9 +479,9 @@ pub fn sync_building_modifiers(
                     prod.food_per_hexadies.push_modifier(Modifier {
                         id: id_f,
                         label,
-                        base_add: f,
-                        multiplier: Amt::ZERO,
-                        add: Amt::ZERO,
+                        base_add: SignedAmt::from_amt(f),
+                        multiplier: SignedAmt::ZERO,
+                        add: SignedAmt::ZERO,
                     });
                 } else {
                     prod.food_per_hexadies.pop_modifier(&id_f);
@@ -554,9 +554,9 @@ pub fn sync_maintenance_modifiers(
                         maint.energy_per_hexadies.push_modifier(Modifier {
                             id: id.clone(),
                             label: format!("{} (slot {})", bt.name(), slot_idx),
-                            base_add: cost,
-                            multiplier: Amt::ZERO,
-                            add: Amt::ZERO,
+                            base_add: SignedAmt::from_amt(cost),
+                            multiplier: SignedAmt::ZERO,
+                            add: SignedAmt::ZERO,
                         });
                         active_ids.insert(id);
                     } else {
@@ -574,9 +574,9 @@ pub fn sync_maintenance_modifiers(
                 maint.energy_per_hexadies.push_modifier(Modifier {
                     id: ship_id.clone(),
                     label: format!("Ship {}", ship_id),
-                    base_add: *cost,
-                    multiplier: Amt::ZERO,
-                    add: Amt::ZERO,
+                    base_add: SignedAmt::from_amt(*cost),
+                    multiplier: SignedAmt::ZERO,
+                    add: SignedAmt::ZERO,
                 });
                 active_ids.insert(ship_id.clone());
             }

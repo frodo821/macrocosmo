@@ -1,7 +1,7 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
+use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
@@ -1686,9 +1686,9 @@ fn test_modifier_affects_production_output() {
     minerals_prod.push_modifier(Modifier {
         id: "tech_boost".to_string(),
         label: "Tech Boost".to_string(),
-        base_add: Amt::ZERO,
-        multiplier: Amt::new(0, 200), // +20%
-        add: Amt::ZERO,
+        base_add: SignedAmt::ZERO,
+        multiplier: SignedAmt::new(0, 200), // +20%
+        add: SignedAmt::ZERO,
     });
 
     app.world_mut().spawn((
@@ -1831,9 +1831,9 @@ fn test_construction_params_modify_ship_cost() {
         params.ship_cost_modifier.push_modifier(Modifier {
             id: "tech_cheaper_ships".to_string(),
             label: "Cheaper Ships".to_string(),
-            base_add: Amt::ZERO,
-            multiplier: Amt::new(0, 500), // +50%
-            add: Amt::ZERO,
+            base_add: SignedAmt::ZERO,
+            multiplier: SignedAmt::new(0, 500), // +50%
+            add: SignedAmt::ZERO,
         });
     }
 
@@ -1908,9 +1908,9 @@ fn test_maintenance_modifier_affects_energy() {
     maint.energy_per_hexadies.push_modifier(Modifier {
         id: "tech_expensive".to_string(),
         label: "Expensive Maintenance".to_string(),
-        base_add: Amt::ZERO,
-        multiplier: Amt::new(0, 500), // +50%
-        add: Amt::ZERO,
+        base_add: SignedAmt::ZERO,
+        multiplier: SignedAmt::new(0, 500), // +50%
+        add: SignedAmt::ZERO,
     });
 
     app.world_mut().spawn((
@@ -1989,9 +1989,9 @@ fn test_food_consumption_modifier() {
     food_consumption.food_per_hexadies.push_modifier(Modifier {
         id: "tech_food".to_string(),
         label: "Extra Consumption".to_string(),
-        base_add: Amt::ZERO,
-        multiplier: Amt::new(0, 200), // +20%
-        add: Amt::ZERO,
+        base_add: SignedAmt::ZERO,
+        multiplier: SignedAmt::new(0, 200), // +20%
+        add: SignedAmt::ZERO,
     });
 
     app.world_mut().spawn((
@@ -2056,9 +2056,9 @@ fn test_authority_params_modifier() {
         params.production.push_modifier(Modifier {
             id: "tech_authority".to_string(),
             label: "Authority Boost".to_string(),
-            base_add: Amt::ZERO,
-            multiplier: Amt::new(0, 500), // +50%
-            add: Amt::ZERO,
+            base_add: SignedAmt::ZERO,
+            multiplier: SignedAmt::new(0, 500), // +50%
+            add: SignedAmt::ZERO,
         });
     }
 

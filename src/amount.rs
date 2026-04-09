@@ -141,6 +141,94 @@ impl std::fmt::Display for Amt {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SignedAmt — signed fixed-point for modifier deltas
+// ---------------------------------------------------------------------------
+
+const SIGNED_SCALE: i64 = 1000;
+
+/// Signed fixed-point amount. 1 displayed unit = 1000 internal units.
+/// Used for modifier values that can be negative (e.g., -20% = SignedAmt(-200)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SignedAmt(pub i64);
+
+impl SignedAmt {
+    pub const ZERO: SignedAmt = SignedAmt(0);
+
+    /// Create from whole units: `SignedAmt::units(-3)` = -3.000
+    pub const fn units(n: i64) -> Self {
+        SignedAmt(n * SIGNED_SCALE)
+    }
+
+    /// Create from whole + fractional millis: `SignedAmt::new(0, -200)` = -0.200
+    pub const fn new(whole: i64, millis: i64) -> Self {
+        SignedAmt(whole * SIGNED_SCALE + millis)
+    }
+
+    /// Create from milli-units directly: `SignedAmt::milli(-500)` = -0.500
+    pub const fn milli(n: i64) -> Self {
+        SignedAmt(n)
+    }
+
+    /// Convert from an unsigned `Amt` (always non-negative).
+    pub const fn from_amt(a: Amt) -> Self {
+        SignedAmt(a.0 as i64)
+    }
+
+    /// Raw internal value.
+    pub const fn raw(self) -> i64 {
+        self.0
+    }
+
+    /// Signed addition.
+    pub const fn add(self, rhs: SignedAmt) -> SignedAmt {
+        SignedAmt(self.0 + rhs.0)
+    }
+
+    /// Format for display with explicit sign. "+5.5", "-0.2", "0"
+    pub fn display(self) -> String {
+        if self.0 == 0 {
+            return "0".to_string();
+        }
+        let sign = if self.0 < 0 { "-" } else { "+" };
+        let abs = self.0.unsigned_abs();
+        let w = abs / SIGNED_SCALE as u64;
+        let f = abs % SIGNED_SCALE as u64;
+        if f == 0 {
+            format!("{}{}", sign, w)
+        } else if f % 100 == 0 {
+            format!("{}{}.{}", sign, w, f / 100)
+        } else if f % 10 == 0 {
+            format!("{}{}.{:02}", sign, w, f / 10)
+        } else {
+            format!("{}{}.{:03}", sign, w, f)
+        }
+    }
+
+    /// Format as percentage. "+15%", "-20%"
+    pub fn display_as_percent(self) -> String {
+        if self.0 == 0 {
+            return "0%".to_string();
+        }
+        let sign = if self.0 < 0 { "-" } else { "+" };
+        let abs = self.0.unsigned_abs();
+        // 150 millis = 15.0%, 200 millis = 20.0%
+        let whole_pct = abs / 10;
+        let frac_pct = abs % 10;
+        if frac_pct == 0 {
+            format!("{}{}%", sign, whole_pct)
+        } else {
+            format!("{}{}.{}%", sign, whole_pct, frac_pct)
+        }
+    }
+}
+
+impl std::fmt::Display for SignedAmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +301,45 @@ mod tests {
     fn saturation() {
         assert_eq!(Amt(u64::MAX).add(Amt::units(1)), Amt(u64::MAX));
         assert_eq!(Amt(u64::MAX).mul_u64(2), Amt(u64::MAX));
+    }
+
+    // --- SignedAmt tests ---
+
+    #[test]
+    fn signed_constructors() {
+        assert_eq!(SignedAmt::units(5), SignedAmt(5000));
+        assert_eq!(SignedAmt::units(-3), SignedAmt(-3000));
+        assert_eq!(SignedAmt::new(0, -200), SignedAmt(-200));
+        assert_eq!(SignedAmt::new(1, 500), SignedAmt(1500));
+        assert_eq!(SignedAmt::milli(-123), SignedAmt(-123));
+        assert_eq!(SignedAmt::ZERO, SignedAmt(0));
+    }
+
+    #[test]
+    fn signed_from_amt() {
+        assert_eq!(SignedAmt::from_amt(Amt::units(5)), SignedAmt(5000));
+        assert_eq!(SignedAmt::from_amt(Amt::ZERO), SignedAmt::ZERO);
+    }
+
+    #[test]
+    fn signed_add() {
+        assert_eq!(SignedAmt::units(3).add(SignedAmt::units(-5)), SignedAmt::units(-2));
+        assert_eq!(SignedAmt::units(-1).add(SignedAmt::units(1)), SignedAmt::ZERO);
+    }
+
+    #[test]
+    fn signed_display() {
+        assert_eq!(SignedAmt::units(5).display(), "+5");
+        assert_eq!(SignedAmt::new(5, 500).display(), "+5.5");
+        assert_eq!(SignedAmt::new(0, -200).display(), "-0.2");
+        assert_eq!(SignedAmt::ZERO.display(), "0");
+        assert_eq!(SignedAmt::units(-3).display(), "-3");
+    }
+
+    #[test]
+    fn signed_display_as_percent() {
+        assert_eq!(SignedAmt::new(0, 150).display_as_percent(), "+15%");
+        assert_eq!(SignedAmt::new(0, -200).display_as_percent(), "-20%");
+        assert_eq!(SignedAmt::ZERO.display_as_percent(), "0%");
     }
 }
