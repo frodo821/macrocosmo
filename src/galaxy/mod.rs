@@ -43,6 +43,26 @@ pub enum Habitability {
     GasGiant,
 }
 
+/// Maximum population that a colony can support at hab_score 1.0.
+pub const BASE_CARRYING_CAPACITY: f64 = 200.0;
+/// Food consumed per population per hexadies.
+pub const FOOD_PER_POP_PER_HEXADIES: f64 = 0.1;
+
+impl Habitability {
+    /// Continuous habitability score in 0.0..=1.0.
+    /// Used for carrying capacity and growth rate scaling.
+    /// Technology bonuses can be added on top of this base value.
+    pub fn base_score(&self) -> f64 {
+        match self {
+            Habitability::Ideal => 1.0,
+            Habitability::Adequate => 0.7,
+            Habitability::Marginal => 0.4,
+            Habitability::Barren => 0.15,
+            Habitability::GasGiant => 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResourceLevel {
     Rich,

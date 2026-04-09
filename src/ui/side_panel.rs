@@ -118,7 +118,28 @@ pub fn draw_system_panel(
                         continue;
                     }
 
-                    ui.label(format!("Population: {:.0}", colony.population));
+                    // #69: Show population with carrying capacity
+                    let carrying_cap = {
+                        use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
+                        let hab_score = attrs.map(|a| a.habitability.base_score()).unwrap_or(0.5);
+                        let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
+                        let mut food_prod = production.map(|p| p.food_per_hexadies).unwrap_or(0.0);
+                        if let Some(b) = buildings {
+                            for slot in &b.slots {
+                                if let Some(bt) = slot {
+                                    let (_, _, _, f) = bt.production_bonus();
+                                    food_prod += f;
+                                }
+                            }
+                        }
+                        let k_food = if FOOD_PER_POP_PER_HEXADIES > 0.0 {
+                            food_prod / FOOD_PER_POP_PER_HEXADIES
+                        } else {
+                            k_habitat
+                        };
+                        k_habitat.min(k_food).max(1.0)
+                    };
+                    ui.label(format!("Population: {:.0} / {:.0}", colony.population, carrying_cap));
 
                     if let Some(prod) = production {
                         ui.label(format!(

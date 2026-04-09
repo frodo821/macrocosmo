@@ -386,34 +386,73 @@ pub fn tick_production(
     }
 }
 
-/// #45: Population growth uses GlobalParams bonus
-/// #72: Food consumption and starvation
+/// #69: Logistic population growth with carrying capacity.
+/// #72: Food consumption and starvation.
+///
+/// K (carrying capacity) = min(BASE_CARRYING_CAPACITY * hab_score, food_production / FOOD_PER_POP)
+/// Growth rate is scaled by hab_score.
+/// dP/dt = r * hab_score * P * (1 - P/K) — when P > K, population declines naturally.
 pub fn tick_population_growth(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     global_params: Res<crate::technology::GlobalParams>,
-    mut query: Query<(&mut Colony, &mut ResourceStockpile)>,
+    mut colonies: Query<(
+        &mut Colony,
+        &mut ResourceStockpile,
+        &Production,
+        Option<&Buildings>,
+    )>,
+    stars: Query<(&StarSystem, &crate::galaxy::SystemAttributes)>,
 ) {
+    use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
+
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
     let d = delta as f64;
-    for (mut colony, mut stockpile) in &mut query {
-        // #72: Food consumption — population * 0.1 food per hexadies
-        let food_consumed = colony.population * 0.1 * d;
+
+    for (mut colony, mut stockpile, production, buildings) in &mut colonies {
+        // #72: Food consumption
+        let food_consumed = colony.population * FOOD_PER_POP_PER_HEXADIES * d;
         stockpile.food -= food_consumed;
 
         if stockpile.food <= 0.0 {
-            // Starvation: population decreases by population * 0.01 per hexadies
+            // Starvation: population decreases
             stockpile.food = 0.0;
             let starvation_loss = colony.population * 0.01 * d;
             colony.population = (colony.population - starvation_loss).max(1.0);
         } else {
-            // Normal growth
+            // #69: Logistic growth
+            let hab_score = stars
+                .get(colony.system)
+                .map(|(_, attr)| attr.habitability.base_score())
+                .unwrap_or(0.5);
+
+            // Total food production (base + building bonuses)
+            let mut food_prod = production.food_per_hexadies;
+            if let Some(b) = buildings {
+                for slot in &b.slots {
+                    if let Some(bt) = slot {
+                        let (_, _, _, f) = bt.production_bonus();
+                        food_prod += f;
+                    }
+                }
+            }
+
+            // K = min(habitat limit, food-sustainable population)
+            let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
+            let k_food = if FOOD_PER_POP_PER_HEXADIES > 0.0 {
+                food_prod / FOOD_PER_POP_PER_HEXADIES
+            } else {
+                k_habitat
+            };
+            let k = k_habitat.min(k_food).max(1.0);
+
+            // Logistic: P_new = P + r * hab_score * P * (1 - P/K) * delta
             let effective_growth = colony.growth_rate + global_params.population_growth_bonus;
-            let growth_factor = (1.0 + effective_growth).powi(delta as i32);
-            colony.population *= growth_factor;
+            let dp = effective_growth * hab_score * colony.population * (1.0 - colony.population / k) * d;
+            colony.population = (colony.population + dp).max(1.0);
         }
     }
 }

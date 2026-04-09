@@ -1286,3 +1286,261 @@ fn test_authority_deficit_penalizes_food_production() {
         }
     }
 }
+
+// =========================================================================
+// Maintenance system (#68)
+// =========================================================================
+
+#[test]
+fn test_maintenance_deducts_energy_integration() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Maint-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with Mine (0.2 E/hd) and Shipyard (1.0 E/hd) = 1.2 E/hd total maintenance
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: 0.0,
+            energy: 100.0,
+            research: 0.0,
+            food: 10000.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 0.0,
+            energy_per_hexadies: 0.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 10.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings {
+            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard)],
+        },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    ));
+
+    // Advance 10 hexadies — maintenance should deduct 1.2 * 10 = 12 energy
+    advance_time(&mut app, 10);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    assert!(
+        stockpile.energy < 100.0,
+        "Maintenance should have deducted energy, got {}",
+        stockpile.energy
+    );
+    assert!(
+        (stockpile.energy - 88.0).abs() < 1.0,
+        "Expected ~88 energy (100 - 12), got {}",
+        stockpile.energy
+    );
+}
+
+// =========================================================================
+// Logistic population growth (#69)
+// =========================================================================
+
+#[test]
+fn test_population_capped_by_carrying_capacity() {
+    let mut app = test_app();
+
+    // Marginal habitability: base_score=0.4, K_habitat = 200 * 0.4 = 80
+    // food_per_hd=10 (base) + 0 (no farm) = 10 → K_food = 10/0.1 = 100
+    // effective K = min(80, 100) = 80
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Marginal-World",
+        [0.0, 0.0, 0.0],
+        Habitability::Marginal,
+        true,
+        true,
+    );
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 70.0,
+            growth_rate: 0.05,
+        },
+        ResourceStockpile {
+            minerals: 0.0,
+            energy: 0.0,
+            research: 0.0,
+            food: 10000.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 0.0,
+            energy_per_hexadies: 0.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 10.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        ProductionFocus::default(),
+    ));
+
+    // Advance in 1-hexady steps for stable Euler integration
+    for _ in 0..600 {
+        advance_time(&mut app, 1);
+    }
+
+    let mut q = app.world_mut().query::<&Colony>();
+    let colony = q.iter(app.world()).next().unwrap();
+
+    assert!(
+        colony.population <= 81.0,
+        "Population should not exceed carrying capacity ~80, got {}",
+        colony.population
+    );
+    assert!(
+        colony.population > 60.0,
+        "Population should have grown toward K, got {}",
+        colony.population
+    );
+}
+
+#[test]
+fn test_habitability_affects_growth_rate() {
+    // Same setup, different habitability → different growth speed
+    let mut ideal_app = test_app();
+    let mut marginal_app = test_app();
+
+    let ideal_sys = spawn_test_system(
+        ideal_app.world_mut(),
+        "Ideal-World",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let marginal_sys = spawn_test_system(
+        marginal_app.world_mut(),
+        "Marginal-World",
+        [0.0, 0.0, 0.0],
+        Habitability::Marginal,
+        true,
+        true,
+    );
+
+    let colony_bundle = |sys| {
+        (
+            Colony {
+                system: sys,
+                population: 10.0,
+                growth_rate: 0.05,
+            },
+            ResourceStockpile {
+                minerals: 0.0,
+                energy: 0.0,
+                research: 0.0,
+                food: 10000.0,
+                authority: 0.0,
+            },
+            Production {
+                minerals_per_hexadies: 0.0,
+                energy_per_hexadies: 0.0,
+                research_per_hexadies: 0.0,
+                food_per_hexadies: 100.0, // abundant food so K isn't food-limited
+            },
+            BuildQueue { queue: Vec::new() },
+            ProductionFocus::default(),
+        )
+    };
+
+    ideal_app.world_mut().spawn(colony_bundle(ideal_sys));
+    marginal_app.world_mut().spawn(colony_bundle(marginal_sys));
+
+    for _ in 0..60 {
+        advance_time(&mut ideal_app, 1);
+        advance_time(&mut marginal_app, 1);
+    }
+
+    let ideal_pop = ideal_app
+        .world_mut()
+        .query::<&Colony>()
+        .iter(ideal_app.world())
+        .next()
+        .unwrap()
+        .population;
+    let marginal_pop = marginal_app
+        .world_mut()
+        .query::<&Colony>()
+        .iter(marginal_app.world())
+        .next()
+        .unwrap()
+        .population;
+
+    assert!(
+        ideal_pop > marginal_pop,
+        "Ideal world should grow faster: ideal={}, marginal={}",
+        ideal_pop,
+        marginal_pop
+    );
+}
+
+#[test]
+fn test_food_limits_carrying_capacity() {
+    let mut app = test_app();
+
+    // Ideal habitability: K_habitat = 200 * 1.0 = 200
+    // But food_per_hd = 5.0 → K_food = 5.0/0.1 = 50
+    // effective K = min(200, 50) = 50
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Food-Limited",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 40.0,
+            growth_rate: 0.05,
+        },
+        ResourceStockpile {
+            minerals: 0.0,
+            energy: 0.0,
+            research: 0.0,
+            food: 10000.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 0.0,
+            energy_per_hexadies: 0.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 5.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        ProductionFocus::default(),
+    ));
+
+    for _ in 0..600 {
+        advance_time(&mut app, 1);
+    }
+
+    let mut q = app.world_mut().query::<&Colony>();
+    let colony = q.iter(app.world()).next().unwrap();
+
+    assert!(
+        colony.population <= 51.0,
+        "Population should be capped by food K=50, got {}",
+        colony.population
+    );
+}
