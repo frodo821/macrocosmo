@@ -1,10 +1,13 @@
 use bevy::prelude::*;
 
+use std::path::Path;
+
 use crate::amount::{Amt, SignedAmt};
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{StarSystem, SystemAttributes, Sovereignty};
 use crate::modifier::{ModifiedValue, Modifier};
+use crate::scripting::building_api::{parse_building_definitions, BuildingRegistry};
 use crate::ship::{spawn_ship, Owner, Ship, ShipState, ShipType};
 use crate::time_system::GameClock;
 
@@ -16,11 +19,15 @@ pub struct LastProductionTick(pub i64);
 impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LastProductionTick>()
+            .init_resource::<BuildingRegistry>()
             .insert_resource(AuthorityParams::default())
             .insert_resource(ConstructionParams::default())
             .add_systems(
                 Startup,
-                spawn_capital_colony.after(crate::galaxy::generate_galaxy),
+                (
+                    load_building_registry.after(crate::scripting::init_scripting),
+                    spawn_capital_colony.after(crate::galaxy::generate_galaxy),
+                ),
             )
             .add_systems(
                 Update,
@@ -368,6 +375,36 @@ pub struct BuildingOrder {
     pub minerals_remaining: Amt,
     pub energy_remaining: Amt,
     pub build_time_remaining: i64,
+}
+
+/// Load building definitions from Lua scripts into the BuildingRegistry.
+/// Falls back to an empty registry if scripts are missing or fail to parse.
+fn load_building_registry(
+    engine: Res<crate::scripting::ScriptEngine>,
+    mut registry: ResMut<BuildingRegistry>,
+) {
+    let building_dir = Path::new("scripts/buildings");
+    if building_dir.exists() {
+        match engine.load_directory(building_dir) {
+            Err(e) => {
+                warn!("Failed to load building scripts: {e}; building registry will be empty");
+            }
+            Ok(()) => match parse_building_definitions(engine.lua()) {
+                Ok(defs) => {
+                    let count = defs.len();
+                    for def in defs {
+                        registry.insert(def);
+                    }
+                    info!("Building registry loaded with {} definitions", count);
+                }
+                Err(e) => {
+                    warn!("Failed to parse building definitions: {e}; building registry will be empty");
+                }
+            },
+        }
+    } else {
+        info!("scripts/buildings directory not found; building registry will be empty");
+    }
 }
 
 pub fn spawn_capital_colony(

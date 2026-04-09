@@ -32,7 +32,7 @@ src/
 ├── knowledge/           # KnowledgeStore, light-speed info propagation
 ├── communication/       # Messages, PendingCommand, CommandLog
 ├── technology/          # TechTree, GlobalParams, GameFlags, research (Lua-loaded)
-├── scripting/           # LuaJIT ScriptEngine, define_tech() API
+├── scripting/           # LuaJIT ScriptEngine, define_tech(), define_building() API
 ├── events.rs            # GameEvent, EventLog, auto-pause
 ├── player/              # Player, StationedAt
 ├── physics/             # Distance, light delay, travel time calculations
@@ -47,6 +47,7 @@ src/
 │   └── overlays.rs      # Research panel
 ├── setup/               # Initial fleet spawn
 scripts/tech/            # Lua technology definitions (15 techs, 4 branches)
+scripts/buildings/       # Lua building definitions (6 building types)
 tests/                   # 145+ tests (unit + integration)
 ```
 
@@ -92,8 +93,11 @@ tests/                   # 145+ tests (unit + integration)
 ### Lua Scripting
 - Tech definitions in `scripts/tech/*.lua`
 - `define_tech { id, name, branch, cost, prerequisites, effects, description }`
+- Building definitions in `scripts/buildings/*.lua`
+- `define_building { id, name, cost, build_time, maintenance, production_bonus }`
+- BuildingRegistry resource loaded at startup; BuildingType enum still used for runtime logic
 - Fallback: `create_initial_tech_tree()` if scripts/ directory is missing (for tests)
-- Future: events, buildings, ships also Lua-defined
+- Future: events, ships also Lua-defined; BuildingType to be replaced by BuildingRegistry
 
 ## Common Pitfalls
 

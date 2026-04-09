@@ -1,3 +1,4 @@
+pub mod building_api;
 pub mod event_api;
 pub mod modifier_api;
 
@@ -52,6 +53,19 @@ impl ScriptEngine {
             Ok(())
         })?;
         globals.set("define_tech", define_tech)?;
+
+        // Accumulator table for building definitions
+        let building_defs = lua.create_table()?;
+        globals.set("_building_definitions", building_defs)?;
+
+        // define_building(table) -- appends a building definition table to _building_definitions
+        let define_building = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_building_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_building", define_building)?;
 
         // --- #45: Global param / flag Lua bindings ---
 
