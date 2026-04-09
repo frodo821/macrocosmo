@@ -5,6 +5,7 @@ mod components;
 mod events;
 mod galaxy;
 mod knowledge;
+mod modifier;
 mod physics;
 mod player;
 mod scripting;
