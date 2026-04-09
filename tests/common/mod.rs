@@ -43,11 +43,14 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time),
     );
     app.insert_resource(AuthorityParams::default());
+    app.insert_resource(ConstructionParams::default());
     app.add_systems(
         Update,
         (
             tick_authority,
             sync_building_modifiers,
+            sync_maintenance_modifiers,
+            sync_food_consumption,
             tick_production,
             tick_maintenance,
             tick_population_growth,
@@ -116,11 +119,14 @@ pub fn full_test_app() -> App {
 
     // --- Colony systems (from ColonyPlugin) ---
     app.insert_resource(AuthorityParams::default());
+    app.insert_resource(ConstructionParams::default());
     app.add_systems(
         Update,
         (
             tick_authority,
             sync_building_modifiers,
+            sync_maintenance_modifiers,
+            sync_food_consumption,
             tick_production,
             tick_maintenance,
             tick_population_growth,
@@ -260,6 +266,8 @@ pub fn spawn_test_colony(
             Buildings { slots: buildings },
             BuildingQueue::default(),
             ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
         ))
         .id()
 }

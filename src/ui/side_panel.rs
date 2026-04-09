@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, Production, ResourceStockpile};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -33,6 +33,7 @@ pub fn draw_system_panel(
     positions: &Query<&Position>,
     knowledge: &KnowledgeStore,
     clock: &GameClock,
+    construction_params: &ConstructionParams,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -221,31 +222,35 @@ pub fn draw_system_panel(
                     // Build buttons - add orders to the queue
                     if let Some(mut bq) = build_queue {
                         use crate::amount::Amt;
-                        let mut build_request: Option<(&str, Amt, Amt)> = None;
+                        let ship_mod = construction_params.ship_cost_modifier.final_value();
+                        let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
+                        // Base costs per ship type
+                        let ships_data: [(&str, Amt, Amt, i64); 3] = [
+                            ("Explorer", Amt::units(200), Amt::units(100), 60),
+                            ("Colony Ship", Amt::units(500), Amt::units(300), 120),
+                            ("Courier", Amt::units(100), Amt::units(50), 30),
+                        ];
+                        let mut build_request: Option<(&str, Amt, Amt, i64)> = None;
                         ui.horizontal(|ui| {
-                            if ui.button("Explorer").on_hover_text("M:200 E:100").clicked() {
-                                build_request = Some(("Explorer", Amt::units(200), Amt::units(100)));
-                            }
-                            if ui
-                                .button("Colony Ship")
-                                .on_hover_text("M:500 E:300")
-                                .clicked()
-                            {
-                                build_request = Some(("Colony Ship", Amt::units(500), Amt::units(300)));
-                            }
-                            if ui.button("Courier").on_hover_text("M:100 E:50").clicked() {
-                                build_request = Some(("Courier", Amt::units(100), Amt::units(50)));
+                            for &(name, base_m, base_e, base_time) in &ships_data {
+                                let eff_m = base_m.mul_amt(ship_mod);
+                                let eff_e = base_e.mul_amt(ship_mod);
+                                let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
+                                let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
+                                if ui.button(name).on_hover_text(tooltip).clicked() {
+                                    build_request = Some((name, eff_m, eff_e, eff_time));
+                                }
                             }
                         });
-                        if let Some((name, minerals_cost, energy_cost)) = build_request {
+                        if let Some((name, minerals_cost, energy_cost, build_time)) = build_request {
                             bq.queue.push(BuildOrder {
                                 ship_type_name: name.to_string(),
                                 minerals_cost,
                                 minerals_invested: Amt::ZERO,
                                 energy_cost,
                                 energy_invested: Amt::ZERO,
-                                build_time_total: 0,
-                                build_time_remaining: 0,
+                                build_time_total: build_time,
+                                build_time_remaining: build_time,
                             });
                             info!("Build order added: {}", name);
                         }
@@ -280,24 +285,31 @@ pub fn draw_system_panel(
                                 BuildingType::Port,
                                 BuildingType::Farm,
                             ];
+                            let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
+                            let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
                             let mut build_building_request: Option<BuildingType> = None;
                             for bt in &building_types {
-                                let (m_cost, e_cost) = bt.build_cost();
-                                let time = bt.build_time();
-                                let tooltip = format!("M:{} E:{} | {} hexadies", m_cost, e_cost, time);
+                                let (base_m, base_e) = bt.build_cost();
+                                let eff_m = base_m.mul_amt(bldg_cost_mod);
+                                let eff_e = base_e.mul_amt(bldg_cost_mod);
+                                let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                                let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
                                 if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
                                     build_building_request = Some(*bt);
                                 }
                             }
                             if let Some(bt) = build_building_request {
                                 if let Some(mut bq) = building_queue {
-                                    let (m_cost, e_cost) = bt.build_cost();
+                                    let (base_m, base_e) = bt.build_cost();
+                                    let eff_m = base_m.mul_amt(bldg_cost_mod);
+                                    let eff_e = base_e.mul_amt(bldg_cost_mod);
+                                    let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
                                     bq.queue.push(BuildingOrder {
                                         building_type: bt,
                                         target_slot: slot_idx,
-                                        minerals_remaining: m_cost,
-                                        energy_remaining: e_cost,
-                                        build_time_remaining: bt.build_time(),
+                                        minerals_remaining: eff_m,
+                                        energy_remaining: eff_e,
+                                        build_time_remaining: eff_time,
                                     });
                                     info!("Building order added: {:?} in slot {}", bt, slot_idx);
                                 }

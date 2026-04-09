@@ -7,7 +7,9 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
-use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production, ResourceStockpile};
+use bevy::ecs::system::SystemParam;
+
+use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, Production, ResourceStockpile};
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
@@ -17,6 +19,16 @@ use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedShip, SelectedSystem};
+
+/// Grouped read-only resources for the UI system to stay within Bevy's
+/// 16-parameter limit.
+#[derive(SystemParam)]
+pub struct UiResources<'w> {
+    pub knowledge: Res<'w, KnowledgeStore>,
+    pub command_log: Res<'w, CommandLog>,
+    pub global_params: Res<'w, GlobalParams>,
+    pub construction_params: Res<'w, ConstructionParams>,
+}
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
@@ -58,9 +70,7 @@ pub fn draw_all_ui(
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     mut command_queues: Query<&mut CommandQueue>,
     positions: Query<&Position>,
-    knowledge: Res<KnowledgeStore>,
-    command_log: Res<CommandLog>,
-    global_params: Res<GlobalParams>,
+    ui_res: UiResources,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -100,8 +110,9 @@ pub fn draw_all_ui(
         &mut colonies,
         &mut ships_query,
         &positions,
-        &knowledge,
+        &ui_res.knowledge,
         &clock,
+        &ui_res.construction_params,
     );
 
     side_panel::draw_ship_panel(
@@ -123,10 +134,10 @@ pub fn draw_all_ui(
         &mut command_queues,
         &positions,
         &clock,
-        &global_params,
+        &ui_res.global_params,
     );
 
-    bottom_bar::draw_bottom_bar(ctx, &command_log, &clock);
+    bottom_bar::draw_bottom_bar(ctx, &ui_res.command_log, &clock);
 
     overlays::draw_overlays(ctx, &mut research_open);
 }

@@ -3,8 +3,8 @@ use rand::Rng;
 
 use crate::amount::Amt;
 use crate::colony::{
-    BuildQueue, Buildings, BuildingQueue, Colony, Production, ProductionFocus,
-    ResourceCapacity, ResourceStockpile,
+    BuildQueue, Buildings, BuildingQueue, Colony, FoodConsumption, MaintenanceCost,
+    Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
 };
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
@@ -811,6 +811,8 @@ pub fn process_settling(
                     },
                     BuildingQueue::default(),
                     ProductionFocus::default(),
+                    MaintenanceCost::default(),
+                    FoodConsumption::default(),
                 ));
 
                 events.write(GameEvent {

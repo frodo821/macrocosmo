@@ -539,6 +539,8 @@ fn all_systems_no_query_conflict() {
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Explorer docked at capital
@@ -856,6 +858,8 @@ fn test_capital_produces_authority() {
         Buildings { slots: vec![None; 4] },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     )).id();
 
     // Advance 10 hexadies
@@ -910,6 +914,8 @@ fn test_empire_scale_authority_cost() {
         Buildings { slots: vec![None; 4] },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     )).id();
 
     // Remote colony (non-capital)
@@ -937,6 +943,8 @@ fn test_empire_scale_authority_cost() {
         Buildings { slots: vec![None; 4] },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Advance 10 hexadies
@@ -1016,6 +1024,8 @@ fn test_authority_deficit_reduces_non_capital_production() {
         Buildings { slots: vec![None; 4] },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Three remote colonies with known production rates
@@ -1043,6 +1053,8 @@ fn test_authority_deficit_reduces_non_capital_production() {
         Buildings { slots: vec![None; 4] },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     )).id();
 
     app.world_mut().spawn((
@@ -1069,6 +1081,8 @@ fn test_authority_deficit_reduces_non_capital_production() {
         Buildings { slots: vec![None; 4] },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     app.world_mut().spawn((
@@ -1095,6 +1109,8 @@ fn test_authority_deficit_reduces_non_capital_production() {
         Buildings { slots: vec![None; 4] },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Advance 10 hexadies
@@ -1160,6 +1176,8 @@ fn test_farm_produces_food() {
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Advance 10 hexadies
@@ -1238,6 +1256,8 @@ fn test_authority_deficit_penalizes_food_production() {
         },
         BuildQueue { queue: Vec::new() },
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Spawn 3 remote colonies so authority cost (0.5*3=1.5/hd) > production (1.0/hd),
@@ -1278,6 +1298,8 @@ fn test_authority_deficit_penalizes_food_production() {
         },
             BuildQueue { queue: Vec::new() },
             ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
         ));
     }
 
@@ -1346,6 +1368,8 @@ fn test_maintenance_deducts_energy_integration() {
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Advance 10 hexadies — maintenance should deduct 1.2 * 10 = 12 energy
@@ -1408,6 +1432,8 @@ fn test_population_capped_by_carrying_capacity() {
         },
         BuildQueue { queue: Vec::new() },
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     // Advance in 1-hexady steps for stable Euler integration
@@ -1476,6 +1502,8 @@ fn test_habitability_affects_growth_rate() {
             },
             BuildQueue { queue: Vec::new() },
             ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
         )
     };
 
@@ -1548,6 +1576,8 @@ fn test_food_limits_carrying_capacity() {
         },
         BuildQueue { queue: Vec::new() },
         ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
     ));
 
     for _ in 0..600 {

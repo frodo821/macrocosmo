@@ -17,6 +17,7 @@ impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LastProductionTick>()
             .insert_resource(AuthorityParams::default())
+            .insert_resource(ConstructionParams::default())
             .add_systems(
                 Startup,
                 spawn_capital_colony.after(crate::galaxy::generate_galaxy),
@@ -26,6 +27,8 @@ impl Plugin for ColonyPlugin {
                 (
                     tick_authority,
                     sync_building_modifiers,
+                    sync_maintenance_modifiers,
+                    sync_food_consumption,
                     tick_production,
                     tick_maintenance,
                     tick_population_growth,
@@ -109,6 +112,60 @@ impl Default for AuthorityParams {
         Self {
             production: ModifiedValue::new(BASE_AUTHORITY_PER_HEXADIES),
             cost_per_colony: ModifiedValue::new(AUTHORITY_COST_PER_COLONY),
+        }
+    }
+}
+
+/// Colony-level maintenance cost as a ModifiedValue (energy/hexady).
+/// The sync_maintenance_modifiers system pushes building and ship maintenance
+/// as base_add modifiers; tick_maintenance reads final_value().
+#[derive(Component)]
+pub struct MaintenanceCost {
+    pub energy_per_hexadies: ModifiedValue,
+}
+
+impl Default for MaintenanceCost {
+    fn default() -> Self {
+        Self {
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        }
+    }
+}
+
+/// Colony-level food consumption as a ModifiedValue (food/hexady).
+/// The sync_food_consumption system sets the base each tick based on population;
+/// tech modifiers (e.g. Hydroponics -20%) stay attached as multiplier modifiers.
+#[derive(Component)]
+pub struct FoodConsumption {
+    pub food_per_hexadies: ModifiedValue,
+}
+
+impl Default for FoodConsumption {
+    fn default() -> Self {
+        Self {
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        }
+    }
+}
+
+/// Global construction cost/time modifiers. Base = 1.0 for all fields.
+/// Techs push multiplier modifiers (e.g. -0.15 for "15% cheaper ships").
+/// Effective cost = base_cost * modifier.final_value().
+#[derive(Resource)]
+pub struct ConstructionParams {
+    pub ship_cost_modifier: ModifiedValue,
+    pub building_cost_modifier: ModifiedValue,
+    pub ship_build_time_modifier: ModifiedValue,
+    pub building_build_time_modifier: ModifiedValue,
+}
+
+impl Default for ConstructionParams {
+    fn default() -> Self {
+        Self {
+            ship_cost_modifier: ModifiedValue::new(Amt::units(1)),
+            building_cost_modifier: ModifiedValue::new(Amt::units(1)),
+            ship_build_time_modifier: ModifiedValue::new(Amt::units(1)),
+            building_build_time_modifier: ModifiedValue::new(Amt::units(1)),
         }
     }
 }
@@ -359,6 +416,8 @@ pub fn spawn_capital_colony(
                 Buildings { slots },
                 BuildingQueue::default(),
                 ProductionFocus::default(),
+                MaintenanceCost::default(),
+                FoodConsumption::default(),
             ));
             info!("Capital colony spawned on {}", system.name);
             return;
@@ -434,6 +493,121 @@ pub fn sync_building_modifiers(
                 prod.food_per_hexadies.pop_modifier(&id_f);
             }
         }
+    }
+}
+
+/// Synchronise maintenance cost modifiers on the MaintenanceCost component.
+/// Pushes a `base_add` modifier for each occupied building slot and for each
+/// ship whose home_port matches the colony's system.
+/// Runs BEFORE tick_maintenance so that `.final_value()` is up-to-date.
+pub fn sync_maintenance_modifiers(
+    mut colonies: Query<(&Colony, &mut MaintenanceCost, Option<&Buildings>)>,
+    ships: Query<(Entity, &Ship)>,
+    stars: Query<&StarSystem>,
+) {
+    // Find capital system for fallback
+    let capital_entity: Option<Entity> = {
+        let mut found = None;
+        for (colony, _, _) in colonies.iter() {
+            if let Ok(star) = stars.get(colony.system) {
+                if star.is_capital {
+                    found = Some(colony.system);
+                    break;
+                }
+            }
+        }
+        found
+    };
+
+    // Collect colony system entities for home_port validation
+    let colony_systems: std::collections::HashSet<Entity> = colonies
+        .iter()
+        .map(|(c, _, _)| c.system)
+        .collect();
+
+    // Collect ship maintenance costs grouped by effective home_port
+    let mut ship_costs_by_system: std::collections::HashMap<Entity, Vec<(String, Amt)>> =
+        std::collections::HashMap::new();
+    for (entity, ship) in &ships {
+        let effective_port = if colony_systems.contains(&ship.home_port) {
+            ship.home_port
+        } else {
+            capital_entity.unwrap_or(ship.home_port)
+        };
+        ship_costs_by_system
+            .entry(effective_port)
+            .or_default()
+            .push((format!("ship_maint_{:?}", entity), ship.ship_type.maintenance_cost()));
+    }
+
+    for (colony, mut maint, buildings) in &mut colonies {
+        // Track which modifier IDs we set this frame
+        let mut active_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Building maintenance modifiers
+        if let Some(buildings) = buildings {
+            for (slot_idx, slot) in buildings.slots.iter().enumerate() {
+                let id = format!("building_maint_{}", slot_idx);
+                if let Some(bt) = slot {
+                    let cost = bt.maintenance_cost();
+                    if cost != Amt::ZERO {
+                        maint.energy_per_hexadies.push_modifier(Modifier {
+                            id: id.clone(),
+                            label: format!("{} (slot {})", bt.name(), slot_idx),
+                            base_add: cost,
+                            multiplier: Amt::ZERO,
+                            add: Amt::ZERO,
+                        });
+                        active_ids.insert(id);
+                    } else {
+                        maint.energy_per_hexadies.pop_modifier(&id);
+                    }
+                } else {
+                    maint.energy_per_hexadies.pop_modifier(&id);
+                }
+            }
+        }
+
+        // Ship maintenance modifiers
+        if let Some(ship_list) = ship_costs_by_system.get(&colony.system) {
+            for (ship_id, cost) in ship_list {
+                maint.energy_per_hexadies.push_modifier(Modifier {
+                    id: ship_id.clone(),
+                    label: format!("Ship {}", ship_id),
+                    base_add: *cost,
+                    multiplier: Amt::ZERO,
+                    add: Amt::ZERO,
+                });
+                active_ids.insert(ship_id.clone());
+            }
+        }
+
+        // Remove stale ship modifiers (ships that moved away or were destroyed)
+        let stale: Vec<String> = maint
+            .energy_per_hexadies
+            .modifiers()
+            .iter()
+            .filter(|m| m.id.starts_with("ship_maint_") && !active_ids.contains(&m.id))
+            .map(|m| m.id.clone())
+            .collect();
+        for id in stale {
+            maint.energy_per_hexadies.pop_modifier(&id);
+        }
+    }
+}
+
+/// Synchronise food consumption based on current population.
+/// Sets the ModifiedValue base to `population * FOOD_PER_POP_PER_HEXADIES`.
+/// Any tech modifiers (e.g. Hydroponics -20%) remain attached as multiplier modifiers.
+/// Runs BEFORE tick_population_growth.
+pub fn sync_food_consumption(
+    mut query: Query<(&Colony, &mut FoodConsumption)>,
+) {
+    use crate::galaxy::FOOD_PER_POP_PER_HEXADIES;
+
+    for (colony, mut consumption) in &mut query {
+        let base = Amt::from_f64(colony.population).mul_amt(FOOD_PER_POP_PER_HEXADIES);
+        consumption.food_per_hexadies.set_base(base);
     }
 }
 
@@ -513,6 +687,7 @@ pub fn tick_population_growth(
         &mut Colony,
         &mut ResourceStockpile,
         &Production,
+        Option<&FoodConsumption>,
     )>,
     stars: Query<(&StarSystem, &crate::galaxy::SystemAttributes)>,
 ) {
@@ -524,9 +699,14 @@ pub fn tick_population_growth(
     }
     let d = delta as u64;
 
-    for (mut colony, mut stockpile, production) in &mut colonies {
-        // #72: Food consumption: pop * 0.1 * delta (bridge f64 pop → Amt food)
-        let food_consumed = Amt::from_f64(colony.population).mul_amt(FOOD_PER_POP_PER_HEXADIES).mul_u64(d);
+    for (mut colony, mut stockpile, production, food_consumption) in &mut colonies {
+        // #72: Food consumption via FoodConsumption ModifiedValue (includes tech modifiers),
+        // falling back to manual calculation if the component is absent.
+        let food_consumed = if let Some(fc) = food_consumption {
+            fc.food_per_hexadies.final_value().mul_u64(d)
+        } else {
+            Amt::from_f64(colony.population).mul_amt(FOOD_PER_POP_PER_HEXADIES).mul_u64(d)
+        };
         stockpile.food = stockpile.food.sub(food_consumed);
 
         if stockpile.food == Amt::ZERO {
@@ -706,14 +886,15 @@ pub fn update_sovereignty(
 }
 
 /// #51/#64: Deduct energy maintenance costs for buildings and ships.
-/// Ship maintenance is charged to the colony at the ship's home_port, not the docked location.
-/// If the home_port colony no longer exists, falls back to the capital system.
+/// Uses MaintenanceCost component (populated by sync_maintenance_modifiers) when present,
+/// falling back to manual summing for colonies without the component.
+/// Ship home_port reassignment to capital is now handled in sync_maintenance_modifiers.
 /// Runs after production so that newly generated energy is available.
 pub fn tick_maintenance(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&Buildings>)>,
-    mut ships: Query<(&mut Ship, &ShipState)>,
+    mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&MaintenanceCost>, Option<&Buildings>)>,
+    ships: Query<(&Ship, &ShipState)>,
     stars: Query<&StarSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -722,14 +903,15 @@ pub fn tick_maintenance(
     }
     let d = delta as u64;
 
-    // #64: Collect ship maintenance costs grouped by home_port system entity.
+    // For colonies WITH MaintenanceCost, just read final_value().
+    // For colonies WITHOUT it (backward compat), fall back to manual sum.
+    // Collect ship costs for fallback path.
     let capital_entity: Option<Entity> = {
-        let colony_systems: Vec<Entity> = colonies.iter().map(|(c, _, _)| c.system).collect();
         let mut found = None;
-        for sys in &colony_systems {
-            if let Ok(star) = stars.get(*sys) {
+        for (colony, _, _, _) in colonies.iter() {
+            if let Ok(star) = stars.get(colony.system) {
                 if star.is_capital {
-                    found = Some(*sys);
+                    found = Some(colony.system);
                     break;
                 }
             }
@@ -737,41 +919,45 @@ pub fn tick_maintenance(
         found
     };
 
-    // Collect per-system ship maintenance costs
+    let colony_systems: std::collections::HashSet<Entity> = colonies
+        .iter()
+        .map(|(c, _, _, _)| c.system)
+        .collect();
+
     let mut ship_maintenance_by_system: std::collections::HashMap<Entity, Amt> =
         std::collections::HashMap::new();
 
-    let colony_systems: std::collections::HashSet<Entity> = colonies
-        .iter()
-        .map(|(c, _, _)| c.system)
-        .collect();
-
-    for (mut ship, _state) in &mut ships {
-        if !colony_systems.contains(&ship.home_port) {
-            if let Some(cap) = capital_entity {
-                ship.home_port = cap;
-            }
-        }
+    for (ship, _state) in &ships {
+        let effective_port = if colony_systems.contains(&ship.home_port) {
+            ship.home_port
+        } else {
+            capital_entity.unwrap_or(ship.home_port)
+        };
         let entry = ship_maintenance_by_system
-            .entry(ship.home_port)
+            .entry(effective_port)
             .or_insert(Amt::ZERO);
         *entry = entry.add(ship.ship_type.maintenance_cost());
     }
 
-    for (colony, mut stockpile, buildings) in &mut colonies {
-        let mut total_maintenance = Amt::ZERO;
-
-        if let Some(buildings) = buildings {
-            for slot in &buildings.slots {
-                if let Some(building) = slot {
-                    total_maintenance = total_maintenance.add(building.maintenance_cost());
+    for (colony, mut stockpile, maint, buildings) in &mut colonies {
+        let total_maintenance = if let Some(maint) = maint {
+            // ModifiedValue path: sync_maintenance_modifiers has already set modifiers
+            maint.energy_per_hexadies.final_value()
+        } else {
+            // Fallback: manual sum (for colonies spawned without MaintenanceCost)
+            let mut total = Amt::ZERO;
+            if let Some(buildings) = buildings {
+                for slot in &buildings.slots {
+                    if let Some(building) = slot {
+                        total = total.add(building.maintenance_cost());
+                    }
                 }
             }
-        }
-
-        if let Some(&ship_cost) = ship_maintenance_by_system.get(&colony.system) {
-            total_maintenance = total_maintenance.add(ship_cost);
-        }
+            if let Some(&ship_cost) = ship_maintenance_by_system.get(&colony.system) {
+                total = total.add(ship_cost);
+            }
+            total
+        };
 
         // Deduct energy: maintenance_per_hd * delta
         stockpile.energy = stockpile.energy.sub(total_maintenance.mul_u64(d));
