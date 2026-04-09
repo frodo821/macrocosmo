@@ -1689,6 +1689,7 @@ fn test_modifier_affects_production_output() {
         base_add: SignedAmt::ZERO,
         multiplier: SignedAmt::new(0, 200), // +20%
         add: SignedAmt::ZERO,
+        expires_at: None,
     });
 
     app.world_mut().spawn((
@@ -1834,6 +1835,7 @@ fn test_construction_params_modify_ship_cost() {
             base_add: SignedAmt::ZERO,
             multiplier: SignedAmt::new(0, 500), // +50%
             add: SignedAmt::ZERO,
+            expires_at: None,
         });
     }
 
@@ -1911,6 +1913,7 @@ fn test_maintenance_modifier_affects_energy() {
         base_add: SignedAmt::ZERO,
         multiplier: SignedAmt::new(0, 500), // +50%
         add: SignedAmt::ZERO,
+        expires_at: None,
     });
 
     app.world_mut().spawn((
@@ -1992,6 +1995,7 @@ fn test_food_consumption_modifier() {
         base_add: SignedAmt::ZERO,
         multiplier: SignedAmt::new(0, 200), // +20%
         add: SignedAmt::ZERO,
+        expires_at: None,
     });
 
     app.world_mut().spawn((
@@ -2059,6 +2063,7 @@ fn test_authority_params_modifier() {
             base_add: SignedAmt::ZERO,
             multiplier: SignedAmt::new(0, 500), // +50%
             add: SignedAmt::ZERO,
+            expires_at: None,
         });
     }
 
@@ -2459,4 +2464,75 @@ fn test_starvation_population_floor() {
         "Population should never drop below 1.0, got {}",
         colony.population
     );
+}
+
+#[test]
+fn test_timed_modifier_expires_in_game() {
+    use common::*;
+
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "TimedTest",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Spawn colony with base mineral production = 5/hd, no buildings
+    let colony_id = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::ZERO,
+        Amt::ZERO,
+        vec![],
+    );
+
+    // Push a +20% mineral production modifier that expires in 5 hd
+    {
+        let mut prod = app.world_mut().get_mut::<Production>(colony_id).unwrap();
+        prod.minerals_per_hexadies.push_modifier_timed(
+            Modifier {
+                id: "timed_boost".to_string(),
+                label: "Timed Boost".to_string(),
+                base_add: SignedAmt::ZERO,
+                multiplier: SignedAmt::new(0, 200), // +20%
+                add: SignedAmt::ZERO,
+                expires_at: None, // will be set by push_modifier_timed
+            },
+            0,
+            5,
+        );
+    }
+
+    // Verify modifier is present and production is boosted: 5 * 1.2 = 6
+    {
+        let prod = app.world().get::<Production>(colony_id).unwrap();
+        assert_eq!(prod.minerals_per_hexadies.final_value(), Amt::units(6));
+        assert!(prod.minerals_per_hexadies.has_modifier("timed_boost"));
+    }
+
+    // Advance 3 hd — modifier should still be active
+    advance_time(&mut app, 3);
+    {
+        let prod = app.world().get::<Production>(colony_id).unwrap();
+        assert!(
+            prod.minerals_per_hexadies.has_modifier("timed_boost"),
+            "Timed modifier should still be present at clock=3"
+        );
+        assert_eq!(prod.minerals_per_hexadies.final_value(), Amt::units(6));
+    }
+
+    // Advance 3 more hd (total clock=6) — modifier should be expired and removed
+    advance_time(&mut app, 3);
+    {
+        let prod = app.world().get::<Production>(colony_id).unwrap();
+        assert!(
+            !prod.minerals_per_hexadies.has_modifier("timed_boost"),
+            "Timed modifier should be removed at clock=6 (expired at 5)"
+        );
+        assert_eq!(prod.minerals_per_hexadies.final_value(), Amt::units(5));
+    }
 }

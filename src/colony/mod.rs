@@ -25,6 +25,7 @@ impl Plugin for ColonyPlugin {
             .add_systems(
                 Update,
                 (
+                    tick_timed_effects,
                     tick_authority,
                     sync_building_modifiers,
                     sync_maintenance_modifiers,
@@ -426,6 +427,38 @@ pub fn spawn_capital_colony(
     warn!("No capital star system found; capital colony not created");
 }
 
+/// Remove expired timed modifiers from all ModifiedValue-containing components.
+/// Runs BEFORE sync_building_modifiers so that expired timed effects are cleaned
+/// up before production values are recalculated.
+pub fn tick_timed_effects(
+    clock: Res<GameClock>,
+    mut productions: Query<&mut Production>,
+    mut maintenance_costs: Query<&mut MaintenanceCost>,
+    mut food_consumptions: Query<&mut FoodConsumption>,
+    mut authority_params: ResMut<AuthorityParams>,
+    mut construction_params: ResMut<ConstructionParams>,
+) {
+    let now = clock.elapsed;
+    for mut prod in &mut productions {
+        prod.minerals_per_hexadies.cleanup_expired(now);
+        prod.energy_per_hexadies.cleanup_expired(now);
+        prod.research_per_hexadies.cleanup_expired(now);
+        prod.food_per_hexadies.cleanup_expired(now);
+    }
+    for mut mc in &mut maintenance_costs {
+        mc.energy_per_hexadies.cleanup_expired(now);
+    }
+    for mut fc in &mut food_consumptions {
+        fc.food_per_hexadies.cleanup_expired(now);
+    }
+    authority_params.production.cleanup_expired(now);
+    authority_params.cost_per_colony.cleanup_expired(now);
+    construction_params.ship_cost_modifier.cleanup_expired(now);
+    construction_params.building_cost_modifier.cleanup_expired(now);
+    construction_params.ship_build_time_modifier.cleanup_expired(now);
+    construction_params.building_build_time_modifier.cleanup_expired(now);
+}
+
 /// Synchronise building-slot bonuses as modifiers on the Production component.
 /// For each occupied building slot, a `base_add` modifier is pushed.
 /// For empty slots, any previously set modifier is removed.
@@ -449,6 +482,7 @@ pub fn sync_building_modifiers(
                         base_add: SignedAmt::from_amt(m),
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
+                        expires_at: None,
                     });
                 } else {
                     prod.minerals_per_hexadies.pop_modifier(&id_m);
@@ -460,6 +494,7 @@ pub fn sync_building_modifiers(
                         base_add: SignedAmt::from_amt(e),
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
+                        expires_at: None,
                     });
                 } else {
                     prod.energy_per_hexadies.pop_modifier(&id_e);
@@ -471,6 +506,7 @@ pub fn sync_building_modifiers(
                         base_add: SignedAmt::from_amt(r),
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
+                        expires_at: None,
                     });
                 } else {
                     prod.research_per_hexadies.pop_modifier(&id_r);
@@ -482,6 +518,7 @@ pub fn sync_building_modifiers(
                         base_add: SignedAmt::from_amt(f),
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
+                        expires_at: None,
                     });
                 } else {
                     prod.food_per_hexadies.pop_modifier(&id_f);
@@ -557,6 +594,7 @@ pub fn sync_maintenance_modifiers(
                             base_add: SignedAmt::from_amt(cost),
                             multiplier: SignedAmt::ZERO,
                             add: SignedAmt::ZERO,
+                            expires_at: None,
                         });
                         active_ids.insert(id);
                     } else {
@@ -577,6 +615,7 @@ pub fn sync_maintenance_modifiers(
                     base_add: SignedAmt::from_amt(*cost),
                     multiplier: SignedAmt::ZERO,
                     add: SignedAmt::ZERO,
+                    expires_at: None,
                 });
                 active_ids.insert(ship_id.clone());
             }

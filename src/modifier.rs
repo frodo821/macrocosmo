@@ -7,6 +7,15 @@ pub struct Modifier {
     pub base_add: SignedAmt,
     pub multiplier: SignedAmt,
     pub add: SignedAmt,
+    /// None = permanent, Some(t) = expires when clock.elapsed >= t
+    pub expires_at: Option<i64>,
+}
+
+impl Modifier {
+    /// Returns remaining hexadies until expiration, or None if permanent.
+    pub fn remaining_duration(&self, current_time: i64) -> Option<i64> {
+        self.expires_at.map(|t| (t - current_time).max(0))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -55,6 +64,22 @@ impl ModifiedValue {
 
     pub fn modifiers(&self) -> &[Modifier] {
         &self.modifiers
+    }
+
+    /// Push a modifier that expires after `duration` hexadies from `now`.
+    pub fn push_modifier_timed(&mut self, mut modifier: Modifier, now: i64, duration: i64) {
+        modifier.expires_at = Some(now + duration);
+        self.push_modifier(modifier);
+    }
+
+    /// Remove all modifiers whose expires_at <= current_time. Returns count removed.
+    pub fn cleanup_expired(&mut self, current_time: i64) -> usize {
+        let before = self.modifiers.len();
+        self.modifiers.retain(|m| match m.expires_at {
+            None => true,
+            Some(t) => t > current_time,
+        });
+        before - self.modifiers.len()
     }
 
     /// `base + Σ base_add`, clamped to 0
@@ -115,6 +140,7 @@ mod tests {
             base_add,
             multiplier,
             add,
+            expires_at: None,
         }
     }
 
@@ -288,5 +314,81 @@ mod tests {
         mv.push_modifier(make_modifier("nerf", SignedAmt::ZERO, SignedAmt::new(0, -300), SignedAmt::ZERO));
         assert_eq!(mv.total_multiplier(), SignedAmt::new(1, 200));
         assert_eq!(mv.final_value(), Amt::units(12));
+    }
+
+    // --- Expiration tests ---
+
+    #[test]
+    fn test_modifier_expires_at_none_is_permanent() {
+        let mut mv = ModifiedValue::new(Amt::units(10));
+        mv.push_modifier(make_modifier("perm", SignedAmt::units(5), SignedAmt::ZERO, SignedAmt::ZERO));
+        // cleanup at any time should not remove permanent modifiers
+        assert_eq!(mv.cleanup_expired(0), 0);
+        assert_eq!(mv.cleanup_expired(1000), 0);
+        assert_eq!(mv.modifiers().len(), 1);
+        assert_eq!(mv.final_value(), Amt::units(15));
+    }
+
+    #[test]
+    fn test_modifier_expires_after_duration() {
+        let mut mv = ModifiedValue::new(Amt::units(10));
+        let m = make_modifier("timed", SignedAmt::units(5), SignedAmt::ZERO, SignedAmt::ZERO);
+        mv.push_modifier_timed(m, 0, 10); // expires_at = 10
+
+        // At clock=9, still present
+        assert_eq!(mv.cleanup_expired(9), 0);
+        assert_eq!(mv.modifiers().len(), 1);
+        assert_eq!(mv.final_value(), Amt::units(15));
+
+        // At clock=10, removed (expires_at <= current_time)
+        assert_eq!(mv.cleanup_expired(10), 1);
+        assert_eq!(mv.modifiers().len(), 0);
+        assert_eq!(mv.final_value(), Amt::units(10));
+    }
+
+    #[test]
+    fn test_cleanup_removes_only_expired() {
+        let mut mv = ModifiedValue::new(Amt::units(10));
+
+        // Permanent modifier
+        mv.push_modifier(make_modifier("perm", SignedAmt::units(1), SignedAmt::ZERO, SignedAmt::ZERO));
+
+        // Expires at 5
+        let m1 = make_modifier("early", SignedAmt::units(2), SignedAmt::ZERO, SignedAmt::ZERO);
+        mv.push_modifier_timed(m1, 0, 5);
+
+        // Expires at 15
+        let m2 = make_modifier("late", SignedAmt::units(3), SignedAmt::ZERO, SignedAmt::ZERO);
+        mv.push_modifier_timed(m2, 0, 15);
+
+        assert_eq!(mv.modifiers().len(), 3);
+
+        // At clock=10, only "early" (expires_at=5) is removed
+        assert_eq!(mv.cleanup_expired(10), 1);
+        assert_eq!(mv.modifiers().len(), 2);
+        assert!(mv.has_modifier("perm"));
+        assert!(!mv.has_modifier("early"));
+        assert!(mv.has_modifier("late"));
+    }
+
+    #[test]
+    fn test_remaining_duration() {
+        let m = Modifier {
+            id: "test".to_string(),
+            label: "Test".to_string(),
+            base_add: SignedAmt::ZERO,
+            multiplier: SignedAmt::ZERO,
+            add: SignedAmt::ZERO,
+            expires_at: Some(20),
+        };
+
+        assert_eq!(m.remaining_duration(0), Some(20));
+        assert_eq!(m.remaining_duration(10), Some(10));
+        assert_eq!(m.remaining_duration(20), Some(0));
+        assert_eq!(m.remaining_duration(25), Some(0)); // clamped to 0
+
+        // Permanent modifier
+        let perm = make_modifier("perm", SignedAmt::ZERO, SignedAmt::ZERO, SignedAmt::ZERO);
+        assert_eq!(perm.remaining_duration(100), None);
     }
 }

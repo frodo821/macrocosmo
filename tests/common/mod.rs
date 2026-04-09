@@ -47,6 +47,7 @@ pub fn test_app() -> App {
     app.add_systems(
         Update,
         (
+            tick_timed_effects,
             tick_authority,
             sync_building_modifiers,
             sync_maintenance_modifiers,
@@ -123,6 +124,7 @@ pub fn full_test_app() -> App {
     app.add_systems(
         Update,
         (
+            tick_timed_effects,
             tick_authority,
             sync_building_modifiers,
             sync_maintenance_modifiers,
