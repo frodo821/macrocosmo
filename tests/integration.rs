@@ -6,14 +6,14 @@ use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
-use macrocosmo::modifier::ModifiedValue;
+use macrocosmo::modifier::{ModifiedValue, Modifier};
 use macrocosmo::physics::sublight_travel_hexadies;
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::technology;
 use macrocosmo::time_system::{GameClock, HEXADIES_PER_YEAR};
 
-use common::{advance_time, spawn_test_system, test_app};
+use common::{advance_time, spawn_test_colony, spawn_test_system, test_app};
 
 // =========================================================================
 // Exploration flow
@@ -1590,6 +1590,873 @@ fn test_food_limits_carrying_capacity() {
     assert!(
         colony.population <= 51.0,
         "Population should be capped by food K=50, got {}",
+        colony.population
+    );
+}
+
+// =========================================================================
+// ResourceCapacity clamping
+// =========================================================================
+
+#[test]
+fn test_resource_capacity_clamps_stockpile() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Cap-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with very high production but low capacity
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity {
+            minerals: Amt::units(100),
+            energy: Amt::units(100),
+            food: Amt::units(500),
+            authority: Amt::units(10000),
+        },
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(50)),
+            energy_per_hexadies: ModifiedValue::new(Amt::units(50)),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    // After 10 hd, production would be 500 minerals without cap
+    advance_time(&mut app, 10);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    assert_eq!(
+        stockpile.minerals,
+        Amt::units(100),
+        "Minerals should be clamped to capacity 100, got {}",
+        stockpile.minerals
+    );
+    assert_eq!(
+        stockpile.energy,
+        Amt::units(100),
+        "Energy should be clamped to capacity 100, got {}",
+        stockpile.energy
+    );
+}
+
+// =========================================================================
+// Modifier affects production output
+// =========================================================================
+
+#[test]
+fn test_modifier_affects_production_output() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Mod-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let mut minerals_prod = ModifiedValue::new(Amt::units(5));
+    minerals_prod.push_modifier(Modifier {
+        id: "tech_boost".to_string(),
+        label: "Tech Boost".to_string(),
+        base_add: Amt::ZERO,
+        multiplier: Amt::new(0, 200), // +20%
+        add: Amt::ZERO,
+    });
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: minerals_prod,
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    advance_time(&mut app, 10);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    // 5 * 1.2 * 10 = 60
+    assert!(
+        stockpile.minerals.to_f64() > 50.0,
+        "Expected minerals > 50 with +20% modifier, got {}",
+        stockpile.minerals
+    );
+    assert!(
+        (stockpile.minerals.to_f64() - 60.0).abs() < 1.0,
+        "Expected ~60 minerals, got {}",
+        stockpile.minerals
+    );
+}
+
+// =========================================================================
+// Building queue completes construction
+// =========================================================================
+
+#[test]
+fn test_building_queue_completes_construction() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Build-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with enough resources and an empty slot; queue a Mine
+    let (minerals_cost, energy_cost) = BuildingType::Mine.build_cost();
+    let build_time = BuildingType::Mine.build_time();
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None, None, None, None] },
+        BuildingQueue {
+            queue: vec![BuildingOrder {
+                building_type: BuildingType::Mine,
+                target_slot: 0,
+                minerals_remaining: minerals_cost,
+                energy_remaining: energy_cost,
+                build_time_remaining: build_time,
+            }],
+        },
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    // Advance enough time for completion
+    advance_time(&mut app, build_time + 5);
+
+    let mut q = app.world_mut().query::<&Buildings>();
+    let buildings = q.iter(app.world()).next().unwrap();
+
+    assert_eq!(
+        buildings.slots[0],
+        Some(BuildingType::Mine),
+        "Mine should have been built in slot 0"
+    );
+}
+
+// =========================================================================
+// ConstructionParams resource exists and can be modified
+// =========================================================================
+
+#[test]
+fn test_construction_params_modify_ship_cost() {
+    let mut app = test_app();
+
+    // Verify ConstructionParams resource exists
+    {
+        let params = app.world().resource::<ConstructionParams>();
+        assert_eq!(
+            params.ship_cost_modifier.final_value(),
+            Amt::units(1),
+            "Default ship cost modifier should be 1.0"
+        );
+    }
+
+    // Modify it
+    {
+        let mut params = app.world_mut().resource_mut::<ConstructionParams>();
+        params.ship_cost_modifier.push_modifier(Modifier {
+            id: "tech_cheaper_ships".to_string(),
+            label: "Cheaper Ships".to_string(),
+            base_add: Amt::ZERO,
+            multiplier: Amt::new(0, 500), // +50%
+            add: Amt::ZERO,
+        });
+    }
+
+    let params = app.world().resource::<ConstructionParams>();
+    assert_eq!(
+        params.ship_cost_modifier.final_value(),
+        Amt::new(1, 500),
+        "Ship cost modifier should be 1.5 after pushing +50% modifier"
+    );
+}
+
+// =========================================================================
+// Building bonus via sync_building_modifiers
+// =========================================================================
+
+#[test]
+fn test_building_bonus_via_sync_modifiers() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Sync-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with Mine in slot 0, base minerals=5
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::ZERO,
+        Amt::ZERO,
+        vec![Some(BuildingType::Mine), None, None, None],
+    );
+
+    // Run one update to trigger sync_building_modifiers
+    app.update();
+
+    let prod = app.world().get::<Production>(colony).unwrap();
+    // Base=5 + Mine base_add=3 -> effective_base=8, no multipliers -> final=8
+    assert_eq!(
+        prod.minerals_per_hexadies.final_value(),
+        Amt::units(8),
+        "Expected 8 minerals/hd (5 base + 3 Mine), got {}",
+        prod.minerals_per_hexadies.final_value()
+    );
+}
+
+// =========================================================================
+// Maintenance modifier affects energy
+// =========================================================================
+
+#[test]
+fn test_maintenance_modifier_affects_energy() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Maint-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Mine maintenance = 0.2, Shipyard maintenance = 1.0 => total base = 1.2/hd
+    // With +50% multiplier => 1.2 * 1.5 = 1.8/hd
+    // Over 10 hd => 18.0 energy deducted from 100 => 82.0 remaining
+    let mut maint = MaintenanceCost::default();
+    maint.energy_per_hexadies.push_modifier(Modifier {
+        id: "tech_expensive".to_string(),
+        label: "Expensive Maintenance".to_string(),
+        base_add: Amt::ZERO,
+        multiplier: Amt::new(0, 500), // +50%
+        add: Amt::ZERO,
+    });
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings {
+            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard), None, None],
+        },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        maint,
+        FoodConsumption::default(),
+    ));
+
+    // First update to sync maintenance modifiers (adds building base_adds)
+    app.update();
+
+    // Now advance 10 hd
+    for _ in 0..10 {
+        advance_time(&mut app, 1);
+    }
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    // Base maintenance from buildings: Mine=0.2 + Shipyard=1.0 = 1.2/hd
+    // With +50% multiplier: 1.2 * 1.5 = 1.8/hd
+    // Over 10 hd: 18.0 deducted from 100 => 82.0 remaining
+    let remaining = stockpile.energy.to_f64();
+    assert!(
+        (remaining - 82.0).abs() < 2.0,
+        "Expected ~82 energy remaining (18 deducted with +50% maint modifier), got {}",
+        remaining
+    );
+}
+
+// =========================================================================
+// Food consumption modifier
+// =========================================================================
+
+#[test]
+fn test_food_consumption_modifier() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Food-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Population=100, FOOD_PER_POP=0.1/hd => base consumption=10/hd
+    // With +20% multiplier => 12/hd
+    // After 1 hd: 12 food consumed from 100 => 88 remaining
+    let mut food_consumption = FoodConsumption::default();
+    food_consumption.food_per_hexadies.push_modifier(Modifier {
+        id: "tech_food".to_string(),
+        label: "Extra Consumption".to_string(),
+        base_add: Amt::ZERO,
+        multiplier: Amt::new(0, 200), // +20%
+        add: Amt::ZERO,
+    });
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 100.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        food_consumption,
+    ));
+
+    // Run one update so sync_food_consumption sets the base
+    app.update();
+
+    // Advance 1 hd
+    advance_time(&mut app, 1);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    // Base food consumption: 100 pop * 0.1 = 10/hd
+    // With +20% multiplier: 10 * 1.2 = 12/hd
+    // After 1 hd: 100 - 12 = 88
+    let remaining = stockpile.food.to_f64();
+    assert!(
+        (remaining - 88.0).abs() < 2.0,
+        "Expected ~88 food remaining (12 consumed with +20% modifier), got {}",
+        remaining
+    );
+}
+
+// =========================================================================
+// Authority params modifier
+// =========================================================================
+
+#[test]
+fn test_authority_params_modifier() {
+    let mut app = test_app();
+
+    // Push +50% multiplier to authority production
+    {
+        let mut params = app.world_mut().resource_mut::<AuthorityParams>();
+        params.production.push_modifier(Modifier {
+            id: "tech_authority".to_string(),
+            label: "Authority Boost".to_string(),
+            base_add: Amt::ZERO,
+            multiplier: Amt::new(0, 500), // +50%
+            add: Amt::ZERO,
+        });
+    }
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Auth-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Mark as capital
+    app.world_mut().get_mut::<StarSystem>(sys).unwrap().is_capital = true;
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    // Advance 10 hd
+    advance_time(&mut app, 10);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    // Base authority = 1.0/hd, with +50% = 1.5/hd, over 10 hd = 15.0
+    assert!(
+        (stockpile.authority.to_f64() - 15.0).abs() < 1.0,
+        "Expected ~15 authority (1.5/hd * 10), got {}",
+        stockpile.authority
+    );
+}
+
+// =========================================================================
+// Production focus weights
+// =========================================================================
+
+#[test]
+fn test_production_focus_weights() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Focus-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::minerals(), // minerals_weight=2.0, energy_weight=0.5
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    advance_time(&mut app, 10);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    // minerals: 5 * 2.0 * 10 = 100, energy: 5 * 0.5 * 10 = 25
+    assert!(
+        stockpile.minerals > stockpile.energy,
+        "Minerals ({}) should exceed energy ({}) with minerals focus",
+        stockpile.minerals,
+        stockpile.energy
+    );
+    assert!(
+        (stockpile.minerals.to_f64() - 100.0).abs() < 5.0,
+        "Expected ~100 minerals, got {}",
+        stockpile.minerals
+    );
+    assert!(
+        (stockpile.energy.to_f64() - 25.0).abs() < 5.0,
+        "Expected ~25 energy, got {}",
+        stockpile.energy
+    );
+}
+
+// =========================================================================
+// Build queue partial resources
+// =========================================================================
+
+#[test]
+fn test_build_queue_partial_resources() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Partial-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with only 20 minerals, building order costs 150 minerals + 50 energy
+    // Mine build_time = 10 hd
+    let (minerals_cost, energy_cost) = BuildingType::Mine.build_cost();
+    let build_time = BuildingType::Mine.build_time();
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::units(20),
+            energy: Amt::units(200),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(20)), // produces 20/hd
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None, None, None, None] },
+        BuildingQueue {
+            queue: vec![BuildingOrder {
+                building_type: BuildingType::Mine,
+                target_slot: 0,
+                minerals_remaining: minerals_cost,
+                energy_remaining: energy_cost,
+                build_time_remaining: build_time,
+            }],
+        },
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    // After 1 hd: only 20 minerals available, not enough to fully pay 150
+    advance_time(&mut app, 1);
+
+    let mut q = app.world_mut().query::<&Buildings>();
+    let buildings = q.iter(app.world()).next().unwrap();
+    assert_eq!(
+        buildings.slots[0], None,
+        "Mine should NOT be complete after 1 hd (insufficient resources)"
+    );
+
+    // Keep advancing -- production adds 20/hd, eventually enough
+    for _ in 0..20 {
+        advance_time(&mut app, 1);
+    }
+
+    let mut q = app.world_mut().query::<&Buildings>();
+    let buildings = q.iter(app.world()).next().unwrap();
+    assert_eq!(
+        buildings.slots[0],
+        Some(BuildingType::Mine),
+        "Mine should be complete after enough time with ongoing production"
+    );
+}
+
+// =========================================================================
+// Build queue requires shipyard
+// =========================================================================
+
+#[test]
+fn test_build_queue_requires_shipyard() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "NoYard-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony WITHOUT Shipyard, but with a ship build order
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue {
+            queue: vec![BuildOrder {
+                ship_type_name: "Explorer".to_string(),
+                minerals_cost: Amt::units(100),
+                minerals_invested: Amt::ZERO,
+                energy_cost: Amt::units(50),
+                energy_invested: Amt::ZERO,
+                build_time_total: 60,
+                build_time_remaining: 60,
+            }],
+        },
+        Buildings { slots: vec![Some(BuildingType::Mine), None, None, None] }, // No Shipyard!
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+        Position::from([0.0, 0.0, 0.0]),
+    ));
+
+    advance_time(&mut app, 100);
+
+    // Verify no ship was spawned
+    let mut ship_q = app.world_mut().query::<&Ship>();
+    let ship_count = ship_q.iter(app.world()).count();
+    assert_eq!(
+        ship_count, 0,
+        "No ship should be spawned without a Shipyard"
+    );
+
+    // Build order should still be in queue (not consumed)
+    let mut bq_q = app.world_mut().query::<&BuildQueue>();
+    let bq = bq_q.iter(app.world()).next().unwrap();
+    assert_eq!(
+        bq.queue.len(),
+        1,
+        "Build order should still be in queue without Shipyard"
+    );
+}
+
+// =========================================================================
+// Starvation reduces population
+// =========================================================================
+
+#[test]
+fn test_starvation_reduces_population() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Starve-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 100.0,
+            growth_rate: 0.01,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO, // No food!
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO), // No food production
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    advance_time(&mut app, 1);
+
+    let mut q = app.world_mut().query::<&Colony>();
+    let colony = q.iter(app.world()).next().unwrap();
+
+    assert!(
+        colony.population < 100.0,
+        "Population should decrease during starvation, got {}",
+        colony.population
+    );
+}
+
+// =========================================================================
+// Starvation population floor
+// =========================================================================
+
+#[test]
+fn test_starvation_population_floor() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Floor-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 1.5,
+            growth_rate: 0.01,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    // Advance many hexadies with starvation
+    for _ in 0..500 {
+        advance_time(&mut app, 1);
+    }
+
+    let mut q = app.world_mut().query::<&Colony>();
+    let colony = q.iter(app.world()).next().unwrap();
+
+    assert!(
+        colony.population >= 1.0,
+        "Population should never drop below 1.0, got {}",
         colony.population
     );
 }

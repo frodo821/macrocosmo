@@ -619,7 +619,7 @@ pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     global_params: Res<crate::technology::GlobalParams>,
-    mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&ProductionFocus>)>,
+    mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&ProductionFocus>, Option<&ResourceCapacity>)>,
     stars: Query<&StarSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -630,7 +630,7 @@ pub fn tick_production(
     let d_amt = Amt::units(d);
 
     // #73: Check if the capital has an authority deficit.
-    let capital_authority = query.iter().find_map(|(colony, _, stockpile, _)| {
+    let capital_authority = query.iter().find_map(|(colony, _, stockpile, _, _)| {
         stars.get(colony.system).ok().and_then(|star| {
             if star.is_capital {
                 Some(stockpile.authority)
@@ -641,7 +641,7 @@ pub fn tick_production(
     });
     let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
 
-    for (colony, prod, mut stockpile, focus) in &mut query {
+    for (colony, prod, mut stockpile, focus, capacity) in &mut query {
         let (mw, ew) = match focus {
             Some(f) => (f.minerals_weight, f.energy_weight),
             None => (Amt::units(1), Amt::units(1)),
@@ -670,6 +670,14 @@ pub fn tick_production(
         );
         // Research is no longer accumulated in the stockpile; it is emitted
         // directly via emit_research in the technology module.
+
+        // Clamp resources to capacity
+        if let Some(cap) = capacity {
+            stockpile.minerals = stockpile.minerals.min(cap.minerals);
+            stockpile.energy = stockpile.energy.min(cap.energy);
+            stockpile.food = stockpile.food.min(cap.food);
+            stockpile.authority = stockpile.authority.min(cap.authority);
+        }
     }
 }
 
@@ -979,7 +987,7 @@ pub fn tick_authority(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     authority_params: Res<AuthorityParams>,
-    mut colonies: Query<(&Colony, &mut ResourceStockpile)>,
+    mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&ResourceCapacity>)>,
     stars: Query<&StarSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -991,7 +999,7 @@ pub fn tick_authority(
     // First pass: find capital system and count non-capital colonies
     let mut capital_system: Option<Entity> = None;
     let mut non_capital_count: u64 = 0;
-    for (colony, _) in colonies.iter() {
+    for (colony, _, _) in colonies.iter() {
         if let Ok(star) = stars.get(colony.system) {
             if star.is_capital {
                 capital_system = Some(colony.system);
@@ -1010,7 +1018,7 @@ pub fn tick_authority(
     // Second pass: produce authority at capital and deduct empire scale cost
     let auth_production = authority_params.production.final_value();
     let auth_cost_per_colony = authority_params.cost_per_colony.final_value();
-    for (colony, mut stockpile) in &mut colonies {
+    for (colony, mut stockpile, capacity) in &mut colonies {
         if colony.system == cap_sys {
             // Capital produces authority
             stockpile.authority = stockpile.authority.add(auth_production.mul_u64(d));
@@ -1018,6 +1026,11 @@ pub fn tick_authority(
             // Deduct empire scale cost for non-capital colonies
             let scale_cost = auth_cost_per_colony.mul_u64(non_capital_count).mul_u64(d);
             stockpile.authority = stockpile.authority.sub(scale_cost);
+
+            // Clamp authority to capacity
+            if let Some(cap) = capacity {
+                stockpile.authority = stockpile.authority.min(cap.authority);
+            }
             break;
         }
     }
