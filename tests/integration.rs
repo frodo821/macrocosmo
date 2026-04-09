@@ -792,3 +792,314 @@ fn test_combat_takes_multiple_ticks() {
     assert!(hostile.hp < 10.0, "Hostile should have taken some damage");
     assert!(hostile.hp > 0.0, "Hostile should still be alive after one tick");
 }
+
+// =========================================================================
+// Authority production and consumption (#73)
+// =========================================================================
+
+/// Helper: spawn a star system marked as capital
+fn spawn_capital_system(world: &mut World, name: &str, pos: [f64; 3]) -> Entity {
+    world
+        .spawn((
+            StarSystem {
+                name: name.to_string(),
+                surveyed: true,
+                colonized: true,
+                is_capital: true,
+            },
+            Position::from(pos),
+            SystemAttributes {
+                habitability: Habitability::Ideal,
+                mineral_richness: ResourceLevel::Moderate,
+                energy_potential: ResourceLevel::Moderate,
+                research_potential: ResourceLevel::Moderate,
+                max_building_slots: 4,
+            },
+            Sovereignty::default(),
+        ))
+        .id()
+}
+
+#[test]
+fn test_capital_produces_authority() {
+    let mut app = test_app();
+
+    let cap_sys = spawn_capital_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0]);
+
+    // Spawn capital colony with zero authority
+    let colony_entity = app.world_mut().spawn((
+        Colony {
+            system: cap_sys,
+            population: 100.0,
+            growth_rate: 0.01,
+        },
+        ResourceStockpile {
+            minerals: 500.0,
+            energy: 500.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 5.0,
+            energy_per_hexadies: 5.0,
+            research_per_hexadies: 1.0,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    )).id();
+
+    // Advance 10 hexadies
+    advance_time(&mut app, 10);
+
+    let stockpile = app.world().get::<ResourceStockpile>(colony_entity).unwrap();
+    // Capital produces BASE_AUTHORITY_PER_HEXADIES (1.0) per hexady, no colonies to drain it
+    // Expected: 1.0 * 10 = 10.0
+    assert!(
+        (stockpile.authority - 10.0).abs() < 1e-6,
+        "Expected 10.0 authority, got {}",
+        stockpile.authority
+    );
+}
+
+#[test]
+fn test_empire_scale_authority_cost() {
+    let mut app = test_app();
+
+    let cap_sys = spawn_capital_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0]);
+    let remote_sys = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [5.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        true,
+    );
+
+    // Capital colony starts with some authority
+    let capital_colony = app.world_mut().spawn((
+        Colony {
+            system: cap_sys,
+            population: 100.0,
+            growth_rate: 0.01,
+        },
+        ResourceStockpile {
+            minerals: 500.0,
+            energy: 500.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 5.0, // start with 5
+        },
+        Production {
+            minerals_per_hexadies: 5.0,
+            energy_per_hexadies: 5.0,
+            research_per_hexadies: 1.0,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    )).id();
+
+    // Remote colony (non-capital)
+    app.world_mut().spawn((
+        Colony {
+            system: remote_sys,
+            population: 50.0,
+            growth_rate: 0.005,
+        },
+        ResourceStockpile {
+            minerals: 100.0,
+            energy: 100.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 3.0,
+            energy_per_hexadies: 3.0,
+            research_per_hexadies: 0.5,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    ));
+
+    // Advance 10 hexadies
+    advance_time(&mut app, 10);
+
+    let stockpile = app.world().get::<ResourceStockpile>(capital_colony).unwrap();
+    // Production: 1.0 * 10 = 10.0
+    // Starting: 5.0
+    // Cost: 0.5 * 1 colony * 10 = 5.0
+    // Expected: 5.0 + 10.0 - 5.0 = 10.0
+    assert!(
+        (stockpile.authority - 10.0).abs() < 1e-6,
+        "Expected 10.0 authority, got {}",
+        stockpile.authority
+    );
+}
+
+#[test]
+fn test_authority_deficit_reduces_non_capital_production() {
+    let mut app = test_app();
+
+    let cap_sys = spawn_capital_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0]);
+    let remote_sys = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [5.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        true,
+    );
+
+    // Capital colony with zero authority -- will be in deficit
+    // Note: tick_authority runs before tick_production in the chain.
+    // With 3 non-capital colonies and 1.0 production per hexady,
+    // authority will be produced then immediately consumed.
+    // To guarantee deficit, we use 3 remote colonies so cost > production.
+    let remote_sys2 = spawn_test_system(
+        app.world_mut(),
+        "Remote2",
+        [10.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        true,
+    );
+    let remote_sys3 = spawn_test_system(
+        app.world_mut(),
+        "Remote3",
+        [15.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        true,
+    );
+
+    // Capital colony: authority = 0, so after tick_authority it stays 0
+    // because cost (3 * 0.5 = 1.5) > production (1.0), net = -0.5, capped to 0
+    app.world_mut().spawn((
+        Colony {
+            system: cap_sys,
+            population: 100.0,
+            growth_rate: 0.01,
+        },
+        ResourceStockpile {
+            minerals: 500.0,
+            energy: 500.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 5.0,
+            energy_per_hexadies: 5.0,
+            research_per_hexadies: 1.0,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    ));
+
+    // Three remote colonies with known production rates
+    let remote_colony = app.world_mut().spawn((
+        Colony {
+            system: remote_sys,
+            population: 50.0,
+            growth_rate: 0.005,
+        },
+        ResourceStockpile {
+            minerals: 0.0,
+            energy: 0.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 10.0,
+            energy_per_hexadies: 10.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    )).id();
+
+    app.world_mut().spawn((
+        Colony {
+            system: remote_sys2,
+            population: 50.0,
+            growth_rate: 0.005,
+        },
+        ResourceStockpile {
+            minerals: 0.0,
+            energy: 0.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 1.0,
+            energy_per_hexadies: 1.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    ));
+
+    app.world_mut().spawn((
+        Colony {
+            system: remote_sys3,
+            population: 50.0,
+            growth_rate: 0.005,
+        },
+        ResourceStockpile {
+            minerals: 0.0,
+            energy: 0.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 1.0,
+            energy_per_hexadies: 1.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    ));
+
+    // Advance 10 hexadies
+    advance_time(&mut app, 10);
+
+    let stockpile = app.world().get::<ResourceStockpile>(remote_colony).unwrap();
+    // With authority deficit, production is multiplied by AUTHORITY_DEFICIT_PENALTY (0.5)
+    // Normal: 10.0 * 10 = 100.0
+    // With penalty: 10.0 * 10 * 0.5 = 50.0
+    assert!(
+        (stockpile.minerals - 50.0).abs() < 1e-6,
+        "Expected 50.0 minerals (penalized), got {}",
+        stockpile.minerals
+    );
+    assert!(
+        (stockpile.energy - 50.0).abs() < 1e-6,
+        "Expected 50.0 energy (penalized), got {}",
+        stockpile.energy
+    );
+}

@@ -43,6 +43,7 @@ pub fn test_app() -> App {
     app.add_systems(
         Update,
         (
+            tick_authority,
             tick_production,
             tick_maintenance,
             tick_population_growth,
@@ -113,6 +114,7 @@ pub fn full_test_app() -> App {
     app.add_systems(
         Update,
         (
+            tick_authority,
             tick_production,
             tick_maintenance,
             tick_population_growth,
