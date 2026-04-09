@@ -4,6 +4,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
+use macrocosmo::event_system::EventSystem;
 use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
@@ -23,6 +24,7 @@ pub fn test_app() -> App {
     app.insert_resource(CommandLog::default());
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
+    app.insert_resource(EventSystem::default());
     app.insert_resource(technology::GlobalParams::default());
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
@@ -62,6 +64,11 @@ pub fn test_app() -> App {
             .chain()
             .after(macrocosmo::time_system::advance_game_time),
     );
+    app.add_systems(
+        Update,
+        macrocosmo::event_system::tick_events
+            .after(macrocosmo::time_system::advance_game_time),
+    );
     app.add_systems(Update, propagate_knowledge);
     app
 }
@@ -83,6 +90,7 @@ pub fn full_test_app() -> App {
     app.insert_resource(CommandLog::default());
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
+    app.insert_resource(EventSystem::default());
     app.add_message::<GameEvent>();
 
     // --- Visualization resources ---
@@ -165,13 +173,17 @@ pub fn full_test_app() -> App {
             .chain(),
     );
 
-    // --- Events systems (from EventsPlugin) ---
+    // --- Events systems (from EventsPlugin + EventSystemPlugin) ---
     app.add_systems(
         Update,
         (
             macrocosmo::events::collect_events,
             macrocosmo::events::auto_pause_on_event,
         ),
+    );
+    app.add_systems(
+        Update,
+        macrocosmo::event_system::tick_events,
     );
 
     // --- Time systems (from GameTimePlugin) ---

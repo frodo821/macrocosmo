@@ -432,16 +432,22 @@ pub fn spawn_capital_colony(
 /// up before production values are recalculated.
 pub fn tick_timed_effects(
     clock: Res<GameClock>,
-    mut productions: Query<&mut Production>,
-    mut maintenance_costs: Query<&mut MaintenanceCost>,
-    mut food_consumptions: Query<&mut FoodConsumption>,
+    mut productions: Query<(Entity, &mut Production)>,
+    mut maintenance_costs: Query<(Entity, &mut MaintenanceCost)>,
+    mut food_consumptions: Query<(Entity, &mut FoodConsumption)>,
     mut authority_params: ResMut<AuthorityParams>,
     mut construction_params: ResMut<ConstructionParams>,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
     let now = clock.elapsed;
 
-    // Helper: drain expired modifiers and log any on_expire_event
-    fn drain_and_log(mv: &mut ModifiedValue, now: i64) {
+    // Helper: drain expired modifiers and fire any on_expire_event via EventSystem
+    fn drain_and_fire(
+        mv: &mut ModifiedValue,
+        now: i64,
+        target: Option<Entity>,
+        event_system: &mut crate::event_system::EventSystem,
+    ) {
         let expired = mv.drain_expired(now);
         for m in &expired {
             if let Some(ref evt) = m.on_expire_event {
@@ -449,28 +455,29 @@ pub fn tick_timed_effects(
                     "Modifier '{}' expired, triggering event: {}",
                     m.id, evt
                 );
+                event_system.fire_event(evt, target, now);
             }
         }
     }
 
-    for mut prod in &mut productions {
-        drain_and_log(&mut prod.minerals_per_hexadies, now);
-        drain_and_log(&mut prod.energy_per_hexadies, now);
-        drain_and_log(&mut prod.research_per_hexadies, now);
-        drain_and_log(&mut prod.food_per_hexadies, now);
+    for (entity, mut prod) in &mut productions {
+        drain_and_fire(&mut prod.minerals_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(&mut prod.energy_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(&mut prod.research_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(&mut prod.food_per_hexadies, now, Some(entity), &mut event_system);
     }
-    for mut mc in &mut maintenance_costs {
-        drain_and_log(&mut mc.energy_per_hexadies, now);
+    for (entity, mut mc) in &mut maintenance_costs {
+        drain_and_fire(&mut mc.energy_per_hexadies, now, Some(entity), &mut event_system);
     }
-    for mut fc in &mut food_consumptions {
-        drain_and_log(&mut fc.food_per_hexadies, now);
+    for (entity, mut fc) in &mut food_consumptions {
+        drain_and_fire(&mut fc.food_per_hexadies, now, Some(entity), &mut event_system);
     }
-    drain_and_log(&mut authority_params.production, now);
-    drain_and_log(&mut authority_params.cost_per_colony, now);
-    drain_and_log(&mut construction_params.ship_cost_modifier, now);
-    drain_and_log(&mut construction_params.building_cost_modifier, now);
-    drain_and_log(&mut construction_params.ship_build_time_modifier, now);
-    drain_and_log(&mut construction_params.building_build_time_modifier, now);
+    drain_and_fire(&mut authority_params.production, now, None, &mut event_system);
+    drain_and_fire(&mut authority_params.cost_per_colony, now, None, &mut event_system);
+    drain_and_fire(&mut construction_params.ship_cost_modifier, now, None, &mut event_system);
+    drain_and_fire(&mut construction_params.building_cost_modifier, now, None, &mut event_system);
+    drain_and_fire(&mut construction_params.ship_build_time_modifier, now, None, &mut event_system);
+    drain_and_fire(&mut construction_params.building_build_time_modifier, now, None, &mut event_system);
 }
 
 /// Synchronise building-slot bonuses as modifiers on the Production component.

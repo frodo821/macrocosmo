@@ -1,3 +1,4 @@
+pub mod event_api;
 pub mod modifier_api;
 
 use bevy::prelude::*;
@@ -96,6 +97,39 @@ impl ScriptEngine {
             Ok(result)
         })?;
         globals.set("check_flag", check_flag)?;
+
+        // --- Event system Lua bindings ---
+
+        // Accumulator table for event definitions
+        let event_defs = lua.create_table()?;
+        globals.set("_event_definitions", event_defs)?;
+
+        // define_event(table) -- appends an event definition table to _event_definitions
+        let define_event = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_event_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_event", define_event)?;
+
+        // Pending script-fired events table
+        let pending_script_events = lua.create_table()?;
+        globals.set("_pending_script_events", pending_script_events)?;
+
+        // fire_event(event_id, target?) -- queues an event to be fired from Lua
+        let fire_event_fn = lua.create_function(|lua, args: (String, Option<u64>)| {
+            let events: mlua::Table = lua.globals().get("_pending_script_events")?;
+            let len = events.len()?;
+            let entry = lua.create_table()?;
+            entry.set("event_id", args.0)?;
+            if let Some(target) = args.1 {
+                entry.set("target", target)?;
+            }
+            events.set(len + 1, entry)?;
+            Ok(())
+        })?;
+        globals.set("fire_event", fire_event_fn)?;
 
         Ok(())
     }
