@@ -495,19 +495,71 @@ pub fn update_sovereignty(
     }
 }
 
-/// #51: Deduct energy maintenance costs for buildings and docked ships.
+/// #51/#64: Deduct energy maintenance costs for buildings and ships.
+/// Ship maintenance is charged to the colony at the ship's home_port, not the docked location.
+/// If the home_port colony no longer exists, falls back to the capital system.
 /// Runs after production so that newly generated energy is available.
 pub fn tick_maintenance(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&Buildings>)>,
-    ships: Query<(&Ship, &ShipState)>,
+    mut ships: Query<(&mut Ship, &ShipState)>,
+    stars: Query<&StarSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
     let d = delta as f64;
+
+    // #64: Collect ship maintenance costs grouped by home_port system entity.
+    // Also handle fallback: if home_port colony doesn't exist, reassign to capital.
+    let capital_system: Option<Entity> = stars
+        .iter()
+        .find(|s| s.is_capital)
+        .map(|_| {
+            // Find the entity for the capital star system
+            // We need entities, so collect from colonies
+            None
+        })
+        .unwrap_or(None);
+    // Actually, find capital from the colony systems that match a capital star
+    let capital_entity: Option<Entity> = {
+        let colony_systems: Vec<Entity> = colonies.iter().map(|(c, _, _)| c.system).collect();
+        let mut found = None;
+        for sys in &colony_systems {
+            if let Ok(star) = stars.get(*sys) {
+                if star.is_capital {
+                    found = Some(*sys);
+                    break;
+                }
+            }
+        }
+        found
+    };
+
+    // Collect per-system ship maintenance costs
+    let mut ship_maintenance_by_system: std::collections::HashMap<Entity, f64> =
+        std::collections::HashMap::new();
+
+    // Check which systems have colonies
+    let colony_systems: std::collections::HashSet<Entity> = colonies
+        .iter()
+        .map(|(c, _, _)| c.system)
+        .collect();
+
+    for (mut ship, _state) in &mut ships {
+        // If home_port colony no longer exists, fall back to capital
+        if !colony_systems.contains(&ship.home_port) {
+            if let Some(cap) = capital_entity {
+                ship.home_port = cap;
+            }
+            // If no capital either, maintenance just won't be charged
+        }
+        *ship_maintenance_by_system
+            .entry(ship.home_port)
+            .or_insert(0.0) += ship.ship_type.maintenance_cost();
+    }
 
     for (colony, mut stockpile, buildings) in &mut colonies {
         let mut total_maintenance = 0.0;
@@ -521,13 +573,9 @@ pub fn tick_maintenance(
             }
         }
 
-        // Ship maintenance (ships docked at this colony's system)
-        for (ship, state) in &ships {
-            if let ShipState::Docked { system } = state {
-                if *system == colony.system {
-                    total_maintenance += ship.ship_type.maintenance_cost();
-                }
-            }
+        // #64: Ship maintenance charged to this colony via home_port
+        if let Some(&ship_cost) = ship_maintenance_by_system.get(&colony.system) {
+            total_maintenance += ship_cost;
         }
 
         // Deduct energy

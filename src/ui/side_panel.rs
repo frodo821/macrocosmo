@@ -136,7 +136,7 @@ pub fn draw_system_panel(
                         ));
                     }
 
-                    // #51: Maintenance cost summary
+                    // #51/#64: Maintenance cost summary (ships charged via home_port)
                     {
                         let mut building_maintenance = 0.0;
                         if let Some(b) = buildings {
@@ -146,19 +146,25 @@ pub fn draw_system_panel(
                                 }
                             }
                         }
+                        // #64: Count ships whose home_port is this colony's system
                         let mut ship_maintenance = 0.0;
-                        for (_, ship, state, _) in ships_query.iter() {
-                            if let ShipState::Docked { system } = &*state {
-                                if *system == colony.system {
-                                    ship_maintenance += ship.ship_type.maintenance_cost();
-                                }
+                        let mut ships_based_here = 0u32;
+                        for (_, ship, _, _) in ships_query.iter() {
+                            if ship.home_port == colony.system {
+                                ship_maintenance += ship.ship_type.maintenance_cost();
+                                ships_based_here += 1;
                             }
                         }
                         let total_maintenance = building_maintenance + ship_maintenance;
                         if total_maintenance > 0.0 {
                             ui.label(format!("Maintenance: {:.1} E/hd", total_maintenance));
-                            ui.label(format!("  Ships: {:.1} E/hd", ship_maintenance));
                             ui.label(format!("  Buildings: {:.1} E/hd", building_maintenance));
+                        }
+                        if ships_based_here > 0 {
+                            ui.label(format!(
+                                "Ships based here: {} (maintenance: {:.1} E/hd)",
+                                ships_based_here, ship_maintenance
+                            ));
                         }
                     }
 
@@ -309,6 +315,7 @@ pub fn draw_system_panel(
 
 /// Draws the floating ship details panel when a ship is selected.
 /// #53: Simplified - command buttons moved to context menu
+/// #64: Shows home port info and "Set Home Port" button
 #[allow(clippy::too_many_arguments)]
 pub fn draw_ship_panel(
     ctx: &egui::Context,
@@ -324,6 +331,7 @@ pub fn draw_ship_panel(
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
     )>,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
 ) {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -334,6 +342,18 @@ pub fn draw_ship_panel(
             None
         };
         let cargo_data = cargo.map(|c| (c.minerals, c.energy));
+        let home_port = ship.home_port;
+        let home_port_name = stars
+            .get(home_port)
+            .map(|(_, s, _, _)| s.name.clone())
+            .unwrap_or_else(|_| "Unknown".to_string());
+        let maintenance_cost = ship.ship_type.maintenance_cost();
+        // Check if docked at a system that has a colony (for "Set Home Port" button)
+        let docked_at_colony = docked_system.and_then(|dock_sys| {
+            colonies.iter().find_map(|(_, col, _, _, _, _, _)| {
+                if col.system == dock_sys { Some(dock_sys) } else { None }
+            })
+        });
         Some((
             ship_entity,
             ship.name.clone(),
@@ -352,6 +372,10 @@ pub fn draw_ship_panel(
             .to_string(),
             docked_system,
             cargo_data,
+            home_port,
+            home_port_name,
+            maintenance_cost,
+            docked_at_colony,
         ))
     });
 
@@ -366,12 +390,17 @@ pub fn draw_ship_panel(
         status,
         docked_system,
         cargo_data,
+        _home_port_entity,
+        home_port_name,
+        maintenance_cost,
+        docked_at_colony,
     )) = ship_data
     else {
         return;
     };
 
     let mut deselect_ship = false;
+    let mut set_home_port: Option<Entity> = None;
 
     // Cargo load/unload actions to apply after UI drawing
     #[derive(Default)]
@@ -412,6 +441,14 @@ pub fn draw_ship_panel(
                 sublight_speed * 100.0
             ));
 
+            // #64: Home port and maintenance info
+            ui.separator();
+            ui.label(format!("Home Port: {}", home_port_name));
+            ui.label(format!(
+                "Maintenance: {:.1} E/hd (charged to {})",
+                maintenance_cost, home_port_name
+            ));
+
             ui.label(
                 egui::RichText::new("Click a star to issue commands")
                     .weak()
@@ -449,6 +486,13 @@ pub fn draw_ship_panel(
                 }
             }
 
+            // #64: Set Home Port button (only when docked at a colony)
+            if let Some(dock_system) = docked_at_colony {
+                if ui.button("Set Home Port").clicked() {
+                    set_home_port = Some(dock_system);
+                }
+            }
+
             if ui.button("Deselect ship").clicked() {
                 deselect_ship = true;
             }
@@ -457,6 +501,13 @@ pub fn draw_ship_panel(
     // Apply deselect
     if deselect_ship {
         selected_ship.0 = None;
+    }
+
+    // #64: Apply home port change
+    if let Some(new_home_port) = set_home_port {
+        if let Ok((_, mut ship, _, _)) = ships_query.get_mut(ship_entity) {
+            ship.home_port = new_home_port;
+        }
     }
 
     // Apply cargo load/unload actions

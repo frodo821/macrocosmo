@@ -41,6 +41,7 @@ pub fn test_app() -> App {
         Update,
         (
             tick_production,
+            tick_maintenance,
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
@@ -109,6 +110,7 @@ pub fn full_test_app() -> App {
         Update,
         (
             tick_production,
+            tick_maintenance,
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
