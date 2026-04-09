@@ -58,6 +58,22 @@ pub struct Sovereignty {
     pub control_score: f64,
 }
 
+/// A hostile presence at a star system that player ships must fight.
+#[derive(Component)]
+pub struct HostilePresence {
+    pub system: Entity,
+    pub strength: f64,
+    pub hp: f64,
+    pub max_hp: f64,
+    pub hostile_type: HostileType,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostileType {
+    SpaceCreature,
+    AncientDefense,
+}
+
 /// Marker for systems obscured by interstellar gas
 #[derive(Component)]
 pub struct ObscuredByGas;

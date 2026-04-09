@@ -7,7 +7,7 @@ use crate::colony::{
 };
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{Habitability, ResourceLevel, StarSystem, SystemAttributes};
+use crate::galaxy::{Habitability, HostilePresence, ResourceLevel, StarSystem, SystemAttributes};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
@@ -104,6 +104,7 @@ impl Plugin for ShipPlugin {
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys),
+            resolve_combat,
         ));
     }
 }
@@ -166,6 +167,20 @@ impl ShipType {
             ShipType::Courier => 0.3,
         }
     }
+
+    pub fn default_combat_stats(&self) -> CombatStats {
+        match self {
+            ShipType::Explorer => CombatStats { attack: 1.0, defense: 2.0 },
+            ShipType::ColonyShip => CombatStats { attack: 0.0, defense: 3.0 },
+            ShipType::Courier => CombatStats { attack: 0.0, defense: 1.0 },
+        }
+    }
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct CombatStats {
+    pub attack: f64,
+    pub defense: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -221,6 +236,71 @@ pub struct Cargo {
     pub energy: f64,
 }
 
+// --- #54: Fleet formation system ---
+
+#[derive(Component)]
+pub struct Fleet {
+    pub name: String,
+    pub members: Vec<Entity>,
+    pub flagship: Entity,
+}
+
+impl Fleet {
+    /// Fleet movement speed = slowest member
+    pub fn speed(&self, ships: &Query<&Ship>) -> f64 {
+        self.members
+            .iter()
+            .filter_map(|e| ships.get(*e).ok())
+            .map(|s| s.sublight_speed)
+            .fold(f64::MAX, f64::min)
+    }
+
+    /// Fleet FTL range = shortest range member
+    pub fn ftl_range(&self, ships: &Query<&Ship>) -> f64 {
+        self.members
+            .iter()
+            .filter_map(|e| ships.get(*e).ok())
+            .map(|s| s.ftl_range)
+            .fold(f64::MAX, f64::min)
+    }
+}
+
+/// Marks a ship as belonging to a fleet.
+#[derive(Component)]
+pub struct FleetMembership {
+    pub fleet: Entity,
+}
+
+/// Create a fleet from the given ships, returning the fleet entity.
+pub fn create_fleet(
+    commands: &mut Commands,
+    name: String,
+    members: Vec<Entity>,
+    flagship: Entity,
+) -> Entity {
+    let fleet_entity = commands
+        .spawn(Fleet {
+            name,
+            members: members.clone(),
+            flagship,
+        })
+        .id();
+    for member in &members {
+        commands
+            .entity(*member)
+            .insert(FleetMembership { fleet: fleet_entity });
+    }
+    fleet_entity
+}
+
+/// Dissolve a fleet, removing FleetMembership from all members and despawning the fleet entity.
+pub fn dissolve_fleet(commands: &mut Commands, fleet_entity: Entity, fleet: &Fleet) {
+    for member in &fleet.members {
+        commands.entity(*member).remove::<FleetMembership>();
+    }
+    commands.entity(fleet_entity).despawn();
+}
+
 pub fn spawn_ship(
     commands: &mut Commands,
     ship_type: ShipType,
@@ -229,6 +309,7 @@ pub fn spawn_ship(
     initial_position: Position,
 ) -> Entity {
     let hp = ship_type.default_hp();
+    let combat_stats = ship_type.default_combat_stats();
     commands
         .spawn((
             Ship {
@@ -245,6 +326,7 @@ pub fn spawn_ship(
             initial_position,
             CommandQueue::default(),
             Cargo::default(),
+            combat_stats,
         ))
         .id()
 }
@@ -488,6 +570,7 @@ pub fn process_surveys(
     clock: Res<GameClock>,
     mut ships: Query<(&mut Ship, &mut ShipState)>,
     mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>)>,
+    hostiles: Query<&HostilePresence>,
     mut events: MessageWriter<GameEvent>,
 ) {
     let mut rng = rand::rng();
@@ -517,6 +600,20 @@ pub fn process_surveys(
                     description: format!("{} completed survey of {}", ship.name, system_name),
                     related_system: Some(target_system),
                 });
+
+                // Check for hostile presence at this system
+                let has_hostile = hostiles.iter().any(|h| h.system == target_system);
+                if has_hostile {
+                    events.write(GameEvent {
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::HostileDetected,
+                        description: format!(
+                            "Warning: Hostile presence detected at {}!",
+                            system_name,
+                        ),
+                        related_system: Some(target_system),
+                    });
+                }
 
                 // Roll an exploration event
                 let event = roll_exploration_event(&mut rng);
@@ -1063,6 +1160,131 @@ pub fn process_command_queue(
     }
 }
 
+// --- Combat resolution (#55) ---
+
+/// Resolves combat between player ships and hostile presences at star systems.
+/// Runs one combat round per tick (hexadies). Damage = max(attack - defense, 0) * 0.1
+pub fn resolve_combat(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    mut ships: Query<(Entity, &mut Ship, &CombatStats, &ShipState)>,
+    mut hostiles: Query<(Entity, &mut HostilePresence)>,
+    systems: Query<&StarSystem>,
+    mut events: MessageWriter<GameEvent>,
+) {
+    // Collect hostile systems first to avoid borrow issues
+    let hostile_systems: Vec<(Entity, Entity)> = hostiles
+        .iter()
+        .filter_map(|(hostile_entity, hostile)| {
+            Some((hostile_entity, hostile.system))
+        })
+        .collect();
+
+    for (hostile_entity, system_entity) in hostile_systems {
+        let system_name = systems
+            .get(system_entity)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+
+        // Find all player ships docked at this system
+        let docked_ships: Vec<Entity> = ships
+            .iter()
+            .filter_map(|(entity, _ship, _stats, state)| {
+                if let ShipState::Docked { system } = state {
+                    if *system == system_entity {
+                        return Some(entity);
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if docked_ships.is_empty() {
+            continue;
+        }
+
+        // Calculate player total attack and defense
+        let mut player_total_attack: f64 = 0.0;
+        let mut player_total_defense: f64 = 0.0;
+        for &ship_entity in &docked_ships {
+            if let Ok((_e, _ship, stats, _state)) = ships.get(ship_entity) {
+                player_total_attack += stats.attack;
+                player_total_defense += stats.defense;
+            }
+        }
+
+        // Get hostile stats
+        let Ok((_he, mut hostile)) = hostiles.get_mut(hostile_entity) else {
+            continue;
+        };
+
+        // Player damages hostile
+        let player_damage = (player_total_attack - hostile.strength * 0.5).max(0.0) * 0.1;
+        hostile.hp -= player_damage;
+
+        // Hostile damages players
+        let hostile_damage = (hostile.strength - player_total_defense).max(0.0) * 0.1;
+
+        // Check if hostile is destroyed
+        if hostile.hp <= 0.0 {
+            commands.entity(hostile_entity).despawn();
+            events.write(GameEvent {
+                timestamp: clock.elapsed,
+                kind: GameEventKind::CombatVictory,
+                description: format!(
+                    "Victory! Hostile {:?} at {} has been defeated",
+                    hostile.hostile_type, system_name
+                ),
+                related_system: Some(system_entity),
+            });
+            continue;
+        }
+
+        // Drop the mutable borrow on hostile before accessing ships mutably
+        drop(hostile);
+
+        // Distribute hostile damage evenly across player ships
+        if hostile_damage > 0.0 && !docked_ships.is_empty() {
+            let damage_per_ship = hostile_damage / docked_ships.len() as f64;
+            let mut destroyed_ships: Vec<(Entity, String)> = Vec::new();
+
+            for &ship_entity in &docked_ships {
+                if let Ok((_e, mut ship, _stats, _state)) = ships.get_mut(ship_entity) {
+                    ship.hp -= damage_per_ship as f32;
+                    if ship.hp <= 0.0 {
+                        destroyed_ships.push((ship_entity, ship.name.clone()));
+                    }
+                }
+            }
+
+            for (entity, name) in &destroyed_ships {
+                commands.entity(*entity).despawn();
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::CombatDefeat,
+                    description: format!("{} destroyed in combat at {}", name, system_name),
+                    related_system: Some(system_entity),
+                });
+            }
+
+            // Check if all player ships at this system are destroyed
+            let surviving = docked_ships.len() - destroyed_ships.len();
+            if surviving == 0 {
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::CombatDefeat,
+                    description: format!(
+                        "All ships destroyed by hostile {:?} at {}",
+                        hostiles.get(hostile_entity).map(|(_, h)| h.hostile_type).unwrap_or(crate::galaxy::HostileType::SpaceCreature),
+                        system_name
+                    ),
+                    related_system: Some(system_entity),
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1324,5 +1546,173 @@ mod tests {
         assert_eq!(ShipType::Explorer.maintenance_cost(), 0.5);
         assert_eq!(ShipType::ColonyShip.maintenance_cost(), 1.0);
         assert_eq!(ShipType::Courier.maintenance_cost(), 0.3);
+    }
+
+    // --- #54: Fleet tests ---
+
+    #[test]
+    fn fleet_speed_is_min_of_members() {
+        let mut world = World::new();
+        let ship_a = world.spawn(Ship {
+            name: "Fast".to_string(),
+            ship_type: ShipType::Courier,
+            owner: Owner::Player,
+            sublight_speed: 0.85,
+            ftl_range: 0.0,
+            hp: 20.0,
+            max_hp: 20.0,
+            player_aboard: false,
+        }).id();
+        let ship_b = world.spawn(Ship {
+            name: "Slow".to_string(),
+            ship_type: ShipType::ColonyShip,
+            owner: Owner::Player,
+            sublight_speed: 0.5,
+            ftl_range: 30.0,
+            hp: 100.0,
+            max_hp: 100.0,
+            player_aboard: false,
+        }).id();
+
+        let fleet = Fleet {
+            name: "Test Fleet".to_string(),
+            members: vec![ship_a, ship_b],
+            flagship: ship_a,
+        };
+
+        let mut system_state = bevy::ecs::system::SystemState::<Query<&Ship>>::new(&mut world);
+        let ships = system_state.get(&world);
+        let speed = fleet.speed(&ships);
+        assert!((speed - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fleet_ftl_range_is_min_of_members() {
+        let mut world = World::new();
+        let ship_a = world.spawn(Ship {
+            name: "Short Range".to_string(),
+            ship_type: ShipType::ColonyShip,
+            owner: Owner::Player,
+            sublight_speed: 0.5,
+            ftl_range: 10.0,
+            hp: 100.0,
+            max_hp: 100.0,
+            player_aboard: false,
+        }).id();
+        let ship_b = world.spawn(Ship {
+            name: "Long Range".to_string(),
+            ship_type: ShipType::ColonyShip,
+            owner: Owner::Player,
+            sublight_speed: 0.5,
+            ftl_range: 30.0,
+            hp: 100.0,
+            max_hp: 100.0,
+            player_aboard: false,
+        }).id();
+
+        let fleet = Fleet {
+            name: "Test Fleet".to_string(),
+            members: vec![ship_a, ship_b],
+            flagship: ship_a,
+        };
+
+        let mut system_state = bevy::ecs::system::SystemState::<Query<&Ship>>::new(&mut world);
+        let ships = system_state.get(&world);
+        let range = fleet.ftl_range(&ships);
+        assert!((range - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fleet_creation_adds_membership() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let ship_a = world.spawn((
+            make_ship(ShipType::Explorer),
+            ShipState::Docked { system },
+            pos,
+            CommandQueue::default(),
+            Cargo::default(),
+        )).id();
+        let ship_b = world.spawn((
+            make_ship(ShipType::ColonyShip),
+            ShipState::Docked { system },
+            pos,
+            CommandQueue::default(),
+            Cargo::default(),
+        )).id();
+
+        let members = vec![ship_a, ship_b];
+        let fleet_entity = {
+            let mut commands = world.commands();
+            let e = create_fleet(&mut commands, "Alpha Fleet".to_string(), members, ship_a);
+            e
+        };
+        world.flush();
+
+        let fleet = world.get::<Fleet>(fleet_entity).expect("Fleet should exist");
+        assert_eq!(fleet.name, "Alpha Fleet");
+        assert_eq!(fleet.members.len(), 2);
+        assert_eq!(fleet.flagship, ship_a);
+
+        let membership_a = world.get::<FleetMembership>(ship_a).expect("Ship A should have FleetMembership");
+        assert_eq!(membership_a.fleet, fleet_entity);
+
+        let membership_b = world.get::<FleetMembership>(ship_b).expect("Ship B should have FleetMembership");
+        assert_eq!(membership_b.fleet, fleet_entity);
+    }
+
+    #[test]
+    fn fleet_dissolution_removes_membership() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let ship_a = world.spawn((
+            make_ship(ShipType::Explorer),
+            ShipState::Docked { system },
+            pos,
+            CommandQueue::default(),
+            Cargo::default(),
+        )).id();
+        let ship_b = world.spawn((
+            make_ship(ShipType::ColonyShip),
+            ShipState::Docked { system },
+            pos,
+            CommandQueue::default(),
+            Cargo::default(),
+        )).id();
+
+        // Create fleet
+        let members = vec![ship_a, ship_b];
+        let fleet_entity = {
+            let mut commands = world.commands();
+            create_fleet(&mut commands, "Alpha Fleet".to_string(), members, ship_a)
+        };
+        world.flush();
+
+        // Verify membership exists
+        assert!(world.get::<FleetMembership>(ship_a).is_some());
+        assert!(world.get::<FleetMembership>(ship_b).is_some());
+
+        // Dissolve fleet
+        let fleet_members = world.get::<Fleet>(fleet_entity).unwrap().members.clone();
+        let fleet_flagship = world.get::<Fleet>(fleet_entity).unwrap().flagship;
+        let fleet_data = Fleet {
+            name: "Alpha Fleet".to_string(),
+            members: fleet_members,
+            flagship: fleet_flagship,
+        };
+        {
+            let mut commands = world.commands();
+            dissolve_fleet(&mut commands, fleet_entity, &fleet_data);
+        }
+        world.flush();
+
+        // Verify membership removed
+        assert!(world.get::<FleetMembership>(ship_a).is_none());
+        assert!(world.get::<FleetMembership>(ship_b).is_none());
+
+        // Fleet entity should be despawned
+        assert!(world.get_entity(fleet_entity).is_err());
     }
 }

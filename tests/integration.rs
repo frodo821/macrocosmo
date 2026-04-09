@@ -3,7 +3,8 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::events::EventLog;
+use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::physics::sublight_travel_hexadies;
 use macrocosmo::player::*;
@@ -587,4 +588,189 @@ fn all_systems_no_query_conflict() {
     for _ in 0..3 {
         app.update();
     }
+}
+
+// =========================================================================
+// Combat resolution (#55)
+// =========================================================================
+
+#[test]
+fn test_hostile_destroyed_when_hp_zero() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Battle-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Spawn a hostile with low HP so it gets destroyed quickly
+    let hostile_entity = app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 0.0,  // no attack
+        hp: 0.05,       // very low HP
+        max_hp: 10.0,
+        hostile_type: HostileType::SpaceCreature,
+    }).id();
+
+    // Spawn a strong explorer docked at that system
+    app.world_mut().spawn((
+        Ship {
+            name: "Warship-1".to_string(),
+            ship_type: ShipType::Explorer,
+            owner: Owner::Player,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            hp: 50.0,
+            max_hp: 50.0,
+            player_aboard: false,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        CombatStats { attack: 5.0, defense: 2.0 },
+        CommandQueue::default(),
+        Cargo::default(),
+    ));
+
+    // Run one tick of combat
+    advance_time(&mut app, 1);
+
+    // Hostile should be destroyed (despawned)
+    assert!(
+        app.world().get_entity(hostile_entity).is_err(),
+        "Hostile entity should be despawned after HP reaches 0"
+    );
+}
+
+#[test]
+fn test_ship_destroyed_when_hp_zero_in_combat() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Danger-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Spawn a powerful hostile
+    app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 100.0,  // very strong attack
+        hp: 1000.0,
+        max_hp: 1000.0,
+        hostile_type: HostileType::AncientDefense,
+    });
+
+    // Spawn a very weak ship with 1 HP
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Doomed-1".to_string(),
+            ship_type: ShipType::Courier,
+            owner: Owner::Player,
+            sublight_speed: 0.85,
+            ftl_range: 0.0,
+            hp: 0.01,  // nearly dead
+            max_hp: 20.0,
+            player_aboard: false,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        CombatStats { attack: 0.0, defense: 0.0 },
+        CommandQueue::default(),
+        Cargo::default(),
+    )).id();
+
+    // Run one tick of combat
+    advance_time(&mut app, 1);
+
+    // Ship should be destroyed
+    assert!(
+        app.world().get_entity(ship_entity).is_err(),
+        "Ship should be despawned after HP reaches 0 in combat"
+    );
+}
+
+#[test]
+fn test_no_combat_when_no_ships_present() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Empty-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Spawn hostile - should not be affected without ships present
+    let hostile_entity = app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 5.0,
+        hp: 10.0,
+        max_hp: 10.0,
+        hostile_type: HostileType::SpaceCreature,
+    }).id();
+
+    advance_time(&mut app, 1);
+
+    // Hostile should still exist with full HP
+    let hostile = app.world().get::<HostilePresence>(hostile_entity).unwrap();
+    assert!((hostile.hp - 10.0).abs() < f64::EPSILON, "Hostile HP should be unchanged");
+}
+
+#[test]
+fn test_combat_takes_multiple_ticks() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Prolonged-Battle",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Hostile with significant HP
+    let hostile_entity = app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 1.0,
+        hp: 10.0,
+        max_hp: 10.0,
+        hostile_type: HostileType::SpaceCreature,
+    }).id();
+
+    // Ship with moderate attack
+    app.world_mut().spawn((
+        Ship {
+            name: "Fighter-1".to_string(),
+            ship_type: ShipType::Explorer,
+            owner: Owner::Player,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            hp: 50.0,
+            max_hp: 50.0,
+            player_aboard: false,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        CombatStats { attack: 2.0, defense: 5.0 },
+        CommandQueue::default(),
+        Cargo::default(),
+    ));
+
+    // After 1 tick, hostile should still be alive but damaged
+    advance_time(&mut app, 1);
+
+    // Hostile damage = max(2.0 - 1.0*0.5, 0) * 0.1 = 0.15
+    let hostile = app.world().get::<HostilePresence>(hostile_entity).unwrap();
+    assert!(hostile.hp < 10.0, "Hostile should have taken some damage");
+    assert!(hostile.hp > 0.0, "Hostile should still be alive after one tick");
 }

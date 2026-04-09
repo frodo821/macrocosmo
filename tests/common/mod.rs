@@ -33,6 +33,7 @@ pub fn test_app() -> App {
             process_settling,
             process_pending_ship_commands,
             process_command_queue,
+            resolve_combat,
         )
             .chain(),
     );
@@ -99,6 +100,7 @@ pub fn full_test_app() -> App {
             process_settling,
             process_pending_ship_commands,
             process_command_queue,
+            resolve_combat,
         ),
     );
 

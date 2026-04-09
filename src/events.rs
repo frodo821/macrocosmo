@@ -17,6 +17,9 @@ pub enum GameEventKind {
     SurveyDiscovery,
     ColonyEstablished,
     ShipBuilt,
+    CombatVictory,
+    CombatDefeat,
+    HostileDetected,
 }
 
 #[derive(Resource)]
