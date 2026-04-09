@@ -47,6 +47,8 @@ pub struct ResourceStockpile {
     pub minerals: f64,
     pub energy: f64,
     pub research: f64,
+    pub food: f64,
+    pub authority: f64,
 }
 
 #[derive(Component)]
@@ -54,6 +56,7 @@ pub struct Production {
     pub minerals_per_hexadies: f64,
     pub energy_per_hexadies: f64,
     pub research_per_hexadies: f64,
+    pub food_per_hexadies: f64,
 }
 
 /// #29: Production focus weights for colony output
@@ -277,11 +280,14 @@ pub fn spawn_capital_colony(
                     minerals: 500.0,
                     energy: 500.0,
                     research: 0.0,
+                    food: 100.0,
+                    authority: 0.0,
                 },
                 Production {
                     minerals_per_hexadies: 5.0,
                     energy_per_hexadies: 5.0,
                     research_per_hexadies: 1.0,
+                    food_per_hexadies: 0.0,
                 },
                 BuildQueue {
                     queue: Vec::new(),
