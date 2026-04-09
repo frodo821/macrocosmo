@@ -439,24 +439,38 @@ pub fn tick_timed_effects(
     mut construction_params: ResMut<ConstructionParams>,
 ) {
     let now = clock.elapsed;
+
+    // Helper: drain expired modifiers and log any on_expire_event
+    fn drain_and_log(mv: &mut ModifiedValue, now: i64) {
+        let expired = mv.drain_expired(now);
+        for m in &expired {
+            if let Some(ref evt) = m.on_expire_event {
+                info!(
+                    "Modifier '{}' expired, triggering event: {}",
+                    m.id, evt
+                );
+            }
+        }
+    }
+
     for mut prod in &mut productions {
-        prod.minerals_per_hexadies.cleanup_expired(now);
-        prod.energy_per_hexadies.cleanup_expired(now);
-        prod.research_per_hexadies.cleanup_expired(now);
-        prod.food_per_hexadies.cleanup_expired(now);
+        drain_and_log(&mut prod.minerals_per_hexadies, now);
+        drain_and_log(&mut prod.energy_per_hexadies, now);
+        drain_and_log(&mut prod.research_per_hexadies, now);
+        drain_and_log(&mut prod.food_per_hexadies, now);
     }
     for mut mc in &mut maintenance_costs {
-        mc.energy_per_hexadies.cleanup_expired(now);
+        drain_and_log(&mut mc.energy_per_hexadies, now);
     }
     for mut fc in &mut food_consumptions {
-        fc.food_per_hexadies.cleanup_expired(now);
+        drain_and_log(&mut fc.food_per_hexadies, now);
     }
-    authority_params.production.cleanup_expired(now);
-    authority_params.cost_per_colony.cleanup_expired(now);
-    construction_params.ship_cost_modifier.cleanup_expired(now);
-    construction_params.building_cost_modifier.cleanup_expired(now);
-    construction_params.ship_build_time_modifier.cleanup_expired(now);
-    construction_params.building_build_time_modifier.cleanup_expired(now);
+    drain_and_log(&mut authority_params.production, now);
+    drain_and_log(&mut authority_params.cost_per_colony, now);
+    drain_and_log(&mut construction_params.ship_cost_modifier, now);
+    drain_and_log(&mut construction_params.building_cost_modifier, now);
+    drain_and_log(&mut construction_params.ship_build_time_modifier, now);
+    drain_and_log(&mut construction_params.building_build_time_modifier, now);
 }
 
 /// Synchronise building-slot bonuses as modifiers on the Production component.
@@ -483,6 +497,7 @@ pub fn sync_building_modifiers(
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
                         expires_at: None,
+                        on_expire_event: None,
                     });
                 } else {
                     prod.minerals_per_hexadies.pop_modifier(&id_m);
@@ -495,6 +510,7 @@ pub fn sync_building_modifiers(
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
                         expires_at: None,
+                        on_expire_event: None,
                     });
                 } else {
                     prod.energy_per_hexadies.pop_modifier(&id_e);
@@ -507,6 +523,7 @@ pub fn sync_building_modifiers(
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
                         expires_at: None,
+                        on_expire_event: None,
                     });
                 } else {
                     prod.research_per_hexadies.pop_modifier(&id_r);
@@ -519,6 +536,7 @@ pub fn sync_building_modifiers(
                         multiplier: SignedAmt::ZERO,
                         add: SignedAmt::ZERO,
                         expires_at: None,
+                        on_expire_event: None,
                     });
                 } else {
                     prod.food_per_hexadies.pop_modifier(&id_f);
@@ -595,6 +613,7 @@ pub fn sync_maintenance_modifiers(
                             multiplier: SignedAmt::ZERO,
                             add: SignedAmt::ZERO,
                             expires_at: None,
+                            on_expire_event: None,
                         });
                         active_ids.insert(id);
                     } else {
@@ -616,6 +635,7 @@ pub fn sync_maintenance_modifiers(
                     multiplier: SignedAmt::ZERO,
                     add: SignedAmt::ZERO,
                     expires_at: None,
+                    on_expire_event: None,
                 });
                 active_ids.insert(ship_id.clone());
             }

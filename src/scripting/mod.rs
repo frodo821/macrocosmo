@@ -1,3 +1,5 @@
+pub mod modifier_api;
+
 use bevy::prelude::*;
 use mlua::prelude::*;
 use std::path::Path;

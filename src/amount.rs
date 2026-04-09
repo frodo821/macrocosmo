@@ -175,6 +175,11 @@ impl SignedAmt {
         SignedAmt(a.0 as i64)
     }
 
+    /// Convert from f64.
+    pub fn from_f64(v: f64) -> Self {
+        SignedAmt((v * SIGNED_SCALE as f64) as i64)
+    }
+
     /// Raw internal value.
     pub const fn raw(self) -> i64 {
         self.0

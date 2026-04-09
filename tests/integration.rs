@@ -1690,6 +1690,7 @@ fn test_modifier_affects_production_output() {
         multiplier: SignedAmt::new(0, 200), // +20%
         add: SignedAmt::ZERO,
         expires_at: None,
+        on_expire_event: None,
     });
 
     app.world_mut().spawn((
@@ -1836,6 +1837,7 @@ fn test_construction_params_modify_ship_cost() {
             multiplier: SignedAmt::new(0, 500), // +50%
             add: SignedAmt::ZERO,
             expires_at: None,
+            on_expire_event: None,
         });
     }
 
@@ -1914,6 +1916,7 @@ fn test_maintenance_modifier_affects_energy() {
         multiplier: SignedAmt::new(0, 500), // +50%
         add: SignedAmt::ZERO,
         expires_at: None,
+        on_expire_event: None,
     });
 
     app.world_mut().spawn((
@@ -1996,6 +1999,7 @@ fn test_food_consumption_modifier() {
         multiplier: SignedAmt::new(0, 200), // +20%
         add: SignedAmt::ZERO,
         expires_at: None,
+        on_expire_event: None,
     });
 
     app.world_mut().spawn((
@@ -2064,6 +2068,7 @@ fn test_authority_params_modifier() {
             multiplier: SignedAmt::new(0, 500), // +50%
             add: SignedAmt::ZERO,
             expires_at: None,
+            on_expire_event: None,
         });
     }
 
@@ -2501,6 +2506,7 @@ fn test_timed_modifier_expires_in_game() {
                 multiplier: SignedAmt::new(0, 200), // +20%
                 add: SignedAmt::ZERO,
                 expires_at: None, // will be set by push_modifier_timed
+                on_expire_event: None,
             },
             0,
             5,
@@ -2534,5 +2540,63 @@ fn test_timed_modifier_expires_in_game() {
             "Timed modifier should be removed at clock=6 (expired at 5)"
         );
         assert_eq!(prod.minerals_per_hexadies.final_value(), Amt::units(5));
+    }
+}
+
+#[test]
+fn test_expired_modifier_has_on_expire_event() {
+    use common::*;
+
+    let mut app = test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Expire Event Test",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let colony_id = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::ZERO,
+        Amt::ZERO,
+        vec![],
+    );
+
+    // Push a modifier with duration=5 and on_expire_event="test_event"
+    {
+        let mut prod = app.world_mut().get_mut::<Production>(colony_id).unwrap();
+        prod.minerals_per_hexadies.push_modifier_timed(
+            Modifier {
+                id: "event_boost".to_string(),
+                label: "Event Boost".to_string(),
+                base_add: SignedAmt::units(2),
+                multiplier: SignedAmt::ZERO,
+                add: SignedAmt::ZERO,
+                expires_at: None,
+                on_expire_event: Some("test_event".to_string()),
+            },
+            0,
+            5,
+        );
+    }
+
+    // At clock=3, modifier should still be present
+    advance_time(&mut app, 3);
+    {
+        let prod = app.world().get::<Production>(colony_id).unwrap();
+        assert!(prod.minerals_per_hexadies.has_modifier("event_boost"));
+    }
+
+    // Advance past expiry (clock=6)
+    advance_time(&mut app, 3);
+    {
+        let prod = app.world().get::<Production>(colony_id).unwrap();
+        assert!(
+            !prod.minerals_per_hexadies.has_modifier("event_boost"),
+            "Modifier with on_expire_event should be removed after expiry"
+        );
     }
 }

@@ -9,6 +9,8 @@ pub struct Modifier {
     pub add: SignedAmt,
     /// None = permanent, Some(t) = expires when clock.elapsed >= t
     pub expires_at: Option<i64>,
+    /// Optional event id to fire when this modifier expires.
+    pub on_expire_event: Option<String>,
 }
 
 impl Modifier {
@@ -72,14 +74,25 @@ impl ModifiedValue {
         self.push_modifier(modifier);
     }
 
+    /// Remove all expired modifiers, returning them.
+    pub fn drain_expired(&mut self, current_time: i64) -> Vec<Modifier> {
+        let mut expired = Vec::new();
+        let mut i = 0;
+        while i < self.modifiers.len() {
+            if let Some(t) = self.modifiers[i].expires_at {
+                if t <= current_time {
+                    expired.push(self.modifiers.remove(i));
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        expired
+    }
+
     /// Remove all modifiers whose expires_at <= current_time. Returns count removed.
     pub fn cleanup_expired(&mut self, current_time: i64) -> usize {
-        let before = self.modifiers.len();
-        self.modifiers.retain(|m| match m.expires_at {
-            None => true,
-            Some(t) => t > current_time,
-        });
-        before - self.modifiers.len()
+        self.drain_expired(current_time).len()
     }
 
     /// `base + Σ base_add`, clamped to 0
@@ -141,6 +154,7 @@ mod tests {
             multiplier,
             add,
             expires_at: None,
+            on_expire_event: None,
         }
     }
 
@@ -380,6 +394,7 @@ mod tests {
             multiplier: SignedAmt::ZERO,
             add: SignedAmt::ZERO,
             expires_at: Some(20),
+            on_expire_event: None,
         };
 
         assert_eq!(m.remaining_duration(0), Some(20));
@@ -390,5 +405,73 @@ mod tests {
         // Permanent modifier
         let perm = make_modifier("perm", SignedAmt::ZERO, SignedAmt::ZERO, SignedAmt::ZERO);
         assert_eq!(perm.remaining_duration(100), None);
+    }
+
+    #[test]
+    fn test_on_expire_event_field() {
+        let mut mv = ModifiedValue::new(Amt::units(10));
+        let m = Modifier {
+            id: "timed".to_string(),
+            label: "Timed".to_string(),
+            base_add: SignedAmt::units(5),
+            multiplier: SignedAmt::ZERO,
+            add: SignedAmt::ZERO,
+            expires_at: Some(10),
+            on_expire_event: Some("test_event".to_string()),
+        };
+        mv.push_modifier(m);
+        assert_eq!(mv.modifiers().len(), 1);
+        assert_eq!(mv.modifiers()[0].on_expire_event, Some("test_event".to_string()));
+
+        // drain should return the modifier with on_expire_event preserved
+        let expired = mv.drain_expired(10);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].id, "timed");
+        assert_eq!(expired[0].on_expire_event, Some("test_event".to_string()));
+        assert_eq!(mv.modifiers().len(), 0);
+    }
+
+    #[test]
+    fn test_drain_expired_returns_modifiers() {
+        let mut mv = ModifiedValue::new(Amt::units(10));
+
+        // Permanent modifier
+        mv.push_modifier(make_modifier("perm", SignedAmt::units(1), SignedAmt::ZERO, SignedAmt::ZERO));
+
+        // Expires at 5, with on_expire_event
+        let m1 = Modifier {
+            id: "early".to_string(),
+            label: "Early".to_string(),
+            base_add: SignedAmt::units(2),
+            multiplier: SignedAmt::ZERO,
+            add: SignedAmt::ZERO,
+            expires_at: Some(5),
+            on_expire_event: Some("early_event".to_string()),
+        };
+        mv.push_modifier(m1);
+
+        // Expires at 15, no event
+        let m2 = Modifier {
+            id: "late".to_string(),
+            label: "Late".to_string(),
+            base_add: SignedAmt::units(3),
+            multiplier: SignedAmt::ZERO,
+            add: SignedAmt::ZERO,
+            expires_at: Some(15),
+            on_expire_event: None,
+        };
+        mv.push_modifier(m2);
+
+        assert_eq!(mv.modifiers().len(), 3);
+
+        // Drain at clock=10: only "early" (expires_at=5) is removed
+        let expired = mv.drain_expired(10);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].id, "early");
+        assert_eq!(expired[0].on_expire_event, Some("early_event".to_string()));
+
+        assert_eq!(mv.modifiers().len(), 2);
+        assert!(mv.has_modifier("perm"));
+        assert!(mv.has_modifier("late"));
     }
 }
