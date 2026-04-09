@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::amount::Amt;
 use crate::colony::{Colony, Production, ProductionFocus};
 use crate::components::Position;
+use crate::galaxy::StarSystem;
 use crate::modifier::ModifiedValue;
 use crate::physics;
 use crate::player::{Player, StationedAt};
@@ -24,10 +25,18 @@ impl Plugin for TechnologyPlugin {
         .insert_resource(GlobalParams::default())
         .insert_resource(GameFlags::default())
         .insert_resource(EmpireModifiers::default())
+        .insert_resource(RecentlyResearched::default())
         .add_systems(
             Update,
             (emit_research, receive_research, tick_research, flush_research)
                 .chain()
+                .after(crate::time_system::advance_game_time),
+        )
+        .add_systems(
+            Update,
+            (propagate_tech_knowledge, receive_tech_knowledge)
+                .chain()
+                .after(tick_research)
                 .after(crate::time_system::advance_game_time),
         );
     }
@@ -415,6 +424,7 @@ pub fn tick_research(
     mut tech_tree: ResMut<TechTree>,
     mut queue: ResMut<ResearchQueue>,
     mut pool: ResMut<ResearchPool>,
+    mut recently_researched: ResMut<RecentlyResearched>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -458,6 +468,7 @@ pub fn tick_research(
             .unwrap_or_default();
 
         tech_tree.complete_research(current_tech_id);
+        recently_researched.techs.push(current_tech_id);
 
         queue.current = None;
         queue.accumulated = 0.0;
@@ -468,6 +479,96 @@ pub fn tick_research(
 /// Flush unused research points at the end of each tick (use it or lose it).
 pub fn flush_research(mut pool: ResMut<ResearchPool>) {
     pool.points = 0.0;
+}
+
+// ---- Technology knowledge propagation ----
+
+/// Tracks which technologies a star system "knows about".
+/// Tech effects only apply to colonies in systems that have received the knowledge.
+#[derive(Component, Default, Debug)]
+pub struct TechKnowledge {
+    pub known_techs: HashSet<TechId>,
+}
+
+/// Techs that were just researched this tick, to be propagated to systems.
+#[derive(Resource, Default)]
+pub struct RecentlyResearched {
+    pub techs: Vec<TechId>,
+}
+
+/// A technology propagating from the capital to a target system at light speed.
+#[derive(Component)]
+pub struct PendingKnowledgePropagation {
+    pub tech_id: TechId,
+    pub target_system: Entity,
+    pub arrives_at: i64,
+}
+
+/// When techs are recently researched, propagate knowledge to all colonized systems.
+/// The capital gets the tech immediately; remote colonies receive it after light delay.
+pub fn propagate_tech_knowledge(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    mut recently_researched: ResMut<RecentlyResearched>,
+    colonies: Query<&Colony>,
+    stars: Query<(Entity, &StarSystem, &Position)>,
+    mut tech_knowledge: Query<&mut TechKnowledge>,
+) {
+    if recently_researched.techs.is_empty() {
+        return;
+    }
+
+    // Find capital system
+    let capital = stars.iter().find(|(_, s, _)| s.is_capital);
+    let Some((capital_entity, _, capital_pos)) = capital else {
+        recently_researched.techs.clear();
+        return;
+    };
+    let capital_pos = *capital_pos;
+
+    // Collect colonized system entities
+    let colonized_systems: HashSet<Entity> = colonies.iter().map(|c| c.system).collect();
+
+    for tech_id in recently_researched.techs.drain(..) {
+        // Capital gets it immediately
+        if let Ok(mut knowledge) = tech_knowledge.get_mut(capital_entity) {
+            knowledge.known_techs.insert(tech_id);
+        }
+
+        // Other colonized systems get it after light delay
+        for (sys_entity, _, sys_pos) in stars.iter() {
+            if sys_entity == capital_entity {
+                continue;
+            }
+            if !colonized_systems.contains(&sys_entity) {
+                continue;
+            }
+            let distance = physics::distance_ly(&capital_pos, sys_pos);
+            let delay = physics::light_delay_hexadies(distance);
+            commands.spawn(PendingKnowledgePropagation {
+                tech_id,
+                target_system: sys_entity,
+                arrives_at: clock.elapsed + delay,
+            });
+        }
+    }
+}
+
+/// Receive pending knowledge propagations that have arrived.
+pub fn receive_tech_knowledge(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    pending: Query<(Entity, &PendingKnowledgePropagation)>,
+    mut tech_knowledge: Query<&mut TechKnowledge>,
+) {
+    for (entity, prop) in pending.iter() {
+        if clock.elapsed >= prop.arrives_at {
+            if let Ok(mut knowledge) = tech_knowledge.get_mut(prop.target_system) {
+                knowledge.known_techs.insert(prop.tech_id);
+            }
+            commands.entity(entity).despawn();
+        }
+    }
 }
 
 // ---- Lua parsing ----

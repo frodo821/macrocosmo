@@ -3,6 +3,7 @@ use rand::Rng;
 
 use crate::components::Position;
 use crate::ship::Owner;
+use crate::technology::TechKnowledge;
 
 pub struct GalaxyPlugin;
 
@@ -321,7 +322,7 @@ pub fn generate_galaxy(mut commands: Commands) {
             Sovereignty::default()
         };
 
-        let entity = commands.spawn((star, Position::from(*position), attributes[i].clone(), sovereignty));
+        let entity = commands.spawn((star, Position::from(*position), attributes[i].clone(), sovereignty, TechKnowledge::default()));
         let entity_id = entity.id();
 
         if gas_indices.contains(&i) && !is_capital {

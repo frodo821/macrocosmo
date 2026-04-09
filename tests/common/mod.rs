@@ -10,7 +10,7 @@ use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, S
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::ship::*;
-use macrocosmo::technology::{self};
+use macrocosmo::technology::{self, TechKnowledge};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
 
@@ -27,6 +27,7 @@ pub fn test_app() -> App {
     app.insert_resource(EventSystem::default());
     app.insert_resource(technology::GlobalParams::default());
     app.insert_resource(technology::EmpireModifiers::default());
+    app.insert_resource(technology::RecentlyResearched::default());
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -164,6 +165,7 @@ pub fn full_test_app() -> App {
     );
 
     // --- Technology systems (from TechnologyPlugin) ---
+    app.insert_resource(technology::RecentlyResearched::default());
     app.add_systems(
         Update,
         (
@@ -173,6 +175,15 @@ pub fn full_test_app() -> App {
             technology::flush_research,
         )
             .chain(),
+    );
+    app.add_systems(
+        Update,
+        (
+            technology::propagate_tech_knowledge,
+            technology::receive_tech_knowledge,
+        )
+            .chain()
+            .after(technology::tick_research),
     );
 
     // --- Events systems (from EventsPlugin + EventSystemPlugin) ---
@@ -243,6 +254,7 @@ pub fn spawn_test_system(
                 max_building_slots: 4,
             },
             Sovereignty::default(),
+            TechKnowledge::default(),
         ))
         .id()
 }

@@ -14,7 +14,7 @@ use macrocosmo::ship::*;
 use macrocosmo::technology;
 use macrocosmo::time_system::{GameClock, HEXADIES_PER_YEAR};
 
-use common::{advance_time, spawn_test_colony, spawn_test_system, test_app};
+use common::{advance_time, full_test_app, spawn_test_colony, spawn_test_system, test_app};
 
 // =========================================================================
 // Exploration flow
@@ -2767,4 +2767,251 @@ fn test_cancel_research_clears_queue() {
     queue.cancel_research();
     assert!(queue.current.is_none());
     assert_eq!(queue.accumulated, 0.0);
+}
+
+// =========================================================================
+// Technology knowledge propagation (#88)
+// =========================================================================
+
+/// Helper: set up an app with tech research + propagation systems for knowledge tests.
+fn tech_knowledge_app() -> App {
+    use macrocosmo::technology::{
+        RecentlyResearched, TechKnowledge,
+    };
+
+    let mut app = full_test_app();
+    app.insert_resource(RecentlyResearched::default());
+    app
+}
+
+#[test]
+fn test_tech_propagates_to_capital_immediately() {
+    use macrocosmo::technology::{
+        RecentlyResearched, TechId, TechKnowledge,
+    };
+
+    let mut app = tech_knowledge_app();
+
+    // Spawn capital system
+    let capital = app.world_mut().spawn((
+        StarSystem {
+            name: "Capital".into(),
+            surveyed: true,
+            colonized: true,
+            is_capital: true,
+        },
+        Position::from([0.0, 0.0, 0.0]),
+        SystemAttributes {
+            habitability: Habitability::Ideal,
+            mineral_richness: ResourceLevel::Moderate,
+            energy_potential: ResourceLevel::Moderate,
+            research_potential: ResourceLevel::Moderate,
+            max_building_slots: 4,
+        },
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+
+    // Spawn a colony at the capital
+    spawn_test_colony(
+        app.world_mut(),
+        capital,
+        Amt::units(100),
+        Amt::units(100),
+        vec![],
+    );
+
+    // Simulate a tech being recently researched
+    app.world_mut()
+        .resource_mut::<RecentlyResearched>()
+        .techs
+        .push(TechId(100));
+
+    // Run one update
+    advance_time(&mut app, 1);
+
+    // Capital should have the tech immediately
+    let knowledge = app.world().get::<TechKnowledge>(capital).unwrap();
+    assert!(
+        knowledge.known_techs.contains(&TechId(100)),
+        "Capital should know tech immediately after research"
+    );
+}
+
+#[test]
+fn test_tech_propagates_to_remote_with_delay() {
+    use macrocosmo::technology::{
+        RecentlyResearched, TechId, TechKnowledge,
+    };
+
+    let mut app = tech_knowledge_app();
+
+    // Capital at origin
+    let capital = app.world_mut().spawn((
+        StarSystem {
+            name: "Capital".into(),
+            surveyed: true,
+            colonized: true,
+            is_capital: true,
+        },
+        Position::from([0.0, 0.0, 0.0]),
+        SystemAttributes {
+            habitability: Habitability::Ideal,
+            mineral_richness: ResourceLevel::Moderate,
+            energy_potential: ResourceLevel::Moderate,
+            research_potential: ResourceLevel::Moderate,
+            max_building_slots: 4,
+        },
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+
+    // Remote system at 1 LY (light delay = 60 hexadies)
+    let remote = app.world_mut().spawn((
+        StarSystem {
+            name: "Remote".into(),
+            surveyed: true,
+            colonized: true,
+            is_capital: false,
+        },
+        Position::from([1.0, 0.0, 0.0]),
+        SystemAttributes {
+            habitability: Habitability::Adequate,
+            mineral_richness: ResourceLevel::Moderate,
+            energy_potential: ResourceLevel::Moderate,
+            research_potential: ResourceLevel::Moderate,
+            max_building_slots: 4,
+        },
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+
+    // Colonies at both systems
+    spawn_test_colony(
+        app.world_mut(),
+        capital,
+        Amt::units(100),
+        Amt::units(100),
+        vec![],
+    );
+    spawn_test_colony(
+        app.world_mut(),
+        remote,
+        Amt::units(100),
+        Amt::units(100),
+        vec![],
+    );
+
+    // Simulate tech researched at tick 0
+    app.world_mut()
+        .resource_mut::<RecentlyResearched>()
+        .techs
+        .push(TechId(200));
+
+    // First tick: propagation entities spawned
+    advance_time(&mut app, 1);
+
+    // Capital should have it immediately
+    let capital_knowledge = app.world().get::<TechKnowledge>(capital).unwrap();
+    assert!(capital_knowledge.known_techs.contains(&TechId(200)));
+
+    // Remote should NOT have it yet (need 60 hexadies for 1 LY)
+    let remote_knowledge = app.world().get::<TechKnowledge>(remote).unwrap();
+    assert!(
+        !remote_knowledge.known_techs.contains(&TechId(200)),
+        "Remote system should not know tech before light delay"
+    );
+
+    // Advance to just before arrival (59 more hexadies, total elapsed = 60)
+    advance_time(&mut app, 59);
+    let remote_knowledge = app.world().get::<TechKnowledge>(remote).unwrap();
+    assert!(
+        !remote_knowledge.known_techs.contains(&TechId(200)),
+        "Remote system should not know tech at tick 60 (arrives_at = 60, spawned at tick 1)"
+    );
+
+    // Advance one more tick to reach arrival time
+    advance_time(&mut app, 1);
+    let remote_knowledge = app.world().get::<TechKnowledge>(remote).unwrap();
+    assert!(
+        remote_knowledge.known_techs.contains(&TechId(200)),
+        "Remote system should know tech after light delay"
+    );
+}
+
+#[test]
+fn test_uncolonized_system_no_propagation() {
+    use macrocosmo::technology::{
+        PendingKnowledgePropagation, RecentlyResearched, TechId, TechKnowledge,
+    };
+
+    let mut app = tech_knowledge_app();
+
+    // Capital at origin
+    let capital = app.world_mut().spawn((
+        StarSystem {
+            name: "Capital".into(),
+            surveyed: true,
+            colonized: true,
+            is_capital: true,
+        },
+        Position::from([0.0, 0.0, 0.0]),
+        SystemAttributes {
+            habitability: Habitability::Ideal,
+            mineral_richness: ResourceLevel::Moderate,
+            energy_potential: ResourceLevel::Moderate,
+            research_potential: ResourceLevel::Moderate,
+            max_building_slots: 4,
+        },
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+
+    // Uncolonized system (no colony spawned for it)
+    let _uncolonized = app.world_mut().spawn((
+        StarSystem {
+            name: "Uncolonized".into(),
+            surveyed: true,
+            colonized: false,
+            is_capital: false,
+        },
+        Position::from([1.0, 0.0, 0.0]),
+        SystemAttributes {
+            habitability: Habitability::Adequate,
+            mineral_richness: ResourceLevel::Moderate,
+            energy_potential: ResourceLevel::Moderate,
+            research_potential: ResourceLevel::Moderate,
+            max_building_slots: 4,
+        },
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+
+    // Colony only at capital
+    spawn_test_colony(
+        app.world_mut(),
+        capital,
+        Amt::units(100),
+        Amt::units(100),
+        vec![],
+    );
+
+    // Simulate tech researched
+    app.world_mut()
+        .resource_mut::<RecentlyResearched>()
+        .techs
+        .push(TechId(300));
+
+    advance_time(&mut app, 1);
+
+    // No PendingKnowledgePropagation entities should exist for uncolonized system
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingKnowledgePropagation>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        pending_count, 0,
+        "No propagation should be created for uncolonized systems"
+    );
 }
