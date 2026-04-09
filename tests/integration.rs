@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
+use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
 use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::{ModifiedValue, Modifier};
@@ -2598,5 +2599,71 @@ fn test_expired_modifier_has_on_expire_event() {
             !prod.minerals_per_hexadies.has_modifier("event_boost"),
             "Modifier with on_expire_event should be removed after expiry"
         );
+    }
+}
+
+// =========================================================================
+// Periodic event fires on interval
+// =========================================================================
+
+#[test]
+fn test_periodic_event_fires() {
+    let mut app = test_app();
+
+    // Register a periodic event with interval=5 hexadies
+    {
+        let mut event_system = app.world_mut().resource_mut::<EventSystem>();
+        event_system.register(EventDefinition {
+            id: "periodic_test".to_string(),
+            name: "Periodic Test".to_string(),
+            description: "Fires every 5 hexadies.".to_string(),
+            trigger: EventTrigger::Periodic {
+                interval_hexadies: 5,
+                last_fired: 0,
+                fire_condition: None,
+                max_times: None,
+                times_triggered: 0,
+            },
+        });
+    }
+
+    // Advance 5 hexadies -- periodic event should fire
+    advance_time(&mut app, 5);
+
+    {
+        let event_system = app.world().resource::<EventSystem>();
+        assert_eq!(
+            event_system.fired_log.len(),
+            1,
+            "Periodic event should have fired once at t=5"
+        );
+        assert_eq!(event_system.fired_log[0].event_id, "periodic_test");
+        assert_eq!(event_system.fired_log[0].fired_at, 5);
+    }
+
+    // Advance 3 more hexadies (t=8) -- should NOT fire again
+    advance_time(&mut app, 3);
+
+    {
+        let event_system = app.world().resource::<EventSystem>();
+        assert_eq!(
+            event_system.fired_log.len(),
+            1,
+            "Periodic event should not have fired again at t=8"
+        );
+    }
+
+    // Advance 2 more (t=10) -- should fire again
+    advance_time(&mut app, 2);
+
+    {
+        let event_system = app.world().resource::<EventSystem>();
+        assert_eq!(
+            event_system.fired_log.len(),
+            2,
+            "Periodic event should have fired again at t=10"
+        );
+        assert_eq!(event_system.fired_log[1].event_id, "periodic_test");
+        assert_eq!(event_system.fired_log[1].fired_at, 10);
     }
 }

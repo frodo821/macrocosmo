@@ -113,6 +113,20 @@ impl ScriptEngine {
         })?;
         globals.set("define_event", define_event)?;
 
+        // mtth_trigger(params) -- constructor that tags a table as type "mtth"
+        let mtth_trigger = lua.create_function(|_, table: mlua::Table| {
+            table.set("_type", "mtth")?;
+            Ok(table)
+        })?;
+        globals.set("mtth_trigger", mtth_trigger)?;
+
+        // periodic_trigger(params) -- constructor that tags a table as type "periodic"
+        let periodic_trigger = lua.create_function(|_, table: mlua::Table| {
+            table.set("_type", "periodic")?;
+            Ok(table)
+        })?;
+        globals.set("periodic_trigger", periodic_trigger)?;
+
         // Pending script-fired events table
         let pending_script_events = lua.create_table()?;
         globals.set("_pending_script_events", pending_script_events)?;
