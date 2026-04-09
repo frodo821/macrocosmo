@@ -90,8 +90,9 @@ tests/                   # 145+ tests (unit + integration)
 
 ## Common Pitfalls
 
-1. **egui schedule:** Use `EguiPrimaryContextPass`, not `Update`, for egui systems
-2. **Query conflicts:** `Query<&Ship>` + `Query<&mut Ship>` in same system = B0001 panic. Merge into one mutable query.
+1. **System ordering:** All game logic systems MUST use `.after(crate::time_system::advance_game_time)`. Without this, delta-based systems (tick_production, movement, etc.) may see delta=0 every frame if they run before the clock advances.
+2. **egui schedule:** Use `EguiPrimaryContextPass`, not `Update`, for egui systems
+3. **Query conflicts:** `Query<&Ship>` + `Query<&mut Ship>` in same system = B0001 panic. Merge into one mutable query.
 3. **hexadies naming:** All code uses "hexadies". Never "sexadies".
 4. **Ship selection regression:** Don't set `selected_ship.0 = None` when changing SelectedSystem in `click_select_system`
 5. **Disk space:** Worktree builds each compile Bevy from scratch. Clean `.claude/worktrees/*/target/` if disk fills up.
