@@ -14,10 +14,9 @@ See `docs/game-design.md` for full game design document.
 
 ## Time System
 
-- Internal unit: **hexadies** (6 days). 1 month = 5 hexadies, 1 year = 60 hexadies.
+- Internal unit: **hexadies** (hexa-dies: 6 days in Latin). 1 month = 5 hexadies, 1 year = 60 hexadies.
 - Constants: `HEXADIES_PER_YEAR`, `HEXADIES_PER_MONTH`
 - `GameClock.elapsed: i64` — integer hexadies, no floating point
-- Previously named "sexadies" — fully renamed to "hexadies"
 
 ## Architecture
 
