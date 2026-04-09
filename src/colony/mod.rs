@@ -1114,6 +1114,11 @@ pub fn tick_authority(
         return; // No capital found
     };
 
+    // TODO (#76): Scale authority cost by light-speed distance from capital to each colony.
+    // Distant colonies should cost more authority to maintain due to communication delay.
+    // This should be its own issue — requires per-colony distance calculation and
+    // Position queries which aren't currently available in this system.
+
     // Second pass: produce authority at capital and deduct empire scale cost
     let auth_production = authority_params.production.final_value();
     let auth_cost_per_colony = authority_params.cost_per_colony.final_value();

@@ -735,6 +735,7 @@ pub fn draw_ship_panel(
 }
 
 /// Draws the RTS-style context menu when a ship is selected and a star is clicked.
+/// #76: Commands are delayed by light-speed distance from player to ship.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_context_menu(
     ctx: &egui::Context,
@@ -746,6 +747,8 @@ pub fn draw_context_menu(
     positions: &Query<&Position>,
     clock: &GameClock,
     global_params: &GlobalParams,
+    player_q: &Query<&StationedAt, With<Player>>,
+    pending_commands_out: &mut Vec<crate::ship::PendingShipCommand>,
 ) {
     if !context_menu.open {
         return;
@@ -810,6 +813,18 @@ pub fn draw_context_menu(
 
     let same_system = is_docked && target_entity == origin_system;
 
+    // #76: Calculate light-speed delay from player to ship
+    let command_delay: i64 = player_q
+        .single()
+        .ok()
+        .and_then(|stationed| {
+            let player_pos = positions.get(stationed.system).ok()?;
+            let ship_pos = positions.get(origin_system).ok()?;
+            let dist = physics::distance_ly(player_pos, ship_pos);
+            Some(physics::light_delay_hexadies(dist))
+        })
+        .unwrap_or(0);
+
     // Collect target star data
     let Ok((_, target_star, target_pos, target_attrs)) = stars.get(target_entity) else {
         context_menu.open = false;
@@ -844,6 +859,8 @@ pub fn draw_context_menu(
 
     let mut command: Option<ShipState> = None;
     let mut queued_command: Option<QueuedCommand> = None;
+    // #76: Delayed command for remote ships (light-speed delay > 0)
+    let mut delayed_command: Option<crate::ship::ShipCommand> = None;
     let mut close_menu = false;
 
     // No actions available at all? Close and bail
@@ -857,17 +874,25 @@ pub fn draw_context_menu(
         if is_docked && same_system {
             // Same system: default is survey or colonize
             if can_survey {
-                command = Some(ShipState::Surveying {
-                    target_system: target_entity,
-                    started_at: clock.elapsed,
-                    completes_at: clock.elapsed + crate::ship::SURVEY_DURATION_HEXADIES,
-                });
+                if command_delay == 0 {
+                    command = Some(ShipState::Surveying {
+                        target_system: target_entity,
+                        started_at: clock.elapsed,
+                        completes_at: clock.elapsed + crate::ship::SURVEY_DURATION_HEXADIES,
+                    });
+                } else {
+                    delayed_command = Some(crate::ship::ShipCommand::Survey { target: target_entity });
+                }
             } else if can_colonize {
-                command = Some(ShipState::Settling {
-                    system: target_entity,
-                    started_at: clock.elapsed,
-                    completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
-                });
+                if command_delay == 0 {
+                    command = Some(ShipState::Settling {
+                        system: target_entity,
+                        started_at: clock.elapsed,
+                        completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
+                    });
+                } else {
+                    delayed_command = Some(crate::ship::ShipCommand::Colonize);
+                }
             }
             context_menu.open = false;
             context_menu.target_system = None;
@@ -877,27 +902,43 @@ pub fn draw_context_menu(
                     *state = new_state;
                 }
             }
+            if let Some(ship_cmd) = delayed_command {
+                info!("Command sent to {} (arrives in {} hd)", ship_name, command_delay);
+                pending_commands_out.push(crate::ship::PendingShipCommand {
+                    ship: ship_entity,
+                    command: ship_cmd,
+                    arrives_at: clock.elapsed + command_delay,
+                });
+            }
             return;
         } else if is_docked {
             if can_ftl {
-                let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
-                let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
-                let travel_time = travel_time.max(1);
-                command = Some(ShipState::InFTL {
-                    origin_system,
-                    destination_system: target_entity,
-                    departed_at: clock.elapsed,
-                    arrival_at: clock.elapsed + travel_time,
-                });
+                if command_delay == 0 {
+                    let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
+                    let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+                    let travel_time = travel_time.max(1);
+                    command = Some(ShipState::InFTL {
+                        origin_system,
+                        destination_system: target_entity,
+                        departed_at: clock.elapsed,
+                        arrival_at: clock.elapsed + travel_time,
+                    });
+                } else {
+                    delayed_command = Some(crate::ship::ShipCommand::FTLTo { destination: target_entity });
+                }
             } else {
-                let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
-                command = Some(ShipState::SubLight {
-                    origin: origin_pos_arr,
-                    destination: target_pos_arr,
-                    target_system: Some(target_entity),
-                    departed_at: clock.elapsed,
-                    arrival_at: clock.elapsed + travel_time,
-                });
+                if command_delay == 0 {
+                    let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
+                    command = Some(ShipState::SubLight {
+                        origin: origin_pos_arr,
+                        destination: target_pos_arr,
+                        target_system: Some(target_entity),
+                        departed_at: clock.elapsed,
+                        arrival_at: clock.elapsed + travel_time,
+                    });
+                } else {
+                    delayed_command = Some(crate::ship::ShipCommand::SubLightTo { destination: target_entity });
+                }
             }
         } else {
             // Non-docked: queue the default action
@@ -923,6 +964,15 @@ pub fn draw_context_menu(
                 selected_ship.0 = None;
             }
         }
+        if let Some(ship_cmd) = delayed_command {
+            info!("Command sent to {} (arrives in {} hd)", ship_name, command_delay);
+            pending_commands_out.push(crate::ship::PendingShipCommand {
+                ship: ship_entity,
+                command: ship_cmd,
+                arrives_at: clock.elapsed + command_delay,
+            });
+            selected_ship.0 = None;
+        }
         if let Some(qc) = queued_command {
             if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
                 queue.commands.push(qc);
@@ -946,6 +996,13 @@ pub fn draw_context_menu(
                     .strong(),
             );
             ui.label(format!("Distance: {:.1} ly", dist));
+            // #76: Show command delay if player is remote
+            if command_delay > 0 {
+                ui.label(
+                    egui::RichText::new(format!("Command delay: {} hd", command_delay))
+                        .color(egui::Color32::from_rgb(255, 200, 100)),
+                );
+            }
             if !is_docked {
                 ui.label(
                     egui::RichText::new("(commands will be queued)")
@@ -958,14 +1015,18 @@ pub fn draw_context_menu(
             // Move (Sub-light) -- available when targeting a different system
             if can_move && ui.button(format!("{}Move (Sub-light)", queue_prefix)).clicked() {
                 if is_docked {
-                    let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
-                    command = Some(ShipState::SubLight {
-                        origin: origin_pos_arr,
-                        destination: target_pos_arr,
-                        target_system: Some(target_entity),
-                        departed_at: clock.elapsed,
-                        arrival_at: clock.elapsed + travel_time,
-                    });
+                    if command_delay == 0 {
+                        let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
+                        command = Some(ShipState::SubLight {
+                            origin: origin_pos_arr,
+                            destination: target_pos_arr,
+                            target_system: Some(target_entity),
+                            departed_at: clock.elapsed,
+                            arrival_at: clock.elapsed + travel_time,
+                        });
+                    } else {
+                        delayed_command = Some(crate::ship::ShipCommand::SubLightTo { destination: target_entity });
+                    }
                 } else {
                     queued_command = Some(QueuedCommand::MoveTo {
                         system: target_entity,
@@ -979,15 +1040,19 @@ pub fn draw_context_menu(
             if can_ftl {
                 if ui.button(format!("{}FTL Jump", queue_prefix)).clicked() {
                     if is_docked {
-                        let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
-                        let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
-                        let travel_time = travel_time.max(1);
-                        command = Some(ShipState::InFTL {
-                            origin_system,
-                            destination_system: target_entity,
-                            departed_at: clock.elapsed,
-                            arrival_at: clock.elapsed + travel_time,
-                        });
+                        if command_delay == 0 {
+                            let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
+                            let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+                            let travel_time = travel_time.max(1);
+                            command = Some(ShipState::InFTL {
+                                origin_system,
+                                destination_system: target_entity,
+                                departed_at: clock.elapsed,
+                                arrival_at: clock.elapsed + travel_time,
+                            });
+                        } else {
+                            delayed_command = Some(crate::ship::ShipCommand::FTLTo { destination: target_entity });
+                        }
                     } else {
                         queued_command = Some(QueuedCommand::FTLTo {
                             system: target_entity,
@@ -1001,12 +1066,16 @@ pub fn draw_context_menu(
             // Survey -- if Explorer + target unsurveyed (docked only)
             if can_survey {
                 if ui.button("Survey").clicked() {
-                    let survey_time = physics::light_delay_hexadies(dist) * 2 + 5;
-                    command = Some(ShipState::Surveying {
-                        target_system: target_entity,
-                        started_at: clock.elapsed,
-                        completes_at: clock.elapsed + survey_time,
-                    });
+                    if command_delay == 0 {
+                        let survey_time = physics::light_delay_hexadies(dist) * 2 + 5;
+                        command = Some(ShipState::Surveying {
+                            target_system: target_entity,
+                            started_at: clock.elapsed,
+                            completes_at: clock.elapsed + survey_time,
+                        });
+                    } else {
+                        delayed_command = Some(crate::ship::ShipCommand::Survey { target: target_entity });
+                    }
                     close_menu = true;
                 }
             }
@@ -1014,11 +1083,15 @@ pub fn draw_context_menu(
             // Colonize -- if ColonyShip + target habitable + uncolonized (docked only)
             if can_colonize {
                 if ui.button("Colonize").clicked() {
-                    command = Some(ShipState::Settling {
-                        system: target_entity,
-                        started_at: clock.elapsed,
-                        completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
-                    });
+                    if command_delay == 0 {
+                        command = Some(ShipState::Settling {
+                            system: target_entity,
+                            started_at: clock.elapsed,
+                            completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
+                        });
+                    } else {
+                        delayed_command = Some(crate::ship::ShipCommand::Colonize);
+                    }
                     close_menu = true;
                 }
             }
@@ -1034,12 +1107,23 @@ pub fn draw_context_menu(
         context_menu.target_system = None;
     }
 
-    // Apply immediate command (docked ships)
+    // Apply immediate command (docked ships, no delay)
     if let Some(new_state) = command {
         if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
             *state = new_state;
             selected_ship.0 = None;
         }
+    }
+
+    // #76: Apply delayed command (docked ships, light-speed delay > 0)
+    if let Some(ship_cmd) = delayed_command {
+        info!("Command sent to {} (arrives in {} hd)", ship_name, command_delay);
+        pending_commands_out.push(crate::ship::PendingShipCommand {
+            ship: ship_entity,
+            command: ship_cmd,
+            arrives_at: clock.elapsed + command_delay,
+        });
+        selected_ship.0 = None;
     }
 
     // Apply queued command (non-docked ships)

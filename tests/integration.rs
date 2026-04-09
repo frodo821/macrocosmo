@@ -8,7 +8,7 @@ use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
 use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::{ModifiedValue, Modifier};
-use macrocosmo::physics::sublight_travel_hexadies;
+use macrocosmo::physics::{light_delay_hexadies, sublight_travel_hexadies};
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::technology;
@@ -3013,5 +3013,226 @@ fn test_uncolonized_system_no_propagation() {
     assert_eq!(
         pending_count, 0,
         "No propagation should be created for uncolonized systems"
+    );
+}
+
+// =========================================================================
+// #76: Light-speed command delay
+// =========================================================================
+
+/// When a PendingShipCommand is created with arrives_at in the future,
+/// the ship should NOT change state until the clock reaches arrives_at.
+#[test]
+fn test_remote_command_has_light_delay() {
+    let mut app = test_app();
+
+    // Player at system A (origin), ship at system B (10 ly away)
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "System-B",
+        [10.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+    let sys_c = spawn_test_system(
+        app.world_mut(),
+        "System-C",
+        [12.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Spawn player at system A
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Spawn explorer at system B with FTL range
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        ShipType::Explorer,
+        sys_b,
+        [10.0, 0.0, 0.0],
+    );
+    // Give it FTL range to reach system C
+    app.world_mut().get_mut::<Ship>(ship_entity).unwrap().ftl_range = 20.0;
+
+    // Calculate expected delay: 10 ly -> 600 hexadies
+    let expected_delay = light_delay_hexadies(10.0);
+    assert_eq!(expected_delay, 600);
+
+    // Simulate what the UI does: create a PendingShipCommand with light delay
+    let current_time = 100;
+    app.world_mut().resource_mut::<GameClock>().elapsed = current_time;
+
+    app.world_mut().spawn(PendingShipCommand {
+        ship: ship_entity,
+        command: ShipCommand::FTLTo { destination: sys_c },
+        arrives_at: current_time + expected_delay,
+    });
+
+    // Advance time but NOT past arrives_at
+    advance_time(&mut app, 100);
+
+    // Ship should still be docked — command hasn't arrived
+    let state = app.world().get::<ShipState>(ship_entity).unwrap();
+    assert!(
+        matches!(state, ShipState::Docked { system } if *system == sys_b),
+        "Ship should remain docked before command arrives"
+    );
+
+    // PendingShipCommand should still exist
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingShipCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(pending_count, 1, "Pending command should still exist");
+}
+
+/// When the player and ship are at the same system, command delay is 0
+/// and the PendingShipCommand system executes immediately.
+#[test]
+fn test_pending_command_executes_on_arrival() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Spawn player at system A
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Spawn colony at sys_a so port check passes
+    spawn_test_colony(
+        app.world_mut(),
+        sys_a,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![],
+    );
+
+    // Spawn explorer at system A with FTL range
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        ShipType::Explorer,
+        sys_a,
+        [0.0, 0.0, 0.0],
+    );
+    app.world_mut().get_mut::<Ship>(ship_entity).unwrap().ftl_range = 20.0;
+
+    let current_time = 100;
+    app.world_mut().resource_mut::<GameClock>().elapsed = current_time;
+
+    // Create a PendingShipCommand with arrives_at = now (simulating 0 delay that
+    // was routed through the pending system anyway, or a command that has arrived)
+    let arrives_at = current_time + 10; // small delay
+    app.world_mut().spawn(PendingShipCommand {
+        ship: ship_entity,
+        command: ShipCommand::FTLTo { destination: sys_b },
+        arrives_at,
+    });
+
+    // Advance time past arrives_at
+    advance_time(&mut app, 15);
+
+    // Ship should now be in FTL
+    let state = app.world().get::<ShipState>(ship_entity).unwrap();
+    assert!(
+        matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_b),
+        "Ship should be in FTL after pending command executes",
+    );
+
+    // PendingShipCommand should be despawned
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingShipCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(pending_count, 0, "Pending command should be consumed");
+}
+
+/// Verify that a PendingShipCommand for survey executes properly after delay.
+#[test]
+fn test_pending_survey_command_executes_after_delay() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "System-B",
+        [3.0, 0.0, 0.0],
+        Habitability::Adequate,
+        false, // unsurveyed
+        false,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        ShipType::Explorer,
+        sys_b,
+        [3.0, 0.0, 0.0],
+    );
+
+    let current_time = 100;
+    app.world_mut().resource_mut::<GameClock>().elapsed = current_time;
+
+    // 3 ly delay = 180 hexadies
+    let delay = light_delay_hexadies(3.0);
+    assert_eq!(delay, 180);
+
+    app.world_mut().spawn(PendingShipCommand {
+        ship: ship_entity,
+        command: ShipCommand::Survey { target: sys_b },
+        arrives_at: current_time + delay,
+    });
+
+    // Before arrival: ship still docked
+    advance_time(&mut app, 100);
+    let state = app.world().get::<ShipState>(ship_entity).unwrap();
+    assert!(
+        matches!(state, ShipState::Docked { .. }),
+        "Ship should still be docked before command arrives"
+    );
+
+    // After arrival: ship surveying
+    advance_time(&mut app, 100); // now at 300, arrives_at = 280
+    let state = app.world().get::<ShipState>(ship_entity).unwrap();
+    assert!(
+        matches!(state, ShipState::Surveying { target_system, .. } if *target_system == sys_b),
+        "Ship should be surveying after command arrives",
     );
 }

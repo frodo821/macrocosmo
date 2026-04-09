@@ -50,6 +50,7 @@ impl Plugin for UiPlugin {
 /// that occurs when multiple systems try to access EguiContexts concurrently.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_all_ui(
+    mut commands: Commands,
     mut contexts: EguiContexts,
     clock: Res<GameClock>,
     mut speed: ResMut<GameSpeed>,
@@ -126,6 +127,8 @@ pub fn draw_all_ui(
         &command_queues,
     );
 
+    // #76: Collect pending ship commands from context menu (light-speed delay)
+    let mut pending_ship_commands = Vec::new();
     side_panel::draw_context_menu(
         ctx,
         &mut context_menu,
@@ -136,7 +139,13 @@ pub fn draw_all_ui(
         &positions,
         &clock,
         &ui_res.global_params,
+        &player_q,
+        &mut pending_ship_commands,
     );
+    // Spawn any delayed commands as entities
+    for pending_cmd in pending_ship_commands {
+        commands.spawn(pending_cmd);
+    }
 
     bottom_bar::draw_bottom_bar(ctx, &ui_res.command_log, &clock);
 

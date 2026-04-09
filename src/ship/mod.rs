@@ -126,6 +126,7 @@ pub enum ShipCommand {
     FTLTo { destination: Entity },
     SubLightTo { destination: Entity },
     Survey { target: Entity },
+    Colonize,
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -956,6 +957,24 @@ pub fn process_pending_ship_commands(
                             ship.name, e,
                         );
                     }
+                }
+            }
+            ShipCommand::Colonize => {
+                if ship.ship_type != ShipType::ColonyShip {
+                    info!(
+                        "Remote colonize command for {} failed: not a colony ship",
+                        ship.name,
+                    );
+                } else {
+                    *state = ShipState::Settling {
+                        system: docked_system,
+                        started_at: clock.elapsed,
+                        completes_at: clock.elapsed + SETTLING_DURATION_HEXADIES,
+                    };
+                    info!(
+                        "Remote colonize command executed: {} settling at docked system",
+                        ship.name,
+                    );
                 }
             }
         }
