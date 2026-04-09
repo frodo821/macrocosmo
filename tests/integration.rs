@@ -1103,3 +1103,186 @@ fn test_authority_deficit_reduces_non_capital_production() {
         stockpile.energy
     );
 }
+
+// =========================================================================
+// Farm food production (#72)
+// =========================================================================
+
+#[test]
+fn test_farm_produces_food() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Farm-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with food_per_hexadies=5.0, a Farm building (+5.0 food bonus), starting food=0
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: 0.0,
+            energy: 100.0,
+            research: 0.0,
+            food: 0.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 0.0,
+            energy_per_hexadies: 0.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 5.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings {
+            slots: vec![Some(BuildingType::Farm)],
+        },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+    ));
+
+    // Advance 10 hexadies
+    advance_time(&mut app, 10);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+
+    // food_per_hexadies=5.0 (base) + 5.0 (Farm bonus) = 10.0/hd
+    // Over 10 hd: 100.0 produced, minus consumption (pop 10 * 0.1 * 10 = 10.0)
+    // Net food should be ~90.0
+    let expected_food = 90.0;
+    assert!(
+        (stockpile.food - expected_food).abs() < 5.0,
+        "Expected ~{} food, got {}",
+        expected_food,
+        stockpile.food
+    );
+    assert!(
+        stockpile.food > 0.0,
+        "Food should be positive with Farm producing"
+    );
+}
+
+// =========================================================================
+// Food + Authority deficit interaction (#72 + #73)
+// =========================================================================
+
+#[test]
+fn test_authority_deficit_penalizes_food_production() {
+    let mut app = test_app();
+
+    // Capital system (provides authority context)
+    let cap_sys = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Non-capital system
+    let remote_sys = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [10.0, 0.0, 0.0],
+        Habitability::Adequate,
+        false,
+        true,
+    );
+
+    // Mark as capital
+    app.world_mut().entity_mut(cap_sys).get_mut::<StarSystem>().unwrap().is_capital = true;
+
+    // Capital colony with 0 authority (deficit)
+    app.world_mut().spawn((
+        Colony {
+            system: cap_sys,
+            population: 1.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: 1000.0,
+            energy: 1000.0,
+            research: 0.0,
+            food: 1000.0,
+            authority: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: 0.0,
+            energy_per_hexadies: 0.0,
+            research_per_hexadies: 0.0,
+            food_per_hexadies: 0.0,
+        },
+        BuildQueue { queue: Vec::new() },
+        ProductionFocus::default(),
+    ));
+
+    // Spawn 3 remote colonies so authority cost (0.5*3=1.5/hd) > production (1.0/hd),
+    // ensuring the capital stays in deficit.
+    let remote_systems: Vec<Entity> = (0..3)
+        .map(|i| {
+            spawn_test_system(
+                app.world_mut(),
+                &format!("Remote-{}", i),
+                [(i + 1) as f64 * 10.0, 0.0, 0.0],
+                Habitability::Adequate,
+                false,
+                true,
+            )
+        })
+        .collect();
+
+    for &sys in &remote_systems {
+        app.world_mut().spawn((
+            Colony {
+                system: sys,
+                population: 1.0,
+                growth_rate: 0.0,
+            },
+            ResourceStockpile {
+                minerals: 0.0,
+                energy: 0.0,
+                research: 0.0,
+                food: 0.0,
+                authority: 0.0,
+            },
+            Production {
+                minerals_per_hexadies: 0.0,
+                energy_per_hexadies: 0.0,
+                research_per_hexadies: 0.0,
+                food_per_hexadies: 10.0,
+            },
+            BuildQueue { queue: Vec::new() },
+            ProductionFocus::default(),
+        ));
+    }
+
+    advance_time(&mut app, 10);
+
+    // Check a remote colony's food: 10.0/hd * 0.5 (penalty) * 10 hd = 50.0, minus consumption
+    let mut q = app.world_mut().query::<(&Colony, &ResourceStockpile)>();
+    for (colony, stockpile) in q.iter(app.world()) {
+        if colony.system == remote_systems[0] {
+            // Without penalty: 100.0 food. With 0.5 penalty: ~50.0 food (minus small consumption)
+            assert!(
+                stockpile.food < 60.0,
+                "Food production should be penalized by authority deficit, got {}",
+                stockpile.food
+            );
+            assert!(
+                stockpile.food > 0.0,
+                "Food should still be positive, got {}",
+                stockpile.food
+            );
+        }
+    }
+}

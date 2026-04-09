@@ -890,6 +890,35 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_lua_tech_table_cost() {
+        let lua = mlua::Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+
+        lua.load(
+            r#"
+            define_tech {
+                id = 888,
+                name = "Expensive Tech",
+                branch = "industrial",
+                cost = { research = 200.0, minerals = 50.0, energy = 30.0 },
+                prerequisites = {},
+                description = "A tech with table cost",
+                effects = {},
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let techs = parse_tech_definitions(&lua).unwrap();
+        assert_eq!(techs.len(), 1);
+        let tech = &techs[0];
+        assert_eq!(tech.cost.research, 200.0);
+        assert_eq!(tech.cost.minerals, 50.0);
+        assert_eq!(tech.cost.energy, 30.0);
+    }
+
+    #[test]
     fn test_parse_resource_production_effect() {
         let lua = mlua::Lua::new();
         crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
