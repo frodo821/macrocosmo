@@ -132,8 +132,8 @@ pub fn draw_system_panel(
 
                     if let Some(stockpile) = stockpile {
                         ui.label(format!(
-                            "Stockpile: M {:.0} | E {:.0} | R {:.0} | F {:.0}",
-                            stockpile.minerals, stockpile.energy, stockpile.research, stockpile.food,
+                            "Stockpile: F {:.0} | E {:.0} | M {:.0} | A {:.0}",
+                            stockpile.food, stockpile.energy, stockpile.minerals, stockpile.authority,
                         ));
                     }
 

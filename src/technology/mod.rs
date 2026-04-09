@@ -180,6 +180,29 @@ pub enum TechEffect {
     ModifyConstructionSpeed(f64),
 }
 
+/// Upfront resource cost to begin researching a technology.
+/// Research points (flow) are tracked separately via `cost_research`.
+#[derive(Debug, Clone, Default)]
+pub struct TechCost {
+    /// Research points needed to complete (flow cost).
+    pub research: f64,
+    /// Minerals consumed upfront when research starts.
+    pub minerals: f64,
+    /// Energy consumed upfront when research starts.
+    pub energy: f64,
+}
+
+impl TechCost {
+    /// Create a research-only cost (no upfront resource cost).
+    pub fn research_only(research: f64) -> Self {
+        Self {
+            research,
+            minerals: 0.0,
+            energy: 0.0,
+        }
+    }
+}
+
 /// A single technology definition.
 #[derive(Debug, Clone)]
 pub struct Technology {
@@ -187,7 +210,7 @@ pub struct Technology {
     pub name: String,
     pub description: String,
     pub branch: TechBranch,
-    pub cost: f64,
+    pub cost: TechCost,
     pub prerequisites: Vec<TechId>,
     pub effects: Vec<TechEffect>,
 }
@@ -265,7 +288,7 @@ impl TechTree {
             .values()
             .filter(|t| t.branch == branch)
             .collect();
-        techs.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
+        techs.sort_by(|a, b| a.cost.research.partial_cmp(&b.cost.research).unwrap());
         techs
     }
 
@@ -437,16 +460,16 @@ pub fn tick_research(
         return;
     };
 
-    let tech_cost = {
+    let research_cost = {
         let Some(tech) = tech_tree.technologies.get(&current_tech_id) else {
             queue.current = None;
             return;
         };
-        tech.cost
+        tech.cost.research
     };
 
     // Transfer available research points from pool
-    let needed = tech_cost - queue.accumulated;
+    let needed = research_cost - queue.accumulated;
     if needed > 0.0 {
         let transfer = pool.points.min(needed);
         if transfer > 0.0 {
@@ -456,7 +479,7 @@ pub fn tick_research(
     }
 
     // Check completion
-    if queue.accumulated >= tech_cost {
+    if queue.accumulated >= research_cost {
         // Collect effects before mutating tree
         let (tech_name, effects) = {
             let tech = tech_tree.technologies.get(&current_tech_id);
@@ -592,7 +615,29 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
                 )))
             }
         };
-        let cost: f64 = table.get("cost")?;
+        // Support both scalar cost (backward compat: research-only) and table cost
+        let cost: TechCost = match table.get::<mlua::Value>("cost")? {
+            mlua::Value::Number(n) => TechCost {
+                research: n,
+                minerals: 0.0,
+                energy: 0.0,
+            },
+            mlua::Value::Integer(n) => TechCost {
+                research: n as f64,
+                minerals: 0.0,
+                energy: 0.0,
+            },
+            mlua::Value::Table(t) => TechCost {
+                research: t.get::<f64>("research").unwrap_or(0.0),
+                minerals: t.get::<f64>("minerals").unwrap_or(0.0),
+                energy: t.get::<f64>("energy").unwrap_or(0.0),
+            },
+            _ => {
+                return Err(mlua::Error::RuntimeError(
+                    "cost must be a number or table".to_string(),
+                ))
+            }
+        };
 
         let prereqs_table: mlua::Table = table.get("prerequisites")?;
         let prerequisites: Vec<TechId> = prereqs_table
@@ -628,7 +673,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(100),
             name: "Xenolinguistics".into(),
             branch: TechBranch::Social,
-            cost: 100.0,
+            cost: TechCost::research_only(100.0),
             prerequisites: vec![],
             effects: vec![TechEffect::ModifyDiplomacyRange(0.1)],
             description: "Foundational study of alien communication patterns".into(),
@@ -637,7 +682,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(101),
             name: "Colonial Administration".into(),
             branch: TechBranch::Social,
-            cost: 150.0,
+            cost: TechCost::research_only(150.0),
             prerequisites: vec![],
             effects: vec![TechEffect::ModifyPopulationGrowth(0.1)],
             description: "Improved governance structures for distant colonies".into(),
@@ -646,7 +691,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(102),
             name: "Interstellar Commerce".into(),
             branch: TechBranch::Social,
-            cost: 250.0,
+            cost: TechCost::research_only(250.0),
             prerequisites: vec![TechId(101)],
             effects: vec![TechEffect::ModifyResourceProduction(
                 ResourceType::Energy,
@@ -658,7 +703,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(103),
             name: "Cultural Exchange Protocols".into(),
             branch: TechBranch::Social,
-            cost: 300.0,
+            cost: TechCost::research_only(300.0),
             prerequisites: vec![TechId(100)],
             effects: vec![TechEffect::ModifyDiplomacyRange(0.2)],
             description: "Formalised frameworks for cross-species cultural interaction".into(),
@@ -668,7 +713,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(200),
             name: "Advanced Sensor Arrays".into(),
             branch: TechBranch::Physics,
-            cost: 100.0,
+            cost: TechCost::research_only(100.0),
             prerequisites: vec![],
             effects: vec![TechEffect::ModifySensorRange(0.2)],
             description: "Next-generation sensors for deep space observation".into(),
@@ -677,7 +722,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(201),
             name: "Improved Sublight Drives".into(),
             branch: TechBranch::Physics,
-            cost: 200.0,
+            cost: TechCost::research_only(200.0),
             prerequisites: vec![],
             effects: vec![TechEffect::ModifySublightSpeed(0.1)],
             description: "Enhances sublight drive efficiency".into(),
@@ -686,7 +731,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(202),
             name: "FTL Theory".into(),
             branch: TechBranch::Physics,
-            cost: 400.0,
+            cost: TechCost::research_only(400.0),
             prerequisites: vec![TechId(201)],
             effects: vec![TechEffect::ModifyFTLRange(0.2)],
             description: "Theoretical foundations for faster-than-light travel".into(),
@@ -695,7 +740,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(203),
             name: "Warp Field Stabilisation".into(),
             branch: TechBranch::Physics,
-            cost: 600.0,
+            cost: TechCost::research_only(600.0),
             prerequisites: vec![TechId(202)],
             effects: vec![TechEffect::ModifyFTLSpeed(0.15)],
             description: "Stabilise warp fields for safer FTL travel".into(),
@@ -705,7 +750,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(300),
             name: "Automated Mining".into(),
             branch: TechBranch::Industrial,
-            cost: 100.0,
+            cost: TechCost::research_only(100.0),
             prerequisites: vec![],
             effects: vec![TechEffect::ModifyResourceProduction(
                 ResourceType::Minerals,
@@ -717,7 +762,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(301),
             name: "Orbital Fabrication".into(),
             branch: TechBranch::Industrial,
-            cost: 200.0,
+            cost: TechCost::research_only(200.0),
             prerequisites: vec![TechId(300)],
             effects: vec![TechEffect::ModifyConstructionSpeed(0.1)],
             description: "Manufacturing facilities in orbit for zero-gravity construction".into(),
@@ -726,7 +771,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(302),
             name: "Fusion Power Plants".into(),
             branch: TechBranch::Industrial,
-            cost: 300.0,
+            cost: TechCost::research_only(300.0),
             prerequisites: vec![TechId(300)],
             effects: vec![TechEffect::ModifyResourceProduction(
                 ResourceType::Energy,
@@ -738,7 +783,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(303),
             name: "Nano-Assembly".into(),
             branch: TechBranch::Industrial,
-            cost: 500.0,
+            cost: TechCost::research_only(500.0),
             prerequisites: vec![TechId(301)],
             effects: vec![TechEffect::ModifyConstructionSpeed(0.2)],
             description: "Molecular-scale construction for unprecedented precision".into(),
@@ -748,7 +793,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(400),
             name: "Kinetic Weapons".into(),
             branch: TechBranch::Military,
-            cost: 100.0,
+            cost: TechCost::research_only(100.0),
             prerequisites: vec![],
             effects: vec![TechEffect::ModifyWeaponDamage(0.1)],
             description: "Mass-driver based weapon systems".into(),
@@ -757,7 +802,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(401),
             name: "Deflector Shields".into(),
             branch: TechBranch::Military,
-            cost: 200.0,
+            cost: TechCost::research_only(200.0),
             prerequisites: vec![],
             effects: vec![TechEffect::ModifyShieldStrength(0.15)],
             description: "Energy barriers to deflect incoming projectiles".into(),
@@ -766,7 +811,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             id: TechId(402),
             name: "Composite Armor".into(),
             branch: TechBranch::Military,
-            cost: 250.0,
+            cost: TechCost::research_only(250.0),
             prerequisites: vec![TechId(400)],
             effects: vec![TechEffect::ModifyArmor(0.2)],
             description: "Multi-layered hull plating for enhanced protection".into(),
@@ -833,7 +878,7 @@ mod tests {
         assert_eq!(first.id, TechId(999));
         assert_eq!(first.name, "Test Tech");
         assert_eq!(first.branch, TechBranch::Physics);
-        assert_eq!(first.cost, 42.0);
+        assert_eq!(first.cost.research, 42.0);
         assert!(first.prerequisites.is_empty());
         assert_eq!(first.effects.len(), 1);
         assert_eq!(first.effects[0], TechEffect::ModifySublightSpeed(0.5));
@@ -906,7 +951,7 @@ mod tests {
             id: TechId(1),
             name: "Basic".into(),
             branch: TechBranch::Physics,
-            cost: 100.0,
+            cost: TechCost::research_only(100.0),
             prerequisites: vec![],
             effects: vec![],
             description: String::new(),
@@ -921,7 +966,7 @@ mod tests {
                 id: TechId(1),
                 name: "Basic".into(),
                 branch: TechBranch::Physics,
-                cost: 100.0,
+                cost: TechCost::research_only(100.0),
                 prerequisites: vec![],
                 effects: vec![],
                 description: String::new(),
@@ -930,7 +975,7 @@ mod tests {
                 id: TechId(2),
                 name: "Advanced".into(),
                 branch: TechBranch::Physics,
-                cost: 200.0,
+                cost: TechCost::research_only(200.0),
                 prerequisites: vec![TechId(1)],
                 effects: vec![],
                 description: String::new(),
@@ -946,7 +991,7 @@ mod tests {
                 id: TechId(1),
                 name: "Basic".into(),
                 branch: TechBranch::Physics,
-                cost: 100.0,
+                cost: TechCost::research_only(100.0),
                 prerequisites: vec![],
                 effects: vec![],
                 description: String::new(),
@@ -955,7 +1000,7 @@ mod tests {
                 id: TechId(2),
                 name: "Advanced".into(),
                 branch: TechBranch::Physics,
-                cost: 200.0,
+                cost: TechCost::research_only(200.0),
                 prerequisites: vec![TechId(1)],
                 effects: vec![],
                 description: String::new(),
@@ -971,7 +1016,7 @@ mod tests {
             id: TechId(1),
             name: "Basic".into(),
             branch: TechBranch::Physics,
-            cost: 100.0,
+            cost: TechCost::research_only(100.0),
             prerequisites: vec![],
             effects: vec![],
             description: String::new(),
@@ -986,7 +1031,7 @@ mod tests {
             id: TechId(1),
             name: "Basic".into(),
             branch: TechBranch::Physics,
-            cost: 100.0,
+            cost: TechCost::research_only(100.0),
             prerequisites: vec![],
             effects: vec![],
             description: String::new(),
@@ -1003,7 +1048,7 @@ mod tests {
                 id: TechId(1),
                 name: "Basic".into(),
                 branch: TechBranch::Physics,
-                cost: 100.0,
+                cost: TechCost::research_only(100.0),
                 prerequisites: vec![],
                 effects: vec![],
                 description: String::new(),
@@ -1012,7 +1057,7 @@ mod tests {
                 id: TechId(2),
                 name: "Advanced".into(),
                 branch: TechBranch::Physics,
-                cost: 200.0,
+                cost: TechCost::research_only(200.0),
                 prerequisites: vec![TechId(1)],
                 effects: vec![],
                 description: String::new(),
@@ -1021,7 +1066,7 @@ mod tests {
                 id: TechId(3),
                 name: "Other".into(),
                 branch: TechBranch::Social,
-                cost: 100.0,
+                cost: TechCost::research_only(100.0),
                 prerequisites: vec![],
                 effects: vec![],
                 description: String::new(),

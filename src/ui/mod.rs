@@ -65,20 +65,22 @@ pub fn draw_all_ui(
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
     // Collect resource totals before passing colonies around
-    let (total_minerals, total_energy, total_food) = {
+    let (total_minerals, total_energy, total_food, total_authority) = {
         let mut m = 0.0_f64;
         let mut e = 0.0_f64;
         let mut f = 0.0_f64;
+        let mut a = 0.0_f64;
         for (_, _, _, stockpile, _, _, _) in colonies.iter() {
             if let Some(s) = stockpile {
                 m += s.minerals;
                 e += s.energy;
                 f += s.food;
+                a += s.authority;
             }
         }
-        (m, e, f)
+        (m, e, f, a)
     };
-    top_bar::draw_top_bar(ctx, &clock, &mut speed, total_minerals, total_energy, total_food, &mut research_open);
+    top_bar::draw_top_bar(ctx, &clock, &mut speed, total_minerals, total_energy, total_food, total_authority, &mut research_open);
 
     outline::draw_outline(
         ctx,

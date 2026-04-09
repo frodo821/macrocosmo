@@ -11,6 +11,7 @@ pub fn draw_top_bar(
     total_minerals: f64,
     total_energy: f64,
     total_food: f64,
+    total_authority: f64,
     research_open: &mut ResearchPanelOpen,
 ) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
@@ -46,7 +47,7 @@ pub fn draw_top_bar(
 
             ui.separator();
 
-            ui.label(format!("M:{:.0}  E:{:.0}  F:{:.0}", total_minerals, total_energy, total_food));
+            ui.label(format!("F:{:.0}  E:{:.0}  M:{:.0}  A:{:.0}", total_food, total_energy, total_minerals, total_authority));
 
             ui.separator();
 
