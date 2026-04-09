@@ -60,6 +60,14 @@ tests/                   # 145+ tests (unit + integration)
 
 ## Development Workflow
 
+### GitHub Issue Management
+- Issue の依存関係は `gh` カスタムエイリアスで管理:
+  - `gh add-dep <issue> <blocked-by>` — #issue が #blocked-by にブロックされることを登録
+  - `gh rm-dep <issue> <blocked-by>` — 依存関係を削除
+  - `gh blocked-by <issue>` — その issue がブロックされている issue 一覧
+  - `gh blocking <issue>` — その issue がブロックしている issue 一覧
+- 優先度ラベル: `priority:icebox`, `priority:low`, `priority:medium`, `priority:high`, `priority:urgent`
+
 ### Parallel Agent Tasks
 - Issues are created on GitHub with labels and milestones
 - Independent issues are implemented in parallel using worktree-isolated agents
