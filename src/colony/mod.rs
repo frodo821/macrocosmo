@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::amount::Amt;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{StarSystem, SystemAttributes, Sovereignty};
@@ -45,45 +46,65 @@ pub struct Colony {
 
 #[derive(Component)]
 pub struct ResourceStockpile {
-    pub minerals: f64,
-    pub energy: f64,
-    pub research: f64,
-    pub food: f64,
-    pub authority: f64,
+    pub minerals: Amt,
+    pub energy: Amt,
+    pub research: Amt,
+    pub food: Amt,
+    pub authority: Amt,
+}
+
+#[derive(Component)]
+pub struct ResourceCapacity {
+    pub minerals: Amt,
+    pub energy: Amt,
+    pub food: Amt,
+    pub authority: Amt,
+}
+
+impl Default for ResourceCapacity {
+    fn default() -> Self {
+        Self {
+            minerals: Amt::units(1000),
+            energy: Amt::units(1000),
+            food: Amt::units(500),
+            authority: Amt::units(10000),
+        }
+    }
 }
 
 #[derive(Component)]
 pub struct Production {
-    pub minerals_per_hexadies: f64,
-    pub energy_per_hexadies: f64,
-    pub research_per_hexadies: f64,
-    pub food_per_hexadies: f64,
+    pub minerals_per_hexadies: Amt,
+    pub energy_per_hexadies: Amt,
+    pub research_per_hexadies: Amt,
+    pub food_per_hexadies: Amt,
 }
 
 /// Base authority produced per hexady by the capital colony.
-pub const BASE_AUTHORITY_PER_HEXADIES: f64 = 1.0;
+pub const BASE_AUTHORITY_PER_HEXADIES: Amt = Amt::units(1);
 
 /// Authority cost per hexady for each non-capital colony (empire scale cost).
-pub const AUTHORITY_COST_PER_COLONY: f64 = 0.5;
+pub const AUTHORITY_COST_PER_COLONY: Amt = Amt::new(0, 500);
 
 /// Production efficiency multiplier applied to non-capital colonies when
 /// the capital's authority stockpile is depleted.
-pub const AUTHORITY_DEFICIT_PENALTY: f64 = 0.5;
+/// 0.5 as fixed-point: Amt(500) means ×0.500
+pub const AUTHORITY_DEFICIT_PENALTY: Amt = Amt::new(0, 500);
 
 /// #29: Production focus weights for colony output
 #[derive(Component)]
 pub struct ProductionFocus {
-    pub minerals_weight: f64,
-    pub energy_weight: f64,
-    pub research_weight: f64,
+    pub minerals_weight: Amt,
+    pub energy_weight: Amt,
+    pub research_weight: Amt,
 }
 
 impl Default for ProductionFocus {
     fn default() -> Self {
         Self {
-            minerals_weight: 1.0,
-            energy_weight: 1.0,
-            research_weight: 1.0,
+            minerals_weight: Amt::units(1),
+            energy_weight: Amt::units(1),
+            research_weight: Amt::units(1),
         }
     }
 }
@@ -94,37 +115,37 @@ impl ProductionFocus {
     }
     pub fn minerals() -> Self {
         Self {
-            minerals_weight: 2.0,
-            energy_weight: 0.5,
-            research_weight: 0.5,
+            minerals_weight: Amt::units(2),
+            energy_weight: Amt::new(0, 500),
+            research_weight: Amt::new(0, 500),
         }
     }
     pub fn energy() -> Self {
         Self {
-            minerals_weight: 0.5,
-            energy_weight: 2.0,
-            research_weight: 0.5,
+            minerals_weight: Amt::new(0, 500),
+            energy_weight: Amt::units(2),
+            research_weight: Amt::new(0, 500),
         }
     }
     pub fn research() -> Self {
         Self {
-            minerals_weight: 0.5,
-            energy_weight: 0.5,
-            research_weight: 2.0,
+            minerals_weight: Amt::new(0, 500),
+            energy_weight: Amt::new(0, 500),
+            research_weight: Amt::units(2),
         }
     }
 
     pub fn label(&self) -> &'static str {
-        if (self.minerals_weight - 1.0).abs() < 0.01
-            && (self.energy_weight - 1.0).abs() < 0.01
-            && (self.research_weight - 1.0).abs() < 0.01
+        if self.minerals_weight == Amt::units(1)
+            && self.energy_weight == Amt::units(1)
+            && self.research_weight == Amt::units(1)
         {
             "Balanced"
-        } else if self.minerals_weight > 1.5 {
+        } else if self.minerals_weight > Amt::new(1, 500) {
             "Minerals"
-        } else if self.energy_weight > 1.5 {
+        } else if self.energy_weight > Amt::new(1, 500) {
             "Energy"
-        } else if self.research_weight > 1.5 {
+        } else if self.research_weight > Amt::new(1, 500) {
             "Research"
         } else {
             "Custom"
@@ -139,10 +160,10 @@ pub struct BuildQueue {
 
 pub struct BuildOrder {
     pub ship_type_name: String,
-    pub minerals_cost: f64,
-    pub minerals_invested: f64,
-    pub energy_cost: f64,
-    pub energy_invested: f64,
+    pub minerals_cost: Amt,
+    pub minerals_invested: Amt,
+    pub energy_cost: Amt,
+    pub energy_invested: Amt,
     /// #32: Total build time in hexadies
     pub build_time_total: i64,
     /// #32: Remaining build time in hexadies
@@ -178,27 +199,27 @@ pub enum BuildingType {
 }
 
 impl BuildingType {
-    pub fn production_bonus(&self) -> (f64, f64, f64, f64) {
+    pub fn production_bonus(&self) -> (Amt, Amt, Amt, Amt) {
         // (minerals, energy, research, food) per hexadies
         match self {
-            BuildingType::Mine => (3.0, 0.0, 0.0, 0.0),
-            BuildingType::PowerPlant => (0.0, 3.0, 0.0, 0.0),
-            BuildingType::ResearchLab => (0.0, 0.0, 2.0, 0.0),
-            BuildingType::Shipyard => (0.0, 0.0, 0.0, 0.0), // special effect
-            BuildingType::Port => (0.0, 0.0, 0.0, 0.0),     // special effect
-            BuildingType::Farm => (0.0, 0.0, 0.0, 5.0),
+            BuildingType::Mine => (Amt::units(3), Amt::ZERO, Amt::ZERO, Amt::ZERO),
+            BuildingType::PowerPlant => (Amt::ZERO, Amt::units(3), Amt::ZERO, Amt::ZERO),
+            BuildingType::ResearchLab => (Amt::ZERO, Amt::ZERO, Amt::units(2), Amt::ZERO),
+            BuildingType::Shipyard => (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO),
+            BuildingType::Port => (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO),
+            BuildingType::Farm => (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::units(5)),
         }
     }
 
-    pub fn build_cost(&self) -> (f64, f64) {
+    pub fn build_cost(&self) -> (Amt, Amt) {
         // (minerals, energy)
         match self {
-            BuildingType::Mine => (150.0, 50.0),
-            BuildingType::PowerPlant => (50.0, 150.0),
-            BuildingType::ResearchLab => (100.0, 100.0),
-            BuildingType::Shipyard => (300.0, 200.0),
-            BuildingType::Port => (400.0, 300.0),
-            BuildingType::Farm => (100.0, 50.0),
+            BuildingType::Mine => (Amt::units(150), Amt::units(50)),
+            BuildingType::PowerPlant => (Amt::units(50), Amt::units(150)),
+            BuildingType::ResearchLab => (Amt::units(100), Amt::units(100)),
+            BuildingType::Shipyard => (Amt::units(300), Amt::units(200)),
+            BuildingType::Port => (Amt::units(400), Amt::units(300)),
+            BuildingType::Farm => (Amt::units(100), Amt::units(50)),
         }
     }
 
@@ -215,14 +236,14 @@ impl BuildingType {
     }
 
     /// Energy maintenance cost per hexadies (#51)
-    pub fn maintenance_cost(&self) -> f64 {
+    pub fn maintenance_cost(&self) -> Amt {
         match self {
-            BuildingType::Mine => 0.2,
-            BuildingType::PowerPlant => 0.0, // self-powered
-            BuildingType::ResearchLab => 0.5,
-            BuildingType::Shipyard => 1.0,
-            BuildingType::Port => 0.5,
-            BuildingType::Farm => 0.3,
+            BuildingType::Mine => Amt::new(0, 200),          // 0.2
+            BuildingType::PowerPlant => Amt::ZERO,            // self-powered
+            BuildingType::ResearchLab => Amt::new(0, 500),    // 0.5
+            BuildingType::Shipyard => Amt::units(1),          // 1.0
+            BuildingType::Port => Amt::new(0, 500),           // 0.5
+            BuildingType::Farm => Amt::new(0, 300),           // 0.3
         }
     }
 
@@ -264,8 +285,8 @@ pub struct BuildingQueue {
 pub struct BuildingOrder {
     pub building_type: BuildingType,
     pub target_slot: usize,
-    pub minerals_remaining: f64,
-    pub energy_remaining: f64,
+    pub minerals_remaining: Amt,
+    pub energy_remaining: Amt,
     pub build_time_remaining: i64,
 }
 
@@ -297,17 +318,18 @@ pub fn spawn_capital_colony(
                     growth_rate: 0.01,
                 },
                 ResourceStockpile {
-                    minerals: 500.0,
-                    energy: 500.0,
-                    research: 0.0,
-                    food: 200.0,
-                    authority: 0.0,
+                    minerals: Amt::units(500),
+                    energy: Amt::units(500),
+                    research: Amt::ZERO,
+                    food: Amt::units(200),
+                    authority: Amt::ZERO,
                 },
+                ResourceCapacity::default(),
                 Production {
-                    minerals_per_hexadies: 5.0,
-                    energy_per_hexadies: 5.0,
-                    research_per_hexadies: 1.0,
-                    food_per_hexadies: 5.0,
+                    minerals_per_hexadies: Amt::units(5),
+                    energy_per_hexadies: Amt::units(5),
+                    research_per_hexadies: Amt::units(1),
+                    food_per_hexadies: Amt::units(5),
                 },
                 BuildQueue {
                     queue: Vec::new(),
@@ -338,7 +360,8 @@ pub fn tick_production(
     if delta <= 0 {
         return;
     }
-    let d = delta as f64;
+    let d = delta as u64;
+    let d_amt = Amt::units(d);
 
     // #73: Check if the capital has an authority deficit.
     let capital_authority = query.iter().find_map(|(colony, _, stockpile, _, _)| {
@@ -350,23 +373,23 @@ pub fn tick_production(
             }
         })
     });
-    let authority_deficit = matches!(capital_authority, Some(a) if a <= 0.0);
+    let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
 
     for (colony, prod, mut stockpile, buildings, focus) in &mut query {
-        let (mut bonus_m, mut bonus_e, mut bonus_f) = (0.0, 0.0, 0.0);
+        let (mut bonus_m, mut bonus_e, mut bonus_f) = (Amt::ZERO, Amt::ZERO, Amt::ZERO);
         if let Some(buildings) = buildings {
             for slot in &buildings.slots {
                 if let Some(bt) = slot {
                     let (m, e, _r, f) = bt.production_bonus();
-                    bonus_m += m;
-                    bonus_e += e;
-                    bonus_f += f;
+                    bonus_m = bonus_m.add(m);
+                    bonus_e = bonus_e.add(e);
+                    bonus_f = bonus_f.add(f);
                 }
             }
         }
         let (mw, ew) = match focus {
             Some(f) => (f.minerals_weight, f.energy_weight),
-            None => (1.0, 1.0),
+            None => (Amt::units(1), Amt::units(1)),
         };
 
         // #73: Apply authority deficit penalty to non-capital colonies
@@ -374,13 +397,22 @@ pub fn tick_production(
         let authority_multiplier = if authority_deficit && !is_capital {
             AUTHORITY_DEFICIT_PENALTY
         } else {
-            1.0
+            Amt::units(1)
         };
 
-        stockpile.minerals += (prod.minerals_per_hexadies + bonus_m) * mw * d * global_params.production_multiplier_minerals * authority_multiplier;
-        stockpile.energy += (prod.energy_per_hexadies + bonus_e) * ew * d * global_params.production_multiplier_energy * authority_multiplier;
+        // production = (base + bonus) * weight * delta * global_mult * authority_mult
+        let m_global = Amt::milli((global_params.production_multiplier_minerals * 1000.0) as u64);
+        let e_global = Amt::milli((global_params.production_multiplier_energy * 1000.0) as u64);
+        stockpile.minerals = stockpile.minerals.add(
+            prod.minerals_per_hexadies.add(bonus_m).mul_amt(mw).mul_amt(d_amt).mul_amt(m_global).mul_amt(authority_multiplier)
+        );
+        stockpile.energy = stockpile.energy.add(
+            prod.energy_per_hexadies.add(bonus_e).mul_amt(ew).mul_amt(d_amt).mul_amt(e_global).mul_amt(authority_multiplier)
+        );
         // #72: Food production from base rate + Farm building bonuses
-        stockpile.food += (prod.food_per_hexadies + bonus_f) * d * authority_multiplier;
+        stockpile.food = stockpile.food.add(
+            prod.food_per_hexadies.add(bonus_f).mul_amt(d_amt).mul_amt(authority_multiplier)
+        );
         // Research is no longer accumulated in the stockpile; it is emitted
         // directly via emit_research in the technology module.
     }
@@ -410,40 +442,39 @@ pub fn tick_population_growth(
     if delta <= 0 {
         return;
     }
-    let d = delta as f64;
+    let d = delta as u64;
 
     for (mut colony, mut stockpile, production, buildings) in &mut colonies {
-        // #72: Food consumption
-        let food_consumed = colony.population * FOOD_PER_POP_PER_HEXADIES * d;
-        stockpile.food -= food_consumed;
+        // #72: Food consumption: pop * 0.1 * delta (bridge f64 pop → Amt food)
+        let food_consumed = Amt::from_f64(colony.population).mul_amt(FOOD_PER_POP_PER_HEXADIES).mul_u64(d);
+        stockpile.food = stockpile.food.sub(food_consumed);
 
-        if stockpile.food <= 0.0 {
-            // Starvation: population decreases
-            stockpile.food = 0.0;
-            let starvation_loss = colony.population * 0.01 * d;
+        if stockpile.food == Amt::ZERO {
+            // Starvation: population decreases (f64 domain)
+            let starvation_loss = colony.population * 0.01 * d as f64;
             colony.population = (colony.population - starvation_loss).max(1.0);
         } else {
-            // #69: Logistic growth
+            // #69: Logistic growth (f64 domain for population math)
             let hab_score = stars
                 .get(colony.system)
                 .map(|(_, attr)| attr.habitability.base_score())
                 .unwrap_or(0.5);
 
-            // Total food production (base + building bonuses)
+            // Total food production (Amt domain)
             let mut food_prod = production.food_per_hexadies;
             if let Some(b) = buildings {
                 for slot in &b.slots {
                     if let Some(bt) = slot {
                         let (_, _, _, f) = bt.production_bonus();
-                        food_prod += f;
+                        food_prod = food_prod.add(f);
                     }
                 }
             }
 
             // K = min(habitat limit, food-sustainable population)
             let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
-            let k_food = if FOOD_PER_POP_PER_HEXADIES > 0.0 {
-                food_prod / FOOD_PER_POP_PER_HEXADIES
+            let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
+                food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
             } else {
                 k_habitat
             };
@@ -451,7 +482,7 @@ pub fn tick_population_growth(
 
             // Logistic: P_new = P + r * hab_score * P * (1 - P/K) * delta
             let effective_growth = colony.growth_rate + global_params.population_growth_bonus;
-            let dp = effective_growth * hab_score * colony.population * (1.0 - colony.population / k) * d;
+            let dp = effective_growth * hab_score * colony.population * (1.0 - colony.population / k) * d as f64;
             colony.population = (colony.population + dp).max(1.0);
         }
     }
@@ -485,15 +516,15 @@ pub fn tick_build_queue(
             }
             let order = &mut build_queue.queue[0];
 
-            let minerals_needed = order.minerals_cost - order.minerals_invested;
-            let minerals_transfer = minerals_needed.min(stockpile.minerals).max(0.0);
-            order.minerals_invested += minerals_transfer;
-            stockpile.minerals -= minerals_transfer;
+            let minerals_needed = order.minerals_cost.sub(order.minerals_invested);
+            let minerals_transfer = minerals_needed.min(stockpile.minerals);
+            order.minerals_invested = order.minerals_invested.add(minerals_transfer);
+            stockpile.minerals = stockpile.minerals.sub(minerals_transfer);
 
-            let energy_needed = order.energy_cost - order.energy_invested;
-            let energy_transfer = energy_needed.min(stockpile.energy).max(0.0);
-            order.energy_invested += energy_transfer;
-            stockpile.energy -= energy_transfer;
+            let energy_needed = order.energy_cost.sub(order.energy_invested);
+            let energy_transfer = energy_needed.min(stockpile.energy);
+            order.energy_invested = order.energy_invested.add(energy_transfer);
+            stockpile.energy = stockpile.energy.sub(energy_transfer);
 
             // #32: Decrement build time
             order.build_time_remaining -= 1;
@@ -547,18 +578,18 @@ pub fn tick_building_queue(
             }
             let order = &mut bq.queue[0];
 
-            let minerals_transfer = order.minerals_remaining.min(stockpile.minerals).max(0.0);
-            order.minerals_remaining -= minerals_transfer;
-            stockpile.minerals -= minerals_transfer;
+            let minerals_transfer = order.minerals_remaining.min(stockpile.minerals);
+            order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
+            stockpile.minerals = stockpile.minerals.sub(minerals_transfer);
 
-            let energy_transfer = order.energy_remaining.min(stockpile.energy).max(0.0);
-            order.energy_remaining -= energy_transfer;
-            stockpile.energy -= energy_transfer;
+            let energy_transfer = order.energy_remaining.min(stockpile.energy);
+            order.energy_remaining = order.energy_remaining.sub(energy_transfer);
+            stockpile.energy = stockpile.energy.sub(energy_transfer);
 
             order.build_time_remaining -= 1;
 
-            if bq.queue[0].minerals_remaining <= 0.0
-                && bq.queue[0].energy_remaining <= 0.0
+            if bq.queue[0].minerals_remaining == Amt::ZERO
+                && bq.queue[0].energy_remaining == Amt::ZERO
                 && bq.queue[0].build_time_remaining <= 0
             {
                 let completed = bq.queue.remove(0);
@@ -617,10 +648,9 @@ pub fn tick_maintenance(
     if delta <= 0 {
         return;
     }
-    let d = delta as f64;
+    let d = delta as u64;
 
     // #64: Collect ship maintenance costs grouped by home_port system entity.
-    // Also handle fallback: if home_port colony doesn't exist, reassign to capital.
     let capital_entity: Option<Entity> = {
         let colony_systems: Vec<Entity> = colonies.iter().map(|(c, _, _)| c.system).collect();
         let mut found = None;
@@ -636,53 +666,43 @@ pub fn tick_maintenance(
     };
 
     // Collect per-system ship maintenance costs
-    let mut ship_maintenance_by_system: std::collections::HashMap<Entity, f64> =
+    let mut ship_maintenance_by_system: std::collections::HashMap<Entity, Amt> =
         std::collections::HashMap::new();
 
-    // Check which systems have colonies
     let colony_systems: std::collections::HashSet<Entity> = colonies
         .iter()
         .map(|(c, _, _)| c.system)
         .collect();
 
     for (mut ship, _state) in &mut ships {
-        // If home_port colony no longer exists, fall back to capital
         if !colony_systems.contains(&ship.home_port) {
             if let Some(cap) = capital_entity {
                 ship.home_port = cap;
             }
-            // If no capital either, maintenance just won't be charged
         }
-        *ship_maintenance_by_system
+        let entry = ship_maintenance_by_system
             .entry(ship.home_port)
-            .or_insert(0.0) += ship.ship_type.maintenance_cost();
+            .or_insert(Amt::ZERO);
+        *entry = entry.add(ship.ship_type.maintenance_cost());
     }
 
     for (colony, mut stockpile, buildings) in &mut colonies {
-        let mut total_maintenance = 0.0;
+        let mut total_maintenance = Amt::ZERO;
 
-        // Building maintenance
         if let Some(buildings) = buildings {
             for slot in &buildings.slots {
                 if let Some(building) = slot {
-                    total_maintenance += building.maintenance_cost();
+                    total_maintenance = total_maintenance.add(building.maintenance_cost());
                 }
             }
         }
 
-        // #64: Ship maintenance charged to this colony via home_port
         if let Some(&ship_cost) = ship_maintenance_by_system.get(&colony.system) {
-            total_maintenance += ship_cost;
+            total_maintenance = total_maintenance.add(ship_cost);
         }
 
-        // Deduct energy
-        stockpile.energy -= total_maintenance * d;
-
-        // If energy goes negative, cap at 0 (penalty system later)
-        if stockpile.energy < 0.0 {
-            stockpile.energy = 0.0;
-            // TODO: apply penalties (production halt, etc.)
-        }
+        // Deduct energy: maintenance_per_hd * delta
+        stockpile.energy = stockpile.energy.sub(total_maintenance.mul_u64(d));
     }
 }
 
@@ -707,11 +727,11 @@ pub fn tick_authority(
     if delta <= 0 {
         return;
     }
-    let d = delta as f64;
+    let d = delta as u64;
 
     // First pass: find capital system and count non-capital colonies
     let mut capital_system: Option<Entity> = None;
-    let mut non_capital_count: u32 = 0;
+    let mut non_capital_count: u64 = 0;
     for (colony, _) in colonies.iter() {
         if let Ok(star) = stars.get(colony.system) {
             if star.is_capital {
@@ -732,17 +752,11 @@ pub fn tick_authority(
     for (colony, mut stockpile) in &mut colonies {
         if colony.system == cap_sys {
             // Capital produces authority
-            // TODO: Technology bonuses can increase authority production
-            stockpile.authority += BASE_AUTHORITY_PER_HEXADIES * d;
+            stockpile.authority = stockpile.authority.add(BASE_AUTHORITY_PER_HEXADIES.mul_u64(d));
 
             // Deduct empire scale cost for non-capital colonies
-            let scale_cost = AUTHORITY_COST_PER_COLONY * non_capital_count as f64 * d;
-            stockpile.authority -= scale_cost;
-
-            // Cap at 0
-            if stockpile.authority < 0.0 {
-                stockpile.authority = 0.0;
-            }
+            let scale_cost = AUTHORITY_COST_PER_COLONY.mul_u64(non_capital_count).mul_u64(d);
+            stockpile.authority = stockpile.authority.sub(scale_cost);
             break;
         }
     }
@@ -756,7 +770,7 @@ pub fn advance_production_tick(clock: Res<GameClock>, mut last_tick: ResMut<Last
 mod tests {
     use super::*;
 
-    fn make_order(minerals_cost: f64, minerals_invested: f64, energy_cost: f64, energy_invested: f64) -> BuildOrder {
+    fn make_order(minerals_cost: Amt, minerals_invested: Amt, energy_cost: Amt, energy_invested: Amt) -> BuildOrder {
         let build_time = 60;
         BuildOrder {
             ship_type_name: "Explorer".to_string(),
@@ -771,25 +785,25 @@ mod tests {
 
     #[test]
     fn build_order_complete_when_both_met() {
-        let order = make_order(100.0, 100.0, 50.0, 50.0);
+        let order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(50));
         assert!(order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_minerals_short() {
-        let order = make_order(100.0, 80.0, 50.0, 50.0);
+        let order = make_order(Amt::units(100), Amt::units(80), Amt::units(50), Amt::units(50));
         assert!(!order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_energy_short() {
-        let order = make_order(100.0, 100.0, 50.0, 30.0);
+        let order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(30));
         assert!(!order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_time_remaining() {
-        let mut order = make_order(100.0, 100.0, 50.0, 50.0);
+        let mut order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(50));
         order.build_time_remaining = 5;
         assert!(!order.is_complete());
     }
@@ -797,57 +811,57 @@ mod tests {
     #[test]
     fn mine_production_bonus() {
         let (m, e, r, f) = BuildingType::Mine.production_bonus();
-        assert_eq!(m, 3.0);
-        assert_eq!(e, 0.0);
-        assert_eq!(r, 0.0);
-        assert_eq!(f, 0.0);
+        assert_eq!(m, Amt::units(3));
+        assert_eq!(e, Amt::ZERO);
+        assert_eq!(r, Amt::ZERO);
+        assert_eq!(f, Amt::ZERO);
     }
 
     #[test]
     fn power_plant_production_bonus() {
         let (m, e, r, f) = BuildingType::PowerPlant.production_bonus();
-        assert_eq!(m, 0.0);
-        assert_eq!(e, 3.0);
-        assert_eq!(r, 0.0);
-        assert_eq!(f, 0.0);
+        assert_eq!(m, Amt::ZERO);
+        assert_eq!(e, Amt::units(3));
+        assert_eq!(r, Amt::ZERO);
+        assert_eq!(f, Amt::ZERO);
     }
 
     #[test]
     fn research_lab_production_bonus() {
         let (m, e, r, f) = BuildingType::ResearchLab.production_bonus();
-        assert_eq!(m, 0.0);
-        assert_eq!(e, 0.0);
-        assert_eq!(r, 2.0);
-        assert_eq!(f, 0.0);
+        assert_eq!(m, Amt::ZERO);
+        assert_eq!(e, Amt::ZERO);
+        assert_eq!(r, Amt::units(2));
+        assert_eq!(f, Amt::ZERO);
     }
 
     #[test]
     fn shipyard_production_bonus() {
         let (m, e, r, f) = BuildingType::Shipyard.production_bonus();
-        assert_eq!(m, 0.0);
-        assert_eq!(e, 0.0);
-        assert_eq!(r, 0.0);
-        assert_eq!(f, 0.0);
+        assert_eq!(m, Amt::ZERO);
+        assert_eq!(e, Amt::ZERO);
+        assert_eq!(r, Amt::ZERO);
+        assert_eq!(f, Amt::ZERO);
     }
 
     #[test]
     fn mine_build_cost() {
-        assert_eq!(BuildingType::Mine.build_cost(), (150.0, 50.0));
+        assert_eq!(BuildingType::Mine.build_cost(), (Amt::units(150), Amt::units(50)));
     }
 
     #[test]
     fn power_plant_build_cost() {
-        assert_eq!(BuildingType::PowerPlant.build_cost(), (50.0, 150.0));
+        assert_eq!(BuildingType::PowerPlant.build_cost(), (Amt::units(50), Amt::units(150)));
     }
 
     #[test]
     fn research_lab_build_cost() {
-        assert_eq!(BuildingType::ResearchLab.build_cost(), (100.0, 100.0));
+        assert_eq!(BuildingType::ResearchLab.build_cost(), (Amt::units(100), Amt::units(100)));
     }
 
     #[test]
     fn shipyard_build_cost() {
-        assert_eq!(BuildingType::Shipyard.build_cost(), (300.0, 200.0));
+        assert_eq!(BuildingType::Shipyard.build_cost(), (Amt::units(300), Amt::units(200)));
     }
 
     #[test]
@@ -891,20 +905,20 @@ mod tests {
                 None,
             ],
         };
-        let (mut m, mut e, mut r, mut f) = (0.0, 0.0, 0.0, 0.0);
+        let (mut m, mut e, mut r, mut f) = (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO);
         for slot in &buildings.slots {
             if let Some(bt) = slot {
                 let (bm, be, br, bf) = bt.production_bonus();
-                m += bm;
-                e += be;
-                r += br;
-                f += bf;
+                m = m.add(bm);
+                e = e.add(be);
+                r = r.add(br);
+                f = f.add(bf);
             }
         }
-        assert_eq!(m, 6.0);
-        assert_eq!(e, 3.0);
-        assert_eq!(r, 2.0);
-        assert_eq!(f, 0.0);
+        assert_eq!(m, Amt::units(6));
+        assert_eq!(e, Amt::units(3));
+        assert_eq!(r, Amt::units(2));
+        assert_eq!(f, Amt::ZERO);
     }
 
     #[test]
@@ -959,7 +973,7 @@ mod tests {
 
     #[test]
     fn port_build_cost() {
-        assert_eq!(BuildingType::Port.build_cost(), (400.0, 300.0));
+        assert_eq!(BuildingType::Port.build_cost(), (Amt::units(400), Amt::units(300)));
     }
 
     #[test]
@@ -970,10 +984,10 @@ mod tests {
     #[test]
     fn port_production_bonus() {
         let (m, e, r, f) = BuildingType::Port.production_bonus();
-        assert_eq!(m, 0.0);
-        assert_eq!(e, 0.0);
-        assert_eq!(r, 0.0);
-        assert_eq!(f, 0.0);
+        assert_eq!(m, Amt::ZERO);
+        assert_eq!(e, Amt::ZERO);
+        assert_eq!(r, Amt::ZERO);
+        assert_eq!(f, Amt::ZERO);
     }
 
     #[test]
@@ -985,11 +999,11 @@ mod tests {
 
     #[test]
     fn building_maintenance_costs() {
-        assert_eq!(BuildingType::Mine.maintenance_cost(), 0.2);
-        assert_eq!(BuildingType::PowerPlant.maintenance_cost(), 0.0);
-        assert_eq!(BuildingType::ResearchLab.maintenance_cost(), 0.5);
-        assert_eq!(BuildingType::Shipyard.maintenance_cost(), 1.0);
-        assert_eq!(BuildingType::Port.maintenance_cost(), 0.5);
+        assert_eq!(BuildingType::Mine.maintenance_cost(), Amt::new(0, 200));
+        assert_eq!(BuildingType::PowerPlant.maintenance_cost(), Amt::ZERO);
+        assert_eq!(BuildingType::ResearchLab.maintenance_cost(), Amt::new(0, 500));
+        assert_eq!(BuildingType::Shipyard.maintenance_cost(), Amt::units(1));
+        assert_eq!(BuildingType::Port.maintenance_cost(), Amt::new(0, 500));
     }
 
     #[test]
@@ -1002,32 +1016,30 @@ mod tests {
                 None,
             ],
         };
-        let mut energy = 100.0;
-        let delta = 5.0;
+        let mut energy = Amt::units(100);
+        let delta = Amt::units(5);
 
-        let mut total_maintenance = 0.0;
+        let mut total_maintenance = Amt::ZERO;
         for slot in &buildings.slots {
             if let Some(bt) = slot {
-                total_maintenance += bt.maintenance_cost();
+                total_maintenance = total_maintenance.add(bt.maintenance_cost());
             }
         }
-        assert!((total_maintenance - 1.2).abs() < 1e-10);
+        assert_eq!(total_maintenance, Amt::new(1, 200));
 
-        energy -= total_maintenance * delta;
-        assert!((energy - 94.0).abs() < 1e-10);
+        energy = energy.sub(total_maintenance.mul_amt(delta));
+        assert_eq!(energy, Amt::units(94));
     }
 
     #[test]
     fn maintenance_negative_energy_capped_at_zero() {
-        let mut energy = 2.0;
-        let total_maintenance = 1.0;
-        let delta = 5.0;
+        let mut energy = Amt::units(2);
+        let total_maintenance = Amt::units(1);
+        let delta = Amt::units(5);
 
-        energy -= total_maintenance * delta;
-        if energy < 0.0 {
-            energy = 0.0;
-        }
-        assert_eq!(energy, 0.0);
+        // total_maintenance * delta = 5, energy = 2, saturating sub => 0
+        energy = energy.sub(total_maintenance.mul_amt(delta));
+        assert_eq!(energy, Amt::ZERO);
     }
 
     // --- #72: Farm and food tests ---
@@ -1035,15 +1047,15 @@ mod tests {
     #[test]
     fn farm_production_bonus() {
         let (m, e, r, f) = BuildingType::Farm.production_bonus();
-        assert_eq!(m, 0.0);
-        assert_eq!(e, 0.0);
-        assert_eq!(r, 0.0);
-        assert_eq!(f, 5.0);
+        assert_eq!(m, Amt::ZERO);
+        assert_eq!(e, Amt::ZERO);
+        assert_eq!(r, Amt::ZERO);
+        assert_eq!(f, Amt::units(5));
     }
 
     #[test]
     fn farm_build_cost() {
-        assert_eq!(BuildingType::Farm.build_cost(), (100.0, 50.0));
+        assert_eq!(BuildingType::Farm.build_cost(), (Amt::units(100), Amt::units(50)));
     }
 
     #[test]
@@ -1053,7 +1065,7 @@ mod tests {
 
     #[test]
     fn farm_maintenance_cost() {
-        assert_eq!(BuildingType::Farm.maintenance_cost(), 0.3);
+        assert_eq!(BuildingType::Farm.maintenance_cost(), Amt::new(0, 300));
     }
 
     #[test]
@@ -1071,20 +1083,20 @@ mod tests {
                 None,
             ],
         };
-        let (mut m, mut e, mut r, mut f) = (0.0, 0.0, 0.0, 0.0);
+        let (mut m, mut e, mut r, mut f) = (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO);
         for slot in &buildings.slots {
             if let Some(bt) = slot {
                 let (bm, be, br, bf) = bt.production_bonus();
-                m += bm;
-                e += be;
-                r += br;
-                f += bf;
+                m = m.add(bm);
+                e = e.add(be);
+                r = r.add(br);
+                f = f.add(bf);
             }
         }
-        assert_eq!(m, 3.0);
-        assert_eq!(e, 0.0);
-        assert_eq!(r, 0.0);
-        assert_eq!(f, 10.0);
+        assert_eq!(m, Amt::units(3));
+        assert_eq!(e, Amt::ZERO);
+        assert_eq!(r, Amt::ZERO);
+        assert_eq!(f, Amt::units(10));
     }
 
     #[test]

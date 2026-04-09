@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
+use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
@@ -223,8 +224,8 @@ pub fn spawn_test_system(
 pub fn spawn_test_colony(
     world: &mut World,
     system: Entity,
-    minerals: f64,
-    energy: f64,
+    minerals: Amt,
+    energy: Amt,
     buildings: Vec<Option<BuildingType>>,
 ) -> Entity {
     world
@@ -237,15 +238,16 @@ pub fn spawn_test_colony(
             ResourceStockpile {
                 minerals,
                 energy,
-                research: 0.0,
-                food: 100.0,
-                authority: 0.0,
+                research: Amt::ZERO,
+                food: Amt::units(100),
+                authority: Amt::ZERO,
             },
+            ResourceCapacity::default(),
             Production {
-                minerals_per_hexadies: 5.0,
-                energy_per_hexadies: 5.0,
-                research_per_hexadies: 1.0,
-                food_per_hexadies: 0.0,
+                minerals_per_hexadies: Amt::units(5),
+                energy_per_hexadies: Amt::units(5),
+                research_per_hexadies: Amt::units(1),
+                food_per_hexadies: Amt::ZERO,
             },
             BuildQueue {
                 queue: Vec::new(),

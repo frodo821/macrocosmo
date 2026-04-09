@@ -1,3 +1,4 @@
+mod amount;
 mod colony;
 mod communication;
 mod components;

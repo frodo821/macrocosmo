@@ -45,8 +45,8 @@ pub enum Habitability {
 
 /// Maximum population that a colony can support at hab_score 1.0.
 pub const BASE_CARRYING_CAPACITY: f64 = 200.0;
-/// Food consumed per population per hexadies.
-pub const FOOD_PER_POP_PER_HEXADIES: f64 = 0.1;
+/// Food consumed per population per hexadies (as Amt: 0.100).
+pub const FOOD_PER_POP_PER_HEXADIES: crate::amount::Amt = crate::amount::Amt::new(0, 100);
 
 impl Habitability {
     /// Continuous habitability score in 0.0..=1.0.

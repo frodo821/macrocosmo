@@ -66,16 +66,16 @@ pub fn draw_all_ui(
 
     // Collect resource totals before passing colonies around
     let (total_minerals, total_energy, total_food, total_authority) = {
-        let mut m = 0.0_f64;
-        let mut e = 0.0_f64;
-        let mut f = 0.0_f64;
-        let mut a = 0.0_f64;
+        let mut m = crate::amount::Amt::ZERO;
+        let mut e = crate::amount::Amt::ZERO;
+        let mut f = crate::amount::Amt::ZERO;
+        let mut a = crate::amount::Amt::ZERO;
         for (_, _, _, stockpile, _, _, _) in colonies.iter() {
             if let Some(s) = stockpile {
-                m += s.minerals;
-                e += s.energy;
-                f += s.food;
-                a += s.authority;
+                m = m.add(s.minerals);
+                e = e.add(s.energy);
+                f = f.add(s.food);
+                a = a.add(s.authority);
             }
         }
         (m, e, f, a)

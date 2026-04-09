@@ -1,9 +1,10 @@
 use bevy::prelude::*;
 use rand::Rng;
 
+use crate::amount::Amt;
 use crate::colony::{
     BuildQueue, Buildings, BuildingQueue, Colony, Production, ProductionFocus,
-    ResourceStockpile,
+    ResourceCapacity, ResourceStockpile,
 };
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
@@ -160,11 +161,12 @@ impl ShipType {
     }
 
     /// Energy maintenance cost per hexadies (#51)
-    pub fn maintenance_cost(&self) -> f64 {
+    pub fn maintenance_cost(&self) -> crate::amount::Amt {
+        use crate::amount::Amt;
         match self {
-            ShipType::Explorer => 0.5,
-            ShipType::ColonyShip => 1.0,
-            ShipType::Courier => 0.3,
+            ShipType::Explorer => Amt::new(0, 500),
+            ShipType::ColonyShip => Amt::units(1),
+            ShipType::Courier => Amt::new(0, 300),
         }
     }
 
@@ -234,8 +236,8 @@ pub enum ShipState {
 /// Cargo hold for Courier ships (and potentially others).
 #[derive(Component, Default, Debug, Clone)]
 pub struct Cargo {
-    pub minerals: f64,
-    pub energy: f64,
+    pub minerals: Amt,
+    pub energy: Amt,
 }
 
 // --- #54: Fleet formation system ---
@@ -788,17 +790,18 @@ pub fn process_settling(
                         growth_rate: 0.005,
                     },
                     ResourceStockpile {
-                        minerals: 100.0,
-                        energy: 100.0,
-                        research: 0.0,
-                        food: 50.0,
-                        authority: 0.0,
+                        minerals: Amt::units(100),
+                        energy: Amt::units(100),
+                        research: Amt::ZERO,
+                        food: Amt::units(50),
+                        authority: Amt::ZERO,
                     },
+                    ResourceCapacity::default(),
                     Production {
                         minerals_per_hexadies: minerals_rate,
                         energy_per_hexadies: energy_rate,
                         research_per_hexadies: research_rate,
-                        food_per_hexadies: 0.0,
+                        food_per_hexadies: Amt::ZERO,
                     },
                     BuildQueue {
                         queue: Vec::new(),
@@ -828,12 +831,13 @@ pub fn process_settling(
 
 // --- Colony ship arrival (#20) ---
 
-pub fn resource_production_rate(level: ResourceLevel) -> f64 {
+pub fn resource_production_rate(level: ResourceLevel) -> crate::amount::Amt {
+    use crate::amount::Amt;
     match level {
-        ResourceLevel::Rich => 8.0,
-        ResourceLevel::Moderate => 5.0,
-        ResourceLevel::Poor => 2.0,
-        ResourceLevel::None => 0.0,
+        ResourceLevel::Rich => Amt::units(8),
+        ResourceLevel::Moderate => Amt::units(5),
+        ResourceLevel::Poor => Amt::units(2),
+        ResourceLevel::None => Amt::ZERO,
     }
 }
 
@@ -1550,9 +1554,9 @@ mod tests {
 
     #[test]
     fn ship_maintenance_costs() {
-        assert_eq!(ShipType::Explorer.maintenance_cost(), 0.5);
-        assert_eq!(ShipType::ColonyShip.maintenance_cost(), 1.0);
-        assert_eq!(ShipType::Courier.maintenance_cost(), 0.3);
+        assert_eq!(ShipType::Explorer.maintenance_cost(), Amt::new(0, 500));
+        assert_eq!(ShipType::ColonyShip.maintenance_cost(), Amt::units(1));
+        assert_eq!(ShipType::Courier.maintenance_cost(), Amt::new(0, 300));
     }
 
     // --- #54: Fleet tests ---

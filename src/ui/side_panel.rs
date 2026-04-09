@@ -120,20 +120,21 @@ pub fn draw_system_panel(
 
                     // #69: Show population with carrying capacity
                     let carrying_cap = {
+                        use crate::amount::Amt;
                         use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
                         let hab_score = attrs.map(|a| a.habitability.base_score()).unwrap_or(0.5);
                         let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
-                        let mut food_prod = production.map(|p| p.food_per_hexadies).unwrap_or(0.0);
+                        let mut food_prod = production.map(|p| p.food_per_hexadies).unwrap_or(Amt::ZERO);
                         if let Some(b) = buildings {
                             for slot in &b.slots {
                                 if let Some(bt) = slot {
                                     let (_, _, _, f) = bt.production_bonus();
-                                    food_prod += f;
+                                    food_prod = food_prod.add(f);
                                 }
                             }
                         }
-                        let k_food = if FOOD_PER_POP_PER_HEXADIES > 0.0 {
-                            food_prod / FOOD_PER_POP_PER_HEXADIES
+                        let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
+                            food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
                         } else {
                             k_habitat
                         };
@@ -143,7 +144,7 @@ pub fn draw_system_panel(
 
                     if let Some(prod) = production {
                         ui.label(format!(
-                            "Production: M {:.1} | E {:.1} | R {:.1} | F {:.1} /hd",
+                            "Production: M {} | E {} | R {} | F {} /hd",
                             prod.minerals_per_hexadies,
                             prod.energy_per_hexadies,
                             prod.research_per_hexadies,
@@ -153,38 +154,38 @@ pub fn draw_system_panel(
 
                     if let Some(stockpile) = stockpile {
                         ui.label(format!(
-                            "Stockpile: F {:.0} | E {:.0} | M {:.0} | A {:.0}",
+                            "Stockpile: F {} | E {} | M {} | A {}",
                             stockpile.food, stockpile.energy, stockpile.minerals, stockpile.authority,
                         ));
                     }
 
                     // #51/#64: Maintenance cost summary (ships charged via home_port)
                     {
-                        let mut building_maintenance = 0.0;
+                        use crate::amount::Amt;
+                        let mut building_maintenance = Amt::ZERO;
                         if let Some(b) = buildings {
                             for slot in &b.slots {
                                 if let Some(bt) = slot {
-                                    building_maintenance += bt.maintenance_cost();
+                                    building_maintenance = building_maintenance.add(bt.maintenance_cost());
                                 }
                             }
                         }
-                        // #64: Count ships whose home_port is this colony's system
-                        let mut ship_maintenance = 0.0;
+                        let mut ship_maintenance = Amt::ZERO;
                         let mut ships_based_here = 0u32;
                         for (_, ship, _, _) in ships_query.iter() {
                             if ship.home_port == colony.system {
-                                ship_maintenance += ship.ship_type.maintenance_cost();
+                                ship_maintenance = ship_maintenance.add(ship.ship_type.maintenance_cost());
                                 ships_based_here += 1;
                             }
                         }
-                        let total_maintenance = building_maintenance + ship_maintenance;
-                        if total_maintenance > 0.0 {
-                            ui.label(format!("Maintenance: {:.1} E/hd", total_maintenance));
-                            ui.label(format!("  Buildings: {:.1} E/hd", building_maintenance));
+                        let total_maintenance = building_maintenance.add(ship_maintenance);
+                        if total_maintenance > Amt::ZERO {
+                            ui.label(format!("Maintenance: {} E/hd", total_maintenance));
+                            ui.label(format!("  Buildings: {} E/hd", building_maintenance));
                         }
                         if ships_based_here > 0 {
                             ui.label(format!(
-                                "Ships based here: {} (maintenance: {:.1} E/hd)",
+                                "Ships based here: {} (maintenance: {} E/hd)",
                                 ships_based_here, ship_maintenance
                             ));
                         }
@@ -199,21 +200,20 @@ pub fn draw_system_panel(
                             ui.label("[empty]");
                         } else {
                             for order in &bq.queue {
-                                let m_pct = if order.minerals_cost > 0.0 {
-                                    (order.minerals_invested / order.minerals_cost * 100.0)
-                                        .min(100.0)
+                                let m_pct = if order.minerals_cost.raw() > 0 {
+                                    (order.minerals_invested.raw() as f32 / order.minerals_cost.raw() as f32).min(1.0)
                                 } else {
-                                    100.0
+                                    1.0
                                 };
-                                let e_pct = if order.energy_cost > 0.0 {
-                                    (order.energy_invested / order.energy_cost * 100.0).min(100.0)
+                                let e_pct = if order.energy_cost.raw() > 0 {
+                                    (order.energy_invested.raw() as f32 / order.energy_cost.raw() as f32).min(1.0)
                                 } else {
-                                    100.0
+                                    1.0
                                 };
                                 let pct = m_pct.min(e_pct);
                                 ui.horizontal(|ui| {
                                     ui.label(&order.ship_type_name);
-                                    let bar = egui::ProgressBar::new(pct as f32 / 100.0)
+                                    let bar = egui::ProgressBar::new(pct)
                                         .desired_width(100.0);
                                     ui.add(bar);
                                 });
@@ -227,29 +227,30 @@ pub fn draw_system_panel(
 
                     // Build buttons - add orders to the queue
                     if let Some(mut bq) = build_queue {
-                        let mut build_request: Option<(&str, f64, f64)> = None;
+                        use crate::amount::Amt;
+                        let mut build_request: Option<(&str, Amt, Amt)> = None;
                         ui.horizontal(|ui| {
                             if ui.button("Explorer").on_hover_text("M:200 E:100").clicked() {
-                                build_request = Some(("Explorer", 200.0, 100.0));
+                                build_request = Some(("Explorer", Amt::units(200), Amt::units(100)));
                             }
                             if ui
                                 .button("Colony Ship")
                                 .on_hover_text("M:500 E:300")
                                 .clicked()
                             {
-                                build_request = Some(("Colony Ship", 500.0, 300.0));
+                                build_request = Some(("Colony Ship", Amt::units(500), Amt::units(300)));
                             }
                             if ui.button("Courier").on_hover_text("M:100 E:50").clicked() {
-                                build_request = Some(("Courier", 100.0, 50.0));
+                                build_request = Some(("Courier", Amt::units(100), Amt::units(50)));
                             }
                         });
                         if let Some((name, minerals_cost, energy_cost)) = build_request {
                             bq.queue.push(BuildOrder {
                                 ship_type_name: name.to_string(),
                                 minerals_cost,
-                                minerals_invested: 0.0,
+                                minerals_invested: Amt::ZERO,
                                 energy_cost,
-                                energy_invested: 0.0,
+                                energy_invested: Amt::ZERO,
                                 build_time_total: 0,
                                 build_time_remaining: 0,
                             });
@@ -290,7 +291,7 @@ pub fn draw_system_panel(
                             for bt in &building_types {
                                 let (m_cost, e_cost) = bt.build_cost();
                                 let time = bt.build_time();
-                                let tooltip = format!("M:{:.0} E:{:.0} | {} hexadies", m_cost, e_cost, time);
+                                let tooltip = format!("M:{} E:{} | {} hexadies", m_cost, e_cost, time);
                                 if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
                                     build_building_request = Some(*bt);
                                 }
@@ -568,10 +569,10 @@ pub fn draw_ship_panel(
     // Cargo load/unload actions to apply after UI drawing
     #[derive(Default)]
     struct CargoAction {
-        load_minerals: f64,
-        load_energy: f64,
-        unload_minerals: f64,
-        unload_energy: f64,
+        load_minerals: crate::amount::Amt,
+        load_energy: crate::amount::Amt,
+        unload_minerals: crate::amount::Amt,
+        unload_energy: crate::amount::Amt,
     }
     let mut cargo_action = CargoAction::default();
     // Entity of the colony at the docked system (for cargo transfers)
@@ -643,16 +644,16 @@ pub fn draw_ship_panel(
                     if let Some((cargo_m, cargo_e)) = cargo_data {
                         ui.separator();
                         ui.label(egui::RichText::new("Cargo").strong());
-                        ui.label(format!("Minerals: {:.0}", cargo_m));
-                        ui.label(format!("Energy: {:.0}", cargo_e));
+                        ui.label(format!("Minerals: {}", cargo_m));
+                        ui.label(format!("Energy: {}", cargo_e));
 
                         if colony_entity_at_dock.is_some() {
                             ui.horizontal(|ui| {
                                 if ui.button("Load M +100").clicked() {
-                                    cargo_action.load_minerals = 100.0;
+                                    cargo_action.load_minerals = crate::amount::Amt::units(100);
                                 }
                                 if ui.button("Load E +100").clicked() {
-                                    cargo_action.load_energy = 100.0;
+                                    cargo_action.load_energy = crate::amount::Amt::units(100);
                                 }
                             });
                             ui.horizontal(|ui| {
@@ -693,38 +694,34 @@ pub fn draw_ship_panel(
     }
 
     // Apply cargo load/unload actions
-    let has_cargo_action = cargo_action.load_minerals > 0.0
-        || cargo_action.load_energy > 0.0
-        || cargo_action.unload_minerals > 0.0
-        || cargo_action.unload_energy > 0.0;
+    use crate::amount::Amt;
+    let has_cargo_action = cargo_action.load_minerals > Amt::ZERO
+        || cargo_action.load_energy > Amt::ZERO
+        || cargo_action.unload_minerals > Amt::ZERO
+        || cargo_action.unload_energy > Amt::ZERO;
     if has_cargo_action {
         if let Some(colony_e) = colony_entity_at_dock {
-            // Get mutable access to the colony stockpile
             if let Ok((_, _, _, Some(mut stockpile), _, _, _)) = colonies.get_mut(colony_e) {
                 if let Ok((_, _, _, Some(mut cargo))) = ships_query.get_mut(ship_entity) {
-                    // Load minerals
-                    if cargo_action.load_minerals > 0.0 {
+                    if cargo_action.load_minerals > Amt::ZERO {
                         let transfer = cargo_action.load_minerals.min(stockpile.minerals);
-                        stockpile.minerals -= transfer;
-                        cargo.minerals += transfer;
+                        stockpile.minerals = stockpile.minerals.sub(transfer);
+                        cargo.minerals = cargo.minerals.add(transfer);
                     }
-                    // Load energy
-                    if cargo_action.load_energy > 0.0 {
+                    if cargo_action.load_energy > Amt::ZERO {
                         let transfer = cargo_action.load_energy.min(stockpile.energy);
-                        stockpile.energy -= transfer;
-                        cargo.energy += transfer;
+                        stockpile.energy = stockpile.energy.sub(transfer);
+                        cargo.energy = cargo.energy.add(transfer);
                     }
-                    // Unload minerals
-                    if cargo_action.unload_minerals > 0.0 {
+                    if cargo_action.unload_minerals > Amt::ZERO {
                         let transfer = cargo_action.unload_minerals.min(cargo.minerals);
-                        cargo.minerals -= transfer;
-                        stockpile.minerals += transfer;
+                        cargo.minerals = cargo.minerals.sub(transfer);
+                        stockpile.minerals = stockpile.minerals.add(transfer);
                     }
-                    // Unload energy
-                    if cargo_action.unload_energy > 0.0 {
+                    if cargo_action.unload_energy > Amt::ZERO {
                         let transfer = cargo_action.unload_energy.min(cargo.energy);
-                        cargo.energy -= transfer;
-                        stockpile.energy += transfer;
+                        cargo.energy = cargo.energy.sub(transfer);
+                        stockpile.energy = stockpile.energy.add(transfer);
                     }
                 }
             }

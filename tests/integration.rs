@@ -1,6 +1,7 @@
 mod common;
 
 use bevy::prelude::*;
+use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
@@ -238,17 +239,18 @@ fn test_production_accumulates_resources() {
             growth_rate: 0.005,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 0.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 5.0,
-            energy_per_hexadies: 3.0,
-            research_per_hexadies: 1.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(5),
+            energy_per_hexadies: Amt::units(3),
+            research_per_hexadies: Amt::units(1),
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue {
             queue: Vec::new(),
@@ -262,19 +264,19 @@ fn test_production_accumulates_resources() {
     let stockpile = stockpile_query.iter(app.world()).next().unwrap();
 
     assert!(
-        (stockpile.minerals - 50.0).abs() < 1e-6,
-        "Expected 50 minerals, got {}",
+        (stockpile.minerals.to_f64() - 50.0).abs() < 1.0,
+        "Expected ~50 minerals, got {}",
         stockpile.minerals
     );
     assert!(
-        (stockpile.energy - 30.0).abs() < 1e-6,
-        "Expected 30 energy, got {}",
+        (stockpile.energy.to_f64() - 30.0).abs() < 1.0,
+        "Expected ~30 energy, got {}",
         stockpile.energy
     );
     // Research is no longer accumulated in the stockpile; it is emitted
     // as PendingResearch entities via emit_research instead.
-    assert!(
-        stockpile.research.abs() < 1e-6,
+    assert_eq!(
+        stockpile.research, Amt::ZERO,
         "Expected 0 research in stockpile (emitted as PendingResearch), got {}",
         stockpile.research
     );
@@ -302,25 +304,26 @@ fn test_build_queue_spawns_ship() {
             growth_rate: 0.01,
         },
         ResourceStockpile {
-            minerals: 1000.0,
-            energy: 1000.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::units(1000),
+            energy: Amt::units(1000),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 0.0,
-            energy_per_hexadies: 0.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::ZERO,
+            energy_per_hexadies: Amt::ZERO,
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue {
             queue: vec![BuildOrder {
                 ship_type_name: "Explorer".to_string(),
-                minerals_cost: 50.0,
-                minerals_invested: 0.0,
-                energy_cost: 30.0,
-                energy_invested: 0.0,
+                minerals_cost: Amt::units(50),
+                minerals_invested: Amt::ZERO,
+                energy_cost: Amt::units(30),
+                energy_invested: Amt::ZERO,
                 build_time_total: 60,
                 build_time_remaining: 0, // set to 0 so it completes with resources
             }],
@@ -507,17 +510,18 @@ fn all_systems_no_query_conflict() {
             growth_rate: 0.01,
         },
         ResourceStockpile {
-            minerals: 500.0,
-            energy: 500.0,
-            research: 0.0,
-            food: 100.0,
-            authority: 0.0,
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 5.0,
-            energy_per_hexadies: 5.0,
-            research_per_hexadies: 1.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(5),
+            energy_per_hexadies: Amt::units(5),
+            research_per_hexadies: Amt::units(1),
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue {
             queue: vec![],
@@ -834,17 +838,18 @@ fn test_capital_produces_authority() {
             growth_rate: 0.01,
         },
         ResourceStockpile {
-            minerals: 500.0,
-            energy: 500.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 5.0,
-            energy_per_hexadies: 5.0,
-            research_per_hexadies: 1.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(5),
+            energy_per_hexadies: Amt::units(5),
+            research_per_hexadies: Amt::units(1),
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         Buildings { slots: vec![None; 4] },
@@ -859,7 +864,7 @@ fn test_capital_produces_authority() {
     // Capital produces BASE_AUTHORITY_PER_HEXADIES (1.0) per hexady, no colonies to drain it
     // Expected: 1.0 * 10 = 10.0
     assert!(
-        (stockpile.authority - 10.0).abs() < 1e-6,
+        (stockpile.authority.to_f64() - 10.0).abs() < 1e-6,
         "Expected 10.0 authority, got {}",
         stockpile.authority
     );
@@ -887,17 +892,18 @@ fn test_empire_scale_authority_cost() {
             growth_rate: 0.01,
         },
         ResourceStockpile {
-            minerals: 500.0,
-            energy: 500.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 5.0, // start with 5
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::units(5), // start with 5
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 5.0,
-            energy_per_hexadies: 5.0,
-            research_per_hexadies: 1.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(5),
+            energy_per_hexadies: Amt::units(5),
+            research_per_hexadies: Amt::units(1),
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         Buildings { slots: vec![None; 4] },
@@ -913,17 +919,18 @@ fn test_empire_scale_authority_cost() {
             growth_rate: 0.005,
         },
         ResourceStockpile {
-            minerals: 100.0,
-            energy: 100.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::units(100),
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 3.0,
-            energy_per_hexadies: 3.0,
-            research_per_hexadies: 0.5,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(3),
+            energy_per_hexadies: Amt::units(3),
+            research_per_hexadies: Amt::new(0, 500),
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         Buildings { slots: vec![None; 4] },
@@ -940,7 +947,7 @@ fn test_empire_scale_authority_cost() {
     // Cost: 0.5 * 1 colony * 10 = 5.0
     // Expected: 5.0 + 10.0 - 5.0 = 10.0
     assert!(
-        (stockpile.authority - 10.0).abs() < 1e-6,
+        (stockpile.authority.to_f64() - 10.0).abs() < 1e-6,
         "Expected 10.0 authority, got {}",
         stockpile.authority
     );
@@ -991,17 +998,18 @@ fn test_authority_deficit_reduces_non_capital_production() {
             growth_rate: 0.01,
         },
         ResourceStockpile {
-            minerals: 500.0,
-            energy: 500.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 5.0,
-            energy_per_hexadies: 5.0,
-            research_per_hexadies: 1.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(5),
+            energy_per_hexadies: Amt::units(5),
+            research_per_hexadies: Amt::units(1),
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         Buildings { slots: vec![None; 4] },
@@ -1017,17 +1025,18 @@ fn test_authority_deficit_reduces_non_capital_production() {
             growth_rate: 0.005,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 0.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 10.0,
-            energy_per_hexadies: 10.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(10),
+            energy_per_hexadies: Amt::units(10),
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         Buildings { slots: vec![None; 4] },
@@ -1042,17 +1051,18 @@ fn test_authority_deficit_reduces_non_capital_production() {
             growth_rate: 0.005,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 0.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 1.0,
-            energy_per_hexadies: 1.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(1),
+            energy_per_hexadies: Amt::units(1),
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         Buildings { slots: vec![None; 4] },
@@ -1067,17 +1077,18 @@ fn test_authority_deficit_reduces_non_capital_production() {
             growth_rate: 0.005,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 0.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 1.0,
-            energy_per_hexadies: 1.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::units(1),
+            energy_per_hexadies: Amt::units(1),
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         Buildings { slots: vec![None; 4] },
@@ -1093,12 +1104,12 @@ fn test_authority_deficit_reduces_non_capital_production() {
     // Normal: 10.0 * 10 = 100.0
     // With penalty: 10.0 * 10 * 0.5 = 50.0
     assert!(
-        (stockpile.minerals - 50.0).abs() < 1e-6,
+        (stockpile.minerals.to_f64() - 50.0).abs() < 1e-6,
         "Expected 50.0 minerals (penalized), got {}",
         stockpile.minerals
     );
     assert!(
-        (stockpile.energy - 50.0).abs() < 1e-6,
+        (stockpile.energy.to_f64() - 50.0).abs() < 1e-6,
         "Expected 50.0 energy (penalized), got {}",
         stockpile.energy
     );
@@ -1129,17 +1140,18 @@ fn test_farm_produces_food() {
             growth_rate: 0.0,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 100.0,
-            research: 0.0,
-            food: 0.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 0.0,
-            energy_per_hexadies: 0.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 5.0,
+            minerals_per_hexadies: Amt::ZERO,
+            energy_per_hexadies: Amt::ZERO,
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::units(5),
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
@@ -1160,13 +1172,13 @@ fn test_farm_produces_food() {
     // Net food should be ~90.0
     let expected_food = 90.0;
     assert!(
-        (stockpile.food - expected_food).abs() < 5.0,
+        (stockpile.food.to_f64() - expected_food).abs() < 5.0,
         "Expected ~{} food, got {}",
         expected_food,
         stockpile.food
     );
     assert!(
-        stockpile.food > 0.0,
+        stockpile.food.to_f64() > 0.0,
         "Food should be positive with Farm producing"
     );
 }
@@ -1210,17 +1222,18 @@ fn test_authority_deficit_penalizes_food_production() {
             growth_rate: 0.0,
         },
         ResourceStockpile {
-            minerals: 1000.0,
-            energy: 1000.0,
-            research: 0.0,
-            food: 1000.0,
-            authority: 0.0,
+            minerals: Amt::units(1000),
+            energy: Amt::units(1000),
+            research: Amt::ZERO,
+            food: Amt::units(1000),
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 0.0,
-            energy_per_hexadies: 0.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 0.0,
+            minerals_per_hexadies: Amt::ZERO,
+            energy_per_hexadies: Amt::ZERO,
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::ZERO,
         },
         BuildQueue { queue: Vec::new() },
         ProductionFocus::default(),
@@ -1249,17 +1262,18 @@ fn test_authority_deficit_penalizes_food_production() {
                 growth_rate: 0.0,
             },
             ResourceStockpile {
-                minerals: 0.0,
-                energy: 0.0,
-                research: 0.0,
-                food: 0.0,
-                authority: 0.0,
+                minerals: Amt::ZERO,
+                energy: Amt::ZERO,
+                research: Amt::ZERO,
+                food: Amt::ZERO,
+                authority: Amt::ZERO,
             },
+            ResourceCapacity::default(),
             Production {
-                minerals_per_hexadies: 0.0,
-                energy_per_hexadies: 0.0,
-                research_per_hexadies: 0.0,
-                food_per_hexadies: 10.0,
+                minerals_per_hexadies: Amt::ZERO,
+                energy_per_hexadies: Amt::ZERO,
+                research_per_hexadies: Amt::ZERO,
+                food_per_hexadies: Amt::units(10),
             },
             BuildQueue { queue: Vec::new() },
             ProductionFocus::default(),
@@ -1274,12 +1288,12 @@ fn test_authority_deficit_penalizes_food_production() {
         if colony.system == remote_systems[0] {
             // Without penalty: 100.0 food. With 0.5 penalty: ~50.0 food (minus small consumption)
             assert!(
-                stockpile.food < 60.0,
+                stockpile.food.to_f64() < 60.0,
                 "Food production should be penalized by authority deficit, got {}",
                 stockpile.food
             );
             assert!(
-                stockpile.food > 0.0,
+                stockpile.food.to_f64() > 0.0,
                 "Food should still be positive, got {}",
                 stockpile.food
             );
@@ -1312,17 +1326,18 @@ fn test_maintenance_deducts_energy_integration() {
             growth_rate: 0.0,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 100.0,
-            research: 0.0,
-            food: 10000.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::units(10000),
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 0.0,
-            energy_per_hexadies: 0.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 10.0,
+            minerals_per_hexadies: Amt::ZERO,
+            energy_per_hexadies: Amt::ZERO,
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::units(10),
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
@@ -1339,12 +1354,12 @@ fn test_maintenance_deducts_energy_integration() {
     let stockpile = q.iter(app.world()).next().unwrap();
 
     assert!(
-        stockpile.energy < 100.0,
+        stockpile.energy.to_f64() < 100.0,
         "Maintenance should have deducted energy, got {}",
         stockpile.energy
     );
     assert!(
-        (stockpile.energy - 88.0).abs() < 1.0,
+        (stockpile.energy.to_f64() - 88.0).abs() < 1.0,
         "Expected ~88 energy (100 - 12), got {}",
         stockpile.energy
     );
@@ -1377,17 +1392,18 @@ fn test_population_capped_by_carrying_capacity() {
             growth_rate: 0.05,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 0.0,
-            research: 0.0,
-            food: 10000.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(10000),
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 0.0,
-            energy_per_hexadies: 0.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 10.0,
+            minerals_per_hexadies: Amt::ZERO,
+            energy_per_hexadies: Amt::ZERO,
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::units(10),
         },
         BuildQueue { queue: Vec::new() },
         ProductionFocus::default(),
@@ -1444,17 +1460,18 @@ fn test_habitability_affects_growth_rate() {
                 growth_rate: 0.05,
             },
             ResourceStockpile {
-                minerals: 0.0,
-                energy: 0.0,
-                research: 0.0,
-                food: 10000.0,
-                authority: 0.0,
+                minerals: Amt::ZERO,
+                energy: Amt::ZERO,
+                research: Amt::ZERO,
+                food: Amt::units(10000),
+                authority: Amt::ZERO,
             },
+            ResourceCapacity::default(),
             Production {
-                minerals_per_hexadies: 0.0,
-                energy_per_hexadies: 0.0,
-                research_per_hexadies: 0.0,
-                food_per_hexadies: 100.0, // abundant food so K isn't food-limited
+                minerals_per_hexadies: Amt::ZERO,
+                energy_per_hexadies: Amt::ZERO,
+                research_per_hexadies: Amt::ZERO,
+                food_per_hexadies: Amt::units(100), // abundant food so K isn't food-limited
             },
             BuildQueue { queue: Vec::new() },
             ProductionFocus::default(),
@@ -1515,17 +1532,18 @@ fn test_food_limits_carrying_capacity() {
             growth_rate: 0.05,
         },
         ResourceStockpile {
-            minerals: 0.0,
-            energy: 0.0,
-            research: 0.0,
-            food: 10000.0,
-            authority: 0.0,
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(10000),
+            authority: Amt::ZERO,
         },
+        ResourceCapacity::default(),
         Production {
-            minerals_per_hexadies: 0.0,
-            energy_per_hexadies: 0.0,
-            research_per_hexadies: 0.0,
-            food_per_hexadies: 5.0,
+            minerals_per_hexadies: Amt::ZERO,
+            energy_per_hexadies: Amt::ZERO,
+            research_per_hexadies: Amt::ZERO,
+            food_per_hexadies: Amt::units(5),
         },
         BuildQueue { queue: Vec::new() },
         ProductionFocus::default(),

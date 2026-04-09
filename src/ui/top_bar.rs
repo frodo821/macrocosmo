@@ -1,5 +1,6 @@
 use bevy_egui::egui;
 
+use crate::amount::Amt;
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::ResearchPanelOpen;
@@ -8,10 +9,10 @@ pub fn draw_top_bar(
     ctx: &egui::Context,
     clock: &GameClock,
     speed: &mut GameSpeed,
-    total_minerals: f64,
-    total_energy: f64,
-    total_food: f64,
-    total_authority: f64,
+    total_minerals: Amt,
+    total_energy: Amt,
+    total_food: Amt,
+    total_authority: Amt,
     research_open: &mut ResearchPanelOpen,
 ) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
@@ -47,7 +48,7 @@ pub fn draw_top_bar(
 
             ui.separator();
 
-            ui.label(format!("F:{:.0}  E:{:.0}  M:{:.0}  A:{:.0}", total_food, total_energy, total_minerals, total_authority));
+            ui.label(format!("F:{}  E:{}  M:{}  A:{}", total_food, total_energy, total_minerals, total_authority));
 
             ui.separator();
 
