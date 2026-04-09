@@ -16,7 +16,7 @@ use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, StationedAt};
 use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
-use crate::technology::GlobalParams;
+use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::technology::EmpireModifiers;
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedShip, SelectedSystem};
@@ -29,6 +29,14 @@ pub struct UiResources<'w> {
     pub command_log: Res<'w, CommandLog>,
     pub global_params: Res<'w, GlobalParams>,
     pub construction_params: Res<'w, ConstructionParams>,
+    pub tech_tree: Res<'w, TechTree>,
+    pub research_pool: Res<'w, ResearchPool>,
+}
+
+/// Grouped mutable resources for the research system.
+#[derive(SystemParam)]
+pub struct UiResMut<'w> {
+    pub research_queue: ResMut<'w, ResearchQueue>,
 }
 
 /// Resource tracking whether the research overlay is open.
@@ -73,6 +81,7 @@ pub fn draw_all_ui(
     mut command_queues: Query<&mut CommandQueue>,
     positions: Query<&Position>,
     ui_res: UiResources,
+    mut ui_res_mut: UiResMut,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -149,5 +158,64 @@ pub fn draw_all_ui(
 
     bottom_bar::draw_bottom_bar(ctx, &ui_res.command_log, &clock);
 
-    overlays::draw_overlays(ctx, &mut research_open);
+    // Find capital colony stockpile for upfront cost checks
+    let capital_stockpile: Option<(crate::amount::Amt, crate::amount::Amt)> = {
+        let mut result = None;
+        for (_, colony_data, _, stockpile, _, _, _) in colonies.iter() {
+            if let Some(s) = stockpile {
+                // Check if the colony's system is the capital
+                if let Ok((_, star, _, _)) = stars.get(colony_data.system) {
+                    if star.is_capital {
+                        result = Some((s.minerals, s.energy));
+                        break;
+                    }
+                }
+            }
+        }
+        result
+    };
+
+    let capital_refs = capital_stockpile
+        .as_ref()
+        .map(|(m, e)| (m, e));
+
+    let research_action = overlays::draw_overlays(
+        ctx,
+        &mut research_open,
+        &ui_res.tech_tree,
+        &ui_res_mut.research_queue,
+        &ui_res.research_pool,
+        capital_refs,
+        clock.elapsed,
+    );
+
+    // Handle research actions that require mutable colony access
+    match research_action {
+        overlays::ResearchAction::StartResearch(tech_id) => {
+            // Deduct upfront costs from capital stockpile
+            if let Some(tech) = ui_res.tech_tree.get(tech_id) {
+                let mineral_cost = tech.cost.minerals;
+                let energy_cost = tech.cost.energy;
+
+                // Find and deduct from capital colony
+                for (_, colony_data, _, stockpile, _, _, _) in colonies.iter_mut() {
+                    if let Some(mut s) = stockpile {
+                        if let Ok((_, star, _, _)) = stars.get(colony_data.system) {
+                            if star.is_capital {
+                                s.minerals = s.minerals.sub(mineral_cost);
+                                s.energy = s.energy.sub(energy_cost);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                ui_res_mut.research_queue.start_research(tech_id);
+            }
+        }
+        overlays::ResearchAction::CancelResearch => {
+            ui_res_mut.research_queue.cancel_research();
+        }
+        overlays::ResearchAction::None => {}
+    }
 }
