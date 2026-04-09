@@ -174,17 +174,19 @@ pub enum BuildingType {
     ResearchLab,  // +2 research/sd
     Shipyard,     // 2x build speed
     Port,         // Reduces FTL travel time from this system
+    Farm,         // +5 food/hd
 }
 
 impl BuildingType {
-    pub fn production_bonus(&self) -> (f64, f64, f64) {
-        // (minerals, energy, research) per hexadies
+    pub fn production_bonus(&self) -> (f64, f64, f64, f64) {
+        // (minerals, energy, research, food) per hexadies
         match self {
-            BuildingType::Mine => (3.0, 0.0, 0.0),
-            BuildingType::PowerPlant => (0.0, 3.0, 0.0),
-            BuildingType::ResearchLab => (0.0, 0.0, 2.0),
-            BuildingType::Shipyard => (0.0, 0.0, 0.0), // special effect
-            BuildingType::Port => (0.0, 0.0, 0.0),     // special effect
+            BuildingType::Mine => (3.0, 0.0, 0.0, 0.0),
+            BuildingType::PowerPlant => (0.0, 3.0, 0.0, 0.0),
+            BuildingType::ResearchLab => (0.0, 0.0, 2.0, 0.0),
+            BuildingType::Shipyard => (0.0, 0.0, 0.0, 0.0), // special effect
+            BuildingType::Port => (0.0, 0.0, 0.0, 0.0),     // special effect
+            BuildingType::Farm => (0.0, 0.0, 0.0, 5.0),
         }
     }
 
@@ -196,6 +198,7 @@ impl BuildingType {
             BuildingType::ResearchLab => (100.0, 100.0),
             BuildingType::Shipyard => (300.0, 200.0),
             BuildingType::Port => (400.0, 300.0),
+            BuildingType::Farm => (100.0, 50.0),
         }
     }
 
@@ -207,6 +210,7 @@ impl BuildingType {
             BuildingType::ResearchLab => 15,
             BuildingType::Shipyard => 30,
             BuildingType::Port => 40,
+            BuildingType::Farm => 20,
         }
     }
 
@@ -218,6 +222,7 @@ impl BuildingType {
             BuildingType::ResearchLab => 0.5,
             BuildingType::Shipyard => 1.0,
             BuildingType::Port => 0.5,
+            BuildingType::Farm => 0.3,
         }
     }
 
@@ -229,6 +234,7 @@ impl BuildingType {
             BuildingType::ResearchLab => "ResearchLab",
             BuildingType::Shipyard => "Shipyard",
             BuildingType::Port => "Port",
+            BuildingType::Farm => "Farm",
         }
     }
 }
@@ -271,7 +277,7 @@ pub fn spawn_capital_colony(
         if system.is_capital {
             let num_slots = attributes.max_building_slots as usize;
             let mut slots = vec![None; num_slots];
-            // Capital starts with 1 Mine, 1 PowerPlant, and 1 Shipyard (#35)
+            // Capital starts with 1 Mine, 1 PowerPlant, 1 Shipyard (#35), and 1 Farm (#72)
             if num_slots > 0 {
                 slots[0] = Some(BuildingType::Mine);
             }
@@ -280,6 +286,9 @@ pub fn spawn_capital_colony(
             }
             if num_slots > 2 {
                 slots[2] = Some(BuildingType::Shipyard);
+            }
+            if num_slots > 3 {
+                slots[3] = Some(BuildingType::Farm);
             }
             commands.spawn((
                 Colony {
@@ -291,14 +300,14 @@ pub fn spawn_capital_colony(
                     minerals: 500.0,
                     energy: 500.0,
                     research: 0.0,
-                    food: 100.0,
+                    food: 200.0,
                     authority: 0.0,
                 },
                 Production {
                     minerals_per_hexadies: 5.0,
                     energy_per_hexadies: 5.0,
                     research_per_hexadies: 1.0,
-                    food_per_hexadies: 0.0,
+                    food_per_hexadies: 5.0,
                 },
                 BuildQueue {
                     queue: Vec::new(),
@@ -332,8 +341,6 @@ pub fn tick_production(
     let d = delta as f64;
 
     // #73: Check if the capital has an authority deficit.
-    // Collect capital authority level first to avoid borrow conflicts.
-    // If no capital colony exists, there is no deficit (no penalty applied).
     let capital_authority = query.iter().find_map(|(colony, _, stockpile, _, _)| {
         stars.get(colony.system).ok().and_then(|star| {
             if star.is_capital {
@@ -346,13 +353,14 @@ pub fn tick_production(
     let authority_deficit = matches!(capital_authority, Some(a) if a <= 0.0);
 
     for (colony, prod, mut stockpile, buildings, focus) in &mut query {
-        let (mut bonus_m, mut bonus_e) = (0.0, 0.0);
+        let (mut bonus_m, mut bonus_e, mut bonus_f) = (0.0, 0.0, 0.0);
         if let Some(buildings) = buildings {
             for slot in &buildings.slots {
                 if let Some(bt) = slot {
-                    let (m, e, _r) = bt.production_bonus();
+                    let (m, e, _r, f) = bt.production_bonus();
                     bonus_m += m;
                     bonus_e += e;
+                    bonus_f += f;
                 }
             }
         }
@@ -371,26 +379,42 @@ pub fn tick_production(
 
         stockpile.minerals += (prod.minerals_per_hexadies + bonus_m) * mw * d * global_params.production_multiplier_minerals * authority_multiplier;
         stockpile.energy += (prod.energy_per_hexadies + bonus_e) * ew * d * global_params.production_multiplier_energy * authority_multiplier;
+        // #72: Food production from base rate + Farm building bonuses
+        stockpile.food += (prod.food_per_hexadies + bonus_f) * d * authority_multiplier;
         // Research is no longer accumulated in the stockpile; it is emitted
         // directly via emit_research in the technology module.
     }
 }
 
 /// #45: Population growth uses GlobalParams bonus
+/// #72: Food consumption and starvation
 pub fn tick_population_growth(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     global_params: Res<crate::technology::GlobalParams>,
-    mut query: Query<&mut Colony>,
+    mut query: Query<(&mut Colony, &mut ResourceStockpile)>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
-    for mut colony in &mut query {
-        let effective_growth = colony.growth_rate + global_params.population_growth_bonus;
-        let growth_factor = (1.0 + effective_growth).powi(delta as i32);
-        colony.population *= growth_factor;
+    let d = delta as f64;
+    for (mut colony, mut stockpile) in &mut query {
+        // #72: Food consumption — population * 0.1 food per hexadies
+        let food_consumed = colony.population * 0.1 * d;
+        stockpile.food -= food_consumed;
+
+        if stockpile.food <= 0.0 {
+            // Starvation: population decreases by population * 0.01 per hexadies
+            stockpile.food = 0.0;
+            let starvation_loss = colony.population * 0.01 * d;
+            colony.population = (colony.population - starvation_loss).max(1.0);
+        } else {
+            // Normal growth
+            let effective_growth = colony.growth_rate + global_params.population_growth_bonus;
+            let growth_factor = (1.0 + effective_growth).powi(delta as i32);
+            colony.population *= growth_factor;
+        }
     }
 }
 
@@ -733,34 +757,38 @@ mod tests {
 
     #[test]
     fn mine_production_bonus() {
-        let (m, e, r) = BuildingType::Mine.production_bonus();
+        let (m, e, r, f) = BuildingType::Mine.production_bonus();
         assert_eq!(m, 3.0);
         assert_eq!(e, 0.0);
         assert_eq!(r, 0.0);
+        assert_eq!(f, 0.0);
     }
 
     #[test]
     fn power_plant_production_bonus() {
-        let (m, e, r) = BuildingType::PowerPlant.production_bonus();
+        let (m, e, r, f) = BuildingType::PowerPlant.production_bonus();
         assert_eq!(m, 0.0);
         assert_eq!(e, 3.0);
         assert_eq!(r, 0.0);
+        assert_eq!(f, 0.0);
     }
 
     #[test]
     fn research_lab_production_bonus() {
-        let (m, e, r) = BuildingType::ResearchLab.production_bonus();
+        let (m, e, r, f) = BuildingType::ResearchLab.production_bonus();
         assert_eq!(m, 0.0);
         assert_eq!(e, 0.0);
         assert_eq!(r, 2.0);
+        assert_eq!(f, 0.0);
     }
 
     #[test]
     fn shipyard_production_bonus() {
-        let (m, e, r) = BuildingType::Shipyard.production_bonus();
+        let (m, e, r, f) = BuildingType::Shipyard.production_bonus();
         assert_eq!(m, 0.0);
         assert_eq!(e, 0.0);
         assert_eq!(r, 0.0);
+        assert_eq!(f, 0.0);
     }
 
     #[test]
@@ -824,18 +852,20 @@ mod tests {
                 None,
             ],
         };
-        let (mut m, mut e, mut r) = (0.0, 0.0, 0.0);
+        let (mut m, mut e, mut r, mut f) = (0.0, 0.0, 0.0, 0.0);
         for slot in &buildings.slots {
             if let Some(bt) = slot {
-                let (bm, be, br) = bt.production_bonus();
+                let (bm, be, br, bf) = bt.production_bonus();
                 m += bm;
                 e += be;
                 r += br;
+                f += bf;
             }
         }
         assert_eq!(m, 6.0);
         assert_eq!(e, 3.0);
         assert_eq!(r, 2.0);
+        assert_eq!(f, 0.0);
     }
 
     #[test]
@@ -900,10 +930,11 @@ mod tests {
 
     #[test]
     fn port_production_bonus() {
-        let (m, e, r) = BuildingType::Port.production_bonus();
+        let (m, e, r, f) = BuildingType::Port.production_bonus();
         assert_eq!(m, 0.0);
         assert_eq!(e, 0.0);
         assert_eq!(r, 0.0);
+        assert_eq!(f, 0.0);
     }
 
     #[test]
@@ -958,5 +989,98 @@ mod tests {
             energy = 0.0;
         }
         assert_eq!(energy, 0.0);
+    }
+
+    // --- #72: Farm and food tests ---
+
+    #[test]
+    fn farm_production_bonus() {
+        let (m, e, r, f) = BuildingType::Farm.production_bonus();
+        assert_eq!(m, 0.0);
+        assert_eq!(e, 0.0);
+        assert_eq!(r, 0.0);
+        assert_eq!(f, 5.0);
+    }
+
+    #[test]
+    fn farm_build_cost() {
+        assert_eq!(BuildingType::Farm.build_cost(), (100.0, 50.0));
+    }
+
+    #[test]
+    fn farm_build_time() {
+        assert_eq!(BuildingType::Farm.build_time(), 20);
+    }
+
+    #[test]
+    fn farm_maintenance_cost() {
+        assert_eq!(BuildingType::Farm.maintenance_cost(), 0.3);
+    }
+
+    #[test]
+    fn farm_name() {
+        assert_eq!(BuildingType::Farm.name(), "Farm");
+    }
+
+    #[test]
+    fn buildings_total_production_with_farm() {
+        let buildings = Buildings {
+            slots: vec![
+                Some(BuildingType::Mine),
+                Some(BuildingType::Farm),
+                Some(BuildingType::Farm),
+                None,
+            ],
+        };
+        let (mut m, mut e, mut r, mut f) = (0.0, 0.0, 0.0, 0.0);
+        for slot in &buildings.slots {
+            if let Some(bt) = slot {
+                let (bm, be, br, bf) = bt.production_bonus();
+                m += bm;
+                e += be;
+                r += br;
+                f += bf;
+            }
+        }
+        assert_eq!(m, 3.0);
+        assert_eq!(e, 0.0);
+        assert_eq!(r, 0.0);
+        assert_eq!(f, 10.0);
+    }
+
+    #[test]
+    fn food_consumption_by_population() {
+        // population=100, food=100, 1 hexadies: consumes 100*0.1*1 = 10 food
+        let population: f64 = 100.0;
+        let mut food: f64 = 100.0;
+        let delta: f64 = 1.0;
+        food -= population * 0.1 * delta;
+        assert!((food - 90.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn starvation_reduces_population() {
+        // population=100, food=0, 1 hexadies: loses 100*0.01*1 = 1 pop
+        let mut population: f64 = 100.0;
+        let food: f64 = 0.0;
+        let delta: f64 = 1.0;
+        if food <= 0.0 {
+            let loss = population * 0.01 * delta;
+            population = (population - loss).max(1.0);
+        }
+        assert!((population - 99.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn starvation_population_minimum() {
+        // population should not drop below 1.0
+        let mut population: f64 = 0.5;
+        let food: f64 = 0.0;
+        let delta: f64 = 1.0;
+        if food <= 0.0 {
+            let loss = population * 0.01 * delta;
+            population = (population - loss).max(1.0);
+        }
+        assert_eq!(population, 1.0);
     }
 }

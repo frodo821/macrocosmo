@@ -337,7 +337,7 @@ pub fn emit_research(
         if let Some(buildings) = buildings {
             for slot in &buildings.slots {
                 if let Some(bt) = slot {
-                    let (_, _, r) = bt.production_bonus();
+                    let (_, _, r, _) = bt.production_bonus();
                     bonus_r += r;
                 }
             }
