@@ -4,12 +4,12 @@ define_tech {
     id = 300,
     name = "Automated Mining",
     branch = "industrial",
-    cost = 100,
+    cost = { research = 100, minerals = 50 },
     prerequisites = {},
     description = "Robotic systems for autonomous resource extraction",
-    effects = {
-        { type = "modify_resource_production", resource = "minerals", value = 0.15 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("production.minerals", { multiplier = 0.15 })
+    end,
 }
 
 define_tech {
@@ -19,9 +19,9 @@ define_tech {
     cost = 200,
     prerequisites = { 300 },
     description = "Manufacturing facilities in orbit for zero-gravity construction",
-    effects = {
-        { type = "modify_construction_speed", value = 0.1 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("construction.speed", { multiplier = 0.1 })
+    end,
 }
 
 define_tech {
@@ -31,9 +31,9 @@ define_tech {
     cost = 300,
     prerequisites = { 300 },
     description = "Harness fusion reactions for abundant clean energy",
-    effects = {
-        { type = "modify_resource_production", resource = "energy", value = 0.2 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("production.energy", { multiplier = 0.2 })
+    end,
 }
 
 define_tech {
@@ -43,7 +43,7 @@ define_tech {
     cost = 500,
     prerequisites = { 301 },
     description = "Molecular-scale construction for unprecedented precision",
-    effects = {
-        { type = "modify_construction_speed", value = 0.2 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("construction.speed", { multiplier = 0.2 })
+    end,
 }

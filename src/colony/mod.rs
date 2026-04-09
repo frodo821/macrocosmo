@@ -715,13 +715,11 @@ pub fn sync_food_consumption(
 }
 
 /// #29: tick_production uses ProductionFocus weights and building bonuses
-/// #45: Multiplies output by GlobalParams production multipliers
 /// #44: Research is no longer accumulated in the stockpile; emitted via emit_research
 /// #73: Non-capital colonies have production reduced when capital authority is depleted
 pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    global_params: Res<crate::technology::GlobalParams>,
     mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&ProductionFocus>, Option<&ResourceCapacity>)>,
     stars: Query<&StarSystem>,
 ) {
@@ -760,13 +758,11 @@ pub fn tick_production(
 
         // Building bonuses are already included via modifiers on Production
         // (sync_building_modifiers runs before this system).
-        let m_global = Amt::milli((global_params.production_multiplier_minerals * 1000.0) as u64);
-        let e_global = Amt::milli((global_params.production_multiplier_energy * 1000.0) as u64);
         stockpile.minerals = stockpile.minerals.add(
-            prod.minerals_per_hexadies.final_value().mul_amt(mw).mul_amt(d_amt).mul_amt(m_global).mul_amt(authority_multiplier)
+            prod.minerals_per_hexadies.final_value().mul_amt(mw).mul_amt(d_amt).mul_amt(authority_multiplier)
         );
         stockpile.energy = stockpile.energy.add(
-            prod.energy_per_hexadies.final_value().mul_amt(ew).mul_amt(d_amt).mul_amt(e_global).mul_amt(authority_multiplier)
+            prod.energy_per_hexadies.final_value().mul_amt(ew).mul_amt(d_amt).mul_amt(authority_multiplier)
         );
         stockpile.food = stockpile.food.add(
             prod.food_per_hexadies.final_value().mul_amt(d_amt).mul_amt(authority_multiplier)
@@ -793,7 +789,7 @@ pub fn tick_production(
 pub fn tick_population_growth(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    global_params: Res<crate::technology::GlobalParams>,
+    empire_modifiers: Res<crate::technology::EmpireModifiers>,
     mut colonies: Query<(
         &mut Colony,
         &mut ResourceStockpile,
@@ -844,7 +840,7 @@ pub fn tick_population_growth(
             let k = k_habitat.min(k_food).max(1.0);
 
             // Logistic: P_new = P + r * hab_score * P * (1 - P/K) * delta
-            let effective_growth = colony.growth_rate + global_params.population_growth_bonus;
+            let effective_growth = colony.growth_rate + empire_modifiers.population_growth.final_value().to_f64();
             let dp = effective_growth * hab_score * colony.population * (1.0 - colony.population / k) * d as f64;
             colony.population = (colony.population + dp).max(1.0);
         }

@@ -7,9 +7,9 @@ define_tech {
     cost = 100,
     prerequisites = {},
     description = "Mass-driver based weapon systems",
-    effects = {
-        { type = "modify_weapon_damage", value = 0.1 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("combat.weapon_damage", { multiplier = 0.1 })
+    end,
 }
 
 define_tech {
@@ -19,9 +19,9 @@ define_tech {
     cost = 200,
     prerequisites = {},
     description = "Energy barriers to deflect incoming projectiles",
-    effects = {
-        { type = "modify_shield_strength", value = 0.15 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("combat.shield_strength", { multiplier = 0.15 })
+    end,
 }
 
 define_tech {
@@ -31,7 +31,7 @@ define_tech {
     cost = 250,
     prerequisites = { 400 },
     description = "Multi-layered hull plating for enhanced protection",
-    effects = {
-        { type = "modify_armor", value = 0.2 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("combat.armor", { multiplier = 0.2 })
+    end,
 }

@@ -7,9 +7,9 @@ define_tech {
     cost = 100,
     prerequisites = {},
     description = "Foundational study of alien communication patterns",
-    effects = {
-        { type = "modify_diplomacy_range", value = 0.1 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("diplomacy.range", { add = 0.1 })
+    end,
 }
 
 define_tech {
@@ -19,9 +19,9 @@ define_tech {
     cost = 150,
     prerequisites = {},
     description = "Improved governance structures for distant colonies",
-    effects = {
-        { type = "modify_population_growth", value = 0.1 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("population.growth", { add = 0.1 })
+    end,
 }
 
 define_tech {
@@ -31,9 +31,9 @@ define_tech {
     cost = 250,
     prerequisites = { 101 },
     description = "Trade frameworks spanning star systems",
-    effects = {
-        { type = "modify_resource_production", resource = "energy", value = 0.15 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("production.energy", { multiplier = 0.15 })
+    end,
 }
 
 define_tech {
@@ -43,7 +43,7 @@ define_tech {
     cost = 300,
     prerequisites = { 100 },
     description = "Formalised frameworks for cross-species cultural interaction",
-    effects = {
-        { type = "modify_diplomacy_range", value = 0.2 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("diplomacy.range", { add = 0.2 })
+    end,
 }

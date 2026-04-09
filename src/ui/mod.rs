@@ -17,6 +17,7 @@ use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, StationedAt};
 use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
 use crate::technology::GlobalParams;
+use crate::technology::EmpireModifiers;
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedShip, SelectedSystem};
 

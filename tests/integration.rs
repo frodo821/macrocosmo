@@ -2667,3 +2667,104 @@ fn test_periodic_event_fires() {
         assert_eq!(event_system.fired_log[1].fired_at, 10);
     }
 }
+
+// =========================================================================
+// Research control (#75)
+// =========================================================================
+
+#[test]
+fn test_start_research_sets_queue() {
+    use technology::{ResearchQueue, TechId};
+
+    let mut queue = ResearchQueue::default();
+    assert!(queue.current.is_none());
+    assert_eq!(queue.accumulated, 0.0);
+    assert!(!queue.blocked);
+
+    queue.start_research(TechId(100));
+    assert_eq!(queue.current, Some(TechId(100)));
+    assert_eq!(queue.accumulated, 0.0);
+    assert!(!queue.blocked);
+}
+
+#[test]
+fn test_block_research_stops_progress() {
+    use technology::{ResearchQueue, ResearchPool, TechId, TechTree, Technology, TechBranch, TechCost, LastResearchTick};
+    use macrocosmo::amount::Amt;
+
+    let mut app = test_app();
+
+    // Add technology resources and systems not included in basic test_app
+    app.insert_resource(ResearchQueue::default());
+    app.insert_resource(ResearchPool::default());
+    app.insert_resource(LastResearchTick(0));
+    app.add_systems(
+        Update,
+        (
+            technology::emit_research,
+            technology::receive_research,
+            technology::tick_research,
+            technology::flush_research,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+
+    // Insert tech tree with a simple tech
+    let tree = TechTree::from_vec(vec![Technology {
+        id: TechId(1),
+        name: "Test".into(),
+        branch: TechBranch::Physics,
+        cost: TechCost::research_only(Amt::units(100)),
+        prerequisites: vec![],
+        description: String::new(),
+    }]);
+    app.insert_resource(tree);
+
+    // Start research and block it
+    {
+        let mut queue = app.world_mut().resource_mut::<ResearchQueue>();
+        queue.start_research(TechId(1));
+        queue.block();
+    }
+
+    // Add points to pool
+    app.world_mut().resource_mut::<ResearchPool>().points = 50.0;
+
+    // Advance time
+    advance_time(&mut app, 1);
+
+    // Queue should have no progress because it's blocked
+    let queue = app.world().resource::<ResearchQueue>();
+    assert_eq!(queue.accumulated, 0.0);
+    assert!(queue.blocked);
+    assert_eq!(queue.current, Some(TechId(1)));
+}
+
+#[test]
+fn test_add_research_progress() {
+    use technology::{ResearchQueue, TechId};
+
+    let mut queue = ResearchQueue::default();
+    queue.start_research(TechId(1));
+    assert_eq!(queue.accumulated, 0.0);
+
+    queue.add_progress(25.0);
+    assert_eq!(queue.accumulated, 25.0);
+
+    queue.add_progress(10.0);
+    assert_eq!(queue.accumulated, 35.0);
+}
+
+#[test]
+fn test_cancel_research_clears_queue() {
+    use technology::{ResearchQueue, TechId};
+
+    let mut queue = ResearchQueue::default();
+    queue.start_research(TechId(1));
+    queue.add_progress(50.0);
+
+    queue.cancel_research();
+    assert!(queue.current.is_none());
+    assert_eq!(queue.accumulated, 0.0);
+}

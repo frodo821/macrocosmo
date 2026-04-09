@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::amount::Amt;
 use crate::colony::{Colony, Production, ProductionFocus};
 use crate::components::Position;
+use crate::modifier::ModifiedValue;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::time_system::GameClock;
@@ -22,6 +23,7 @@ impl Plugin for TechnologyPlugin {
         .insert_resource(LastResearchTick(0))
         .insert_resource(GlobalParams::default())
         .insert_resource(GameFlags::default())
+        .insert_resource(EmpireModifiers::default())
         .add_systems(
             Update,
             (emit_research, receive_research, tick_research, flush_research)
@@ -32,7 +34,8 @@ impl Plugin for TechnologyPlugin {
 }
 
 /// Global parameters modified by researched technologies.
-/// Systems read these to apply tech bonuses to gameplay mechanics.
+/// Contains ship/movement-related bonuses. Production and population bonuses
+/// have been moved to the modifier system (EmpireModifiers).
 #[derive(Resource, Debug, Clone)]
 pub struct GlobalParams {
     /// Added to base sublight speed
@@ -45,14 +48,6 @@ pub struct GlobalParams {
     pub survey_range_bonus: f64,
     /// Multiplied with build time (lower = faster)
     pub build_speed_multiplier: f64,
-    /// Multiplied with mineral production rate
-    pub production_multiplier_minerals: f64,
-    /// Multiplied with energy production rate
-    pub production_multiplier_energy: f64,
-    /// Multiplied with research production rate
-    pub production_multiplier_research: f64,
-    /// Added to base population growth rate
-    pub population_growth_bonus: f64,
 }
 
 impl Default for GlobalParams {
@@ -63,10 +58,21 @@ impl Default for GlobalParams {
             ftl_range_bonus: 0.0,
             survey_range_bonus: 0.0,
             build_speed_multiplier: 1.0,
-            production_multiplier_minerals: 1.0,
-            production_multiplier_energy: 1.0,
-            production_multiplier_research: 1.0,
-            population_growth_bonus: 0.0,
+        }
+    }
+}
+
+/// Empire-wide modifiers applied via the modifier system.
+/// Replaces the production/population fields that were in GlobalParams.
+#[derive(Resource)]
+pub struct EmpireModifiers {
+    pub population_growth: ModifiedValue,
+}
+
+impl Default for EmpireModifiers {
+    fn default() -> Self {
+        Self {
+            population_growth: ModifiedValue::new(Amt::ZERO),
         }
     }
 }
@@ -153,34 +159,6 @@ impl TechBranch {
     }
 }
 
-/// The type of resource a production modifier applies to.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ResourceType {
-    Energy,
-    Minerals,
-    Research,
-    Food,
-}
-
-/// An effect granted when a technology is researched.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TechEffect {
-    ModifySublightSpeed(f64),
-    ModifyFTLRange(f64),
-    ModifyFTLSpeed(f64),
-    ModifyResearchOutput(f64),
-    ModifyResourceProduction(ResourceType, f64),
-    UnlockShipType(String),
-    UnlockBuilding(String),
-    ModifyPopulationGrowth(f64),
-    ModifyDiplomacyRange(f64),
-    ModifySensorRange(f64),
-    ModifyWeaponDamage(f64),
-    ModifyShieldStrength(f64),
-    ModifyArmor(f64),
-    ModifyConstructionSpeed(f64),
-}
-
 /// Upfront resource cost to begin researching a technology.
 /// Research points (flow) are tracked separately via `cost_research`.
 #[derive(Debug, Clone, Default)]
@@ -213,7 +191,6 @@ pub struct Technology {
     pub branch: TechBranch,
     pub cost: TechCost,
     pub prerequisites: Vec<TechId>,
-    pub effects: Vec<TechEffect>,
 }
 
 /// The complete technology tree, indexed by TechId.
@@ -316,6 +293,32 @@ impl TechTree {
 pub struct ResearchQueue {
     pub current: Option<TechId>,
     pub accumulated: f64,
+    pub blocked: bool,
+}
+
+impl ResearchQueue {
+    pub fn start_research(&mut self, tech_id: TechId) {
+        self.current = Some(tech_id);
+        self.accumulated = 0.0;
+        self.blocked = false;
+    }
+
+    pub fn cancel_research(&mut self) {
+        self.current = None;
+        self.accumulated = 0.0;
+    }
+
+    pub fn block(&mut self) {
+        self.blocked = true;
+    }
+
+    pub fn unblock(&mut self) {
+        self.blocked = false;
+    }
+
+    pub fn add_progress(&mut self, amount: f64) {
+        self.accumulated += amount;
+    }
 }
 
 /// Global research points pool (accumulated from colonies).
@@ -341,7 +344,6 @@ pub fn emit_research(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastResearchTick>,
-    global_params: Res<GlobalParams>,
     colonies: Query<(&Colony, &Production, Option<&ProductionFocus>)>,
     player_q: Query<&StationedAt, With<Player>>,
     positions: Query<&Position>,
@@ -362,9 +364,8 @@ pub fn emit_research(
             None => Amt::units(1),
         };
         let d_amt = Amt::units(d as u64);
-        let r_global = Amt::milli((global_params.production_multiplier_research * 1000.0) as u64);
         // Building bonuses are already included via modifiers on Production
-        let amount = prod.research_per_hexadies.final_value().mul_amt(rw).mul_amt(d_amt).mul_amt(r_global).to_f64();
+        let amount = prod.research_per_hexadies.final_value().mul_amt(rw).mul_amt(d_amt).to_f64();
         if amount <= 0.0 {
             continue;
         }
@@ -405,45 +406,15 @@ pub fn receive_research(
     }
 }
 
-/// Apply a single technology effect to global parameters and flags.
-pub fn apply_tech_effect(effect: &TechEffect, params: &mut GlobalParams, flags: &mut GameFlags) {
-    match effect {
-        TechEffect::ModifySublightSpeed(v) => params.sublight_speed_bonus += v,
-        TechEffect::ModifyFTLSpeed(v) => params.ftl_speed_multiplier += v,
-        TechEffect::ModifyFTLRange(v) => params.ftl_range_bonus += v,
-        TechEffect::ModifySensorRange(v) => params.survey_range_bonus += v,
-        TechEffect::ModifyConstructionSpeed(v) => params.build_speed_multiplier *= 1.0 + v,
-        TechEffect::ModifyPopulationGrowth(v) => params.population_growth_bonus += v,
-        TechEffect::ModifyResearchOutput(v) => params.production_multiplier_research *= 1.0 + v,
-        TechEffect::ModifyResourceProduction(resource, multiplier) => match resource {
-            ResourceType::Minerals => params.production_multiplier_minerals *= 1.0 + multiplier,
-            ResourceType::Energy => params.production_multiplier_energy *= 1.0 + multiplier,
-            ResourceType::Research => params.production_multiplier_research *= 1.0 + multiplier,
-            ResourceType::Food => {} // not yet tracked in GlobalParams
-        },
-        TechEffect::UnlockBuilding(name) => {
-            flags.set(&format!("building_{}", name));
-        }
-        TechEffect::UnlockShipType(name) => {
-            flags.set(&format!("ship_type_{}", name));
-        }
-        // Effects that don't yet map to GlobalParams (combat, diplomacy)
-        TechEffect::ModifyDiplomacyRange(_)
-        | TechEffect::ModifyWeaponDamage(_)
-        | TechEffect::ModifyShieldStrength(_)
-        | TechEffect::ModifyArmor(_) => {}
-    }
-}
-
 /// Processes research each tick: transfers points from pool to current project.
+/// When research completes, the tech is marked as researched. The on_researched
+/// Lua callback will be invoked separately by the scripting system.
 pub fn tick_research(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastResearchTick>,
     mut tech_tree: ResMut<TechTree>,
     mut queue: ResMut<ResearchQueue>,
     mut pool: ResMut<ResearchPool>,
-    mut global_params: ResMut<GlobalParams>,
-    mut game_flags: ResMut<GameFlags>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -454,6 +425,11 @@ pub fn tick_research(
     let Some(current_tech_id) = queue.current else {
         return;
     };
+
+    // Skip progress if research is blocked
+    if queue.blocked {
+        return;
+    }
 
     let research_cost = {
         let Some(tech) = tech_tree.technologies.get(&current_tech_id) else {
@@ -475,20 +451,13 @@ pub fn tick_research(
 
     // Check completion
     if queue.accumulated >= research_cost {
-        // Collect effects before mutating tree
-        let (tech_name, effects) = {
-            let tech = tech_tree.technologies.get(&current_tech_id);
-            let name = tech.map(|t| t.name.clone()).unwrap_or_default();
-            let effects = tech.map(|t| t.effects.clone()).unwrap_or_default();
-            (name, effects)
-        };
+        let tech_name = tech_tree
+            .technologies
+            .get(&current_tech_id)
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
 
         tech_tree.complete_research(current_tech_id);
-
-        // Apply tech effects to global params and flags
-        for effect in &effects {
-            apply_tech_effect(effect, &mut global_params, &mut game_flags);
-        }
 
         queue.current = None;
         queue.accumulated = 0.0;
@@ -503,95 +472,9 @@ pub fn flush_research(mut pool: ResMut<ResearchPool>) {
 
 // ---- Lua parsing ----
 
-/// Parse a single effects table entry from Lua into a TechEffect.
-fn parse_effect(table: &mlua::Table) -> Result<TechEffect, mlua::Error> {
-    let effect_type: String = table.get("type")?;
-    match effect_type.as_str() {
-        "modify_sublight_speed" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifySublightSpeed(value))
-        }
-        "modify_ftl_range" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyFTLRange(value))
-        }
-        "modify_ftl_speed" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyFTLSpeed(value))
-        }
-        "modify_research_output" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyResearchOutput(value))
-        }
-        "modify_resource_production" => {
-            let resource: String = table.get("resource")?;
-            let value: f64 = table.get("value")?;
-            let resource_type = match resource.as_str() {
-                "energy" => ResourceType::Energy,
-                "minerals" => ResourceType::Minerals,
-                "research" => ResourceType::Research,
-                "food" => ResourceType::Food,
-                other => {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "Unknown resource type: {other}"
-                    )))
-                }
-            };
-            Ok(TechEffect::ModifyResourceProduction(resource_type, value))
-        }
-        "unlock_ship_type" => {
-            let value: String = table.get("value")?;
-            Ok(TechEffect::UnlockShipType(value))
-        }
-        "unlock_building" => {
-            let value: String = table.get("value")?;
-            Ok(TechEffect::UnlockBuilding(value))
-        }
-        "modify_population_growth" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyPopulationGrowth(value))
-        }
-        "modify_diplomacy_range" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyDiplomacyRange(value))
-        }
-        "modify_sensor_range" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifySensorRange(value))
-        }
-        "modify_weapon_damage" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyWeaponDamage(value))
-        }
-        "modify_shield_strength" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyShieldStrength(value))
-        }
-        "modify_armor" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyArmor(value))
-        }
-        "modify_construction_speed" => {
-            let value: f64 = table.get("value")?;
-            Ok(TechEffect::ModifyConstructionSpeed(value))
-        }
-        other => Err(mlua::Error::RuntimeError(format!(
-            "Unknown effect type: {other}"
-        ))),
-    }
-}
-
-/// Parse effects from a Lua table (sequence of effect tables).
-fn parse_effects(table: mlua::Table) -> Result<Vec<TechEffect>, mlua::Error> {
-    let mut effects = Vec::new();
-    for pair in table.pairs::<i64, mlua::Table>() {
-        let (_, effect_table) = pair?;
-        effects.push(parse_effect(&effect_table)?);
-    }
-    Ok(effects)
-}
-
 /// Read `_tech_definitions` from the Lua state and convert to `Vec<Technology>`.
+/// The `on_researched` callback stays in the Lua table and is not extracted here;
+/// it will be invoked by the scripting system when research completes.
 pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::Error> {
     let defs: mlua::Table = lua.globals().get("_tech_definitions")?;
     let mut techs = Vec::new();
@@ -640,9 +523,6 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
             .map(|r| r.map(TechId))
             .collect::<Result<_, _>>()?;
 
-        let effects_table: mlua::Table = table.get("effects")?;
-        let effects = parse_effects(effects_table)?;
-
         let description: String = table
             .get::<Option<String>>("description")?
             .unwrap_or_default();
@@ -653,7 +533,6 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
             branch,
             cost,
             prerequisites,
-            effects,
             description,
         });
     }
@@ -670,7 +549,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
-            effects: vec![TechEffect::ModifyDiplomacyRange(0.1)],
             description: "Foundational study of alien communication patterns".into(),
         },
         Technology {
@@ -679,7 +557,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(150)),
             prerequisites: vec![],
-            effects: vec![TechEffect::ModifyPopulationGrowth(0.1)],
             description: "Improved governance structures for distant colonies".into(),
         },
         Technology {
@@ -688,10 +565,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(250)),
             prerequisites: vec![TechId(101)],
-            effects: vec![TechEffect::ModifyResourceProduction(
-                ResourceType::Energy,
-                0.15,
-            )],
             description: "Trade frameworks spanning star systems".into(),
         },
         Technology {
@@ -700,7 +573,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(300)),
             prerequisites: vec![TechId(100)],
-            effects: vec![TechEffect::ModifyDiplomacyRange(0.2)],
             description: "Formalised frameworks for cross-species cultural interaction".into(),
         },
         // === Physics Branch ===
@@ -710,7 +582,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
-            effects: vec![TechEffect::ModifySensorRange(0.2)],
             description: "Next-generation sensors for deep space observation".into(),
         },
         Technology {
@@ -719,7 +590,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(200)),
             prerequisites: vec![],
-            effects: vec![TechEffect::ModifySublightSpeed(0.1)],
             description: "Enhances sublight drive efficiency".into(),
         },
         Technology {
@@ -728,7 +598,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(400)),
             prerequisites: vec![TechId(201)],
-            effects: vec![TechEffect::ModifyFTLRange(0.2)],
             description: "Theoretical foundations for faster-than-light travel".into(),
         },
         Technology {
@@ -737,7 +606,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(600)),
             prerequisites: vec![TechId(202)],
-            effects: vec![TechEffect::ModifyFTLSpeed(0.15)],
             description: "Stabilise warp fields for safer FTL travel".into(),
         },
         // === Industrial Branch ===
@@ -747,10 +615,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
-            effects: vec![TechEffect::ModifyResourceProduction(
-                ResourceType::Minerals,
-                0.15,
-            )],
             description: "Robotic systems for autonomous resource extraction".into(),
         },
         Technology {
@@ -759,7 +623,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(200)),
             prerequisites: vec![TechId(300)],
-            effects: vec![TechEffect::ModifyConstructionSpeed(0.1)],
             description: "Manufacturing facilities in orbit for zero-gravity construction".into(),
         },
         Technology {
@@ -768,10 +631,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(300)),
             prerequisites: vec![TechId(300)],
-            effects: vec![TechEffect::ModifyResourceProduction(
-                ResourceType::Energy,
-                0.2,
-            )],
             description: "Harness fusion reactions for abundant clean energy".into(),
         },
         Technology {
@@ -780,7 +639,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(500)),
             prerequisites: vec![TechId(301)],
-            effects: vec![TechEffect::ModifyConstructionSpeed(0.2)],
             description: "Molecular-scale construction for unprecedented precision".into(),
         },
         // === Military Branch ===
@@ -790,7 +648,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Military,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
-            effects: vec![TechEffect::ModifyWeaponDamage(0.1)],
             description: "Mass-driver based weapon systems".into(),
         },
         Technology {
@@ -799,7 +656,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Military,
             cost: TechCost::research_only(Amt::units(200)),
             prerequisites: vec![],
-            effects: vec![TechEffect::ModifyShieldStrength(0.15)],
             description: "Energy barriers to deflect incoming projectiles".into(),
         },
         Technology {
@@ -808,7 +664,6 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             branch: TechBranch::Military,
             cost: TechCost::research_only(Amt::units(250)),
             prerequisites: vec![TechId(400)],
-            effects: vec![TechEffect::ModifyArmor(0.2)],
             description: "Multi-layered hull plating for enhanced protection".into(),
         },
     ]
@@ -845,9 +700,9 @@ mod tests {
                 cost = 42.0,
                 prerequisites = {},
                 description = "A test technology",
-                effects = {
-                    { type = "modify_sublight_speed", value = 0.5 },
-                },
+                on_researched = function()
+                    -- TODO: push_empire_modifier
+                end,
             }
             define_tech {
                 id = 1000,
@@ -856,10 +711,9 @@ mod tests {
                 cost = 100.0,
                 prerequisites = { 999 },
                 description = "Depends on test tech",
-                effects = {
-                    { type = "modify_weapon_damage", value = 0.3 },
-                    { type = "modify_armor", value = 0.1 },
-                },
+                on_researched = function()
+                    -- TODO: push_empire_modifier
+                end,
             }
             "#,
         )
@@ -875,13 +729,10 @@ mod tests {
         assert_eq!(first.branch, TechBranch::Physics);
         assert_eq!(first.cost.research, Amt::units(42));
         assert!(first.prerequisites.is_empty());
-        assert_eq!(first.effects.len(), 1);
-        assert_eq!(first.effects[0], TechEffect::ModifySublightSpeed(0.5));
 
         let second = &techs[1];
         assert_eq!(second.id, TechId(1000));
         assert_eq!(second.prerequisites, vec![TechId(999)]);
-        assert_eq!(second.effects.len(), 2);
     }
 
     #[test]
@@ -898,7 +749,7 @@ mod tests {
                 cost = { research = 200.0, minerals = 50.0, energy = 30.0 },
                 prerequisites = {},
                 description = "A tech with table cost",
-                effects = {},
+                on_researched = function() end,
             }
             "#,
         )
@@ -911,37 +762,6 @@ mod tests {
         assert_eq!(tech.cost.research, Amt::units(200));
         assert_eq!(tech.cost.minerals, Amt::units(50));
         assert_eq!(tech.cost.energy, Amt::units(30));
-    }
-
-    #[test]
-    fn test_parse_resource_production_effect() {
-        let lua = mlua::Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
-
-        lua.load(
-            r#"
-            define_tech {
-                id = 500,
-                name = "Resource Tech",
-                branch = "industrial",
-                cost = 100.0,
-                prerequisites = {},
-                description = "Tests resource production parsing",
-                effects = {
-                    { type = "modify_resource_production", resource = "minerals", value = 0.15 },
-                },
-            }
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let techs = parse_tech_definitions(&lua).unwrap();
-        assert_eq!(techs.len(), 1);
-        assert_eq!(
-            techs[0].effects[0],
-            TechEffect::ModifyResourceProduction(ResourceType::Minerals, 0.15)
-        );
     }
 
     #[test]
@@ -977,7 +797,6 @@ mod tests {
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
-            effects: vec![],
             description: String::new(),
         }]);
         assert!(tree.can_research(TechId(1)));
@@ -992,7 +811,6 @@ mod tests {
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
-                effects: vec![],
                 description: String::new(),
             },
             Technology {
@@ -1001,7 +819,6 @@ mod tests {
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId(1)],
-                effects: vec![],
                 description: String::new(),
             },
         ]);
@@ -1017,7 +834,6 @@ mod tests {
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
-                effects: vec![],
                 description: String::new(),
             },
             Technology {
@@ -1026,7 +842,6 @@ mod tests {
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId(1)],
-                effects: vec![],
                 description: String::new(),
             },
         ]);
@@ -1042,7 +857,6 @@ mod tests {
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
-            effects: vec![],
             description: String::new(),
         }]);
         tree.complete_research(TechId(1));
@@ -1057,7 +871,6 @@ mod tests {
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
-            effects: vec![],
             description: String::new(),
         }]);
         assert!(!tree.is_researched(TechId(1)));
@@ -1074,7 +887,6 @@ mod tests {
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
-                effects: vec![],
                 description: String::new(),
             },
             Technology {
@@ -1083,7 +895,6 @@ mod tests {
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId(1)],
-                effects: vec![],
                 description: String::new(),
             },
             Technology {
@@ -1092,7 +903,6 @@ mod tests {
                 branch: TechBranch::Social,
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
-                effects: vec![],
                 description: String::new(),
             },
         ]);

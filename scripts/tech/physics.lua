@@ -7,9 +7,9 @@ define_tech {
     cost = 100,
     prerequisites = {},
     description = "Next-generation sensors for deep space observation",
-    effects = {
-        { type = "modify_sensor_range", value = 0.2 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("sensor.range", { add = 0.2 })
+    end,
 }
 
 define_tech {
@@ -19,9 +19,9 @@ define_tech {
     cost = 200,
     prerequisites = {},
     description = "Enhances sublight drive efficiency",
-    effects = {
-        { type = "modify_sublight_speed", value = 0.1 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("ship.sublight_speed", { add = 0.1 })
+    end,
 }
 
 define_tech {
@@ -31,9 +31,9 @@ define_tech {
     cost = 400,
     prerequisites = { 201 },
     description = "Theoretical foundations for faster-than-light travel",
-    effects = {
-        { type = "modify_ftl_range", value = 0.2 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("ship.ftl_range", { add = 0.2 })
+    end,
 }
 
 define_tech {
@@ -43,7 +43,7 @@ define_tech {
     cost = 600,
     prerequisites = { 202 },
     description = "Stabilise warp fields for safer FTL travel",
-    effects = {
-        { type = "modify_ftl_speed", value = 0.15 },
-    },
+    on_researched = function()
+        -- TODO: push_empire_modifier("ship.ftl_speed", { multiplier = 0.15 })
+    end,
 }

@@ -26,6 +26,7 @@ pub fn test_app() -> App {
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
     app.insert_resource(technology::GlobalParams::default());
+    app.insert_resource(technology::EmpireModifiers::default());
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -111,6 +112,7 @@ pub fn full_test_app() -> App {
     app.insert_resource(technology::LastResearchTick(0));
     app.insert_resource(technology::GlobalParams::default());
     app.insert_resource(technology::GameFlags::default());
+    app.insert_resource(technology::EmpireModifiers::default());
 
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(
