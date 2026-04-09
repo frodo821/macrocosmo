@@ -73,6 +73,7 @@ pub fn full_test_app() -> App {
     // --- Visualization resources ---
     app.insert_resource(visualization::SelectedSystem::default());
     app.insert_resource(visualization::SelectedShip::default());
+    app.insert_resource(visualization::ContextMenu::default());
     app.insert_resource(visualization::GalaxyView { scale: 5.0 });
 
     // --- Input resources (needed by visualization + time_system + player systems) ---
@@ -166,7 +167,6 @@ pub fn full_test_app() -> App {
         Update,
         (
             visualization::camera_controls,
-            visualization::handle_ship_commands,
         ),
     );
 

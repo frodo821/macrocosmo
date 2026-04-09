@@ -7,15 +7,16 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
-use crate::colony::{BuildQueue, Colony, Production, ResourceStockpile};
+use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production, ResourceStockpile};
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, StationedAt};
 use crate::ship::{Cargo, Ship, ShipState};
+use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, GameSpeed};
-use crate::visualization::{SelectedShip, SelectedSystem};
+use crate::visualization::{ContextMenu, SelectedShip, SelectedSystem};
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
@@ -42,6 +43,7 @@ pub fn draw_all_ui(
     mut research_open: ResMut<ResearchPanelOpen>,
     mut selected_system: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
+    mut context_menu: ResMut<ContextMenu>,
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<&StationedAt, With<Player>>,
     mut colonies: Query<(
@@ -50,15 +52,30 @@ pub fn draw_all_ui(
         Option<&Production>,
         Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
+        Option<&Buildings>,
+        Option<&mut BuildingQueue>,
     )>,
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     positions: Query<&Position>,
     knowledge: Res<KnowledgeStore>,
     command_log: Res<CommandLog>,
+    global_params: Res<GlobalParams>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
-    top_bar::draw_top_bar(ctx, &clock, &mut speed, &colonies, &mut research_open);
+    // Collect resource totals before passing colonies around
+    let (total_minerals, total_energy) = {
+        let mut m = 0.0_f64;
+        let mut e = 0.0_f64;
+        for (_, _, _, stockpile, _, _, _) in colonies.iter() {
+            if let Some(s) = stockpile {
+                m += s.minerals;
+                e += s.energy;
+            }
+        }
+        (m, e)
+    };
+    top_bar::draw_top_bar(ctx, &clock, &mut speed, total_minerals, total_energy, &mut research_open);
 
     outline::draw_outline(
         ctx,
@@ -84,13 +101,21 @@ pub fn draw_all_ui(
 
     side_panel::draw_ship_panel(
         ctx,
-        &selected_system,
+        &mut selected_ship,
+        &mut ships_query,
+        &clock,
+        &mut colonies,
+    );
+
+    side_panel::draw_context_menu(
+        ctx,
+        &mut context_menu,
         &mut selected_ship,
         &stars,
         &mut ships_query,
         &positions,
         &clock,
-        &mut colonies,
+        &global_params,
     );
 
     bottom_bar::draw_bottom_bar(ctx, &command_log, &clock);

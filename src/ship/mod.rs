@@ -20,10 +20,10 @@ pub struct CommandQueue {
 
 #[derive(Clone, Debug)]
 pub enum QueuedCommand {
-    MoveTo(Entity),
-    FTLTo(Entity),
-    Survey(Entity),
-    Colonize,
+    MoveTo { system: Entity, expected_position: [f64; 3] },
+    FTLTo { system: Entity, expected_position: [f64; 3] },
+    Survey { system: Entity, expected_position: [f64; 3] },
+    Colonize { expected_position: [f64; 3] },
 }
 
 /// Result of an exploration event rolled when a survey completes.
@@ -144,9 +144,9 @@ impl ShipType {
 
     pub fn default_ftl_range(&self) -> f64 {
         match self {
-            ShipType::Explorer => 0.0,
-            ShipType::ColonyShip => 30.0,
-            ShipType::Courier => 0.0,
+            ShipType::Explorer => 0.0,    // No FTL initially
+            ShipType::ColonyShip => 15.0, // Reduced from 30
+            ShipType::Courier => 0.0,     // No FTL initially
         }
     }
 
@@ -155,6 +155,15 @@ impl ShipType {
             ShipType::Explorer => 50.0,
             ShipType::ColonyShip => 100.0,
             ShipType::Courier => 20.0,
+        }
+    }
+
+    /// Energy maintenance cost per hexadies (#51)
+    pub fn maintenance_cost(&self) -> f64 {
+        match self {
+            ShipType::Explorer => 0.5,
+            ShipType::ColonyShip => 1.0,
+            ShipType::Courier => 0.3,
         }
     }
 }
@@ -345,8 +354,14 @@ pub fn start_ftl_travel(
     dest_pos: &Position,
     current_time: i64,
 ) -> Result<(), &'static str> {
-    start_ftl_travel_with_bonus(ship_state, ship, origin_system, destination_system, origin_pos, dest_pos, current_time, 0.0, 1.0)
+    start_ftl_travel_with_bonus(ship_state, ship, origin_system, destination_system, origin_pos, dest_pos, current_time, 0.0, 1.0, false)
 }
+
+/// Port FTL range bonus in light-years (#46)
+pub const PORT_FTL_RANGE_BONUS_LY: f64 = 10.0;
+
+/// Port FTL travel time reduction factor (#46): 20% reduction
+pub const PORT_TRAVEL_TIME_FACTOR: f64 = 0.8;
 
 pub fn start_ftl_travel_with_bonus(
     ship_state: &mut ShipState,
@@ -358,19 +373,24 @@ pub fn start_ftl_travel_with_bonus(
     current_time: i64,
     ftl_range_bonus: f64,
     ftl_speed_multiplier: f64,
+    origin_has_port: bool,
 ) -> Result<(), &'static str> {
     if ship.ftl_range <= 0.0 {
         return Err("Ship has no FTL capability");
     }
 
-    let effective_range = ship.ftl_range + ftl_range_bonus;
+    let port_range_bonus = if origin_has_port { PORT_FTL_RANGE_BONUS_LY } else { 0.0 };
+    let effective_range = ship.ftl_range + ftl_range_bonus + port_range_bonus;
     let dist = distance_ly(origin_pos, dest_pos);
     if dist > effective_range {
         return Err("Destination is beyond FTL range");
     }
 
     let effective_ftl_speed = INITIAL_FTL_SPEED_C * ftl_speed_multiplier;
-    let travel_hexadies = (dist * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+    let mut travel_hexadies = (dist * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+    if origin_has_port {
+        travel_hexadies = (travel_hexadies as f64 * PORT_TRAVEL_TIME_FACTOR).ceil() as i64;
+    }
 
     *ship_state = ShipState::InFTL {
         origin_system,
@@ -718,6 +738,7 @@ pub fn resource_production_rate(level: ResourceLevel) -> f64 {
 
 /// Processes pending ship commands that have arrived after communication delay.
 /// #45: Uses GlobalParams for tech bonuses
+/// #46: Checks for port facility at origin system
 pub fn process_pending_ship_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -725,6 +746,7 @@ pub fn process_pending_ship_commands(
     pending: Query<(Entity, &PendingShipCommand)>,
     mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
+    colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
 ) {
     for (cmd_entity, pending_cmd) in &pending {
         if clock.elapsed < pending_cmd.arrives_at {
@@ -759,6 +781,7 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
+                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system == docked_system && bldgs.has_port());
                 match start_ftl_travel_with_bonus(
                     &mut state,
                     &ship,
@@ -769,6 +792,7 @@ pub fn process_pending_ship_commands(
                     clock.elapsed,
                     global_params.ftl_range_bonus,
                     global_params.ftl_speed_multiplier,
+                    origin_has_port,
                 ) {
                     Ok(()) => {
                         info!(
@@ -831,16 +855,117 @@ pub fn process_pending_ship_commands(
     }
 }
 
+// --- Auto-route planning (#49) ---
+
+/// Plan an FTL route from a starting position to a destination system.
+///
+/// Uses a greedy algorithm: at each hop, pick the surveyed system within FTL range
+/// that is closest to the final destination. Returns `None` if no route can be found.
+///
+/// The returned `Vec<Entity>` lists every system to jump to, in order, ending with
+/// the destination itself.
+pub fn plan_ftl_route(
+    from_pos: [f64; 3],
+    to: Entity,
+    ftl_range: f64,
+    systems: &Query<(Entity, &StarSystem, &Position), Without<Ship>>,
+) -> Option<Vec<Entity>> {
+    let Ok((_, _, dest_pos)) = systems.get(to) else {
+        return None;
+    };
+    let dest_arr = dest_pos.as_array();
+
+    // Direct jump possible?
+    if distance_ly_arr(from_pos, dest_arr) <= ftl_range {
+        return Some(vec![to]);
+    }
+
+    let mut route: Vec<Entity> = Vec::new();
+    let mut current_pos = from_pos;
+    let mut visited: Vec<Entity> = Vec::new();
+    let max_hops = 50; // safety valve
+
+    for _ in 0..max_hops {
+        // Among surveyed systems within range, pick the one closest to destination
+        let mut best: Option<(Entity, [f64; 3], f64)> = None;
+
+        for (entity, star, pos) in systems.iter() {
+            if !star.surveyed {
+                continue;
+            }
+            if visited.contains(&entity) {
+                continue;
+            }
+            let pos_arr = pos.as_array();
+            let dist_from_current = distance_ly_arr(current_pos, pos_arr);
+            if dist_from_current > ftl_range || dist_from_current < 1e-9 {
+                continue;
+            }
+            let dist_to_dest = distance_ly_arr(pos_arr, dest_arr);
+            match &best {
+                Some((_, _, best_dist)) if dist_to_dest >= *best_dist => {}
+                _ => {
+                    best = Some((entity, pos_arr, dist_to_dest));
+                }
+            }
+        }
+
+        let Some((best_entity, best_pos, best_dist)) = best else {
+            return None; // stuck
+        };
+
+        route.push(best_entity);
+        visited.push(best_entity);
+        current_pos = best_pos;
+
+        // Can we reach the final destination from here?
+        if best_entity == to || best_dist <= ftl_range {
+            if best_entity != to {
+                route.push(to);
+            }
+            return Some(route);
+        }
+    }
+
+    None // exceeded max hops
+}
+
+/// Build a command queue of FTL jumps from a route returned by `plan_ftl_route`.
+///
+/// `from_pos` is the ship's current (or expected) position when the first jump begins.
+pub fn build_ftl_command_queue(
+    from_pos: [f64; 3],
+    route: &[Entity],
+    systems: &Query<(Entity, &StarSystem, &Position), Without<Ship>>,
+) -> Vec<QueuedCommand> {
+    let mut commands = Vec::new();
+    let mut current_pos = from_pos;
+
+    for &system in route {
+        commands.push(QueuedCommand::FTLTo {
+            system,
+            expected_position: current_pos,
+        });
+        if let Ok((_, _, pos)) = systems.get(system) {
+            current_pos = pos.as_array();
+        }
+    }
+
+    commands
+}
+
 // --- Command queue processing (#34) ---
 
 /// #45: Uses GlobalParams for tech bonuses
+/// #46: Checks for port facility at origin system
 pub fn process_command_queue(
     clock: Res<GameClock>,
     global_params: Res<crate::technology::GlobalParams>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position)>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
+    colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
 ) {
-    for (_entity, ship, mut state, mut queue, ship_pos) in ships.iter_mut() {
+    for (_entity, ship, mut state, mut queue, _ship_pos) in ships.iter_mut() {
         // Only process queue when ship is Docked (current command finished)
         let ShipState::Docked { system: docked_system } = *state else {
             continue;
@@ -853,14 +978,15 @@ pub fn process_command_queue(
         let next = queue.commands.remove(0);
 
         match next {
-            QueuedCommand::MoveTo(target) => {
+            QueuedCommand::MoveTo { system: target, expected_position } => {
                 let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
                     warn!("Queued MoveTo target no longer exists");
                     continue;
                 };
+                let origin = Position::from(expected_position);
                 start_sublight_travel_with_bonus(
                     &mut state,
-                    ship_pos,
+                    &origin,
                     ship,
                     *target_pos,
                     Some(target),
@@ -869,24 +995,24 @@ pub fn process_command_queue(
                 );
                 info!("Queue: Ship {} moving to {}", ship.name, target_star.name);
             }
-            QueuedCommand::FTLTo(target) => {
+            QueuedCommand::FTLTo { system: target, expected_position } => {
                 let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
                     warn!("Queued FTLTo target no longer exists");
                     continue;
                 };
-                let Ok((_dock_entity, _dock_star, dock_pos)) = systems.get(docked_system) else {
-                    continue;
-                };
+                let origin = Position::from(expected_position);
+                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system == docked_system && bldgs.has_port());
                 match start_ftl_travel_with_bonus(
                     &mut state,
                     ship,
                     docked_system,
                     target,
-                    dock_pos,
+                    &origin,
                     target_pos,
                     clock.elapsed,
                     global_params.ftl_range_bonus,
                     global_params.ftl_speed_multiplier,
+                    origin_has_port,
                 ) {
                     Ok(()) => {
                         info!(
@@ -899,16 +1025,17 @@ pub fn process_command_queue(
                     }
                 }
             }
-            QueuedCommand::Survey(target) => {
+            QueuedCommand::Survey { system: target, expected_position } => {
                 let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
                     warn!("Queued Survey target no longer exists");
                     continue;
                 };
+                let origin = Position::from(expected_position);
                 match start_survey_with_bonus(
                     &mut state,
                     ship,
                     target,
-                    ship_pos,
+                    &origin,
                     target_pos,
                     clock.elapsed,
                     global_params.survey_range_bonus,
@@ -924,7 +1051,7 @@ pub fn process_command_queue(
                     }
                 }
             }
-            QueuedCommand::Colonize => {
+            QueuedCommand::Colonize { .. } => {
                 // Colonization is handled automatically by process_settling
                 // when a colony ship docks. No explicit action needed here.
                 info!(
@@ -1134,5 +1261,68 @@ mod tests {
 
         assert!(nothing > resource, "Nothing should be more common than ResourceBonus");
         assert!(nothing > ruins, "Nothing should be more common than AncientRuins");
+    }
+
+    // --- #46: Port FTL tests ---
+
+    #[test]
+    fn start_ftl_with_port_reduces_travel_time() {
+        let mut world = World::new();
+        let origin = world.spawn_empty().id();
+        let dest = world.spawn_empty().id();
+        let ship = make_ship(ShipType::ColonyShip);
+        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
+
+        // Without port
+        let mut state_no_port = ShipState::Docked { system: origin };
+        let _ = start_ftl_travel_with_bonus(&mut state_no_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, false);
+        let time_no_port = match state_no_port {
+            ShipState::InFTL { arrival_at, .. } => arrival_at,
+            _ => panic!("Expected InFTL state"),
+        };
+
+        // With port
+        let mut state_port = ShipState::Docked { system: origin };
+        let _ = start_ftl_travel_with_bonus(&mut state_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, true);
+        let time_port = match state_port {
+            ShipState::InFTL { arrival_at, .. } => arrival_at,
+            _ => panic!("Expected InFTL state"),
+        };
+
+        // Port should reduce travel time by 20%
+        assert!(time_port < time_no_port, "Port should reduce FTL travel time");
+        let expected = (time_no_port as f64 * PORT_TRAVEL_TIME_FACTOR).ceil() as i64;
+        assert_eq!(time_port, expected);
+    }
+
+    #[test]
+    fn start_ftl_with_port_extends_range() {
+        let mut world = World::new();
+        let origin = world.spawn_empty().id();
+        let dest = world.spawn_empty().id();
+        let ship = make_ship(ShipType::ColonyShip); // ftl_range = 15.0
+
+        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest_pos = Position { x: 20.0, y: 0.0, z: 0.0 }; // 20 ly, beyond base 15 ly range
+
+        // Without port: should fail
+        let mut state = ShipState::Docked { system: origin };
+        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, false);
+        assert_eq!(result, Err("Destination is beyond FTL range"));
+
+        // With port: +10 ly range, so 25 ly total, should succeed
+        let mut state = ShipState::Docked { system: origin };
+        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, true);
+        assert!(result.is_ok(), "Port should extend FTL range by {} ly", PORT_FTL_RANGE_BONUS_LY);
+    }
+
+    // --- #51: Ship maintenance cost tests ---
+
+    #[test]
+    fn ship_maintenance_costs() {
+        assert_eq!(ShipType::Explorer.maintenance_cost(), 0.5);
+        assert_eq!(ShipType::ColonyShip.maintenance_cost(), 1.0);
+        assert_eq!(ShipType::Courier.maintenance_cost(), 0.3);
     }
 }

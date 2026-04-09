@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{StarSystem, SystemAttributes, Sovereignty};
-use crate::ship::{spawn_ship, Owner, ShipType};
+use crate::ship::{spawn_ship, Owner, Ship, ShipState, ShipType};
 use crate::time_system::GameClock;
 
 pub struct ColonyPlugin;
@@ -22,6 +22,7 @@ impl Plugin for ColonyPlugin {
                 Update,
                 (
                     tick_production,
+                    tick_maintenance,
                     tick_population_growth,
                     tick_build_queue,
                     tick_building_queue,
@@ -157,6 +158,7 @@ pub enum BuildingType {
     PowerPlant,   // +3 energy/sd
     ResearchLab,  // +2 research/sd
     Shipyard,     // 2x build speed
+    Port,         // Reduces FTL travel time from this system
 }
 
 impl BuildingType {
@@ -167,6 +169,7 @@ impl BuildingType {
             BuildingType::PowerPlant => (0.0, 3.0, 0.0),
             BuildingType::ResearchLab => (0.0, 0.0, 2.0),
             BuildingType::Shipyard => (0.0, 0.0, 0.0), // special effect
+            BuildingType::Port => (0.0, 0.0, 0.0),     // special effect
         }
     }
 
@@ -177,6 +180,7 @@ impl BuildingType {
             BuildingType::PowerPlant => (50.0, 150.0),
             BuildingType::ResearchLab => (100.0, 100.0),
             BuildingType::Shipyard => (300.0, 200.0),
+            BuildingType::Port => (400.0, 300.0),
         }
     }
 
@@ -187,6 +191,18 @@ impl BuildingType {
             BuildingType::PowerPlant => 10,
             BuildingType::ResearchLab => 15,
             BuildingType::Shipyard => 30,
+            BuildingType::Port => 40,
+        }
+    }
+
+    /// Energy maintenance cost per hexadies (#51)
+    pub fn maintenance_cost(&self) -> f64 {
+        match self {
+            BuildingType::Mine => 0.2,
+            BuildingType::PowerPlant => 0.0, // self-powered
+            BuildingType::ResearchLab => 0.5,
+            BuildingType::Shipyard => 1.0,
+            BuildingType::Port => 0.5,
         }
     }
 
@@ -197,6 +213,7 @@ impl BuildingType {
             BuildingType::PowerPlant => "PowerPlant",
             BuildingType::ResearchLab => "ResearchLab",
             BuildingType::Shipyard => "Shipyard",
+            BuildingType::Port => "Port",
         }
     }
 }
@@ -210,6 +227,11 @@ impl Buildings {
     /// #35: Check if any slot contains a Shipyard
     pub fn has_shipyard(&self) -> bool {
         self.slots.iter().any(|s| *s == Some(BuildingType::Shipyard))
+    }
+
+    /// #46: Check if any slot contains a Port
+    pub fn has_port(&self) -> bool {
+        self.slots.iter().any(|s| *s == Some(BuildingType::Port))
     }
 }
 
@@ -473,6 +495,52 @@ pub fn update_sovereignty(
     }
 }
 
+/// #51: Deduct energy maintenance costs for buildings and docked ships.
+/// Runs after production so that newly generated energy is available.
+pub fn tick_maintenance(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&Buildings>)>,
+    ships: Query<(&Ship, &ShipState)>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    let d = delta as f64;
+
+    for (colony, mut stockpile, buildings) in &mut colonies {
+        let mut total_maintenance = 0.0;
+
+        // Building maintenance
+        if let Some(buildings) = buildings {
+            for slot in &buildings.slots {
+                if let Some(building) = slot {
+                    total_maintenance += building.maintenance_cost();
+                }
+            }
+        }
+
+        // Ship maintenance (ships docked at this colony's system)
+        for (ship, state) in &ships {
+            if let ShipState::Docked { system } = state {
+                if *system == colony.system {
+                    total_maintenance += ship.ship_type.maintenance_cost();
+                }
+            }
+        }
+
+        // Deduct energy
+        stockpile.energy -= total_maintenance * d;
+
+        // If energy goes negative, cap at 0 (penalty system later)
+        if stockpile.energy < 0.0 {
+            stockpile.energy = 0.0;
+            // TODO: apply penalties (production halt, etc.)
+        }
+    }
+}
+
 pub fn advance_production_tick(clock: Res<GameClock>, mut last_tick: ResMut<LastProductionTick>) {
     last_tick.0 = clock.elapsed;
 }
@@ -656,5 +724,95 @@ mod tests {
         assert_eq!(BuildOrder::build_time_for("Colony Ship"), 120);
         assert_eq!(BuildOrder::build_time_for("Courier"), 30);
         assert_eq!(BuildOrder::build_time_for("Unknown"), 60);
+    }
+
+    // --- #46: Port tests ---
+
+    #[test]
+    fn has_port_true() {
+        let buildings = Buildings {
+            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Port), None],
+        };
+        assert!(buildings.has_port());
+    }
+
+    #[test]
+    fn has_port_false() {
+        let buildings = Buildings {
+            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard), None],
+        };
+        assert!(!buildings.has_port());
+    }
+
+    #[test]
+    fn port_build_cost() {
+        assert_eq!(BuildingType::Port.build_cost(), (400.0, 300.0));
+    }
+
+    #[test]
+    fn port_build_time() {
+        assert_eq!(BuildingType::Port.build_time(), 40);
+    }
+
+    #[test]
+    fn port_production_bonus() {
+        let (m, e, r) = BuildingType::Port.production_bonus();
+        assert_eq!(m, 0.0);
+        assert_eq!(e, 0.0);
+        assert_eq!(r, 0.0);
+    }
+
+    #[test]
+    fn port_name() {
+        assert_eq!(BuildingType::Port.name(), "Port");
+    }
+
+    // --- #51: Maintenance cost tests ---
+
+    #[test]
+    fn building_maintenance_costs() {
+        assert_eq!(BuildingType::Mine.maintenance_cost(), 0.2);
+        assert_eq!(BuildingType::PowerPlant.maintenance_cost(), 0.0);
+        assert_eq!(BuildingType::ResearchLab.maintenance_cost(), 0.5);
+        assert_eq!(BuildingType::Shipyard.maintenance_cost(), 1.0);
+        assert_eq!(BuildingType::Port.maintenance_cost(), 0.5);
+    }
+
+    #[test]
+    fn maintenance_deducts_from_stockpile() {
+        let buildings = Buildings {
+            slots: vec![
+                Some(BuildingType::Mine),       // 0.2
+                Some(BuildingType::Shipyard),    // 1.0
+                Some(BuildingType::PowerPlant),  // 0.0
+                None,
+            ],
+        };
+        let mut energy = 100.0;
+        let delta = 5.0;
+
+        let mut total_maintenance = 0.0;
+        for slot in &buildings.slots {
+            if let Some(bt) = slot {
+                total_maintenance += bt.maintenance_cost();
+            }
+        }
+        assert!((total_maintenance - 1.2).abs() < 1e-10);
+
+        energy -= total_maintenance * delta;
+        assert!((energy - 94.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn maintenance_negative_energy_capped_at_zero() {
+        let mut energy = 2.0;
+        let total_maintenance = 1.0;
+        let delta = 5.0;
+
+        energy -= total_maintenance * delta;
+        if energy < 0.0 {
+            energy = 0.0;
+        }
+        assert_eq!(energy, 0.0);
     }
 }

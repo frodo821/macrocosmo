@@ -1,7 +1,5 @@
-use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildQueue, Colony, Production, ResourceStockpile};
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::ResearchPanelOpen;
@@ -10,13 +8,8 @@ pub fn draw_top_bar(
     ctx: &egui::Context,
     clock: &GameClock,
     speed: &mut GameSpeed,
-    colonies: &Query<(
-        Entity,
-        &Colony,
-        Option<&Production>,
-        Option<&mut ResourceStockpile>,
-        Option<&mut BuildQueue>,
-    )>,
+    total_minerals: f64,
+    total_energy: f64,
     research_open: &mut ResearchPanelOpen,
 ) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
@@ -51,16 +44,6 @@ pub fn draw_top_bar(
             ui.label(&speed_text);
 
             ui.separator();
-
-            // Resource summary from colonies query
-            let mut total_minerals = 0.0_f64;
-            let mut total_energy = 0.0_f64;
-            for (_, _, _, stockpile, _) in colonies.iter() {
-                if let Some(stockpile) = stockpile {
-                    total_minerals += stockpile.minerals;
-                    total_energy += stockpile.energy;
-                }
-            }
 
             ui.label(format!("M:{:.0}  E:{:.0}", total_minerals, total_energy));
 

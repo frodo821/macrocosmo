@@ -1,13 +1,14 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, Colony, Production, ResourceStockpile};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::ship::{Cargo, Ship, ShipState, ShipType};
+use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedShip, SelectedSystem};
 
@@ -25,6 +26,8 @@ pub fn draw_system_panel(
         Option<&Production>,
         Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
+        Option<&Buildings>,
+        Option<&mut BuildingQueue>,
     )>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     positions: &Query<&Position>,
@@ -108,7 +111,7 @@ pub fn draw_system_panel(
 
                 // We need to iterate colonies to find the one matching this system.
                 // Because we have a mutable query, we iterate once.
-                for (_colony_entity, colony, production, stockpile, build_queue) in
+                for (_colony_entity, colony, production, stockpile, build_queue, buildings, building_queue) in
                     colonies.iter_mut()
                 {
                     if colony.system != sel_entity {
@@ -131,6 +134,32 @@ pub fn draw_system_panel(
                             "Stockpile: M {:.0} | E {:.0} | R {:.0}",
                             stockpile.minerals, stockpile.energy, stockpile.research,
                         ));
+                    }
+
+                    // #51: Maintenance cost summary
+                    {
+                        let mut building_maintenance = 0.0;
+                        if let Some(b) = buildings {
+                            for slot in &b.slots {
+                                if let Some(bt) = slot {
+                                    building_maintenance += bt.maintenance_cost();
+                                }
+                            }
+                        }
+                        let mut ship_maintenance = 0.0;
+                        for (_, ship, state, _) in ships_query.iter() {
+                            if let ShipState::Docked { system } = &*state {
+                                if *system == colony.system {
+                                    ship_maintenance += ship.ship_type.maintenance_cost();
+                                }
+                            }
+                        }
+                        let total_maintenance = building_maintenance + ship_maintenance;
+                        if total_maintenance > 0.0 {
+                            ui.label(format!("Maintenance: {:.1} E/hd", total_maintenance));
+                            ui.label(format!("  Ships: {:.1} E/hd", ship_maintenance));
+                            ui.label(format!("  Buildings: {:.1} E/hd", building_maintenance));
+                        }
                     }
 
                     // Build queue
@@ -200,6 +229,59 @@ pub fn draw_system_panel(
                         }
                     }
 
+                    // #46: Buildings display and construction UI
+                    if let Some(buildings) = buildings {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Buildings").strong());
+                        for (i, slot) in buildings.slots.iter().enumerate() {
+                            match slot {
+                                Some(bt) => {
+                                    ui.label(format!("  [{}] {}", i, bt.name()));
+                                }
+                                None => {
+                                    ui.label(format!("  [{}] (empty)", i));
+                                }
+                            }
+                        }
+
+                        // Find first empty slot for building construction
+                        let empty_slot = buildings.slots.iter().position(|s| s.is_none());
+
+                        if let Some(slot_idx) = empty_slot {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Build Building").strong());
+                            let building_types = [
+                                BuildingType::Mine,
+                                BuildingType::PowerPlant,
+                                BuildingType::ResearchLab,
+                                BuildingType::Shipyard,
+                                BuildingType::Port,
+                            ];
+                            let mut build_building_request: Option<BuildingType> = None;
+                            for bt in &building_types {
+                                let (m_cost, e_cost) = bt.build_cost();
+                                let time = bt.build_time();
+                                let tooltip = format!("M:{:.0} E:{:.0} | {} hexadies", m_cost, e_cost, time);
+                                if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
+                                    build_building_request = Some(*bt);
+                                }
+                            }
+                            if let Some(bt) = build_building_request {
+                                if let Some(mut bq) = building_queue {
+                                    let (m_cost, e_cost) = bt.build_cost();
+                                    bq.queue.push(BuildingOrder {
+                                        building_type: bt,
+                                        target_slot: slot_idx,
+                                        minerals_remaining: m_cost,
+                                        energy_remaining: e_cost,
+                                        build_time_remaining: bt.build_time(),
+                                    });
+                                    info!("Building order added: {:?} in slot {}", bt, slot_idx);
+                                }
+                            }
+                        }
+                    }
+
                     break;
                 }
             }
@@ -226,21 +308,21 @@ pub fn draw_system_panel(
 }
 
 /// Draws the floating ship details panel when a ship is selected.
+/// #53: Simplified - command buttons moved to context menu
 #[allow(clippy::too_many_arguments)]
 pub fn draw_ship_panel(
     ctx: &egui::Context,
-    selected_system: &SelectedSystem,
     selected_ship: &mut SelectedShip,
-    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
-    positions: &Query<&Position>,
-    clock: &GameClock,
+    _clock: &GameClock,
     colonies: &mut Query<(
         Entity,
         &Colony,
         Option<&Production>,
         Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
+        Option<&Buildings>,
+        Option<&mut BuildingQueue>,
     )>,
 ) {
     // Collect ship data into locals first, then draw UI, then apply mutations
@@ -289,9 +371,6 @@ pub fn draw_ship_panel(
         return;
     };
 
-    let sel_entity = selected_system.0;
-
-    let mut command: Option<ShipState> = None;
     let mut deselect_ship = false;
 
     // Cargo load/unload actions to apply after UI drawing
@@ -305,7 +384,7 @@ pub fn draw_ship_panel(
     let mut cargo_action = CargoAction::default();
     // Entity of the colony at the docked system (for cargo transfers)
     let colony_entity_at_dock: Option<Entity> = docked_system.and_then(|dock_sys| {
-        colonies.iter().find_map(|(e, col, _, _, _)| {
+        colonies.iter().find_map(|(e, col, _, _, _, _, _)| {
             if col.system == dock_sys { Some(e) } else { None }
         })
     });
@@ -325,107 +404,22 @@ pub fn draw_ship_panel(
             ui.label(format!("Status: {}", status));
             if ftl_range > 0.0 {
                 ui.label(format!("FTL range: {:.1} ly", ftl_range));
+            } else {
+                ui.label("No FTL capability");
             }
             ui.label(format!(
                 "Sub-light speed: {:.0}% c",
                 sublight_speed * 100.0
             ));
 
-            if let Some(docked_system) = docked_system {
-                ui.separator();
-                ui.label(egui::RichText::new("Commands").strong());
+            ui.label(
+                egui::RichText::new("Click a star to issue commands")
+                    .weak()
+                    .italics(),
+            );
 
-                let target_info = sel_entity.and_then(|sel| {
-                    if sel != docked_system {
-                        if let Ok((_, target_star, target_pos, _)) = stars.get(sel) {
-                            if let Ok(dock_pos) = positions.get(docked_system) {
-                                let dist = physics::distance_ly(dock_pos, target_pos);
-                                ui.label(format!(
-                                    "Target: {} ({:.1} ly)",
-                                    target_star.name, dist
-                                ));
-                                return Some((
-                                    sel,
-                                    dist,
-                                    target_star.name.clone(),
-                                    target_star.surveyed,
-                                    dock_pos.as_array(),
-                                    target_pos.as_array(),
-                                ));
-                            }
-                        }
-                    }
-                    None
-                });
-
-                // FTL button
-                if ftl_range > 0.0 {
-                    let can_ftl = target_info
-                        .as_ref()
-                        .is_some_and(|(_, dist, _, surveyed, _, _)| {
-                            *dist <= ftl_range && *surveyed
-                        });
-                    if ui
-                        .add_enabled(can_ftl, egui::Button::new("FTL Jump"))
-                        .on_disabled_hover_text("Select a surveyed system within FTL range")
-                        .clicked()
-                    {
-                        if let Some((target, dist, _, _, _, _)) = &target_info {
-                            let travel_time =
-                                physics::sublight_travel_hexadies(*dist, 10.0).max(1);
-                            command = Some(ShipState::InFTL {
-                                origin_system: docked_system,
-                                destination_system: *target,
-                                departed_at: clock.elapsed,
-                                arrival_at: clock.elapsed + travel_time,
-                            });
-                        }
-                    }
-                }
-
-                // Sub-light button
-                let can_move = target_info.is_some();
-                if ui
-                    .add_enabled(can_move, egui::Button::new("Move (Sub-light)"))
-                    .on_disabled_hover_text("Select a different system as target")
-                    .clicked()
-                {
-                    if let Some((target, dist, _, _, origin, dest)) = &target_info {
-                        let travel_time =
-                            physics::sublight_travel_hexadies(*dist, sublight_speed);
-                        command = Some(ShipState::SubLight {
-                            origin: *origin,
-                            destination: *dest,
-                            target_system: Some(*target),
-                            departed_at: clock.elapsed,
-                            arrival_at: clock.elapsed + travel_time,
-                        });
-                    }
-                }
-
-                // Survey button
-                if ship_type == ShipType::Explorer {
-                    let can_survey = target_info
-                        .as_ref()
-                        .is_some_and(|(_, _, _, surveyed, _, _)| !surveyed);
-                    if ui
-                        .add_enabled(can_survey, egui::Button::new("Survey"))
-                        .on_disabled_hover_text("Select an unsurveyed system as target")
-                        .clicked()
-                    {
-                        if let Some((target, dist, _, _, _, _)) = &target_info {
-                            let survey_time =
-                                physics::light_delay_hexadies(*dist) * 2 + 5;
-                            command = Some(ShipState::Surveying {
-                                target_system: *target,
-                                started_at: clock.elapsed,
-                                completes_at: clock.elapsed + survey_time,
-                            });
-                        }
-                    }
-                }
-
-                // Cargo section for Courier ships docked at a colony
+            // Cargo section for Courier ships docked at a colony
+            if let Some(_docked_system) = docked_system {
                 if ship_type == ShipType::Courier {
                     if let Some((cargo_m, cargo_e)) = cargo_data {
                         ui.separator();
@@ -453,24 +447,16 @@ pub fn draw_ship_panel(
                         }
                     }
                 }
+            }
 
-                if ui.button("Deselect ship").clicked() {
-                    deselect_ship = true;
-                }
+            if ui.button("Deselect ship").clicked() {
+                deselect_ship = true;
             }
         });
 
     // Apply deselect
     if deselect_ship {
         selected_ship.0 = None;
-    }
-
-    // Apply command mutation AFTER UI drawing (no borrow conflict)
-    if let Some(new_state) = command {
-        if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
-            *state = new_state;
-            selected_ship.0 = None;
-        }
     }
 
     // Apply cargo load/unload actions
@@ -481,7 +467,7 @@ pub fn draw_ship_panel(
     if has_cargo_action {
         if let Some(colony_e) = colony_entity_at_dock {
             // Get mutable access to the colony stockpile
-            if let Ok((_, _, _, Some(mut stockpile), _)) = colonies.get_mut(colony_e) {
+            if let Ok((_, _, _, Some(mut stockpile), _, _, _)) = colonies.get_mut(colony_e) {
                 if let Ok((_, _, _, Some(mut cargo))) = ships_query.get_mut(ship_entity) {
                     // Load minerals
                     if cargo_action.load_minerals > 0.0 {
@@ -509,6 +495,223 @@ pub fn draw_ship_panel(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Draws the RTS-style context menu when a ship is selected and a star is clicked.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_context_menu(
+    ctx: &egui::Context,
+    context_menu: &mut crate::visualization::ContextMenu,
+    selected_ship: &mut SelectedShip,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    positions: &Query<&Position>,
+    clock: &GameClock,
+    global_params: &GlobalParams,
+) {
+    if !context_menu.open {
+        return;
+    }
+
+    let Some(ship_entity) = selected_ship.0 else {
+        context_menu.open = false;
+        return;
+    };
+
+    let Some(target_entity) = context_menu.target_system else {
+        context_menu.open = false;
+        return;
+    };
+
+    // Collect ship data
+    let ship_data = {
+        let Ok((_, ship, state, _)) = ships_query.get(ship_entity) else {
+            context_menu.open = false;
+            return;
+        };
+        let docked_system = if let ShipState::Docked { system } = &*state {
+            Some(*system)
+        } else {
+            None
+        };
+        (
+            ship.name.clone(),
+            ship.ship_type,
+            ship.ftl_range,
+            ship.sublight_speed,
+            docked_system,
+        )
+    };
+
+    let (ship_name, ship_type, ftl_range, sublight_speed, docked_system) = ship_data;
+
+    let Some(docked_system) = docked_system else {
+        // Ship is not docked; close menu
+        context_menu.open = false;
+        return;
+    };
+
+    if target_entity == docked_system {
+        // Clicking the same system the ship is docked at; close menu
+        context_menu.open = false;
+        return;
+    }
+
+    // Collect target star data
+    let Ok((_, target_star, target_pos, target_attrs)) = stars.get(target_entity) else {
+        context_menu.open = false;
+        return;
+    };
+    let Ok(dock_pos) = positions.get(docked_system) else {
+        context_menu.open = false;
+        return;
+    };
+
+    let dist = physics::distance_ly(dock_pos, target_pos);
+    let target_name = target_star.name.clone();
+    let target_surveyed = target_star.surveyed;
+    let target_colonized = target_star.colonized;
+    let target_habitable = target_attrs
+        .map(|a| {
+            a.habitability != crate::galaxy::Habitability::Barren
+                && a.habitability != crate::galaxy::Habitability::GasGiant
+        })
+        .unwrap_or(false);
+
+    // #48: Use effective FTL range including tech bonuses
+    let effective_ftl_range = ftl_range + global_params.ftl_range_bonus;
+    let can_ftl = effective_ftl_range > 0.0 && target_surveyed && dist <= effective_ftl_range;
+    let can_survey = ship_type == ShipType::Explorer && !target_surveyed;
+    let can_colonize = ship_type == ShipType::ColonyShip && target_habitable && !target_colonized && target_surveyed;
+
+    let dock_pos_arr = dock_pos.as_array();
+    let target_pos_arr = target_pos.as_array();
+
+    let mut command: Option<ShipState> = None;
+    let mut close_menu = false;
+
+    // Shift+click: execute default action immediately without showing menu
+    if context_menu.execute_default {
+        if can_ftl {
+            let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
+            let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+            let travel_time = travel_time.max(1);
+            command = Some(ShipState::InFTL {
+                origin_system: docked_system,
+                destination_system: target_entity,
+                departed_at: clock.elapsed,
+                arrival_at: clock.elapsed + travel_time,
+            });
+        } else {
+            let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
+            command = Some(ShipState::SubLight {
+                origin: dock_pos_arr,
+                destination: target_pos_arr,
+                target_system: Some(target_entity),
+                departed_at: clock.elapsed,
+                arrival_at: clock.elapsed + travel_time,
+            });
+        }
+        context_menu.open = false;
+        context_menu.target_system = None;
+        context_menu.execute_default = false;
+
+        if let Some(new_state) = command {
+            if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
+                *state = new_state;
+                selected_ship.0 = None;
+            }
+        }
+        return;
+    }
+
+    let menu_pos = egui::pos2(context_menu.position[0], context_menu.position[1]);
+
+    egui::Window::new("Ship Commands")
+        .fixed_pos(menu_pos)
+        .resizable(false)
+        .collapsible(false)
+        .title_bar(false)
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(format!("{} -> {}", ship_name, target_name))
+                    .strong(),
+            );
+            ui.label(format!("Distance: {:.1} ly", dist));
+            ui.separator();
+
+            // Move (Sub-light) -- always available
+            if ui.button("Move (Sub-light)").clicked() {
+                let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
+                command = Some(ShipState::SubLight {
+                    origin: dock_pos_arr,
+                    destination: target_pos_arr,
+                    target_system: Some(target_entity),
+                    departed_at: clock.elapsed,
+                    arrival_at: clock.elapsed + travel_time,
+                });
+                close_menu = true;
+            }
+
+            // FTL Jump -- if ship has FTL + target surveyed + in range
+            if can_ftl {
+                if ui.button("FTL Jump").clicked() {
+                    let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
+                    let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+                    let travel_time = travel_time.max(1);
+                    command = Some(ShipState::InFTL {
+                        origin_system: docked_system,
+                        destination_system: target_entity,
+                        departed_at: clock.elapsed,
+                        arrival_at: clock.elapsed + travel_time,
+                    });
+                    close_menu = true;
+                }
+            }
+
+            // Survey -- if Explorer + target unsurveyed
+            if can_survey {
+                if ui.button("Survey").clicked() {
+                    let survey_time = physics::light_delay_hexadies(dist) * 2 + 5;
+                    command = Some(ShipState::Surveying {
+                        target_system: target_entity,
+                        started_at: clock.elapsed,
+                        completes_at: clock.elapsed + survey_time,
+                    });
+                    close_menu = true;
+                }
+            }
+
+            // Colonize -- if ColonyShip + target habitable + uncolonized
+            if can_colonize {
+                if ui.button("Colonize").clicked() {
+                    command = Some(ShipState::Settling {
+                        system: target_entity,
+                        started_at: clock.elapsed,
+                        completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
+                    });
+                    close_menu = true;
+                }
+            }
+
+            ui.separator();
+            if ui.button("Cancel").clicked() {
+                close_menu = true;
+            }
+        });
+
+    if close_menu {
+        context_menu.open = false;
+        context_menu.target_system = None;
+    }
+
+    // Apply command
+    if let Some(new_state) = command {
+        if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
+            *state = new_state;
+            selected_ship.0 = None;
         }
     }
 }
