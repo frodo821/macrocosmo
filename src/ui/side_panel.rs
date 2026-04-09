@@ -573,11 +573,7 @@ pub fn draw_context_menu(
         return;
     };
 
-    if is_docked && target_entity == origin_system {
-        // Clicking the same system the ship is docked at; close menu
-        context_menu.open = false;
-        return;
-    }
+    let same_system = is_docked && target_entity == origin_system;
 
     // Collect target star data
     let Ok((_, target_star, target_pos, target_attrs)) = stars.get(target_entity) else {
@@ -602,10 +598,11 @@ pub fn draw_context_menu(
 
     // #48: Use effective FTL range including tech bonuses
     let effective_ftl_range = ftl_range + global_params.ftl_range_bonus;
-    let can_ftl = effective_ftl_range > 0.0 && target_surveyed && dist <= effective_ftl_range;
-    // Survey and Colonize only available for docked ships (they require being at a system)
+    let can_ftl = !same_system && effective_ftl_range > 0.0 && target_surveyed && dist <= effective_ftl_range;
+    let can_move = !same_system;
+    // Survey: can survey nearby unsurveyed system (including from docked at same system if unsurveyed)
     let can_survey = is_docked && ship_type == ShipType::Explorer && !target_surveyed;
-    let can_colonize = is_docked && ship_type == ShipType::ColonyShip && target_habitable && !target_colonized && target_surveyed;
+    let can_colonize = is_docked && ship_type == ShipType::ColonyShip && target_habitable && !target_colonized && target_surveyed && same_system;
 
     let origin_pos_arr = origin_pos.as_array();
     let target_pos_arr = target_pos.as_array();
@@ -614,9 +611,39 @@ pub fn draw_context_menu(
     let mut queued_command: Option<QueuedCommand> = None;
     let mut close_menu = false;
 
+    // No actions available at all? Close and bail
+    if !can_move && !can_ftl && !can_survey && !can_colonize {
+        context_menu.open = false;
+        return;
+    }
+
     // Shift+click: execute default action immediately without showing menu
     if context_menu.execute_default {
-        if is_docked {
+        if is_docked && same_system {
+            // Same system: default is survey or colonize
+            if can_survey {
+                command = Some(ShipState::Surveying {
+                    target_system: target_entity,
+                    started_at: clock.elapsed,
+                    completes_at: clock.elapsed + crate::ship::SURVEY_DURATION_HEXADIES,
+                });
+            } else if can_colonize {
+                command = Some(ShipState::Settling {
+                    system: target_entity,
+                    started_at: clock.elapsed,
+                    completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
+                });
+            }
+            context_menu.open = false;
+            context_menu.target_system = None;
+            context_menu.execute_default = false;
+            if let Some(new_state) = command {
+                if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
+                    *state = new_state;
+                }
+            }
+            return;
+        } else if is_docked {
             if can_ftl {
                 let effective_ftl_speed = crate::ship::INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
                 let travel_time = (dist * crate::time_system::HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
@@ -693,8 +720,8 @@ pub fn draw_context_menu(
             }
             ui.separator();
 
-            // Move (Sub-light) -- always available
-            if ui.button(format!("{}Move (Sub-light)", queue_prefix)).clicked() {
+            // Move (Sub-light) -- available when targeting a different system
+            if can_move && ui.button(format!("{}Move (Sub-light)", queue_prefix)).clicked() {
                 if is_docked {
                     let travel_time = physics::sublight_travel_hexadies(dist, sublight_speed);
                     command = Some(ShipState::SubLight {
