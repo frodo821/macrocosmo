@@ -307,14 +307,148 @@ pub fn draw_system_panel(
         });
 }
 
+/// Resolve an Entity to a star system name, falling back to "Unknown".
+fn system_name(
+    entity: Entity,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+) -> String {
+    stars
+        .get(entity)
+        .map(|(_, s, _, _)| s.name.clone())
+        .unwrap_or_else(|_| "Unknown".to_string())
+}
+
+/// Collected status information for the ship panel UI.
+struct ShipStatusInfo {
+    label: String,
+    /// Progress fraction 0.0..=1.0, if applicable.
+    progress: Option<(i64, i64, f32)>, // (elapsed, total, fraction)
+}
+
+/// Build a detailed status string (and optional progress) from a ShipState.
+fn build_status_info(
+    state: &ShipState,
+    clock: &GameClock,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+) -> ShipStatusInfo {
+    match state {
+        ShipState::Docked { system } => ShipStatusInfo {
+            label: format!("Docked at {}", system_name(*system, stars)),
+            progress: None,
+        },
+        ShipState::SubLight {
+            target_system,
+            departed_at,
+            arrival_at,
+            ..
+        } => {
+            let total = (arrival_at - departed_at).max(1);
+            let elapsed = (clock.elapsed - departed_at).clamp(0, total);
+            let pct = elapsed as f32 / total as f32;
+            let dest_name = target_system
+                .map(|e| system_name(e, stars))
+                .unwrap_or_else(|| "deep space".to_string());
+            ShipStatusInfo {
+                label: format!(
+                    "Moving to {} ({}/{} hd, {:.0}%)",
+                    dest_name,
+                    elapsed,
+                    total,
+                    pct * 100.0
+                ),
+                progress: Some((elapsed, total, pct)),
+            }
+        }
+        ShipState::InFTL {
+            destination_system,
+            departed_at,
+            arrival_at,
+            ..
+        } => {
+            let total = (arrival_at - departed_at).max(1);
+            let elapsed = (clock.elapsed - departed_at).clamp(0, total);
+            let pct = elapsed as f32 / total as f32;
+            ShipStatusInfo {
+                label: format!(
+                    "FTL to {} ({}/{} hd, {:.0}%)",
+                    system_name(*destination_system, stars),
+                    elapsed,
+                    total,
+                    pct * 100.0
+                ),
+                progress: Some((elapsed, total, pct)),
+            }
+        }
+        ShipState::Surveying {
+            target_system,
+            started_at,
+            completes_at,
+        } => {
+            let total = (completes_at - started_at).max(1);
+            let elapsed = (clock.elapsed - started_at).clamp(0, total);
+            let pct = elapsed as f32 / total as f32;
+            ShipStatusInfo {
+                label: format!(
+                    "Surveying {} ({}/{} hd, {:.0}%)",
+                    system_name(*target_system, stars),
+                    elapsed,
+                    total,
+                    pct * 100.0
+                ),
+                progress: Some((elapsed, total, pct)),
+            }
+        }
+        ShipState::Settling {
+            system,
+            started_at,
+            completes_at,
+        } => {
+            let total = (completes_at - started_at).max(1);
+            let elapsed = (clock.elapsed - started_at).clamp(0, total);
+            let pct = elapsed as f32 / total as f32;
+            ShipStatusInfo {
+                label: format!(
+                    "Settling {} ({}/{} hd, {:.0}%)",
+                    system_name(*system, stars),
+                    elapsed,
+                    total,
+                    pct * 100.0
+                ),
+                progress: Some((elapsed, total, pct)),
+            }
+        }
+    }
+}
+
+/// Format a QueuedCommand as a human-readable string.
+fn format_queued_command(
+    cmd: &QueuedCommand,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+) -> String {
+    match cmd {
+        QueuedCommand::MoveTo { system, .. } => {
+            format!("Move -> {}", system_name(*system, stars))
+        }
+        QueuedCommand::FTLTo { system, .. } => {
+            format!("FTL -> {}", system_name(*system, stars))
+        }
+        QueuedCommand::Survey { system, .. } => {
+            format!("Survey {}", system_name(*system, stars))
+        }
+        QueuedCommand::Colonize { .. } => "Colonize".to_string(),
+    }
+}
+
 /// Draws the floating ship details panel when a ship is selected.
 /// #53: Simplified - command buttons moved to context menu
+/// #62: Detailed status display with progress bars and command queue
+/// #64: Shows home port info and "Set Home Port" button
 #[allow(clippy::too_many_arguments)]
 pub fn draw_ship_panel(
     ctx: &egui::Context,
     selected_ship: &mut SelectedShip,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
-    _clock: &GameClock,
+    clock: &GameClock,
     colonies: &mut Query<(
         Entity,
         &Colony,
@@ -324,6 +458,8 @@ pub fn draw_ship_panel(
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
     )>,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+    command_queues: &Query<&mut CommandQueue>,
 ) {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -334,6 +470,29 @@ pub fn draw_ship_panel(
             None
         };
         let cargo_data = cargo.map(|c| (c.minerals, c.energy));
+        let status_info = build_status_info(&state, clock, stars);
+        let queued_cmds: Vec<String> = command_queues
+            .get(ship_entity)
+            .ok()
+            .map(|q| {
+                q.commands
+                    .iter()
+                    .map(|cmd| format_queued_command(cmd, stars))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let home_port = ship.home_port;
+        let home_port_name = stars
+            .get(home_port)
+            .map(|(_, s, _, _)| s.name.clone())
+            .unwrap_or_else(|_| "Unknown".to_string());
+        let maintenance_cost = ship.ship_type.maintenance_cost();
+        // Check if docked at a system that has a colony (for "Set Home Port" button)
+        let docked_at_colony = docked_system.and_then(|dock_sys| {
+            colonies.iter().find_map(|(_, col, _, _, _, _, _)| {
+                if col.system == dock_sys { Some(dock_sys) } else { None }
+            })
+        });
         Some((
             ship_entity,
             ship.name.clone(),
@@ -342,16 +501,13 @@ pub fn draw_ship_panel(
             ship.max_hp,
             ship.ftl_range,
             ship.sublight_speed,
-            match &*state {
-                ShipState::Docked { .. } => "Docked",
-                ShipState::SubLight { .. } => "Sub-light travel",
-                ShipState::InFTL { .. } => "FTL travel",
-                ShipState::Surveying { .. } => "Surveying",
-                ShipState::Settling { .. } => "Settling",
-            }
-            .to_string(),
+            status_info,
             docked_system,
             cargo_data,
+            queued_cmds,
+            home_port_name,
+            maintenance_cost,
+            docked_at_colony,
         ))
     });
 
@@ -363,15 +519,20 @@ pub fn draw_ship_panel(
         max_hp,
         ftl_range,
         sublight_speed,
-        status,
+        status_info,
         docked_system,
         cargo_data,
+        queued_cmds,
+        home_port_name,
+        maintenance_cost,
+        docked_at_colony,
     )) = ship_data
     else {
         return;
     };
 
     let mut deselect_ship = false;
+    let mut set_home_port: Option<Entity> = None;
 
     // Cargo load/unload actions to apply after UI drawing
     #[derive(Default)]
@@ -401,7 +562,17 @@ pub fn draw_ship_panel(
             );
             ui.label(format!("Type: {:?}", ship_type));
             ui.label(format!("HP: {:.0}/{:.0}", hp, max_hp));
-            ui.label(format!("Status: {}", status));
+
+            // #62: Detailed status with progress bar
+            ui.label(&status_info.label);
+            if let Some((elapsed, total, fraction)) = status_info.progress {
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .text(format!("{}/{} hd", elapsed, total))
+                        .desired_width(200.0),
+                );
+            }
+
             if ftl_range > 0.0 {
                 ui.label(format!("FTL range: {:.1} ly", ftl_range));
             } else {
@@ -411,6 +582,23 @@ pub fn draw_ship_panel(
                 "Sub-light speed: {:.0}% c",
                 sublight_speed * 100.0
             ));
+
+            // #64: Home port and maintenance info
+            ui.separator();
+            ui.label(format!("Home Port: {}", home_port_name));
+            ui.label(format!(
+                "Maintenance: {:.1} E/hd (charged to {})",
+                maintenance_cost, home_port_name
+            ));
+
+            // #62: Command queue display
+            if !queued_cmds.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Command Queue").strong());
+                for (i, cmd_str) in queued_cmds.iter().enumerate() {
+                    ui.label(format!("  {}. {}", i + 1, cmd_str));
+                }
+            }
 
             ui.label(
                 egui::RichText::new("Click a star to issue commands")
@@ -449,6 +637,13 @@ pub fn draw_ship_panel(
                 }
             }
 
+            // #64: Set Home Port button (only when docked at a colony)
+            if let Some(dock_system) = docked_at_colony {
+                if ui.button("Set Home Port").clicked() {
+                    set_home_port = Some(dock_system);
+                }
+            }
+
             if ui.button("Deselect ship").clicked() {
                 deselect_ship = true;
             }
@@ -457,6 +652,13 @@ pub fn draw_ship_panel(
     // Apply deselect
     if deselect_ship {
         selected_ship.0 = None;
+    }
+
+    // #64: Apply home port change
+    if let Some(new_home_port) = set_home_port {
+        if let Ok((_, mut ship, _, _)) = ships_query.get_mut(ship_entity) {
+            ship.home_port = new_home_port;
+        }
     }
 
     // Apply cargo load/unload actions

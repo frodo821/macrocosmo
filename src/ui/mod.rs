@@ -106,6 +106,8 @@ pub fn draw_all_ui(
         &mut ships_query,
         &clock,
         &mut colonies,
+        &stars,
+        &command_queues,
     );
 
     side_panel::draw_context_menu(

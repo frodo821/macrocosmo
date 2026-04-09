@@ -54,6 +54,7 @@ fn test_sublight_travel_and_arrival() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::SubLight {
             origin: [0.0, 0.0, 0.0],
@@ -116,6 +117,7 @@ fn test_survey_completes_and_marks_system() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Surveying {
             target_system: sys_b,
@@ -179,6 +181,7 @@ fn test_ftl_travel_and_arrival() {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::InFTL {
             origin_system: sys_a,
@@ -535,6 +538,7 @@ fn all_systems_no_query_conflict() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
@@ -553,6 +557,7 @@ fn all_systems_no_query_conflict() {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
@@ -571,6 +576,7 @@ fn all_systems_no_query_conflict() {
             hp: 20.0,
             max_hp: 20.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
@@ -627,6 +633,7 @@ fn test_hostile_destroyed_when_hp_zero() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: sys },
         Position::from([0.0, 0.0, 0.0]),
@@ -678,6 +685,7 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
             hp: 0.01,  // nearly dead
             max_hp: 20.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: sys },
         Position::from([0.0, 0.0, 0.0]),
@@ -758,6 +766,7 @@ fn test_combat_takes_multiple_ticks() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: sys },
         Position::from([0.0, 0.0, 0.0]),
@@ -812,6 +821,7 @@ fn test_full_exploration_flow() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
@@ -903,6 +913,7 @@ fn test_full_colonization_flow() {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: capital },
         Position::from([0.0, 0.0, 0.0]),
@@ -1300,6 +1311,7 @@ fn test_maintenance_deducts_energy() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: sys,
         },
         ShipState::Docked { system: sys },
         Position::from([0.0, 0.0, 0.0]),
@@ -1314,10 +1326,11 @@ fn test_maintenance_deducts_energy() {
     let mut stockpile_query = app.world_mut().query::<&ResourceStockpile>();
     let stockpile = stockpile_query.iter(app.world()).next().unwrap();
 
-    // Energy should be reduced by 0.5 * 10 = 5.0
+    // Production adds 5.0/hd, maintenance deducts 0.5/hd, net +4.5/hd
+    // After 10 hd: 100 + (5.0 - 0.5) * 10 = 145.0
     assert!(
-        (stockpile.energy - 95.0).abs() < 1e-6,
-        "Expected 95.0 energy (100 - 0.5*10), got {}",
+        (stockpile.energy - 145.0).abs() < 1e-6,
+        "Expected 145.0 energy (100 + (5.0-0.5)*10), got {}",
         stockpile.energy
     );
 }
@@ -1375,6 +1388,7 @@ fn test_command_queue_executes_sequentially() {
             hp: 50.0,
             max_hp: 50.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::SubLight {
             origin: [0.0, 0.0, 0.0],
@@ -1464,6 +1478,7 @@ fn test_port_reduces_ftl_travel_time() {
         hp: 100.0,
         max_hp: 100.0,
         player_aboard: false,
+        home_port: Entity::PLACEHOLDER,
     };
 
     let origin_pos = Position::from([0.0, 0.0, 0.0]);
@@ -1542,6 +1557,7 @@ fn test_combat_damages_both_sides() {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: sys },
         Position::from([0.0, 0.0, 0.0]),
@@ -1612,6 +1628,7 @@ fn test_combat_damages_both_sides_hostile_stronger() {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         },
         ShipState::Docked { system: sys },
         Position::from([0.0, 0.0, 0.0]),
@@ -1667,6 +1684,7 @@ fn test_ftl_rejected_out_of_range() {
         hp: 100.0,
         max_hp: 100.0,
         player_aboard: false,
+        home_port: Entity::PLACEHOLDER,
     };
 
     let origin_pos = Position::from([0.0, 0.0, 0.0]);

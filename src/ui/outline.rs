@@ -95,6 +95,86 @@ pub fn draw_outline(
                 }
             }
 
+            // Collect owned system entities for lookup
+            let owned_system_entities: Vec<Entity> =
+                owned_systems.iter().map(|(e, _, _)| *e).collect();
+
+            // "Stationed Elsewhere" section for ships docked at unowned systems
+            let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, ShipType)>)> =
+                Vec::new();
+            for (entity, ship, state, _) in ships.iter() {
+                if let ShipState::Docked { system } = &*state {
+                    if !owned_system_entities.contains(system) {
+                        // Find or create entry for this system
+                        if let Ok((_, star, _, _)) = stars.get(*system) {
+                            if let Some(entry) = unowned_system_ships
+                                .iter_mut()
+                                .find(|(e, _, _)| *e == *system)
+                            {
+                                entry.2.push((entity, ship.name.clone(), ship.ship_type));
+                            } else {
+                                unowned_system_ships.push((
+                                    *system,
+                                    star.name.clone(),
+                                    vec![(entity, ship.name.clone(), ship.ship_type)],
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            unowned_system_ships.sort_by(|a, b| a.1.cmp(&b.1));
+            for entry in &mut unowned_system_ships {
+                entry.2.sort_by(|a, b| a.1.cmp(&b.1));
+            }
+
+            if !unowned_system_ships.is_empty() {
+                ui.separator();
+                egui::CollapsingHeader::new("Stationed Elsewhere")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (system_entity, system_name, docked) in &unowned_system_ships {
+                            let is_system_selected =
+                                selected_system.0 == Some(*system_entity);
+                            let id = ui.make_persistent_id(format!(
+                                "outline_unowned_{:?}",
+                                system_entity
+                            ));
+                            let header_response = egui::CollapsingHeader::new(
+                                egui::RichText::new(system_name).color(
+                                    if is_system_selected {
+                                        egui::Color32::from_rgb(0, 255, 255)
+                                    } else {
+                                        egui::Color32::from_rgb(160, 160, 160)
+                                    },
+                                ),
+                            )
+                            .id_salt(id)
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for (ship_entity, name, ship_type) in docked {
+                                    let label =
+                                        format!("  {} ({:?})", name, ship_type);
+                                    let is_selected =
+                                        selected_ship.0 == Some(*ship_entity);
+                                    if ui
+                                        .selectable_label(is_selected, &label)
+                                        .clicked()
+                                    {
+                                        selected_ship.0 = Some(*ship_entity);
+                                        selected_system.0 =
+                                            Some(*system_entity);
+                                    }
+                                }
+                            });
+                            if header_response.header_response.clicked() {
+                                selected_system.0 = Some(*system_entity);
+                                selected_ship.0 = None;
+                            }
+                        }
+                    });
+            }
+
             // "In Transit" section for ships not docked
             let mut in_transit: Vec<(Entity, String, ShipType, &str)> = Vec::new();
             for (entity, ship, state, _) in ships.iter() {

@@ -198,6 +198,8 @@ pub struct Ship {
     pub hp: f32,
     pub max_hp: f32,
     pub player_aboard: bool,
+    /// #64: System entity where maintenance is charged
+    pub home_port: Entity,
 }
 
 #[derive(Component)]
@@ -321,6 +323,7 @@ pub fn spawn_ship(
                 hp,
                 max_hp: hp,
                 player_aboard: false,
+                home_port: system,
             },
             ShipState::Docked { system },
             initial_position,
@@ -1300,6 +1303,7 @@ mod tests {
             hp: ship_type.default_hp(),
             max_hp: ship_type.default_hp(),
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         }
     }
 
@@ -1562,6 +1566,7 @@ mod tests {
             hp: 20.0,
             max_hp: 20.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         }).id();
         let ship_b = world.spawn(Ship {
             name: "Slow".to_string(),
@@ -1572,6 +1577,7 @@ mod tests {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         }).id();
 
         let fleet = Fleet {
@@ -1598,6 +1604,7 @@ mod tests {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         }).id();
         let ship_b = world.spawn(Ship {
             name: "Long Range".to_string(),
@@ -1608,6 +1615,7 @@ mod tests {
             hp: 100.0,
             max_hp: 100.0,
             player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
         }).id();
 
         let fleet = Fleet {

@@ -273,6 +273,7 @@ pub fn spawn_test_ship(
                 hp,
                 max_hp: hp,
                 player_aboard: false,
+                home_port: system,
             },
             ShipState::Docked { system },
             Position::from(pos),
