@@ -3,6 +3,7 @@ use rand::Rng;
 use std::path::Path;
 
 use crate::components::Position;
+use crate::modifier::ScopedModifiers;
 use crate::scripting::galaxy_api::{
     PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition, StarTypeRegistry,
 };
@@ -143,6 +144,15 @@ pub struct ObscuredByGas;
 pub struct PortFacility {
     /// The other star system entity this port connects to
     pub partner: Entity,
+}
+
+/// Modifiers that apply to all ships in a star system.
+/// Example: solar storm reducing speed, nebula boosting shields.
+#[derive(Component, Default)]
+pub struct SystemModifiers {
+    pub ship_speed: ScopedModifiers,
+    pub ship_attack: ScopedModifiers,
+    pub ship_defense: ScopedModifiers,
 }
 
 /// Sample from Poisson distribution using Knuth's algorithm.
@@ -586,6 +596,7 @@ pub fn generate_galaxy(
             Position::from(*position),
             sovereignty,
             TechKnowledge::default(),
+            SystemModifiers::default(),
         ));
         let star_entity = entity.id();
 

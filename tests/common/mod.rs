@@ -7,7 +7,7 @@ use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
-use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::{Empire, PlayerEmpire};
@@ -308,6 +308,7 @@ pub fn spawn_test_system_with_planet(
             Position::from(pos),
             Sovereignty::default(),
             TechKnowledge::default(),
+            SystemModifiers::default(),
         ))
         .id();
 

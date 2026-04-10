@@ -5,7 +5,7 @@ use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
-use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::{ModifiedValue, Modifier};
 use macrocosmo::physics::{light_delay_hexadies, sublight_travel_hexadies};
@@ -4439,4 +4439,63 @@ fn test_galaxy_generation_uses_types() {
             "All planets should have planet_type 'test_planet'"
         );
     }
+}
+
+#[test]
+fn test_system_modifiers_on_star_systems() {
+    use macrocosmo::scripting::galaxy_api::{
+        PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition,
+        StarTypeRegistry,
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+
+    let mut star_reg = StarTypeRegistry::default();
+    star_reg.types.push(StarTypeDefinition {
+        id: "test_star".to_string(),
+        name: "Test Star".to_string(),
+        color: [1.0, 1.0, 1.0],
+        planet_lambda: 2.0,
+        max_planets: 3,
+        habitability_bonus: 0.0,
+        weight: 1.0,
+    });
+    app.insert_resource(star_reg);
+
+    let mut planet_reg = PlanetTypeRegistry::default();
+    planet_reg.types.push(PlanetTypeDefinition {
+        id: "test_planet".to_string(),
+        name: "Test Planet".to_string(),
+        base_habitability: 0.7,
+        base_slots: 4,
+        resource_bias: ResourceBias {
+            minerals: 1.0,
+            energy: 1.0,
+            research: 1.0,
+        },
+        weight: 1.0,
+    });
+    app.insert_resource(planet_reg);
+
+    app.add_systems(Startup, macrocosmo::galaxy::generate_galaxy);
+    app.update();
+
+    // Every star system should have a SystemModifiers component
+    let star_count = app
+        .world_mut()
+        .query::<&StarSystem>()
+        .iter(app.world())
+        .count();
+    assert!(star_count > 0, "Should have generated star systems");
+
+    let modifiers_count = app
+        .world_mut()
+        .query::<(&StarSystem, &SystemModifiers)>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        star_count, modifiers_count,
+        "Every star system should have a SystemModifiers component"
+    );
 }
