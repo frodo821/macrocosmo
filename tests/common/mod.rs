@@ -5,7 +5,7 @@ use macrocosmo::colony::*;
 use macrocosmo::species;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
-use macrocosmo::event_system::EventSystem;
+use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
@@ -49,6 +49,7 @@ pub fn test_app() -> App {
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
+    app.insert_resource(EventBus::default());
     app.insert_resource(technology::LastResearchTick(0));
     app.init_resource::<species::SpeciesRegistry>();
     app.init_resource::<species::JobRegistry>();

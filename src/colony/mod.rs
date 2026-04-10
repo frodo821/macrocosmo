@@ -1051,11 +1051,22 @@ pub fn tick_building_queue(
                         "Building {} demolished in slot {}, refunded M:{} E:{}",
                         building_name, slot_idx, completed.minerals_refund, completed.energy_refund
                     );
-                    // Fire event
+                    // Fire event (legacy EventSystem)
                     event_system.fire_event(
                         "building_demolished",
                         Some(colony_entity),
                         clock.elapsed,
+                    );
+                    // Fire via EventBus with structured payload
+                    let mut payload = std::collections::HashMap::new();
+                    payload.insert("cause".to_string(), "demolished".to_string());
+                    payload.insert("building_id".to_string(), building_name.to_string());
+                    payload.insert("slot".to_string(), slot_idx.to_string());
+                    event_system.fire_event_with_payload(
+                        "macrocosmo:building_lost",
+                        Some(colony_entity),
+                        clock.elapsed,
+                        payload,
                     );
                 }
             }

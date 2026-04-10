@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use mlua::prelude::*;
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -60,6 +61,8 @@ pub struct FiredEvent {
     pub event_id: String,
     pub target: Option<Entity>,
     pub fired_at: i64,
+    /// Optional key-value payload for EventBus dispatch.
+    pub payload: Option<HashMap<String, String>>,
 }
 
 /// Resource holding all event definitions and pending events.
@@ -104,6 +107,29 @@ impl EventSystem {
         });
     }
 
+    /// Queue an event with a key-value payload for EventBus dispatch.
+    /// The event fires immediately (fires_at = now), like `fire_event` for manual events.
+    pub fn fire_event_with_payload(
+        &mut self,
+        event_id: &str,
+        target: Option<Entity>,
+        now: i64,
+        payload: HashMap<String, String>,
+    ) {
+        self.pending.push(PendingEvent {
+            event_id: event_id.to_string(),
+            target,
+            fires_at: now,
+        });
+        // Also log immediately so dispatch_event_handlers picks it up
+        self.fired_log.push(FiredEvent {
+            event_id: event_id.to_string(),
+            target,
+            fired_at: now,
+            payload: Some(payload),
+        });
+    }
+
     /// Queue an event to fire at a specific time (bypasses trigger logic).
     pub fn fire_event_delayed(&mut self, event_id: &str, target: Option<Entity>, fires_at: i64) {
         self.pending.push(PendingEvent {
@@ -111,6 +137,89 @@ impl EventSystem {
             target,
             fires_at,
         });
+    }
+}
+
+// Event IDs follow namespace:name convention.
+// Built-in events use "macrocosmo:" prefix.
+// Examples: "macrocosmo:building_lost", "macrocosmo:ship_lost", "macrocosmo:tech_researched"
+
+/// Central event bus for dispatching events to Lua handlers.
+///
+/// Handlers are stored in the Lua global `_event_handlers` table to avoid
+/// Send/Sync issues with `mlua::RegistryKey`. Each entry in the table is:
+/// `{ event_id = "...", filter = { key = "value", ... } | nil, func = function(...) }`.
+///
+/// The `handler_count` field tracks the number of registered handlers for
+/// informational purposes (it is not used for dispatch logic).
+#[derive(Resource, Default)]
+pub struct EventBus {
+    pub handler_count: usize,
+}
+
+impl EventBus {
+    /// Fire an event to all matching Lua handlers in `_event_handlers`.
+    ///
+    /// Returns the number of handlers that were called. Handlers whose
+    /// `event_id` does not match, or whose structural `filter` does not match
+    /// the payload, are skipped. Errors from individual handlers are logged
+    /// but do not abort processing of remaining handlers.
+    pub fn fire(lua: &Lua, event_id: &str, payload: &HashMap<String, String>) -> usize {
+        // Build payload table
+        let Ok(payload_table) = lua.create_table() else {
+            return 0;
+        };
+        for (k, v) in payload {
+            let _ = payload_table.set(k.as_str(), v.as_str());
+        }
+        let _ = payload_table.set("event_id", event_id);
+
+        // Get handlers table
+        let Ok(handlers) = lua.globals().get::<LuaTable>("_event_handlers") else {
+            return 0;
+        };
+        let len = handlers.len().unwrap_or(0);
+        if len == 0 {
+            return 0;
+        }
+
+        let mut count = 0;
+        for i in 1..=len {
+            let Ok(entry) = handlers.get::<LuaTable>(i) else {
+                continue;
+            };
+            let Ok(eid) = entry.get::<String>("event_id") else {
+                continue;
+            };
+            if eid != event_id {
+                continue;
+            }
+
+            // Check structural filter
+            if let Ok(filter) = entry.get::<LuaTable>("filter") {
+                let mut matches = true;
+                for pair in filter.pairs::<String, String>() {
+                    if let Ok((k, v)) = pair {
+                        if payload.get(&k).map(|pv| pv.as_str()) != Some(v.as_str()) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                }
+                if !matches {
+                    continue;
+                }
+            }
+
+            // Call handler
+            if let Ok(func) = entry.get::<LuaFunction>("func") {
+                if let Err(e) = func.call::<()>(payload_table.clone()) {
+                    warn!("EventBus handler error for {}: {}", event_id, e);
+                }
+                count += 1;
+            }
+        }
+        count
     }
 }
 
@@ -177,6 +286,7 @@ pub fn tick_events(clock: Res<GameClock>, mut event_system: ResMut<EventSystem>)
                     event_id: id,
                     target: None,
                     fired_at: now,
+                    payload: None,
                 });
             }
         }
@@ -213,6 +323,7 @@ pub fn tick_events(clock: Res<GameClock>, mut event_system: ResMut<EventSystem>)
             event_id: event.event_id.clone(),
             target: event.target,
             fired_at: now,
+            payload: None,
         });
     }
 }
@@ -222,7 +333,9 @@ pub struct EventSystemPlugin;
 
 impl Plugin for EventSystemPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(EventSystem::default()).add_systems(
+        app.insert_resource(EventSystem::default())
+            .insert_resource(EventBus::default())
+            .add_systems(
             Update,
             tick_events.after(crate::time_system::advance_game_time),
         );
@@ -546,5 +659,118 @@ mod tests {
         } else {
             panic!("Expected Periodic trigger");
         }
+    }
+
+    #[test]
+    fn test_event_bus_fire_calls_handler() {
+        let lua = Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+
+        // Register a handler via on() and fire an event
+        lua.load(
+            r#"
+            _handler_called = false
+            on("macrocosmo:test", function(evt)
+                _handler_called = true
+                _received_event_id = evt.event_id
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let mut payload = HashMap::new();
+        payload.insert("some_key".to_string(), "some_value".to_string());
+        let count = EventBus::fire(&lua, "macrocosmo:test", &payload);
+
+        assert_eq!(count, 1);
+        let called: bool = lua.globals().get("_handler_called").unwrap();
+        assert!(called);
+        let received_id: String = lua.globals().get("_received_event_id").unwrap();
+        assert_eq!(received_id, "macrocosmo:test");
+    }
+
+    #[test]
+    fn test_event_bus_filter_match() {
+        let lua = Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+
+        lua.load(
+            r#"
+            _combat_handler_called = false
+            on("macrocosmo:building_lost", { cause = "combat" }, function(evt)
+                _combat_handler_called = true
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        // Fire with matching filter
+        let mut payload = HashMap::new();
+        payload.insert("cause".to_string(), "combat".to_string());
+        payload.insert("building_id".to_string(), "mine".to_string());
+        let count = EventBus::fire(&lua, "macrocosmo:building_lost", &payload);
+        assert_eq!(count, 1);
+        let called: bool = lua.globals().get("_combat_handler_called").unwrap();
+        assert!(called);
+
+        // Reset and fire with non-matching filter
+        lua.load(r#"_combat_handler_called = false"#).exec().unwrap();
+        let mut payload2 = HashMap::new();
+        payload2.insert("cause".to_string(), "recycled".to_string());
+        let count2 = EventBus::fire(&lua, "macrocosmo:building_lost", &payload2);
+        assert_eq!(count2, 0);
+        let called2: bool = lua.globals().get("_combat_handler_called").unwrap();
+        assert!(!called2);
+    }
+
+    #[test]
+    fn test_event_bus_no_filter_matches_all() {
+        let lua = Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+
+        lua.load(
+            r#"
+            _any_handler_called = false
+            on("macrocosmo:any_event", function(evt)
+                _any_handler_called = true
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        // Fire with arbitrary payload
+        let mut payload = HashMap::new();
+        payload.insert("cause".to_string(), "anything".to_string());
+        payload.insert("extra".to_string(), "data".to_string());
+        let count = EventBus::fire(&lua, "macrocosmo:any_event", &payload);
+        assert_eq!(count, 1);
+        let called: bool = lua.globals().get("_any_handler_called").unwrap();
+        assert!(called);
+    }
+
+    #[test]
+    fn test_event_bus_wrong_event_id_not_called() {
+        let lua = Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+
+        lua.load(
+            r#"
+            _wrong_handler_called = false
+            on("macrocosmo:specific_event", function(evt)
+                _wrong_handler_called = true
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let payload = HashMap::new();
+        let count = EventBus::fire(&lua, "macrocosmo:other_event", &payload);
+        assert_eq!(count, 0);
+        let called: bool = lua.globals().get("_wrong_handler_called").unwrap();
+        assert!(!called);
     }
 }

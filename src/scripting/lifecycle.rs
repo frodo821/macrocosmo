@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use mlua::Lua;
+use std::collections::HashMap;
 
-use crate::event_system::EventSystem;
+use crate::event_system::{EventBus, EventSystem};
 use crate::scripting::ScriptEngine;
 use crate::time_system::GameClock;
 
@@ -91,6 +92,38 @@ pub fn drain_script_events(
     // Clear the table by replacing it with a fresh one
     if let Ok(new_table) = lua.create_table() {
         let _ = lua.globals().set("_pending_script_events", new_table);
+    }
+}
+
+/// Per-tick system that dispatches recently fired events from `EventSystem.fired_log`
+/// to Lua handlers registered via the `on()` API (stored in `_event_handlers`).
+///
+/// This runs after `tick_events` so that events fired during this tick are
+/// available in `fired_log`. The fired_log is drained after processing to
+/// avoid re-dispatching the same events on subsequent ticks.
+pub fn dispatch_event_handlers(
+    engine: Res<ScriptEngine>,
+    mut event_system: ResMut<EventSystem>,
+    _bus: Res<EventBus>,
+) {
+    if event_system.fired_log.is_empty() {
+        return;
+    }
+
+    let lua = engine.lua();
+
+    // Collect events to dispatch, then clear the log
+    let fired_events: Vec<_> = event_system.fired_log.drain(..).collect();
+
+    for fired in &fired_events {
+        let payload = if let Some(ref p) = fired.payload {
+            p.clone()
+        } else {
+            let mut p = HashMap::new();
+            p.insert("event_id".to_string(), fired.event_id.clone());
+            p
+        };
+        EventBus::fire(lua, &fired.event_id, &payload);
     }
 }
 

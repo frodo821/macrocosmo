@@ -23,6 +23,12 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Update,
                 lifecycle::drain_script_events.after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
+                lifecycle::dispatch_event_handlers
+                    .after(crate::event_system::tick_events)
+                    .after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -152,6 +158,69 @@ impl ScriptEngine {
             Ok(())
         })?;
         globals.set("define_job", define_job)?;
+
+        // --- EventBus handler registration ---
+
+        // Handler table for on() registrations
+        let event_handlers = lua.create_table()?;
+        globals.set("_event_handlers", event_handlers)?;
+
+        // on(event_id, [filter,] handler) -- registers an event handler with optional structural filter
+        let on_fn = lua.create_function(|lua, args: mlua::MultiValue| {
+            let handlers: mlua::Table = lua.globals().get("_event_handlers")?;
+            let len = handlers.len()?;
+
+            let entry = lua.create_table()?;
+
+            let mut args_iter = args.into_iter();
+            // First arg: event_id string
+            let event_id: String = match args_iter.next() {
+                Some(mlua::Value::String(s)) => s.to_str()?.to_string(),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "on() requires event_id string as first argument".into(),
+                    ));
+                }
+            };
+            entry.set("event_id", event_id)?;
+
+            // Second arg: either a filter table or a handler function
+            let second = args_iter.next().ok_or_else(|| {
+                mlua::Error::RuntimeError(
+                    "on() requires handler function (or filter table + handler function)".into(),
+                )
+            })?;
+
+            match second {
+                mlua::Value::Function(func) => {
+                    // on(event_id, handler) -- no filter
+                    entry.set("func", func)?;
+                }
+                mlua::Value::Table(filter) => {
+                    // on(event_id, filter, handler)
+                    entry.set("filter", filter)?;
+                    let func = match args_iter.next() {
+                        Some(mlua::Value::Function(f)) => f,
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "on() with filter requires handler function as 3rd argument"
+                                    .into(),
+                            ));
+                        }
+                    };
+                    entry.set("func", func)?;
+                }
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "on() 2nd argument must be a filter table or handler function".into(),
+                    ));
+                }
+            }
+
+            handlers.set(len + 1, entry)?;
+            Ok(())
+        })?;
+        globals.set("on", on_fn)?;
 
         // --- Event system Lua bindings ---
 
@@ -373,5 +442,85 @@ mod tests {
             .eval()
             .unwrap();
         assert!(result);
+    }
+
+    #[test]
+    fn test_on_function_registers_handler() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            on("macrocosmo:test_event", function(evt)
+                -- handler body
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let handlers: mlua::Table = lua.globals().get("_event_handlers").unwrap();
+        assert_eq!(handlers.len().unwrap(), 1);
+
+        let entry: mlua::Table = handlers.get(1).unwrap();
+        let eid: String = entry.get("event_id").unwrap();
+        assert_eq!(eid, "macrocosmo:test_event");
+
+        // No filter should be set
+        let filter: mlua::Value = entry.get("filter").unwrap();
+        assert!(matches!(filter, mlua::Value::Nil));
+
+        // Handler function should be present
+        let _func: mlua::Function = entry.get("func").unwrap();
+    }
+
+    #[test]
+    fn test_on_with_filter() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            on("macrocosmo:building_lost", { cause = "combat" }, function(evt)
+                -- handler body
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let handlers: mlua::Table = lua.globals().get("_event_handlers").unwrap();
+        assert_eq!(handlers.len().unwrap(), 1);
+
+        let entry: mlua::Table = handlers.get(1).unwrap();
+        let eid: String = entry.get("event_id").unwrap();
+        assert_eq!(eid, "macrocosmo:building_lost");
+
+        // Filter should be present with the correct key/value
+        let filter: mlua::Table = entry.get("filter").unwrap();
+        let cause: String = filter.get("cause").unwrap();
+        assert_eq!(cause, "combat");
+
+        // Handler function should be present
+        let _func: mlua::Function = entry.get("func").unwrap();
+    }
+
+    #[test]
+    fn test_on_multiple_handlers() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            on("macrocosmo:event_a", function(evt) end)
+            on("macrocosmo:event_b", { key = "val" }, function(evt) end)
+            on("macrocosmo:event_a", function(evt) end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let handlers: mlua::Table = lua.globals().get("_event_handlers").unwrap();
+        assert_eq!(handlers.len().unwrap(), 3);
     }
 }
