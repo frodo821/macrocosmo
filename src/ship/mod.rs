@@ -5,6 +5,7 @@ use crate::amount::Amt;
 use crate::colony::{
     BuildQueue, Buildings, BuildingQueue, Colony, FoodConsumption, MaintenanceCost,
     Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+    SystemBuildings, SystemBuildingQueue,
 };
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
@@ -1128,6 +1129,7 @@ pub fn process_settling(
     planet_query: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
     existing_colonies: Query<&Colony>,
     existing_stockpiles: Query<&ResourceStockpile, With<StarSystem>>,
+    existing_system_buildings: Query<&SystemBuildings>,
     mut events: MessageWriter<GameEvent>,
 ) {
     for (ship_entity, ship, state) in &ships {
@@ -1211,6 +1213,16 @@ pub fn process_settling(
                 ));
             }
 
+            // Add SystemBuildings and SystemBuildingQueue if not already present
+            if existing_system_buildings.get(system_entity).is_err() {
+                commands.entity(system_entity).insert((
+                    SystemBuildings {
+                        slots: vec![None; crate::colony::DEFAULT_SYSTEM_BUILDING_SLOTS],
+                    },
+                    SystemBuildingQueue::default(),
+                ));
+            }
+
             events.write(GameEvent {
                 timestamp: clock.elapsed,
                 kind: GameEventKind::ColonyEstablished,
@@ -1250,8 +1262,8 @@ pub fn process_pending_ship_commands(
     pending: Query<(Entity, &PendingShipCommand)>,
     mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
-    colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
-    planets: Query<&crate::galaxy::Planet>,
+    system_buildings: Query<&crate::colony::SystemBuildings>,
+    _planets: Query<&crate::galaxy::Planet>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -1290,7 +1302,7 @@ pub fn process_pending_ship_commands(
                     continue;
                 };
                 // Try FTL first, fall back to sublight
-                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system(&planets) == Some(docked_system) && bldgs.has_port());
+                let origin_has_port = system_buildings.get(docked_system).is_ok_and(|sb| sb.has_port());
                 match start_ftl_travel_with_bonus(
                     &mut state,
                     &ship,
@@ -1463,8 +1475,8 @@ pub fn process_command_queue(
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position)>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-    colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
-    planets: Query<&crate::galaxy::Planet>,
+    system_buildings: Query<&crate::colony::SystemBuildings>,
+    _planets: Query<&crate::galaxy::Planet>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -1501,7 +1513,7 @@ pub fn process_command_queue(
                     continue;
                 };
 
-                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system(&planets) == Some(docked_system) && bldgs.has_port());
+                let origin_has_port = system_buildings.get(docked_system).is_ok_and(|sb| sb.has_port());
                 let port_range_bonus = if origin_has_port { PORT_FTL_RANGE_BONUS_LY } else { 0.0 };
                 let effective_ftl_range = ship.ftl_range + global_params.ftl_range_bonus + port_range_bonus;
 
@@ -1929,8 +1941,7 @@ pub fn tick_ship_repair(
     clock: Res<GameClock>,
     last_tick: Res<crate::colony::LastProductionTick>,
     mut ships: Query<(&ShipState, &mut ShipHitpoints)>,
-    colonies: Query<(&Colony, Option<&Buildings>)>,
-    planets: Query<&crate::galaxy::Planet>,
+    system_buildings: Query<&crate::colony::SystemBuildings>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -1943,11 +1954,8 @@ pub fn tick_ship_repair(
             continue;
         };
 
-        // Check if the system has a colony with a Port
-        let has_port = colonies.iter().any(|(col, bldgs)| {
-            col.system(&planets) == Some(*system)
-                && bldgs.map_or(false, |b| b.has_port())
-        });
+        // Check if the system has a Port in system buildings
+        let has_port = system_buildings.get(*system).is_ok_and(|sb| sb.has_port());
 
         if has_port {
             // Repair armor first, then hull
