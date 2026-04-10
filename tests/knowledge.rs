@@ -338,7 +338,7 @@ fn test_tech_propagates_to_capital_immediately() {
             .get_mut::<RecentlyResearched>(empire)
             .unwrap()
             .techs
-            .push(TechId(100));
+            .push(TechId("social_xenolinguistics".into()));
     }
 
     // Run one update
@@ -347,7 +347,7 @@ fn test_tech_propagates_to_capital_immediately() {
     // Capital should have the tech immediately
     let knowledge = app.world().get::<TechKnowledge>(capital).unwrap();
     assert!(
-        knowledge.known_techs.contains(&TechId(100)),
+        knowledge.known_techs.contains(&TechId("social_xenolinguistics".into())),
         "Capital should know tech immediately after research"
     );
 }
@@ -431,7 +431,7 @@ fn test_tech_propagates_to_remote_with_delay() {
             .get_mut::<RecentlyResearched>(empire)
             .unwrap()
             .techs
-            .push(TechId(200));
+            .push(TechId("physics_sensor_arrays".into()));
     }
 
     // First tick: propagation entities spawned
@@ -439,12 +439,12 @@ fn test_tech_propagates_to_remote_with_delay() {
 
     // Capital should have it immediately
     let capital_knowledge = app.world().get::<TechKnowledge>(capital).unwrap();
-    assert!(capital_knowledge.known_techs.contains(&TechId(200)));
+    assert!(capital_knowledge.known_techs.contains(&TechId("physics_sensor_arrays".into())));
 
     // Remote should NOT have it yet (need 60 hexadies for 1 LY)
     let remote_knowledge = app.world().get::<TechKnowledge>(remote).unwrap();
     assert!(
-        !remote_knowledge.known_techs.contains(&TechId(200)),
+        !remote_knowledge.known_techs.contains(&TechId("physics_sensor_arrays".into())),
         "Remote system should not know tech before light delay"
     );
 
@@ -452,7 +452,7 @@ fn test_tech_propagates_to_remote_with_delay() {
     advance_time(&mut app, 59);
     let remote_knowledge = app.world().get::<TechKnowledge>(remote).unwrap();
     assert!(
-        !remote_knowledge.known_techs.contains(&TechId(200)),
+        !remote_knowledge.known_techs.contains(&TechId("physics_sensor_arrays".into())),
         "Remote system should not know tech at tick 60 (arrives_at = 60, spawned at tick 1)"
     );
 
@@ -460,7 +460,7 @@ fn test_tech_propagates_to_remote_with_delay() {
     advance_time(&mut app, 1);
     let remote_knowledge = app.world().get::<TechKnowledge>(remote).unwrap();
     assert!(
-        remote_knowledge.known_techs.contains(&TechId(200)),
+        remote_knowledge.known_techs.contains(&TechId("physics_sensor_arrays".into())),
         "Remote system should know tech after light delay"
     );
 }
@@ -526,7 +526,7 @@ fn test_uncolonized_system_no_propagation() {
             .get_mut::<RecentlyResearched>(empire)
             .unwrap()
             .techs
-            .push(TechId(300));
+            .push(TechId("industrial_automated_mining".into()));
     }
 
     advance_time(&mut app, 1);

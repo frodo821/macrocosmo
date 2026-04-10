@@ -52,7 +52,7 @@ pub fn draw_overlays(
             ui.separator();
 
             // --- Current research ---
-            if let Some(current_id) = research_queue.current {
+            if let Some(ref current_id) = research_queue.current {
                 if let Some(tech) = tech_tree.get(current_id) {
                     let cost = tech.cost.research.to_f64();
                     let progress = if cost > 0.0 {
@@ -118,9 +118,9 @@ pub fn draw_overlays(
                 .show(ui, |ui| {
                     let techs = tech_tree.techs_in_branch(selected_branch);
                     for tech in &techs {
-                        let is_researched = tech_tree.is_researched(tech.id);
-                        let is_current = research_queue.current == Some(tech.id);
-                        let is_available = tech_tree.can_research(tech.id);
+                        let is_researched = tech_tree.is_researched(&tech.id);
+                        let is_current = research_queue.current.as_ref() == Some(&tech.id);
+                        let is_available = tech_tree.can_research(&tech.id);
 
                         ui.group(|ui| {
                             // Header line: status + name + cost
@@ -217,7 +217,7 @@ pub fn draw_overlays(
 
                                 if can_afford {
                                     if ui.button("Start Research").clicked() {
-                                        action = ResearchAction::StartResearch(tech.id);
+                                        action = ResearchAction::StartResearch(tech.id.clone());
                                     }
                                 } else {
                                     ui.add_enabled(false, egui::Button::new("Start Research"))
@@ -234,9 +234,9 @@ pub fn draw_overlays(
                                 let missing: Vec<String> = tech
                                     .prerequisites
                                     .iter()
-                                    .filter(|pre| !tech_tree.is_researched(**pre))
+                                    .filter(|pre| !tech_tree.is_researched(pre))
                                     .filter_map(|pre| {
-                                        tech_tree.get(*pre).map(|t| t.name.clone())
+                                        tech_tree.get(pre).map(|t| t.name.clone())
                                     })
                                     .collect();
                                 if !missing.is_empty() {

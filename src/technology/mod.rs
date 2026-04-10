@@ -143,8 +143,8 @@ pub fn load_technologies(
 }
 
 /// Unique identifier for a technology.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TechId(pub u32);
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct TechId(pub String);
 
 /// The branch a technology belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -218,7 +218,7 @@ pub struct TechTree {
 
 impl TechTree {
     pub fn from_vec(techs: Vec<Technology>) -> Self {
-        let technologies = techs.into_iter().map(|t| (t.id, t)).collect();
+        let technologies = techs.into_iter().map(|t| (t.id.clone(), t)).collect();
         Self {
             technologies,
             researched: HashSet::new(),
@@ -227,23 +227,23 @@ impl TechTree {
 
     /// Insert a technology into the tree.
     pub fn add(&mut self, tech: Technology) {
-        self.technologies.insert(tech.id, tech);
+        self.technologies.insert(tech.id.clone(), tech);
     }
 
     /// Get a technology by its id.
-    pub fn get(&self, id: TechId) -> Option<&Technology> {
-        self.technologies.get(&id)
+    pub fn get(&self, id: &TechId) -> Option<&Technology> {
+        self.technologies.get(id)
     }
 
-    pub fn is_researched(&self, id: TechId) -> bool {
-        self.researched.contains(&id)
+    pub fn is_researched(&self, id: &TechId) -> bool {
+        self.researched.contains(id)
     }
 
-    pub fn can_research(&self, id: TechId) -> bool {
-        if self.researched.contains(&id) {
+    pub fn can_research(&self, id: &TechId) -> bool {
+        if self.researched.contains(id) {
             return false;
         }
-        let Some(tech) = self.technologies.get(&id) else {
+        let Some(tech) = self.technologies.get(id) else {
             return false;
         };
         tech.prerequisites
@@ -252,14 +252,14 @@ impl TechTree {
     }
 
     /// Alias used by the research panel UI.
-    pub fn is_available(&self, id: TechId) -> bool {
+    pub fn is_available(&self, id: &TechId) -> bool {
         self.can_research(id)
     }
 
     pub fn available_technologies(&self) -> Vec<&Technology> {
         self.technologies
             .values()
-            .filter(|t| self.can_research(t.id))
+            .filter(|t| self.can_research(&t.id))
             .collect()
     }
 
@@ -292,7 +292,7 @@ impl TechTree {
         for tech in self.technologies.values() {
             for prereq in &tech.prerequisites {
                 if !self.technologies.contains_key(prereq) {
-                    missing.push((tech.id, *prereq));
+                    missing.push((tech.id.clone(), prereq.clone()));
                 }
             }
         }
@@ -455,7 +455,7 @@ pub fn tick_research(
         return;
     };
 
-    let Some(current_tech_id) = queue.current else {
+    let Some(ref current_tech_id) = queue.current else {
         return;
     };
 
@@ -463,6 +463,8 @@ pub fn tick_research(
     if queue.blocked {
         return;
     }
+
+    let current_tech_id = current_tech_id.clone();
 
     let research_cost = {
         let Some(tech) = tech_tree.technologies.get(&current_tech_id) else {
@@ -490,7 +492,7 @@ pub fn tick_research(
             .map(|t| t.name.clone())
             .unwrap_or_default();
 
-        tech_tree.complete_research(current_tech_id);
+        tech_tree.complete_research(current_tech_id.clone());
         recently_researched.techs.push(current_tech_id);
 
         queue.current = None;
@@ -564,7 +566,7 @@ pub fn propagate_tech_knowledge(
     for tech_id in recently_researched.techs.drain(..) {
         // Capital gets it immediately
         if let Ok(mut knowledge) = tech_knowledge.get_mut(capital_entity) {
-            knowledge.known_techs.insert(tech_id);
+            knowledge.known_techs.insert(tech_id.clone());
         }
 
         // Other colonized systems get it after light delay
@@ -578,7 +580,7 @@ pub fn propagate_tech_knowledge(
             let distance = physics::distance_ly(&capital_pos, sys_pos);
             let delay = physics::light_delay_hexadies(distance);
             commands.spawn(PendingKnowledgePropagation {
-                tech_id,
+                tech_id: tech_id.clone(),
                 target_system: sys_entity,
                 arrives_at: clock.elapsed + delay,
             });
@@ -596,7 +598,7 @@ pub fn receive_tech_knowledge(
     for (entity, prop) in pending.iter() {
         if clock.elapsed >= prop.arrives_at {
             if let Ok(mut knowledge) = tech_knowledge.get_mut(prop.target_system) {
-                knowledge.known_techs.insert(prop.tech_id);
+                knowledge.known_techs.insert(prop.tech_id.clone());
             }
             commands.entity(entity).despawn();
         }
@@ -613,7 +615,7 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
     let mut techs = Vec::new();
     for pair in defs.pairs::<i64, mlua::Table>() {
         let (_, table) = pair?;
-        let id = TechId(table.get::<u32>("id")?);
+        let id = TechId(table.get::<String>("id")?);
         let name: String = table.get("name")?;
         let branch = match table.get::<String>("branch")?.as_str() {
             "social" => TechBranch::Social,
@@ -652,7 +654,7 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
 
         let prereqs_table: mlua::Table = table.get("prerequisites")?;
         let prerequisites: Vec<TechId> = prereqs_table
-            .sequence_values::<u32>()
+            .sequence_values::<String>()
             .map(|r| r.map(TechId))
             .collect::<Result<_, _>>()?;
 
@@ -677,7 +679,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
     vec![
         // === Social Branch ===
         Technology {
-            id: TechId(100),
+            id: TechId("social_xenolinguistics".into()),
             name: "Xenolinguistics".into(),
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(100)),
@@ -685,7 +687,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             description: "Foundational study of alien communication patterns".into(),
         },
         Technology {
-            id: TechId(101),
+            id: TechId("social_colonial_admin".into()),
             name: "Colonial Administration".into(),
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(150)),
@@ -693,24 +695,24 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             description: "Improved governance structures for distant colonies".into(),
         },
         Technology {
-            id: TechId(102),
+            id: TechId("social_interstellar_commerce".into()),
             name: "Interstellar Commerce".into(),
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(250)),
-            prerequisites: vec![TechId(101)],
+            prerequisites: vec![TechId("social_colonial_admin".into())],
             description: "Trade frameworks spanning star systems".into(),
         },
         Technology {
-            id: TechId(103),
+            id: TechId("social_cultural_exchange".into()),
             name: "Cultural Exchange Protocols".into(),
             branch: TechBranch::Social,
             cost: TechCost::research_only(Amt::units(300)),
-            prerequisites: vec![TechId(100)],
+            prerequisites: vec![TechId("social_xenolinguistics".into())],
             description: "Formalised frameworks for cross-species cultural interaction".into(),
         },
         // === Physics Branch ===
         Technology {
-            id: TechId(200),
+            id: TechId("physics_sensor_arrays".into()),
             name: "Advanced Sensor Arrays".into(),
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
@@ -718,7 +720,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             description: "Next-generation sensors for deep space observation".into(),
         },
         Technology {
-            id: TechId(201),
+            id: TechId("physics_sublight_drives".into()),
             name: "Improved Sublight Drives".into(),
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(200)),
@@ -726,24 +728,24 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             description: "Enhances sublight drive efficiency".into(),
         },
         Technology {
-            id: TechId(202),
+            id: TechId("physics_ftl_theory".into()),
             name: "FTL Theory".into(),
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(400)),
-            prerequisites: vec![TechId(201)],
+            prerequisites: vec![TechId("physics_sublight_drives".into())],
             description: "Theoretical foundations for faster-than-light travel".into(),
         },
         Technology {
-            id: TechId(203),
+            id: TechId("physics_warp_stabilisation".into()),
             name: "Warp Field Stabilisation".into(),
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(600)),
-            prerequisites: vec![TechId(202)],
+            prerequisites: vec![TechId("physics_ftl_theory".into())],
             description: "Stabilise warp fields for safer FTL travel".into(),
         },
         // === Industrial Branch ===
         Technology {
-            id: TechId(300),
+            id: TechId("industrial_automated_mining".into()),
             name: "Automated Mining".into(),
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(100)),
@@ -751,32 +753,32 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             description: "Robotic systems for autonomous resource extraction".into(),
         },
         Technology {
-            id: TechId(301),
+            id: TechId("industrial_orbital_fabrication".into()),
             name: "Orbital Fabrication".into(),
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(200)),
-            prerequisites: vec![TechId(300)],
+            prerequisites: vec![TechId("industrial_automated_mining".into())],
             description: "Manufacturing facilities in orbit for zero-gravity construction".into(),
         },
         Technology {
-            id: TechId(302),
+            id: TechId("industrial_fusion_power".into()),
             name: "Fusion Power Plants".into(),
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(300)),
-            prerequisites: vec![TechId(300)],
+            prerequisites: vec![TechId("industrial_automated_mining".into())],
             description: "Harness fusion reactions for abundant clean energy".into(),
         },
         Technology {
-            id: TechId(303),
+            id: TechId("industrial_nano_assembly".into()),
             name: "Nano-Assembly".into(),
             branch: TechBranch::Industrial,
             cost: TechCost::research_only(Amt::units(500)),
-            prerequisites: vec![TechId(301)],
+            prerequisites: vec![TechId("industrial_orbital_fabrication".into())],
             description: "Molecular-scale construction for unprecedented precision".into(),
         },
         // === Military Branch ===
         Technology {
-            id: TechId(400),
+            id: TechId("military_kinetic_weapons".into()),
             name: "Kinetic Weapons".into(),
             branch: TechBranch::Military,
             cost: TechCost::research_only(Amt::units(100)),
@@ -784,7 +786,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             description: "Mass-driver based weapon systems".into(),
         },
         Technology {
-            id: TechId(401),
+            id: TechId("military_deflector_shields".into()),
             name: "Deflector Shields".into(),
             branch: TechBranch::Military,
             cost: TechCost::research_only(Amt::units(200)),
@@ -792,11 +794,11 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             description: "Energy barriers to deflect incoming projectiles".into(),
         },
         Technology {
-            id: TechId(402),
+            id: TechId("military_composite_armor".into()),
             name: "Composite Armor".into(),
             branch: TechBranch::Military,
             cost: TechCost::research_only(Amt::units(250)),
-            prerequisites: vec![TechId(400)],
+            prerequisites: vec![TechId("military_kinetic_weapons".into())],
             description: "Multi-layered hull plating for enhanced protection".into(),
         },
     ]
@@ -815,8 +817,8 @@ mod tests {
     fn test_hardcoded_tech_tree() {
         let tree = create_initial_tech_tree();
         assert_eq!(tree.technologies.len(), 15);
-        assert!(tree.get(TechId(100)).is_some());
-        assert!(tree.get(TechId(402)).is_some());
+        assert!(tree.get(&TechId("social_xenolinguistics".into())).is_some());
+        assert!(tree.get(&TechId("military_composite_armor".into())).is_some());
     }
 
     #[test]
@@ -827,7 +829,7 @@ mod tests {
         lua.load(
             r#"
             define_tech {
-                id = 999,
+                id = "physics_test",
                 name = "Test Tech",
                 branch = "physics",
                 cost = 42.0,
@@ -838,11 +840,11 @@ mod tests {
                 end,
             }
             define_tech {
-                id = 1000,
+                id = "military_advanced_test",
                 name = "Advanced Test Tech",
                 branch = "military",
                 cost = 100.0,
-                prerequisites = { 999 },
+                prerequisites = { "physics_test" },
                 description = "Depends on test tech",
                 on_researched = function()
                     -- TODO: push_empire_modifier
@@ -857,15 +859,15 @@ mod tests {
         assert_eq!(techs.len(), 2);
 
         let first = &techs[0];
-        assert_eq!(first.id, TechId(999));
+        assert_eq!(first.id, TechId("physics_test".into()));
         assert_eq!(first.name, "Test Tech");
         assert_eq!(first.branch, TechBranch::Physics);
         assert_eq!(first.cost.research, Amt::units(42));
         assert!(first.prerequisites.is_empty());
 
         let second = &techs[1];
-        assert_eq!(second.id, TechId(1000));
-        assert_eq!(second.prerequisites, vec![TechId(999)]);
+        assert_eq!(second.id, TechId("military_advanced_test".into()));
+        assert_eq!(second.prerequisites, vec![TechId("physics_test".into())]);
     }
 
     #[test]
@@ -876,7 +878,7 @@ mod tests {
         lua.load(
             r#"
             define_tech {
-                id = 888,
+                id = "industrial_expensive",
                 name = "Expensive Tech",
                 branch = "industrial",
                 cost = { research = 200.0, minerals = 50.0, energy = 30.0 },
@@ -910,36 +912,36 @@ mod tests {
         // Verify one tech from each branch
         assert!(techs
             .iter()
-            .any(|t| t.id == TechId(100) && t.branch == TechBranch::Social));
+            .any(|t| t.id == TechId("social_xenolinguistics".into()) && t.branch == TechBranch::Social));
         assert!(techs
             .iter()
-            .any(|t| t.id == TechId(201) && t.branch == TechBranch::Physics));
+            .any(|t| t.id == TechId("physics_sublight_drives".into()) && t.branch == TechBranch::Physics));
         assert!(techs
             .iter()
-            .any(|t| t.id == TechId(300) && t.branch == TechBranch::Industrial));
+            .any(|t| t.id == TechId("industrial_automated_mining".into()) && t.branch == TechBranch::Industrial));
         assert!(techs
             .iter()
-            .any(|t| t.id == TechId(402) && t.branch == TechBranch::Military));
+            .any(|t| t.id == TechId("military_composite_armor".into()) && t.branch == TechBranch::Military));
     }
 
     #[test]
     fn can_research_no_prerequisites() {
         let tree = TechTree::from_vec(vec![Technology {
-            id: TechId(1),
+            id: TechId("test_1".into()),
             name: "Basic".into(),
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
         }]);
-        assert!(tree.can_research(TechId(1)));
+        assert!(tree.can_research(&TechId("test_1".into())));
     }
 
     #[test]
     fn cannot_research_missing_prerequisites() {
         let tree = TechTree::from_vec(vec![
             Technology {
-                id: TechId(1),
+                id: TechId("test_1".into()),
                 name: "Basic".into(),
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(100)),
@@ -947,22 +949,22 @@ mod tests {
                 description: String::new(),
             },
             Technology {
-                id: TechId(2),
+                id: TechId("test_2".into()),
                 name: "Advanced".into(),
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(200)),
-                prerequisites: vec![TechId(1)],
+                prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
             },
         ]);
-        assert!(!tree.can_research(TechId(2)));
+        assert!(!tree.can_research(&TechId("test_2".into())));
     }
 
     #[test]
     fn can_research_after_completing_prerequisites() {
         let mut tree = TechTree::from_vec(vec![
             Technology {
-                id: TechId(1),
+                id: TechId("test_1".into()),
                 name: "Basic".into(),
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(100)),
@@ -970,52 +972,52 @@ mod tests {
                 description: String::new(),
             },
             Technology {
-                id: TechId(2),
+                id: TechId("test_2".into()),
                 name: "Advanced".into(),
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(200)),
-                prerequisites: vec![TechId(1)],
+                prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
             },
         ]);
-        tree.complete_research(TechId(1));
-        assert!(tree.can_research(TechId(2)));
+        tree.complete_research(TechId("test_1".into()));
+        assert!(tree.can_research(&TechId("test_2".into())));
     }
 
     #[test]
     fn cannot_research_already_researched() {
         let mut tree = TechTree::from_vec(vec![Technology {
-            id: TechId(1),
+            id: TechId("test_1".into()),
             name: "Basic".into(),
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
         }]);
-        tree.complete_research(TechId(1));
-        assert!(!tree.can_research(TechId(1)));
+        tree.complete_research(TechId("test_1".into()));
+        assert!(!tree.can_research(&TechId("test_1".into())));
     }
 
     #[test]
     fn is_researched() {
         let mut tree = TechTree::from_vec(vec![Technology {
-            id: TechId(1),
+            id: TechId("test_1".into()),
             name: "Basic".into(),
             branch: TechBranch::Physics,
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
         }]);
-        assert!(!tree.is_researched(TechId(1)));
-        tree.complete_research(TechId(1));
-        assert!(tree.is_researched(TechId(1)));
+        assert!(!tree.is_researched(&TechId("test_1".into())));
+        tree.complete_research(TechId("test_1".into()));
+        assert!(tree.is_researched(&TechId("test_1".into())));
     }
 
     #[test]
     fn available_technologies_returns_only_researchable() {
         let mut tree = TechTree::from_vec(vec![
             Technology {
-                id: TechId(1),
+                id: TechId("test_1".into()),
                 name: "Basic".into(),
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(100)),
@@ -1023,15 +1025,15 @@ mod tests {
                 description: String::new(),
             },
             Technology {
-                id: TechId(2),
+                id: TechId("test_2".into()),
                 name: "Advanced".into(),
                 branch: TechBranch::Physics,
                 cost: TechCost::research_only(Amt::units(200)),
-                prerequisites: vec![TechId(1)],
+                prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
             },
             Technology {
-                id: TechId(3),
+                id: TechId("test_3".into()),
                 name: "Other".into(),
                 branch: TechBranch::Social,
                 cost: TechCost::research_only(Amt::units(100)),
@@ -1040,15 +1042,15 @@ mod tests {
             },
         ]);
 
-        let available: Vec<TechId> = tree.available_technologies().iter().map(|t| t.id).collect();
-        assert!(available.contains(&TechId(1)));
-        assert!(available.contains(&TechId(3)));
-        assert!(!available.contains(&TechId(2)));
+        let available: Vec<TechId> = tree.available_technologies().iter().map(|t| t.id.clone()).collect();
+        assert!(available.contains(&TechId("test_1".into())));
+        assert!(available.contains(&TechId("test_3".into())));
+        assert!(!available.contains(&TechId("test_2".into())));
 
-        tree.complete_research(TechId(1));
-        let available: Vec<TechId> = tree.available_technologies().iter().map(|t| t.id).collect();
-        assert!(!available.contains(&TechId(1)));
-        assert!(available.contains(&TechId(2)));
-        assert!(available.contains(&TechId(3)));
+        tree.complete_research(TechId("test_1".into()));
+        let available: Vec<TechId> = tree.available_technologies().iter().map(|t| t.id.clone()).collect();
+        assert!(!available.contains(&TechId("test_1".into())));
+        assert!(available.contains(&TechId("test_2".into())));
+        assert!(available.contains(&TechId("test_3".into())));
     }
 }
