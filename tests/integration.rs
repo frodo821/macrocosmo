@@ -5445,9 +5445,9 @@ fn test_non_ftl_survey_marks_system_immediately() {
         Habitability::Adequate, false, false,
     );
 
-    // Spawn non-FTL explorer (standard explorer_mk1 with ftl_range 0.0)
+    // Spawn non-FTL ship (courier has ftl_range 0.0)
     let ship = common::spawn_test_ship(
-        app.world_mut(), "Scout-1", "explorer_mk1", sys_b, [3.0, 0.0, 0.0],
+        app.world_mut(), "Scout-1", "courier_mk1", sys_b, [3.0, 0.0, 0.0],
     );
     *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
         target_system: sys_b,

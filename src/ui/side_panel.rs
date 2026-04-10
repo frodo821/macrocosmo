@@ -1413,12 +1413,25 @@ pub fn draw_context_menu(
                             delayed_command = Some(crate::ship::ShipCommand::Survey { target: target_entity });
                         }
                     } else {
-                        // #101: Remote survey — queue move + survey via command queue
-                        // The command queue processor will auto-insert move before survey
-                        queued_command = Some(QueuedCommand::Survey {
-                            system: target_entity,
-                            expected_position: origin_pos_arr,
-                        });
+                        // #101: Remote survey — need move + survey
+                        if command_delay > 0 {
+                            // Send FTL/sublight move as delayed command, queue survey for after arrival
+                            if can_ftl {
+                                delayed_command = Some(crate::ship::ShipCommand::FTLTo { destination: target_entity });
+                            } else {
+                                delayed_command = Some(crate::ship::ShipCommand::SubLightTo { destination: target_entity });
+                            }
+                            queued_command = Some(QueuedCommand::Survey {
+                                system: target_entity,
+                                expected_position: target_pos_arr,
+                            });
+                        } else {
+                            // No delay: queue survey directly, process_command_queue will auto-insert move
+                            queued_command = Some(QueuedCommand::Survey {
+                                system: target_entity,
+                                expected_position: origin_pos_arr,
+                            });
+                        }
                     }
                     close_menu = true;
                 }
@@ -1439,12 +1452,25 @@ pub fn draw_context_menu(
                             delayed_command = Some(crate::ship::ShipCommand::Colonize);
                         }
                     } else {
-                        // #101: Remote colonize — queue move + colonize via command queue
-                        // The command queue processor will auto-insert move before colonize
-                        queued_command = Some(QueuedCommand::Colonize {
-                            system: target_entity,
-                            expected_position: origin_pos_arr,
-                        });
+                        // #101: Remote colonize — need move + colonize
+                        if command_delay > 0 {
+                            // Send FTL/sublight move as delayed command, queue colonize for after arrival
+                            if can_ftl {
+                                delayed_command = Some(crate::ship::ShipCommand::FTLTo { destination: target_entity });
+                            } else {
+                                delayed_command = Some(crate::ship::ShipCommand::SubLightTo { destination: target_entity });
+                            }
+                            queued_command = Some(QueuedCommand::Colonize {
+                                system: target_entity,
+                                expected_position: target_pos_arr,
+                            });
+                        } else {
+                            // No delay: queue colonize directly, process_command_queue will auto-insert move
+                            queued_command = Some(QueuedCommand::Colonize {
+                                system: target_entity,
+                                expected_position: origin_pos_arr,
+                            });
+                        }
                     }
                     close_menu = true;
                 }

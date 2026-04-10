@@ -252,7 +252,7 @@ pub const EXPLORER_PRESET: ShipDesignPreset = ShipDesignPreset {
     design_name: "Explorer",
     hull_id: "corvette",
     sublight_speed: 0.75,
-    ftl_range: 0.0,
+    ftl_range: 10.0,
     hp: 50.0,
     maintenance: Amt::new(0, 500),
     build_cost_minerals: Amt::units(200),
@@ -1939,7 +1939,7 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship("explorer_mk1");
+        let ship = make_ship("courier_mk1");
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 1.0, y: 0.0, z: 0.0 };
