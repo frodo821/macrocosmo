@@ -13,6 +13,7 @@ mod scripting;
 mod setup;
 mod species;
 mod ship;
+mod ship_design;
 mod technology;
 mod time_system;
 mod ui;
@@ -44,8 +45,9 @@ fn main() {
             event_system::EventSystemPlugin,
             events::EventsPlugin,
             species::SpeciesPlugin,
+            ship_design::ShipDesignPlugin,
             setup::GameSetupPlugin,
-            ui::UiPlugin,
         ))
+        .add_plugins(ui::UiPlugin)
         .run();
 }

@@ -13,6 +13,7 @@ pub mod scripting;
 pub mod setup;
 pub mod species;
 pub mod ship;
+pub mod ship_design;
 pub mod technology;
 pub mod time_system;
 pub mod ui;

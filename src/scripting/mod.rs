@@ -3,6 +3,7 @@ pub mod event_api;
 pub mod galaxy_api;
 pub mod lifecycle;
 pub mod modifier_api;
+pub mod ship_design_api;
 pub mod species_api;
 
 use bevy::prelude::*;
@@ -263,6 +264,56 @@ impl ScriptEngine {
             Ok(())
         })?;
         globals.set("define_event", define_event)?;
+
+        // --- Ship design Lua bindings ---
+
+        // Accumulator table for slot type definitions
+        let slot_type_defs = lua.create_table()?;
+        globals.set("_slot_type_definitions", slot_type_defs)?;
+
+        let define_slot_type = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_slot_type_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_slot_type", define_slot_type)?;
+
+        // Accumulator table for hull definitions
+        let hull_defs = lua.create_table()?;
+        globals.set("_hull_definitions", hull_defs)?;
+
+        let define_hull = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_hull_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_hull", define_hull)?;
+
+        // Accumulator table for module definitions
+        let module_defs = lua.create_table()?;
+        globals.set("_module_definitions", module_defs)?;
+
+        let define_module = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_module_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_module", define_module)?;
+
+        // Accumulator table for ship design definitions
+        let ship_design_defs = lua.create_table()?;
+        globals.set("_ship_design_definitions", ship_design_defs)?;
+
+        let define_ship_design = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_ship_design_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_ship_design", define_ship_design)?;
 
         // mtth_trigger(params) -- constructor that tags a table as type "mtth"
         let mtth_trigger = lua.create_function(|_, table: mlua::Table| {
