@@ -8,7 +8,7 @@ use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::amount::Amt;
-use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipHitpoints, ShipState};
+use crate::ship::{Cargo, CommandQueue, PendingShipCommand, QueuedCommand, Ship, ShipHitpoints, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
@@ -22,6 +22,16 @@ pub struct ShipScrapAction {
     pub system_name: String,
     pub minerals_refund: Amt,
     pub energy_refund: Amt,
+}
+
+/// All actions that can be triggered from the ship panel UI.
+/// Processed in draw_all_ui where mutable access is available.
+#[derive(Default)]
+pub struct ShipPanelActions {
+    pub scrap: Option<ShipScrapAction>,
+    pub cancel_command_index: Option<usize>,
+    pub clear_commands: bool,
+    pub cancel_current: bool,
 }
 
 /// Draws the right-side system info panel when a star system is selected.
@@ -718,7 +728,8 @@ pub fn draw_ship_panel(
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     command_queues: &Query<&mut CommandQueue>,
     planets: &Query<&Planet>,
-) -> Option<ShipScrapAction> {
+    pending_commands: &Query<&PendingShipCommand>,
+) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
         let (_, ship, state, cargo, ship_hp) = ships_query.get(ship_entity).ok()?;
@@ -751,6 +762,13 @@ pub fn draw_ship_panel(
                 if col.system(planets) == Some(dock_sys) { Some(dock_sys) } else { None }
             })
         });
+        // Check if ship is in a cancellable state (surveying or settling)
+        let is_cancellable = matches!(&*state, ShipState::Surveying { .. } | ShipState::Settling { .. });
+        // Collect pending commands for this ship
+        let pending_info: Option<i64> = pending_commands.iter()
+            .filter(|pc| pc.ship == ship_entity)
+            .map(|pc| pc.arrives_at)
+            .min();
         Some((
             ship_entity,
             ship.name.clone(),
@@ -771,6 +789,8 @@ pub fn draw_ship_panel(
             home_port_name,
             maintenance_cost,
             docked_at_colony,
+            is_cancellable,
+            pending_info,
         ))
     });
 
@@ -794,14 +814,16 @@ pub fn draw_ship_panel(
         home_port_name,
         maintenance_cost,
         docked_at_colony,
+        is_cancellable,
+        pending_arrives_at,
     )) = ship_data
     else {
-        return None;
+        return ShipPanelActions::default();
     };
 
     let mut deselect_ship = false;
     let mut set_home_port: Option<Entity> = None;
-    let mut scrap_action: Option<ShipScrapAction> = None;
+    let mut actions = ShipPanelActions::default();
 
     // Cargo load/unload actions to apply after UI drawing
     #[derive(Default)]
@@ -867,12 +889,36 @@ pub fn draw_ship_panel(
                 maintenance_cost, home_port_name
             ));
 
-            // #62: Command queue display
+            // #99: Pending command in transit display
+            if let Some(arrives_at) = pending_arrives_at {
+                let remaining = (arrives_at - clock.elapsed).max(0);
+                ui.label(
+                    egui::RichText::new(format!("Command in transit... arrives in {} hd", remaining))
+                        .color(egui::Color32::from_rgb(255, 191, 0)),
+                );
+            }
+
+            // #99: Cancel current action button (surveying/settling)
+            if is_cancellable {
+                if ui.button("Cancel Current Action").clicked() {
+                    actions.cancel_current = true;
+                }
+            }
+
+            // #62/#99: Command queue display with cancel buttons
             if !queued_cmds.is_empty() {
                 ui.separator();
                 ui.label(egui::RichText::new("Command Queue").strong());
                 for (i, cmd_str) in queued_cmds.iter().enumerate() {
-                    ui.label(format!("  {}. {}", i + 1, cmd_str));
+                    ui.horizontal(|ui| {
+                        if ui.small_button("X").clicked() {
+                            actions.cancel_command_index = Some(i);
+                        }
+                        ui.label(format!("{}. {}", i + 1, cmd_str));
+                    });
+                }
+                if ui.button("Clear All").clicked() {
+                    actions.clear_commands = true;
                 }
             }
 
@@ -933,7 +979,7 @@ pub fn draw_ship_panel(
                             .get(dock_system)
                             .map(|(_, s, _, _)| s.name.clone())
                             .unwrap_or_else(|_| "Unknown".to_string());
-                        scrap_action = Some(ShipScrapAction {
+                        actions.scrap = Some(ShipScrapAction {
                             ship_entity,
                             colony_entity: colony_e,
                             ship_name: name.clone(),
@@ -997,11 +1043,11 @@ pub fn draw_ship_panel(
     }
 
     // If scrapping, clear selection (despawn handled in draw_all_ui)
-    if scrap_action.is_some() {
+    if actions.scrap.is_some() {
         selected_ship.0 = None;
     }
 
-    scrap_action
+    actions
 }
 
 /// Draws the RTS-style context menu when a ship is selected and a star is clicked.

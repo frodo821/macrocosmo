@@ -5045,3 +5045,231 @@ fn test_system_modifiers_on_star_systems() {
         "Every star system should have a SystemModifiers component"
     );
 }
+
+// --- #99: Command queue UI improvements tests ---
+
+/// Clearing the command queue removes all queued commands.
+#[test]
+fn test_clear_command_queue() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+    let sys_c = spawn_test_system(
+        app.world_mut(),
+        "System-C",
+        [10.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        "explorer_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Add commands to queue
+    let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
+    queue.commands.push(QueuedCommand::MoveTo {
+        system: sys_b,
+        expected_position: [5.0, 0.0, 0.0],
+    });
+    queue.commands.push(QueuedCommand::MoveTo {
+        system: sys_c,
+        expected_position: [10.0, 0.0, 0.0],
+    });
+
+    // Verify commands exist
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    assert_eq!(queue.commands.len(), 2, "Should have 2 queued commands");
+
+    // Clear all commands
+    let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
+    queue.commands.clear();
+
+    // Verify empty
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    assert!(queue.commands.is_empty(), "Command queue should be empty after clear");
+}
+
+/// Cancelling an individual command removes only that command.
+#[test]
+fn test_cancel_individual_command() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+    let sys_c = spawn_test_system(
+        app.world_mut(),
+        "System-C",
+        [10.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        "explorer_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Add 3 commands to queue
+    let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
+    queue.commands.push(QueuedCommand::MoveTo {
+        system: sys_a,
+        expected_position: [0.0, 0.0, 0.0],
+    });
+    queue.commands.push(QueuedCommand::MoveTo {
+        system: sys_b,
+        expected_position: [5.0, 0.0, 0.0],
+    });
+    queue.commands.push(QueuedCommand::MoveTo {
+        system: sys_c,
+        expected_position: [10.0, 0.0, 0.0],
+    });
+
+    // Cancel the middle command (index 1)
+    let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
+    queue.commands.remove(1);
+
+    // Verify: 2 commands remain, the second system should be sys_c
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    assert_eq!(queue.commands.len(), 2, "Should have 2 commands after cancelling one");
+    match &queue.commands[1] {
+        QueuedCommand::MoveTo { system, .. } => {
+            assert_eq!(*system, sys_c, "Second remaining command should target System-C");
+        }
+        _ => panic!("Expected MoveTo command"),
+    }
+}
+
+/// Cancelling a survey returns the ship to Docked state at the target system.
+#[test]
+fn test_cancel_survey_returns_to_docked() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        "explorer_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Set ship to Surveying state
+    let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
+    *state = ShipState::Surveying {
+        target_system: sys_a,
+        started_at: 0,
+        completes_at: 100,
+    };
+
+    // Cancel: set back to Docked at the target system
+    let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
+    let dock_system = match &*state {
+        ShipState::Surveying { target_system, .. } => Some(*target_system),
+        _ => None,
+    };
+    if let Some(sys) = dock_system {
+        *state = ShipState::Docked { system: sys };
+    }
+
+    // Verify ship is docked
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        matches!(state, ShipState::Docked { system } if *system == sys_a),
+        "Ship should be docked at System-A after cancelling survey"
+    );
+}
+
+/// Cancelling settling returns the ship to Docked state at the settling system.
+#[test]
+fn test_cancel_settling_returns_to_docked() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Colony-Ship-1",
+        "colony_ship_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Set ship to Settling state
+    let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
+    *state = ShipState::Settling {
+        system: sys_a,
+        started_at: 0,
+        completes_at: 120,
+    };
+
+    // Cancel: set back to Docked at the settling system
+    let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
+    let dock_system = match &*state {
+        ShipState::Settling { system, .. } => Some(*system),
+        _ => None,
+    };
+    if let Some(sys) = dock_system {
+        *state = ShipState::Docked { system: sys };
+    }
+
+    // Verify ship is docked
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        matches!(state, ShipState::Docked { system } if *system == sys_a),
+        "Ship should be docked at System-A after cancelling settling"
+    );
+}

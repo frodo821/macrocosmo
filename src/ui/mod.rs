@@ -14,7 +14,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
-use crate::ship::{Cargo, CommandQueue, Ship, ShipHitpoints, ShipState};
+use crate::ship::{Cargo, CommandQueue, PendingShipCommand, Ship, ShipHitpoints, ShipState};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
@@ -60,6 +60,7 @@ pub fn draw_all_ui(
     )>,
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
     mut command_queues: Query<&mut CommandQueue>,
+    pending_commands: Query<&PendingShipCommand>,
     positions_planets_and_entities: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>),
     mut empire_q: Query<
         (
@@ -164,7 +165,7 @@ pub fn draw_all_ui(
         &planet_entities,
     );
 
-    let scrap_action = side_panel::draw_ship_panel(
+    let ship_panel_actions = side_panel::draw_ship_panel(
         ctx,
         &mut selected_ship,
         &mut ships_query,
@@ -173,10 +174,47 @@ pub fn draw_all_ui(
         &stars,
         &command_queues,
         &planets,
+        &pending_commands,
     );
 
+    // #99: Handle cancel current action (surveying/settling -> docked)
+    if ship_panel_actions.cancel_current {
+        if let Some(ship_entity) = selected_ship.0 {
+            if let Ok((_, _, mut state, _, _)) = ships_query.get_mut(ship_entity) {
+                let dock_system = match &*state {
+                    ShipState::Surveying { target_system, .. } => Some(*target_system),
+                    ShipState::Settling { system, .. } => Some(*system),
+                    _ => None,
+                };
+                if let Some(sys) = dock_system {
+                    *state = ShipState::Docked { system: sys };
+                }
+            }
+        }
+    }
+
+    // #99: Handle cancel individual command from queue
+    if let Some(index) = ship_panel_actions.cancel_command_index {
+        if let Some(ship_entity) = selected_ship.0 {
+            if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
+                if index < queue.commands.len() {
+                    queue.commands.remove(index);
+                }
+            }
+        }
+    }
+
+    // #99: Handle clear all commands from queue
+    if ship_panel_actions.clear_commands {
+        if let Some(ship_entity) = selected_ship.0 {
+            if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
+                queue.commands.clear();
+            }
+        }
+    }
+
     // #79: Handle ship scrapping — despawn entity, refund resources, fire events
-    if let Some(scrap) = scrap_action {
+    if let Some(scrap) = ship_panel_actions.scrap {
         // Add refund to colony stockpile
         if let Ok((_, _, _, Some(mut stockpile), _, _, _, _, _)) = colonies.get_mut(scrap.colony_entity) {
             stockpile.minerals = stockpile.minerals.add(scrap.minerals_refund);
