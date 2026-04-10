@@ -1387,9 +1387,15 @@ pub fn plan_ftl_route(
     ftl_range: f64,
     systems: &Query<(Entity, &StarSystem, &Position), Without<Ship>>,
 ) -> Option<Vec<Entity>> {
-    let Ok((_, _, dest_pos)) = systems.get(to) else {
+    let Ok((_, dest_star, dest_pos)) = systems.get(to) else {
         return None;
     };
+
+    // FTL requires destination to be surveyed
+    if !dest_star.surveyed {
+        return None;
+    }
+
     let dest_arr = dest_pos.as_array();
 
     // Direct jump possible?

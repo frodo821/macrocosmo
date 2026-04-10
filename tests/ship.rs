@@ -945,3 +945,99 @@ fn test_non_ftl_survey_marks_system_immediately() {
     let survey_data = app.world().get::<SurveyData>(ship);
     assert!(survey_data.is_none(), "Non-FTL ship should not carry survey data");
 }
+
+// --- Regression: FTL must not jump to unsurveyed systems ---
+
+#[test]
+fn test_plan_ftl_route_rejects_unsurveyed_destination() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false, // surveyed=true
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, false, false, // surveyed=false
+    );
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
+
+    // Queue MoveTo unsurveyed system
+    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
+        QueuedCommand::MoveTo { system: sys_b },
+    );
+
+    // Process command queue — should NOT FTL (unsurveyed), should sublight
+    common::advance_time(&mut app, 1);
+
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        matches!(state, ShipState::SubLight { .. }),
+        "Ship should sublight to unsurveyed system, not FTL. Got: {:?}",
+        std::mem::discriminant(state)
+    );
+}
+
+#[test]
+fn test_plan_ftl_route_allows_surveyed_destination() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false, // surveyed=true
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, true, false, // surveyed=true
+    );
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
+
+    // Queue MoveTo surveyed system within FTL range
+    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
+        QueuedCommand::MoveTo { system: sys_b },
+    );
+
+    common::advance_time(&mut app, 1);
+
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_b),
+        "Ship should FTL to surveyed system within range. Got: {:?}",
+        std::mem::discriminant(state)
+    );
+}
+
+#[test]
+fn test_survey_return_uses_ftl_to_surveyed_home() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, false, false, // unsurveyed target
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Spawn FTL explorer docked at sys_b (as if it arrived by sublight and completed survey)
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_b, [5.0, 0.0, 0.0]);
+
+    // Queue return MoveTo home (surveyed)
+    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
+        QueuedCommand::MoveTo { system: sys_a },
+    );
+
+    common::advance_time(&mut app, 1);
+
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_a),
+        "Ship should FTL back to surveyed home system. Got: {:?}",
+        std::mem::discriminant(state)
+    );
+}
