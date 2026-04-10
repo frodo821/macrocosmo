@@ -268,11 +268,17 @@ fn update_star_colors(
     }
 }
 
+/// Resource set each frame by the UI system to indicate egui is consuming pointer input.
+/// Camera controls check this to avoid scroll-zoom when the pointer is over a UI panel.
+#[derive(Resource, Default)]
+pub struct EguiWantsPointer(pub bool);
+
 pub fn camera_controls(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut camera_q: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
     scroll: Res<AccumulatedMouseScroll>,
+    egui_wants_pointer: Option<Res<EguiWantsPointer>>,
 ) {
     let Ok((mut transform, mut projection)) = camera_q.single_mut() else {
         return;
@@ -298,7 +304,9 @@ pub fn camera_controls(
         transform.translation.x += pan_speed;
     }
 
-    if scroll.delta.y != 0.0 {
+    let egui_wants_input = egui_wants_pointer.is_some_and(|r| r.0);
+
+    if scroll.delta.y != 0.0 && !egui_wants_input {
         let zoom_delta = -scroll.delta.y * 0.1;
         if let Projection::Orthographic(ref mut ortho) = *projection {
             ortho.scale = (ortho.scale + zoom_delta).clamp(0.2, 10.0);

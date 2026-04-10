@@ -58,7 +58,7 @@ pub struct ColonizationAction {
 #[allow(clippy::too_many_arguments)]
 pub fn draw_system_panel(
     ctx: &egui::Context,
-    selected_system: &SelectedSystem,
+    selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
     selected_planet: &mut SelectedPlanet,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
@@ -124,11 +124,18 @@ pub fn draw_system_panel(
             .map(|(e, _, _, _)| *e);
     }
 
-    egui::SidePanel::right("system_panel")
-        .min_width(280.0)
+    let screen = ctx.screen_rect();
+    let mut close_system_view = false;
+    egui::Window::new(format!("{} ({})", star.name, format_star_type(&star.star_type)))
+        .fixed_pos(egui::pos2(0.0, 30.0))
+        .fixed_size(egui::vec2(screen.width(), screen.height() - 60.0))
+        .title_bar(true)
+        .collapsible(false)
         .show(ctx, |ui| {
-            // === Star System Overview ===
-            ui.heading(format!("{} ({})", star.name, format_star_type(&star.star_type)));
+            // === Back to Galaxy button ===
+            if ui.button("\u{2190} Back to Galaxy").clicked() {
+                close_system_view = true;
+            }
             ui.separator();
 
             if let Ok(stationed) = player_q.single() {
@@ -455,6 +462,9 @@ pub fn draw_system_panel(
                 }
             }
         });
+    if close_system_view {
+        selected_system.0 = None;
+    }
 }
 
 /// Format a type id into a display name (e.g. "yellow_dwarf" -> "Yellow Dwarf").

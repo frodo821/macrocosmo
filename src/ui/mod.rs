@@ -18,7 +18,7 @@ use crate::ship::{Cargo, CommandQueue, PendingShipCommand, Ship, ShipHitpoints, 
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
-use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
+use crate::visualization::{ContextMenu, EguiWantsPointer, SelectedPlanet, SelectedShip, SelectedSystem};
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
@@ -31,6 +31,7 @@ impl Plugin for UiPlugin {
         app.add_plugins(EguiPlugin::default())
             .init_resource::<ResearchPanelOpen>()
             .init_resource::<overlays::ShipDesignerState>()
+            .init_resource::<EguiWantsPointer>()
             .add_systems(EguiPrimaryContextPass, draw_all_ui);
     }
 }
@@ -46,7 +47,7 @@ pub fn draw_all_ui(
     mut speed: ResMut<GameSpeed>,
     overlay_state: (ResMut<ResearchPanelOpen>, ResMut<overlays::ShipDesignerState>, Res<HullRegistry>, Res<ModuleRegistry>, ResMut<ShipDesignRegistry>),
     mut selected_system: ResMut<SelectedSystem>,
-    selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>),
+    selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>, ResMut<EguiWantsPointer>),
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<&StationedAt, With<Player>>,
     mut colonies: Query<(
@@ -78,10 +79,13 @@ pub fn draw_all_ui(
     >,
     mut game_events: MessageWriter<GameEvent>,
 ) {
-    let (mut selected_ship, mut context_menu, mut selected_planet) = selection_state;
+    let (mut selected_ship, mut context_menu, mut selected_planet, mut egui_wants_pointer) = selection_state;
     let (mut research_open, mut designer_state, hull_registry, module_registry, mut design_registry) = overlay_state;
     let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
+
+    // Tell camera_controls whether egui is consuming pointer input this frame
+    egui_wants_pointer.0 = ctx.wants_pointer_input();
     let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
         empire_q.single_mut()
     else {
@@ -172,7 +176,7 @@ pub fn draw_all_ui(
     let mut colonization_actions = Vec::new();
     side_panel::draw_system_panel(
         ctx,
-        &selected_system,
+        &mut selected_system,
         &mut selected_ship,
         &mut selected_planet,
         &stars,
