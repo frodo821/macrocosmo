@@ -271,7 +271,12 @@ fn test_build_queue_spawns_ship() {
             research: Amt::ZERO,
             food: Amt::ZERO,
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
+        }, ResourceCapacity::default(),
+        SystemBuildings {
+            slots: vec![Some(BuildingType::Shipyard), None, None, None, None, None],
+        },
+        SystemBuildingQueue::default(),
+    ));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
@@ -297,7 +302,7 @@ fn test_build_queue_spawns_ship() {
             }],
         },
         Buildings {
-            slots: vec![Some(BuildingType::Shipyard), None, None, None],
+            slots: vec![None, None, None, None],
         },
     ));
 

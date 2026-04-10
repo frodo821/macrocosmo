@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -63,6 +63,7 @@ pub fn draw_system_panel(
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
+    system_buildings_q: &mut Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -201,6 +202,122 @@ pub fn draw_system_panel(
                                 planets,
                             );
                         });
+                }
+            }
+
+            // === System Buildings ===
+            if let Ok((Some(sys_bldgs), sys_bldg_queue)) = system_buildings_q.get_mut(sel_entity) {
+                ui.separator();
+                ui.label(egui::RichText::new("System Buildings").strong());
+
+                let mut sys_demolish_request: Option<(usize, BuildingType)> = None;
+
+                for (i, slot) in sys_bldgs.slots.iter().enumerate() {
+                    let is_demolishing = sys_bldg_queue
+                        .as_ref()
+                        .map(|bq| bq.is_demolishing(i))
+                        .unwrap_or(false);
+
+                    match slot {
+                        Some(bt) if is_demolishing => {
+                            let remaining = sys_bldg_queue
+                                .as_ref()
+                                .and_then(|bq| bq.demolition_time_remaining(i))
+                                .unwrap_or(0);
+                            ui.label(format!(
+                                "  [{}] {} — Demolishing... ({} hd remaining)",
+                                i,
+                                bt.name(),
+                                remaining
+                            ));
+                        }
+                        Some(bt) => {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("  [{}] {}", i, bt.name()));
+                                let (m_refund, e_refund) = bt.demolition_refund();
+                                let demo_time = bt.demolition_time();
+                                let tooltip = format!(
+                                    "Demolish: {} hd | Refund M:{} E:{}",
+                                    demo_time, m_refund, e_refund
+                                );
+                                if ui
+                                    .small_button("Demolish")
+                                    .on_hover_text(tooltip)
+                                    .clicked()
+                                {
+                                    sys_demolish_request = Some((i, *bt));
+                                }
+                            });
+                        }
+                        None => {
+                            ui.label(format!("  [{}] (empty)", i));
+                        }
+                    }
+                }
+
+                if let Some((slot_idx, bt)) = sys_demolish_request {
+                    if let Some(mut bq) = sys_bldg_queue {
+                        let (m_refund, e_refund) = bt.demolition_refund();
+                        bq.demolition_queue.push(DemolitionOrder {
+                            target_slot: slot_idx,
+                            building_type: bt,
+                            time_remaining: bt.demolition_time(),
+                            minerals_refund: m_refund,
+                            energy_refund: e_refund,
+                        });
+                        info!("System building demolition order added: {:?} in slot {}", bt, slot_idx);
+                    }
+                }
+
+                // Build system building buttons
+                if let Ok((Some(sys_bldgs_read), sys_bq_read)) = system_buildings_q.get(sel_entity) {
+                    let pending_slots: Vec<usize> = sys_bq_read
+                        .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
+                        .unwrap_or_default();
+                    let empty_slot = sys_bldgs_read
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
+
+                    if let Some(slot_idx) = empty_slot {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Build System Building").strong());
+                        let system_building_types = [
+                            BuildingType::Shipyard,
+                            BuildingType::ResearchLab,
+                            BuildingType::Port,
+                        ];
+                        let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
+                        let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
+                        let mut build_sys_building_request: Option<BuildingType> = None;
+                        for bt in &system_building_types {
+                            let (base_m, base_e) = bt.build_cost();
+                            let eff_m = base_m.mul_amt(bldg_cost_mod);
+                            let eff_e = base_e.mul_amt(bldg_cost_mod);
+                            let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                            let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
+                            if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
+                                build_sys_building_request = Some(*bt);
+                            }
+                        }
+                        if let Some(bt) = build_sys_building_request {
+                            if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
+                                let (base_m, base_e) = bt.build_cost();
+                                let eff_m = base_m.mul_amt(bldg_cost_mod);
+                                let eff_e = base_e.mul_amt(bldg_cost_mod);
+                                let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                                bq.queue.push(BuildingOrder {
+                                    building_type: bt,
+                                    target_slot: slot_idx,
+                                    minerals_remaining: eff_m,
+                                    energy_remaining: eff_e,
+                                    build_time_remaining: eff_time,
+                                });
+                                info!("System building order added: {:?} in slot {}", bt, slot_idx);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -467,10 +584,10 @@ fn draw_colony_detail(
             }
         }
 
-        // #46: Buildings display and construction UI
+        // #46: Planet buildings display and construction UI
         if let Some(buildings) = buildings {
             ui.separator();
-            ui.label(egui::RichText::new("Buildings").strong());
+            ui.label(egui::RichText::new("Planet Buildings").strong());
 
             let mut demolish_request: Option<(usize, BuildingType)> = None;
 
@@ -579,13 +696,10 @@ fn draw_colony_detail(
 
             if let Some(slot_idx) = empty_slot {
                 ui.separator();
-                ui.label(egui::RichText::new("Build Building").strong());
+                ui.label(egui::RichText::new("Build Planet Building").strong());
                 let building_types = [
                     BuildingType::Mine,
                     BuildingType::PowerPlant,
-                    BuildingType::ResearchLab,
-                    BuildingType::Shipyard,
-                    BuildingType::Port,
                     BuildingType::Farm,
                 ];
                 let bldg_cost_mod = construction_params.building_cost_modifier.final_value();

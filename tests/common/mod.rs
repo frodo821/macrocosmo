@@ -367,6 +367,25 @@ pub fn spawn_test_colony(
         (planet, system_or_planet)
     };
 
+    // Separate buildings into planet and system buildings
+    let mut planet_buildings = Vec::new();
+    let mut system_building_slots: Vec<Option<BuildingType>> = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
+    let mut sys_slot_idx = 0;
+    for b in &buildings {
+        if let Some(bt) = b {
+            if bt.is_system_building() {
+                if sys_slot_idx < system_building_slots.len() {
+                    system_building_slots[sys_slot_idx] = Some(*bt);
+                    sys_slot_idx += 1;
+                }
+            } else {
+                planet_buildings.push(Some(*bt));
+            }
+        } else {
+            planet_buildings.push(None);
+        }
+    }
+
     // Add ResourceStockpile and ResourceCapacity to the StarSystem if not already present
     if world.get::<ResourceStockpile>(system).is_none() {
         world.entity_mut(system).insert((
@@ -378,6 +397,14 @@ pub fn spawn_test_colony(
                 authority: Amt::ZERO,
             },
             ResourceCapacity::default(),
+        ));
+    }
+
+    // Add SystemBuildings and SystemBuildingQueue to the StarSystem if not already present
+    if world.get::<SystemBuildings>(system).is_none() {
+        world.entity_mut(system).insert((
+            SystemBuildings { slots: system_building_slots },
+            SystemBuildingQueue::default(),
         ));
     }
 
@@ -397,7 +424,7 @@ pub fn spawn_test_colony(
             BuildQueue {
                 queue: Vec::new(),
             },
-            Buildings { slots: buildings },
+            Buildings { slots: planet_buildings },
             BuildingQueue::default(),
             ProductionFocus::default(),
             MaintenanceCost::default(),

@@ -35,6 +35,7 @@ impl Plugin for ColonyPlugin {
                     tick_timed_effects,
                     tick_authority,
                     sync_building_modifiers,
+                    sync_system_building_maintenance,
                     sync_maintenance_modifiers,
                     sync_food_consumption,
                     tick_production,
@@ -42,6 +43,7 @@ impl Plugin for ColonyPlugin {
                     tick_population_growth,
                     tick_build_queue,
                     tick_building_queue,
+                    tick_system_building_queue,
                     check_resource_alerts,
                     advance_production_tick,
                 )
@@ -361,6 +363,16 @@ impl BuildingType {
             BuildingType::Farm => "Farm",
         }
     }
+
+    /// Whether this building type is a system-level building (Shipyard, ResearchLab, Port).
+    pub fn is_system_building(&self) -> bool {
+        matches!(self, BuildingType::Shipyard | BuildingType::ResearchLab | BuildingType::Port)
+    }
+
+    /// Whether this building type is a planet-level building (Mine, PowerPlant, Farm).
+    pub fn is_planet_building(&self) -> bool {
+        !self.is_system_building()
+    }
 }
 
 #[derive(Component)]
@@ -416,6 +428,48 @@ impl BuildingQueue {
     }
 }
 
+/// System-level buildings (Shipyard, ResearchLab, Port) placed on StarSystem entities.
+#[derive(Component)]
+pub struct SystemBuildings {
+    pub slots: Vec<Option<BuildingType>>,
+}
+
+impl SystemBuildings {
+    /// Check if any slot contains a Shipyard.
+    pub fn has_shipyard(&self) -> bool {
+        self.slots.iter().any(|s| *s == Some(BuildingType::Shipyard))
+    }
+
+    /// Check if any slot contains a Port.
+    pub fn has_port(&self) -> bool {
+        self.slots.iter().any(|s| *s == Some(BuildingType::Port))
+    }
+}
+
+/// Build queue for system-level buildings, placed on StarSystem entities.
+#[derive(Component, Default)]
+pub struct SystemBuildingQueue {
+    pub queue: Vec<BuildingOrder>,
+    pub demolition_queue: Vec<DemolitionOrder>,
+}
+
+impl SystemBuildingQueue {
+    /// Check if a given slot is currently being demolished.
+    pub fn is_demolishing(&self, slot: usize) -> bool {
+        self.demolition_queue.iter().any(|d| d.target_slot == slot)
+    }
+
+    /// Get the remaining demolition time for a slot, if any.
+    pub fn demolition_time_remaining(&self, slot: usize) -> Option<i64> {
+        self.demolition_queue.iter()
+            .find(|d| d.target_slot == slot)
+            .map(|d| d.time_remaining)
+    }
+}
+
+/// Default number of system building slots for any star system.
+pub const DEFAULT_SYSTEM_BUILDING_SLOTS: usize = 6;
+
 /// Load building definitions from Lua scripts into the BuildingRegistry.
 /// Falls back to an empty registry if scripts are missing or fail to parse.
 pub fn load_building_registry(
@@ -467,7 +521,7 @@ pub fn spawn_capital_colony(
 
     let num_slots = attributes.max_building_slots as usize;
     let mut slots = vec![None; num_slots];
-    // Capital starts with 1 Mine, 1 PowerPlant, 1 Shipyard (#35), and 1 Farm (#72)
+    // Capital starts with 1 Mine, 1 PowerPlant, and 1 Farm (#72) as planet buildings
     if num_slots > 0 {
         slots[0] = Some(BuildingType::Mine);
     }
@@ -475,11 +529,12 @@ pub fn spawn_capital_colony(
         slots[1] = Some(BuildingType::PowerPlant);
     }
     if num_slots > 2 {
-        slots[2] = Some(BuildingType::Shipyard);
+        slots[2] = Some(BuildingType::Farm);
     }
-    if num_slots > 3 {
-        slots[3] = Some(BuildingType::Farm);
-    }
+
+    // System buildings: capital starts with 1 Shipyard (#35)
+    let mut system_slots = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
+    system_slots[0] = Some(BuildingType::Shipyard);
     commands.spawn((
         Colony {
             planet: planet_entity,
@@ -508,7 +563,7 @@ pub fn spawn_capital_colony(
         },
         ColonyJobs::default(),
     ));
-    // Add ResourceStockpile and ResourceCapacity to the StarSystem entity
+    // Add ResourceStockpile, ResourceCapacity, and SystemBuildings to the StarSystem entity
     commands.entity(capital_entity).insert((
         ResourceStockpile {
             minerals: Amt::units(500),
@@ -518,6 +573,8 @@ pub fn spawn_capital_colony(
             authority: Amt::ZERO,
         },
         ResourceCapacity::default(),
+        SystemBuildings { slots: system_slots },
+        SystemBuildingQueue::default(),
     ));
     info!("Capital colony spawned on {}", capital_star.name);
 }
@@ -765,6 +822,120 @@ pub fn sync_maintenance_modifiers(
     }
 }
 
+/// Synchronise system building maintenance and production modifiers.
+/// System buildings' maintenance costs are pushed into the first colony of each system.
+/// System buildings' production bonuses (e.g. ResearchLab) are also pushed to the first colony.
+pub fn sync_system_building_maintenance(
+    system_buildings_q: Query<(Entity, &SystemBuildings)>,
+    mut colonies: Query<(&Colony, &mut MaintenanceCost, &mut Production)>,
+    planets: Query<&Planet>,
+) {
+    // Build a mapping of system entity -> system buildings
+    let system_buildings: Vec<(Entity, &SystemBuildings)> = system_buildings_q.iter().collect();
+
+    for (sys_entity, sys_bldgs) in &system_buildings {
+        // Find the first colony in this system to attach modifiers to
+        let colony_data: Option<()> = None;
+        let _ = colony_data; // suppress warning
+
+        for (colony, mut maint, mut prod) in &mut colonies {
+            if colony.system(&planets) != Some(*sys_entity) {
+                continue;
+            }
+
+            // Push maintenance modifiers for system buildings
+            for (slot_idx, slot) in sys_bldgs.slots.iter().enumerate() {
+                let maint_id = format!("sys_building_maint_{}", slot_idx);
+                let prod_id_m = format!("sys_building_{}_minerals", slot_idx);
+                let prod_id_e = format!("sys_building_{}_energy", slot_idx);
+                let prod_id_r = format!("sys_building_{}_research", slot_idx);
+                let prod_id_f = format!("sys_building_{}_food", slot_idx);
+                if let Some(bt) = slot {
+                    let cost = bt.maintenance_cost();
+                    if cost != Amt::ZERO {
+                        maint.energy_per_hexadies.push_modifier(Modifier {
+                            id: maint_id,
+                            label: format!("{} (sys slot {})", bt.name(), slot_idx),
+                            base_add: SignedAmt::from_amt(cost),
+                            multiplier: SignedAmt::ZERO,
+                            add: SignedAmt::ZERO,
+                            expires_at: None,
+                            on_expire_event: None,
+                        });
+                    } else {
+                        maint.energy_per_hexadies.pop_modifier(&maint_id);
+                    }
+
+                    // Production bonuses from system buildings (e.g. ResearchLab)
+                    let (m, e, r, f) = bt.production_bonus();
+                    let label = format!("{} (sys slot {})", bt.name(), slot_idx);
+                    if m != Amt::ZERO {
+                        prod.minerals_per_hexadies.push_modifier(Modifier {
+                            id: prod_id_m,
+                            label: label.clone(),
+                            base_add: SignedAmt::from_amt(m),
+                            multiplier: SignedAmt::ZERO,
+                            add: SignedAmt::ZERO,
+                            expires_at: None,
+                            on_expire_event: None,
+                        });
+                    } else {
+                        prod.minerals_per_hexadies.pop_modifier(&prod_id_m);
+                    }
+                    if e != Amt::ZERO {
+                        prod.energy_per_hexadies.push_modifier(Modifier {
+                            id: prod_id_e,
+                            label: label.clone(),
+                            base_add: SignedAmt::from_amt(e),
+                            multiplier: SignedAmt::ZERO,
+                            add: SignedAmt::ZERO,
+                            expires_at: None,
+                            on_expire_event: None,
+                        });
+                    } else {
+                        prod.energy_per_hexadies.pop_modifier(&prod_id_e);
+                    }
+                    if r != Amt::ZERO {
+                        prod.research_per_hexadies.push_modifier(Modifier {
+                            id: prod_id_r,
+                            label: label.clone(),
+                            base_add: SignedAmt::from_amt(r),
+                            multiplier: SignedAmt::ZERO,
+                            add: SignedAmt::ZERO,
+                            expires_at: None,
+                            on_expire_event: None,
+                        });
+                    } else {
+                        prod.research_per_hexadies.pop_modifier(&prod_id_r);
+                    }
+                    if f != Amt::ZERO {
+                        prod.food_per_hexadies.push_modifier(Modifier {
+                            id: prod_id_f,
+                            label,
+                            base_add: SignedAmt::from_amt(f),
+                            multiplier: SignedAmt::ZERO,
+                            add: SignedAmt::ZERO,
+                            expires_at: None,
+                            on_expire_event: None,
+                        });
+                    } else {
+                        prod.food_per_hexadies.pop_modifier(&prod_id_f);
+                    }
+                } else {
+                    maint.energy_per_hexadies.pop_modifier(&maint_id);
+                    prod.minerals_per_hexadies.pop_modifier(&prod_id_m);
+                    prod.energy_per_hexadies.pop_modifier(&prod_id_e);
+                    prod.research_per_hexadies.pop_modifier(&prod_id_r);
+                    prod.food_per_hexadies.pop_modifier(&prod_id_f);
+                }
+            }
+
+            // Only apply to first colony in the system
+            break;
+        }
+    }
+}
+
 /// Synchronise food consumption based on current population.
 /// Sets the ModifiedValue base to `population * FOOD_PER_POP_PER_HEXADIES`.
 /// Any tech modifiers (e.g. Hydroponics -20%) remain attached as multiplier modifiers.
@@ -945,11 +1116,12 @@ pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut colonies: Query<(&Colony, &mut BuildQueue, Option<&Buildings>)>,
+    mut colonies: Query<(&Colony, &mut BuildQueue)>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
+    system_buildings: Query<&SystemBuildings>,
     mut events: MessageWriter<GameEvent>,
     empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
@@ -972,13 +1144,13 @@ pub fn tick_build_queue(
 
     let mut results: Vec<BuildResult> = Vec::new();
 
-    for (colony, mut build_queue, buildings) in &mut colonies {
+    for (colony, mut build_queue) in &mut colonies {
         let Some(sys) = colony.system(&planets) else { continue };
 
-        // #35: Skip ship construction if colony has no shipyard
-        let has_shipyard = buildings.is_some_and(|b| b.has_shipyard());
+        // #35: Skip ship construction if system has no shipyard
+        let has_shipyard = system_buildings.get(sys).is_ok_and(|sb| sb.has_shipyard());
         if !build_queue.queue.is_empty() && !has_shipyard {
-            warn!("Colony lacks a Shipyard; skipping ship construction");
+            warn!("System lacks a Shipyard; skipping ship construction");
             continue;
         }
 
@@ -1196,6 +1368,96 @@ pub fn tick_building_queue(
             stockpile.minerals = stockpile.minerals.sub(delta.minerals_consumed).add(delta.minerals_refunded);
             stockpile.energy = stockpile.energy.sub(delta.energy_consumed).add(delta.energy_refunded);
         }
+    }
+}
+
+/// Tick system-level building construction/demolition queues on StarSystem entities.
+pub fn tick_system_building_queue(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    mut query: Query<(Entity, &mut SystemBuildingQueue, &mut SystemBuildings, &mut ResourceStockpile)>,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+
+    for (system_entity, mut bq, mut buildings, mut stockpile) in &mut query {
+        let mut available_minerals = stockpile.minerals;
+        let mut available_energy = stockpile.energy;
+        let mut minerals_consumed = Amt::ZERO;
+        let mut energy_consumed = Amt::ZERO;
+        let mut minerals_refunded = Amt::ZERO;
+        let mut energy_refunded = Amt::ZERO;
+
+        // --- Process construction queue ---
+        for _ in 0..delta {
+            if bq.queue.is_empty() {
+                break;
+            }
+            let order = &mut bq.queue[0];
+
+            let minerals_transfer = order.minerals_remaining.min(available_minerals);
+            order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
+            available_minerals = available_minerals.sub(minerals_transfer);
+            minerals_consumed = minerals_consumed.add(minerals_transfer);
+
+            let energy_transfer = order.energy_remaining.min(available_energy);
+            order.energy_remaining = order.energy_remaining.sub(energy_transfer);
+            available_energy = available_energy.sub(energy_transfer);
+            energy_consumed = energy_consumed.add(energy_transfer);
+
+            order.build_time_remaining -= 1;
+
+            if bq.queue[0].minerals_remaining == Amt::ZERO
+                && bq.queue[0].energy_remaining == Amt::ZERO
+                && bq.queue[0].build_time_remaining <= 0
+            {
+                let completed = bq.queue.remove(0);
+                if completed.target_slot < buildings.slots.len() {
+                    buildings.slots[completed.target_slot] = Some(completed.building_type);
+                    info!(
+                        "System building {:?} completed in slot {}",
+                        completed.building_type, completed.target_slot
+                    );
+                }
+            }
+        }
+
+        // --- Process demolition queue ---
+        let mut completed_demolitions = Vec::new();
+        for demo in bq.demolition_queue.iter_mut() {
+            demo.time_remaining -= delta;
+            if demo.time_remaining <= 0 {
+                completed_demolitions.push(demo.target_slot);
+            }
+        }
+        for slot_idx in completed_demolitions {
+            if let Some(pos) = bq.demolition_queue.iter().position(|d| d.target_slot == slot_idx) {
+                let completed = bq.demolition_queue.remove(pos);
+                if slot_idx < buildings.slots.len() {
+                    let building_name = buildings.slots[slot_idx]
+                        .map(|bt| bt.name())
+                        .unwrap_or("Unknown");
+                    buildings.slots[slot_idx] = None;
+                    minerals_refunded = minerals_refunded.add(completed.minerals_refund);
+                    energy_refunded = energy_refunded.add(completed.energy_refund);
+                    info!(
+                        "System building {} demolished in slot {}, refunded M:{} E:{}",
+                        building_name, slot_idx, completed.minerals_refund, completed.energy_refund
+                    );
+                    event_system.fire_event(
+                        "building_demolished",
+                        Some(system_entity),
+                        clock.elapsed,
+                    );
+                }
+            }
+        }
+
+        stockpile.minerals = stockpile.minerals.sub(minerals_consumed).add(minerals_refunded);
+        stockpile.energy = stockpile.energy.sub(energy_consumed).add(energy_refunded);
     }
 }
 
@@ -1900,6 +2162,65 @@ mod tests {
         assert!(bq.is_demolishing(2));
         assert!(!bq.is_demolishing(0));
         assert_eq!(bq.demolition_time_remaining(2), Some(5));
+        assert_eq!(bq.demolition_time_remaining(0), None);
+    }
+
+    // --- #113: System vs Planet building classification ---
+
+    #[test]
+    fn building_type_classification() {
+        assert!(BuildingType::Mine.is_planet_building());
+        assert!(BuildingType::PowerPlant.is_planet_building());
+        assert!(BuildingType::Farm.is_planet_building());
+        assert!(!BuildingType::Mine.is_system_building());
+
+        assert!(BuildingType::Shipyard.is_system_building());
+        assert!(BuildingType::ResearchLab.is_system_building());
+        assert!(BuildingType::Port.is_system_building());
+        assert!(!BuildingType::Shipyard.is_planet_building());
+    }
+
+    #[test]
+    fn system_buildings_has_shipyard() {
+        let sb = SystemBuildings {
+            slots: vec![Some(BuildingType::Shipyard), None, None],
+        };
+        assert!(sb.has_shipyard());
+
+        let sb_empty = SystemBuildings {
+            slots: vec![Some(BuildingType::Port), None, None],
+        };
+        assert!(!sb_empty.has_shipyard());
+    }
+
+    #[test]
+    fn system_buildings_has_port() {
+        let sb = SystemBuildings {
+            slots: vec![None, Some(BuildingType::Port), None],
+        };
+        assert!(sb.has_port());
+
+        let sb_empty = SystemBuildings {
+            slots: vec![Some(BuildingType::Shipyard), None, None],
+        };
+        assert!(!sb_empty.has_port());
+    }
+
+    #[test]
+    fn system_building_queue_is_demolishing() {
+        let bq = SystemBuildingQueue {
+            queue: Vec::new(),
+            demolition_queue: vec![DemolitionOrder {
+                target_slot: 1,
+                building_type: BuildingType::Shipyard,
+                time_remaining: 15,
+                minerals_refund: Amt::ZERO,
+                energy_refund: Amt::ZERO,
+            }],
+        };
+        assert!(bq.is_demolishing(1));
+        assert!(!bq.is_demolishing(0));
+        assert_eq!(bq.demolition_time_remaining(1), Some(15));
         assert_eq!(bq.demolition_time_remaining(0), None);
     }
 }

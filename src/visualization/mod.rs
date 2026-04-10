@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy_egui::EguiContexts;
 
-use crate::colony::{Buildings, Colony};
+use crate::colony::{Buildings, Colony, SystemBuildings};
 use crate::components::Position;
 use crate::galaxy::{ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
@@ -324,6 +324,7 @@ fn draw_galaxy_overlay(
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
     empire_params_q: Query<&GlobalParams, With<PlayerEmpire>>,
+    system_buildings: Query<(Entity, &SystemBuildings)>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
 ) {
@@ -444,10 +445,10 @@ fn draw_galaxy_overlay(
     }
 
     // #46: Port facility markers - draw a diamond icon on systems with ports
-    let port_systems: Vec<Entity> = colonies
+    let port_systems: Vec<Entity> = system_buildings
         .iter()
-        .filter(|(_, bldgs)| bldgs.has_port())
-        .filter_map(|(col, _)| col.system(&planets))
+        .filter(|(_, sb)| sb.has_port())
+        .map(|(entity, _)| entity)
         .collect();
 
     for system_entity in &port_systems {
