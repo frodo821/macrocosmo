@@ -391,7 +391,7 @@ pub fn generate_galaxy(
     let mut rng = rand::rng();
     let num_systems = 150;
     let num_arms = 3;
-    let galaxy_radius = 60.0_f64; // light-years
+    let galaxy_radius = 80.0_f64; // light-years
     let arm_twist = 2.5; // how tightly the arms spiral
     let arm_spread = 0.4; // angular spread of each arm
     let min_distance = 2.0_f64;

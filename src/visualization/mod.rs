@@ -32,7 +32,7 @@ impl Plugin for VisualizationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(territory::TerritoryPlugin)
         .insert_resource(GalaxyView {
-            scale: 3.0,
+            scale: 7.0,
         })
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedShip::default())
