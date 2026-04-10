@@ -21,6 +21,7 @@ pub enum GameEventKind {
     CombatVictory,
     CombatDefeat,
     HostileDetected,
+    ShipScrapped,
 }
 
 #[derive(Resource)]

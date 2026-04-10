@@ -171,6 +171,21 @@ impl ShipType {
         }
     }
 
+    /// Build cost in (minerals, energy).
+    pub fn build_cost(&self) -> (Amt, Amt) {
+        match self {
+            ShipType::Explorer => (Amt::units(200), Amt::units(100)),
+            ShipType::ColonyShip => (Amt::units(500), Amt::units(300)),
+            ShipType::Courier => (Amt::units(100), Amt::units(50)),
+        }
+    }
+
+    /// Scrap refund: 50% of build cost in both minerals and energy.
+    pub fn scrap_refund(&self) -> (Amt, Amt) {
+        let (m, e) = self.build_cost();
+        (Amt::milli(m.raw() / 2), Amt::milli(e.raw() / 2))
+    }
+
     pub fn default_combat_stats(&self) -> CombatStats {
         match self {
             ShipType::Explorer => CombatStats { attack: 1.0, defense: 2.0 },
@@ -1765,5 +1780,22 @@ mod tests {
 
         // Fleet entity should be despawned
         assert!(world.get_entity(fleet_entity).is_err());
+    }
+
+    #[test]
+    fn build_cost_returns_expected_values() {
+        assert_eq!(ShipType::Explorer.build_cost(), (Amt::units(200), Amt::units(100)));
+        assert_eq!(ShipType::ColonyShip.build_cost(), (Amt::units(500), Amt::units(300)));
+        assert_eq!(ShipType::Courier.build_cost(), (Amt::units(100), Amt::units(50)));
+    }
+
+    #[test]
+    fn scrap_refund_is_half_build_cost() {
+        for st in [ShipType::Explorer, ShipType::ColonyShip, ShipType::Courier] {
+            let (bm, be) = st.build_cost();
+            let (rm, re) = st.scrap_refund();
+            assert_eq!(rm, Amt::milli(bm.raw() / 2));
+            assert_eq!(re, Amt::milli(be.raw() / 2));
+        }
     }
 }

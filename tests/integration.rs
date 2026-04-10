@@ -4074,3 +4074,124 @@ fn test_job_auto_assignment_excess_population() {
     assert_eq!(jobs.total_employed(), 10);
     assert_eq!(pop.total() - jobs.total_employed(), 5); // 5 unemployed
 }
+
+// =========================================================================
+// #79: Ship scrapping (recycling)
+// =========================================================================
+
+#[test]
+fn test_scrap_ship_refund_amounts() {
+    // Verify scrap_refund returns 50% of build_cost for all ship types
+    let (m, e) = ShipType::Explorer.build_cost();
+    assert_eq!(m, Amt::units(200));
+    assert_eq!(e, Amt::units(100));
+    let (rm, re) = ShipType::Explorer.scrap_refund();
+    assert_eq!(rm, Amt::units(100));
+    assert_eq!(re, Amt::units(50));
+
+    let (m, e) = ShipType::ColonyShip.build_cost();
+    assert_eq!(m, Amt::units(500));
+    assert_eq!(e, Amt::units(300));
+    let (rm, re) = ShipType::ColonyShip.scrap_refund();
+    assert_eq!(rm, Amt::units(250));
+    assert_eq!(re, Amt::units(150));
+
+    let (m, e) = ShipType::Courier.build_cost();
+    assert_eq!(m, Amt::units(100));
+    assert_eq!(e, Amt::units(50));
+    let (rm, re) = ShipType::Courier.scrap_refund();
+    assert_eq!(rm, Amt::units(50));
+    assert_eq!(re, Amt::units(25));
+}
+
+#[test]
+fn test_scrap_ship_despawns_entity() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Sol",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let _colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(100),
+        Amt::units(100),
+        vec![None; 4],
+    );
+
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        ShipType::Explorer,
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Verify ship exists
+    assert!(app.world().get_entity(ship).is_ok());
+
+    // Despawn the ship (simulating scrap action)
+    app.world_mut().despawn(ship);
+
+    // Verify ship is gone
+    assert!(app.world().get_entity(ship).is_err());
+}
+
+#[test]
+fn test_scrap_ship_refunds_resources() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Sol",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(100),
+        Amt::units(100),
+        vec![None; 4],
+    );
+
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        ShipType::Explorer,
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Get refund amounts
+    let (refund_m, refund_e) = ShipType::Explorer.scrap_refund();
+    assert_eq!(refund_m, Amt::units(100));
+    assert_eq!(refund_e, Amt::units(50));
+
+    // Apply refund to colony stockpile
+    {
+        let mut stockpile = app.world_mut().get_mut::<ResourceStockpile>(colony).unwrap();
+        stockpile.minerals = stockpile.minerals.add(refund_m);
+        stockpile.energy = stockpile.energy.add(refund_e);
+    }
+
+    // Despawn ship
+    app.world_mut().despawn(ship);
+
+    // Verify resources were added
+    let stockpile = app.world().get::<ResourceStockpile>(colony).unwrap();
+    assert_eq!(stockpile.minerals, Amt::units(200)); // 100 + 100 refund
+    assert_eq!(stockpile.energy, Amt::units(150));   // 100 + 50 refund
+
+    // Verify ship is gone
+    assert!(app.world().get_entity(ship).is_err());
+}

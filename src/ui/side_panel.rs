@@ -7,10 +7,22 @@ use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
+use crate::amount::Amt;
 use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState, ShipType};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedShip, SelectedSystem};
+
+/// Action returned from draw_ship_panel when the player clicks "Scrap Ship".
+/// Processed in draw_all_ui where Commands is available for despawning.
+pub struct ShipScrapAction {
+    pub ship_entity: Entity,
+    pub colony_entity: Entity,
+    pub ship_name: String,
+    pub system_name: String,
+    pub minerals_refund: Amt,
+    pub energy_refund: Amt,
+}
 
 /// Draws the right-side system info panel when a star system is selected.
 #[allow(clippy::too_many_arguments)]
@@ -599,7 +611,7 @@ pub fn draw_ship_panel(
     )>,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     command_queues: &Query<&mut CommandQueue>,
-) {
+) -> Option<ShipScrapAction> {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
         let (_, ship, state, cargo) = ships_query.get(ship_entity).ok()?;
@@ -669,11 +681,12 @@ pub fn draw_ship_panel(
         docked_at_colony,
     )) = ship_data
     else {
-        return;
+        return None;
     };
 
     let mut deselect_ship = false;
     let mut set_home_port: Option<Entity> = None;
+    let mut scrap_action: Option<ShipScrapAction> = None;
 
     // Cargo load/unload actions to apply after UI drawing
     #[derive(Default)]
@@ -785,6 +798,31 @@ pub fn draw_ship_panel(
                 }
             }
 
+            // #79: Scrap Ship button (only when docked at a colony)
+            if let Some(dock_system) = docked_at_colony {
+                let (refund_m, refund_e) = ship_type.scrap_refund();
+                let scrap_label = format!("Scrap Ship (+{} M, +{} E)", refund_m, refund_e);
+                let response = ui.button(&scrap_label)
+                    .on_hover_text("Dismantle this ship and recover 50% of build cost");
+                if response.clicked() {
+                    // Find colony entity at dock system
+                    if let Some(colony_e) = colony_entity_at_dock {
+                        let system_name = stars
+                            .get(dock_system)
+                            .map(|(_, s, _, _)| s.name.clone())
+                            .unwrap_or_else(|_| "Unknown".to_string());
+                        scrap_action = Some(ShipScrapAction {
+                            ship_entity,
+                            colony_entity: colony_e,
+                            ship_name: name.clone(),
+                            system_name,
+                            minerals_refund: refund_m,
+                            energy_refund: refund_e,
+                        });
+                    }
+                }
+            }
+
             if ui.button("Deselect ship").clicked() {
                 deselect_ship = true;
             }
@@ -803,7 +841,6 @@ pub fn draw_ship_panel(
     }
 
     // Apply cargo load/unload actions
-    use crate::amount::Amt;
     let has_cargo_action = cargo_action.load_minerals > Amt::ZERO
         || cargo_action.load_energy > Amt::ZERO
         || cargo_action.unload_minerals > Amt::ZERO
@@ -836,6 +873,13 @@ pub fn draw_ship_panel(
             }
         }
     }
+
+    // If scrapping, clear selection (despawn handled in draw_all_ui)
+    if scrap_action.is_some() {
+        selected_ship.0 = None;
+    }
+
+    scrap_action
 }
 
 /// Draws the RTS-style context menu when a ship is selected and a star is clicked.

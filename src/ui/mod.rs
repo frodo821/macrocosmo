@@ -10,6 +10,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
 use crate::communication::CommandLog;
 use crate::components::Position;
+use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
@@ -74,6 +75,7 @@ pub fn draw_all_ui(
         ),
         With<PlayerEmpire>,
     >,
+    mut game_events: MessageWriter<GameEvent>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
@@ -155,7 +157,7 @@ pub fn draw_all_ui(
         construction_params,
     );
 
-    side_panel::draw_ship_panel(
+    let scrap_action = side_panel::draw_ship_panel(
         ctx,
         &mut selected_ship,
         &mut ships_query,
@@ -164,6 +166,28 @@ pub fn draw_all_ui(
         &stars,
         &command_queues,
     );
+
+    // #79: Handle ship scrapping — despawn entity, refund resources, fire events
+    if let Some(scrap) = scrap_action {
+        // Add refund to colony stockpile
+        if let Ok((_, _, _, Some(mut stockpile), _, _, _, _, _)) = colonies.get_mut(scrap.colony_entity) {
+            stockpile.minerals = stockpile.minerals.add(scrap.minerals_refund);
+            stockpile.energy = stockpile.energy.add(scrap.energy_refund);
+        }
+        // Despawn the ship entity
+        commands.entity(scrap.ship_entity).despawn();
+        // Fire GameEvent for the event log
+        let description = format!(
+            "{} scrapped at {} (+{} M, +{} E)",
+            scrap.ship_name, scrap.system_name, scrap.minerals_refund, scrap.energy_refund
+        );
+        game_events.write(GameEvent {
+            timestamp: clock.elapsed,
+            kind: GameEventKind::ShipScrapped,
+            description,
+            related_system: None,
+        });
+    }
 
     // #76: Collect pending ship commands from context menu (light-speed delay)
     let mut pending_ship_commands = Vec::new();
