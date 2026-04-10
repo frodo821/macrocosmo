@@ -2,6 +2,7 @@ pub mod building_api;
 pub mod event_api;
 pub mod lifecycle;
 pub mod modifier_api;
+pub mod species_api;
 
 use bevy::prelude::*;
 use mlua::prelude::*;
@@ -123,6 +124,34 @@ impl ScriptEngine {
             Ok(result)
         })?;
         globals.set("check_flag", check_flag)?;
+
+        // --- Species and job definition Lua bindings ---
+
+        // Accumulator table for species definitions
+        let species_defs = lua.create_table()?;
+        globals.set("_species_definitions", species_defs)?;
+
+        // define_species(table) -- appends a species definition table to _species_definitions
+        let define_species = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_species_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_species", define_species)?;
+
+        // Accumulator table for job definitions
+        let job_defs = lua.create_table()?;
+        globals.set("_job_definitions", job_defs)?;
+
+        // define_job(table) -- appends a job definition table to _job_definitions
+        let define_job = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_job_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_job", define_job)?;
 
         // --- Event system Lua bindings ---
 

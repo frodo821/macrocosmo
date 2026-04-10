@@ -9,6 +9,7 @@ use crate::galaxy::{StarSystem, SystemAttributes, Sovereignty};
 use crate::modifier::{ModifiedValue, Modifier};
 use crate::scripting::building_api::{parse_building_definitions, BuildingRegistry};
 use crate::ship::{spawn_ship, Owner, Ship, ShipState, ShipType};
+use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
 pub struct ColonyPlugin;
@@ -454,6 +455,13 @@ pub fn spawn_capital_colony(
                 ProductionFocus::default(),
                 MaintenanceCost::default(),
                 FoodConsumption::default(),
+                ColonyPopulation {
+                    species: vec![ColonySpecies {
+                        species_id: "human".to_string(),
+                        population: 100,
+                    }],
+                },
+                ColonyJobs::default(),
             ));
             info!("Capital colony spawned on {}", system.name);
             return;

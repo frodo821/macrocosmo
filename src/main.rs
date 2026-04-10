@@ -11,6 +11,7 @@ mod physics;
 mod player;
 mod scripting;
 mod setup;
+mod species;
 mod ship;
 mod technology;
 mod time_system;
@@ -42,6 +43,7 @@ fn main() {
             technology::TechnologyPlugin,
             event_system::EventSystemPlugin,
             events::EventsPlugin,
+            species::SpeciesPlugin,
             setup::GameSetupPlugin,
             ui::UiPlugin,
         ))

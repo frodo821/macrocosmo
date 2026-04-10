@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
+use macrocosmo::species;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
 use macrocosmo::event_system::EventSystem;
@@ -49,6 +50,8 @@ pub fn test_app() -> App {
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
     app.insert_resource(technology::LastResearchTick(0));
+    app.init_resource::<species::SpeciesRegistry>();
+    app.init_resource::<species::JobRegistry>();
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -87,6 +90,10 @@ pub fn test_app() -> App {
     );
     app.add_systems(
         Update,
+        species::sync_job_assignment.after(macrocosmo::time_system::advance_game_time),
+    );
+    app.add_systems(
+        Update,
         macrocosmo::event_system::tick_events
             .after(macrocosmo::time_system::advance_game_time),
     );
@@ -114,6 +121,8 @@ pub fn full_test_app() -> App {
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
+    app.init_resource::<species::SpeciesRegistry>();
+    app.init_resource::<species::JobRegistry>();
     app.add_message::<GameEvent>();
 
     // --- Visualization resources ---
@@ -163,6 +172,9 @@ pub fn full_test_app() -> App {
             .chain(),
     );
     app.add_systems(Update, update_sovereignty);
+
+    // --- Species systems (from SpeciesPlugin) ---
+    app.add_systems(Update, species::sync_job_assignment);
 
     // --- Knowledge system (from KnowledgePlugin) ---
     app.add_systems(Update, propagate_knowledge);

@@ -11,6 +11,7 @@ pub mod physics;
 pub mod player;
 pub mod scripting;
 pub mod setup;
+pub mod species;
 pub mod ship;
 pub mod technology;
 pub mod time_system;
