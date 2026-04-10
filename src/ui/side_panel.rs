@@ -8,7 +8,7 @@ use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::amount::Amt;
-use crate::ship::{Cargo, CommandQueue, PendingShipCommand, QueuedCommand, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship::{Cargo, CommandQueue, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
@@ -43,6 +43,8 @@ pub struct ShipPanelActions {
     pub clear_commands: bool,
     pub cancel_current: bool,
     pub refit: Option<ShipRefitAction>,
+    /// #57: ROE change action — (ship_entity, new_roe, command_delay)
+    pub set_roe: Option<(Entity, RulesOfEngagement, i64)>,
 }
 
 /// #114: Action to start colonizing a planet from the system panel build queue.
@@ -1084,6 +1086,9 @@ pub fn draw_ship_panel(
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     clock_elapsed: i64,
+    roe_query: &Query<&RulesOfEngagement>,
+    player_q: &Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    positions: &Query<&Position>,
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -1132,6 +1137,32 @@ pub fn draw_ship_panel(
         let ship_modules: Vec<crate::ship::EquippedModule> = ship.modules.clone();
         // #98: Is the ship refitting?
         let is_refitting = matches!(&*state, ShipState::Refitting { .. });
+        // #57: Current ROE
+        let current_roe = roe_query.get(ship_entity).copied().unwrap_or_default();
+        // #57: Command delay for ROE changes
+        let roe_command_delay: i64 = {
+            // Determine the system the ship is at (or heading to)
+            let ship_system = docked_system.or_else(|| {
+                match &*state {
+                    ShipState::SubLight { target_system, .. } => *target_system,
+                    ShipState::InFTL { destination_system, .. } => Some(*destination_system),
+                    ShipState::Surveying { target_system, .. } => Some(*target_system),
+                    ShipState::Settling { system, .. } => Some(*system),
+                    _ => None,
+                }
+            });
+            player_q
+                .single()
+                .ok()
+                .and_then(|stationed| {
+                    let player_pos = positions.get(stationed.system).ok()?;
+                    let ship_sys = ship_system?;
+                    let ship_pos = positions.get(ship_sys).ok()?;
+                    let dist = crate::physics::distance_ly(player_pos, ship_pos);
+                    Some(crate::physics::light_delay_hexadies(dist))
+                })
+                .unwrap_or(0)
+        };
         Some((
             ship_entity,
             ship.name.clone(),
@@ -1159,6 +1190,8 @@ pub fn draw_ship_panel(
             ship_hull_id,
             ship_modules,
             is_refitting,
+            current_roe,
+            roe_command_delay,
         ))
     });
 
@@ -1189,6 +1222,8 @@ pub fn draw_ship_panel(
         ship_hull_id,
         ship_modules,
         is_refitting,
+        current_roe,
+        roe_command_delay,
     )) = ship_data
     else {
         return ShipPanelActions::default();
@@ -1272,6 +1307,26 @@ pub fn draw_ship_panel(
                 "Maintenance: {:.1} E/hd (charged to {})",
                 maintenance_cost, home_port_name
             ));
+
+            // #57: Rules of Engagement selector
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("ROE:");
+                for roe_option in RulesOfEngagement::ALL {
+                    let is_selected = current_roe == roe_option;
+                    let label = roe_option.label();
+                    if ui.selectable_label(is_selected, label).clicked() && !is_selected {
+                        actions.set_roe = Some((ship_entity, roe_option, roe_command_delay));
+                    }
+                }
+            });
+            if roe_command_delay > 0 {
+                ui.label(
+                    egui::RichText::new(format!("ROE change delay: {} hd", roe_command_delay))
+                        .small()
+                        .color(egui::Color32::from_rgb(255, 200, 100)),
+                );
+            }
 
             // #99: Pending command in transit display
             if let Some(arrives_at) = pending_arrives_at {

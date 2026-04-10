@@ -717,3 +717,460 @@ fn test_shield_piercing() {
     assert!((h.hp - expected_hp).abs() < 1.0,
         "Hostile HP should be ~{}, got {}", expected_hp, h.hp);
 }
+
+// --- #57: Rules of Engagement tests ---
+
+#[test]
+fn test_default_roe_is_defensive() {
+    let roe = RulesOfEngagement::default();
+    assert_eq!(roe, RulesOfEngagement::Defensive);
+}
+
+#[test]
+fn test_retreat_ships_skip_combat_no_damage_dealt() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Retreat-Test",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Hostile with no attack but trackable HP
+    let hostile_entity = app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 0.0,
+        hp: 100.0,
+        max_hp: 100.0,
+        hostile_type: HostileType::SpaceCreature,
+        evasion: 0.0,
+    }).id();
+
+    // Register a weapon module
+    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
+        macrocosmo::ship_design::ModuleDefinition {
+            id: "roe_laser".to_string(),
+            name: "ROE Laser".to_string(),
+            slot_type: "weapon".to_string(),
+            modifiers: Vec::new(),
+            weapon: Some(macrocosmo::ship_design::WeaponStats {
+                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
+                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
+                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
+                hull_damage: 5.0, hull_damage_div: 0.0,
+            }),
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+        },
+    );
+
+    // Ship with Retreat ROE — should NOT engage
+    app.world_mut().spawn((
+        Ship {
+            name: "Coward-1".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "roe_laser".to_string() }],
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 50.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Retreat,
+    ));
+
+    advance_time(&mut app, 1);
+
+    // Hostile should be undamaged because the only ship has Retreat ROE
+    let hostile = app.world().get::<HostilePresence>(hostile_entity).unwrap();
+    assert!(
+        (hostile.hp - 100.0).abs() < f64::EPSILON,
+        "Hostile HP should be unchanged when only Retreat ships present, got {}",
+        hostile.hp
+    );
+}
+
+#[test]
+fn test_retreat_ships_dont_take_damage() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Retreat-NoDmg",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Hostile with strong attack
+    app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 100.0,
+        hp: 10000.0,
+        max_hp: 10000.0,
+        hostile_type: HostileType::AncientDefense,
+        evasion: 0.0,
+    });
+
+    // Ship with Retreat ROE — should not take damage
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Runner-1".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 1.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Retreat,
+    )).id();
+
+    advance_time(&mut app, 1);
+
+    // Ship should still exist and be undamaged (Retreat skips combat)
+    let hp = app.world().get::<ShipHitpoints>(ship_entity).unwrap();
+    assert!(
+        (hp.hull - 1.0).abs() < f64::EPSILON,
+        "Retreat ship should not take damage, hull is {}",
+        hp.hull
+    );
+}
+
+#[test]
+fn test_aggressive_ships_engage_combat() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Aggro-Test",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    let hostile_entity = app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 0.0,
+        hp: 0.05,
+        max_hp: 10.0,
+        hostile_type: HostileType::SpaceCreature,
+        evasion: 0.0,
+    }).id();
+
+    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
+        macrocosmo::ship_design::ModuleDefinition {
+            id: "aggro_laser".to_string(),
+            name: "Aggro Laser".to_string(),
+            slot_type: "weapon".to_string(),
+            modifiers: Vec::new(),
+            weapon: Some(macrocosmo::ship_design::WeaponStats {
+                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
+                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
+                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
+                hull_damage: 5.0, hull_damage_div: 0.0,
+            }),
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+        },
+    );
+
+    // Ship with Aggressive ROE
+    app.world_mut().spawn((
+        Ship {
+            name: "Aggressor-1".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "aggro_laser".to_string() }],
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 50.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Aggressive,
+    ));
+
+    advance_time(&mut app, 1);
+
+    // Hostile should be destroyed by the Aggressive ship
+    assert!(
+        app.world().get_entity(hostile_entity).is_err(),
+        "Hostile should be destroyed by Aggressive ship"
+    );
+}
+
+#[test]
+fn test_defensive_ships_engage_combat_same_as_before() {
+    // Defensive is the default and should behave the same as current (always fight)
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Defensive-Test",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    let hostile_entity = app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 0.0,
+        hp: 0.05,
+        max_hp: 10.0,
+        hostile_type: HostileType::SpaceCreature,
+        evasion: 0.0,
+    }).id();
+
+    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
+        macrocosmo::ship_design::ModuleDefinition {
+            id: "def_laser".to_string(),
+            name: "Defensive Laser".to_string(),
+            slot_type: "weapon".to_string(),
+            modifiers: Vec::new(),
+            weapon: Some(macrocosmo::ship_design::WeaponStats {
+                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
+                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
+                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
+                hull_damage: 5.0, hull_damage_div: 0.0,
+            }),
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+        },
+    );
+
+    // Ship with Defensive ROE (default) — should still fight
+    app.world_mut().spawn((
+        Ship {
+            name: "Defender-1".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "def_laser".to_string() }],
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 50.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Defensive,
+    ));
+
+    advance_time(&mut app, 1);
+
+    // Hostile should be destroyed (Defensive ships engage when hostiles are present)
+    assert!(
+        app.world().get_entity(hostile_entity).is_err(),
+        "Hostile should be destroyed by Defensive ship"
+    );
+}
+
+#[test]
+fn test_mixed_roe_only_non_retreat_fight() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Mixed-ROE",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Hostile with moderate HP and strong attack
+    app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 50.0,
+        hp: 0.05,
+        max_hp: 10.0,
+        hostile_type: HostileType::SpaceCreature,
+        evasion: 0.0,
+    });
+
+    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
+        macrocosmo::ship_design::ModuleDefinition {
+            id: "mix_laser".to_string(),
+            name: "Mix Laser".to_string(),
+            slot_type: "weapon".to_string(),
+            modifiers: Vec::new(),
+            weapon: Some(macrocosmo::ship_design::WeaponStats {
+                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
+                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
+                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
+                hull_damage: 5.0, hull_damage_div: 0.0,
+            }),
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+        },
+    );
+
+    // Aggressive ship — will fight
+    app.world_mut().spawn((
+        Ship {
+            name: "Fighter".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "mix_laser".to_string() }],
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 5000.0, hull_max: 5000.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Aggressive,
+    ));
+
+    // Retreat ship — should NOT take damage from hostile
+    let retreat_ship = app.world_mut().spawn((
+        Ship {
+            name: "Pacifist".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 1.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Retreat,
+    )).id();
+
+    advance_time(&mut app, 1);
+
+    // Retreat ship should survive (not included in combat damage distribution)
+    let retreat_hp = app.world().get::<ShipHitpoints>(retreat_ship).unwrap();
+    assert!(
+        (retreat_hp.hull - 1.0).abs() < f64::EPSILON,
+        "Retreat ship should not take any damage, hull is {}",
+        retreat_hp.hull
+    );
+}
+
+#[test]
+fn test_set_roe_via_pending_command() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "ROE-Cmd-Test",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "ROE-Target".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: sys,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 50.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Defensive,
+    )).id();
+
+    // Spawn a pending SetROE command that arrives at tick 5
+    app.world_mut().spawn(PendingShipCommand {
+        ship: ship_entity,
+        command: ShipCommand::SetROE { roe: RulesOfEngagement::Aggressive },
+        arrives_at: 5,
+    });
+
+    // Before arrival, ROE should still be Defensive
+    advance_time(&mut app, 3);
+    let roe = app.world().get::<RulesOfEngagement>(ship_entity).unwrap();
+    assert_eq!(*roe, RulesOfEngagement::Defensive, "ROE should still be Defensive before command arrives");
+
+    // After arrival (tick 5), ROE should change to Aggressive
+    advance_time(&mut app, 3);
+    let roe = app.world().get::<RulesOfEngagement>(ship_entity).unwrap();
+    assert_eq!(*roe, RulesOfEngagement::Aggressive, "ROE should be Aggressive after command arrives");
+}

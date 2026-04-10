@@ -500,6 +500,7 @@ pub fn spawn_test_ship(
             CommandQueue::default(),
             Cargo::default(),
             ShipModifiers::default(),
+            RulesOfEngagement::default(),
         ))
         .id()
 }

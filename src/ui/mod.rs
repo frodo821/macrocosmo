@@ -14,7 +14,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
-use crate::ship::{Cargo, CommandQueue, PendingShipCommand, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship::{Cargo, CommandQueue, PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
@@ -63,7 +63,7 @@ pub fn draw_all_ui(
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     mut command_queues: Query<&mut CommandQueue>,
     pending_commands: Query<&PendingShipCommand>,
-    positions_planets_stockpiles: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>, Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>, Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>, Query<&ColonizationQueue>),
+    positions_planets_stockpiles: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>, Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>, Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>, Query<&ColonizationQueue>, Query<&RulesOfEngagement>),
     mut empire_q: Query<
         (
             &KnowledgeStore,
@@ -81,7 +81,7 @@ pub fn draw_all_ui(
 ) {
     let (mut selected_ship, mut context_menu, mut selected_planet, mut egui_wants_pointer) = selection_state;
     let (mut research_open, mut designer_state, hull_registry, module_registry, mut design_registry) = overlay_state;
-    let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues) = positions_planets_stockpiles;
+    let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues, roe_query) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
     // Tell camera_controls whether egui is consuming pointer input this frame
@@ -221,6 +221,9 @@ pub fn draw_all_ui(
         &hull_registry,
         &module_registry,
         clock.elapsed,
+        &roe_query,
+        &player_q,
+        &positions,
     );
 
     // #99: Handle cancel current action (surveying/settling -> docked)
@@ -296,6 +299,21 @@ pub fn draw_all_ui(
                 completes_at: clock.elapsed + refit.refit_time,
                 new_modules: refit.new_modules,
             };
+        }
+    }
+
+    // #57: Handle ROE change — immediate if local, delayed if remote
+    if let Some((ship_entity, new_roe, delay)) = ship_panel_actions.set_roe {
+        if delay == 0 {
+            // Local ship: apply immediately
+            commands.entity(ship_entity).insert(new_roe);
+        } else {
+            // Remote ship: send as pending command with light-speed delay
+            commands.spawn(PendingShipCommand {
+                ship: ship_entity,
+                command: crate::ship::ShipCommand::SetROE { roe: new_roe },
+                arrives_at: clock.elapsed + delay,
+            });
         }
     }
 

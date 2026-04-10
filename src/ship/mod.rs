@@ -227,6 +227,36 @@ fn push_ship_modifier(mods: &mut Mut<ShipModifiers>, target: &str, modifier: Mod
     }
 }
 
+// --- #57: Rules of Engagement ---
+
+/// Controls automatic combat behavior for a ship.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RulesOfEngagement {
+    /// Always attack hostiles in system
+    Aggressive,
+    /// Only fight back when attacked (hostile initiates) — same as current behavior
+    #[default]
+    Defensive,
+    /// Do not engage hostiles; skip combat entirely
+    Retreat,
+}
+
+impl RulesOfEngagement {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Aggressive => "Aggressive",
+            Self::Defensive => "Defensive",
+            Self::Retreat => "Retreat",
+        }
+    }
+
+    pub const ALL: [RulesOfEngagement; 3] = [
+        RulesOfEngagement::Aggressive,
+        RulesOfEngagement::Defensive,
+        RulesOfEngagement::Retreat,
+    ];
+}
+
 // --- #33: Pending ship command system ---
 
 /// A command queued for a remote ship, waiting for light-speed communication delay.
@@ -243,6 +273,7 @@ pub enum ShipCommand {
     MoveTo { destination: Entity },
     Survey { target: Entity },
     Colonize,
+    SetROE { roe: RulesOfEngagement },
 }
 
 /// A module equipped in a specific slot on a ship.
@@ -607,6 +638,7 @@ pub fn spawn_ship(
             },
             ShipModifiers::default(),
             ShipStats::default(),
+            RulesOfEngagement::default(),
         ))
         .id()
 }
@@ -1501,6 +1533,14 @@ pub fn process_pending_ship_commands(
                     );
                 }
             }
+            ShipCommand::SetROE { roe } => {
+                let roe_val = *roe;
+                info!(
+                    "Remote ROE command executed: {} set to {:?}",
+                    ship.name, roe_val,
+                );
+                commands.entity(pending_cmd.ship).insert(roe_val);
+            }
         }
 
         commands.entity(cmd_entity).despawn();
@@ -1871,7 +1911,7 @@ pub fn resolve_combat(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<crate::colony::LastProductionTick>,
-    mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState)>,
+    mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState, Option<&RulesOfEngagement>)>,
     mut hostiles: Query<(Entity, &mut HostilePresence)>,
     module_registry: Res<ModuleRegistry>,
     systems: Query<&StarSystem>,
@@ -1896,10 +1936,14 @@ pub fn resolve_combat(
             .map(|s| s.name.clone())
             .unwrap_or_default();
 
-        // Find all player ships docked at this system
+        // Find all player ships docked at this system, excluding Retreat ROE
         let docked_ships: Vec<Entity> = ships
             .iter()
-            .filter_map(|(entity, _ship, _hp, _mods, state)| {
+            .filter_map(|(entity, _ship, _hp, _mods, state, roe)| {
+                let roe = roe.copied().unwrap_or_default();
+                if roe == RulesOfEngagement::Retreat {
+                    return None; // #57: Retreat ships skip combat
+                }
                 if let ShipState::Docked { system } = state {
                     if *system == *system_entity {
                         return Some(entity);
@@ -1921,7 +1965,7 @@ pub fn resolve_combat(
         }
         let mut ship_weapons: Vec<ShipWeaponData> = Vec::new();
         for &ship_entity in &docked_ships {
-            if let Ok((_e, ship, _hp, _mods, _state)) = ships.get(ship_entity) {
+            if let Ok((_e, ship, _hp, _mods, _state, _roe)) = ships.get(ship_entity) {
                 let mut weapons = Vec::new();
                 for equipped in &ship.modules {
                     if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
@@ -1979,7 +2023,7 @@ pub fn resolve_combat(
             let mut destroyed_ships: Vec<(Entity, String)> = Vec::new();
 
             for &ship_entity in &docked_ships {
-                if let Ok((_e, ship, mut hp, _mods, _state)) = ships.get_mut(ship_entity) {
+                if let Ok((_e, ship, mut hp, _mods, _state, _roe)) = ships.get_mut(ship_entity) {
                     apply_flat_damage_to_ship(&mut hp, damage_per_ship);
                     if hp.hull <= 0.0 {
                         destroyed_ships.push((ship_entity, ship.name.clone()));
