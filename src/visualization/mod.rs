@@ -1,3 +1,5 @@
+pub mod territory;
+
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -27,7 +29,8 @@ pub struct VisualizationPlugin;
 
 impl Plugin for VisualizationPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(GalaxyView {
+        app.add_plugins(territory::TerritoryPlugin)
+        .insert_resource(GalaxyView {
             scale: 5.0,
         })
         .insert_resource(SelectedSystem::default())
