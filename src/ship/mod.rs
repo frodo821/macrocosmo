@@ -11,6 +11,8 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Habitability, HostilePresence, ResourceLevel, StarSystem, SystemAttributes};
 use crate::modifier::{CachedValue, Modifier, ScopedModifiers};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
+use crate::knowledge::{KnowledgeStore, SystemKnowledge, SystemSnapshot};
+use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship_design::ModuleRegistry;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
@@ -103,6 +105,7 @@ impl Plugin for ShipPlugin {
             tick_shield_regen,
             sublight_movement_system,
             process_ftl_travel,
+            deliver_survey_results.after(process_ftl_travel),
             process_surveys,
             process_settling,
             process_pending_ship_commands,
@@ -412,6 +415,19 @@ pub enum ShipState {
 pub struct Cargo {
     pub minerals: Amt,
     pub energy: Amt,
+}
+
+/// #103: Survey data carried by an FTL-capable ship back to the player's system.
+/// Stored on the ship when survey completes until the ship docks at the player's
+/// StationedAt system, at which point the results are published.
+#[derive(Component, Clone, Debug)]
+pub struct SurveyData {
+    /// The system that was surveyed.
+    pub target_system: Entity,
+    /// The game time when the survey completed.
+    pub surveyed_at: i64,
+    /// Name of the surveyed system (cached for event descriptions).
+    pub system_name: String,
 }
 
 // --- #54: Fleet formation system ---
@@ -756,16 +772,26 @@ pub fn start_survey_with_bonus(
 
 /// System that processes ongoing surveys and marks star systems as surveyed
 /// when the survey duration has elapsed. Rolls an exploration event on completion.
+///
+/// #103: FTL-capable ships store survey data internally instead of publishing
+/// immediately. They auto-queue an FTL return to the player's StationedAt system
+/// if no commands are pending. Non-FTL ships publish results immediately via
+/// light-speed propagation (existing behavior).
 pub fn process_surveys(
+    mut commands: Commands,
     clock: Res<GameClock>,
-    mut ships: Query<(&Ship, &mut ShipState, &mut ShipHitpoints)>,
-    mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>)>,
+    mut ships: Query<(Entity, &Ship, &mut ShipState, &mut ShipHitpoints, &Position, Option<&mut CommandQueue>)>,
+    mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>, &Position), Without<Ship>>,
     hostiles: Query<&HostilePresence>,
+    player_q: Query<&StationedAt, With<Player>>,
     mut events: MessageWriter<GameEvent>,
 ) {
     let mut rng = rand::rng();
 
-    for (ship, mut state, mut ship_hp) in ships.iter_mut() {
+    // Collect player's stationed-at system for auto-return
+    let player_system = player_q.iter().next().map(|s| s.system);
+
+    for (ship_entity, ship, mut state, mut ship_hp, ship_pos, mut cmd_queue) in ships.iter_mut() {
         let (target_system, completes_at) = match *state {
             ShipState::Surveying {
                 target_system,
@@ -776,54 +802,190 @@ pub fn process_surveys(
         };
 
         if clock.elapsed >= completes_at {
-            if let Ok((mut star_system, attrs)) = systems.get_mut(target_system) {
-                star_system.surveyed = true;
-                let system_name = star_system.name.clone();
-                info!(
-                    "Survey complete: {} has been surveyed",
-                    system_name
-                );
+            let has_ftl = ship.ftl_range > 0.0;
 
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::SurveyComplete,
-                    description: format!("{} completed survey of {}", ship.name, system_name),
-                    related_system: Some(target_system),
-                });
+            if has_ftl {
+                // #103: FTL ship — store data internally, do NOT mark system as surveyed yet
+                if let Ok((star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                    let system_name = star_system.name.clone();
+                    info!(
+                        "Survey complete (FTL ship): {} surveyed {} — data stored on ship",
+                        ship.name, system_name
+                    );
 
-                // Check for hostile presence at this system
-                let has_hostile = hostiles.iter().any(|h| h.system == target_system);
-                if has_hostile {
+                    // Check for hostile presence (this is immediately visible to the ship)
+                    let has_hostile = hostiles.iter().any(|h| h.system == target_system);
+                    if has_hostile {
+                        events.write(GameEvent {
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::HostileDetected,
+                            description: format!(
+                                "Warning: Hostile presence detected at {}!",
+                                system_name,
+                            ),
+                            related_system: Some(target_system),
+                        });
+                    }
+
+                    // Roll exploration event (applied immediately — ship observes it)
+                    let event = roll_exploration_event(&mut rng);
+                    apply_exploration_event(
+                        &event,
+                        &system_name,
+                        &ship,
+                        &mut ship_hp,
+                        attrs,
+                        &mut rng,
+                        clock.elapsed,
+                        target_system,
+                        &mut events,
+                    );
+
+                    // Store survey data on the ship entity
+                    commands.entity(ship_entity).insert(SurveyData {
+                        target_system,
+                        surveyed_at: clock.elapsed,
+                        system_name: system_name.clone(),
+                    });
+
+                    // Auto-queue FTL return to player's system if command queue is empty
+                    let queue_empty = cmd_queue.as_ref().map(|q| q.commands.is_empty()).unwrap_or(true);
+                    if queue_empty {
+                        if let Some(player_sys) = player_system {
+                            if player_sys != target_system {
+                                if let Some(ref mut queue) = cmd_queue {
+                                    queue.commands.push(QueuedCommand::FTLTo {
+                                        system: player_sys,
+                                        expected_position: ship_pos.as_array(),
+                                    });
+                                    info!(
+                                        "Auto-queued FTL return to player system for {}",
+                                        ship.name
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Non-FTL ship — existing behavior: mark surveyed immediately
+                if let Ok((mut star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                    star_system.surveyed = true;
+                    let system_name = star_system.name.clone();
+                    info!(
+                        "Survey complete: {} has been surveyed",
+                        system_name
+                    );
+
                     events.write(GameEvent {
                         timestamp: clock.elapsed,
-                        kind: GameEventKind::HostileDetected,
-                        description: format!(
-                            "Warning: Hostile presence detected at {}!",
-                            system_name,
-                        ),
+                        kind: GameEventKind::SurveyComplete,
+                        description: format!("{} completed survey of {}", ship.name, system_name),
                         related_system: Some(target_system),
                     });
-                }
 
-                // Roll an exploration event
-                let event = roll_exploration_event(&mut rng);
-                apply_exploration_event(
-                    &event,
-                    &system_name,
-                    &ship,
-                    &mut ship_hp,
-                    attrs,
-                    &mut rng,
-                    clock.elapsed,
-                    target_system,
-                    &mut events,
-                );
+                    // Check for hostile presence at this system
+                    let has_hostile = hostiles.iter().any(|h| h.system == target_system);
+                    if has_hostile {
+                        events.write(GameEvent {
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::HostileDetected,
+                            description: format!(
+                                "Warning: Hostile presence detected at {}!",
+                                system_name,
+                            ),
+                            related_system: Some(target_system),
+                        });
+                    }
+
+                    // Roll an exploration event
+                    let event = roll_exploration_event(&mut rng);
+                    apply_exploration_event(
+                        &event,
+                        &system_name,
+                        &ship,
+                        &mut ship_hp,
+                        attrs,
+                        &mut rng,
+                        clock.elapsed,
+                        target_system,
+                        &mut events,
+                    );
+                }
             }
 
             *state = ShipState::Docked {
                 system: target_system,
             };
         }
+    }
+}
+
+/// #103: Deliver survey results when an FTL ship carrying survey data docks
+/// at the player's StationedAt system.
+pub fn deliver_survey_results(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    ships: Query<(Entity, &Ship, &ShipState, &SurveyData)>,
+    mut systems: Query<(&mut StarSystem, &Position), Without<Ship>>,
+    player_q: Query<&StationedAt, With<Player>>,
+    mut empire_q: Query<&mut KnowledgeStore, With<PlayerEmpire>>,
+    mut events: MessageWriter<GameEvent>,
+) {
+    let player_system = match player_q.iter().next() {
+        Some(s) => s.system,
+        None => return,
+    };
+
+    for (ship_entity, ship, state, survey_data) in &ships {
+        let ShipState::Docked { system: docked_at } = state else {
+            continue;
+        };
+
+        if *docked_at != player_system {
+            continue;
+        }
+
+        // Ship is docked at the player's system — deliver results
+        let target = survey_data.target_system;
+
+        // Mark the target system as surveyed and update KnowledgeStore
+        if let Ok((mut star_system, pos)) = systems.get_mut(target) {
+            star_system.surveyed = true;
+            info!(
+                "Survey data delivered: {} marked as surveyed (delivered by {})",
+                survey_data.system_name, ship.name
+            );
+
+            // Update KnowledgeStore
+            if let Ok(mut store) = empire_q.single_mut() {
+                store.update(SystemKnowledge {
+                    system: target,
+                    observed_at: survey_data.surveyed_at,
+                    received_at: clock.elapsed,
+                    data: SystemSnapshot {
+                        name: star_system.name.clone(),
+                        position: pos.as_array(),
+                        surveyed: true,
+                        ..default()
+                    },
+                });
+            }
+        }
+
+        // Publish GameEvent
+        events.write(GameEvent {
+            timestamp: clock.elapsed,
+            kind: GameEventKind::SurveyComplete,
+            description: format!(
+                "{} delivered survey data for {} (surveyed at t={})",
+                ship.name, survey_data.system_name, survey_data.surveyed_at
+            ),
+            related_system: Some(target),
+        });
+
+        // Clear survey data from the ship
+        commands.entity(ship_entity).remove::<SurveyData>();
     }
 }
 

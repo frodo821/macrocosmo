@@ -4,7 +4,7 @@ use bevy_egui::egui;
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
-use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState};
+use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::visualization::{SelectedShip, SelectedSystem};
 
 /// Draws the left-side outline panel showing owned systems and ships.
@@ -23,7 +23,7 @@ pub fn draw_outline(
         Option<&crate::colony::MaintenanceCost>,
         Option<&crate::colony::FoodConsumption>,
     )>,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
+    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
     planets: &Query<&Planet>,
@@ -108,7 +108,7 @@ pub fn draw_outline(
             // "Stationed Elsewhere" section for ships docked at unowned systems
             let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
                 Vec::new();
-            for (entity, ship, state, _, _) in ships.iter() {
+            for (entity, ship, state, _, _, _) in ships.iter() {
                 if let ShipState::Docked { system } = &*state {
                     if !owned_system_entities.contains(system) {
                         // Find or create entry for this system
@@ -184,7 +184,7 @@ pub fn draw_outline(
 
             // "In Transit" section for ships not docked
             let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
-            for (entity, ship, state, _, _) in ships.iter() {
+            for (entity, ship, state, _, _, _) in ships.iter() {
                 let status = match &*state {
                     ShipState::Docked { .. } => continue,
                     ShipState::SubLight { .. } => "Moving",
@@ -216,11 +216,11 @@ pub fn draw_outline(
 /// Helper to collect ships docked at a given system.
 fn ships_docked_at(
     system: Entity,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
+    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
-        .filter_map(|(e, ship, state, _, _)| {
+        .filter_map(|(e, ship, state, _, _, _)| {
             if let ShipState::Docked { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.design_id.clone()));

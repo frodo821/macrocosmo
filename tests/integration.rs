@@ -5273,3 +5273,196 @@ fn test_cancel_settling_returns_to_docked() {
         "Ship should be docked at System-A after cancelling settling"
     );
 }
+
+// --- #103: Survey data carry-back model ---
+
+/// Helper: spawn an FTL-capable explorer (can survey + has FTL range).
+fn spawn_ftl_explorer(
+    world: &mut World,
+    name: &str,
+    system: Entity,
+    pos: [f64; 3],
+) -> Entity {
+    world
+        .spawn((
+            Ship {
+                name: name.to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 15.0, // FTL capable
+                player_aboard: false,
+                home_port: system,
+            },
+            ShipState::Docked { system },
+            Position::from(pos),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            CommandQueue::default(),
+            Cargo::default(),
+            ShipModifiers::default(),
+        ))
+        .id()
+}
+
+#[test]
+fn test_ftl_survey_stores_data_on_ship() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+
+    // Spawn player stationed at System-A
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Spawn FTL explorer in Surveying state targeting System-B
+    let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [3.0, 0.0, 0.0]);
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
+        target_system: sys_b,
+        started_at: 0,
+        completes_at: SURVEY_DURATION_HEXADIES,
+    };
+
+    // Advance time to complete survey
+    common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
+
+    // System-B should NOT be marked as surveyed (FTL ship stores data)
+    let star = app.world().get::<StarSystem>(sys_b).unwrap();
+    assert!(!star.surveyed, "FTL ship should NOT mark system as surveyed immediately");
+
+    // Ship should have SurveyData component
+    let survey_data = app.world().get::<SurveyData>(ship);
+    assert!(survey_data.is_some(), "FTL ship should carry survey data");
+    assert_eq!(survey_data.unwrap().target_system, sys_b);
+}
+
+#[test]
+fn test_ftl_survey_auto_queues_return() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+
+    // Spawn player stationed at System-A
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Spawn FTL explorer surveying System-B (command queue empty)
+    let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [3.0, 0.0, 0.0]);
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
+        target_system: sys_b,
+        started_at: 0,
+        completes_at: SURVEY_DURATION_HEXADIES,
+    };
+
+    // Advance time to complete survey
+    common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
+
+    // The auto-queued FTL return may have already been consumed by process_command_queue
+    // in the same frame. Check that the ship is either:
+    // 1. In FTL heading to System-A, or
+    // 2. Still has the FTL command in the queue
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+
+    let in_ftl_to_a = matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_a);
+    let queued_ftl_to_a = queue.commands.iter().any(|cmd| {
+        matches!(cmd, QueuedCommand::FTLTo { system, .. } if *system == sys_a)
+    });
+
+    assert!(
+        in_ftl_to_a || queued_ftl_to_a,
+        "Ship should be FTL-returning to player system or have FTL return queued"
+    );
+}
+
+#[test]
+fn test_ftl_survey_delivers_on_dock_at_player_system() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+
+    // Spawn player stationed at System-A
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Spawn FTL explorer docked at System-A, carrying survey data
+    let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_a, [0.0, 0.0, 0.0]);
+    app.world_mut().entity_mut(ship).insert(SurveyData {
+        target_system: sys_b,
+        surveyed_at: 10,
+        system_name: "System-B".to_string(),
+    });
+
+    // Advance time to trigger deliver_survey_results
+    common::advance_time(&mut app, 1);
+
+    // System-B should now be marked as surveyed
+    let star = app.world().get::<StarSystem>(sys_b).unwrap();
+    assert!(star.surveyed, "System should be marked surveyed after delivery");
+
+    // SurveyData should be removed from the ship
+    let survey_data = app.world().get::<SurveyData>(ship);
+    assert!(survey_data.is_none(), "Survey data should be cleared after delivery");
+}
+
+#[test]
+fn test_non_ftl_survey_marks_system_immediately() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+
+    // Spawn non-FTL explorer (standard explorer_mk1 with ftl_range 0.0)
+    let ship = common::spawn_test_ship(
+        app.world_mut(), "Scout-1", "explorer_mk1", sys_b, [3.0, 0.0, 0.0],
+    );
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
+        target_system: sys_b,
+        started_at: 0,
+        completes_at: SURVEY_DURATION_HEXADIES,
+    };
+
+    // Advance time to complete survey
+    common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
+
+    // System-B should be immediately marked as surveyed (no FTL)
+    let star = app.world().get::<StarSystem>(sys_b).unwrap();
+    assert!(star.surveyed, "Non-FTL ship should mark system as surveyed immediately");
+
+    // Ship should NOT have SurveyData
+    let survey_data = app.world().get::<SurveyData>(ship);
+    assert!(survey_data.is_none(), "Non-FTL ship should not carry survey data");
+}
