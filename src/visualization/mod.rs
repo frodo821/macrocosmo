@@ -8,7 +8,7 @@ use bevy_egui::EguiContexts;
 
 use crate::colony::{Buildings, Colony, SystemBuildings};
 use crate::components::Position;
-use crate::galaxy::{ObscuredByGas, Planet, StarSystem};
+use crate::galaxy::{GalaxyConfig, ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
@@ -31,7 +31,7 @@ impl Plugin for VisualizationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(territory::TerritoryPlugin)
         .insert_resource(GalaxyView {
-            scale: 5.0,
+            scale: 3.0,
         })
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedShip::default())
@@ -338,7 +338,31 @@ fn draw_galaxy_overlay(
     system_buildings: Query<(Entity, &SystemBuildings)>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
+    galaxy_config: Option<Res<GalaxyConfig>>,
 ) {
+    // Galaxy outline: center marker and boundary circle
+    if let Some(ref config) = galaxy_config {
+        let boundary_radius = config.radius as f32 * view.scale;
+        // Galaxy center crosshair
+        gizmos.circle_2d(Vec2::ZERO, 3.0, Color::srgba(0.5, 0.5, 0.5, 0.15));
+        gizmos.line_2d(
+            Vec2::new(-5.0, 0.0),
+            Vec2::new(5.0, 0.0),
+            Color::srgba(0.5, 0.5, 0.5, 0.1),
+        );
+        gizmos.line_2d(
+            Vec2::new(0.0, -5.0),
+            Vec2::new(0.0, 5.0),
+            Color::srgba(0.5, 0.5, 0.5, 0.1),
+        );
+        // Galaxy boundary circle
+        gizmos.circle_2d(
+            Vec2::ZERO,
+            boundary_radius,
+            Color::srgba(0.3, 0.3, 0.5, 0.08),
+        );
+    }
+
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };

@@ -10,6 +10,14 @@ use crate::scripting::galaxy_api::{
 use crate::ship::Owner;
 use crate::technology::TechKnowledge;
 
+/// Galaxy configuration resource, inserted by generate_galaxy so other systems
+/// (e.g. visualization) can reference galaxy parameters.
+#[derive(Resource)]
+pub struct GalaxyConfig {
+    pub radius: f64,
+    pub num_systems: usize,
+}
+
 pub struct GalaxyPlugin;
 
 impl Plugin for GalaxyPlugin {
@@ -381,12 +389,13 @@ pub fn generate_galaxy(
     planet_registry: Res<PlanetTypeRegistry>,
 ) {
     let mut rng = rand::rng();
-    let num_systems = 100;
+    let num_systems = 150;
     let num_arms = 3;
-    let galaxy_radius = 80.0_f64; // light-years
+    let galaxy_radius = 60.0_f64; // light-years
     let arm_twist = 2.5; // how tightly the arms spiral
     let arm_spread = 0.4; // angular spread of each arm
-    let min_distance = 3.0_f64;
+    let min_distance = 2.0_f64;
+    let max_neighbor_distance = 8.0_f64; // isolation threshold
 
     // Use registries or fallback defaults
     let star_types = if star_registry.types.is_empty() {
@@ -448,8 +457,68 @@ pub fn generate_galaxy(
         systems.push((name, [x, y, z]));
     }
 
-    // Choose capital: find system closest to ~27 ly from center (1/3 galaxy radius)
-    let target_capital_radius = 27.0_f64;
+    // Bridge pass: fix isolated systems (nearest neighbor > max_neighbor_distance).
+    // For each isolated system, try to place a bridge system halfway to its nearest neighbor.
+    let mut bridge_attempts = 0;
+    let max_bridge_attempts = 100;
+    loop {
+        if bridge_attempts >= max_bridge_attempts {
+            break;
+        }
+        // Find the most isolated system
+        let mut worst_idx: Option<usize> = None;
+        let mut worst_nearest_dist = 0.0_f64;
+        let mut worst_nearest_idx = 0_usize;
+        for (i, (_, pos_i)) in systems.iter().enumerate() {
+            let mut nearest_dist = f64::MAX;
+            let mut nearest_j = 0;
+            for (j, (_, pos_j)) in systems.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let dx = pos_i[0] - pos_j[0];
+                let dy = pos_i[1] - pos_j[1];
+                let dz = pos_i[2] - pos_j[2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                if dist < nearest_dist {
+                    nearest_dist = dist;
+                    nearest_j = j;
+                }
+            }
+            if nearest_dist > max_neighbor_distance && nearest_dist > worst_nearest_dist {
+                worst_nearest_dist = nearest_dist;
+                worst_nearest_idx = nearest_j;
+                worst_idx = Some(i);
+            }
+        }
+        let Some(iso_idx) = worst_idx else {
+            break; // No more isolated systems
+        };
+        bridge_attempts += 1;
+
+        // Place a bridge system halfway between isolated system and its nearest neighbor
+        let pos_a = systems[iso_idx].1;
+        let pos_b = systems[worst_nearest_idx].1;
+        let mid = [
+            (pos_a[0] + pos_b[0]) / 2.0 + rng.random_range(-1.0_f64..1.0),
+            (pos_a[1] + pos_b[1]) / 2.0 + rng.random_range(-1.0_f64..1.0),
+            (pos_a[2] + pos_b[2]) / 2.0 + rng.random_range(-0.5_f64..0.5),
+        ];
+        // Check min_distance for bridge system
+        let too_close = systems.iter().any(|(_, pos)| {
+            let dx = pos[0] - mid[0];
+            let dy = pos[1] - mid[1];
+            let dz = pos[2] - mid[2];
+            (dx * dx + dy * dy + dz * dz).sqrt() < min_distance
+        });
+        if !too_close {
+            let name = format!("System-{:03}", systems.len());
+            systems.push((name, mid));
+        }
+    }
+
+    // Choose capital: find system closest to ~20 ly from center (1/3 galaxy radius)
+    let target_capital_radius = 20.0_f64;
     let capital_idx = systems
         .iter()
         .enumerate()
@@ -621,6 +690,11 @@ pub fn generate_galaxy(
             ));
         }
     }
+
+    commands.insert_resource(GalaxyConfig {
+        radius: galaxy_radius,
+        num_systems: actual_count,
+    });
 
     info!(
         "Galaxy generated: {} star systems (spiral, {} arms)",
