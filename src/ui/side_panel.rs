@@ -8,7 +8,7 @@ use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::amount::Amt;
-use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState};
+use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipHitpoints, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
@@ -46,7 +46,7 @@ pub fn draw_system_panel(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
     positions: &Query<&Position>,
     knowledge: &KnowledgeStore,
     clock: &GameClock,
@@ -251,7 +251,7 @@ fn draw_colony_detail(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
 ) {
@@ -354,7 +354,7 @@ fn draw_colony_detail(
             }
             let mut ship_maintenance = Amt::ZERO;
             let mut ships_based_here = 0u32;
-            for (_, ship, _, _) in ships_query.iter() {
+            for (_, ship, _, _, _) in ships_query.iter() {
                 if colony.system(planets) == Some(ship.home_port) {
                     ship_maintenance = ship_maintenance.add(crate::ship::ship_maintenance_cost(&ship.design_id));
                     ships_based_here += 1;
@@ -702,7 +702,7 @@ fn format_queued_command(
 pub fn draw_ship_panel(
     ctx: &egui::Context,
     selected_ship: &mut SelectedShip,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
     clock: &GameClock,
     colonies: &mut Query<(
         Entity,
@@ -721,7 +721,7 @@ pub fn draw_ship_panel(
 ) -> Option<ShipScrapAction> {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
-        let (_, ship, state, cargo) = ships_query.get(ship_entity).ok()?;
+        let (_, ship, state, cargo, ship_hp) = ships_query.get(ship_entity).ok()?;
         let docked_system = if let ShipState::Docked { system } = &*state {
             Some(*system)
         } else {
@@ -755,8 +755,12 @@ pub fn draw_ship_panel(
             ship_entity,
             ship.name.clone(),
             ship.design_id.clone(),
-            ship.hp,
-            ship.max_hp,
+            ship_hp.hull,
+            ship_hp.hull_max,
+            ship_hp.armor,
+            ship_hp.armor_max,
+            ship_hp.shield,
+            ship_hp.shield_max,
             ship.ftl_range,
             ship.sublight_speed,
             status_info,
@@ -774,8 +778,12 @@ pub fn draw_ship_panel(
         ship_entity,
         name,
         design_id,
-        hp,
-        max_hp,
+        hull,
+        hull_max,
+        armor,
+        armor_max,
+        shield,
+        shield_max,
         ftl_range,
         sublight_speed,
         status_info,
@@ -823,7 +831,13 @@ pub fn draw_ship_panel(
             );
             let design_display_name = crate::ship::design_preset(&design_id).map(|p| p.design_name).unwrap_or(&design_id);
             ui.label(format!("Type: {}", design_display_name));
-            ui.label(format!("HP: {:.0}/{:.0}", hp, max_hp));
+            ui.label(format!("Hull: {:.0}/{:.0}", hull, hull_max));
+            if armor_max > 0.0 {
+                ui.label(format!("Armor: {:.0}/{:.0}", armor, armor_max));
+            }
+            if shield_max > 0.0 {
+                ui.label(format!("Shield: {:.0}/{:.0}", shield, shield_max));
+            }
 
             // #62: Detailed status with progress bar
             ui.label(&status_info.label);
@@ -943,7 +957,7 @@ pub fn draw_ship_panel(
 
     // #64: Apply home port change
     if let Some(new_home_port) = set_home_port {
-        if let Ok((_, mut ship, _, _)) = ships_query.get_mut(ship_entity) {
+        if let Ok((_, mut ship, _, _, _)) = ships_query.get_mut(ship_entity) {
             ship.home_port = new_home_port;
         }
     }
@@ -956,7 +970,7 @@ pub fn draw_ship_panel(
     if has_cargo_action {
         if let Some(colony_e) = colony_entity_at_dock {
             if let Ok((_, _, _, Some(mut stockpile), _, _, _, _, _)) = colonies.get_mut(colony_e) {
-                if let Ok((_, _, _, Some(mut cargo))) = ships_query.get_mut(ship_entity) {
+                if let Ok((_, _, _, Some(mut cargo), _)) = ships_query.get_mut(ship_entity) {
                     if cargo_action.load_minerals > Amt::ZERO {
                         let transfer = cargo_action.load_minerals.min(stockpile.minerals);
                         stockpile.minerals = stockpile.minerals.sub(transfer);
@@ -998,7 +1012,7 @@ pub fn draw_context_menu(
     context_menu: &mut crate::visualization::ContextMenu,
     selected_ship: &mut SelectedShip,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
     command_queues: &mut Query<&mut CommandQueue>,
     positions: &Query<&Position>,
     clock: &GameClock,
@@ -1024,7 +1038,7 @@ pub fn draw_context_menu(
 
     // Collect ship data
     let ship_data = {
-        let Ok((_, ship, state, _)) = ships_query.get(ship_entity) else {
+        let Ok((_, ship, state, _, _)) = ships_query.get(ship_entity) else {
             context_menu.open = false;
             return;
         };
@@ -1156,7 +1170,7 @@ pub fn draw_context_menu(
             context_menu.target_system = None;
             context_menu.execute_default = false;
             if let Some(new_state) = command {
-                if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
+                if let Ok((_, _, mut state, _, _)) = ships_query.get_mut(ship_entity) {
                     *state = new_state;
                 }
             }
@@ -1217,7 +1231,7 @@ pub fn draw_context_menu(
         context_menu.execute_default = false;
 
         if let Some(new_state) = command {
-            if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
+            if let Ok((_, _, mut state, _, _)) = ships_query.get_mut(ship_entity) {
                 *state = new_state;
                 selected_ship.0 = None;
             }
@@ -1367,7 +1381,7 @@ pub fn draw_context_menu(
 
     // Apply immediate command (docked ships, no delay)
     if let Some(new_state) = command {
-        if let Ok((_, _, mut state, _)) = ships_query.get_mut(ship_entity) {
+        if let Ok((_, _, mut state, _, _)) = ships_query.get_mut(ship_entity) {
             *state = new_state;
             selected_ship.0 = None;
         }
@@ -1396,11 +1410,11 @@ pub fn draw_context_menu(
 /// Helper to collect ships docked at a given system.
 fn ships_docked_at(
     system: Entity,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
-        .filter_map(|(e, ship, state, _)| {
+        .filter_map(|(e, ship, state, _, _)| {
             if let ShipState::Docked { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.design_id.clone()));

@@ -54,6 +54,7 @@ pub fn test_app() -> App {
     app.init_resource::<species::SpeciesRegistry>();
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
+    app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -61,6 +62,9 @@ pub fn test_app() -> App {
     app.add_systems(
         Update,
         (
+            sync_ship_module_modifiers,
+            sync_ship_hitpoints,
+            tick_shield_regen,
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
@@ -68,9 +72,11 @@ pub fn test_app() -> App {
             process_pending_ship_commands,
             process_command_queue,
             resolve_combat,
+            tick_ship_repair,
         )
             .chain()
-            .after(macrocosmo::time_system::advance_game_time),
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
     );
     app.add_systems(
         Update,
@@ -141,6 +147,7 @@ pub fn full_test_app() -> App {
     app.init_resource::<species::SpeciesRegistry>();
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
+    app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.add_message::<GameEvent>();
 
     // --- Visualization resources ---
@@ -161,6 +168,9 @@ pub fn full_test_app() -> App {
     app.add_systems(
         Update,
         (
+            sync_ship_module_modifiers,
+            sync_ship_hitpoints,
+            tick_shield_regen,
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
@@ -168,6 +178,7 @@ pub fn full_test_app() -> App {
             process_pending_ship_commands,
             process_command_queue,
             resolve_combat,
+            tick_ship_repair,
         ),
     );
 
@@ -409,7 +420,7 @@ pub fn spawn_test_ship(
     pos: [f64; 3],
 ) -> Entity {
     let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
-    let combat_stats = CombatStats { attack: preset.combat_attack, defense: preset.combat_defense };
+    let hull_hp = preset.hp;
     world
         .spawn((
             Ship {
@@ -420,16 +431,23 @@ pub fn spawn_test_ship(
                 owner: Owner::Neutral,
                 sublight_speed: preset.sublight_speed,
                 ftl_range: preset.ftl_range,
-                hp: preset.hp,
-                max_hp: preset.hp,
                 player_aboard: false,
                 home_port: system,
             },
             ShipState::Docked { system },
             Position::from(pos),
-            combat_stats,
+            ShipHitpoints {
+                hull: hull_hp,
+                hull_max: hull_hp,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
             CommandQueue::default(),
             Cargo::default(),
+            ShipModifiers::default(),
         ))
         .id()
 }

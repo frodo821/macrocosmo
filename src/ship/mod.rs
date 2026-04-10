@@ -99,6 +99,8 @@ impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (
             sync_ship_module_modifiers,
+            sync_ship_hitpoints.after(sync_ship_module_modifiers),
+            tick_shield_regen,
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
@@ -109,13 +111,15 @@ impl Plugin for ShipPlugin {
                 .after(process_ftl_travel)
                 .after(process_surveys),
             resolve_combat,
-        ).after(crate::time_system::advance_game_time));
+            tick_ship_repair,
+        ).after(crate::time_system::advance_game_time)
+         .before(crate::colony::advance_production_tick));
     }
 }
 
 /// Syncs module modifiers from equipped modules to ShipModifiers.
 /// Clears and rebuilds module modifiers each time a ship's modules change.
-fn sync_ship_module_modifiers(
+pub fn sync_ship_module_modifiers(
     ships: Query<(Entity, &Ship), Changed<Ship>>,
     mut ship_mods: Query<&mut ShipModifiers>,
     module_registry: Res<ModuleRegistry>,
@@ -133,6 +137,9 @@ fn sync_ship_module_modifiers(
         mods.cargo_capacity = ScopedModifiers::default();
         mods.attack = ScopedModifiers::default();
         mods.defense = ScopedModifiers::default();
+        mods.armor_max = ScopedModifiers::default();
+        mods.shield_max = ScopedModifiers::default();
+        mods.shield_regen = ScopedModifiers::default();
 
         for (i, equipped) in ship.modules.iter().enumerate() {
             if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
@@ -155,6 +162,9 @@ fn sync_ship_module_modifiers(
                         "ship.cargo_capacity" => mods.cargo_capacity.push_modifier(modifier),
                         "ship.attack" => mods.attack.push_modifier(modifier),
                         "ship.defense" => mods.defense.push_modifier(modifier),
+                        "ship.armor_max" => mods.armor_max.push_modifier(modifier),
+                        "ship.shield_max" => mods.shield_max.push_modifier(modifier),
+                        "ship.shield_regen" => mods.shield_regen.push_modifier(modifier),
                         _ => {}
                     }
                 }
@@ -200,6 +210,9 @@ pub struct ShipModifiers {
     pub cargo_capacity: ScopedModifiers,
     pub attack: ScopedModifiers,
     pub defense: ScopedModifiers,
+    pub armor_max: ScopedModifiers,
+    pub shield_max: ScopedModifiers,
+    pub shield_regen: ScopedModifiers,
 }
 
 /// Cached computed stats for a ship, derived from ShipModifiers.
@@ -227,8 +240,6 @@ pub struct ShipDesignPreset {
     pub build_cost_minerals: Amt,
     pub build_cost_energy: Amt,
     pub build_time: i64,
-    pub combat_attack: f64,
-    pub combat_defense: f64,
     pub can_survey: bool,
     pub can_colonize: bool,
 }
@@ -244,8 +255,6 @@ pub const EXPLORER_PRESET: ShipDesignPreset = ShipDesignPreset {
     build_cost_minerals: Amt::units(200),
     build_cost_energy: Amt::units(100),
     build_time: 60,
-    combat_attack: 1.0,
-    combat_defense: 2.0,
     can_survey: true,
     can_colonize: false,
 };
@@ -261,8 +270,6 @@ pub const COLONY_SHIP_PRESET: ShipDesignPreset = ShipDesignPreset {
     build_cost_minerals: Amt::units(500),
     build_cost_energy: Amt::units(300),
     build_time: 120,
-    combat_attack: 0.0,
-    combat_defense: 3.0,
     can_survey: false,
     can_colonize: true,
 };
@@ -278,8 +285,6 @@ pub const COURIER_PRESET: ShipDesignPreset = ShipDesignPreset {
     build_cost_minerals: Amt::units(100),
     build_cost_energy: Amt::units(50),
     build_time: 30,
-    combat_attack: 0.0,
-    combat_defense: 1.0,
     can_survey: false,
     can_colonize: false,
 };
@@ -333,10 +338,17 @@ pub fn design_can_colonize(design_id: &str) -> bool {
     design_preset(design_id).map(|p| p.can_colonize).unwrap_or(false)
 }
 
-#[derive(Component, Debug, Clone)]
-pub struct CombatStats {
-    pub attack: f64,
-    pub defense: f64,
+/// 3-layer hit point model: shield → armor → hull.
+/// Shield regenerates over time; armor/hull require docking at a Port.
+#[derive(Component, Clone, Debug)]
+pub struct ShipHitpoints {
+    pub hull: f64,
+    pub hull_max: f64,
+    pub armor: f64,
+    pub armor_max: f64,
+    pub shield: f64,
+    pub shield_max: f64,
+    pub shield_regen: f64, // per hexadies
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -361,8 +373,6 @@ pub struct Ship {
     pub owner: Owner,
     pub sublight_speed: f64,
     pub ftl_range: f64,
-    pub hp: f64,
-    pub max_hp: f64,
     pub player_aboard: bool,
     /// #64: System entity where maintenance is charged
     pub home_port: Entity,
@@ -478,7 +488,7 @@ pub fn spawn_ship(
     owner: Owner,
 ) -> Entity {
     let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
-    let combat_stats = CombatStats { attack: preset.combat_attack, defense: preset.combat_defense };
+    let hull_hp = preset.hp;
     commands
         .spawn((
             Ship {
@@ -489,8 +499,6 @@ pub fn spawn_ship(
                 owner,
                 sublight_speed: preset.sublight_speed,
                 ftl_range: preset.ftl_range,
-                hp: preset.hp,
-                max_hp: preset.hp,
                 player_aboard: false,
                 home_port: system,
             },
@@ -498,7 +506,15 @@ pub fn spawn_ship(
             initial_position,
             CommandQueue::default(),
             Cargo::default(),
-            combat_stats,
+            ShipHitpoints {
+                hull: hull_hp,
+                hull_max: hull_hp,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
             ShipModifiers::default(),
             ShipStats::default(),
         ))
@@ -742,14 +758,14 @@ pub fn start_survey_with_bonus(
 /// when the survey duration has elapsed. Rolls an exploration event on completion.
 pub fn process_surveys(
     clock: Res<GameClock>,
-    mut ships: Query<(&mut Ship, &mut ShipState)>,
+    mut ships: Query<(&Ship, &mut ShipState, &mut ShipHitpoints)>,
     mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>)>,
     hostiles: Query<&HostilePresence>,
     mut events: MessageWriter<GameEvent>,
 ) {
     let mut rng = rand::rng();
 
-    for (mut ship, mut state) in ships.iter_mut() {
+    for (ship, mut state, mut ship_hp) in ships.iter_mut() {
         let (target_system, completes_at) = match *state {
             ShipState::Surveying {
                 target_system,
@@ -794,7 +810,8 @@ pub fn process_surveys(
                 apply_exploration_event(
                     &event,
                     &system_name,
-                    &mut ship,
+                    &ship,
+                    &mut ship_hp,
                     attrs,
                     &mut rng,
                     clock.elapsed,
@@ -814,7 +831,8 @@ pub fn process_surveys(
 fn apply_exploration_event(
     event: &ExplorationEvent,
     system_name: &str,
-    ship: &mut Ship,
+    ship: &Ship,
+    ship_hp: &mut ShipHitpoints,
     attrs: Option<Mut<SystemAttributes>>,
     rng: &mut impl Rng,
     timestamp: i64,
@@ -877,13 +895,13 @@ fn apply_exploration_event(
         }
         ExplorationEvent::Danger { .. } => {
             let damage_pct = rng.random_range(0.20..0.50);
-            let damage = ship.max_hp * damage_pct;
-            ship.hp = (ship.hp - damage).max(1.0);
+            let damage = ship_hp.hull_max * damage_pct;
+            ship_hp.hull = (ship_hp.hull - damage).max(1.0);
             events.write(GameEvent {
                 timestamp,
                 kind: GameEventKind::SurveyDiscovery,
                 description: format!(
-                    "Danger at {}! Ship {} took {:.0} damage ({:.0}% HP) from hazardous anomaly",
+                    "Danger at {}! Ship {} took {:.0} damage ({:.0}% hull) from hazardous anomaly",
                     system_name, ship.name, damage, damage_pct * 100.0,
                 ),
                 related_system: Some(target_system),
@@ -1377,38 +1395,101 @@ pub fn process_command_queue(
     }
 }
 
-// --- Combat resolution (#55) ---
+// --- Combat resolution (#55, #97) ---
+
+/// Hit chance: precision * track / (track + evasion)
+fn hit_chance(weapon: &crate::ship_design::WeaponStats, target_evasion: f64) -> f64 {
+    weapon.precision * (weapon.track / (weapon.track + target_evasion))
+}
+
+/// Apply weapon damage to a hostile (single HP pool).
+fn apply_damage_to_hostile(hostile_hp: &mut f64, weapon: &crate::ship_design::WeaponStats, rng: &mut impl Rng) {
+    let dmg = (weapon.hull_damage + weapon.hull_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+    *hostile_hp -= dmg;
+}
+
+/// Apply damage through 3-layer HP: shield → armor → hull.
+fn apply_damage_to_ship(hp: &mut ShipHitpoints, weapon: &crate::ship_design::WeaponStats, rng: &mut impl Rng) {
+    // Shield phase
+    if hp.shield > 0.0 && rng.random::<f64>() >= weapon.shield_piercing {
+        let dmg = (weapon.shield_damage + weapon.shield_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+        hp.shield = (hp.shield - dmg).max(0.0);
+        return; // damage absorbed by shield
+    }
+
+    // Armor phase
+    if hp.armor > 0.0 && rng.random::<f64>() >= weapon.armor_piercing {
+        let dmg = (weapon.armor_damage + weapon.armor_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+        hp.armor = (hp.armor - dmg).max(0.0);
+        return; // damage absorbed by armor
+    }
+
+    // Hull phase
+    let dmg = (weapon.hull_damage + weapon.hull_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+    hp.hull = (hp.hull - dmg).max(0.0);
+}
+
+/// Apply flat hostile damage through 3-layer HP (simplified for hostile attacks).
+fn apply_flat_damage_to_ship(hp: &mut ShipHitpoints, damage: f64) {
+    let mut remaining = damage;
+
+    // Shield absorbs first
+    if hp.shield > 0.0 {
+        let absorbed = remaining.min(hp.shield);
+        hp.shield -= absorbed;
+        remaining -= absorbed;
+    }
+
+    // Armor absorbs next
+    if remaining > 0.0 && hp.armor > 0.0 {
+        let absorbed = remaining.min(hp.armor);
+        hp.armor -= absorbed;
+        remaining -= absorbed;
+    }
+
+    // Hull takes the rest
+    if remaining > 0.0 {
+        hp.hull = (hp.hull - remaining).max(0.0);
+    }
+}
 
 /// Resolves combat between player ships and hostile presences at star systems.
-/// Runs one combat round per tick (hexadies). Damage = max(attack - defense, 0) * 0.1
+/// Combat turns per hexadies: 12. Uses WeaponStats from equipped modules.
 pub fn resolve_combat(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut ships: Query<(Entity, &mut Ship, &CombatStats, &ShipState)>,
+    last_tick: Res<crate::colony::LastProductionTick>,
+    mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState)>,
     mut hostiles: Query<(Entity, &mut HostilePresence)>,
+    module_registry: Res<ModuleRegistry>,
     systems: Query<&StarSystem>,
     mut events: MessageWriter<GameEvent>,
 ) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    let combat_turns = (delta * 12) as u32;
+    let mut rng = rand::rng();
+
     // Collect hostile systems first to avoid borrow issues
-    let hostile_systems: Vec<(Entity, Entity)> = hostiles
+    let hostile_data: Vec<(Entity, Entity, f64, f64, f64, crate::galaxy::HostileType, f64)> = hostiles
         .iter()
-        .filter_map(|(hostile_entity, hostile)| {
-            Some((hostile_entity, hostile.system))
-        })
+        .map(|(e, h)| (e, h.system, h.strength, h.hp, h.max_hp, h.hostile_type, h.evasion))
         .collect();
 
-    for (hostile_entity, system_entity) in hostile_systems {
+    for (hostile_entity, system_entity, _hostile_strength, _hostile_hp, _hostile_max_hp, _hostile_type, hostile_evasion) in &hostile_data {
         let system_name = systems
-            .get(system_entity)
+            .get(*system_entity)
             .map(|s| s.name.clone())
             .unwrap_or_default();
 
         // Find all player ships docked at this system
         let docked_ships: Vec<Entity> = ships
             .iter()
-            .filter_map(|(entity, _ship, _stats, state)| {
+            .filter_map(|(entity, _ship, _hp, _mods, state)| {
                 if let ShipState::Docked { system } = state {
-                    if *system == system_entity {
+                    if *system == *system_entity {
                         return Some(entity);
                     }
                 }
@@ -1420,31 +1501,47 @@ pub fn resolve_combat(
             continue;
         }
 
-        // Calculate player total attack and defense
-        let mut player_total_attack: f64 = 0.0;
-        let mut player_total_defense: f64 = 0.0;
+        // --- Player ships attack hostile ---
+        // Collect weapon data for each ship
+        struct ShipWeaponData {
+            entity: Entity,
+            weapons: Vec<crate::ship_design::WeaponStats>,
+        }
+        let mut ship_weapons: Vec<ShipWeaponData> = Vec::new();
         for &ship_entity in &docked_ships {
-            if let Ok((_e, _ship, stats, _state)) = ships.get(ship_entity) {
-                player_total_attack += stats.attack;
-                player_total_defense += stats.defense;
+            if let Ok((_e, ship, _hp, _mods, _state)) = ships.get(ship_entity) {
+                let mut weapons = Vec::new();
+                for equipped in &ship.modules {
+                    if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
+                        if let Some(weapon) = &module_def.weapon {
+                            weapons.push(weapon.clone());
+                        }
+                    }
+                }
+                ship_weapons.push(ShipWeaponData { entity: ship_entity, weapons });
             }
         }
 
-        // Get hostile stats
-        let Ok((_he, mut hostile)) = hostiles.get_mut(hostile_entity) else {
+        // Apply weapon damage to hostile
+        let Ok((_he, mut hostile)) = hostiles.get_mut(*hostile_entity) else {
             continue;
         };
 
-        // Player damages hostile
-        let player_damage = (player_total_attack - hostile.strength * 0.5).max(0.0) * 0.1;
-        hostile.hp -= player_damage;
-
-        // Hostile damages players
-        let hostile_damage = (hostile.strength - player_total_defense).max(0.0) * 0.1;
+        for sw in &ship_weapons {
+            for weapon in &sw.weapons {
+                let shots = if weapon.cooldown > 0 { combat_turns / weapon.cooldown as u32 } else { combat_turns };
+                for _ in 0..shots {
+                    let chance = hit_chance(weapon, *hostile_evasion);
+                    if rng.random::<f64>() < chance {
+                        apply_damage_to_hostile(&mut hostile.hp, weapon, &mut rng);
+                    }
+                }
+            }
+        }
 
         // Check if hostile is destroyed
         if hostile.hp <= 0.0 {
-            commands.entity(hostile_entity).despawn();
+            commands.entity(*hostile_entity).despawn();
             events.write(GameEvent {
                 timestamp: clock.elapsed,
                 kind: GameEventKind::CombatVictory,
@@ -1452,23 +1549,27 @@ pub fn resolve_combat(
                     "Victory! Hostile {:?} at {} has been defeated",
                     hostile.hostile_type, system_name
                 ),
-                related_system: Some(system_entity),
+                related_system: Some(*system_entity),
             });
             continue;
         }
 
+        let hostile_str = hostile.strength;
+        let hostile_tp = hostile.hostile_type;
         // Drop the mutable borrow on hostile before accessing ships mutably
         drop(hostile);
 
-        // Distribute hostile damage evenly across player ships
-        if hostile_damage > 0.0 && !docked_ships.is_empty() {
-            let damage_per_ship = hostile_damage / docked_ships.len() as f64;
+        // --- Hostile attacks player ships ---
+        // Hostile deals strength damage per combat turn, distributed evenly
+        if hostile_str > 0.0 && !docked_ships.is_empty() {
+            let total_damage = hostile_str * combat_turns as f64;
+            let damage_per_ship = total_damage / docked_ships.len() as f64;
             let mut destroyed_ships: Vec<(Entity, String)> = Vec::new();
 
             for &ship_entity in &docked_ships {
-                if let Ok((_e, mut ship, _stats, _state)) = ships.get_mut(ship_entity) {
-                    ship.hp -= damage_per_ship;
-                    if ship.hp <= 0.0 {
+                if let Ok((_e, ship, mut hp, _mods, _state)) = ships.get_mut(ship_entity) {
+                    apply_flat_damage_to_ship(&mut hp, damage_per_ship);
+                    if hp.hull <= 0.0 {
                         destroyed_ships.push((ship_entity, ship.name.clone()));
                     }
                 }
@@ -1480,7 +1581,7 @@ pub fn resolve_combat(
                     timestamp: clock.elapsed,
                     kind: GameEventKind::CombatDefeat,
                     description: format!("{} destroyed in combat at {}", name, system_name),
-                    related_system: Some(system_entity),
+                    related_system: Some(*system_entity),
                 });
             }
 
@@ -1492,11 +1593,93 @@ pub fn resolve_combat(
                     kind: GameEventKind::CombatDefeat,
                     description: format!(
                         "All ships destroyed by hostile {:?} at {}",
-                        hostiles.get(hostile_entity).map(|(_, h)| h.hostile_type).unwrap_or(crate::galaxy::HostileType::SpaceCreature),
+                        hostile_tp,
                         system_name
                     ),
-                    related_system: Some(system_entity),
+                    related_system: Some(*system_entity),
                 });
+            }
+        }
+    }
+}
+
+/// Sync ShipHitpoints max values from ShipModifiers.
+/// Only updates when the modifier-computed values differ from current values.
+pub fn sync_ship_hitpoints(
+    mut ships: Query<(&ShipModifiers, &mut ShipHitpoints)>,
+) {
+    for (mods, mut hp) in &mut ships {
+        let new_armor_max = mods.armor_max.final_value().to_f64();
+        let new_shield_max = mods.shield_max.final_value().to_f64();
+        let new_shield_regen = mods.shield_regen.final_value().to_f64();
+        // Only update if values actually changed from modifiers
+        if (hp.armor_max - new_armor_max).abs() > f64::EPSILON
+            || (hp.shield_max - new_shield_max).abs() > f64::EPSILON
+            || (hp.shield_regen - new_shield_regen).abs() > f64::EPSILON
+        {
+            hp.armor_max = new_armor_max;
+            hp.shield_max = new_shield_max;
+            hp.shield_regen = new_shield_regen;
+            // Clamp current values to new max
+            hp.armor = hp.armor.min(hp.armor_max);
+            hp.shield = hp.shield.min(hp.shield_max);
+        }
+    }
+}
+
+/// Regenerate shields over time.
+pub fn tick_shield_regen(
+    clock: Res<GameClock>,
+    last_tick: Res<crate::colony::LastProductionTick>,
+    mut ships: Query<&mut ShipHitpoints>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    let d = delta as f64;
+    for mut hp in &mut ships {
+        if hp.shield < hp.shield_max && hp.shield_regen > 0.0 {
+            hp.shield = (hp.shield + hp.shield_regen * d).min(hp.shield_max);
+        }
+    }
+}
+
+/// Repair armor and hull for ships docked at a system with a Port building.
+/// Repair rate: 5.0 HP per hexadies.
+const REPAIR_RATE_PER_HEXADIES: f64 = 5.0;
+
+pub fn tick_ship_repair(
+    clock: Res<GameClock>,
+    last_tick: Res<crate::colony::LastProductionTick>,
+    mut ships: Query<(&ShipState, &mut ShipHitpoints)>,
+    colonies: Query<(&Colony, Option<&Buildings>)>,
+    planets: Query<&crate::galaxy::Planet>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    let repair_amount = REPAIR_RATE_PER_HEXADIES * delta as f64;
+
+    for (state, mut hp) in &mut ships {
+        let ShipState::Docked { system } = state else {
+            continue;
+        };
+
+        // Check if the system has a colony with a Port
+        let has_port = colonies.iter().any(|(col, bldgs)| {
+            col.system(&planets) == Some(*system)
+                && bldgs.map_or(false, |b| b.has_port())
+        });
+
+        if has_port {
+            // Repair armor first, then hull
+            if hp.armor < hp.armor_max {
+                hp.armor = (hp.armor + repair_amount).min(hp.armor_max);
+            }
+            if hp.hull < hp.hull_max {
+                hp.hull = (hp.hull + repair_amount).min(hp.hull_max);
             }
         }
     }
@@ -1517,8 +1700,6 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: preset.sublight_speed,
             ftl_range: preset.ftl_range,
-            hp: preset.hp,
-            max_hp: preset.hp,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
         }
@@ -1782,8 +1963,6 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: 0.85,
             ftl_range: 0.0,
-            hp: 20.0,
-            max_hp: 20.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
         }).id();
@@ -1795,8 +1974,6 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
-            hp: 100.0,
-            max_hp: 100.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
         }).id();
@@ -1824,8 +2001,6 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 10.0,
-            hp: 100.0,
-            max_hp: 100.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
         }).id();
@@ -1837,8 +2012,6 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
-            hp: 100.0,
-            max_hp: 100.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
         }).id();

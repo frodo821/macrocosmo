@@ -127,6 +127,7 @@ pub struct HostilePresence {
     pub hp: f64,
     pub max_hp: f64,
     pub hostile_type: HostileType,
+    pub evasion: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

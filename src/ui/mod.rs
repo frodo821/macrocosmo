@@ -14,7 +14,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
-use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
+use crate::ship::{Cargo, CommandQueue, Ship, ShipHitpoints, ShipState};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
@@ -58,7 +58,7 @@ pub fn draw_all_ui(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
     mut command_queues: Query<&mut CommandQueue>,
     positions_planets_and_entities: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>),
     mut empire_q: Query<
