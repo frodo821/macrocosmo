@@ -7,7 +7,7 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
-use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
+use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
@@ -62,7 +62,7 @@ pub fn draw_all_ui(
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     mut command_queues: Query<&mut CommandQueue>,
     pending_commands: Query<&PendingShipCommand>,
-    positions_planets_stockpiles: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>, Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>, Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>),
+    positions_planets_stockpiles: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>, Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>, Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>, Query<&ColonizationQueue>),
     mut empire_q: Query<
         (
             &KnowledgeStore,
@@ -80,7 +80,7 @@ pub fn draw_all_ui(
 ) {
     let (mut selected_ship, mut context_menu, mut selected_planet) = selection_state;
     let (mut research_open, mut designer_state, hull_registry, module_registry, mut design_registry) = overlay_state;
-    let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q) = positions_planets_stockpiles;
+    let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
         empire_q.single_mut()
@@ -169,6 +169,7 @@ pub fn draw_all_ui(
         &planets,
     );
 
+    let mut colonization_actions = Vec::new();
     side_panel::draw_system_panel(
         ctx,
         &selected_system,
@@ -189,7 +190,18 @@ pub fn draw_all_ui(
         &hull_registry,
         &module_registry,
         &design_registry,
+        &colonization_queues,
+        &mut colonization_actions,
     );
+
+    // #114: Process colonization actions from system panel
+    for action in colonization_actions {
+        commands.spawn(crate::colony::PendingColonizationOrder {
+            system_entity: action.system_entity,
+            target_planet: action.target_planet,
+            source_colony: action.source_colony,
+        });
+    }
 
     let ship_panel_actions = side_panel::draw_ship_panel(
         ctx,
@@ -301,6 +313,7 @@ pub fn draw_all_ui(
         &mut pending_ship_commands,
         &colony_ro,
         &planets,
+        &planet_entities,
     );
     // Spawn any delayed commands as entities
     for pending_cmd in pending_ship_commands {

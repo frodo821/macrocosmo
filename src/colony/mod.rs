@@ -44,13 +44,17 @@ impl Plugin for ColonyPlugin {
                     tick_build_queue,
                     tick_building_queue,
                     tick_system_building_queue,
+                    tick_colonization_queue,
                     check_resource_alerts,
                     advance_production_tick,
                 )
                     .chain()
                     .after(crate::time_system::advance_game_time),
             )
-            .add_systems(Update, update_sovereignty);
+            .add_systems(Update, (
+                update_sovereignty,
+                apply_pending_colonization_orders,
+            ));
     }
 }
 
@@ -469,6 +473,37 @@ impl SystemBuildingQueue {
 
 /// Default number of system building slots for any star system.
 pub const DEFAULT_SYSTEM_BUILDING_SLOTS: usize = 6;
+
+/// #114: Cost to colonize a new planet from an existing colony in the same system.
+pub const COLONIZATION_MINERAL_COST: Amt = Amt::units(300);
+pub const COLONIZATION_ENERGY_COST: Amt = Amt::units(200);
+pub const COLONIZATION_BUILD_TIME: i64 = 90;
+pub const COLONIZATION_POPULATION_TRANSFER: f64 = 10.0;
+pub const COLONIZATION_MIN_POPULATION: f64 = 20.0;
+
+/// #114: Queue for same-system colonization orders (attached to StarSystem entities).
+#[derive(Component, Default)]
+pub struct ColonizationQueue {
+    pub orders: Vec<ColonizationOrder>,
+}
+
+/// #114: A single colonization order in the queue.
+pub struct ColonizationOrder {
+    pub target_planet: Entity,
+    pub source_colony: Entity,
+    pub minerals_remaining: Amt,
+    pub energy_remaining: Amt,
+    pub build_time_remaining: i64,
+    pub initial_population: f64,
+}
+
+/// #114: Pending colonization order spawned by UI, consumed by `apply_pending_colonization_orders`.
+#[derive(Component)]
+pub struct PendingColonizationOrder {
+    pub system_entity: Entity,
+    pub target_planet: Entity,
+    pub source_colony: Entity,
+}
 
 /// Load building definitions from Lua scripts into the BuildingRegistry.
 /// Falls back to an empty registry if scripts are missing or fail to parse.
@@ -1458,6 +1493,137 @@ pub fn tick_system_building_queue(
 
         stockpile.minerals = stockpile.minerals.sub(minerals_consumed).add(minerals_refunded);
         stockpile.energy = stockpile.energy.sub(energy_consumed).add(energy_refunded);
+    }
+}
+
+/// #114: Process colonization orders on star systems.
+/// Deducts resources, counts down build time, and spawns a new colony on completion.
+pub fn tick_colonization_queue(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    mut systems_with_queue: Query<(Entity, &mut ColonizationQueue, &mut ResourceStockpile)>,
+    mut colonies: Query<&mut Colony>,
+    planet_query: Query<(Entity, &Planet, &SystemAttributes)>,
+    mut events: MessageWriter<GameEvent>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+
+    for (system_entity, mut cq, mut stockpile) in &mut systems_with_queue {
+        let mut completed: Vec<usize> = Vec::new();
+
+        for (i, order) in cq.orders.iter_mut().enumerate() {
+            for _ in 0..delta {
+                let minerals_transfer = order.minerals_remaining.min(stockpile.minerals);
+                order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
+                stockpile.minerals = stockpile.minerals.sub(minerals_transfer);
+
+                let energy_transfer = order.energy_remaining.min(stockpile.energy);
+                order.energy_remaining = order.energy_remaining.sub(energy_transfer);
+                stockpile.energy = stockpile.energy.sub(energy_transfer);
+
+                order.build_time_remaining -= 1;
+
+                if order.minerals_remaining == Amt::ZERO
+                    && order.energy_remaining == Amt::ZERO
+                    && order.build_time_remaining <= 0
+                {
+                    completed.push(i);
+                    break;
+                }
+            }
+        }
+
+        // Process completions in reverse to maintain indices
+        for &idx in completed.iter().rev() {
+            let order = cq.orders.remove(idx);
+
+            // Transfer population from source colony
+            if let Ok(mut source) = colonies.get_mut(order.source_colony) {
+                let transfer = order.initial_population.min(source.population - 1.0);
+                source.population -= transfer;
+            }
+
+            // Get planet attributes for production rates
+            let (planet_name, minerals_rate, energy_rate, research_rate, num_slots) =
+                if let Ok((_, planet, attrs)) = planet_query.get(order.target_planet) {
+                    (
+                        planet.name.clone(),
+                        crate::ship::resource_production_rate(attrs.mineral_richness),
+                        crate::ship::resource_production_rate(attrs.energy_potential),
+                        crate::ship::resource_production_rate(attrs.research_potential),
+                        attrs.max_building_slots as usize,
+                    )
+                } else {
+                    continue;
+                };
+
+            // Spawn the new colony
+            commands.spawn((
+                Colony {
+                    planet: order.target_planet,
+                    population: order.initial_population,
+                    growth_rate: 0.005,
+                },
+                Production {
+                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(minerals_rate),
+                    energy_per_hexadies: crate::modifier::ModifiedValue::new(energy_rate),
+                    research_per_hexadies: crate::modifier::ModifiedValue::new(research_rate),
+                    food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                },
+                BuildQueue { queue: Vec::new() },
+                Buildings { slots: vec![None; num_slots] },
+                BuildingQueue::default(),
+                ProductionFocus::default(),
+                MaintenanceCost::default(),
+                FoodConsumption::default(),
+            ));
+
+            events.write(crate::events::GameEvent {
+                timestamp: clock.elapsed,
+                kind: crate::events::GameEventKind::ColonyEstablished,
+                description: format!("New colony established on {}", planet_name),
+                related_system: Some(system_entity),
+            });
+
+            info!("Colony established on {} via build queue colonization", planet_name);
+        }
+    }
+}
+
+/// #114: Consume PendingColonizationOrder entities and add them to the system's ColonizationQueue.
+pub fn apply_pending_colonization_orders(
+    mut commands: Commands,
+    pending: Query<(Entity, &PendingColonizationOrder)>,
+    mut queues: Query<&mut ColonizationQueue>,
+) {
+    for (entity, order) in &pending {
+        // Get or create the ColonizationQueue on the system
+        if let Ok(mut cq) = queues.get_mut(order.system_entity) {
+            cq.orders.push(ColonizationOrder {
+                target_planet: order.target_planet,
+                source_colony: order.source_colony,
+                minerals_remaining: COLONIZATION_MINERAL_COST,
+                energy_remaining: COLONIZATION_ENERGY_COST,
+                build_time_remaining: COLONIZATION_BUILD_TIME,
+                initial_population: COLONIZATION_POPULATION_TRANSFER,
+            });
+        } else {
+            commands.entity(order.system_entity).insert(ColonizationQueue {
+                orders: vec![ColonizationOrder {
+                    target_planet: order.target_planet,
+                    source_colony: order.source_colony,
+                    minerals_remaining: COLONIZATION_MINERAL_COST,
+                    energy_remaining: COLONIZATION_ENERGY_COST,
+                    build_time_remaining: COLONIZATION_BUILD_TIME,
+                    initial_population: COLONIZATION_POPULATION_TRANSFER,
+                }],
+            });
+        }
+        commands.entity(entity).despawn();
     }
 }
 

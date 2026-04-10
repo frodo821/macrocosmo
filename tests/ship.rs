@@ -794,6 +794,7 @@ fn test_cancel_settling_returns_to_docked() {
     let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
     *state = ShipState::Settling {
         system: sys_a,
+        planet: None,
         started_at: 0,
         completes_at: 120,
     };

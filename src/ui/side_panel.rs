@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -45,6 +45,13 @@ pub struct ShipPanelActions {
     pub refit: Option<ShipRefitAction>,
 }
 
+/// #114: Action to start colonizing a planet from the system panel build queue.
+pub struct ColonizationAction {
+    pub system_entity: Entity,
+    pub target_planet: Entity,
+    pub source_colony: Entity,
+}
+
 /// Draws the right-side system info panel when a star system is selected.
 /// Shows star system overview, planet list with selection, and colony detail
 /// for the selected planet.
@@ -78,6 +85,8 @@ pub fn draw_system_panel(
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
+    colonization_queues: &Query<&ColonizationQueue>,
+    colonization_actions_out: &mut Vec<ColonizationAction>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -333,6 +342,94 @@ pub fn draw_system_panel(
                                 });
                                 info!("System building order added: {:?} in slot {}", bt, slot_idx);
                             }
+                        }
+                    }
+                }
+            }
+
+            // === #114: Same-system colonization ===
+            // Show if this system has at least one colony and uncolonized habitable planets
+            if !colonized_planets.is_empty() {
+                // Collect uncolonized habitable planets in this system
+                let mut colonizable: Vec<(Entity, String, String)> = Vec::new();
+                for (pe, planet, attrs) in planet_entities.iter() {
+                    if planet.system == sel_entity
+                        && !colonized_planets.contains(&pe)
+                        && attrs.map(|a| {
+                            a.habitability != crate::galaxy::Habitability::Barren
+                                && a.habitability != crate::galaxy::Habitability::GasGiant
+                        }).unwrap_or(false)
+                    {
+                        // Check not already in colonization queue
+                        let in_queue = colonization_queues.get(sel_entity)
+                            .map(|cq| cq.orders.iter().any(|o| o.target_planet == pe))
+                            .unwrap_or(false);
+                        if !in_queue {
+                            colonizable.push((pe, planet.name.clone(), format_planet_type(&planet.planet_type)));
+                        }
+                    }
+                }
+                colonizable.sort_by(|a, b| a.1.cmp(&b.1));
+
+                if !colonizable.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Colonize Planet").strong());
+                    ui.label(format!(
+                        "Cost: {} minerals, {} energy, {} hd",
+                        crate::colony::COLONIZATION_MINERAL_COST,
+                        crate::colony::COLONIZATION_ENERGY_COST,
+                        crate::colony::COLONIZATION_BUILD_TIME,
+                    ));
+
+                    // Find a source colony with enough population
+                    let source_colony: Option<Entity> = colonies.iter()
+                        .find(|(_, c, _, _, _, _, _, _)| {
+                            c.system(planets) == Some(sel_entity)
+                                && c.population > crate::colony::COLONIZATION_MIN_POPULATION
+                        })
+                        .map(|(e, _, _, _, _, _, _, _)| e);
+
+                    for (pe, name, ptype) in &colonizable {
+                        let label = format!("{} ({})", name, ptype);
+                        let enabled = source_colony.is_some();
+                        if ui.add_enabled(enabled, egui::Button::new(format!("Colonize {}", label))).clicked() {
+                            if let Some(source) = source_colony {
+                                colonization_actions_out.push(ColonizationAction {
+                                    system_entity: sel_entity,
+                                    target_planet: *pe,
+                                    source_colony: source,
+                                });
+                            }
+                        }
+                    }
+
+                    if source_colony.is_none() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "(Need colony with >{:.0} pop)",
+                                crate::colony::COLONIZATION_MIN_POPULATION
+                            ))
+                            .small()
+                            .color(egui::Color32::from_rgb(200, 200, 100)),
+                        );
+                    }
+                }
+
+                // Show in-progress colonization orders
+                if let Ok(cq) = colonization_queues.get(sel_entity) {
+                    if !cq.orders.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Colonization In Progress").strong());
+                        for order in &cq.orders {
+                            let planet_name = planets.get(order.target_planet)
+                                .map(|p| p.name.as_str())
+                                .unwrap_or("Unknown");
+                            let total_time = crate::colony::COLONIZATION_BUILD_TIME;
+                            let elapsed = total_time - order.build_time_remaining;
+                            let pct = if total_time > 0 { elapsed as f32 / total_time as f32 } else { 1.0 };
+                            ui.label(format!("{}: {}/{} hd ({:.0}%)", planet_name, elapsed, total_time, pct * 100.0));
+                            let bar = egui::ProgressBar::new(pct);
+                            ui.add(bar);
                         }
                     }
                 }
@@ -894,6 +991,7 @@ fn build_status_info(
             system,
             started_at,
             completes_at,
+            ..
         } => {
             let total = (completes_at - started_at).max(1);
             let elapsed = (clock.elapsed - started_at).clamp(0, total);
@@ -1490,6 +1588,7 @@ pub fn draw_context_menu(
     pending_commands_out: &mut Vec<crate::ship::PendingShipCommand>,
     colonies: &[Colony],
     planets: &Query<&Planet>,
+    planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
 ) {
     if !context_menu.open {
         return;
@@ -1580,20 +1679,26 @@ pub fn draw_context_menu(
     let dist = physics::distance_ly(origin_pos, target_pos);
     let target_name = target_star.name.clone();
     let target_surveyed = target_star.surveyed;
-    let target_colonized = colonies.iter().any(|c| planets.get(c.planet).ok().map(|p| p.system) == Some(target_entity));
-    let target_habitable = target_attrs
-        .map(|a| {
-            a.habitability != crate::galaxy::Habitability::Barren
-                && a.habitability != crate::galaxy::Habitability::GasGiant
-        })
-        .unwrap_or(false);
+
+    // #114: Check for colonizable planets (habitable + uncolonized) in the target system
+    let colonized_planets: std::collections::HashSet<Entity> = colonies.iter()
+        .map(|c| c.planet)
+        .collect();
+    let has_colonizable_planet = planet_entities.iter().any(|(pe, p, attrs)| {
+        p.system == target_entity
+            && attrs.map(|a| {
+                a.habitability != crate::galaxy::Habitability::Barren
+                    && a.habitability != crate::galaxy::Habitability::GasGiant
+            }).unwrap_or(false)
+            && !colonized_planets.contains(&pe)
+    });
 
     // #108: Unified move — auto-route picks FTL vs sublight
     let can_move = !same_system;
     // Survey: can survey unsurveyed system (docked: immediate/delayed, non-docked: queued)
     let can_survey = crate::ship::design_can_survey(&design_id) && !target_surveyed;
-    // Colonize: can colonize habitable, uncolonized, surveyed system (docked: immediate/delayed, non-docked: queued)
-    let can_colonize = crate::ship::design_can_colonize(&design_id) && target_habitable && !target_colonized && target_surveyed;
+    // Colonize: can colonize surveyed system with at least one habitable uncolonized planet
+    let can_colonize = crate::ship::design_can_colonize(&design_id) && has_colonizable_planet && target_surveyed;
 
     let mut command: Option<ShipState> = None;
     let mut queued_command: Option<QueuedCommand> = None;
@@ -1625,6 +1730,7 @@ pub fn draw_context_menu(
                 if command_delay == 0 {
                     command = Some(ShipState::Settling {
                         system: target_entity,
+                        planet: None,
                         started_at: clock.elapsed,
                         completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
                     });
@@ -1778,19 +1884,21 @@ pub fn draw_context_menu(
                 }
             }
 
-            // Colonize -- if ColonyShip + target habitable + uncolonized
+            // Colonize -- if ColonyShip + target has colonizable planet
             if can_colonize {
                 let colonize_label = if !is_docked || !same_system { format!("{}Colonize", queue_prefix) } else { "Colonize".to_string() };
                 if ui.button(colonize_label).clicked() {
                     if !is_docked {
-                        // Ship in transit: queue colonize
+                        // Ship in transit: queue colonize (planet auto-selected on arrival)
                         queued_command = Some(QueuedCommand::Colonize {
                             system: target_entity,
+                            planet: None,
                         });
                     } else if same_system {
                         if command_delay == 0 {
                             command = Some(ShipState::Settling {
                                 system: target_entity,
+                                planet: None,
                                 started_at: clock.elapsed,
                                 completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
                             });
@@ -1803,10 +1911,12 @@ pub fn draw_context_menu(
                             delayed_command = Some(crate::ship::ShipCommand::MoveTo { destination: target_entity });
                             queued_command = Some(QueuedCommand::Colonize {
                                 system: target_entity,
+                                planet: None,
                             });
                         } else {
                             queued_command = Some(QueuedCommand::Colonize {
                                 system: target_entity,
+                                planet: None,
                             });
                         }
                     }

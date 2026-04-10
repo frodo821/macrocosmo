@@ -93,6 +93,7 @@ pub fn test_app() -> App {
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
         )
@@ -101,7 +102,10 @@ pub fn test_app() -> App {
     );
     app.add_systems(
         Update,
-        species::sync_job_assignment.after(macrocosmo::time_system::advance_game_time),
+        (
+            species::sync_job_assignment,
+            apply_pending_colonization_orders,
+        ).after(macrocosmo::time_system::advance_game_time),
     );
     app.add_systems(
         Update,
@@ -200,12 +204,13 @@ pub fn full_test_app() -> App {
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
         )
             .chain(),
     );
-    app.add_systems(Update, update_sovereignty);
+    app.add_systems(Update, (update_sovereignty, apply_pending_colonization_orders));
 
     // --- Species systems (from SpeciesPlugin) ---
     app.add_systems(Update, species::sync_job_assignment);

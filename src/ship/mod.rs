@@ -32,7 +32,7 @@ impl CommandQueue {
     /// Push a command and update predicted position
     pub fn push(&mut self, cmd: QueuedCommand, system_positions: &impl Fn(Entity) -> Option<[f64; 3]>) {
         match &cmd {
-            QueuedCommand::MoveTo { system } | QueuedCommand::Survey { system } | QueuedCommand::Colonize { system } => {
+            QueuedCommand::MoveTo { system } | QueuedCommand::Survey { system } | QueuedCommand::Colonize { system, .. } => {
                 if let Some(pos) = system_positions(*system) {
                     self.predicted_position = pos;
                     self.predicted_system = Some(*system);
@@ -55,7 +55,7 @@ impl CommandQueue {
 pub enum QueuedCommand {
     MoveTo { system: Entity },
     Survey { system: Entity },
-    Colonize { system: Entity },
+    Colonize { system: Entity, planet: Option<Entity> },
 }
 
 /// Result of an exploration event rolled when a survey completes.
@@ -471,6 +471,7 @@ pub enum ShipState {
     /// #32: Colony ship settling state
     Settling {
         system: Entity,
+        planet: Option<Entity>,
         started_at: i64,
         completes_at: i64,
     },
@@ -1213,12 +1214,13 @@ pub fn process_settling(
     mut events: MessageWriter<GameEvent>,
 ) {
     for (ship_entity, ship, state) in &ships {
-        let (system_entity, completes_at) = match *state {
+        let (system_entity, target_planet_entity, completes_at) = match *state {
             ShipState::Settling {
                 system,
+                planet,
                 completes_at,
                 ..
-            } => (system, completes_at),
+            } => (system, planet, completes_at),
             _ => continue,
         };
 
@@ -1227,21 +1229,28 @@ pub fn process_settling(
                 continue;
             };
 
-            // Check if any planet in this system already has a colony
-            let already_colonized = existing_colonies.iter().any(|c| {
-                planet_query.get(c.planet).ok().map(|(_, p, _)| p.system) == Some(system_entity)
-            });
+            // Collect planets that already have a colony
+            let colonized_planets: Vec<Entity> = existing_colonies.iter()
+                .map(|c| c.planet)
+                .collect();
 
-            if already_colonized {
-                info!("System {} is already colonized, settling aborted", star_system.name);
-                commands.entity(ship_entity).despawn();
-                continue;
-            }
-
-            // Find the first habitable planet in this system
-            let target_planet = planet_query.iter().find(|(_, p, attrs)| {
-                p.system == system_entity && attrs.habitability != Habitability::GasGiant
-            });
+            // If a specific planet was targeted, try to use it
+            let target_planet = if let Some(target_pe) = target_planet_entity {
+                // Verify target planet is valid and not already colonized
+                if colonized_planets.contains(&target_pe) {
+                    info!("Target planet in {} is already colonized, settling aborted", star_system.name);
+                    commands.entity(ship_entity).despawn();
+                    continue;
+                }
+                planet_query.get(target_pe).ok()
+            } else {
+                // Auto-select: find the first habitable, uncolonized planet in this system
+                planet_query.iter().find(|(entity, p, attrs)| {
+                    p.system == system_entity
+                        && attrs.habitability != Habitability::GasGiant
+                        && !colonized_planets.contains(entity)
+                })
+            };
 
             let Some((planet_entity, _, attrs)) = target_planet else {
                 info!("Colony Ship {} found no habitable planet at {}", ship.name, star_system.name);
@@ -1482,6 +1491,7 @@ pub fn process_pending_ship_commands(
                 } else {
                     *state = ShipState::Settling {
                         system: docked_system,
+                        planet: None,
                         started_at: clock.elapsed,
                         completes_at: clock.elapsed + SETTLING_DURATION_HEXADIES,
                     };
@@ -1761,7 +1771,7 @@ pub fn process_command_queue(
                 }
                 queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
             }
-            QueuedCommand::Colonize { system: target } => {
+            QueuedCommand::Colonize { system: target, planet } => {
                 let Ok((_target_entity, target_star, _target_pos)) = systems.get(target) else {
                     warn!("Queued Colonize target no longer exists");
                     queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
@@ -1770,7 +1780,7 @@ pub fn process_command_queue(
                 // #101: If not docked at the target system, auto-insert a move command
                 if docked_system != target {
                     // Re-insert the colonize command after the move
-                    queue.commands.insert(0, QueuedCommand::Colonize { system: target });
+                    queue.commands.insert(0, QueuedCommand::Colonize { system: target, planet });
                     queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
                     info!("Queue: Ship {} not at target, auto-inserting move before colonize of {}", ship.name, target_star.name);
                     continue;
@@ -1783,6 +1793,7 @@ pub fn process_command_queue(
                 }
                 *state = ShipState::Settling {
                     system: docked_system,
+                    planet,
                     started_at: clock.elapsed,
                     completes_at: clock.elapsed + SETTLING_DURATION_HEXADIES,
                 };
@@ -2609,6 +2620,7 @@ mod tests {
         let mut queue = CommandQueue {
             commands: vec![QueuedCommand::Colonize {
                 system: system_b,
+                planet: None,
             }],
             ..Default::default()
         };
@@ -2620,10 +2632,10 @@ mod tests {
         };
         let next = queue.commands.remove(0);
         match next {
-            QueuedCommand::Colonize { system: target } => {
+            QueuedCommand::Colonize { system: target, planet } => {
                 assert_ne!(docked_system, target);
                 // Auto-insert: move to target, then re-queue colonize
-                queue.commands.insert(0, QueuedCommand::Colonize { system: target });
+                queue.commands.insert(0, QueuedCommand::Colonize { system: target, planet });
                 queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
             }
             _ => panic!("Expected Colonize command"),
