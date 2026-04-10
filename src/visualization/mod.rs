@@ -9,7 +9,7 @@ use crate::components::Position;
 use crate::galaxy::{ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
-use crate::ship::{Ship, ShipState};
+use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
 
@@ -485,19 +485,38 @@ fn ship_color(design_id: &str) -> Color {
     Color::srgb(r, g, b)
 }
 
+fn draw_dashed_line(gizmos: &mut Gizmos, start: Vec2, end: Vec2, color: Color) {
+    let diff = end - start;
+    let length = diff.length();
+    if length <= 0.0 {
+        return;
+    }
+    let dir = diff / length;
+    let dash_len = 4.0;
+    let gap_len = 4.0;
+    let mut d = 0.0;
+    while d < length {
+        let seg_start = start + dir * d;
+        let seg_end = start + dir * (d + dash_len).min(length);
+        gizmos.line_2d(seg_start, seg_end, color);
+        d += dash_len + gap_len;
+    }
+}
+
 fn draw_ships(
     mut gizmos: Gizmos,
-    ships: Query<(&Ship, &ShipState)>,
+    ships: Query<(Entity, &Ship, &ShipState, Option<&CommandQueue>)>,
     stars: Query<&Position, With<StarSystem>>,
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
+    selected_ship: Res<SelectedShip>,
 ) {
     // Group docked ships by system so we can offset them.
     let mut docked_counts: HashMap<Entity, Vec<String>> = HashMap::new();
     // Also count ships per system for badge display.
     let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
 
-    for (ship, state) in &ships {
+    for (_entity, ship, state, _queue) in &ships {
         match state {
             ShipState::Docked { system } => {
                 docked_counts
@@ -532,29 +551,51 @@ fn draw_ships(
                 // Draw movement path as dashed line segments
                 let dest_x = destination[0] as f32 * view.scale;
                 let dest_y = destination[1] as f32 * view.scale;
-                let start = Vec2::new(cx, cy);
-                let end = Vec2::new(dest_x, dest_y);
-                let diff = end - start;
-                let length = diff.length();
-                if length > 0.0 {
-                    let dir = diff / length;
-                    let dash_len = 4.0;
-                    let gap_len = 4.0;
-                    let mut d = 0.0;
-                    while d < length {
-                        let seg_start = start + dir * d;
-                        let seg_end = start + dir * (d + dash_len).min(length);
-                        gizmos.line_2d(
-                            seg_start,
-                            seg_end,
-                            Color::srgba(r, g, b, 0.5),
-                        );
-                        d += dash_len + gap_len;
-                    }
-                }
+                draw_dashed_line(
+                    &mut gizmos,
+                    Vec2::new(cx, cy),
+                    Vec2::new(dest_x, dest_y),
+                    Color::srgba(r, g, b, 0.5),
+                );
             }
-            ShipState::InFTL { .. } => {
-                // Ships in FTL are undetectable; do not draw.
+            ShipState::InFTL {
+                origin_system,
+                destination_system,
+                departed_at,
+                arrival_at,
+            } => {
+                // #31: Ghost marker showing estimated FTL position
+                let (Ok(origin_pos), Ok(dest_pos)) =
+                    (stars.get(*origin_system), stars.get(*destination_system))
+                else {
+                    continue;
+                };
+
+                let total = (*arrival_at - *departed_at) as f64;
+                let elapsed = (clock.elapsed - *departed_at) as f64;
+                let t = if total > 0.0 {
+                    (elapsed / total).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+
+                let cx = (origin_pos.x + (dest_pos.x - origin_pos.x) * t) as f32 * view.scale;
+                let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32 * view.scale;
+
+                let (r, g, b) = ship_color_rgb(&ship.design_id);
+
+                // Ghost marker: semi-transparent, smaller circle
+                gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgba(r, g, b, 0.4));
+
+                // Dashed trajectory line from current position to destination
+                let dest_x = dest_pos.x as f32 * view.scale;
+                let dest_y = dest_pos.y as f32 * view.scale;
+                draw_dashed_line(
+                    &mut gizmos,
+                    Vec2::new(cx, cy),
+                    Vec2::new(dest_x, dest_y),
+                    Color::srgba(r, g, b, 0.25),
+                );
             }
             ShipState::Settling { system, .. } => {
                 // Draw settling ships at the target system with a pulsing indicator
@@ -650,6 +691,137 @@ fn draw_ships(
             gizmos.circle_2d(Vec2::new(badge_x, badge_y), 3.5, Color::WHITE);
         }
     }
+
+    // #104: Command queue overlay for selected ship
+    if let Some(selected_entity) = selected_ship.0 {
+        if let Ok((_entity, ship, state, Some(queue))) = ships.get(selected_entity) {
+            if !queue.commands.is_empty() {
+                // Determine the ship's current screen position from its state
+                let current_pos = match state {
+                    ShipState::Docked { system } => {
+                        stars.get(*system).ok().map(|pos| {
+                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
+                        })
+                    }
+                    ShipState::SubLight {
+                        origin,
+                        destination,
+                        departed_at,
+                        arrival_at,
+                        ..
+                    } => {
+                        let total = (*arrival_at - *departed_at) as f64;
+                        let elapsed = (clock.elapsed - *departed_at) as f64;
+                        let t = if total > 0.0 {
+                            (elapsed / total).clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        let cx =
+                            (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
+                        let cy =
+                            (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
+                        Some(Vec2::new(cx, cy))
+                    }
+                    ShipState::InFTL {
+                        origin_system,
+                        destination_system,
+                        departed_at,
+                        arrival_at,
+                    } => {
+                        if let (Ok(origin_pos), Ok(dest_pos)) =
+                            (stars.get(*origin_system), stars.get(*destination_system))
+                        {
+                            let total = (*arrival_at - *departed_at) as f64;
+                            let elapsed = (clock.elapsed - *departed_at) as f64;
+                            let t = if total > 0.0 {
+                                (elapsed / total).clamp(0.0, 1.0)
+                            } else {
+                                1.0
+                            };
+                            let cx = (origin_pos.x + (dest_pos.x - origin_pos.x) * t) as f32
+                                * view.scale;
+                            let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32
+                                * view.scale;
+                            Some(Vec2::new(cx, cy))
+                        } else {
+                            None
+                        }
+                    }
+                    ShipState::Settling { system, .. } => {
+                        stars.get(*system).ok().map(|pos| {
+                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
+                        })
+                    }
+                    ShipState::Surveying { target_system, .. } => {
+                        stars.get(*target_system).ok().map(|pos| {
+                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
+                        })
+                    }
+                };
+
+                if let Some(mut prev_pos) = current_pos {
+                    let (r, g, b) = ship_color_rgb(&ship.design_id);
+
+                    for cmd in &queue.commands {
+                        let target_system = match cmd {
+                            QueuedCommand::MoveTo { system, .. }
+                            | QueuedCommand::FTLTo { system, .. }
+                            | QueuedCommand::Survey { system, .. }
+                            | QueuedCommand::Colonize { system, .. } => *system,
+                        };
+
+                        let Ok(target_pos) = stars.get(target_system) else {
+                            continue;
+                        };
+                        let tx = target_pos.x as f32 * view.scale;
+                        let ty = target_pos.y as f32 * view.scale;
+                        let target_screen = Vec2::new(tx, ty);
+
+                        // Dashed path line from previous position to target
+                        draw_dashed_line(
+                            &mut gizmos,
+                            prev_pos,
+                            target_screen,
+                            Color::srgba(r, g, b, 0.3),
+                        );
+
+                        // Command-specific markers
+                        match cmd {
+                            QueuedCommand::MoveTo { .. } | QueuedCommand::FTLTo { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    4.0,
+                                    Color::srgba(r, g, b, 0.5),
+                                );
+                            }
+                            QueuedCommand::Survey { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    6.0,
+                                    Color::srgba(0.2, 1.0, 0.2, 0.4),
+                                );
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    3.0,
+                                    Color::srgba(0.2, 1.0, 0.2, 0.6),
+                                );
+                            }
+                            QueuedCommand::Colonize { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    5.0,
+                                    Color::srgba(1.0, 1.0, 0.2, 0.5),
+                                );
+                            }
+                        }
+
+                        prev_pos = target_screen;
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub fn click_select_system(
@@ -739,7 +911,29 @@ pub fn click_select_system(
                 };
                 Vec2::new(sys_pos.x as f32 * view.scale, sys_pos.y as f32 * view.scale)
             }
-            // Docked ships selected via outline panel; InFTL ships are invisible
+            ShipState::InFTL {
+                origin_system,
+                destination_system,
+                departed_at,
+                arrival_at,
+            } => {
+                let (Ok(origin_pos), Ok(dest_pos)) =
+                    (star_positions.get(*origin_system), star_positions.get(*destination_system))
+                else {
+                    continue;
+                };
+                let total = (*arrival_at - *departed_at) as f64;
+                let elapsed = (clock.elapsed - *departed_at) as f64;
+                let t = if total > 0.0 {
+                    (elapsed / total).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let cx = (origin_pos.x + (dest_pos.x - origin_pos.x) * t) as f32 * view.scale;
+                let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32 * view.scale;
+                Vec2::new(cx, cy)
+            }
+            // Docked ships selected via outline panel
             _ => continue,
         };
 
