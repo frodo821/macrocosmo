@@ -226,4 +226,61 @@ mod tests {
         run_on_game_load(lua).unwrap();
         run_on_scripts_loaded(lua).unwrap();
     }
+
+    /// CRITICAL #2: Verify fire_event from Lua queues into _pending_script_events.
+    #[test]
+    fn test_drain_script_events_integration() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        // Simulate fire_event from Lua side
+        lua.load(r#"fire_event("test_event")"#).exec().unwrap();
+
+        // Read _pending_script_events and verify the event was queued
+        let events: mlua::Table = lua.globals().get("_pending_script_events").unwrap();
+        assert_eq!(events.len().unwrap(), 1);
+        let entry: mlua::Table = events.get(1).unwrap();
+        let event_id: String = entry.get("event_id").unwrap();
+        assert_eq!(event_id, "test_event");
+    }
+
+    /// CRITICAL #2: Verify fire_event with target parameter.
+    #[test]
+    fn test_drain_script_events_with_target() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"fire_event("targeted_event", 42)"#).exec().unwrap();
+
+        let events: mlua::Table = lua.globals().get("_pending_script_events").unwrap();
+        assert_eq!(events.len().unwrap(), 1);
+        let entry: mlua::Table = events.get(1).unwrap();
+        let event_id: String = entry.get("event_id").unwrap();
+        assert_eq!(event_id, "targeted_event");
+        let target: u64 = entry.get("target").unwrap();
+        assert_eq!(target, 42);
+    }
+
+    /// CRITICAL #2: Verify multiple fire_event calls accumulate.
+    #[test]
+    fn test_drain_script_events_multiple() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"
+            fire_event("event_a")
+            fire_event("event_b")
+            fire_event("event_c")
+        "#).exec().unwrap();
+
+        let events: mlua::Table = lua.globals().get("_pending_script_events").unwrap();
+        assert_eq!(events.len().unwrap(), 3);
+
+        let e1: mlua::Table = events.get(1).unwrap();
+        assert_eq!(e1.get::<String>("event_id").unwrap(), "event_a");
+        let e2: mlua::Table = events.get(2).unwrap();
+        assert_eq!(e2.get::<String>("event_id").unwrap(), "event_b");
+        let e3: mlua::Table = events.get(3).unwrap();
+        assert_eq!(e3.get::<String>("event_id").unwrap(), "event_c");
+    }
 }

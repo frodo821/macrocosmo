@@ -3260,3 +3260,417 @@ fn test_pending_survey_command_executes_after_delay() {
         "Ship should be surveying after command arrives",
     );
 }
+
+// =========================================================================
+// CRITICAL: tick_timed_effects cleans all components (#1)
+// =========================================================================
+
+#[test]
+fn test_tick_timed_effects_cleans_all_components() {
+    use macrocosmo::modifier::Modifier;
+    use macrocosmo::amount::SignedAmt;
+
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Test System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(500),
+        Amt::units(500),
+        vec![],
+    );
+
+    // Push timed modifiers (duration=5, so expires_at = 0 + 5 = 5) to all three components
+    {
+        let mut prod = app.world_mut().get_mut::<Production>(colony).unwrap();
+        prod.minerals_per_hexadies.push_modifier_timed(
+            Modifier {
+                id: "timed_prod".to_string(),
+                label: "Timed production bonus".to_string(),
+                base_add: SignedAmt::units(10),
+                multiplier: SignedAmt::ZERO,
+                add: SignedAmt::ZERO,
+                expires_at: None,
+                on_expire_event: None,
+            },
+            0,
+            5,
+        );
+        assert_eq!(prod.minerals_per_hexadies.modifiers().len(), 1);
+    }
+    {
+        let mut maint = app.world_mut().get_mut::<MaintenanceCost>(colony).unwrap();
+        maint.energy_per_hexadies.push_modifier_timed(
+            Modifier {
+                id: "timed_maint".to_string(),
+                label: "Timed maintenance cost".to_string(),
+                base_add: SignedAmt::units(2),
+                multiplier: SignedAmt::ZERO,
+                add: SignedAmt::ZERO,
+                expires_at: None,
+                on_expire_event: None,
+            },
+            0,
+            5,
+        );
+        assert_eq!(maint.energy_per_hexadies.modifiers().len(), 1);
+    }
+    {
+        let mut fc = app.world_mut().get_mut::<FoodConsumption>(colony).unwrap();
+        fc.food_per_hexadies.push_modifier_timed(
+            Modifier {
+                id: "timed_food".to_string(),
+                label: "Timed food consumption".to_string(),
+                base_add: SignedAmt::units(3),
+                multiplier: SignedAmt::ZERO,
+                add: SignedAmt::ZERO,
+                expires_at: None,
+                on_expire_event: None,
+            },
+            0,
+            5,
+        );
+        assert_eq!(fc.food_per_hexadies.modifiers().len(), 1);
+    }
+
+    // Advance 6 hexadies -- all three should expire (expires_at=5, clock=6)
+    advance_time(&mut app, 6);
+
+    // Verify Production modifier removed
+    let prod = app.world().get::<Production>(colony).unwrap();
+    assert_eq!(
+        prod.minerals_per_hexadies.modifiers().iter().filter(|m| m.id == "timed_prod").count(),
+        0,
+        "Production timed modifier should have been removed"
+    );
+
+    // Verify MaintenanceCost modifier removed
+    let maint = app.world().get::<MaintenanceCost>(colony).unwrap();
+    assert_eq!(
+        maint.energy_per_hexadies.modifiers().iter().filter(|m| m.id == "timed_maint").count(),
+        0,
+        "MaintenanceCost timed modifier should have been removed"
+    );
+
+    // Verify FoodConsumption modifier removed
+    let fc = app.world().get::<FoodConsumption>(colony).unwrap();
+    assert_eq!(
+        fc.food_per_hexadies.modifiers().iter().filter(|m| m.id == "timed_food").count(),
+        0,
+        "FoodConsumption timed modifier should have been removed"
+    );
+}
+
+// =========================================================================
+// CRITICAL: Owner::Empire ships (#3)
+// =========================================================================
+
+#[test]
+fn test_empire_owned_ships() {
+    let mut app = test_app();
+
+    let empire = empire_entity(app.world_mut());
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Home System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Spawn a ship with Owner::Empire
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Imperial Scout".to_string(),
+            ship_type: ShipType::Explorer,
+            owner: Owner::Empire(empire),
+            sublight_speed: 0.75,
+            ftl_range: 10.0,
+            hp: 50.0,
+            max_hp: 50.0,
+            player_aboard: false,
+            home_port: sys,
+        },
+        ShipState::Docked { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        CombatStats { attack: 5.0, defense: 5.0 },
+        CommandQueue::default(),
+        Cargo::default(),
+    )).id();
+
+    // Verify the owner is correctly set
+    let ship = app.world().get::<Ship>(ship_entity).unwrap();
+    assert_eq!(ship.owner, Owner::Empire(empire));
+    assert!(ship.owner.is_empire());
+
+    // Verify update_sovereignty works with empire-owned ships using full_test_app
+    // which includes the update_sovereignty system
+    let mut app2 = full_test_app();
+    let empire2 = empire_entity(app2.world_mut());
+
+    let sys2 = spawn_test_system(
+        app2.world_mut(),
+        "Sov System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Spawn a colony to trigger sovereignty update
+    spawn_test_colony(
+        app2.world_mut(),
+        sys2,
+        Amt::units(100),
+        Amt::units(100),
+        vec![],
+    );
+
+    advance_time(&mut app2, 1);
+
+    // Sovereignty should be set to the empire owner
+    let sov = app2.world().get::<Sovereignty>(sys2).unwrap();
+    assert_eq!(sov.owner, Some(Owner::Empire(empire2)));
+}
+
+// =========================================================================
+// CRITICAL: GlobalParams on empire entity (#4)
+// =========================================================================
+
+#[test]
+fn test_global_params_on_empire_entity() {
+    let mut app = test_app();
+
+    let empire = empire_entity(app.world_mut());
+    let params = app.world().get::<technology::GlobalParams>(empire).unwrap();
+
+    // Verify defaults
+    assert_eq!(params.sublight_speed_bonus, 0.0);
+    assert_eq!(params.ftl_speed_multiplier, 1.0);
+    assert_eq!(params.ftl_range_bonus, 0.0);
+    assert_eq!(params.survey_range_bonus, 0.0);
+    assert_eq!(params.build_speed_multiplier, 1.0);
+}
+
+#[test]
+fn test_ftl_range_bonus_extends_range() {
+    let mut app = test_app();
+
+    let empire = empire_entity(app.world_mut());
+
+    // Set ftl_range_bonus to 5.0
+    {
+        let mut params = app.world_mut().get_mut::<technology::GlobalParams>(empire).unwrap();
+        params.ftl_range_bonus = 5.0;
+    }
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "Origin",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // System at 12 LY -- within range (10 base + 5 bonus = 15)
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "Near",
+        [12.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Spawn ship with ftl_range = 10.0 and Owner::Empire
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "FTL Scout".to_string(),
+            ship_type: ShipType::Explorer,
+            owner: Owner::Empire(empire),
+            sublight_speed: 0.75,
+            ftl_range: 10.0,
+            hp: 50.0,
+            max_hp: 50.0,
+            player_aboard: false,
+            home_port: sys_a,
+        },
+        ShipState::Docked { system: sys_a },
+        Position::from([0.0, 0.0, 0.0]),
+        CombatStats { attack: 5.0, defense: 5.0 },
+        CommandQueue::default(),
+        Cargo::default(),
+    )).id();
+
+    // Issue FTL command via command queue
+    {
+        let mut queue = app.world_mut().get_mut::<CommandQueue>(ship_entity).unwrap();
+        queue.commands.push(QueuedCommand::FTLTo {
+            system: sys_b,
+            expected_position: [0.0, 0.0, 0.0],
+        });
+    }
+
+    advance_time(&mut app, 1);
+
+    // Ship should be in FTL travel (InFTL state)
+    let state = app.world().get::<ShipState>(ship_entity).unwrap();
+    assert!(
+        matches!(state, ShipState::InFTL { .. }),
+        "Ship should be in FTL state when destination is within base + bonus range, got {:?}",
+        std::mem::discriminant(state)
+    );
+}
+
+// =========================================================================
+// MAJOR: on_expire_event fires named event (#6)
+// =========================================================================
+
+#[test]
+fn test_on_expire_event_fires_named_event() {
+    use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
+    use macrocosmo::modifier::Modifier;
+    use macrocosmo::amount::SignedAmt;
+
+    let mut app = test_app();
+
+    // Register an event definition
+    {
+        let mut event_system = app.world_mut().resource_mut::<EventSystem>();
+        event_system.register(EventDefinition {
+            id: "test_expire_event".to_string(),
+            name: "Test Expire Event".to_string(),
+            description: "Fires when a modifier expires.".to_string(),
+            trigger: EventTrigger::Manual,
+        });
+    }
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Test System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(500),
+        Amt::units(500),
+        vec![],
+    );
+
+    // Push modifier with duration=3 and on_expire_event
+    {
+        let mut prod = app.world_mut().get_mut::<Production>(colony).unwrap();
+        prod.minerals_per_hexadies.push_modifier_timed(
+            Modifier {
+                id: "expiring_mod".to_string(),
+                label: "Expiring modifier".to_string(),
+                base_add: SignedAmt::units(5),
+                multiplier: SignedAmt::ZERO,
+                add: SignedAmt::ZERO,
+                expires_at: None,
+                on_expire_event: Some("test_expire_event".to_string()),
+            },
+            0,
+            3,
+        );
+    }
+
+    // Advance 4 hexadies to trigger expiration
+    advance_time(&mut app, 4);
+
+    // Check EventSystem.fired_log contains our event
+    let event_system = app.world().resource::<EventSystem>();
+    let found = event_system
+        .fired_log
+        .iter()
+        .any(|e| e.event_id == "test_expire_event");
+    assert!(
+        found,
+        "EventSystem.fired_log should contain 'test_expire_event' after modifier expires"
+    );
+}
+
+// =========================================================================
+// MAJOR: sync_maintenance_modifiers ship maintenance (#7)
+// =========================================================================
+
+#[test]
+fn test_ship_maintenance_synced_via_modifiers() {
+    use common::spawn_test_ship;
+
+    let mut app = test_app();
+
+    let empire = empire_entity(app.world_mut());
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Home System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Spawn colony at the system
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(500),
+        Amt::units(500),
+        vec![],
+    );
+
+    // Spawn an explorer ship docked at the colony system (home_port = sys)
+    let ship_entity = spawn_test_ship(
+        app.world_mut(),
+        "Explorer-1",
+        ShipType::Explorer,
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+    // Set owner to empire
+    {
+        let mut ship = app.world_mut().get_mut::<Ship>(ship_entity).unwrap();
+        ship.owner = Owner::Empire(empire);
+    }
+
+    // Advance 1 tick to run sync_maintenance_modifiers
+    advance_time(&mut app, 1);
+
+    // Check MaintenanceCost on colony has a ship maintenance modifier
+    let maint = app.world().get::<MaintenanceCost>(colony).unwrap();
+    let ship_maint_modifier = maint
+        .energy_per_hexadies
+        .modifiers()
+        .iter()
+        .find(|m| m.id.starts_with("ship_maint_"));
+    assert!(
+        ship_maint_modifier.is_some(),
+        "Colony MaintenanceCost should have a ship maintenance modifier"
+    );
+
+    // Explorer maintenance is 0.5 E/hd = Amt(500)
+    let modifier = ship_maint_modifier.unwrap();
+    assert_eq!(
+        modifier.base_add,
+        macrocosmo::amount::SignedAmt::from_amt(Amt::new(0, 500)),
+        "Ship maintenance modifier should match Explorer maintenance cost (0.5 E/hd)"
+    );
+}

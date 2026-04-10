@@ -266,6 +266,60 @@ mod tests {
         assert!(registry.get("nonexistent").is_none());
     }
 
+    /// MAJOR #9: Verify BuildingRegistry loaded from scripts/buildings/basic.lua.
+    #[test]
+    fn test_building_registry_loaded_from_lua() {
+        let engine = ScriptEngine::new().unwrap();
+
+        // Load the actual building definitions file
+        let building_script = std::path::Path::new("scripts/buildings/basic.lua");
+        if !building_script.exists() {
+            // Try from the workspace root (worktree directory)
+            let alt_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
+            if alt_path.exists() {
+                engine.load_file(&alt_path).unwrap();
+            } else {
+                panic!("scripts/buildings/basic.lua not found at {:?} or {:?}", building_script, alt_path);
+            }
+        } else {
+            engine.load_file(building_script).unwrap();
+        }
+
+        let defs = parse_building_definitions(engine.lua()).unwrap();
+
+        // basic.lua defines 6 buildings: mine, power_plant, research_lab, shipyard, port, farm
+        assert_eq!(defs.len(), 6, "Expected 6 building definitions from basic.lua");
+
+        // Build a registry from the parsed definitions
+        let mut registry = BuildingRegistry::default();
+        for def in &defs {
+            registry.insert(def.clone());
+        }
+
+        // Verify Mine has minerals production bonus = 3.0
+        let mine = registry.get("mine").expect("Mine should be in registry");
+        assert_eq!(mine.name, "Mine");
+        assert_eq!(mine.production_bonus_minerals, Amt::units(3));
+        assert_eq!(mine.minerals_cost, Amt::units(150));
+        assert_eq!(mine.energy_cost, Amt::units(50));
+        assert_eq!(mine.build_time, 10);
+        assert_eq!(mine.maintenance, Amt::new(0, 200));
+
+        // Verify Farm has food production bonus = 5.0
+        let farm = registry.get("farm").expect("Farm should be in registry");
+        assert_eq!(farm.name, "Farm");
+        assert_eq!(farm.production_bonus_food, Amt::units(5));
+
+        // Verify Shipyard has no production bonus
+        let shipyard = registry.get("shipyard").expect("Shipyard should be in registry");
+        assert_eq!(shipyard.name, "Shipyard");
+        assert_eq!(shipyard.production_bonus_minerals, Amt::ZERO);
+        assert_eq!(shipyard.production_bonus_energy, Amt::ZERO);
+        assert_eq!(shipyard.production_bonus_research, Amt::ZERO);
+        assert_eq!(shipyard.production_bonus_food, Amt::ZERO);
+        assert_eq!(shipyard.maintenance, Amt::units(1));
+    }
+
     #[test]
     fn test_building_registry_replace() {
         let mut registry = BuildingRegistry::default();

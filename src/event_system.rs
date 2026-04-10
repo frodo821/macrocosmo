@@ -487,4 +487,64 @@ mod tests {
             panic!("Expected Periodic trigger");
         }
     }
+
+    /// CRITICAL #5: Verify fire_condition field is stored and accessible on MTTH triggers.
+    /// TODO: Actual Lua callback execution for fire_condition requires ScriptEngine
+    /// integration and is not tested here. This test only verifies the field is stored
+    /// and retrievable from the EventDefinition.
+    #[test]
+    fn test_fire_condition_stored_on_mtth() {
+        let mut system = EventSystem::default();
+        let lua_ref = LuaFunctionRef(42);
+        system.register(EventDefinition {
+            id: "conditional_mtth".to_string(),
+            name: "Conditional MTTH".to_string(),
+            description: "An MTTH event with a fire_condition.".to_string(),
+            trigger: EventTrigger::Mtth {
+                mean_hexadies: 30,
+                fire_condition: Some(lua_ref.clone()),
+                max_times: None,
+                times_triggered: 0,
+            },
+        });
+
+        let def = system.definitions.get("conditional_mtth").unwrap();
+        if let EventTrigger::Mtth { fire_condition, mean_hexadies, .. } = &def.trigger {
+            assert!(fire_condition.is_some(), "fire_condition should be stored");
+            assert_eq!(fire_condition.as_ref().unwrap().0, 42);
+            assert_eq!(*mean_hexadies, 30);
+        } else {
+            panic!("Expected Mtth trigger");
+        }
+    }
+
+    /// CRITICAL #5: Verify fire_condition field is stored and accessible on Periodic triggers.
+    /// TODO: Actual Lua callback execution for fire_condition is not tested here.
+    #[test]
+    fn test_fire_condition_stored_on_periodic() {
+        let mut system = EventSystem::default();
+        let lua_ref = LuaFunctionRef(99);
+        system.register(EventDefinition {
+            id: "conditional_periodic".to_string(),
+            name: "Conditional Periodic".to_string(),
+            description: "A periodic event with a fire_condition.".to_string(),
+            trigger: EventTrigger::Periodic {
+                interval_hexadies: 10,
+                last_fired: 0,
+                fire_condition: Some(lua_ref.clone()),
+                max_times: Some(5),
+                times_triggered: 0,
+            },
+        });
+
+        let def = system.definitions.get("conditional_periodic").unwrap();
+        if let EventTrigger::Periodic { fire_condition, interval_hexadies, max_times, .. } = &def.trigger {
+            assert!(fire_condition.is_some(), "fire_condition should be stored");
+            assert_eq!(fire_condition.as_ref().unwrap().0, 99);
+            assert_eq!(*interval_hexadies, 10);
+            assert_eq!(*max_times, Some(5));
+        } else {
+            panic!("Expected Periodic trigger");
+        }
+    }
 }
