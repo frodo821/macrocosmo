@@ -24,6 +24,7 @@ pub enum GameEventKind {
     ShipScrapped,
     ResourceAlert,
     PlayerRespawn,
+    ColonyFailed,
 }
 
 impl GameEventKind {
@@ -36,7 +37,8 @@ impl GameEventKind {
             | GameEventKind::CombatVictory
             | GameEventKind::CombatDefeat
             | GameEventKind::HostileDetected
-            | GameEventKind::PlayerRespawn => true,
+            | GameEventKind::PlayerRespawn
+            | GameEventKind::ColonyFailed => true,
 
             GameEventKind::ShipArrived
             | GameEventKind::ShipBuilt
@@ -160,6 +162,7 @@ mod tests {
         assert!(GameEventKind::CombatDefeat.should_pause());
         assert!(GameEventKind::HostileDetected.should_pause());
         assert!(GameEventKind::PlayerRespawn.should_pause());
+        assert!(GameEventKind::ColonyFailed.should_pause());
     }
 
     #[test]

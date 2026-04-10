@@ -63,7 +63,7 @@ pub fn draw_all_ui(
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     mut command_queues: Query<&mut CommandQueue>,
     pending_commands: Query<&PendingShipCommand>,
-    positions_planets_stockpiles: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>, Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>, Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>, Query<&ColonizationQueue>, Query<&RulesOfEngagement>),
+    positions_planets_stockpiles: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>, Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>, Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>, Query<&ColonizationQueue>, Query<&RulesOfEngagement>, Query<&crate::galaxy::HostilePresence>),
     mut empire_q: Query<
         (
             &KnowledgeStore,
@@ -81,7 +81,7 @@ pub fn draw_all_ui(
 ) {
     let (mut selected_ship, mut context_menu, mut selected_planet, mut egui_wants_pointer) = selection_state;
     let (mut research_open, mut designer_state, hull_registry, module_registry, mut design_registry) = overlay_state;
-    let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues, roe_query) = positions_planets_stockpiles;
+    let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues, roe_query, hostiles_query) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
     // Tell camera_controls whether egui is consuming pointer input this frame
@@ -348,6 +348,7 @@ pub fn draw_all_ui(
     let mut pending_ship_commands = Vec::new();
     // Need a read-only Colony query for context menu colonization check
     let colony_ro: Vec<Colony> = colonies.iter().map(|(_, c, _, _, _, _, _, _)| Colony { planet: c.planet, population: c.population, growth_rate: c.growth_rate }).collect();
+    let hostile_systems: std::collections::HashSet<Entity> = hostiles_query.iter().map(|h| h.system).collect();
     side_panel::draw_context_menu(
         ctx,
         &mut context_menu,
@@ -363,6 +364,7 @@ pub fn draw_all_ui(
         &colony_ro,
         &planets,
         &planet_entities,
+        &hostile_systems,
     );
     // Spawn any delayed commands as entities
     for pending_cmd in pending_ship_commands {

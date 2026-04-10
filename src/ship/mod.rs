@@ -1237,15 +1237,16 @@ fn apply_exploration_event(
 pub fn process_settling(
     mut commands: Commands,
     clock: Res<GameClock>,
-    ships: Query<(Entity, &Ship, &ShipState)>,
+    mut ships: Query<(Entity, &Ship, &mut ShipState)>,
     systems: Query<&StarSystem>,
     planet_query: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
     existing_colonies: Query<&Colony>,
     existing_stockpiles: Query<&ResourceStockpile, With<StarSystem>>,
     existing_system_buildings: Query<&SystemBuildings>,
     mut events: MessageWriter<GameEvent>,
+    hostiles: Query<&HostilePresence>,
 ) {
-    for (ship_entity, ship, state) in &ships {
+    for (ship_entity, ship, mut state) in &mut ships {
         let (system_entity, target_planet_entity, completes_at) = match *state {
             ShipState::Settling {
                 system,
@@ -1260,6 +1261,26 @@ pub fn process_settling(
             let Ok(star_system) = systems.get(system_entity) else {
                 continue;
             };
+
+            // #52/#56: Check for hostile presence — cannot colonize while hostiles remain
+            let has_hostile = hostiles.iter().any(|h| h.system == system_entity);
+            if has_hostile {
+                info!(
+                    "Colony Ship {} cannot settle at {} — hostile presence!",
+                    ship.name, star_system.name
+                );
+                *state = ShipState::Docked { system: system_entity };
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ColonyFailed,
+                    description: format!(
+                        "Cannot establish colony at {} — hostile presence must be eliminated first!",
+                        star_system.name
+                    ),
+                    related_system: Some(system_entity),
+                });
+                continue;
+            }
 
             // Collect planets that already have a colony
             let colonized_planets: Vec<Entity> = existing_colonies.iter()

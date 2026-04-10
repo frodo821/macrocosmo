@@ -1174,3 +1174,242 @@ fn test_set_roe_via_pending_command() {
     let roe = app.world().get::<RulesOfEngagement>(ship_entity).unwrap();
     assert_eq!(*roe, RulesOfEngagement::Aggressive, "ROE should be Aggressive after command arrives");
 }
+
+// --- #52/#56: Galaxy hostile spawning + colonization restriction tests ---
+
+#[test]
+fn test_galaxy_has_hostiles() {
+    use macrocosmo::scripting::galaxy_api::{
+        PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition,
+        StarTypeRegistry,
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+
+    let mut star_reg = StarTypeRegistry::default();
+    star_reg.types.push(StarTypeDefinition {
+        id: "test_star".to_string(),
+        name: "Test Star".to_string(),
+        color: [1.0, 1.0, 1.0],
+        planet_lambda: 2.0,
+        max_planets: 3,
+        habitability_bonus: 0.0,
+        weight: 1.0,
+    });
+    app.insert_resource(star_reg);
+
+    let mut planet_reg = PlanetTypeRegistry::default();
+    planet_reg.types.push(PlanetTypeDefinition {
+        id: "test_planet".to_string(),
+        name: "Test Planet".to_string(),
+        base_habitability: 0.7,
+        base_slots: 4,
+        resource_bias: ResourceBias { minerals: 1.0, energy: 1.0, research: 1.0 },
+        weight: 1.0,
+    });
+    app.insert_resource(planet_reg);
+
+    app.add_systems(Startup, macrocosmo::galaxy::generate_galaxy);
+    app.update();
+
+    // Check hostiles exist
+    let hostile_count = app
+        .world_mut()
+        .query::<&HostilePresence>()
+        .iter(app.world())
+        .count();
+    assert!(hostile_count > 0, "Galaxy should have at least some hostile presences");
+
+    // Check that no hostile is at the capital system
+    let capital_entity = app
+        .world_mut()
+        .query::<(Entity, &macrocosmo::galaxy::StarSystem)>()
+        .iter(app.world())
+        .find(|(_, s)| s.is_capital)
+        .map(|(e, _)| e)
+        .expect("Should have a capital system");
+
+    let capital_pos = *app.world().get::<Position>(capital_entity).unwrap();
+
+    for hostile in app.world_mut().query::<&HostilePresence>().iter(app.world()) {
+        assert_ne!(
+            hostile.system, capital_entity,
+            "No hostile should be spawned at the capital system"
+        );
+        // Check capital proximity exclusion (10 ly)
+        let hostile_pos = app.world().get::<Position>(hostile.system).unwrap();
+        let dx = hostile_pos.x - capital_pos.x;
+        let dy = hostile_pos.y - capital_pos.y;
+        let dz = hostile_pos.z - capital_pos.z;
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        assert!(
+            dist >= 10.0,
+            "Hostile at distance {:.1} ly from capital — should be >= 10.0 ly",
+            dist
+        );
+    }
+}
+
+#[test]
+fn test_colonize_blocked_by_hostile() {
+    use macrocosmo::galaxy::StarSystem;
+
+    let mut app = test_app();
+
+    let (sys, _planet) = common::spawn_test_system_with_planet(
+        app.world_mut(),
+        "Hostile-Colony-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+    );
+
+    // Spawn hostile at this system (low strength so it won't kill the ship via combat)
+    app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 0.0,  // no attack — we only want to test colonization blocking
+        hp: 500.0,
+        max_hp: 500.0,
+        hostile_type: HostileType::AncientDefense,
+        evasion: 0.0,
+    });
+
+    // Spawn a colony ship that is settling at this system (completes at tick 1)
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Colony-Ship-1".to_string(),
+                design_id: "colony_ship_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.5,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+            },
+            ShipState::Settling {
+                system: sys,
+                planet: None,
+                started_at: 0,
+                completes_at: 1,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 20.0,
+                hull_max: 20.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
+
+    // Advance time so settling completes
+    advance_time(&mut app, 2);
+
+    // Ship should still exist (not despawned) and be Docked, not settled
+    let ship_state = app
+        .world()
+        .get::<ShipState>(ship_entity)
+        .expect("Ship should still exist — colonization should be blocked by hostile");
+    match ship_state {
+        ShipState::Docked { system } => {
+            assert_eq!(*system, sys, "Ship should be docked at the hostile system");
+        }
+        _ => panic!("Ship should be in Docked state after failed colonization"),
+    }
+
+    // No colony should have been established
+    let colony_count = app
+        .world_mut()
+        .query::<&macrocosmo::colony::Colony>()
+        .iter(app.world())
+        .count();
+    assert_eq!(colony_count, 0, "No colony should exist when hostile presence blocks colonization");
+}
+
+#[test]
+fn test_hostile_cleared_allows_colonization() {
+    let mut app = test_app();
+
+    let (sys, _planet) = common::spawn_test_system_with_planet(
+        app.world_mut(),
+        "Cleared-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+    );
+
+    // Spawn and immediately despawn a hostile (simulating it was defeated)
+    let hostile_entity = app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 10.0,
+        hp: 10.0,
+        max_hp: 10.0,
+        hostile_type: HostileType::SpaceCreature,
+        evasion: 0.0,
+    }).id();
+    app.world_mut().despawn(hostile_entity);
+
+    // Spawn a colony ship settling at this system
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Colony-Ship-2".to_string(),
+                design_id: "colony_ship_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.5,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+            },
+            ShipState::Settling {
+                system: sys,
+                planet: None,
+                started_at: 0,
+                completes_at: 1,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 20.0,
+                hull_max: 20.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
+
+    // Advance time
+    advance_time(&mut app, 2);
+
+    // Ship should be despawned (consumed by colony establishment)
+    assert!(
+        app.world().get_entity(ship_entity).is_err(),
+        "Colony ship should be despawned after successful colonization"
+    );
+
+    // Colony should exist
+    let colony_count = app
+        .world_mut()
+        .query::<&macrocosmo::colony::Colony>()
+        .iter(app.world())
+        .count();
+    assert_eq!(colony_count, 1, "Colony should be established after hostile is cleared");
+}

@@ -9,7 +9,7 @@ use bevy_egui::EguiContexts;
 use crate::colony::{Buildings, Colony, SystemBuildings};
 use crate::components::Position;
 use crate::deep_space::{DeepSpaceStructure, StructureHitpoints};
-use crate::galaxy::{GalaxyConfig, ObscuredByGas, Planet, StarSystem};
+use crate::galaxy::{GalaxyConfig, HostilePresence, ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
@@ -341,6 +341,7 @@ fn draw_galaxy_overlay(
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
     galaxy_config: Option<Res<GalaxyConfig>>,
+    hostiles: Query<&HostilePresence>,
 ) {
     // Galaxy outline: center marker and boundary circle
     if let Some(ref config) = galaxy_config {
@@ -479,6 +480,23 @@ fn draw_galaxy_overlay(
                 }
             }
         }
+    }
+
+    // #52/#56: Hostile presence markers — red X on surveyed systems with hostiles
+    for hostile in &hostiles {
+        let Ok((_, star, star_pos)) = stars.get(hostile.system) else {
+            continue;
+        };
+        // Only show hostile marker if system has been surveyed (survey reveals hostiles)
+        if !star.surveyed {
+            continue;
+        }
+        let sx = star_pos.x as f32 * view.scale;
+        let sy = star_pos.y as f32 * view.scale;
+        let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
+        let s = 5.0_f32;
+        gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
+        gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
     }
 
     // #46: Port facility markers - draw a diamond icon on systems with ports

@@ -645,6 +645,9 @@ pub fn generate_galaxy(
         .filter(|_| rng.random_range(0.0_f32..1.0) < 0.15)
         .collect();
 
+    // Track spawned system entities and positions for hostile spawning
+    let mut spawned_systems: Vec<(Entity, [f64; 3], bool)> = Vec::with_capacity(actual_count);
+
     for (i, (name, position)) in systems.iter().enumerate() {
         let is_capital = i == 0;
         let star_idx = system_star_types[i];
@@ -669,6 +672,8 @@ pub fn generate_galaxy(
             SystemModifiers::default(),
         ));
         let star_entity = entity.id();
+
+        spawned_systems.push((star_entity, *position, is_capital));
 
         if gas_indices.contains(&i) && !is_capital {
             commands.entity(star_entity).insert(ObscuredByGas);
@@ -696,8 +701,61 @@ pub fn generate_galaxy(
         num_systems: actual_count,
     });
 
+    // --- Spawn hostile presences (#52, #56) ---
+    let hostile_fraction = 0.12;
+    let capital_safe_zone = 10.0_f64; // no hostiles within 10 ly of capital
+    let mut hostile_count = 0;
+    for &(system_entity, pos, is_capital) in &spawned_systems {
+        if is_capital {
+            continue;
+        }
+
+        // Capital proximity exclusion
+        let dx = pos[0] - capital_pos[0];
+        let dy = pos[1] - capital_pos[1];
+        let dz = pos[2] - capital_pos[2];
+        let dist_from_capital = (dx * dx + dy * dy + dz * dz).sqrt();
+        if dist_from_capital < capital_safe_zone {
+            continue;
+        }
+
+        if rng.random::<f64>() > hostile_fraction {
+            continue;
+        }
+
+        // Scale strength by distance from galaxy center
+        let center_dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+        let strength_mult = 1.0 + (center_dist / galaxy_radius) * 2.0;
+
+        let hostile_type = if rng.random::<f64>() < 0.7 {
+            HostileType::SpaceCreature
+        } else {
+            HostileType::AncientDefense
+        };
+        let base_hp = match hostile_type {
+            HostileType::SpaceCreature => 80.0,
+            HostileType::AncientDefense => 200.0,
+        };
+        let hp = base_hp * strength_mult;
+        let strength = 10.0 * strength_mult;
+        let evasion = match hostile_type {
+            HostileType::SpaceCreature => 20.0,
+            HostileType::AncientDefense => 10.0,
+        };
+
+        commands.spawn(HostilePresence {
+            system: system_entity,
+            strength,
+            hp,
+            max_hp: hp,
+            hostile_type,
+            evasion,
+        });
+        hostile_count += 1;
+    }
+
     info!(
-        "Galaxy generated: {} star systems (spiral, {} arms)",
-        actual_count, num_arms
+        "Galaxy generated: {} star systems (spiral, {} arms), {} hostile presences",
+        actual_count, num_arms, hostile_count
     );
 }
