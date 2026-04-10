@@ -766,7 +766,6 @@ fn draw_ships(
                     for cmd in &queue.commands {
                         let target_system = match cmd {
                             QueuedCommand::MoveTo { system, .. }
-                            | QueuedCommand::FTLTo { system, .. }
                             | QueuedCommand::Survey { system, .. }
                             | QueuedCommand::Colonize { system, .. } => *system,
                         };
@@ -788,7 +787,7 @@ fn draw_ships(
 
                         // Command-specific markers
                         match cmd {
-                            QueuedCommand::MoveTo { .. } | QueuedCommand::FTLTo { .. } => {
+                            QueuedCommand::MoveTo { .. } => {
                                 gizmos.circle_2d(
                                     target_screen,
                                     4.0,
