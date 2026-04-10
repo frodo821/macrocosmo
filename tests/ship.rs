@@ -1326,3 +1326,41 @@ fn test_ftl_survey_uses_carry_back_when_ftl_faster() {
     let survey_data = app.world().get::<SurveyData>(ship);
     assert!(survey_data.is_some(), "Ship should carry survey data for FTL carry-back");
 }
+
+// --- Regression: Non-FTL ship should not attempt FTL routing ---
+
+#[test]
+fn test_non_ftl_ship_no_ftl_routing_loop() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, true, false,
+    );
+
+    // Courier has ftl_range: 0.0
+    let ship = common::spawn_test_ship(
+        app.world_mut(), "Courier-1", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+    );
+
+    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
+        QueuedCommand::MoveTo { system: sys_b },
+    );
+
+    common::advance_time(&mut app, 1);
+
+    // Ship should go sublight, not get stuck in FTL routing loop
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        matches!(state, ShipState::SubLight { .. }),
+        "Non-FTL ship should use sublight directly, not attempt FTL routing"
+    );
+
+    // Queue should be empty (command consumed)
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    assert!(queue.commands.is_empty(), "Queue should be empty after command consumed");
+}

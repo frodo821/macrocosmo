@@ -1539,7 +1539,7 @@ pub fn process_command_queue(
                 let effective_ftl_range = ship.ftl_range + global_params.ftl_range_bonus + port_range_bonus;
 
                 // Try FTL route planning first
-                if effective_ftl_range > 0.0 {
+                if ship.ftl_range > 0.0 && effective_ftl_range > 0.0 {
                     if let Some(route) = plan_ftl_route(origin_pos.as_array(), target, effective_ftl_range, &systems) {
                         // Execute first hop
                         let first_hop = route[0];
@@ -1579,7 +1579,7 @@ pub fn process_command_queue(
                 }
 
                 // Try hybrid route: FTL to nearest reachable surveyed system to target, then sublight
-                if effective_ftl_range > 0.0 {
+                if ship.ftl_range > 0.0 && effective_ftl_range > 0.0 {
                     let origin_arr = origin_pos.as_array();
                     let target_arr = target_pos.as_array();
                     let mut best_waypoint: Option<(Entity, [f64; 3], f64)> = None;
