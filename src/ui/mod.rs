@@ -85,7 +85,8 @@ pub fn draw_all_ui(
         return;
     };
 
-    // Collect resource totals and net income before passing colonies around
+    // Collect resource totals using KnowledgeStore (light-speed delayed) + real-time for local system
+    let player_system = player_q.iter().next().map(|s| s.system);
     let (total_minerals, total_energy, total_food, total_authority,
          net_minerals, net_energy, net_food, net_authority) = {
         use crate::amount::{Amt, SignedAmt};
@@ -93,12 +94,29 @@ pub fn draw_all_ui(
         let mut e = Amt::ZERO;
         let mut f = Amt::ZERO;
         let mut a = Amt::ZERO;
-        // Aggregate stockpiles from star systems
-        for (stockpile, _) in system_stockpiles.iter() {
-            m = m.add(stockpile.minerals);
-            e = e.add(stockpile.energy);
-            f = f.add(stockpile.food);
-            a = a.add(stockpile.authority);
+
+        // Remote systems: use delayed data from KnowledgeStore
+        for (_entity, k) in knowledge.iter() {
+            if player_system == Some(k.system) {
+                continue; // local system added below with real-time data
+            }
+            let snap = &k.data;
+            if snap.colonized {
+                m = m.add(snap.minerals);
+                e = e.add(snap.energy);
+                f = f.add(snap.food);
+                a = a.add(snap.authority);
+            }
+        }
+
+        // Local system: use real-time stockpile
+        if let Some(local_sys) = player_system {
+            if let Ok((stockpile, _)) = system_stockpiles.get(local_sys) {
+                m = m.add(stockpile.minerals);
+                e = e.add(stockpile.energy);
+                f = f.add(stockpile.food);
+                a = a.add(stockpile.authority);
+            }
         }
         let mut net_m = SignedAmt::ZERO;
         let mut net_e = SignedAmt::ZERO;

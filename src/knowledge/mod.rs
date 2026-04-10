@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
+use crate::amount::Amt;
+use crate::colony::ResourceStockpile;
 use crate::components::Position;
 use crate::galaxy::StarSystem;
 use crate::physics;
@@ -38,6 +40,10 @@ pub struct SystemSnapshot {
     pub colonized: bool,
     pub population: f64,
     pub production: f64,
+    pub minerals: Amt,
+    pub energy: Amt,
+    pub food: Amt,
+    pub authority: Amt,
 }
 
 #[derive(Resource, Component, Default)]
@@ -120,7 +126,7 @@ fn initialize_capital_knowledge(
 pub fn propagate_knowledge(
     clock: Res<GameClock>,
     player_q: Query<&StationedAt, With<Player>>,
-    systems: Query<(Entity, &StarSystem, &Position)>,
+    systems: Query<(Entity, &StarSystem, &Position, Option<&ResourceStockpile>)>,
     positions: Query<&Position>,
     mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
     colonies: Query<&crate::colony::Colony>,
@@ -139,7 +145,7 @@ pub fn propagate_knowledge(
         Err(_) => return,
     };
 
-    for (entity, star, sys_pos) in &systems {
+    for (entity, star, sys_pos, stockpile) in &systems {
         let distance = physics::distance_ly(player_pos, sys_pos);
         let delay = physics::light_delay_hexadies(distance);
         let observed_at = clock.elapsed - delay;
@@ -158,11 +164,21 @@ pub fn propagate_knowledge(
 
         // Derive colonized status from whether any colony has a planet in this system
         let is_colonized = colonies.iter().any(|c| c.system(&planets) == Some(entity));
+
+        // Resource snapshot from StarSystem's stockpile (#106)
+        let (minerals, energy, food, authority) = stockpile
+            .map(|s| (s.minerals, s.energy, s.food, s.authority))
+            .unwrap_or((Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO));
+
         let snapshot = SystemSnapshot {
             name: star.name.clone(),
             position: sys_pos.as_array(),
             surveyed: star.surveyed,
             colonized: is_colonized,
+            minerals,
+            energy,
+            food,
+            authority,
             ..default()
         };
 
