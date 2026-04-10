@@ -14,7 +14,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
-use crate::ship::{Cargo, CommandQueue, PendingShipCommand, Ship, ShipHitpoints, ShipState};
+use crate::ship::{Cargo, CommandQueue, PendingShipCommand, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
@@ -58,7 +58,7 @@ pub fn draw_all_ui(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints)>,
+    mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     mut command_queues: Query<&mut CommandQueue>,
     pending_commands: Query<&PendingShipCommand>,
     positions_planets_and_entities: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>),
@@ -180,7 +180,7 @@ pub fn draw_all_ui(
     // #99: Handle cancel current action (surveying/settling -> docked)
     if ship_panel_actions.cancel_current {
         if let Some(ship_entity) = selected_ship.0 {
-            if let Ok((_, _, mut state, _, _)) = ships_query.get_mut(ship_entity) {
+            if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(ship_entity) {
                 let dock_system = match &*state {
                     ShipState::Surveying { target_system, .. } => Some(*target_system),
                     ShipState::Settling { system, .. } => Some(*system),
