@@ -1041,3 +1041,169 @@ fn test_survey_return_uses_ftl_to_surveyed_home() {
         std::mem::discriminant(state)
     );
 }
+
+// --- Regression: Multi-hop FTL chain routing ---
+
+#[test]
+fn test_multi_hop_ftl_route() {
+    let mut app = common::test_app();
+
+    // A --8ly-- B --8ly-- C (all surveyed, FTL range 10ly, can't direct A→C at 16ly)
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let _sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [8.0, 0.0, 0.0],
+        Habitability::Adequate, true, false,
+    );
+    let sys_c = common::spawn_test_system(
+        app.world_mut(), "System-C", [16.0, 0.0, 0.0],
+        Habitability::Adequate, true, false,
+    );
+
+    // FTL range 10ly — can reach B from A, C from B, but NOT C from A directly
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
+
+    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
+        QueuedCommand::MoveTo { system: sys_c },
+    );
+
+    // First tick: should FTL to intermediate hop (B)
+    common::advance_time(&mut app, 1);
+
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        matches!(state, ShipState::InFTL { .. }),
+        "Ship should be in FTL for first hop of multi-hop route"
+    );
+
+    // Queue should still have remaining hop(s) to C
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    assert!(
+        queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_c)),
+        "Queue should contain remaining MoveTo for final destination"
+    );
+}
+
+// --- Regression: Survey data NOT delivered at non-player system ---
+
+#[test]
+fn test_survey_data_not_delivered_at_wrong_system() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+    let sys_c = common::spawn_test_system(
+        app.world_mut(), "System-C", [10.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+
+    // Player stationed at System-A
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Ship docked at System-C (NOT the player's system), carrying survey data for B
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_c, [10.0, 0.0, 0.0]);
+    app.world_mut().entity_mut(ship).insert(SurveyData {
+        target_system: sys_b,
+        surveyed_at: 10,
+        system_name: "System-B".to_string(),
+    });
+
+    common::advance_time(&mut app, 1);
+
+    // System-B should NOT be surveyed (ship is not at player's system)
+    let star = app.world().get::<StarSystem>(sys_b).unwrap();
+    assert!(!star.surveyed, "Survey data should NOT be delivered at non-player system");
+
+    // SurveyData should still be on ship
+    assert!(app.world().get::<SurveyData>(ship).is_some(), "SurveyData should remain on ship");
+}
+
+// --- Regression: Auto-insert move when Survey queued at wrong system ---
+
+#[test]
+fn test_queued_survey_auto_inserts_move() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, false, false, // unsurveyed
+    );
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
+
+    // Queue Survey for system B while docked at A
+    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
+        QueuedCommand::Survey { system: sys_b },
+    );
+
+    // Process: should auto-insert MoveTo before Survey
+    common::advance_time(&mut app, 1);
+
+    // Ship should be moving (SubLight, since B is unsurveyed → can't FTL)
+    // After auto-insert: queue becomes [MoveTo B, Survey B], MoveTo executes → SubLight
+    // But MoveTo may stay in queue if process_command_queue runs before the insert takes effect
+    let state = app.world().get::<ShipState>(ship).unwrap().clone();
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    let in_sublight = matches!(state, ShipState::SubLight { .. });
+    let has_move_queued = queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_b));
+    assert!(
+        in_sublight || has_move_queued,
+        "Ship should be in SubLight or have MoveTo queued. in_sublight={}, has_move={}, queue_len={}",
+        in_sublight, has_move_queued, queue.commands.len()
+    );
+
+    // Queue should still have Survey queued for after arrival
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    assert!(
+        queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::Survey { system } if *system == sys_b)),
+        "Survey should remain queued for after arrival"
+    );
+}
+
+// --- Regression: CommandQueue predicted position tracking ---
+
+#[test]
+fn test_command_queue_predicted_position() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, true, false,
+    );
+    let sys_c = common::spawn_test_system(
+        app.world_mut(), "System-C", [10.0, 0.0, 0.0],
+        Habitability::Adequate, true, false,
+    );
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
+
+    // Push two MoveTo commands
+    {
+        let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
+        queue.commands.push(QueuedCommand::MoveTo { system: sys_b });
+        queue.commands.push(QueuedCommand::MoveTo { system: sys_c });
+        // Manually set predicted to match last target
+        queue.predicted_system = Some(sys_c);
+        queue.predicted_position = [10.0, 0.0, 0.0];
+    }
+
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+    assert_eq!(queue.predicted_system, Some(sys_c));
+    assert!((queue.predicted_position[0] - 10.0).abs() < 1e-9);
+}

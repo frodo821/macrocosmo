@@ -148,4 +148,23 @@ mod tests {
         assert_eq!(log.max_entries, 50);
         assert!(log.entries.is_empty());
     }
+
+    #[test]
+    fn important_events_should_pause() {
+        assert!(GameEventKind::SurveyComplete.should_pause());
+        assert!(GameEventKind::SurveyDiscovery.should_pause());
+        assert!(GameEventKind::ColonyEstablished.should_pause());
+        assert!(GameEventKind::CombatVictory.should_pause());
+        assert!(GameEventKind::CombatDefeat.should_pause());
+        assert!(GameEventKind::HostileDetected.should_pause());
+    }
+
+    #[test]
+    fn routine_events_should_not_pause() {
+        assert!(!GameEventKind::ShipArrived.should_pause());
+        assert!(!GameEventKind::ShipBuilt.should_pause());
+        assert!(!GameEventKind::BuildingDemolished.should_pause());
+        assert!(!GameEventKind::ShipScrapped.should_pause());
+        assert!(!GameEventKind::ResourceAlert.should_pause());
+    }
 }
