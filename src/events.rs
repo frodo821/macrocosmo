@@ -25,6 +25,26 @@ pub enum GameEventKind {
     ResourceAlert,
 }
 
+impl GameEventKind {
+    /// Whether this event kind should auto-pause the game.
+    pub fn should_pause(&self) -> bool {
+        match self {
+            GameEventKind::SurveyComplete
+            | GameEventKind::SurveyDiscovery
+            | GameEventKind::ColonyEstablished
+            | GameEventKind::CombatVictory
+            | GameEventKind::CombatDefeat
+            | GameEventKind::HostileDetected => true,
+
+            GameEventKind::ShipArrived
+            | GameEventKind::ShipBuilt
+            | GameEventKind::BuildingDemolished
+            | GameEventKind::ShipScrapped
+            | GameEventKind::ResourceAlert => false,
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct EventLog {
     pub entries: Vec<GameEvent>,
@@ -69,13 +89,15 @@ pub fn collect_events(
     }
 }
 
-/// Auto-pause when a GameEvent fires
+/// Auto-pause when a pause-worthy GameEvent fires
 pub fn auto_pause_on_event(
     mut reader: MessageReader<GameEvent>,
     mut speed: ResMut<GameSpeed>,
 ) {
-    for _event in reader.read() {
-        speed.pause();
+    for event in reader.read() {
+        if event.kind.should_pause() {
+            speed.pause();
+        }
     }
 }
 
