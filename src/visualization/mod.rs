@@ -32,6 +32,7 @@ impl Plugin for VisualizationPlugin {
         })
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedShip::default())
+        .insert_resource(SelectedPlanet::default())
         .insert_resource(ContextMenu::default())
         .add_systems(Startup, setup_camera)
         .add_systems(PostStartup, (spawn_star_visuals, center_camera_on_capital))
@@ -50,6 +51,9 @@ pub struct SelectedSystem(pub Option<Entity>);
 
 #[derive(Resource, Default)]
 pub struct SelectedShip(pub Option<Entity>);
+
+#[derive(Resource, Default)]
+pub struct SelectedPlanet(pub Option<Entity>);
 
 #[derive(Resource)]
 pub struct GalaxyView {

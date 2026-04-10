@@ -17,7 +17,7 @@ use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
-use crate::visualization::{ContextMenu, SelectedShip, SelectedSystem};
+use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
@@ -44,8 +44,7 @@ pub fn draw_all_ui(
     mut speed: ResMut<GameSpeed>,
     mut research_open: ResMut<ResearchPanelOpen>,
     mut selected_system: ResMut<SelectedSystem>,
-    mut selected_ship: ResMut<SelectedShip>,
-    mut context_menu: ResMut<ContextMenu>,
+    selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>),
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<&StationedAt, With<Player>>,
     mut colonies: Query<(
@@ -61,7 +60,7 @@ pub fn draw_all_ui(
     )>,
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     mut command_queues: Query<&mut CommandQueue>,
-    positions_and_planets: (Query<&Position>, Query<&Planet>),
+    positions_planets_and_entities: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>),
     mut empire_q: Query<
         (
             &KnowledgeStore,
@@ -77,7 +76,8 @@ pub fn draw_all_ui(
     >,
     mut game_events: MessageWriter<GameEvent>,
 ) {
-    let (positions, planets) = positions_and_planets;
+    let (mut selected_ship, mut context_menu, mut selected_planet) = selection_state;
+    let (positions, planets, planet_entities) = positions_planets_and_entities;
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
         empire_q.single_mut()
@@ -151,6 +151,7 @@ pub fn draw_all_ui(
         ctx,
         &selected_system,
         &mut selected_ship,
+        &mut selected_planet,
         &stars,
         &player_q,
         &mut colonies,
@@ -160,6 +161,7 @@ pub fn draw_all_ui(
         &clock,
         construction_params,
         &planets,
+        &planet_entities,
     );
 
     let scrap_action = side_panel::draw_ship_panel(

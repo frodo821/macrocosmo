@@ -11,7 +11,7 @@ use crate::amount::Amt;
 use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState, ShipType};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
-use crate::visualization::{SelectedShip, SelectedSystem};
+use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
 
 /// Action returned from draw_ship_panel when the player clicks "Scrap Ship".
 /// Processed in draw_all_ui where Commands is available for despawning.
@@ -25,11 +25,14 @@ pub struct ShipScrapAction {
 }
 
 /// Draws the right-side system info panel when a star system is selected.
+/// Shows star system overview, planet list with selection, and colony detail
+/// for the selected planet.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_system_panel(
     ctx: &egui::Context,
     selected_system: &SelectedSystem,
     selected_ship: &mut SelectedShip,
+    selected_planet: &mut SelectedPlanet,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: &Query<&StationedAt, With<Player>>,
     colonies: &mut Query<(
@@ -49,36 +52,61 @@ pub fn draw_system_panel(
     clock: &GameClock,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
+    planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
     };
 
-    let Ok((_, star, star_pos, attrs)) = stars.get(sel_entity) else {
+    let Ok((_, star, star_pos, _)) = stars.get(sel_entity) else {
         return;
     };
 
+    // Collect planets in this system using the entity-bearing query
+    let mut system_planets: Vec<(Entity, String, String, bool)> = Vec::new();
+    let colonized_planets: std::collections::HashSet<Entity> = colonies
+        .iter()
+        .filter(|(_, c, _, _, _, _, _, _, _)| c.system(planets) == Some(sel_entity))
+        .map(|(_, c, _, _, _, _, _, _, _)| c.planet)
+        .collect();
+
+    for (planet_entity, planet, _attrs) in planet_entities.iter() {
+        if planet.system == sel_entity {
+            let is_colonized = colonized_planets.contains(&planet_entity);
+            system_planets.push((planet_entity, planet.name.clone(), planet.planet_type.clone(), is_colonized));
+        }
+    }
+    system_planets.sort_by(|a, b| a.1.cmp(&b.1));
+
+    // Auto-select planet: if no planet selected or selected planet not in this system,
+    // pick first colonized planet, or first planet
+    let current_planet_valid = selected_planet.0
+        .map(|pe| system_planets.iter().any(|(e, _, _, _)| *e == pe))
+        .unwrap_or(false);
+    if !current_planet_valid {
+        selected_planet.0 = system_planets.iter()
+            .find(|(_, _, _, colonized)| *colonized)
+            .or(system_planets.first())
+            .map(|(e, _, _, _)| *e);
+    }
+
     egui::SidePanel::right("system_panel")
-        .min_width(260.0)
+        .min_width(280.0)
         .show(ctx, |ui| {
-            ui.heading(&star.name);
+            // === Star System Overview ===
+            ui.heading(format!("{} ({})", star.name, format_star_type(&star.star_type)));
             ui.separator();
 
-            // Distance and light delay from player
             if let Ok(stationed) = player_q.single() {
                 if let Ok(player_pos) = positions.get(stationed.system) {
                     let dist = physics::distance_ly(player_pos, star_pos);
                     let delay_sd = physics::light_delay_hexadies(dist);
                     let delay_yr = physics::light_delay_years(dist);
                     ui.label(format!("Distance: {:.1} ly", dist));
-                    ui.label(format!(
-                        "Light delay: {} sd ({:.1} yr)",
-                        delay_sd, delay_yr
-                    ));
+                    ui.label(format!("Light delay: {} hd ({:.1} yr)", delay_sd, delay_yr));
                 }
             }
 
-            // Survey status
             if star.surveyed {
                 ui.label("Status: Surveyed");
             } else {
@@ -86,7 +114,6 @@ pub fn draw_system_panel(
                 ui.label("Approximate position only. Survey required.");
             }
 
-            // Knowledge age
             if let Some(age) = knowledge.info_age(sel_entity, clock.elapsed) {
                 let years = age as f64 / HEXADIES_PER_YEAR as f64;
                 let freshness = if age < 60 {
@@ -98,346 +125,74 @@ pub fn draw_system_panel(
                 } else {
                     "VERY OLD"
                 };
-                ui.label(format!(
-                    "Info age: {} sd ({:.1} yr) [{}]",
-                    age, years, freshness
-                ));
+                ui.label(format!("Info age: {} hd ({:.1} yr) [{}]", age, years, freshness));
             }
 
-            // Attributes (if surveyed)
-            if star.surveyed {
-                if let Some(attrs) = attrs {
-                    ui.separator();
-                    ui.label(format!("Habitability: {:?}", attrs.habitability));
-                    ui.label(format!("Minerals: {:?}", attrs.mineral_richness));
-                    ui.label(format!("Energy: {:?}", attrs.energy_potential));
-                    ui.label(format!("Research: {:?}", attrs.research_potential));
-                    ui.label(format!("Building slots: {}", attrs.max_building_slots));
-                }
-            }
-
-            // Colony info: check if any colony's planet belongs to this system
-            let has_colony = colonies.iter().any(|(_, c, _, _, _, _, _, _, _)| c.system(planets) == Some(sel_entity));
-            if has_colony {
+            // === Planet List ===
+            if !system_planets.is_empty() {
                 ui.separator();
-                ui.label(
-                    egui::RichText::new("Colony")
-                        .strong()
-                        .color(egui::Color32::from_rgb(100, 200, 100)),
-                );
+                ui.label(egui::RichText::new("Planets").strong());
 
-                // We need to iterate colonies to find the one matching this system.
-                // Because we have a mutable query, we iterate once.
-                for (_colony_entity, colony, production, stockpile, build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
-                    colonies.iter_mut()
-                {
-                    if colony.system(planets) != Some(sel_entity) {
-                        continue;
-                    }
+                for (planet_entity, name, planet_type, is_colonized) in &system_planets {
+                    let is_selected = selected_planet.0 == Some(*planet_entity);
+                    let prefix = if is_selected { "\u{25CF} " } else { "  " };
+                    let status = if *is_colonized { " [COLONIZED]" } else { "" };
+                    let label_text = format!(
+                        "{}{} ({}){}",
+                        prefix, name, format_planet_type(planet_type), status
+                    );
 
-                    // #69: Show population with carrying capacity
-                    let carrying_cap = {
-                        use crate::amount::Amt;
-                        use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
-                        let hab_score = attrs.map(|a| a.habitability.base_score()).unwrap_or(0.5);
-                        let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
-                        // Food production including building modifiers
-                        let food_prod = production.map(|p| p.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
-                        let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
-                            food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
-                        } else {
-                            k_habitat
-                        };
-                        k_habitat.min(k_food).max(1.0)
+                    let label = if *is_colonized {
+                        egui::RichText::new(&label_text).color(egui::Color32::from_rgb(100, 200, 100))
+                    } else {
+                        egui::RichText::new(&label_text)
                     };
-                    ui.label(format!("Population: {:.0} / {:.0}", colony.population, carrying_cap));
 
-                    if let Some(prod) = production {
-                        use crate::amount::SignedAmt;
-                        let green = egui::Color32::from_rgb(100, 200, 100);
-                        let red = egui::Color32::from_rgb(255, 100, 100);
-
-                        ui.label(egui::RichText::new("Income/hd:").strong());
-
-                        // Food: production - consumption
-                        let food_prod = prod.food_per_hexadies.final_value();
-                        let food_cons = food_consumption.map(|fc| fc.food_per_hexadies.final_value()).unwrap_or(crate::amount::Amt::ZERO);
-                        let food_net = SignedAmt::from_amt(food_prod).add(SignedAmt(0 - SignedAmt::from_amt(food_cons).raw()));
-                        let food_color = if food_net.raw() > 0 { green } else if food_net.raw() < 0 { red } else { egui::Color32::GRAY };
-                        ui.horizontal(|ui| {
-                            ui.label("  Food:    ");
-                            ui.label(egui::RichText::new(food_net.display()).color(food_color));
-                            if food_cons > crate::amount::Amt::ZERO {
-                                ui.label(format!("(produce {}, consume {})", food_prod, food_cons));
-                            }
-                        });
-
-                        // Energy: production - maintenance
-                        let energy_prod = prod.energy_per_hexadies.final_value();
-                        let maint = maintenance_cost.map(|mc| mc.energy_per_hexadies.final_value()).unwrap_or(crate::amount::Amt::ZERO);
-                        let energy_net = SignedAmt::from_amt(energy_prod).add(SignedAmt(0 - SignedAmt::from_amt(maint).raw()));
-                        let energy_color = if energy_net.raw() > 0 { green } else if energy_net.raw() < 0 { red } else { egui::Color32::GRAY };
-                        ui.horizontal(|ui| {
-                            ui.label("  Energy:  ");
-                            ui.label(egui::RichText::new(energy_net.display()).color(energy_color));
-                            if maint > crate::amount::Amt::ZERO {
-                                ui.label(format!("(produce {}, maintain {})", energy_prod, maint));
-                            }
-                        });
-
-                        // Minerals: just production
-                        let minerals_prod = prod.minerals_per_hexadies.final_value();
-                        let minerals_net = SignedAmt::from_amt(minerals_prod);
-                        let minerals_color = if minerals_net.raw() > 0 { green } else { egui::Color32::GRAY };
-                        ui.horizontal(|ui| {
-                            ui.label("  Minerals:");
-                            ui.label(egui::RichText::new(minerals_net.display()).color(minerals_color));
-                        });
-
-                        // Research: just production (flow, no consumption)
-                        let research_prod = prod.research_per_hexadies.final_value();
-                        ui.horizontal(|ui| {
-                            ui.label("  Research:");
-                            ui.label(format!("{}", research_prod));
-                        });
+                    if ui.selectable_label(is_selected, label).clicked() {
+                        selected_planet.0 = Some(*planet_entity);
                     }
-
-                    if let Some(stockpile) = stockpile {
-                        ui.label(format!(
-                            "Stockpile: F {} | E {} | M {} | A {}",
-                            stockpile.food, stockpile.energy, stockpile.minerals, stockpile.authority,
-                        ));
-                    }
-
-                    // #51/#64: Maintenance cost summary (ships charged via home_port)
-                    {
-                        use crate::amount::Amt;
-                        let mut building_maintenance = Amt::ZERO;
-                        if let Some(b) = buildings {
-                            for slot in &b.slots {
-                                if let Some(bt) = slot {
-                                    building_maintenance = building_maintenance.add(bt.maintenance_cost());
-                                }
-                            }
-                        }
-                        let mut ship_maintenance = Amt::ZERO;
-                        let mut ships_based_here = 0u32;
-                        for (_, ship, _, _) in ships_query.iter() {
-                            if colony.system(planets) == Some(ship.home_port) {
-                                ship_maintenance = ship_maintenance.add(ship.ship_type.maintenance_cost());
-                                ships_based_here += 1;
-                            }
-                        }
-                        let total_maintenance = building_maintenance.add(ship_maintenance);
-                        if total_maintenance > Amt::ZERO {
-                            ui.label(format!("Maintenance: {} E/hd", total_maintenance));
-                            ui.label(format!("  Buildings: {} E/hd", building_maintenance));
-                        }
-                        if ships_based_here > 0 {
-                            ui.label(format!(
-                                "Ships based here: {} (maintenance: {} E/hd)",
-                                ships_based_here, ship_maintenance
-                            ));
-                        }
-                    }
-
-                    // Build queue
-                    if let Some(ref bq) = build_queue {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Build Queue").strong());
-
-                        if bq.queue.is_empty() {
-                            ui.label("[empty]");
-                        } else {
-                            for order in &bq.queue {
-                                let m_pct = if order.minerals_cost.raw() > 0 {
-                                    (order.minerals_invested.raw() as f32 / order.minerals_cost.raw() as f32).min(1.0)
-                                } else {
-                                    1.0
-                                };
-                                let e_pct = if order.energy_cost.raw() > 0 {
-                                    (order.energy_invested.raw() as f32 / order.energy_cost.raw() as f32).min(1.0)
-                                } else {
-                                    1.0
-                                };
-                                let pct = m_pct.min(e_pct);
-                                ui.horizontal(|ui| {
-                                    ui.label(&order.ship_type_name);
-                                    let bar = egui::ProgressBar::new(pct)
-                                        .desired_width(100.0);
-                                    ui.add(bar);
-                                });
-                            }
-                        }
-
-                        // Build buttons
-                        ui.separator();
-                        ui.label(egui::RichText::new("Build Ship").strong());
-                    }
-
-                    // Build buttons - add orders to the queue
-                    if let Some(mut bq) = build_queue {
-                        use crate::amount::Amt;
-                        let ship_mod = construction_params.ship_cost_modifier.final_value();
-                        let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
-                        // Base costs per ship type
-                        let ships_data: [(&str, Amt, Amt, i64); 3] = [
-                            ("Explorer", Amt::units(200), Amt::units(100), 60),
-                            ("Colony Ship", Amt::units(500), Amt::units(300), 120),
-                            ("Courier", Amt::units(100), Amt::units(50), 30),
-                        ];
-                        let mut build_request: Option<(&str, Amt, Amt, i64)> = None;
-                        ui.horizontal(|ui| {
-                            for &(name, base_m, base_e, base_time) in &ships_data {
-                                let eff_m = base_m.mul_amt(ship_mod);
-                                let eff_e = base_e.mul_amt(ship_mod);
-                                let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
-                                let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
-                                if ui.button(name).on_hover_text(tooltip).clicked() {
-                                    build_request = Some((name, eff_m, eff_e, eff_time));
-                                }
-                            }
-                        });
-                        if let Some((name, minerals_cost, energy_cost, build_time)) = build_request {
-                            bq.queue.push(BuildOrder {
-                                ship_type_name: name.to_string(),
-                                minerals_cost,
-                                minerals_invested: Amt::ZERO,
-                                energy_cost,
-                                energy_invested: Amt::ZERO,
-                                build_time_total: build_time,
-                                build_time_remaining: build_time,
-                            });
-                            info!("Build order added: {}", name);
-                        }
-                    }
-
-                    // #46: Buildings display and construction UI
-                    if let Some(buildings) = buildings {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Buildings").strong());
-
-                        // Collect demolition requests outside the borrow
-                        let mut demolish_request: Option<(usize, BuildingType)> = None;
-
-                        for (i, slot) in buildings.slots.iter().enumerate() {
-                            let is_demolishing = building_queue
-                                .as_ref()
-                                .map(|bq| bq.is_demolishing(i))
-                                .unwrap_or(false);
-
-                            match slot {
-                                Some(bt) if is_demolishing => {
-                                    let remaining = building_queue
-                                        .as_ref()
-                                        .and_then(|bq| bq.demolition_time_remaining(i))
-                                        .unwrap_or(0);
-                                    ui.label(format!(
-                                        "  [{}] {} — Demolishing... ({} hd remaining)",
-                                        i,
-                                        bt.name(),
-                                        remaining
-                                    ));
-                                }
-                                Some(bt) => {
-                                    ui.horizontal(|ui| {
-                                        ui.label(format!("  [{}] {}", i, bt.name()));
-                                        let (m_refund, e_refund) = bt.demolition_refund();
-                                        let demo_time = bt.demolition_time();
-                                        let tooltip = format!(
-                                            "Demolish: {} hd | Refund M:{} E:{}",
-                                            demo_time, m_refund, e_refund
-                                        );
-                                        if ui
-                                            .small_button("Demolish")
-                                            .on_hover_text(tooltip)
-                                            .clicked()
-                                        {
-                                            demolish_request = Some((i, *bt));
-                                        }
-                                    });
-                                }
-                                None => {
-                                    ui.label(format!("  [{}] (empty)", i));
-                                }
-                            }
-                        }
-
-                        // Process demolish request
-                        if let Some((slot_idx, bt)) = demolish_request {
-                            if let Some(bq) = building_queue.as_mut() {
-                                let (m_refund, e_refund) = bt.demolition_refund();
-                                bq.demolition_queue.push(DemolitionOrder {
-                                    target_slot: slot_idx,
-                                    building_type: bt,
-                                    time_remaining: bt.demolition_time(),
-                                    minerals_refund: m_refund,
-                                    energy_refund: e_refund,
-                                });
-                                info!("Demolition order added: {:?} in slot {}", bt, slot_idx);
-                            }
-                        }
-
-                        // Find first empty slot for building construction
-                        // Exclude slots that are targets of pending construction orders
-                        let pending_slots: Vec<usize> = building_queue
-                            .as_ref()
-                            .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
-                            .unwrap_or_default();
-                        let empty_slot = buildings
-                            .slots
-                            .iter()
-                            .enumerate()
-                            .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
-
-                        if let Some(slot_idx) = empty_slot {
-                            ui.separator();
-                            ui.label(egui::RichText::new("Build Building").strong());
-                            let building_types = [
-                                BuildingType::Mine,
-                                BuildingType::PowerPlant,
-                                BuildingType::ResearchLab,
-                                BuildingType::Shipyard,
-                                BuildingType::Port,
-                                BuildingType::Farm,
-                            ];
-                            let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
-                            let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
-                            let mut build_building_request: Option<BuildingType> = None;
-                            for bt in &building_types {
-                                let (base_m, base_e) = bt.build_cost();
-                                let eff_m = base_m.mul_amt(bldg_cost_mod);
-                                let eff_e = base_e.mul_amt(bldg_cost_mod);
-                                let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                                let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
-                                if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
-                                    build_building_request = Some(*bt);
-                                }
-                            }
-                            if let Some(bt) = build_building_request {
-                                if let Some(mut bq) = building_queue {
-                                    let (base_m, base_e) = bt.build_cost();
-                                    let eff_m = base_m.mul_amt(bldg_cost_mod);
-                                    let eff_e = base_e.mul_amt(bldg_cost_mod);
-                                    let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                                    bq.queue.push(BuildingOrder {
-                                        building_type: bt,
-                                        target_slot: slot_idx,
-                                        minerals_remaining: eff_m,
-                                        energy_remaining: eff_e,
-                                        build_time_remaining: eff_time,
-                                    });
-                                    info!("Building order added: {:?} in slot {}", bt, slot_idx);
-                                }
-                            }
-                        }
-                    }
-
-                    break;
                 }
             }
 
-            // Docked ships
+            // === Selected Planet Detail ===
+            if let Some(sel_planet_entity) = selected_planet.0 {
+                // Show planet attributes if surveyed
+                if star.surveyed {
+                    if let Ok((_, sel_planet, Some(attrs))) = planet_entities.get(sel_planet_entity) {
+                        ui.separator();
+                        ui.label(egui::RichText::new(format!("{} — Attributes", sel_planet.name)).strong());
+                        ui.label(format!("Habitability: {:?}", attrs.habitability));
+                        ui.label(format!("Minerals: {:?}", attrs.mineral_richness));
+                        ui.label(format!("Energy: {:?}", attrs.energy_potential));
+                        ui.label(format!("Research: {:?}", attrs.research_potential));
+                        ui.label(format!("Building slots: {}", attrs.max_building_slots));
+                    }
+                }
+
+                // Colony detail section (scrollable)
+                let has_colony_on_planet = colonized_planets.contains(&sel_planet_entity);
+                if has_colony_on_planet {
+                    ui.separator();
+
+                    let planet_attrs = planet_entities.get(sel_planet_entity).ok().and_then(|(_, _, a)| a);
+
+                    egui::ScrollArea::vertical()
+                        .max_height(400.0)
+                        .show(ui, |ui| {
+                            draw_colony_detail(
+                                ui,
+                                sel_planet_entity,
+                                planet_attrs,
+                                colonies,
+                                ships_query,
+                                construction_params,
+                                planets,
+                            );
+                        });
+                }
+            }
+
+            // === Docked Ships ===
             ui.separator();
             let docked_ships = ships_docked_at(sel_entity, ships_query);
             if !docked_ships.is_empty() {
@@ -456,6 +211,355 @@ pub fn draw_system_panel(
                 }
             }
         });
+}
+
+/// Format a type id into a display name (e.g. "yellow_dwarf" -> "Yellow Dwarf").
+fn format_star_type(type_id: &str) -> String {
+    type_id
+        .split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Format a planet_type id into a display name.
+fn format_planet_type(planet_type: &str) -> String {
+    format_star_type(planet_type)
+}
+
+/// Draws colony detail for a specific planet. Called within a ScrollArea.
+#[allow(clippy::too_many_arguments)]
+fn draw_colony_detail(
+    ui: &mut egui::Ui,
+    planet_entity: Entity,
+    planet_attrs: Option<&SystemAttributes>,
+    colonies: &mut Query<(
+        Entity,
+        &Colony,
+        Option<&Production>,
+        Option<&mut ResourceStockpile>,
+        Option<&mut BuildQueue>,
+        Option<&Buildings>,
+        Option<&mut BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
+    )>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
+    construction_params: &ConstructionParams,
+    planets: &Query<&Planet>,
+) {
+    ui.label(
+        egui::RichText::new("Colony")
+            .strong()
+            .color(egui::Color32::from_rgb(100, 200, 100)),
+    );
+
+    for (_colony_entity, colony, production, stockpile, build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
+        colonies.iter_mut()
+    {
+        if colony.planet != planet_entity {
+            continue;
+        }
+
+        // #69: Show population with carrying capacity
+        let carrying_cap = {
+            use crate::amount::Amt;
+            use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
+            let hab_score = planet_attrs.map(|a| a.habitability.base_score()).unwrap_or(0.5);
+            let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
+            let food_prod = production.map(|p| p.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
+            let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
+                food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
+            } else {
+                k_habitat
+            };
+            k_habitat.min(k_food).max(1.0)
+        };
+        ui.label(format!("Population: {:.0} / {:.0}", colony.population, carrying_cap));
+
+        if let Some(prod) = production {
+            use crate::amount::SignedAmt;
+            let green = egui::Color32::from_rgb(100, 200, 100);
+            let red = egui::Color32::from_rgb(255, 100, 100);
+
+            ui.label(egui::RichText::new("Income/hd:").strong());
+
+            // Food: production - consumption
+            let food_prod = prod.food_per_hexadies.final_value();
+            let food_cons = food_consumption.map(|fc| fc.food_per_hexadies.final_value()).unwrap_or(crate::amount::Amt::ZERO);
+            let food_net = SignedAmt::from_amt(food_prod).add(SignedAmt(0 - SignedAmt::from_amt(food_cons).raw()));
+            let food_color = if food_net.raw() > 0 { green } else if food_net.raw() < 0 { red } else { egui::Color32::GRAY };
+            ui.horizontal(|ui| {
+                ui.label("  Food:    ");
+                ui.label(egui::RichText::new(food_net.display()).color(food_color));
+                if food_cons > crate::amount::Amt::ZERO {
+                    ui.label(format!("(produce {}, consume {})", food_prod, food_cons));
+                }
+            });
+
+            // Energy: production - maintenance
+            let energy_prod = prod.energy_per_hexadies.final_value();
+            let maint = maintenance_cost.map(|mc| mc.energy_per_hexadies.final_value()).unwrap_or(crate::amount::Amt::ZERO);
+            let energy_net = SignedAmt::from_amt(energy_prod).add(SignedAmt(0 - SignedAmt::from_amt(maint).raw()));
+            let energy_color = if energy_net.raw() > 0 { green } else if energy_net.raw() < 0 { red } else { egui::Color32::GRAY };
+            ui.horizontal(|ui| {
+                ui.label("  Energy:  ");
+                ui.label(egui::RichText::new(energy_net.display()).color(energy_color));
+                if maint > crate::amount::Amt::ZERO {
+                    ui.label(format!("(produce {}, maintain {})", energy_prod, maint));
+                }
+            });
+
+            // Minerals: just production
+            let minerals_prod = prod.minerals_per_hexadies.final_value();
+            let minerals_net = SignedAmt::from_amt(minerals_prod);
+            let minerals_color = if minerals_net.raw() > 0 { green } else { egui::Color32::GRAY };
+            ui.horizontal(|ui| {
+                ui.label("  Minerals:");
+                ui.label(egui::RichText::new(minerals_net.display()).color(minerals_color));
+            });
+
+            // Research: just production (flow, no consumption)
+            let research_prod = prod.research_per_hexadies.final_value();
+            ui.horizontal(|ui| {
+                ui.label("  Research:");
+                ui.label(format!("{}", research_prod));
+            });
+        }
+
+        if let Some(stockpile) = stockpile {
+            ui.label(format!(
+                "Stockpile: F {} | E {} | M {} | A {}",
+                stockpile.food, stockpile.energy, stockpile.minerals, stockpile.authority,
+            ));
+        }
+
+        // #51/#64: Maintenance cost summary
+        {
+            use crate::amount::Amt;
+            let mut building_maintenance = Amt::ZERO;
+            if let Some(b) = buildings {
+                for slot in &b.slots {
+                    if let Some(bt) = slot {
+                        building_maintenance = building_maintenance.add(bt.maintenance_cost());
+                    }
+                }
+            }
+            let mut ship_maintenance = Amt::ZERO;
+            let mut ships_based_here = 0u32;
+            for (_, ship, _, _) in ships_query.iter() {
+                if colony.system(planets) == Some(ship.home_port) {
+                    ship_maintenance = ship_maintenance.add(ship.ship_type.maintenance_cost());
+                    ships_based_here += 1;
+                }
+            }
+            let total_maintenance = building_maintenance.add(ship_maintenance);
+            if total_maintenance > Amt::ZERO {
+                ui.label(format!("Maintenance: {} E/hd", total_maintenance));
+                ui.label(format!("  Buildings: {} E/hd", building_maintenance));
+            }
+            if ships_based_here > 0 {
+                ui.label(format!(
+                    "Ships based here: {} (maintenance: {} E/hd)",
+                    ships_based_here, ship_maintenance
+                ));
+            }
+        }
+
+        // Build queue
+        if let Some(ref bq) = build_queue {
+            ui.separator();
+            ui.label(egui::RichText::new("Build Queue").strong());
+
+            if bq.queue.is_empty() {
+                ui.label("[empty]");
+            } else {
+                for order in &bq.queue {
+                    let m_pct = if order.minerals_cost.raw() > 0 {
+                        (order.minerals_invested.raw() as f32 / order.minerals_cost.raw() as f32).min(1.0)
+                    } else {
+                        1.0
+                    };
+                    let e_pct = if order.energy_cost.raw() > 0 {
+                        (order.energy_invested.raw() as f32 / order.energy_cost.raw() as f32).min(1.0)
+                    } else {
+                        1.0
+                    };
+                    let pct = m_pct.min(e_pct);
+                    ui.horizontal(|ui| {
+                        ui.label(&order.ship_type_name);
+                        let bar = egui::ProgressBar::new(pct)
+                            .desired_width(100.0);
+                        ui.add(bar);
+                    });
+                }
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Build Ship").strong());
+        }
+
+        // Build buttons - add orders to the queue
+        if let Some(mut bq) = build_queue {
+            use crate::amount::Amt;
+            let ship_mod = construction_params.ship_cost_modifier.final_value();
+            let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
+            let ships_data: [(&str, Amt, Amt, i64); 3] = [
+                ("Explorer", Amt::units(200), Amt::units(100), 60),
+                ("Colony Ship", Amt::units(500), Amt::units(300), 120),
+                ("Courier", Amt::units(100), Amt::units(50), 30),
+            ];
+            let mut build_request: Option<(&str, Amt, Amt, i64)> = None;
+            ui.horizontal(|ui| {
+                for &(name, base_m, base_e, base_time) in &ships_data {
+                    let eff_m = base_m.mul_amt(ship_mod);
+                    let eff_e = base_e.mul_amt(ship_mod);
+                    let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
+                    let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
+                    if ui.button(name).on_hover_text(tooltip).clicked() {
+                        build_request = Some((name, eff_m, eff_e, eff_time));
+                    }
+                }
+            });
+            if let Some((name, minerals_cost, energy_cost, build_time)) = build_request {
+                bq.queue.push(BuildOrder {
+                    ship_type_name: name.to_string(),
+                    minerals_cost,
+                    minerals_invested: Amt::ZERO,
+                    energy_cost,
+                    energy_invested: Amt::ZERO,
+                    build_time_total: build_time,
+                    build_time_remaining: build_time,
+                });
+                info!("Build order added: {}", name);
+            }
+        }
+
+        // #46: Buildings display and construction UI
+        if let Some(buildings) = buildings {
+            ui.separator();
+            ui.label(egui::RichText::new("Buildings").strong());
+
+            let mut demolish_request: Option<(usize, BuildingType)> = None;
+
+            for (i, slot) in buildings.slots.iter().enumerate() {
+                let is_demolishing = building_queue
+                    .as_ref()
+                    .map(|bq| bq.is_demolishing(i))
+                    .unwrap_or(false);
+
+                match slot {
+                    Some(bt) if is_demolishing => {
+                        let remaining = building_queue
+                            .as_ref()
+                            .and_then(|bq| bq.demolition_time_remaining(i))
+                            .unwrap_or(0);
+                        ui.label(format!(
+                            "  [{}] {} — Demolishing... ({} hd remaining)",
+                            i,
+                            bt.name(),
+                            remaining
+                        ));
+                    }
+                    Some(bt) => {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("  [{}] {}", i, bt.name()));
+                            let (m_refund, e_refund) = bt.demolition_refund();
+                            let demo_time = bt.demolition_time();
+                            let tooltip = format!(
+                                "Demolish: {} hd | Refund M:{} E:{}",
+                                demo_time, m_refund, e_refund
+                            );
+                            if ui
+                                .small_button("Demolish")
+                                .on_hover_text(tooltip)
+                                .clicked()
+                            {
+                                demolish_request = Some((i, *bt));
+                            }
+                        });
+                    }
+                    None => {
+                        ui.label(format!("  [{}] (empty)", i));
+                    }
+                }
+            }
+
+            if let Some((slot_idx, bt)) = demolish_request {
+                if let Some(bq) = building_queue.as_mut() {
+                    let (m_refund, e_refund) = bt.demolition_refund();
+                    bq.demolition_queue.push(DemolitionOrder {
+                        target_slot: slot_idx,
+                        building_type: bt,
+                        time_remaining: bt.demolition_time(),
+                        minerals_refund: m_refund,
+                        energy_refund: e_refund,
+                    });
+                    info!("Demolition order added: {:?} in slot {}", bt, slot_idx);
+                }
+            }
+
+            let pending_slots: Vec<usize> = building_queue
+                .as_ref()
+                .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
+                .unwrap_or_default();
+            let empty_slot = buildings
+                .slots
+                .iter()
+                .enumerate()
+                .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
+
+            if let Some(slot_idx) = empty_slot {
+                ui.separator();
+                ui.label(egui::RichText::new("Build Building").strong());
+                let building_types = [
+                    BuildingType::Mine,
+                    BuildingType::PowerPlant,
+                    BuildingType::ResearchLab,
+                    BuildingType::Shipyard,
+                    BuildingType::Port,
+                    BuildingType::Farm,
+                ];
+                let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
+                let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
+                let mut build_building_request: Option<BuildingType> = None;
+                for bt in &building_types {
+                    let (base_m, base_e) = bt.build_cost();
+                    let eff_m = base_m.mul_amt(bldg_cost_mod);
+                    let eff_e = base_e.mul_amt(bldg_cost_mod);
+                    let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                    let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
+                    if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
+                        build_building_request = Some(*bt);
+                    }
+                }
+                if let Some(bt) = build_building_request {
+                    if let Some(mut bq) = building_queue {
+                        let (base_m, base_e) = bt.build_cost();
+                        let eff_m = base_m.mul_amt(bldg_cost_mod);
+                        let eff_e = base_e.mul_amt(bldg_cost_mod);
+                        let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                        bq.queue.push(BuildingOrder {
+                            building_type: bt,
+                            target_slot: slot_idx,
+                            minerals_remaining: eff_m,
+                            energy_remaining: eff_e,
+                            build_time_remaining: eff_time,
+                        });
+                        info!("Building order added: {:?} in slot {}", bt, slot_idx);
+                    }
+                }
+            }
+        }
+
+        break;
+    }
 }
 
 /// Resolve an Entity to a star system name, falling back to "Unknown".
