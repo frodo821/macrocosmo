@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, Production, ResourceStockpile};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -28,6 +28,8 @@ pub fn draw_system_panel(
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
     )>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     positions: &Query<&Position>,
@@ -112,7 +114,7 @@ pub fn draw_system_panel(
 
                 // We need to iterate colonies to find the one matching this system.
                 // Because we have a mutable query, we iterate once.
-                for (_colony_entity, colony, production, stockpile, build_queue, buildings, building_queue) in
+                for (_colony_entity, colony, production, stockpile, build_queue, buildings, building_queue, maintenance_cost, food_consumption) in
                     colonies.iter_mut()
                 {
                     if colony.system != sel_entity {
@@ -137,13 +139,53 @@ pub fn draw_system_panel(
                     ui.label(format!("Population: {:.0} / {:.0}", colony.population, carrying_cap));
 
                     if let Some(prod) = production {
-                        ui.label(format!(
-                            "Production: M {} | E {} | R {} | F {} /hd",
-                            prod.minerals_per_hexadies.final_value(),
-                            prod.energy_per_hexadies.final_value(),
-                            prod.research_per_hexadies.final_value(),
-                            prod.food_per_hexadies.final_value(),
-                        ));
+                        use crate::amount::SignedAmt;
+                        let green = egui::Color32::from_rgb(100, 200, 100);
+                        let red = egui::Color32::from_rgb(255, 100, 100);
+
+                        ui.label(egui::RichText::new("Income/hd:").strong());
+
+                        // Food: production - consumption
+                        let food_prod = prod.food_per_hexadies.final_value();
+                        let food_cons = food_consumption.map(|fc| fc.food_per_hexadies.final_value()).unwrap_or(crate::amount::Amt::ZERO);
+                        let food_net = SignedAmt::from_amt(food_prod).add(SignedAmt(0 - SignedAmt::from_amt(food_cons).raw()));
+                        let food_color = if food_net.raw() > 0 { green } else if food_net.raw() < 0 { red } else { egui::Color32::GRAY };
+                        ui.horizontal(|ui| {
+                            ui.label("  Food:    ");
+                            ui.label(egui::RichText::new(food_net.display()).color(food_color));
+                            if food_cons > crate::amount::Amt::ZERO {
+                                ui.label(format!("(produce {}, consume {})", food_prod, food_cons));
+                            }
+                        });
+
+                        // Energy: production - maintenance
+                        let energy_prod = prod.energy_per_hexadies.final_value();
+                        let maint = maintenance_cost.map(|mc| mc.energy_per_hexadies.final_value()).unwrap_or(crate::amount::Amt::ZERO);
+                        let energy_net = SignedAmt::from_amt(energy_prod).add(SignedAmt(0 - SignedAmt::from_amt(maint).raw()));
+                        let energy_color = if energy_net.raw() > 0 { green } else if energy_net.raw() < 0 { red } else { egui::Color32::GRAY };
+                        ui.horizontal(|ui| {
+                            ui.label("  Energy:  ");
+                            ui.label(egui::RichText::new(energy_net.display()).color(energy_color));
+                            if maint > crate::amount::Amt::ZERO {
+                                ui.label(format!("(produce {}, maintain {})", energy_prod, maint));
+                            }
+                        });
+
+                        // Minerals: just production
+                        let minerals_prod = prod.minerals_per_hexadies.final_value();
+                        let minerals_net = SignedAmt::from_amt(minerals_prod);
+                        let minerals_color = if minerals_net.raw() > 0 { green } else { egui::Color32::GRAY };
+                        ui.horizontal(|ui| {
+                            ui.label("  Minerals:");
+                            ui.label(egui::RichText::new(minerals_net.display()).color(minerals_color));
+                        });
+
+                        // Research: just production (flow, no consumption)
+                        let research_prod = prod.research_per_hexadies.final_value();
+                        ui.horizontal(|ui| {
+                            ui.label("  Research:");
+                            ui.label(format!("{}", research_prod));
+                        });
                     }
 
                     if let Some(stockpile) = stockpile {
@@ -492,6 +534,8 @@ pub fn draw_ship_panel(
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
     )>,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     command_queues: &Query<&mut CommandQueue>,
@@ -524,7 +568,7 @@ pub fn draw_ship_panel(
         let maintenance_cost = ship.ship_type.maintenance_cost();
         // Check if docked at a system that has a colony (for "Set Home Port" button)
         let docked_at_colony = docked_system.and_then(|dock_sys| {
-            colonies.iter().find_map(|(_, col, _, _, _, _, _)| {
+            colonies.iter().find_map(|(_, col, _, _, _, _, _, _, _)| {
                 if col.system == dock_sys { Some(dock_sys) } else { None }
             })
         });
@@ -582,7 +626,7 @@ pub fn draw_ship_panel(
     let mut cargo_action = CargoAction::default();
     // Entity of the colony at the docked system (for cargo transfers)
     let colony_entity_at_dock: Option<Entity> = docked_system.and_then(|dock_sys| {
-        colonies.iter().find_map(|(e, col, _, _, _, _, _)| {
+        colonies.iter().find_map(|(e, col, _, _, _, _, _, _, _)| {
             if col.system == dock_sys { Some(e) } else { None }
         })
     });
@@ -706,7 +750,7 @@ pub fn draw_ship_panel(
         || cargo_action.unload_energy > Amt::ZERO;
     if has_cargo_action {
         if let Some(colony_e) = colony_entity_at_dock {
-            if let Ok((_, _, _, Some(mut stockpile), _, _, _)) = colonies.get_mut(colony_e) {
+            if let Ok((_, _, _, Some(mut stockpile), _, _, _, _, _)) = colonies.get_mut(colony_e) {
                 if let Ok((_, _, _, Some(mut cargo))) = ships_query.get_mut(ship_entity) {
                     if cargo_action.load_minerals > Amt::ZERO {
                         let transfer = cargo_action.load_minerals.min(stockpile.minerals);

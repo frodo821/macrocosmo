@@ -1,10 +1,11 @@
 use bevy_egui::egui;
 
-use crate::amount::Amt;
+use crate::amount::{Amt, SignedAmt};
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::ResearchPanelOpen;
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_top_bar(
     ctx: &egui::Context,
     clock: &GameClock,
@@ -13,6 +14,10 @@ pub fn draw_top_bar(
     total_energy: Amt,
     total_food: Amt,
     total_authority: Amt,
+    net_food: SignedAmt,
+    net_energy: SignedAmt,
+    net_minerals: SignedAmt,
+    net_authority: SignedAmt,
     research_open: &mut ResearchPanelOpen,
 ) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
@@ -48,7 +53,23 @@ pub fn draw_top_bar(
 
             ui.separator();
 
-            ui.label(format!("F:{}  E:{}  M:{}  A:{}", total_food, total_energy, total_minerals, total_authority));
+            // Resource stockpiles with net income
+            for (label, stockpile, net) in [
+                ("F", total_food, net_food),
+                ("E", total_energy, net_energy),
+                ("M", total_minerals, net_minerals),
+                ("A", total_authority, net_authority),
+            ] {
+                ui.label(format!("{}:{}", label, stockpile));
+                let net_color = if net.raw() > 0 {
+                    egui::Color32::from_rgb(100, 200, 100)
+                } else if net.raw() < 0 {
+                    egui::Color32::from_rgb(255, 100, 100)
+                } else {
+                    egui::Color32::GRAY
+                };
+                ui.label(egui::RichText::new(format!("({})", net.display())).color(net_color));
+            }
 
             ui.separator();
 

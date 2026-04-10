@@ -7,7 +7,7 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
-use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, Production, ResourceStockpile};
+use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
@@ -55,6 +55,8 @@ pub fn draw_all_ui(
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
     )>,
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     mut command_queues: Query<&mut CommandQueue>,
@@ -68,34 +70,67 @@ pub fn draw_all_ui(
             &TechTree,
             &ResearchPool,
             &mut ResearchQueue,
+            &AuthorityParams,
         ),
         With<PlayerEmpire>,
     >,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
-    let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue)) =
+    let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
         empire_q.single_mut()
     else {
         return;
     };
 
-    // Collect resource totals before passing colonies around
-    let (total_minerals, total_energy, total_food, total_authority) = {
-        let mut m = crate::amount::Amt::ZERO;
-        let mut e = crate::amount::Amt::ZERO;
-        let mut f = crate::amount::Amt::ZERO;
-        let mut a = crate::amount::Amt::ZERO;
-        for (_, _, _, stockpile, _, _, _) in colonies.iter() {
+    // Collect resource totals and net income before passing colonies around
+    let (total_minerals, total_energy, total_food, total_authority,
+         net_minerals, net_energy, net_food, net_authority) = {
+        use crate::amount::{Amt, SignedAmt};
+        let mut m = Amt::ZERO;
+        let mut e = Amt::ZERO;
+        let mut f = Amt::ZERO;
+        let mut a = Amt::ZERO;
+        let mut net_m = SignedAmt::ZERO;
+        let mut net_e = SignedAmt::ZERO;
+        let mut net_f = SignedAmt::ZERO;
+        let mut colony_count: u64 = 0;
+        let mut has_capital = false;
+        for (_, colony, production, stockpile, _, _, _, maintenance, food_consumption) in colonies.iter() {
             if let Some(s) = stockpile {
                 m = m.add(s.minerals);
                 e = e.add(s.energy);
                 f = f.add(s.food);
                 a = a.add(s.authority);
             }
+            // Net income calculations
+            if let Some(prod) = production {
+                // Minerals: just production (no per-tick consumption to subtract)
+                net_m = net_m.add(SignedAmt::from_amt(prod.minerals_per_hexadies.final_value()));
+                // Energy: production - maintenance
+                let energy_prod = SignedAmt::from_amt(prod.energy_per_hexadies.final_value());
+                let maint = maintenance.map(|mc| SignedAmt::from_amt(mc.energy_per_hexadies.final_value())).unwrap_or(SignedAmt::ZERO);
+                net_e = net_e.add(energy_prod.add(SignedAmt(0 - maint.raw())));
+                // Food: production - consumption
+                let food_prod = SignedAmt::from_amt(prod.food_per_hexadies.final_value());
+                let food_cons = food_consumption.map(|fc| SignedAmt::from_amt(fc.food_per_hexadies.final_value())).unwrap_or(SignedAmt::ZERO);
+                net_f = net_f.add(food_prod.add(SignedAmt(0 - food_cons.raw())));
+            }
+            colony_count += 1;
+            // Check if capital
+            if let Ok((_, star, _, _)) = stars.get(colony.system) {
+                if star.is_capital {
+                    has_capital = true;
+                }
+            }
         }
-        (m, e, f, a)
+        // Authority net: production - cost_per_colony * non_capital_count
+        let non_capital_count = if has_capital { colony_count.saturating_sub(1) } else { colony_count };
+        let auth_prod = SignedAmt::from_amt(authority_params.production.final_value());
+        let auth_cost = SignedAmt::from_amt(authority_params.cost_per_colony.final_value().mul_u64(non_capital_count));
+        let net_a = auth_prod.add(SignedAmt(0 - auth_cost.raw()));
+        (m, e, f, a, net_m, net_e, net_f, net_a)
     };
-    top_bar::draw_top_bar(ctx, &clock, &mut speed, total_minerals, total_energy, total_food, total_authority, &mut research_open);
+    top_bar::draw_top_bar(ctx, &clock, &mut speed, total_minerals, total_energy, total_food, total_authority, net_food, net_energy, net_minerals, net_authority, &mut research_open);
 
     outline::draw_outline(
         ctx,
@@ -155,7 +190,7 @@ pub fn draw_all_ui(
     // Find capital colony stockpile for upfront cost checks
     let capital_stockpile: Option<(crate::amount::Amt, crate::amount::Amt)> = {
         let mut result = None;
-        for (_, colony_data, _, stockpile, _, _, _) in colonies.iter() {
+        for (_, colony_data, _, stockpile, _, _, _, _, _) in colonies.iter() {
             if let Some(s) = stockpile {
                 // Check if the colony's system is the capital
                 if let Ok((_, star, _, _)) = stars.get(colony_data.system) {
@@ -192,7 +227,7 @@ pub fn draw_all_ui(
                 let energy_cost = tech.cost.energy;
 
                 // Find and deduct from capital colony
-                for (_, colony_data, _, stockpile, _, _, _) in colonies.iter_mut() {
+                for (_, colony_data, _, stockpile, _, _, _, _, _) in colonies.iter_mut() {
                     if let Some(mut s) = stockpile {
                         if let Ok((_, star, _, _)) = stars.get(colony_data.system) {
                             if star.is_capital {
