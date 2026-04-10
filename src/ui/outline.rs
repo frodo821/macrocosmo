@@ -87,7 +87,7 @@ pub fn draw_outline(
                             let is_selected = selected_ship.0 == Some(*ship_entity);
                             if ui.selectable_label(is_selected, &label).clicked() {
                                 selected_ship.0 = Some(*ship_entity);
-                                selected_system.0 = Some(*system_entity);
+                                selected_system.0 = None;
                             }
                         }
                     }
@@ -168,8 +168,7 @@ pub fn draw_outline(
                                         .clicked()
                                     {
                                         selected_ship.0 = Some(*ship_entity);
-                                        selected_system.0 =
-                                            Some(*system_entity);
+                                        selected_system.0 = None;
                                     }
                                 }
                             });
