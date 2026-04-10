@@ -46,6 +46,7 @@ pub struct HullDefinition {
     pub build_cost_energy: Amt,
     pub build_time: i64,
     pub maintenance: Amt,
+    pub modifiers: Vec<ModuleModifier>,
 }
 
 #[derive(Resource, Default)]
@@ -259,6 +260,7 @@ mod tests {
             build_cost_energy: Amt::units(100),
             build_time: 60,
             maintenance: Amt::new(0, 500),
+            modifiers: vec![],
         });
 
         let corvette = registry.get("corvette").unwrap();

@@ -14,7 +14,7 @@ use crate::modifier::{CachedValue, Modifier, ScopedModifiers};
 use crate::physics::{distance_ly, distance_ly_arr, light_delay_hexadies, sublight_travel_hexadies};
 use crate::knowledge::{KnowledgeStore, SystemKnowledge, SystemSnapshot};
 use crate::player::{Player, PlayerEmpire, StationedAt};
-use crate::ship_design::ModuleRegistry;
+use crate::ship_design::{HullRegistry, ModuleRegistry};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 // --- #34: Command queue ---
@@ -153,6 +153,7 @@ pub fn sync_ship_module_modifiers(
     ships: Query<(Entity, &Ship), Changed<Ship>>,
     mut ship_mods: Query<&mut ShipModifiers>,
     module_registry: Res<ModuleRegistry>,
+    hull_registry: Res<HullRegistry>,
 ) {
     use crate::amount::SignedAmt;
     for (entity, ship) in &ships {
@@ -171,6 +172,23 @@ pub fn sync_ship_module_modifiers(
         mods.shield_max = ScopedModifiers::default();
         mods.shield_regen = ScopedModifiers::default();
 
+        // Apply hull modifiers first
+        if let Some(hull_def) = hull_registry.get(&ship.hull_id) {
+            for mod_def in &hull_def.modifiers {
+                let modifier = Modifier {
+                    id: format!("hull_{}_{}", ship.hull_id, mod_def.target),
+                    label: hull_def.name.clone(),
+                    base_add: SignedAmt::from_f64(mod_def.base_add),
+                    multiplier: SignedAmt::from_f64(mod_def.multiplier),
+                    add: SignedAmt::from_f64(mod_def.add),
+                    expires_at: None,
+                    on_expire_event: None,
+                };
+                push_ship_modifier(&mut mods, &mod_def.target, modifier);
+            }
+        }
+
+        // Apply module modifiers
         for (i, equipped) in ship.modules.iter().enumerate() {
             if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
                 for mod_def in &module_def.modifiers {
@@ -183,23 +201,28 @@ pub fn sync_ship_module_modifiers(
                         expires_at: None,
                         on_expire_event: None,
                     };
-                    match mod_def.target.as_str() {
-                        "ship.speed" => mods.speed.push_modifier(modifier),
-                        "ship.ftl_range" => mods.ftl_range.push_modifier(modifier),
-                        "ship.survey_speed" => mods.survey_speed.push_modifier(modifier),
-                        "ship.colonize_speed" => mods.colonize_speed.push_modifier(modifier),
-                        "ship.evasion" => mods.evasion.push_modifier(modifier),
-                        "ship.cargo_capacity" => mods.cargo_capacity.push_modifier(modifier),
-                        "ship.attack" => mods.attack.push_modifier(modifier),
-                        "ship.defense" => mods.defense.push_modifier(modifier),
-                        "ship.armor_max" => mods.armor_max.push_modifier(modifier),
-                        "ship.shield_max" => mods.shield_max.push_modifier(modifier),
-                        "ship.shield_regen" => mods.shield_regen.push_modifier(modifier),
-                        _ => {}
-                    }
+                    push_ship_modifier(&mut mods, &mod_def.target, modifier);
                 }
             }
         }
+    }
+}
+
+/// Push a modifier to the appropriate ShipModifiers field based on target string.
+fn push_ship_modifier(mods: &mut Mut<ShipModifiers>, target: &str, modifier: Modifier) {
+    match target {
+        "ship.speed" => mods.speed.push_modifier(modifier),
+        "ship.ftl_range" => mods.ftl_range.push_modifier(modifier),
+        "ship.survey_speed" => mods.survey_speed.push_modifier(modifier),
+        "ship.colonize_speed" => mods.colonize_speed.push_modifier(modifier),
+        "ship.evasion" => mods.evasion.push_modifier(modifier),
+        "ship.cargo_capacity" => mods.cargo_capacity.push_modifier(modifier),
+        "ship.attack" => mods.attack.push_modifier(modifier),
+        "ship.defense" => mods.defense.push_modifier(modifier),
+        "ship.armor_max" => mods.armor_max.push_modifier(modifier),
+        "ship.shield_max" => mods.shield_max.push_modifier(modifier),
+        "ship.shield_regen" => mods.shield_regen.push_modifier(modifier),
+        _ => {}
     }
 }
 
@@ -306,15 +329,30 @@ pub const COLONY_SHIP_PRESET: ShipDesignPreset = ShipDesignPreset {
 pub const COURIER_PRESET: ShipDesignPreset = ShipDesignPreset {
     design_id: "courier_mk1",
     design_name: "Courier",
-    hull_id: "corvette",
-    sublight_speed: 0.85,
+    hull_id: "courier_hull",
+    sublight_speed: 0.80,
     ftl_range: 0.0,
-    hp: 20.0,
+    hp: 35.0,
     maintenance: Amt::new(0, 300),
     build_cost_minerals: Amt::units(100),
     build_cost_energy: Amt::units(50),
     build_time: 30,
     can_survey: false,
+    can_colonize: false,
+};
+
+pub const SCOUT_PRESET: ShipDesignPreset = ShipDesignPreset {
+    design_id: "scout_mk1",
+    design_name: "Scout",
+    hull_id: "scout_hull",
+    sublight_speed: 0.85,
+    ftl_range: 10.0,
+    hp: 40.0,
+    maintenance: Amt::new(0, 400),
+    build_cost_minerals: Amt::units(150),
+    build_cost_energy: Amt::units(80),
+    build_time: 45,
+    can_survey: true,
     can_colonize: false,
 };
 
@@ -324,13 +362,14 @@ pub fn design_preset(design_id: &str) -> Option<&'static ShipDesignPreset> {
         "explorer_mk1" => Some(&EXPLORER_PRESET),
         "colony_ship_mk1" => Some(&COLONY_SHIP_PRESET),
         "courier_mk1" => Some(&COURIER_PRESET),
+        "scout_mk1" => Some(&SCOUT_PRESET),
         _ => None,
     }
 }
 
 /// All available design presets.
 pub fn all_design_presets() -> &'static [&'static ShipDesignPreset] {
-    &[&EXPLORER_PRESET, &COLONY_SHIP_PRESET, &COURIER_PRESET]
+    &[&EXPLORER_PRESET, &COLONY_SHIP_PRESET, &COURIER_PRESET, &SCOUT_PRESET]
 }
 
 /// Compute maintenance cost for a ship given its design_id.

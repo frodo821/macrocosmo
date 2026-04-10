@@ -22,10 +22,21 @@ define_ship_design {
 define_ship_design {
     id = "courier_mk1",
     name = "Courier Mk.I",
-    hull = "corvette",
+    hull = "courier_hull",
     modules = {
         { slot_type = "engine", module = "ftl_drive" },
+        { slot_type = "engine", module = "ftl_drive" },
         { slot_type = "utility", module = "cargo_bay" },
+    },
+}
+
+define_ship_design {
+    id = "scout_mk1",
+    name = "Scout Mk.I",
+    hull = "scout_hull",
+    modules = {
+        { slot_type = "engine", module = "ftl_drive" },
+        { slot_type = "utility", module = "survey_equipment" },
     },
 }
 
