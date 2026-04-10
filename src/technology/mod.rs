@@ -17,15 +17,11 @@ impl Plugin for TechnologyPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
-            load_technologies.after(crate::scripting::init_scripting),
+            load_technologies
+                .after(crate::scripting::init_scripting)
+                .after(crate::player::spawn_player_empire),
         )
-        .insert_resource(ResearchQueue::default())
-        .insert_resource(ResearchPool::default())
         .insert_resource(LastResearchTick(0))
-        .insert_resource(GlobalParams::default())
-        .insert_resource(GameFlags::default())
-        .insert_resource(EmpireModifiers::default())
-        .insert_resource(RecentlyResearched::default())
         .add_systems(
             Update,
             (emit_research, receive_research, tick_research, flush_research)
@@ -45,7 +41,7 @@ impl Plugin for TechnologyPlugin {
 /// Global parameters modified by researched technologies.
 /// Contains ship/movement-related bonuses. Production and population bonuses
 /// have been moved to the modifier system (EmpireModifiers).
-#[derive(Resource, Debug, Clone)]
+#[derive(Resource, Component, Debug, Clone)]
 pub struct GlobalParams {
     /// Added to base sublight speed
     pub sublight_speed_bonus: f64,
@@ -73,7 +69,7 @@ impl Default for GlobalParams {
 
 /// Empire-wide modifiers applied via the modifier system.
 /// Replaces the production/population fields that were in GlobalParams.
-#[derive(Resource)]
+#[derive(Resource, Component)]
 pub struct EmpireModifiers {
     pub population_growth: ModifiedValue,
 }
@@ -87,7 +83,7 @@ impl Default for EmpireModifiers {
 }
 
 /// Tracks boolean flags set by technology effects (e.g. unlocked buildings).
-#[derive(Resource, Default, Debug, Clone)]
+#[derive(Resource, Component, Default, Debug, Clone)]
 pub struct GameFlags {
     pub flags: HashSet<String>,
 }
@@ -102,7 +98,11 @@ impl GameFlags {
     }
 }
 
-pub fn load_technologies(mut commands: Commands, engine: Res<crate::scripting::ScriptEngine>) {
+pub fn load_technologies(
+    mut commands: Commands,
+    engine: Res<crate::scripting::ScriptEngine>,
+    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+) {
     let tech_dir = Path::new("scripts/tech");
     let techs = if tech_dir.exists() {
         match engine.load_directory(tech_dir) {
@@ -132,7 +132,14 @@ pub fn load_technologies(mut commands: Commands, engine: Res<crate::scripting::S
         "Tech tree loaded with {} technologies",
         tree.technologies.len()
     );
-    commands.insert_resource(tree);
+
+    // Insert onto the player empire entity (replacing the default)
+    if let Ok(empire_entity) = empire_q.single() {
+        commands.entity(empire_entity).insert(tree);
+    } else {
+        warn!("No player empire entity found; inserting TechTree as resource fallback");
+        commands.insert_resource(tree);
+    }
 }
 
 /// Unique identifier for a technology.
@@ -203,7 +210,7 @@ pub struct Technology {
 }
 
 /// The complete technology tree, indexed by TechId.
-#[derive(Resource, Debug, Clone, Default)]
+#[derive(Resource, Component, Debug, Clone, Default)]
 pub struct TechTree {
     pub technologies: HashMap<TechId, Technology>,
     pub researched: HashSet<TechId>,
@@ -298,7 +305,7 @@ impl TechTree {
 }
 
 /// Current research target and accumulated points.
-#[derive(Resource, Default)]
+#[derive(Resource, Component, Default)]
 pub struct ResearchQueue {
     pub current: Option<TechId>,
     pub accumulated: f64,
@@ -331,7 +338,7 @@ impl ResearchQueue {
 }
 
 /// Global research points pool (accumulated from colonies).
-#[derive(Resource, Default)]
+#[derive(Resource, Component, Default)]
 pub struct ResearchPool {
     pub points: f64,
 }
@@ -404,9 +411,12 @@ pub fn emit_research(
 pub fn receive_research(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut pool: ResMut<ResearchPool>,
+    mut empire_q: Query<&mut ResearchPool, With<crate::player::PlayerEmpire>>,
     pending: Query<(Entity, &PendingResearch)>,
 ) {
+    let Ok(mut pool) = empire_q.single_mut() else {
+        return;
+    };
     for (entity, pr) in &pending {
         if clock.elapsed >= pr.arrives_at {
             pool.points += pr.amount;
@@ -421,16 +431,22 @@ pub fn receive_research(
 pub fn tick_research(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastResearchTick>,
-    mut tech_tree: ResMut<TechTree>,
-    mut queue: ResMut<ResearchQueue>,
-    mut pool: ResMut<ResearchPool>,
-    mut recently_researched: ResMut<RecentlyResearched>,
+    mut empire_q: Query<
+        (&mut TechTree, &mut ResearchQueue, &mut ResearchPool, &mut RecentlyResearched),
+        With<crate::player::PlayerEmpire>,
+    >,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
     last_tick.0 = clock.elapsed;
+
+    let Ok((mut tech_tree, mut queue, mut pool, mut recently_researched)) =
+        empire_q.single_mut()
+    else {
+        return;
+    };
 
     let Some(current_tech_id) = queue.current else {
         return;
@@ -477,7 +493,12 @@ pub fn tick_research(
 }
 
 /// Flush unused research points at the end of each tick (use it or lose it).
-pub fn flush_research(mut pool: ResMut<ResearchPool>) {
+pub fn flush_research(
+    mut empire_q: Query<&mut ResearchPool, With<crate::player::PlayerEmpire>>,
+) {
+    let Ok(mut pool) = empire_q.single_mut() else {
+        return;
+    };
     pool.points = 0.0;
 }
 
@@ -491,7 +512,7 @@ pub struct TechKnowledge {
 }
 
 /// Techs that were just researched this tick, to be propagated to systems.
-#[derive(Resource, Default)]
+#[derive(Resource, Component, Default)]
 pub struct RecentlyResearched {
     pub techs: Vec<TechId>,
 }
@@ -509,11 +530,14 @@ pub struct PendingKnowledgePropagation {
 pub fn propagate_tech_knowledge(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut recently_researched: ResMut<RecentlyResearched>,
+    mut empire_q: Query<&mut RecentlyResearched, With<crate::player::PlayerEmpire>>,
     colonies: Query<&Colony>,
     stars: Query<(Entity, &StarSystem, &Position)>,
     mut tech_knowledge: Query<&mut TechKnowledge>,
 ) {
+    let Ok(mut recently_researched) = empire_q.single_mut() else {
+        return;
+    };
     if recently_researched.techs.is_empty() {
         return;
     }

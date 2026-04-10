@@ -7,8 +7,7 @@ pub struct CommunicationPlugin;
 
 impl Plugin for CommunicationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<CommandLog>()
-            .add_systems(
+        app.add_systems(
                 Update,
                 (process_messages, process_courier_ships, process_pending_commands),
             );
@@ -139,7 +138,7 @@ pub enum RemoteCommand {
 }
 
 /// Tracks command status for UI display.
-#[derive(Resource, Default)]
+#[derive(Resource, Component, Default)]
 pub struct CommandLog {
     pub entries: Vec<CommandLogEntry>,
 }
@@ -187,8 +186,11 @@ pub fn process_pending_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
     pending: Query<(Entity, &PendingCommand)>,
-    mut command_log: ResMut<CommandLog>,
+    mut empire_q: Query<&mut CommandLog, With<crate::player::PlayerEmpire>>,
 ) {
+    let Ok(mut command_log) = empire_q.single_mut() else {
+        return;
+    };
     for (entity, cmd) in &pending {
         if clock.elapsed >= cmd.arrives_at {
             let delay = cmd.arrives_at - cmd.sent_at;

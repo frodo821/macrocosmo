@@ -7,37 +7,16 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
-use bevy::ecs::system::SystemParam;
-
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, Production, ResourceStockpile};
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
-use crate::player::{Player, StationedAt};
+use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
-use crate::technology::EmpireModifiers;
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedShip, SelectedSystem};
-
-/// Grouped read-only resources for the UI system to stay within Bevy's
-/// 16-parameter limit.
-#[derive(SystemParam)]
-pub struct UiResources<'w> {
-    pub knowledge: Res<'w, KnowledgeStore>,
-    pub command_log: Res<'w, CommandLog>,
-    pub global_params: Res<'w, GlobalParams>,
-    pub construction_params: Res<'w, ConstructionParams>,
-    pub tech_tree: Res<'w, TechTree>,
-    pub research_pool: Res<'w, ResearchPool>,
-}
-
-/// Grouped mutable resources for the research system.
-#[derive(SystemParam)]
-pub struct UiResMut<'w> {
-    pub research_queue: ResMut<'w, ResearchQueue>,
-}
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
@@ -80,10 +59,25 @@ pub fn draw_all_ui(
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     mut command_queues: Query<&mut CommandQueue>,
     positions: Query<&Position>,
-    ui_res: UiResources,
-    mut ui_res_mut: UiResMut,
+    mut empire_q: Query<
+        (
+            &KnowledgeStore,
+            &CommandLog,
+            &GlobalParams,
+            &ConstructionParams,
+            &TechTree,
+            &ResearchPool,
+            &mut ResearchQueue,
+        ),
+        With<PlayerEmpire>,
+    >,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
+    let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue)) =
+        empire_q.single_mut()
+    else {
+        return;
+    };
 
     // Collect resource totals before passing colonies around
     let (total_minerals, total_energy, total_food, total_authority) = {
@@ -121,9 +115,9 @@ pub fn draw_all_ui(
         &mut colonies,
         &mut ships_query,
         &positions,
-        &ui_res.knowledge,
+        knowledge,
         &clock,
-        &ui_res.construction_params,
+        construction_params,
     );
 
     side_panel::draw_ship_panel(
@@ -147,7 +141,7 @@ pub fn draw_all_ui(
         &mut command_queues,
         &positions,
         &clock,
-        &ui_res.global_params,
+        global_params,
         &player_q,
         &mut pending_ship_commands,
     );
@@ -156,7 +150,7 @@ pub fn draw_all_ui(
         commands.spawn(pending_cmd);
     }
 
-    bottom_bar::draw_bottom_bar(ctx, &ui_res.command_log, &clock);
+    bottom_bar::draw_bottom_bar(ctx, command_log, &clock);
 
     // Find capital colony stockpile for upfront cost checks
     let capital_stockpile: Option<(crate::amount::Amt, crate::amount::Amt)> = {
@@ -182,9 +176,9 @@ pub fn draw_all_ui(
     let research_action = overlays::draw_overlays(
         ctx,
         &mut research_open,
-        &ui_res.tech_tree,
-        &ui_res_mut.research_queue,
-        &ui_res.research_pool,
+        tech_tree,
+        &research_queue,
+        research_pool,
         capital_refs,
         clock.elapsed,
     );
@@ -193,7 +187,7 @@ pub fn draw_all_ui(
     match research_action {
         overlays::ResearchAction::StartResearch(tech_id) => {
             // Deduct upfront costs from capital stockpile
-            if let Some(tech) = ui_res.tech_tree.get(tech_id) {
+            if let Some(tech) = tech_tree.get(tech_id) {
                 let mineral_cost = tech.cost.minerals;
                 let energy_cost = tech.cost.energy;
 
@@ -210,11 +204,11 @@ pub fn draw_all_ui(
                     }
                 }
 
-                ui_res_mut.research_queue.start_research(tech_id);
+                research_queue.start_research(tech_id);
             }
         }
         overlays::ResearchAction::CancelResearch => {
-            ui_res_mut.research_queue.cancel_research();
+            research_queue.cancel_research();
         }
         overlays::ResearchAction::None => {}
     }

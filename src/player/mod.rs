@@ -1,16 +1,47 @@
 use bevy::prelude::*;
 
+use crate::colony::{AuthorityParams, ConstructionParams};
+use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::galaxy::StarSystem;
+use crate::knowledge::KnowledgeStore;
 use crate::physics;
+use crate::technology::{
+    EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
+    TechTree,
+};
 
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player.after(crate::galaxy::generate_galaxy))
+        app.add_systems(Startup, spawn_player_empire)
+            .add_systems(Startup, spawn_player.after(crate::galaxy::generate_galaxy))
             .add_systems(Update, log_player_info);
     }
+}
+
+/// Spawn the player's empire entity with all empire-level components.
+/// This must run before any system that queries for PlayerEmpire.
+pub fn spawn_player_empire(mut commands: Commands) {
+    commands.spawn((
+        Empire {
+            name: "Human Federation".into(),
+        },
+        PlayerEmpire,
+        TechTree::default(),
+        ResearchQueue::default(),
+        ResearchPool::default(),
+        RecentlyResearched::default(),
+        AuthorityParams::default(),
+        ConstructionParams::default(),
+        EmpireModifiers::default(),
+        GameFlags::default(),
+        GlobalParams::default(),
+        KnowledgeStore::default(),
+        CommandLog::default(),
+    ));
+    info!("Player empire entity spawned");
 }
 
 /// The player's current location
@@ -28,6 +59,16 @@ pub struct StationedAt {
 pub struct AboardShip {
     pub ship: Entity,
 }
+
+/// An empire entity represents a faction/civilization.
+#[derive(Component)]
+pub struct Empire {
+    pub name: String,
+}
+
+/// Marker component for the player's empire entity.
+#[derive(Component)]
+pub struct PlayerEmpire;
 
 pub fn spawn_player(
     mut commands: Commands,

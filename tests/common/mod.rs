@@ -9,10 +9,35 @@ use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::ship::*;
 use macrocosmo::technology::{self, TechKnowledge};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
+
+/// Spawn a player empire entity with all empire-level components.
+/// Returns the empire entity.
+pub fn spawn_test_empire(world: &mut World) -> Entity {
+    world
+        .spawn((
+            Empire {
+                name: "Test Empire".into(),
+            },
+            PlayerEmpire,
+            technology::TechTree::default(),
+            technology::ResearchQueue::default(),
+            technology::ResearchPool::default(),
+            technology::RecentlyResearched::default(),
+            AuthorityParams::default(),
+            ConstructionParams::default(),
+            technology::EmpireModifiers::default(),
+            technology::GameFlags::default(),
+            technology::GlobalParams::default(),
+            KnowledgeStore::default(),
+            CommandLog::default(),
+        ))
+        .id()
+}
 
 /// Build a headless Bevy App with game logic systems but no rendering.
 pub fn test_app() -> App {
@@ -20,14 +45,10 @@ pub fn test_app() -> App {
     app.add_plugins(MinimalPlugins);
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
-    app.insert_resource(KnowledgeStore::default());
-    app.insert_resource(CommandLog::default());
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
-    app.insert_resource(technology::GlobalParams::default());
-    app.insert_resource(technology::EmpireModifiers::default());
-    app.insert_resource(technology::RecentlyResearched::default());
+    app.insert_resource(technology::LastResearchTick(0));
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -46,8 +67,6 @@ pub fn test_app() -> App {
             .chain()
             .after(macrocosmo::time_system::advance_game_time),
     );
-    app.insert_resource(AuthorityParams::default());
-    app.insert_resource(ConstructionParams::default());
     app.add_systems(
         Update,
         (
@@ -72,6 +91,10 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time),
     );
     app.add_systems(Update, propagate_knowledge);
+
+    // Spawn the empire entity
+    spawn_test_empire(app.world_mut());
+
     app
 }
 
@@ -88,8 +111,6 @@ pub fn full_test_app() -> App {
     // --- Core resources ---
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
-    app.insert_resource(KnowledgeStore::default());
-    app.insert_resource(CommandLog::default());
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
@@ -106,14 +127,8 @@ pub fn full_test_app() -> App {
     app.insert_resource(ButtonInput::<MouseButton>::default());
     app.insert_resource(AccumulatedMouseScroll::default());
 
-    // --- Technology resources ---
-    app.insert_resource(technology::create_initial_tech_tree());
-    app.insert_resource(technology::ResearchQueue::default());
-    app.insert_resource(technology::ResearchPool::default());
+    // --- Technology resources (only LastResearchTick remains as a global resource) ---
     app.insert_resource(technology::LastResearchTick(0));
-    app.insert_resource(technology::GlobalParams::default());
-    app.insert_resource(technology::GameFlags::default());
-    app.insert_resource(technology::EmpireModifiers::default());
 
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(
@@ -130,8 +145,6 @@ pub fn full_test_app() -> App {
     );
 
     // --- Colony systems (from ColonyPlugin) ---
-    app.insert_resource(AuthorityParams::default());
-    app.insert_resource(ConstructionParams::default());
     app.add_systems(
         Update,
         (
@@ -165,7 +178,6 @@ pub fn full_test_app() -> App {
     );
 
     // --- Technology systems (from TechnologyPlugin) ---
-    app.insert_resource(technology::RecentlyResearched::default());
     app.add_systems(
         Update,
         (
@@ -218,6 +230,9 @@ pub fn full_test_app() -> App {
             visualization::camera_controls,
         ),
     );
+
+    // Spawn the empire entity
+    spawn_test_empire(app.world_mut());
 
     app
 }
@@ -315,7 +330,7 @@ pub fn spawn_test_ship(
             Ship {
                 name: name.to_string(),
                 ship_type,
-                owner: Owner::Player,
+                owner: Owner::Neutral,
                 sublight_speed: ship_type.default_sublight_speed(),
                 ftl_range: ship_type.default_ftl_range(),
                 hp,

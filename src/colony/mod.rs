@@ -20,8 +20,6 @@ impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LastProductionTick>()
             .init_resource::<BuildingRegistry>()
-            .insert_resource(AuthorityParams::default())
-            .insert_resource(ConstructionParams::default())
             .add_systems(
                 Startup,
                 (
@@ -107,7 +105,7 @@ pub const AUTHORITY_DEFICIT_PENALTY: Amt = Amt::new(0, 500);
 
 /// Configurable authority parameters. Tech effects can push modifiers to
 /// adjust authority production or cost scaling.
-#[derive(Resource)]
+#[derive(Resource, Component)]
 pub struct AuthorityParams {
     /// Authority produced per hexady by the capital colony. Base = 1.0
     pub production: ModifiedValue,
@@ -159,7 +157,7 @@ impl Default for FoodConsumption {
 /// Global construction cost/time modifiers. Base = 1.0 for all fields.
 /// Techs push multiplier modifiers (e.g. -0.15 for "15% cheaper ships").
 /// Effective cost = base_cost * modifier.final_value().
-#[derive(Resource)]
+#[derive(Resource, Component)]
 pub struct ConstructionParams {
     pub ship_cost_modifier: ModifiedValue,
     pub building_cost_modifier: ModifiedValue,
@@ -472,10 +470,12 @@ pub fn tick_timed_effects(
     mut productions: Query<(Entity, &mut Production)>,
     mut maintenance_costs: Query<(Entity, &mut MaintenanceCost)>,
     mut food_consumptions: Query<(Entity, &mut FoodConsumption)>,
-    mut authority_params: ResMut<AuthorityParams>,
-    mut construction_params: ResMut<ConstructionParams>,
+    mut empire_q: Query<(&mut AuthorityParams, &mut ConstructionParams), With<crate::player::PlayerEmpire>>,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
+    let Ok((mut authority_params, mut construction_params)) = empire_q.single_mut() else {
+        return;
+    };
     let now = clock.elapsed;
 
     // Helper: drain expired modifiers and fire any on_expire_event via EventSystem
@@ -789,7 +789,7 @@ pub fn tick_production(
 pub fn tick_population_growth(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    empire_modifiers: Res<crate::technology::EmpireModifiers>,
+    empire_modifiers_q: Query<&crate::technology::EmpireModifiers, With<crate::player::PlayerEmpire>>,
     mut colonies: Query<(
         &mut Colony,
         &mut ResourceStockpile,
@@ -799,6 +799,10 @@ pub fn tick_population_growth(
     stars: Query<(&StarSystem, &crate::galaxy::SystemAttributes)>,
 ) {
     use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
+
+    let Ok(empire_modifiers) = empire_modifiers_q.single() else {
+        return;
+    };
 
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -856,7 +860,12 @@ pub fn tick_build_queue(
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     mut events: MessageWriter<GameEvent>,
+    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
+    let ship_owner = empire_q
+        .single()
+        .map(Owner::Empire)
+        .unwrap_or(Owner::Neutral);
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
@@ -906,6 +915,7 @@ pub fn tick_build_queue(
                         completed.ship_type_name.clone(),
                         colony.system,
                         *pos,
+                        ship_owner,
                     );
                     let sys_name = stars.get(colony.system).map(|s| s.name.clone()).unwrap_or_default();
                     events.write(GameEvent {
@@ -975,7 +985,10 @@ pub fn tick_building_queue(
 pub fn update_sovereignty(
     colonies: Query<&Colony>,
     mut sovereignties: Query<(Entity, &mut Sovereignty)>,
+    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
+    let player_empire = empire_q.single().ok();
+
     let mut colony_pop: std::collections::HashMap<Entity, f64> = std::collections::HashMap::new();
     for colony in &colonies {
         *colony_pop.entry(colony.system).or_insert(0.0) += colony.population;
@@ -983,7 +996,7 @@ pub fn update_sovereignty(
 
     for (entity, mut sov) in &mut sovereignties {
         if let Some(&pop) = colony_pop.get(&entity) {
-            sov.owner = Some(Owner::Player);
+            sov.owner = player_empire.map(Owner::Empire);
             sov.control_score = pop;
         } else {
             sov.owner = None;
@@ -1085,10 +1098,13 @@ pub fn tick_maintenance(
 pub fn tick_authority(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    authority_params: Res<AuthorityParams>,
+    empire_authority_q: Query<&AuthorityParams, With<crate::player::PlayerEmpire>>,
     mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&ResourceCapacity>)>,
     stars: Query<&StarSystem>,
 ) {
+    let Ok(authority_params) = empire_authority_q.single() else {
+        return;
+    };
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;

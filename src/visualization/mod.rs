@@ -8,7 +8,7 @@ use crate::colony::{Buildings, Colony};
 use crate::components::Position;
 use crate::galaxy::{ObscuredByGas, StarSystem};
 use crate::knowledge::KnowledgeStore;
-use crate::player::{Player, StationedAt};
+use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Ship, ShipState, ShipType};
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
@@ -194,10 +194,13 @@ fn star_color(star: &StarSystem, obscured: bool) -> Color {
 fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
     mut visuals: Query<(&StarVisual, &mut Sprite, Option<&StarGlow>, Option<&BaseStarSize>)>,
-    knowledge: Res<KnowledgeStore>,
+    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
     clock: Res<GameClock>,
     camera_q: Query<&Projection, With<Camera2d>>,
 ) {
+    let Ok(knowledge) = empire_q.single() else {
+        return;
+    };
     // Get the current camera scale for zoom-responsive sizing
     let camera_scale = camera_q
         .iter()
@@ -299,9 +302,12 @@ fn draw_galaxy_overlay(
     selected: Res<SelectedSystem>,
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
-    global_params: Res<GlobalParams>,
+    empire_params_q: Query<&GlobalParams, With<PlayerEmpire>>,
     colonies: Query<(&Colony, &Buildings)>,
 ) {
+    let Ok(global_params) = empire_params_q.single() else {
+        return;
+    };
     let Ok(stationed) = player_q.single() else {
         return;
     };

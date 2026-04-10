@@ -11,12 +11,12 @@ pub struct KnowledgePlugin;
 
 impl Plugin for KnowledgePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(KnowledgeStore::default())
-            .add_systems(
+        app.add_systems(
                 Startup,
                 initialize_capital_knowledge
                     .after(crate::galaxy::generate_galaxy)
-                    .after(crate::player::spawn_player),
+                    .after(crate::player::spawn_player)
+                    .after(crate::player::spawn_player_empire),
             )
             .add_systems(Update, propagate_knowledge);
     }
@@ -40,7 +40,7 @@ pub struct SystemSnapshot {
     pub production: f64,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Component, Default)]
 pub struct KnowledgeStore {
     entries: HashMap<Entity, SystemKnowledge>,
 }
@@ -73,10 +73,14 @@ impl KnowledgeStore {
 }
 
 fn initialize_capital_knowledge(
-    mut store: ResMut<KnowledgeStore>,
+    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
     player_q: Query<&StationedAt, With<Player>>,
     systems: Query<(Entity, &StarSystem, &Position)>,
 ) {
+    let Ok(mut store) = empire_q.single_mut() else {
+        warn!("Knowledge init: no player empire found");
+        return;
+    };
     let capital_entity = match player_q.iter().next() {
         Some(stationed) => stationed.system,
         None => {
@@ -118,8 +122,11 @@ pub fn propagate_knowledge(
     player_q: Query<&StationedAt, With<Player>>,
     systems: Query<(Entity, &StarSystem, &Position)>,
     positions: Query<&Position>,
-    mut store: ResMut<KnowledgeStore>,
+    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
 ) {
+    let Ok(mut store) = empire_q.single_mut() else {
+        return;
+    };
     let stationed = match player_q.iter().next() {
         Some(s) => s,
         None => return,

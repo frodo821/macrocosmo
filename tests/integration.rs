@@ -16,6 +16,12 @@ use macrocosmo::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 use common::{advance_time, full_test_app, spawn_test_colony, spawn_test_system, test_app};
 
+/// Find the player empire entity in the world.
+fn empire_entity(world: &mut World) -> Entity {
+    let mut query = world.query_filtered::<Entity, With<PlayerEmpire>>();
+    query.single(world).expect("No player empire found in test world")
+}
+
 // =========================================================================
 // Exploration flow
 // =========================================================================
@@ -51,7 +57,7 @@ fn test_sublight_travel_and_arrival() {
         Ship {
             name: "Scout-1".to_string(),
             ship_type: ShipType::Explorer,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
             hp: 50.0,
@@ -114,7 +120,7 @@ fn test_survey_completes_and_marks_system() {
         Ship {
             name: "Scout-1".to_string(),
             ship_type: ShipType::Explorer,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
             hp: 50.0,
@@ -178,7 +184,7 @@ fn test_ftl_travel_and_arrival() {
         Ship {
             name: "Colony-1".to_string(),
             ship_type: ShipType::ColonyShip,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
             hp: 100.0,
@@ -396,7 +402,8 @@ fn test_knowledge_propagation_light_delay() {
     // At time 0, no knowledge should exist of System-B (light hasn't arrived)
     app.update();
     {
-        let store = app.world().resource::<KnowledgeStore>();
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
         assert!(
             store.get(sys_b).is_none(),
             "Should have no knowledge of distant system at time 0"
@@ -407,7 +414,8 @@ fn test_knowledge_propagation_light_delay() {
     advance_time(&mut app, 600);
 
     {
-        let store = app.world().resource::<KnowledgeStore>();
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
         let knowledge = store.get(sys_b);
         assert!(
             knowledge.is_some(),
@@ -453,7 +461,7 @@ fn all_systems_no_query_conflict() {
                 max_building_slots: 6,
             },
             Sovereignty {
-                owner: Some(Owner::Player),
+                owner: None,
                 control_score: 100.0,
             },
         ))
@@ -549,7 +557,7 @@ fn all_systems_no_query_conflict() {
         Ship {
             name: "Explorer-1".into(),
             ship_type: ShipType::Explorer,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
             hp: 50.0,
@@ -568,7 +576,7 @@ fn all_systems_no_query_conflict() {
         Ship {
             name: "Colony Ship-1".into(),
             ship_type: ShipType::ColonyShip,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
             hp: 100.0,
@@ -587,7 +595,7 @@ fn all_systems_no_query_conflict() {
         Ship {
             name: "Courier-1".into(),
             ship_type: ShipType::Courier,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.85,
             ftl_range: 0.0,
             hp: 20.0,
@@ -644,7 +652,7 @@ fn test_hostile_destroyed_when_hp_zero() {
         Ship {
             name: "Warship-1".to_string(),
             ship_type: ShipType::Explorer,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
             hp: 50.0,
@@ -696,7 +704,7 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
         Ship {
             name: "Doomed-1".to_string(),
             ship_type: ShipType::Courier,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.85,
             ftl_range: 0.0,
             hp: 0.01,  // nearly dead
@@ -777,7 +785,7 @@ fn test_combat_takes_multiple_ticks() {
         Ship {
             name: "Fighter-1".to_string(),
             ship_type: ShipType::Explorer,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
             hp: 50.0,
@@ -1818,9 +1826,10 @@ fn test_building_queue_completes_construction() {
 fn test_construction_params_modify_ship_cost() {
     let mut app = test_app();
 
-    // Verify ConstructionParams resource exists
+    // Verify ConstructionParams component on empire exists
     {
-        let params = app.world().resource::<ConstructionParams>();
+        let empire = empire_entity(app.world_mut());
+        let params = app.world().get::<ConstructionParams>(empire).unwrap();
         assert_eq!(
             params.ship_cost_modifier.final_value(),
             Amt::units(1),
@@ -1830,7 +1839,8 @@ fn test_construction_params_modify_ship_cost() {
 
     // Modify it
     {
-        let mut params = app.world_mut().resource_mut::<ConstructionParams>();
+        let empire = empire_entity(app.world_mut());
+        let mut params = app.world_mut().get_mut::<ConstructionParams>(empire).unwrap();
         params.ship_cost_modifier.push_modifier(Modifier {
             id: "tech_cheaper_ships".to_string(),
             label: "Cheaper Ships".to_string(),
@@ -1842,7 +1852,8 @@ fn test_construction_params_modify_ship_cost() {
         });
     }
 
-    let params = app.world().resource::<ConstructionParams>();
+    let empire = empire_entity(app.world_mut());
+    let params = app.world().get::<ConstructionParams>(empire).unwrap();
     assert_eq!(
         params.ship_cost_modifier.final_value(),
         Amt::new(1, 500),
@@ -2061,7 +2072,8 @@ fn test_authority_params_modifier() {
 
     // Push +50% multiplier to authority production
     {
-        let mut params = app.world_mut().resource_mut::<AuthorityParams>();
+        let empire = empire_entity(app.world_mut());
+        let mut params = app.world_mut().get_mut::<AuthorityParams>(empire).unwrap();
         params.production.push_modifier(Modifier {
             id: "tech_authority".to_string(),
             label: "Authority Boost".to_string(),
@@ -2694,10 +2706,7 @@ fn test_block_research_stops_progress() {
 
     let mut app = test_app();
 
-    // Add technology resources and systems not included in basic test_app
-    app.insert_resource(ResearchQueue::default());
-    app.insert_resource(ResearchPool::default());
-    app.insert_resource(LastResearchTick(0));
+    // Add technology systems not included in basic test_app
     app.add_systems(
         Update,
         (
@@ -2710,7 +2719,7 @@ fn test_block_research_stops_progress() {
             .after(macrocosmo::time_system::advance_game_time),
     );
 
-    // Insert tech tree with a simple tech
+    // Insert tech tree onto empire entity
     let tree = TechTree::from_vec(vec![Technology {
         id: TechId(1),
         name: "Test".into(),
@@ -2719,23 +2728,31 @@ fn test_block_research_stops_progress() {
         prerequisites: vec![],
         description: String::new(),
     }]);
-    app.insert_resource(tree);
+    {
+        let empire = empire_entity(app.world_mut());
+        app.world_mut().entity_mut(empire).insert(tree);
+    }
 
     // Start research and block it
     {
-        let mut queue = app.world_mut().resource_mut::<ResearchQueue>();
+        let empire = empire_entity(app.world_mut());
+        let mut queue = app.world_mut().get_mut::<ResearchQueue>(empire).unwrap();
         queue.start_research(TechId(1));
         queue.block();
     }
 
     // Add points to pool
-    app.world_mut().resource_mut::<ResearchPool>().points = 50.0;
+    {
+        let empire = empire_entity(app.world_mut());
+        app.world_mut().get_mut::<ResearchPool>(empire).unwrap().points = 50.0;
+    }
 
     // Advance time
     advance_time(&mut app, 1);
 
     // Queue should have no progress because it's blocked
-    let queue = app.world().resource::<ResearchQueue>();
+    let empire = empire_entity(app.world_mut());
+    let queue = app.world().get::<ResearchQueue>(empire).unwrap();
     assert_eq!(queue.accumulated, 0.0);
     assert!(queue.blocked);
     assert_eq!(queue.current, Some(TechId(1)));
@@ -2775,12 +2792,7 @@ fn test_cancel_research_clears_queue() {
 
 /// Helper: set up an app with tech research + propagation systems for knowledge tests.
 fn tech_knowledge_app() -> App {
-    use macrocosmo::technology::{
-        RecentlyResearched, TechKnowledge,
-    };
-
-    let mut app = full_test_app();
-    app.insert_resource(RecentlyResearched::default());
+    let app = full_test_app();
     app
 }
 
@@ -2822,10 +2834,14 @@ fn test_tech_propagates_to_capital_immediately() {
     );
 
     // Simulate a tech being recently researched
-    app.world_mut()
-        .resource_mut::<RecentlyResearched>()
-        .techs
-        .push(TechId(100));
+    {
+        let empire = empire_entity(app.world_mut());
+        app.world_mut()
+            .get_mut::<RecentlyResearched>(empire)
+            .unwrap()
+            .techs
+            .push(TechId(100));
+    }
 
     // Run one update
     advance_time(&mut app, 1);
@@ -2903,10 +2919,14 @@ fn test_tech_propagates_to_remote_with_delay() {
     );
 
     // Simulate tech researched at tick 0
-    app.world_mut()
-        .resource_mut::<RecentlyResearched>()
-        .techs
-        .push(TechId(200));
+    {
+        let empire = empire_entity(app.world_mut());
+        app.world_mut()
+            .get_mut::<RecentlyResearched>(empire)
+            .unwrap()
+            .techs
+            .push(TechId(200));
+    }
 
     // First tick: propagation entities spawned
     advance_time(&mut app, 1);
@@ -2997,10 +3017,14 @@ fn test_uncolonized_system_no_propagation() {
     );
 
     // Simulate tech researched
-    app.world_mut()
-        .resource_mut::<RecentlyResearched>()
-        .techs
-        .push(TechId(300));
+    {
+        let empire = empire_entity(app.world_mut());
+        app.world_mut()
+            .get_mut::<RecentlyResearched>(empire)
+            .unwrap()
+            .techs
+            .push(TechId(300));
+    }
 
     advance_time(&mut app, 1);
 

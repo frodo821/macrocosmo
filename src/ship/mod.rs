@@ -188,7 +188,15 @@ pub struct CombatStats {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Owner {
-    Player,
+    Empire(Entity),
+    Neutral,
+}
+
+impl Owner {
+    /// Check if this owner is any empire (not neutral).
+    pub fn is_empire(&self) -> bool {
+        matches!(self, Owner::Empire(_))
+    }
 }
 
 #[derive(Component)]
@@ -312,6 +320,7 @@ pub fn spawn_ship(
     name: String,
     system: Entity,
     initial_position: Position,
+    owner: Owner,
 ) -> Entity {
     let hp = ship_type.default_hp();
     let combat_stats = ship_type.default_combat_stats();
@@ -320,7 +329,7 @@ pub fn spawn_ship(
             Ship {
                 name,
                 ship_type,
-                owner: Owner::Player,
+                owner,
                 sublight_speed: ship_type.default_sublight_speed(),
                 ftl_range: ship_type.default_ftl_range(),
                 hp,
@@ -852,12 +861,15 @@ pub fn resource_production_rate(level: ResourceLevel) -> crate::amount::Amt {
 pub fn process_pending_ship_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
-    global_params: Res<crate::technology::GlobalParams>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
     pending: Query<(Entity, &PendingShipCommand)>,
     mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
 ) {
+    let Ok(global_params) = empire_params_q.single() else {
+        return;
+    };
     for (cmd_entity, pending_cmd) in &pending {
         if clock.elapsed < pending_cmd.arrives_at {
             continue;
@@ -1088,11 +1100,14 @@ pub fn build_ftl_command_queue(
 /// #46: Checks for port facility at origin system
 pub fn process_command_queue(
     clock: Res<GameClock>,
-    global_params: Res<crate::technology::GlobalParams>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position)>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
 ) {
+    let Ok(global_params) = empire_params_q.single() else {
+        return;
+    };
     for (_entity, ship, mut state, mut queue, _ship_pos) in ships.iter_mut() {
         // Only process queue when ship is Docked (current command finished)
         let ShipState::Docked { system: docked_system } = *state else {
@@ -1325,7 +1340,7 @@ mod tests {
         Ship {
             name: "Test Ship".to_string(),
             ship_type,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: ship_type.default_sublight_speed(),
             ftl_range: ship_type.default_ftl_range(),
             hp: ship_type.default_hp(),
@@ -1588,7 +1603,7 @@ mod tests {
         let ship_a = world.spawn(Ship {
             name: "Fast".to_string(),
             ship_type: ShipType::Courier,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.85,
             ftl_range: 0.0,
             hp: 20.0,
@@ -1599,7 +1614,7 @@ mod tests {
         let ship_b = world.spawn(Ship {
             name: "Slow".to_string(),
             ship_type: ShipType::ColonyShip,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
             hp: 100.0,
@@ -1626,7 +1641,7 @@ mod tests {
         let ship_a = world.spawn(Ship {
             name: "Short Range".to_string(),
             ship_type: ShipType::ColonyShip,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 10.0,
             hp: 100.0,
@@ -1637,7 +1652,7 @@ mod tests {
         let ship_b = world.spawn(Ship {
             name: "Long Range".to_string(),
             ship_type: ShipType::ColonyShip,
-            owner: Owner::Player,
+            owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
             hp: 100.0,

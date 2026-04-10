@@ -313,14 +313,9 @@ pub fn generate_galaxy(mut commands: Commands) {
             is_capital,
         };
 
-        let sovereignty = if is_capital {
-            Sovereignty {
-                owner: Some(Owner::Player),
-                control_score: 100.0,
-            }
-        } else {
-            Sovereignty::default()
-        };
+        // Capital sovereignty will be set by update_sovereignty once
+        // the empire entity is spawned; start with default for all.
+        let sovereignty = Sovereignty::default();
 
         let entity = commands.spawn((star, Position::from(*position), attributes[i].clone(), sovereignty, TechKnowledge::default()));
         let entity_id = entity.id();
