@@ -87,7 +87,7 @@ pub fn draw_outline(
                             let is_selected = selected_ship.0 == Some(*ship_entity);
                             if ui.selectable_label(is_selected, &label).clicked() {
                                 selected_ship.0 = Some(*ship_entity);
-                                selected_system.0 = None;
+                                // Don't touch selected_system — selections are independent
                             }
                         }
                     }
@@ -96,7 +96,7 @@ pub fn draw_outline(
                 // Click on the header to select the system
                 if header_response.header_response.clicked() {
                     selected_system.0 = Some(*system_entity);
-                    selected_ship.0 = None;
+                    // Don't touch selected_ship — selections are independent
                 }
             }
 
@@ -168,13 +168,13 @@ pub fn draw_outline(
                                         .clicked()
                                     {
                                         selected_ship.0 = Some(*ship_entity);
-                                        selected_system.0 = None;
+                                        // Don't touch selected_system — selections are independent
                                     }
                                 }
                             });
                             if header_response.header_response.clicked() {
                                 selected_system.0 = Some(*system_entity);
-                                selected_ship.0 = None;
+                                // Don't touch selected_ship — selections are independent
                             }
                         }
                     });
