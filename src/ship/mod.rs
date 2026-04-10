@@ -1545,7 +1545,50 @@ pub fn process_command_queue(
                     }
                 }
 
-                // Fall back to sublight
+                // Try hybrid route: FTL to nearest reachable surveyed system to target, then sublight
+                if effective_ftl_range > 0.0 {
+                    let origin_arr = origin_pos.as_array();
+                    let target_arr = target_pos.as_array();
+                    let mut best_waypoint: Option<(Entity, [f64; 3], f64)> = None;
+
+                    for (wp_entity, wp_star, wp_pos) in systems.iter() {
+                        if !wp_star.surveyed { continue; }
+                        let wp_arr = wp_pos.as_array();
+                        // Must be reachable via FTL from current position (direct or chain)
+                        if plan_ftl_route(origin_arr, wp_entity, effective_ftl_range, &systems).is_none() {
+                            continue;
+                        }
+                        // Calculate total travel time: FTL to waypoint + sublight to target
+                        let ftl_dist = distance_ly_arr(origin_arr, wp_arr);
+                        let ftl_time = (ftl_dist * HEXADIES_PER_YEAR as f64 / (INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier)).ceil();
+                        let sl_dist = distance_ly_arr(wp_arr, target_arr);
+                        let sl_speed = ship.sublight_speed + global_params.sublight_speed_bonus;
+                        let sl_time = if sl_speed > 0.0 { (sl_dist * HEXADIES_PER_YEAR as f64 / sl_speed).ceil() } else { f64::MAX };
+                        let total = ftl_time + sl_time;
+
+                        // Must be faster than direct sublight
+                        let direct_sl_time = {
+                            let d = distance_ly_arr(origin_arr, target_arr);
+                            if sl_speed > 0.0 { (d * HEXADIES_PER_YEAR as f64 / sl_speed).ceil() } else { f64::MAX }
+                        };
+                        if total >= direct_sl_time { continue; }
+
+                        match &best_waypoint {
+                            Some((_, _, best_total)) if total >= *best_total => {}
+                            _ => { best_waypoint = Some((wp_entity, wp_arr, total)); }
+                        }
+                    }
+
+                    if let Some((wp_entity, _, _)) = best_waypoint {
+                        // FTL to waypoint, then sublight to final target
+                        queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
+                        queue.commands.insert(0, QueuedCommand::MoveTo { system: wp_entity });
+                        info!("Queue: Ship {} hybrid route — FTL to waypoint, then sublight to {}", ship.name, target_star.name);
+                        continue;
+                    }
+                }
+
+                // Fall back to sublight direct
                 start_sublight_travel_with_bonus(
                     &mut state,
                     origin_pos,

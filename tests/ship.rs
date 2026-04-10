@@ -1088,6 +1088,53 @@ fn test_multi_hop_ftl_route() {
 
 // --- Regression: Survey data NOT delivered at non-player system ---
 
+// --- Regression: Hybrid FTL+sublight route when full FTL route unavailable ---
+
+#[test]
+fn test_hybrid_ftl_sublight_route() {
+    let mut app = common::test_app();
+
+    // A (surveyed) --5ly-- B (surveyed) --5ly-- C (unsurveyed)
+    // FTL range 10ly: can FTL A→B, but C is unsurveyed so no FTL to C
+    // Hybrid: FTL A→B, sublight B→C should be faster than sublight A→C direct
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
+        Habitability::Adequate, true, false, // surveyed
+    );
+    let sys_c = common::spawn_test_system(
+        app.world_mut(), "System-C", [10.0, 0.0, 0.0],
+        Habitability::Adequate, false, false, // unsurveyed
+    );
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
+
+    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
+        QueuedCommand::MoveTo { system: sys_c },
+    );
+
+    common::advance_time(&mut app, 1);
+
+    // Ship should take hybrid route: FTL to B first (not sublight direct to C)
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    let queue = app.world().get::<CommandQueue>(ship).unwrap();
+
+    let in_ftl_to_b = matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_b);
+    let has_move_to_b = queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_b));
+
+    assert!(
+        in_ftl_to_b || has_move_to_b,
+        "Ship should use hybrid route via B, not sublight direct to C"
+    );
+
+    // C should still be in the queue for after the waypoint
+    let has_move_to_c = queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_c));
+    assert!(has_move_to_c, "Final destination C should remain in queue");
+}
+
 #[test]
 fn test_survey_data_not_delivered_at_wrong_system() {
     let mut app = common::test_app();
