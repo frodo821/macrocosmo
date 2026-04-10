@@ -8,6 +8,7 @@ use bevy_egui::EguiContexts;
 
 use crate::colony::{Buildings, Colony, SystemBuildings};
 use crate::components::Position;
+use crate::deep_space::{DeepSpaceStructure, StructureHitpoints};
 use crate::galaxy::{GalaxyConfig, ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
@@ -45,6 +46,7 @@ impl Plugin for VisualizationPlugin {
             update_star_colors,
             draw_galaxy_overlay,
             draw_ships,
+            draw_deep_space_structures,
         ));
     }
 }
@@ -869,6 +871,24 @@ fn draw_ships(
                 }
             }
         }
+    }
+}
+
+fn draw_deep_space_structures(
+    mut gizmos: Gizmos,
+    structures: Query<(&DeepSpaceStructure, &Position, &StructureHitpoints)>,
+    view: Res<GalaxyView>,
+) {
+    for (_structure, pos, _hp) in &structures {
+        let x = pos.x as f32 * view.scale;
+        let y = pos.y as f32 * view.scale;
+        // Draw a small diamond marker
+        let size = 4.0;
+        let color = Color::srgba(0.7, 0.7, 1.0, 0.6);
+        gizmos.line_2d(Vec2::new(x, y - size), Vec2::new(x + size, y), color);
+        gizmos.line_2d(Vec2::new(x + size, y), Vec2::new(x, y + size), color);
+        gizmos.line_2d(Vec2::new(x, y + size), Vec2::new(x - size, y), color);
+        gizmos.line_2d(Vec2::new(x - size, y), Vec2::new(x, y - size), color);
     }
 }
 

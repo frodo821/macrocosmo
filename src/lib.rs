@@ -2,6 +2,7 @@ pub mod amount;
 pub mod colony;
 pub mod communication;
 pub mod components;
+pub mod deep_space;
 pub mod event_system;
 pub mod events;
 pub mod galaxy;

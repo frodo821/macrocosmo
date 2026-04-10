@@ -2,6 +2,7 @@ mod amount;
 mod colony;
 mod communication;
 mod components;
+mod deep_space;
 mod event_system;
 mod events;
 mod galaxy;
@@ -46,6 +47,9 @@ fn main() {
             events::EventsPlugin,
             species::SpeciesPlugin,
             ship_design::ShipDesignPlugin,
+        ))
+        .add_plugins((
+            deep_space::DeepSpacePlugin,
             setup::GameSetupPlugin,
         ))
         .add_plugins(ui::UiPlugin)

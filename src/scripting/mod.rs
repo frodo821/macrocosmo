@@ -5,6 +5,7 @@ pub mod lifecycle;
 pub mod modifier_api;
 pub mod ship_design_api;
 pub mod species_api;
+pub mod structure_api;
 
 use bevy::prelude::*;
 use mlua::prelude::*;
@@ -314,6 +315,18 @@ impl ScriptEngine {
             Ok(())
         })?;
         globals.set("define_ship_design", define_ship_design)?;
+
+        // Accumulator table for structure definitions
+        let structure_defs = lua.create_table()?;
+        globals.set("_structure_definitions", structure_defs)?;
+
+        let define_structure = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_structure_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_structure", define_structure)?;
 
         // mtth_trigger(params) -- constructor that tags a table as type "mtth"
         let mtth_trigger = lua.create_function(|_, table: mlua::Table| {
