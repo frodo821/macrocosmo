@@ -13,7 +13,7 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
-use crate::player::{Player, PlayerEmpire, StationedAt};
+use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::ship::{Cargo, CommandQueue, PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
@@ -49,7 +49,7 @@ pub fn draw_all_ui(
     mut selected_system: ResMut<SelectedSystem>,
     selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>, ResMut<EguiWantsPointer>),
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    player_q: Query<&StationedAt, With<Player>>,
+    player_q: Query<(Entity, &StationedAt, Option<&AboardShip>), With<Player>>,
     mut colonies: Query<(
         Entity,
         &Colony,
@@ -93,7 +93,10 @@ pub fn draw_all_ui(
     };
 
     // Collect resource totals using KnowledgeStore (light-speed delayed) + real-time for local system
-    let player_system = player_q.iter().next().map(|s| s.system);
+    // #59: Extract player info for UI
+    let player_info = player_q.iter().next().map(|(e, s, a)| (e, s.system, a.map(|ab| ab.ship)));
+    let player_system = player_info.map(|(_, sys, _)| sys);
+    let player_aboard_ship = player_info.and_then(|(_, _, aboard)| aboard);
     let (total_minerals, total_energy, total_food, total_authority,
          net_minerals, net_energy, net_food, net_authority) = {
         use crate::amount::{Amt, SignedAmt};
@@ -222,8 +225,9 @@ pub fn draw_all_ui(
         &module_registry,
         clock.elapsed,
         &roe_query,
-        &player_q,
         &positions,
+        player_system,
+        player_aboard_ship,
     );
 
     // #99: Handle cancel current action (surveying/settling -> docked)
@@ -314,6 +318,29 @@ pub fn draw_all_ui(
                 command: crate::ship::ShipCommand::SetROE { roe: new_roe },
                 arrives_at: clock.elapsed + delay,
             });
+        }
+    }
+
+    // #59: Handle board ship
+    if let Some(ship_entity) = ship_panel_actions.board_ship {
+        if let Some((player_entity, _, _)) = player_info {
+            if let Ok((_, mut ship, _, _, _, _)) = ships_query.get_mut(ship_entity) {
+                ship.player_aboard = true;
+            }
+            commands.entity(player_entity).insert(AboardShip { ship: ship_entity });
+        }
+    }
+
+    // #59: Handle disembark
+    if ship_panel_actions.disembark {
+        if let Some((player_entity, _, _)) = player_info {
+            if let Some(ship_entity) = selected_ship.0 {
+                if let Ok((_, mut ship, state, _, _, _)) = ships_query.get_mut(ship_entity) {
+                    ship.player_aboard = false;
+                    // StationedAt is already tracking the docked system via update_player_location
+                }
+            }
+            commands.entity(player_entity).remove::<AboardShip>();
         }
     }
 

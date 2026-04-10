@@ -1914,8 +1914,9 @@ pub fn resolve_combat(
     mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState, Option<&RulesOfEngagement>)>,
     mut hostiles: Query<(Entity, &mut HostilePresence)>,
     module_registry: Res<ModuleRegistry>,
-    systems: Query<&StarSystem>,
+    systems: Query<(Entity, &StarSystem)>,
     mut events: MessageWriter<GameEvent>,
+    mut player_q: Query<(Entity, &mut StationedAt, Option<&crate::player::AboardShip>), With<Player>>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -1933,7 +1934,7 @@ pub fn resolve_combat(
     for (hostile_entity, system_entity, _hostile_strength, _hostile_hp, _hostile_max_hp, _hostile_type, hostile_evasion) in &hostile_data {
         let system_name = systems
             .get(*system_entity)
-            .map(|s| s.name.clone())
+            .map(|(_, s)| s.name.clone())
             .unwrap_or_default();
 
         // Find all player ships docked at this system, excluding Retreat ROE
@@ -2032,6 +2033,27 @@ pub fn resolve_combat(
             }
 
             for (entity, name) in &destroyed_ships {
+                // #59: Check if player is aboard this ship — respawn at capital
+                if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
+                    if let Some(aboard_ship) = aboard {
+                        if aboard_ship.ship == *entity {
+                            // Find capital system entity
+                            let capital_entity = systems.iter()
+                                .find(|(_, s)| s.is_capital)
+                                .map(|(e, _)| e);
+                            if let Some(cap_entity) = capital_entity {
+                                stationed.system = cap_entity;
+                            }
+                            commands.entity(player_entity).remove::<crate::player::AboardShip>();
+                            events.write(GameEvent {
+                                timestamp: clock.elapsed,
+                                kind: GameEventKind::PlayerRespawn,
+                                description: "Flagship destroyed! Respawned at capital.".to_string(),
+                                related_system: capital_entity,
+                            });
+                        }
+                    }
+                }
                 commands.entity(*entity).despawn();
                 events.write(GameEvent {
                     timestamp: clock.elapsed,

@@ -4,6 +4,7 @@ use crate::colony::{AuthorityParams, ConstructionParams};
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::galaxy::StarSystem;
+use crate::ship::{Ship, ShipState};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::technology::{
@@ -17,6 +18,8 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_player_empire)
             .add_systems(Startup, spawn_player.after(crate::galaxy::generate_galaxy))
+            .add_systems(Update, update_player_location
+                .after(crate::time_system::advance_game_time))
             .add_systems(Update, log_player_info);
     }
 }
@@ -121,6 +124,22 @@ pub fn log_player_info(
                     survey_mark, name, dist, delay_sd, dist
                 );
             }
+        }
+    }
+}
+
+/// Update player's StationedAt when aboard a ship that docks at a new system.
+/// Only updates on dock — while in transit, StationedAt stays at the last docked system.
+pub fn update_player_location(
+    mut player_q: Query<(&AboardShip, &mut StationedAt), With<Player>>,
+    ships: Query<&ShipState>,
+) {
+    for (aboard, mut stationed) in &mut player_q {
+        if let Ok(state) = ships.get(aboard.ship) {
+            if let ShipState::Docked { system } = state {
+                stationed.system = *system;
+            }
+            // In transit states (SubLight, InFTL, etc.): keep StationedAt at last docked system
         }
     }
 }

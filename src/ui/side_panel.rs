@@ -6,7 +6,7 @@ use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
-use crate::player::{Player, StationedAt};
+use crate::player::{AboardShip, Player, StationedAt};
 use crate::amount::Amt;
 use crate::ship::{Cargo, CommandQueue, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::technology::GlobalParams;
@@ -45,6 +45,10 @@ pub struct ShipPanelActions {
     pub refit: Option<ShipRefitAction>,
     /// #57: ROE change action — (ship_entity, new_roe, command_delay)
     pub set_roe: Option<(Entity, RulesOfEngagement, i64)>,
+    /// #59: Player wants to board the selected ship
+    pub board_ship: Option<Entity>,
+    /// #59: Player wants to disembark from the selected ship
+    pub disembark: bool,
 }
 
 /// #114: Action to start colonizing a planet from the system panel build queue.
@@ -64,7 +68,7 @@ pub fn draw_system_panel(
     selected_ship: &mut SelectedShip,
     selected_planet: &mut SelectedPlanet,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    player_q: &Query<&StationedAt, With<Player>>,
+    player_q: &Query<(Entity, &StationedAt, Option<&AboardShip>), With<Player>>,
     colonies: &mut Query<(
         Entity,
         &Colony,
@@ -140,7 +144,7 @@ pub fn draw_system_panel(
             }
             ui.separator();
 
-            if let Ok(stationed) = player_q.single() {
+            if let Ok((_, stationed, _)) = player_q.single() {
                 if let Ok(player_pos) = positions.get(stationed.system) {
                     let dist = physics::distance_ly(player_pos, star_pos);
                     let delay_sd = physics::light_delay_hexadies(dist);
@@ -1087,8 +1091,9 @@ pub fn draw_ship_panel(
     module_registry: &crate::ship_design::ModuleRegistry,
     clock_elapsed: i64,
     roe_query: &Query<&RulesOfEngagement>,
-    player_q: &Query<&crate::player::StationedAt, With<crate::player::Player>>,
     positions: &Query<&Position>,
+    player_stationed: Option<Entity>,
+    player_aboard_ship: Option<Entity>,
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -1151,11 +1156,9 @@ pub fn draw_ship_panel(
                     _ => None,
                 }
             });
-            player_q
-                .single()
-                .ok()
-                .and_then(|stationed| {
-                    let player_pos = positions.get(stationed.system).ok()?;
+            player_stationed
+                .and_then(|player_sys| {
+                    let player_pos = positions.get(player_sys).ok()?;
                     let ship_sys = ship_system?;
                     let ship_pos = positions.get(ship_sys).ok()?;
                     let dist = crate::physics::distance_ly(player_pos, ship_pos);
@@ -1163,6 +1166,15 @@ pub fn draw_ship_panel(
                 })
                 .unwrap_or(0)
         };
+        // #59: Player aboard this ship?
+        let is_player_aboard = ship.player_aboard;
+        // #59: Can player board this ship? (ship docked at player's system, player not aboard any ship)
+        let can_board = !is_player_aboard
+            && player_aboard_ship.is_none()
+            && docked_system.is_some()
+            && docked_system == player_stationed;
+        // #59: Can player disembark? (player aboard this ship and ship is docked)
+        let can_disembark = is_player_aboard && docked_system.is_some();
         Some((
             ship_entity,
             ship.name.clone(),
@@ -1192,6 +1204,9 @@ pub fn draw_ship_panel(
             is_refitting,
             current_roe,
             roe_command_delay,
+            is_player_aboard,
+            can_board,
+            can_disembark,
         ))
     });
 
@@ -1224,6 +1239,9 @@ pub fn draw_ship_panel(
         is_refitting,
         current_roe,
         roe_command_delay,
+        is_player_aboard,
+        can_board,
+        can_disembark,
     )) = ship_data
     else {
         return ShipPanelActions::default();
@@ -1263,6 +1281,14 @@ pub fn draw_ship_panel(
             );
             let design_display_name = crate::ship::design_preset(&design_id).map(|p| p.design_name).unwrap_or(&design_id);
             ui.label(format!("Type: {}", design_display_name));
+            // #59: Player aboard indicator
+            if is_player_aboard {
+                ui.label(
+                    egui::RichText::new("[Player Aboard]")
+                        .color(egui::Color32::from_rgb(50, 255, 50))
+                        .strong(),
+                );
+            }
             ui.label(format!("Hull: {:.0}/{:.0}", hull_hp, hull_max));
             if armor_max > 0.0 {
                 ui.label(format!("Armor: {:.0}/{:.0}", armor, armor_max));
@@ -1395,6 +1421,18 @@ pub fn draw_ship_panel(
                             });
                         }
                     }
+                }
+            }
+
+            // #59: Board / Disembark buttons
+            if can_board {
+                if ui.button("Board Ship").clicked() {
+                    actions.board_ship = Some(ship_entity);
+                }
+            }
+            if can_disembark {
+                if ui.button("Disembark").clicked() {
+                    actions.disembark = true;
                 }
             }
 
@@ -1649,7 +1687,7 @@ pub fn draw_context_menu(
     positions: &Query<&Position>,
     clock: &GameClock,
     global_params: &GlobalParams,
-    player_q: &Query<&StationedAt, With<Player>>,
+    player_q: &Query<(Entity, &StationedAt, Option<&AboardShip>), With<Player>>,
     pending_commands_out: &mut Vec<crate::ship::PendingShipCommand>,
     colonies: &[Colony],
     planets: &Query<&Planet>,
@@ -1723,7 +1761,7 @@ pub fn draw_context_menu(
     let command_delay: i64 = player_q
         .single()
         .ok()
-        .and_then(|stationed| {
+        .and_then(|(_, stationed, _)| {
             let player_pos = positions.get(stationed.system).ok()?;
             let ship_pos = positions.get(origin_system).ok()?;
             let dist = physics::distance_ly(player_pos, ship_pos);

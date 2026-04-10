@@ -110,9 +110,18 @@ pub fn test_app() -> App {
     app.add_systems(
         Update,
         macrocosmo::event_system::tick_events
-            .after(macrocosmo::time_system::advance_game_time),
+            .after(macrocosmo::time_system::advance_game_time)
+            .after(tick_timed_effects),
     );
     app.add_systems(Update, propagate_knowledge);
+    // #59: Player location tracking (after ship movement systems)
+    app.add_systems(
+        Update,
+        macrocosmo::player::update_player_location
+            .after(macrocosmo::time_system::advance_game_time)
+            .after(sublight_movement_system)
+            .after(process_ftl_travel),
+    );
 
     // Spawn the empire entity
     spawn_test_empire(app.world_mut());
@@ -273,6 +282,7 @@ pub fn full_test_app() -> App {
 
     // --- Player system (from PlayerPlugin, excluding Startup spawn_player) ---
     app.add_systems(Update, macrocosmo::player::log_player_info);
+    app.add_systems(Update, macrocosmo::player::update_player_location);
 
     // --- Visualization systems (excluding Gizmos-dependent ones) ---
     app.add_systems(
