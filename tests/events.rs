@@ -329,16 +329,15 @@ fn test_food_depletion_alert() {
 
     // Colony with food = 0
     let planet_sys = find_planet(app.world_mut(), sys);
-    let _colony = app.world_mut().spawn((
-        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
-        ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::units(500),
             research: Amt::ZERO,
             food: Amt::ZERO,
             authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
+        }, ResourceCapacity::default()));
+    let _colony = app.world_mut().spawn((
+        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
@@ -379,16 +378,15 @@ fn test_energy_depletion_alert() {
 
     // Colony with energy = 0
     let planet_sys = find_planet(app.world_mut(), sys);
-    let _colony = app.world_mut().spawn((
-        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
-        ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::ZERO,
             research: Amt::ZERO,
             food: Amt::units(100),
             authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
+        }, ResourceCapacity::default()));
+    let _colony = app.world_mut().spawn((
+        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -430,16 +428,15 @@ fn test_alert_cooldown() {
     );
     // Colony with food = 0 and no food production
     let planet_sys = find_planet(app.world_mut(), sys);
-    let _colony = app.world_mut().spawn((
-        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
-        ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::units(500),
             research: Amt::ZERO,
             food: Amt::ZERO,
             authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
+        }, ResourceCapacity::default()));
+    let _colony = app.world_mut().spawn((
+        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),

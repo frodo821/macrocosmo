@@ -36,20 +36,19 @@ fn test_modifier_affects_production_output() {
     });
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: minerals_prod,
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -149,20 +148,19 @@ fn test_maintenance_modifier_affects_energy() {
     });
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::units(100),
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -231,20 +229,19 @@ fn test_food_consumption_modifier() {
     });
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 100.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -313,20 +310,19 @@ fn test_authority_params_modifier() {
     app.world_mut().get_mut::<macrocosmo::galaxy::StarSystem>(sys).unwrap().is_capital = true;
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),

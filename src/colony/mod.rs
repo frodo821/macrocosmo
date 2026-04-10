@@ -486,14 +486,6 @@ pub fn spawn_capital_colony(
             population: 100.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::units(200),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
@@ -515,6 +507,17 @@ pub fn spawn_capital_colony(
             }],
         },
         ColonyJobs::default(),
+    ));
+    // Add ResourceStockpile and ResourceCapacity to the StarSystem entity
+    commands.entity(capital_entity).insert((
+        ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(200),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
     ));
     info!("Capital colony spawned on {}", capital_star.name);
 }
@@ -783,7 +786,8 @@ pub fn sync_food_consumption(
 pub fn tick_production(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&ProductionFocus>, Option<&ResourceCapacity>)>,
+    colonies: Query<(&Colony, &Production, Option<&ProductionFocus>)>,
+    mut stockpiles: Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
 ) {
@@ -795,53 +799,54 @@ pub fn tick_production(
     let d_amt = Amt::units(d);
 
     // #73: Check if the capital has an authority deficit.
-    let capital_authority = query.iter().find_map(|(colony, _, stockpile, _, _)| {
-        colony.system(&planets).and_then(|sys| {
-            stars.get(sys).ok().and_then(|star| {
-                if star.is_capital {
-                    Some(stockpile.authority)
-                } else {
-                    None
-                }
-            })
-        })
-    });
+    let capital_authority = {
+        let capital_sys = colonies.iter().find_map(|(colony, _, _)| {
+            colony.system(&planets).filter(|&sys| stars.get(sys).ok().is_some_and(|s| s.is_capital))
+        });
+        capital_sys.and_then(|sys| stockpiles.get(sys).ok().map(|(s, _)| s.authority))
+    };
     let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
 
-    for (colony, prod, mut stockpile, focus, capacity) in &mut query {
+    // Collect production deltas per system
+    let mut system_deltas: std::collections::HashMap<Entity, (Amt, Amt, Amt)> = std::collections::HashMap::new();
+    for (colony, prod, focus) in &colonies {
+        let Some(sys) = colony.system(&planets) else { continue };
         let (mw, ew) = match focus {
             Some(f) => (f.minerals_weight, f.energy_weight),
             None => (Amt::units(1), Amt::units(1)),
         };
 
         // #73: Apply authority deficit penalty to non-capital colonies
-        let is_capital = colony.system(&planets).and_then(|sys| stars.get(sys).ok()).is_some_and(|s| s.is_capital);
+        let is_capital = stars.get(sys).ok().is_some_and(|s| s.is_capital);
         let authority_multiplier = if authority_deficit && !is_capital {
             AUTHORITY_DEFICIT_PENALTY
         } else {
             Amt::units(1)
         };
 
-        // Building bonuses are already included via modifiers on Production
-        // (sync_building_modifiers runs before this system).
-        stockpile.minerals = stockpile.minerals.add(
-            prod.minerals_per_hexadies.final_value().mul_amt(mw).mul_amt(d_amt).mul_amt(authority_multiplier)
-        );
-        stockpile.energy = stockpile.energy.add(
-            prod.energy_per_hexadies.final_value().mul_amt(ew).mul_amt(d_amt).mul_amt(authority_multiplier)
-        );
-        stockpile.food = stockpile.food.add(
-            prod.food_per_hexadies.final_value().mul_amt(d_amt).mul_amt(authority_multiplier)
-        );
-        // Research is no longer accumulated in the stockpile; it is emitted
-        // directly via emit_research in the technology module.
+        let minerals = prod.minerals_per_hexadies.final_value().mul_amt(mw).mul_amt(d_amt).mul_amt(authority_multiplier);
+        let energy = prod.energy_per_hexadies.final_value().mul_amt(ew).mul_amt(d_amt).mul_amt(authority_multiplier);
+        let food = prod.food_per_hexadies.final_value().mul_amt(d_amt).mul_amt(authority_multiplier);
 
-        // Clamp resources to capacity
-        if let Some(cap) = capacity {
-            stockpile.minerals = stockpile.minerals.min(cap.minerals);
-            stockpile.energy = stockpile.energy.min(cap.energy);
-            stockpile.food = stockpile.food.min(cap.food);
-            stockpile.authority = stockpile.authority.min(cap.authority);
+        let entry = system_deltas.entry(sys).or_insert((Amt::ZERO, Amt::ZERO, Amt::ZERO));
+        entry.0 = entry.0.add(minerals);
+        entry.1 = entry.1.add(energy);
+        entry.2 = entry.2.add(food);
+    }
+
+    // Apply deltas to system stockpiles
+    for (sys, (minerals, energy, food)) in system_deltas {
+        if let Ok((mut stockpile, capacity)) = stockpiles.get_mut(sys) {
+            stockpile.minerals = stockpile.minerals.add(minerals);
+            stockpile.energy = stockpile.energy.add(energy);
+            stockpile.food = stockpile.food.add(food);
+            // Clamp resources to capacity
+            if let Some(cap) = capacity {
+                stockpile.minerals = stockpile.minerals.min(cap.minerals);
+                stockpile.energy = stockpile.energy.min(cap.energy);
+                stockpile.food = stockpile.food.min(cap.food);
+                stockpile.authority = stockpile.authority.min(cap.authority);
+            }
         }
     }
 }
@@ -858,11 +863,12 @@ pub fn tick_population_growth(
     empire_modifiers_q: Query<&crate::technology::EmpireModifiers, With<crate::player::PlayerEmpire>>,
     mut colonies: Query<(
         &mut Colony,
-        &mut ResourceStockpile,
         &Production,
         Option<&FoodConsumption>,
     )>,
+    mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     planet_attrs: Query<&crate::galaxy::SystemAttributes, With<Planet>>,
+    planets: Query<&Planet>,
 ) {
     use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
 
@@ -876,43 +882,60 @@ pub fn tick_population_growth(
     }
     let d = delta as u64;
 
-    for (mut colony, mut stockpile, production, food_consumption) in &mut colonies {
-        // #72: Food consumption via FoodConsumption ModifiedValue (includes tech modifiers),
-        // falling back to manual calculation if the component is absent.
-        let food_consumed = if let Some(fc) = food_consumption {
-            fc.food_per_hexadies.final_value().mul_u64(d)
-        } else {
-            Amt::from_f64(colony.population).mul_amt(FOOD_PER_POP_PER_HEXADIES).mul_u64(d)
-        };
-        stockpile.food = stockpile.food.sub(food_consumed);
-
-        if stockpile.food == Amt::ZERO {
-            // Starvation: population decreases (f64 domain)
-            let starvation_loss = colony.population * 0.01 * d as f64;
-            colony.population = (colony.population - starvation_loss).max(1.0);
-        } else {
-            // #69: Logistic growth (f64 domain for population math)
+    // Collect colony data into a Vec to avoid borrow conflicts
+    let colony_data: Vec<(Entity, f64, f64, Amt, Amt, f64, Entity)> = colonies
+        .iter()
+        .filter_map(|(colony, production, food_consumption)| {
+            let sys = colony.system(&planets)?;
+            let food_consumed = if let Some(fc) = food_consumption {
+                fc.food_per_hexadies.final_value().mul_u64(d)
+            } else {
+                Amt::from_f64(colony.population).mul_amt(FOOD_PER_POP_PER_HEXADIES).mul_u64(d)
+            };
             let hab_score = planet_attrs
                 .get(colony.planet)
                 .map(|attr| attr.habitability.base_score())
                 .unwrap_or(0.5);
-
-            // Total food production from ModifiedValue (includes building bonuses)
             let food_prod = production.food_per_hexadies.final_value();
+            Some((colony.planet, colony.population, colony.growth_rate, food_consumed, food_prod, hab_score, sys))
+        })
+        .collect();
 
-            // K = min(habitat limit, food-sustainable population)
-            let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
-            let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
-                food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
+    // Process each colony: deduct food from system stockpile, update population
+    for (_planet_entity, _population, _growth_rate, food_consumed, _food_prod, _hab_score, sys) in &colony_data {
+        // Deduct food from system stockpile
+        if let Ok(mut stockpile) = stockpiles.get_mut(*sys) {
+            stockpile.food = stockpile.food.sub(*food_consumed);
+        }
+    }
+
+    // Second pass: update colony populations based on updated stockpile
+    for (planet_entity, _population, _growth_rate, _food_consumed, food_prod, hab_score, sys) in &colony_data {
+        let food_at_zero = stockpiles.get(*sys).ok().is_some_and(|s| s.food == Amt::ZERO);
+
+        // Find and mutate the colony
+        for (mut colony, _production, _food_consumption) in &mut colonies {
+            if colony.planet != *planet_entity {
+                continue;
+            }
+
+            if food_at_zero {
+                let starvation_loss = colony.population * 0.01 * d as f64;
+                colony.population = (colony.population - starvation_loss).max(1.0);
             } else {
-                k_habitat
-            };
-            let k = k_habitat.min(k_food).max(1.0);
+                let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
+                let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
+                    food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
+                } else {
+                    k_habitat
+                };
+                let k = k_habitat.min(k_food).max(1.0);
 
-            // Logistic: P_new = P + r * hab_score * P * (1 - P/K) * delta
-            let effective_growth = colony.growth_rate + empire_modifiers.population_growth.final_value().to_f64();
-            let dp = effective_growth * hab_score * colony.population * (1.0 - colony.population / k) * d as f64;
-            colony.population = (colony.population + dp).max(1.0);
+                let effective_growth = colony.growth_rate + empire_modifiers.population_growth.final_value().to_f64();
+                let dp = effective_growth * hab_score * colony.population * (1.0 - colony.population / k) * d as f64;
+                colony.population = (colony.population + dp).max(1.0);
+            }
+            break;
         }
     }
 }
@@ -922,7 +945,8 @@ pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(&Colony, &mut BuildQueue, &mut ResourceStockpile, Option<&Buildings>)>,
+    mut colonies: Query<(&Colony, &mut BuildQueue, Option<&Buildings>)>,
+    mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
@@ -937,13 +961,34 @@ pub fn tick_build_queue(
     if delta <= 0 {
         return;
     }
-    for (colony, mut build_queue, mut stockpile, buildings) in &mut query {
+
+    // Collect build queue processing results
+    struct BuildResult {
+        system: Entity,
+        minerals_consumed: Amt,
+        energy_consumed: Amt,
+        completed_ships: Vec<(String, String)>, // (design_id, display_name)
+    }
+
+    let mut results: Vec<BuildResult> = Vec::new();
+
+    for (colony, mut build_queue, buildings) in &mut colonies {
+        let Some(sys) = colony.system(&planets) else { continue };
+
         // #35: Skip ship construction if colony has no shipyard
         let has_shipyard = buildings.is_some_and(|b| b.has_shipyard());
         if !build_queue.queue.is_empty() && !has_shipyard {
             warn!("Colony lacks a Shipyard; skipping ship construction");
             continue;
         }
+
+        // Get current stockpile amounts for this system
+        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let mut available_minerals = stockpile.minerals;
+        let mut available_energy = stockpile.energy;
+        let mut total_minerals_consumed = Amt::ZERO;
+        let mut total_energy_consumed = Amt::ZERO;
+        let mut completed_ships = Vec::new();
 
         for _ in 0..delta {
             if build_queue.queue.is_empty() {
@@ -952,41 +997,58 @@ pub fn tick_build_queue(
             let order = &mut build_queue.queue[0];
 
             let minerals_needed = order.minerals_cost.sub(order.minerals_invested);
-            let minerals_transfer = minerals_needed.min(stockpile.minerals);
+            let minerals_transfer = minerals_needed.min(available_minerals);
             order.minerals_invested = order.minerals_invested.add(minerals_transfer);
-            stockpile.minerals = stockpile.minerals.sub(minerals_transfer);
+            available_minerals = available_minerals.sub(minerals_transfer);
+            total_minerals_consumed = total_minerals_consumed.add(minerals_transfer);
 
             let energy_needed = order.energy_cost.sub(order.energy_invested);
-            let energy_transfer = energy_needed.min(stockpile.energy);
+            let energy_transfer = energy_needed.min(available_energy);
             order.energy_invested = order.energy_invested.add(energy_transfer);
-            stockpile.energy = stockpile.energy.sub(energy_transfer);
+            available_energy = available_energy.sub(energy_transfer);
+            total_energy_consumed = total_energy_consumed.add(energy_transfer);
 
             // #32: Decrement build time
             order.build_time_remaining -= 1;
 
             if build_queue.queue[0].is_complete() {
                 let completed = build_queue.queue.remove(0);
-                let system_entity = colony.system(&planets);
-                if let Some(sys) = system_entity {
-                if let Ok(pos) = positions.get(sys) {
-                    spawn_ship(
-                        &mut commands,
-                        &completed.design_id,
-                        completed.display_name.clone(),
-                        sys,
-                        *pos,
-                        ship_owner,
-                    );
-                    let sys_name = stars.get(sys).map(|s| s.name.clone()).unwrap_or_default();
-                    events.write(GameEvent {
-                        timestamp: clock.elapsed,
-                        kind: GameEventKind::ShipBuilt,
-                        description: format!("{} built at {}", completed.display_name, sys_name),
-                        related_system: Some(sys),
-                    });
-                    info!("Ship built and launched: {}", completed.display_name);
-                }
-                }
+                completed_ships.push((completed.design_id, completed.display_name));
+            }
+        }
+
+        results.push(BuildResult {
+            system: sys,
+            minerals_consumed: total_minerals_consumed,
+            energy_consumed: total_energy_consumed,
+            completed_ships,
+        });
+    }
+
+    // Apply stockpile changes and spawn ships
+    for result in results {
+        if let Ok(mut stockpile) = stockpiles.get_mut(result.system) {
+            stockpile.minerals = stockpile.minerals.sub(result.minerals_consumed);
+            stockpile.energy = stockpile.energy.sub(result.energy_consumed);
+        }
+        for (design_id, display_name) in result.completed_ships {
+            if let Ok(pos) = positions.get(result.system) {
+                spawn_ship(
+                    &mut commands,
+                    &design_id,
+                    display_name.clone(),
+                    result.system,
+                    *pos,
+                    ship_owner,
+                );
+                let sys_name = stars.get(result.system).map(|s| s.name.clone()).unwrap_or_default();
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ShipBuilt,
+                    description: format!("{} built at {}", display_name, sys_name),
+                    related_system: Some(result.system),
+                });
+                info!("Ship built and launched: {}", display_name);
             }
         }
     }
@@ -995,14 +1057,45 @@ pub fn tick_build_queue(
 pub fn tick_building_queue(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(Entity, &mut BuildingQueue, &mut Buildings, &mut ResourceStockpile)>,
+    mut query: Query<(Entity, &Colony, &mut BuildingQueue, &mut Buildings)>,
+    mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
+    planets: Query<&Planet>,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
-    for (colony_entity, mut bq, mut buildings, mut stockpile) in &mut query {
+
+    // Collect changes per system to apply afterwards
+    struct SystemDelta {
+        minerals_consumed: Amt,
+        energy_consumed: Amt,
+        minerals_refunded: Amt,
+        energy_refunded: Amt,
+    }
+    let mut system_deltas: std::collections::HashMap<Entity, SystemDelta> = std::collections::HashMap::new();
+
+    for (colony_entity, colony, mut bq, mut buildings) in &mut query {
+        let Some(sys) = colony.system(&planets) else { continue };
+
+        // Get available resources from system stockpile
+        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let mut available_minerals = stockpile.minerals;
+        let mut available_energy = stockpile.energy;
+
+        // Track how much we consume/refund for this colony
+        let mut minerals_consumed = Amt::ZERO;
+        let mut energy_consumed = Amt::ZERO;
+        let mut minerals_refunded = Amt::ZERO;
+        let mut energy_refunded = Amt::ZERO;
+
+        // Also account for deltas already accumulated for this system by previous colonies
+        if let Some(existing) = system_deltas.get(&sys) {
+            available_minerals = available_minerals.sub(existing.minerals_consumed).add(existing.minerals_refunded);
+            available_energy = available_energy.sub(existing.energy_consumed).add(existing.energy_refunded);
+        }
+
         // --- Process construction queue ---
         for _ in 0..delta {
             if bq.queue.is_empty() {
@@ -1010,13 +1103,15 @@ pub fn tick_building_queue(
             }
             let order = &mut bq.queue[0];
 
-            let minerals_transfer = order.minerals_remaining.min(stockpile.minerals);
+            let minerals_transfer = order.minerals_remaining.min(available_minerals);
             order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
-            stockpile.minerals = stockpile.minerals.sub(minerals_transfer);
+            available_minerals = available_minerals.sub(minerals_transfer);
+            minerals_consumed = minerals_consumed.add(minerals_transfer);
 
-            let energy_transfer = order.energy_remaining.min(stockpile.energy);
+            let energy_transfer = order.energy_remaining.min(available_energy);
             order.energy_remaining = order.energy_remaining.sub(energy_transfer);
-            stockpile.energy = stockpile.energy.sub(energy_transfer);
+            available_energy = available_energy.sub(energy_transfer);
+            energy_consumed = energy_consumed.add(energy_transfer);
 
             order.build_time_remaining -= 1;
 
@@ -1051,29 +1146,24 @@ pub fn tick_building_queue(
             }
         }
         for slot_idx in completed_demolitions {
-            // Find and remove the completed demolition order
             if let Some(pos) = bq.demolition_queue.iter().position(|d| d.target_slot == slot_idx) {
                 let completed = bq.demolition_queue.remove(pos);
-                // Remove building from slot
                 if slot_idx < buildings.slots.len() {
                     let building_name = buildings.slots[slot_idx]
                         .map(|bt| bt.name())
                         .unwrap_or("Unknown");
                     buildings.slots[slot_idx] = None;
-                    // Refund resources
-                    stockpile.minerals = stockpile.minerals.add(completed.minerals_refund);
-                    stockpile.energy = stockpile.energy.add(completed.energy_refund);
+                    minerals_refunded = minerals_refunded.add(completed.minerals_refund);
+                    energy_refunded = energy_refunded.add(completed.energy_refund);
                     info!(
                         "Building {} demolished in slot {}, refunded M:{} E:{}",
                         building_name, slot_idx, completed.minerals_refund, completed.energy_refund
                     );
-                    // Fire event (legacy EventSystem)
                     event_system.fire_event(
                         "building_demolished",
                         Some(colony_entity),
                         clock.elapsed,
                     );
-                    // Fire via EventBus with structured payload
                     let mut payload = std::collections::HashMap::new();
                     payload.insert("cause".to_string(), "demolished".to_string());
                     payload.insert("building_id".to_string(), building_name.to_string());
@@ -1086,6 +1176,25 @@ pub fn tick_building_queue(
                     );
                 }
             }
+        }
+
+        let entry = system_deltas.entry(sys).or_insert(SystemDelta {
+            minerals_consumed: Amt::ZERO,
+            energy_consumed: Amt::ZERO,
+            minerals_refunded: Amt::ZERO,
+            energy_refunded: Amt::ZERO,
+        });
+        entry.minerals_consumed = entry.minerals_consumed.add(minerals_consumed);
+        entry.energy_consumed = entry.energy_consumed.add(energy_consumed);
+        entry.minerals_refunded = entry.minerals_refunded.add(minerals_refunded);
+        entry.energy_refunded = entry.energy_refunded.add(energy_refunded);
+    }
+
+    // Apply all stockpile changes
+    for (sys, delta) in system_deltas {
+        if let Ok(mut stockpile) = stockpiles.get_mut(sys) {
+            stockpile.minerals = stockpile.minerals.sub(delta.minerals_consumed).add(delta.minerals_refunded);
+            stockpile.energy = stockpile.energy.sub(delta.energy_consumed).add(delta.energy_refunded);
         }
     }
 }
@@ -1125,7 +1234,8 @@ pub fn update_sovereignty(
 pub fn tick_maintenance(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&MaintenanceCost>, Option<&Buildings>)>,
+    colonies: Query<(&Colony, Option<&MaintenanceCost>, Option<&Buildings>)>,
+    mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     ships: Query<(&Ship, &ShipState)>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
@@ -1138,10 +1248,9 @@ pub fn tick_maintenance(
 
     // For colonies WITH MaintenanceCost, just read final_value().
     // For colonies WITHOUT it (backward compat), fall back to manual sum.
-    // Collect ship costs for fallback path.
     let capital_entity: Option<Entity> = {
         let mut found = None;
-        for (colony, _, _, _) in colonies.iter() {
+        for (colony, _, _) in colonies.iter() {
             if let Some(sys) = colony.system(&planets) {
                 if let Ok(star) = stars.get(sys) {
                     if star.is_capital {
@@ -1156,7 +1265,7 @@ pub fn tick_maintenance(
 
     let colony_systems: std::collections::HashSet<Entity> = colonies
         .iter()
-        .filter_map(|(c, _, _, _)| c.system(&planets))
+        .filter_map(|(c, _, _)| c.system(&planets))
         .collect();
 
     let mut ship_maintenance_by_system: std::collections::HashMap<Entity, Amt> =
@@ -1174,12 +1283,14 @@ pub fn tick_maintenance(
         *entry = entry.add(crate::ship::ship_maintenance_cost(&ship.design_id));
     }
 
-    for (colony, mut stockpile, maint, buildings) in &mut colonies {
+    // Collect maintenance costs per system
+    let mut system_maintenance: std::collections::HashMap<Entity, Amt> = std::collections::HashMap::new();
+    for (colony, maint, buildings) in &colonies {
+        let Some(sys) = colony.system(&planets) else { continue };
+
         let total_maintenance = if let Some(maint) = maint {
-            // ModifiedValue path: sync_maintenance_modifiers has already set modifiers
             maint.energy_per_hexadies.final_value()
         } else {
-            // Fallback: manual sum (for colonies spawned without MaintenanceCost)
             let mut total = Amt::ZERO;
             if let Some(buildings) = buildings {
                 for slot in &buildings.slots {
@@ -1188,16 +1299,21 @@ pub fn tick_maintenance(
                     }
                 }
             }
-            if let Some(sys) = colony.system(&planets) {
-                if let Some(&ship_cost) = ship_maintenance_by_system.get(&sys) {
-                    total = total.add(ship_cost);
-                }
+            if let Some(&ship_cost) = ship_maintenance_by_system.get(&sys) {
+                total = total.add(ship_cost);
             }
             total
         };
 
-        // Deduct energy: maintenance_per_hd * delta
-        stockpile.energy = stockpile.energy.sub(total_maintenance.mul_u64(d));
+        let entry = system_maintenance.entry(sys).or_insert(Amt::ZERO);
+        *entry = entry.add(total_maintenance);
+    }
+
+    // Deduct energy from system stockpiles
+    for (sys, total_maintenance) in system_maintenance {
+        if let Ok(mut stockpile) = stockpiles.get_mut(sys) {
+            stockpile.energy = stockpile.energy.sub(total_maintenance.mul_u64(d));
+        }
     }
 }
 
@@ -1216,7 +1332,8 @@ pub fn tick_authority(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     empire_authority_q: Query<&AuthorityParams, With<crate::player::PlayerEmpire>>,
-    mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&ResourceCapacity>)>,
+    colonies: Query<&Colony>,
+    mut stockpiles: Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
 ) {
@@ -1232,7 +1349,7 @@ pub fn tick_authority(
     // First pass: find capital system and count non-capital colonies
     let mut capital_system: Option<Entity> = None;
     let mut non_capital_count: u64 = 0;
-    for (colony, _, _) in colonies.iter() {
+    for colony in colonies.iter() {
         if let Some(sys) = colony.system(&planets) {
             if let Ok(star) = stars.get(sys) {
                 if star.is_capital {
@@ -1257,23 +1374,20 @@ pub fn tick_authority(
     // This should be its own issue — requires per-colony distance calculation and
     // Position queries which aren't currently available in this system.
 
-    // Second pass: produce authority at capital and deduct empire scale cost
+    // Produce authority at capital system and deduct empire scale cost
     let auth_production = authority_params.production.final_value();
     let auth_cost_per_colony = authority_params.cost_per_colony.final_value();
-    for (colony, mut stockpile, capacity) in &mut colonies {
-        if colony.system(&planets) == Some(cap_sys) {
-            // Capital produces authority
-            stockpile.authority = stockpile.authority.add(auth_production.mul_u64(d));
+    if let Ok((mut stockpile, capacity)) = stockpiles.get_mut(cap_sys) {
+        // Capital produces authority
+        stockpile.authority = stockpile.authority.add(auth_production.mul_u64(d));
 
-            // Deduct empire scale cost for non-capital colonies
-            let scale_cost = auth_cost_per_colony.mul_u64(non_capital_count).mul_u64(d);
-            stockpile.authority = stockpile.authority.sub(scale_cost);
+        // Deduct empire scale cost for non-capital colonies
+        let scale_cost = auth_cost_per_colony.mul_u64(non_capital_count).mul_u64(d);
+        stockpile.authority = stockpile.authority.sub(scale_cost);
 
-            // Clamp authority to capacity
-            if let Some(cap) = capacity {
-                stockpile.authority = stockpile.authority.min(cap.authority);
-            }
-            break;
+        // Clamp authority to capacity
+        if let Some(cap) = capacity {
+            stockpile.authority = stockpile.authority.min(cap.authority);
         }
     }
 }
@@ -1307,10 +1421,10 @@ pub fn check_resource_alerts(
     last_tick: Res<LastProductionTick>,
     colonies: Query<(
         &Colony,
-        &ResourceStockpile,
         Option<&FoodConsumption>,
         Option<&MaintenanceCost>,
     )>,
+    stockpiles: Query<&ResourceStockpile, With<StarSystem>>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
     mut events: MessageWriter<GameEvent>,
@@ -1321,12 +1435,14 @@ pub fn check_resource_alerts(
         return;
     }
 
-    for (colony, stockpile, food_consumption, _maintenance) in &colonies {
+    for (colony, food_consumption, _maintenance) in &colonies {
         let colony_sys = colony.system(&planets);
         let system_name = colony_sys
             .and_then(|sys| stars.get(sys).ok())
             .map(|s| s.name.clone())
             .unwrap_or_default();
+        let Some(sys) = colony_sys else { continue };
+        let Ok(stockpile) = stockpiles.get(sys) else { continue };
         // Use planet entity as alert key (unique per colony)
         let alert_key = colony.planet;
 

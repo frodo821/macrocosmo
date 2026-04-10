@@ -1103,6 +1103,7 @@ pub fn process_settling(
     systems: Query<&StarSystem>,
     planet_query: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
     existing_colonies: Query<&Colony>,
+    existing_stockpiles: Query<&ResourceStockpile, With<StarSystem>>,
     mut events: MessageWriter<GameEvent>,
 ) {
     for (ship_entity, ship, state) in &ships {
@@ -1154,14 +1155,6 @@ pub fn process_settling(
                     population: 10.0,
                     growth_rate: 0.005,
                 },
-                ResourceStockpile {
-                    minerals: Amt::units(100),
-                    energy: Amt::units(100),
-                    research: Amt::ZERO,
-                    food: Amt::units(50),
-                    authority: Amt::ZERO,
-                },
-                ResourceCapacity::default(),
                 Production {
                     minerals_per_hexadies: crate::modifier::ModifiedValue::new(minerals_rate),
                     energy_per_hexadies: crate::modifier::ModifiedValue::new(energy_rate),
@@ -1179,6 +1172,20 @@ pub fn process_settling(
                 MaintenanceCost::default(),
                 FoodConsumption::default(),
             ));
+
+            // Add ResourceStockpile and ResourceCapacity to the StarSystem if not already present
+            if existing_stockpiles.get(system_entity).is_err() {
+                commands.entity(system_entity).insert((
+                    ResourceStockpile {
+                        minerals: Amt::units(100),
+                        energy: Amt::units(100),
+                        research: Amt::ZERO,
+                        food: Amt::units(50),
+                        authority: Amt::ZERO,
+                    },
+                    ResourceCapacity::default(),
+                ));
+            }
 
             events.write(GameEvent {
                 timestamp: clock.elapsed,

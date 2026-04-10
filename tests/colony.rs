@@ -10,6 +10,12 @@ use macrocosmo::ship::*;
 
 use common::{advance_time, find_planet, spawn_test_colony, spawn_test_system, test_app};
 
+/// Helper: add ResourceStockpile and ResourceCapacity to a star system entity.
+/// If the system already has a stockpile, it replaces it.
+fn set_system_stockpile(world: &mut World, sys: Entity, stockpile: ResourceStockpile) {
+    world.entity_mut(sys).insert((stockpile, ResourceCapacity::default()));
+}
+
 /// Helper: spawn a star system marked as capital with a planet
 fn spawn_capital_system(world: &mut World, name: &str, pos: [f64; 3]) -> Entity {
     let sys = world
@@ -60,20 +66,19 @@ fn test_production_accumulates_resources() {
 
     // Spawn colony with production rates 5/3/1 and zero stockpile
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+        minerals: Amt::ZERO,
+        energy: Amt::ZERO,
+        research: Amt::ZERO,
+        food: Amt::ZERO,
+        authority: Amt::ZERO,
+    });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 50.0,
             growth_rate: 0.005,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(3)),
@@ -128,20 +133,19 @@ fn test_building_queue_completes_construction() {
     let build_time = BuildingType::Mine.build_time();
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -197,20 +201,19 @@ fn test_demolish_building_removes_from_slot() {
     let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -264,20 +267,19 @@ fn test_demolish_refunds_resources() {
     let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -338,20 +340,19 @@ fn test_demolish_takes_time() {
     let (m_refund, e_refund) = BuildingType::Shipyard.demolition_refund();
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -422,20 +423,19 @@ fn test_farm_produces_food() {
 
     // Colony with food_per_hexadies=5.0, a Farm building (+5.0 food bonus), starting food=0
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::units(100),
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -505,20 +505,19 @@ fn test_authority_deficit_penalizes_food_production() {
 
     // Capital colony with 0 authority (deficit)
     let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
+    set_system_stockpile(app.world_mut(), cap_sys, ResourceStockpile {
+            minerals: Amt::units(1000),
+            energy: Amt::units(1000),
+            research: Amt::ZERO,
+            food: Amt::units(1000),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_cap_sys,
             population: 1.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::units(1000),
-            energy: Amt::units(1000),
-            research: Amt::ZERO,
-            food: Amt::units(1000),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -548,20 +547,19 @@ fn test_authority_deficit_penalizes_food_production() {
 
     for &sys in &remote_systems {
         let planet_sys = find_planet(app.world_mut(), sys);
+        set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+                minerals: Amt::ZERO,
+                energy: Amt::ZERO,
+                research: Amt::ZERO,
+                food: Amt::ZERO,
+                authority: Amt::ZERO,
+            });
         app.world_mut().spawn((
             Colony {
                 planet: planet_sys,
                 population: 1.0,
                 growth_rate: 0.0,
             },
-            ResourceStockpile {
-                minerals: Amt::ZERO,
-                energy: Amt::ZERO,
-                research: Amt::ZERO,
-                food: Amt::ZERO,
-                authority: Amt::ZERO,
-            },
-            ResourceCapacity::default(),
             Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -578,23 +576,18 @@ fn test_authority_deficit_penalizes_food_production() {
     advance_time(&mut app, 10);
 
     // Check a remote colony's food: 10.0/hd * 0.5 (penalty) * 10 hd = 50.0, minus consumption
-    let remote_planet_0 = find_planet(app.world_mut(), remote_systems[0]);
-    let mut q = app.world_mut().query::<(&Colony, &ResourceStockpile)>();
-    for (colony, stockpile) in q.iter(app.world()) {
-        if colony.planet == remote_planet_0 {
-            // Without penalty: 100.0 food. With 0.5 penalty: ~50.0 food (minus small consumption)
-            assert!(
-                stockpile.food.to_f64() < 60.0,
-                "Food production should be penalized by authority deficit, got {}",
-                stockpile.food
-            );
-            assert!(
-                stockpile.food.to_f64() > 0.0,
-                "Food should still be positive, got {}",
-                stockpile.food
-            );
-        }
-    }
+    let stockpile = app.world().get::<ResourceStockpile>(remote_systems[0]).unwrap();
+    // Without penalty: 100.0 food. With 0.5 penalty: ~50.0 food (minus small consumption)
+    assert!(
+        stockpile.food.to_f64() < 60.0,
+        "Food production should be penalized by authority deficit, got {}",
+        stockpile.food
+    );
+    assert!(
+        stockpile.food.to_f64() > 0.0,
+        "Food should still be positive, got {}",
+        stockpile.food
+    );
 }
 
 // Maintenance system (#68)
@@ -614,20 +607,19 @@ fn test_maintenance_deducts_energy_integration() {
 
     // Colony with Mine (0.2 E/hd) and Shipyard (1.0 E/hd) = 1.2 E/hd total maintenance
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::units(10000),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::units(100),
-            research: Amt::ZERO,
-            food: Amt::units(10000),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -681,21 +673,19 @@ fn test_population_capped_by_carrying_capacity() {
     );
 
     let planet_sys = find_planet(app.world_mut(), sys);
-    let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(10000),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 70.0,
             growth_rate: 0.05,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(10000),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -758,14 +748,6 @@ fn test_habitability_affects_growth_rate() {
                 population: 10.0,
                 growth_rate: 0.05,
             },
-            ResourceStockpile {
-                minerals: Amt::ZERO,
-                energy: Amt::ZERO,
-                research: Amt::ZERO,
-                food: Amt::units(10000),
-                authority: Amt::ZERO,
-            },
-            ResourceCapacity::default(),
             Production {
                 minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
                 energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -829,20 +811,19 @@ fn test_food_limits_carrying_capacity() {
     );
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(10000),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 40.0,
             growth_rate: 0.05,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(10000),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -886,12 +867,7 @@ fn test_resource_capacity_clamps_stockpile() {
 
     // Colony with very high production but low capacity
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().spawn((
-        Colony {
-            planet: planet_sys,
-            population: 10.0,
-            growth_rate: 0.0,
-        },
+    app.world_mut().entity_mut(sys).insert((
         ResourceStockpile {
             minerals: Amt::ZERO,
             energy: Amt::ZERO,
@@ -904,6 +880,13 @@ fn test_resource_capacity_clamps_stockpile() {
             energy: Amt::units(100),
             food: Amt::units(500),
             authority: Amt::units(10000),
+        },
+    ));
+    app.world_mut().spawn((
+        Colony {
+            planet: planet_sys,
+            population: 10.0,
+            growth_rate: 0.0,
         },
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(50)),
@@ -955,20 +938,19 @@ fn test_production_focus_weights() {
     );
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
@@ -1028,20 +1010,19 @@ fn test_build_queue_partial_resources() {
     let build_time = BuildingType::Mine.build_time();
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::units(20),
+            energy: Amt::units(200),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::units(20),
-            energy: Amt::units(200),
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(20)), // produces 20/hd
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -1106,20 +1087,19 @@ fn test_build_queue_requires_shipyard() {
 
     // Colony WITHOUT Shipyard, but with a ship build order
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -1182,20 +1162,19 @@ fn test_starvation_reduces_population() {
     );
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO, // No food!
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::ZERO, // No food!
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -1238,20 +1217,19 @@ fn test_starvation_population_floor() {
     );
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 1.5,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -1291,20 +1269,19 @@ fn test_capital_produces_authority() {
 
     // Spawn capital colony with zero authority
     let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
+    set_system_stockpile(app.world_mut(), cap_sys, ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     let colony_entity = app.world_mut().spawn((
         Colony {
             planet: planet_cap_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
@@ -1322,7 +1299,7 @@ fn test_capital_produces_authority() {
     // Advance 10 hexadies
     advance_time(&mut app, 10);
 
-    let stockpile = app.world().get::<ResourceStockpile>(colony_entity).unwrap();
+    let stockpile = app.world().get::<ResourceStockpile>(cap_sys).unwrap();
     // Capital produces BASE_AUTHORITY_PER_HEXADIES (1.0) per hexady, no colonies to drain it
     // Expected: 1.0 * 10 = 10.0
     assert!(
@@ -1348,20 +1325,19 @@ fn test_empire_scale_authority_cost() {
 
     // Capital colony starts with some authority
     let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
+    set_system_stockpile(app.world_mut(), cap_sys, ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::units(5), // start with 5
+        });
     let capital_colony = app.world_mut().spawn((
         Colony {
             planet: planet_cap_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::units(5), // start with 5
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
@@ -1378,20 +1354,19 @@ fn test_empire_scale_authority_cost() {
 
     // Remote colony (non-capital)
     let planet_remote_sys = find_planet(app.world_mut(), remote_sys);
+    set_system_stockpile(app.world_mut(), remote_sys, ResourceStockpile {
+            minerals: Amt::units(100),
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_remote_sys,
             population: 50.0,
             growth_rate: 0.005,
         },
-        ResourceStockpile {
-            minerals: Amt::units(100),
-            energy: Amt::units(100),
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(3)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(3)),
@@ -1409,7 +1384,7 @@ fn test_empire_scale_authority_cost() {
     // Advance 10 hexadies
     advance_time(&mut app, 10);
 
-    let stockpile = app.world().get::<ResourceStockpile>(capital_colony).unwrap();
+    let stockpile = app.world().get::<ResourceStockpile>(cap_sys).unwrap();
     // Production: 1.0 * 10 = 10.0
     // Starting: 5.0
     // Cost: 0.5 * 1 colony * 10 = 5.0
@@ -1460,20 +1435,19 @@ fn test_authority_deficit_reduces_non_capital_production() {
     // Capital colony: authority = 0, so after tick_authority it stays 0
     // because cost (3 * 0.5 = 1.5) > production (1.0), net = -0.5, capped to 0
     let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
+    set_system_stockpile(app.world_mut(), cap_sys, ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_cap_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
@@ -1490,20 +1464,19 @@ fn test_authority_deficit_reduces_non_capital_production() {
 
     // Three remote colonies with known production rates
     let planet_remote_sys = find_planet(app.world_mut(), remote_sys);
+    set_system_stockpile(app.world_mut(), remote_sys, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     let remote_colony = app.world_mut().spawn((
         Colony {
             planet: planet_remote_sys,
             population: 50.0,
             growth_rate: 0.005,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(10)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(10)),
@@ -1519,20 +1492,19 @@ fn test_authority_deficit_reduces_non_capital_production() {
     )).id();
 
     let planet_remote_sys2 = find_planet(app.world_mut(), remote_sys2);
+    set_system_stockpile(app.world_mut(), remote_sys2, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_remote_sys2,
             population: 50.0,
             growth_rate: 0.005,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(1)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(1)),
@@ -1548,20 +1520,19 @@ fn test_authority_deficit_reduces_non_capital_production() {
     ));
 
     let planet_remote_sys3 = find_planet(app.world_mut(), remote_sys3);
+    set_system_stockpile(app.world_mut(), remote_sys3, ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        });
     app.world_mut().spawn((
         Colony {
             planet: planet_remote_sys3,
             population: 50.0,
             growth_rate: 0.005,
         },
-        ResourceStockpile {
-            minerals: Amt::ZERO,
-            energy: Amt::ZERO,
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(1)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(1)),
@@ -1579,7 +1550,7 @@ fn test_authority_deficit_reduces_non_capital_production() {
     // Advance 10 hexadies
     advance_time(&mut app, 10);
 
-    let stockpile = app.world().get::<ResourceStockpile>(remote_colony).unwrap();
+    let stockpile = app.world().get::<ResourceStockpile>(remote_sys).unwrap();
     // With authority deficit, production is multiplied by AUTHORITY_DEFICIT_PENALTY (0.5)
     // Normal: 10.0 * 10 = 100.0
     // With penalty: 10.0 * 10 * 0.5 = 50.0

@@ -357,19 +357,19 @@ pub fn spawn_test_colony(
     buildings: Vec<Option<BuildingType>>,
 ) -> Entity {
     // Check if the entity is a Planet or a StarSystem; find the planet entity accordingly
-    let planet = if world.get::<Planet>(system_or_planet).is_some() {
-        system_or_planet
+    let (planet, system) = if world.get::<Planet>(system_or_planet).is_some() {
+        let p = world.get::<Planet>(system_or_planet).unwrap();
+        let sys = p.system;
+        (system_or_planet, sys)
     } else {
         // It's a system entity; find its first planet
-        find_planet(world, system_or_planet)
+        let planet = find_planet(world, system_or_planet);
+        (planet, system_or_planet)
     };
-    world
-        .spawn((
-            Colony {
-                planet,
-                population: 100.0,
-                growth_rate: 0.01,
-            },
+
+    // Add ResourceStockpile and ResourceCapacity to the StarSystem if not already present
+    if world.get::<ResourceStockpile>(system).is_none() {
+        world.entity_mut(system).insert((
             ResourceStockpile {
                 minerals,
                 energy,
@@ -378,6 +378,16 @@ pub fn spawn_test_colony(
                 authority: Amt::ZERO,
             },
             ResourceCapacity::default(),
+        ));
+    }
+
+    world
+        .spawn((
+            Colony {
+                planet,
+                population: 100.0,
+                growth_rate: 0.01,
+            },
             Production {
                 minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
                 energy_per_hexadies: ModifiedValue::new(Amt::units(5)),

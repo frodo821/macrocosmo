@@ -25,20 +25,19 @@ fn test_job_auto_assignment() {
 
     // Spawn a colony with population 10, job slots [miner:5, farmer:5]
     let planet_sys = find_planet(app.world_mut(), sys);
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+            minerals: Amt::units(100),
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     let colony = app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 10.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(100),
-            energy: Amt::units(100),
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
@@ -121,20 +120,19 @@ fn test_job_auto_assignment_excess_population() {
     );
 
     let planet_sys = find_planet(app.world_mut(), sys);
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+            minerals: Amt::units(100),
+            energy: Amt::units(100),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     let colony = app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 15.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(100),
-            energy: Amt::units(100),
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),

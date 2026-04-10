@@ -121,20 +121,19 @@ fn all_systems_no_query_conflict() {
     app.world_mut().spawn((Player, StationedAt { system: capital }));
 
     // Colony at capital
+    app.world_mut().entity_mut(capital).insert((ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     app.world_mut().spawn((
         Colony {
             planet: capital_planet,
             population: 100.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::units(100),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),

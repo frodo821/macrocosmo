@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -49,13 +49,13 @@ pub fn draw_system_panel(
         Entity,
         &Colony,
         Option<&Production>,
-        Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
+    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     positions: &Query<&Position>,
     knowledge: &KnowledgeStore,
@@ -76,8 +76,8 @@ pub fn draw_system_panel(
     let mut system_planets: Vec<(Entity, String, String, bool)> = Vec::new();
     let colonized_planets: std::collections::HashSet<Entity> = colonies
         .iter()
-        .filter(|(_, c, _, _, _, _, _, _, _)| c.system(planets) == Some(sel_entity))
-        .map(|(_, c, _, _, _, _, _, _, _)| c.planet)
+        .filter(|(_, c, _, _, _, _, _, _)| c.system(planets) == Some(sel_entity))
+        .map(|(_, c, _, _, _, _, _, _)| c.planet)
         .collect();
 
     for (planet_entity, planet, _attrs) in planet_entities.iter() {
@@ -192,8 +192,10 @@ pub fn draw_system_panel(
                             draw_colony_detail(
                                 ui,
                                 sel_planet_entity,
+                                sel_entity,
                                 planet_attrs,
                                 colonies,
+                                system_stockpiles,
                                 ships_query,
                                 construction_params,
                                 planets,
@@ -249,18 +251,19 @@ fn format_planet_type(planet_type: &str) -> String {
 fn draw_colony_detail(
     ui: &mut egui::Ui,
     planet_entity: Entity,
+    system_entity: Entity,
     planet_attrs: Option<&SystemAttributes>,
     colonies: &mut Query<(
         Entity,
         &Colony,
         Option<&Production>,
-        Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
+    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
@@ -271,7 +274,7 @@ fn draw_colony_detail(
             .color(egui::Color32::from_rgb(100, 200, 100)),
     );
 
-    for (_colony_entity, colony, production, stockpile, build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
+    for (_colony_entity, colony, production, build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
         colonies.iter_mut()
     {
         if colony.planet != planet_entity {
@@ -344,7 +347,7 @@ fn draw_colony_detail(
             });
         }
 
-        if let Some(stockpile) = stockpile {
+        if let Ok((stockpile, _)) = system_stockpiles.get(system_entity) {
             ui.label(format!(
                 "Stockpile: F {} | E {} | M {} | A {}",
                 stockpile.food, stockpile.energy, stockpile.minerals, stockpile.authority,
@@ -718,13 +721,13 @@ pub fn draw_ship_panel(
         Entity,
         &Colony,
         Option<&Production>,
-        Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
+    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     command_queues: &Query<&mut CommandQueue>,
     planets: &Query<&Planet>,
@@ -758,7 +761,7 @@ pub fn draw_ship_panel(
         let maintenance_cost = crate::ship::ship_maintenance_cost(&ship.design_id);
         // Check if docked at a system that has a colony (for "Set Home Port" button)
         let docked_at_colony = docked_system.and_then(|dock_sys| {
-            colonies.iter().find_map(|(_, col, _, _, _, _, _, _, _)| {
+            colonies.iter().find_map(|(_, col, _, _, _, _, _, _)| {
                 if col.system(planets) == Some(dock_sys) { Some(dock_sys) } else { None }
             })
         });
@@ -841,11 +844,13 @@ pub fn draw_ship_panel(
         unload_energy: crate::amount::Amt,
     }
     let mut cargo_action = CargoAction::default();
-    // Entity of the colony at the docked system (for cargo transfers)
-    let colony_entity_at_dock: Option<Entity> = docked_system.and_then(|dock_sys| {
-        colonies.iter().find_map(|(e, col, _, _, _, _, _, _, _)| {
-            if col.system(planets) == Some(dock_sys) { Some(e) } else { None }
-        })
+    // Entity of the system at the dock (for cargo transfers via system stockpile)
+    let system_entity_at_dock: Option<Entity> = docked_system.and_then(|dock_sys| {
+        // Check if there's a colony at this system
+        let has_colony = colonies.iter().any(|(_, col, _, _, _, _, _, _)| {
+            col.system(planets) == Some(dock_sys)
+        });
+        if has_colony { Some(dock_sys) } else { None }
     });
 
     egui::Window::new("Selected Ship")
@@ -953,7 +958,7 @@ pub fn draw_ship_panel(
                         ui.label(format!("Minerals: {}", cargo_m));
                         ui.label(format!("Energy: {}", cargo_e));
 
-                        if colony_entity_at_dock.is_some() {
+                        if system_entity_at_dock.is_some() {
                             ui.horizontal(|ui| {
                                 if ui.button("Load M +100").clicked() {
                                     cargo_action.load_minerals = crate::amount::Amt::units(100);
@@ -989,15 +994,15 @@ pub fn draw_ship_panel(
                 let response = ui.button(&scrap_label)
                     .on_hover_text("Dismantle this ship and recover 50% of build cost");
                 if response.clicked() {
-                    // Find colony entity at dock system
-                    if let Some(colony_e) = colony_entity_at_dock {
+                    // Use system entity for stockpile refund
+                    if let Some(sys_e) = system_entity_at_dock {
                         let system_name = stars
                             .get(dock_system)
                             .map(|(_, s, _, _)| s.name.clone())
                             .unwrap_or_else(|_| "Unknown".to_string());
                         actions.scrap = Some(ShipScrapAction {
                             ship_entity,
-                            colony_entity: colony_e,
+                            colony_entity: sys_e,
                             ship_name: name.clone(),
                             system_name,
                             minerals_refund: refund_m,
@@ -1030,8 +1035,8 @@ pub fn draw_ship_panel(
         || cargo_action.unload_minerals > Amt::ZERO
         || cargo_action.unload_energy > Amt::ZERO;
     if has_cargo_action {
-        if let Some(colony_e) = colony_entity_at_dock {
-            if let Ok((_, _, _, Some(mut stockpile), _, _, _, _, _)) = colonies.get_mut(colony_e) {
+        if let Some(sys_e) = system_entity_at_dock {
+            if let Ok((mut stockpile, _)) = system_stockpiles.get_mut(sys_e) {
                 if let Ok((_, _, _, Some(mut cargo), _, _)) = ships_query.get_mut(ship_entity) {
                     if cargo_action.load_minerals > Amt::ZERO {
                         let transfer = cargo_action.load_minerals.min(stockpile.minerals);

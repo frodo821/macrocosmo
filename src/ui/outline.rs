@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production, ResourceStockpile};
+use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
@@ -16,7 +16,6 @@ pub fn draw_outline(
         Entity,
         &Colony,
         Option<&Production>,
-        Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
@@ -37,7 +36,7 @@ pub fn draw_outline(
 
             // Collect systems that have colonies (owned systems)
             let mut owned_systems: Vec<(Entity, String, bool)> = Vec::new();
-            for (_, colony, _, _, _, _, _, _, _) in colonies.iter() {
+            for (_, colony, _, _, _, _, _, _) in colonies.iter() {
                 if let Some(sys) = colony.system(planets) {
                     if let Ok((entity, star, _, _)) = stars.get(sys) {
                         // Avoid duplicates if multiple colonies on same system

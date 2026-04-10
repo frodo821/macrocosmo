@@ -7,7 +7,7 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
-use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
+use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile};
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
@@ -51,7 +51,6 @@ pub fn draw_all_ui(
         Entity,
         &Colony,
         Option<&Production>,
-        Option<&mut ResourceStockpile>,
         Option<&mut BuildQueue>,
         Option<&Buildings>,
         Option<&mut BuildingQueue>,
@@ -61,7 +60,7 @@ pub fn draw_all_ui(
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     mut command_queues: Query<&mut CommandQueue>,
     pending_commands: Query<&PendingShipCommand>,
-    positions_planets_and_entities: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>),
+    positions_planets_stockpiles: (Query<&Position>, Query<&Planet>, Query<(Entity, &Planet, Option<&SystemAttributes>)>, Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>),
     mut empire_q: Query<
         (
             &KnowledgeStore,
@@ -78,7 +77,7 @@ pub fn draw_all_ui(
     mut game_events: MessageWriter<GameEvent>,
 ) {
     let (mut selected_ship, mut context_menu, mut selected_planet) = selection_state;
-    let (positions, planets, planet_entities) = positions_planets_and_entities;
+    let (positions, planets, planet_entities, mut system_stockpiles) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
         empire_q.single_mut()
@@ -94,18 +93,19 @@ pub fn draw_all_ui(
         let mut e = Amt::ZERO;
         let mut f = Amt::ZERO;
         let mut a = Amt::ZERO;
+        // Aggregate stockpiles from star systems
+        for (stockpile, _) in system_stockpiles.iter() {
+            m = m.add(stockpile.minerals);
+            e = e.add(stockpile.energy);
+            f = f.add(stockpile.food);
+            a = a.add(stockpile.authority);
+        }
         let mut net_m = SignedAmt::ZERO;
         let mut net_e = SignedAmt::ZERO;
         let mut net_f = SignedAmt::ZERO;
         let mut colony_count: u64 = 0;
         let mut has_capital = false;
-        for (_, colony, production, stockpile, _, _, _, maintenance, food_consumption) in colonies.iter() {
-            if let Some(s) = stockpile {
-                m = m.add(s.minerals);
-                e = e.add(s.energy);
-                f = f.add(s.food);
-                a = a.add(s.authority);
-            }
+        for (_, colony, production, _, _, _, maintenance, food_consumption) in colonies.iter() {
             // Net income calculations
             if let Some(prod) = production {
                 // Minerals: just production (no per-tick consumption to subtract)
@@ -156,6 +156,7 @@ pub fn draw_all_ui(
         &stars,
         &player_q,
         &mut colonies,
+        &mut system_stockpiles,
         &mut ships_query,
         &positions,
         knowledge,
@@ -171,6 +172,7 @@ pub fn draw_all_ui(
         &mut ships_query,
         &clock,
         &mut colonies,
+        &mut system_stockpiles,
         &stars,
         &command_queues,
         &planets,
@@ -215,8 +217,8 @@ pub fn draw_all_ui(
 
     // #79: Handle ship scrapping — despawn entity, refund resources, fire events
     if let Some(scrap) = ship_panel_actions.scrap {
-        // Add refund to colony stockpile
-        if let Ok((_, _, _, Some(mut stockpile), _, _, _, _, _)) = colonies.get_mut(scrap.colony_entity) {
+        // Add refund to system stockpile (scrap.colony_entity is now the system entity)
+        if let Ok((mut stockpile, _)) = system_stockpiles.get_mut(scrap.colony_entity) {
             stockpile.minerals = stockpile.minerals.add(scrap.minerals_refund);
             stockpile.energy = stockpile.energy.add(scrap.energy_refund);
         }
@@ -238,7 +240,7 @@ pub fn draw_all_ui(
     // #76: Collect pending ship commands from context menu (light-speed delay)
     let mut pending_ship_commands = Vec::new();
     // Need a read-only Colony query for context menu colonization check
-    let colony_ro: Vec<Colony> = colonies.iter().map(|(_, c, _, _, _, _, _, _, _)| Colony { planet: c.planet, population: c.population, growth_rate: c.growth_rate }).collect();
+    let colony_ro: Vec<Colony> = colonies.iter().map(|(_, c, _, _, _, _, _, _)| Colony { planet: c.planet, population: c.population, growth_rate: c.growth_rate }).collect();
     side_panel::draw_context_menu(
         ctx,
         &mut context_menu,
@@ -261,20 +263,21 @@ pub fn draw_all_ui(
 
     bottom_bar::draw_bottom_bar(ctx, command_log, &clock);
 
-    // Find capital colony stockpile for upfront cost checks
+    // Find capital system stockpile for upfront cost checks
     let capital_stockpile: Option<(crate::amount::Amt, crate::amount::Amt)> = {
         let mut result = None;
-        for (_, colony_data, _, stockpile, _, _, _, _, _) in colonies.iter() {
-            if let Some(s) = stockpile {
-                // Check if the colony's system is the capital
-                if let Some(sys) = colony_data.system(&planets) {
-                    if let Ok((_, star, _, _)) = stars.get(sys) {
-                        if star.is_capital {
+        for (_, star, _, _) in stars.iter() {
+            if star.is_capital {
+                // Find the star system entity
+                for (sys_entity, sys_star, _, _) in stars.iter() {
+                    if sys_star.is_capital {
+                        if let Ok((s, _)) = system_stockpiles.get(sys_entity) {
                             result = Some((s.minerals, s.energy));
-                            break;
                         }
+                        break;
                     }
                 }
+                break;
             }
         }
         result
@@ -297,23 +300,19 @@ pub fn draw_all_ui(
     // Handle research actions that require mutable colony access
     match research_action {
         overlays::ResearchAction::StartResearch(tech_id) => {
-            // Deduct upfront costs from capital stockpile
+            // Deduct upfront costs from capital system stockpile
             if let Some(tech) = tech_tree.get(tech_id) {
                 let mineral_cost = tech.cost.minerals;
                 let energy_cost = tech.cost.energy;
 
-                // Find and deduct from capital colony
-                for (_, colony_data, _, stockpile, _, _, _, _, _) in colonies.iter_mut() {
-                    if let Some(mut s) = stockpile {
-                        if let Some(sys) = colony_data.system(&planets) {
-                            if let Ok((_, star, _, _)) = stars.get(sys) {
-                                if star.is_capital {
-                                    s.minerals = s.minerals.sub(mineral_cost);
-                                    s.energy = s.energy.sub(energy_cost);
-                                    break;
-                                }
-                            }
+                // Find and deduct from capital system
+                for (sys_entity, star, _, _) in stars.iter() {
+                    if star.is_capital {
+                        if let Ok((mut s, _)) = system_stockpiles.get_mut(sys_entity) {
+                            s.minerals = s.minerals.sub(mineral_cost);
+                            s.energy = s.energy.sub(energy_cost);
                         }
+                        break;
                     }
                 }
 

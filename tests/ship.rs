@@ -265,20 +265,19 @@ fn test_build_queue_spawns_ship() {
 
     // Colony with ample resources and a build order for an Explorer
     let planet_sys = find_planet(app.world_mut(), sys);
+    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+            minerals: Amt::units(1000),
+            energy: Amt::units(1000),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        }, ResourceCapacity::default()));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
-        ResourceStockpile {
-            minerals: Amt::units(1000),
-            energy: Amt::units(1000),
-            research: Amt::ZERO,
-            food: Amt::ZERO,
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
         Production {
             minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
             energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
@@ -571,9 +570,9 @@ fn test_scrap_ship_refunds_resources() {
     assert_eq!(refund_m, Amt::units(100));
     assert_eq!(refund_e, Amt::units(50));
 
-    // Apply refund to colony stockpile
+    // Apply refund to system stockpile (stockpile is now on star system entity)
     {
-        let mut stockpile = app.world_mut().get_mut::<ResourceStockpile>(colony).unwrap();
+        let mut stockpile = app.world_mut().get_mut::<ResourceStockpile>(sys).unwrap();
         stockpile.minerals = stockpile.minerals.add(refund_m);
         stockpile.energy = stockpile.energy.add(refund_e);
     }
@@ -582,7 +581,7 @@ fn test_scrap_ship_refunds_resources() {
     app.world_mut().despawn(ship);
 
     // Verify resources were added
-    let stockpile = app.world().get::<ResourceStockpile>(colony).unwrap();
+    let stockpile = app.world().get::<ResourceStockpile>(sys).unwrap();
     assert_eq!(stockpile.minerals, Amt::units(200)); // 100 + 100 refund
     assert_eq!(stockpile.energy, Amt::units(150));   // 100 + 50 refund
 
