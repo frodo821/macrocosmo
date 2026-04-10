@@ -24,6 +24,16 @@ pub struct ShipScrapAction {
     pub energy_refund: Amt,
 }
 
+/// Action for starting a refit on a docked ship.
+pub struct ShipRefitAction {
+    pub ship_entity: Entity,
+    pub system_entity: Entity,
+    pub new_modules: Vec<crate::ship::EquippedModule>,
+    pub refit_time: i64,
+    pub cost_minerals: Amt,
+    pub cost_energy: Amt,
+}
+
 /// All actions that can be triggered from the ship panel UI.
 /// Processed in draw_all_ui where mutable access is available.
 #[derive(Default)]
@@ -32,6 +42,7 @@ pub struct ShipPanelActions {
     pub cancel_command_index: Option<usize>,
     pub clear_commands: bool,
     pub cancel_current: bool,
+    pub refit: Option<ShipRefitAction>,
 }
 
 /// Draws the right-side system info panel when a star system is selected.
@@ -64,6 +75,9 @@ pub fn draw_system_panel(
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
     system_buildings_q: &mut Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>,
+    hull_registry: &crate::ship_design::HullRegistry,
+    module_registry: &crate::ship_design::ModuleRegistry,
+    design_registry: &crate::ship_design::ShipDesignRegistry,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -200,6 +214,9 @@ pub fn draw_system_panel(
                                 ships_query,
                                 construction_params,
                                 planets,
+                                hull_registry,
+                                module_registry,
+                                design_registry,
                             );
                         });
                 }
@@ -384,6 +401,9 @@ fn draw_colony_detail(
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
+    hull_registry: &crate::ship_design::HullRegistry,
+    module_registry: &crate::ship_design::ModuleRegistry,
+    design_registry: &crate::ship_design::ShipDesignRegistry,
 ) {
     ui.label(
         egui::RichText::new("Colony")
@@ -550,29 +570,70 @@ fn draw_colony_detail(
         }
 
         // Build buttons - add orders to the queue
+        // Uses ShipDesignRegistry when available, falls back to presets
         if let Some(mut bq) = build_queue {
             use crate::amount::Amt;
             let ship_mod = construction_params.ship_cost_modifier.final_value();
             let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
-            let mut build_request: Option<(&str, &str, Amt, Amt, i64)> = None;
-            ui.horizontal(|ui| {
-                for preset in crate::ship::all_design_presets() {
-                    let base_m = preset.build_cost_minerals;
-                    let base_e = preset.build_cost_energy;
-                    let base_time = preset.build_time;
-                    let eff_m = base_m.mul_amt(ship_mod);
-                    let eff_e = base_e.mul_amt(ship_mod);
-                    let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
-                    let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
-                    if ui.button(preset.design_name).on_hover_text(tooltip).clicked() {
-                        build_request = Some((preset.design_id, preset.design_name, eff_m, eff_e, eff_time));
+            let mut build_request: Option<(String, String, Amt, Amt, i64)> = None;
+
+            // Collect designs: from registry first, then fallback to presets
+            let has_registry_designs = !design_registry.designs.is_empty();
+
+            if has_registry_designs {
+                let mut design_ids: Vec<_> = design_registry.designs.keys().cloned().collect();
+                design_ids.sort();
+
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for design_id in &design_ids {
+                            let design = &design_registry.designs[design_id];
+                            // Calculate cost from hull + modules
+                            let hull = hull_registry.get(&design.hull_id);
+                            let (base_m, base_e, base_time) = if let Some(hull) = hull {
+                                let mods: Vec<_> = design.modules.iter()
+                                    .filter_map(|a| module_registry.get(&a.module_id))
+                                    .collect();
+                                let (m, e, t, _maint) = crate::ship_design::design_cost(hull, &mods);
+                                (m, e, t)
+                            } else {
+                                // Fallback to preset if hull not in registry
+                                crate::ship::design_preset(design_id)
+                                    .map(|p| (p.build_cost_minerals, p.build_cost_energy, p.build_time))
+                                    .unwrap_or((Amt::units(200), Amt::units(100), 60))
+                            };
+                            let eff_m = base_m.mul_amt(ship_mod);
+                            let eff_e = base_e.mul_amt(ship_mod);
+                            let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
+                            let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
+                            if ui.button(&design.name).on_hover_text(tooltip).clicked() {
+                                build_request = Some((design_id.clone(), design.name.clone(), eff_m, eff_e, eff_time));
+                            }
+                        }
+                    });
+                });
+            } else {
+                // Fallback: use hardcoded presets
+                ui.horizontal(|ui| {
+                    for preset in crate::ship::all_design_presets() {
+                        let base_m = preset.build_cost_minerals;
+                        let base_e = preset.build_cost_energy;
+                        let base_time = preset.build_time;
+                        let eff_m = base_m.mul_amt(ship_mod);
+                        let eff_e = base_e.mul_amt(ship_mod);
+                        let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
+                        let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
+                        if ui.button(preset.design_name).on_hover_text(tooltip).clicked() {
+                            build_request = Some((preset.design_id.to_string(), preset.design_name.to_string(), eff_m, eff_e, eff_time));
+                        }
                     }
-                }
-            });
+                });
+            }
+
             if let Some((design_id, display_name, minerals_cost, energy_cost, build_time)) = build_request {
                 bq.queue.push(BuildOrder {
-                    design_id: design_id.to_string(),
-                    display_name: display_name.to_string(),
+                    design_id,
+                    display_name: display_name.clone(),
                     minerals_cost,
                     minerals_invested: Amt::ZERO,
                     energy_cost,
@@ -848,6 +909,26 @@ fn build_status_info(
                 progress: Some((elapsed, total, pct)),
             }
         }
+        ShipState::Refitting {
+            system,
+            started_at,
+            completes_at,
+            ..
+        } => {
+            let total = (completes_at - started_at).max(1);
+            let elapsed = (clock.elapsed - started_at).clamp(0, total);
+            let pct = elapsed as f32 / total as f32;
+            ShipStatusInfo {
+                label: format!(
+                    "Refitting at {} ({}/{} hd, {:.0}%)",
+                    system_name(*system, stars),
+                    elapsed,
+                    total,
+                    pct * 100.0
+                ),
+                progress: Some((elapsed, total, pct)),
+            }
+        }
     }
 }
 
@@ -892,6 +973,9 @@ pub fn draw_ship_panel(
     command_queues: &Query<&mut CommandQueue>,
     planets: &Query<&Planet>,
     pending_commands: &Query<&PendingShipCommand>,
+    hull_registry: &crate::ship_design::HullRegistry,
+    module_registry: &crate::ship_design::ModuleRegistry,
+    clock_elapsed: i64,
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -935,6 +1019,11 @@ pub fn draw_ship_panel(
             .filter(|pc| pc.ship == ship_entity)
             .map(|pc| pc.arrives_at)
             .min();
+        // #98: Collect hull_id and modules for refit UI
+        let ship_hull_id = ship.hull_id.clone();
+        let ship_modules: Vec<crate::ship::EquippedModule> = ship.modules.clone();
+        // #98: Is the ship refitting?
+        let is_refitting = matches!(&*state, ShipState::Refitting { .. });
         Some((
             ship_entity,
             ship.name.clone(),
@@ -959,6 +1048,9 @@ pub fn draw_ship_panel(
             pending_info,
             has_survey_data,
             survey_data_system,
+            ship_hull_id,
+            ship_modules,
+            is_refitting,
         ))
     });
 
@@ -966,7 +1058,7 @@ pub fn draw_ship_panel(
         ship_entity,
         name,
         design_id,
-        hull,
+        hull_hp,
         hull_max,
         armor,
         armor_max,
@@ -986,6 +1078,9 @@ pub fn draw_ship_panel(
         pending_arrives_at,
         has_survey_data,
         survey_data_system,
+        ship_hull_id,
+        ship_modules,
+        is_refitting,
     )) = ship_data
     else {
         return ShipPanelActions::default();
@@ -1025,7 +1120,7 @@ pub fn draw_ship_panel(
             );
             let design_display_name = crate::ship::design_preset(&design_id).map(|p| p.design_name).unwrap_or(&design_id);
             ui.label(format!("Type: {}", design_display_name));
-            ui.label(format!("Hull: {:.0}/{:.0}", hull, hull_max));
+            ui.label(format!("Hull: {:.0}/{:.0}", hull_hp, hull_max));
             if armor_max > 0.0 {
                 ui.label(format!("Armor: {:.0}/{:.0}", armor, armor_max));
             }
@@ -1137,6 +1232,153 @@ pub fn draw_ship_panel(
                             });
                         }
                     }
+                }
+            }
+
+            // #98: Refit UI (only when docked at a colony and not already refitting)
+            if let Some(dock_system) = docked_at_colony {
+                if !is_refitting {
+                    if let Some(hull_def) = hull_registry.get(&ship_hull_id) {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Refit").strong());
+
+                        // Use egui temp memory to track refit module selections
+                        let refit_id = egui::Id::new(("refit_modules", ship_entity));
+                        let mut refit_selections: Vec<Option<String>> = ui
+                            .memory(|m| m.data.get_temp(refit_id))
+                            .unwrap_or_else(|| {
+                                // Initialize from current modules
+                                let mut selections = Vec::new();
+                                let mut mod_idx = 0;
+                                for hull_slot in &hull_def.slots {
+                                    for _ in 0..hull_slot.count {
+                                        let current = ship_modules.get(mod_idx)
+                                            .filter(|em| em.slot_type == hull_slot.slot_type)
+                                            .map(|em| em.module_id.clone());
+                                        selections.push(current);
+                                        mod_idx += 1;
+                                    }
+                                }
+                                selections
+                            });
+
+                        let mut slot_idx = 0;
+                        for hull_slot in &hull_def.slots {
+                            for i in 0..hull_slot.count {
+                                let slot_label = if hull_slot.count > 1 {
+                                    format!("[{}] {}_{}", hull_slot.slot_type.chars().next().unwrap_or('?').to_uppercase(), hull_slot.slot_type, i + 1)
+                                } else {
+                                    format!("[{}] {}", hull_slot.slot_type.chars().next().unwrap_or('?').to_uppercase(), hull_slot.slot_type)
+                                };
+
+                                let current_name = refit_selections
+                                    .get(slot_idx)
+                                    .and_then(|opt| opt.as_ref())
+                                    .and_then(|id| module_registry.get(id))
+                                    .map(|m| m.name.clone())
+                                    .unwrap_or_else(|| "(empty)".to_string());
+
+                                ui.horizontal(|ui| {
+                                    ui.label(&slot_label);
+                                    let combo_id = format!("refit_slot_{}", slot_idx);
+                                    egui::ComboBox::from_id_salt(combo_id)
+                                        .selected_text(&current_name)
+                                        .show_ui(ui, |ui| {
+                                            if ui.selectable_label(
+                                                refit_selections.get(slot_idx).and_then(|o| o.as_ref()).is_none(),
+                                                "(empty)",
+                                            ).clicked() {
+                                                if slot_idx < refit_selections.len() {
+                                                    refit_selections[slot_idx] = None;
+                                                }
+                                            }
+                                            let mut mod_ids: Vec<_> = module_registry
+                                                .modules.iter()
+                                                .filter(|(_, m)| m.slot_type == hull_slot.slot_type)
+                                                .map(|(id, _)| id.clone())
+                                                .collect();
+                                            mod_ids.sort();
+                                            for mod_id in mod_ids {
+                                                let module = &module_registry.modules[&mod_id];
+                                                let is_selected = refit_selections
+                                                    .get(slot_idx)
+                                                    .and_then(|o| o.as_ref()) == Some(&mod_id);
+                                                if ui.selectable_label(is_selected, &module.name).clicked() {
+                                                    if slot_idx < refit_selections.len() {
+                                                        refit_selections[slot_idx] = Some(mod_id.clone());
+                                                    }
+                                                }
+                                            }
+                                        });
+                                });
+                                slot_idx += 1;
+                            }
+                        }
+
+                        // Calculate refit cost
+                        let old_mods: Vec<_> = ship_modules.iter()
+                            .filter_map(|em| module_registry.get(&em.module_id))
+                            .collect();
+                        let new_mods: Vec<_> = refit_selections.iter()
+                            .filter_map(|opt| opt.as_ref())
+                            .filter_map(|id| module_registry.get(id))
+                            .collect();
+                        let (refit_m, refit_e, refit_time) = crate::ship_design::refit_cost(&old_mods, &new_mods, hull_def);
+
+                        ui.label(format!("Refit cost: M:{} E:{} | {} hd", refit_m, refit_e, refit_time));
+
+                        // Check if any module actually changed
+                        let mut has_changes = false;
+                        {
+                            let mut idx = 0;
+                            for hull_slot in &hull_def.slots {
+                                for _ in 0..hull_slot.count {
+                                    let old_mod = ship_modules.get(idx)
+                                        .filter(|em| em.slot_type == hull_slot.slot_type)
+                                        .map(|em| &em.module_id);
+                                    let new_mod = refit_selections.get(idx).and_then(|o| o.as_ref());
+                                    if old_mod != new_mod {
+                                        has_changes = true;
+                                    }
+                                    idx += 1;
+                                }
+                            }
+                        }
+
+                        if ui.add_enabled(has_changes, egui::Button::new("Apply Refit")).clicked() {
+                            // Build new modules list
+                            let mut new_modules = Vec::new();
+                            let mut idx = 0;
+                            for hull_slot in &hull_def.slots {
+                                for _ in 0..hull_slot.count {
+                                    if let Some(Some(mod_id)) = refit_selections.get(idx) {
+                                        new_modules.push(crate::ship::EquippedModule {
+                                            slot_type: hull_slot.slot_type.clone(),
+                                            module_id: mod_id.clone(),
+                                        });
+                                    }
+                                    idx += 1;
+                                }
+                            }
+                            actions.refit = Some(ShipRefitAction {
+                                ship_entity,
+                                system_entity: dock_system,
+                                new_modules,
+                                refit_time,
+                                cost_minerals: refit_m,
+                                cost_energy: refit_e,
+                            });
+                        }
+
+                        // Store selections in egui temp memory
+                        ui.memory_mut(|m| m.data.insert_temp(refit_id, refit_selections));
+                    }
+                } else {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Refitting in progress...")
+                            .color(egui::Color32::from_rgb(255, 220, 80)),
+                    );
                 }
             }
 
@@ -1281,6 +1523,7 @@ pub fn draw_context_menu(
             ShipState::Surveying { target_system, .. } => Some(*target_system),
             ShipState::Settling { system, .. } => Some(*system),
             ShipState::Docked { .. } => None, // handled via docked_system
+            ShipState::Refitting { system, .. } => Some(*system),
         };
         (
             ship.name.clone(),

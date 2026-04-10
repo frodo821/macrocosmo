@@ -15,6 +15,7 @@ use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Cargo, CommandQueue, PendingShipCommand, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
@@ -29,6 +30,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
             .init_resource::<ResearchPanelOpen>()
+            .init_resource::<overlays::ShipDesignerState>()
             .add_systems(EguiPrimaryContextPass, draw_all_ui);
     }
 }
@@ -42,7 +44,7 @@ pub fn draw_all_ui(
     mut contexts: EguiContexts,
     clock: Res<GameClock>,
     mut speed: ResMut<GameSpeed>,
-    mut research_open: ResMut<ResearchPanelOpen>,
+    overlay_state: (ResMut<ResearchPanelOpen>, ResMut<overlays::ShipDesignerState>, Res<HullRegistry>, Res<ModuleRegistry>, ResMut<ShipDesignRegistry>),
     mut selected_system: ResMut<SelectedSystem>,
     selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>),
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
@@ -77,6 +79,7 @@ pub fn draw_all_ui(
     mut game_events: MessageWriter<GameEvent>,
 ) {
     let (mut selected_ship, mut context_menu, mut selected_planet) = selection_state;
+    let (mut research_open, mut designer_state, hull_registry, module_registry, mut design_registry) = overlay_state;
     let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
@@ -154,7 +157,7 @@ pub fn draw_all_ui(
         let net_a = auth_prod.add(SignedAmt(0 - auth_cost.raw()));
         (m, e, f, a, net_m, net_e, net_f, net_a)
     };
-    top_bar::draw_top_bar(ctx, &clock, &mut speed, total_minerals, total_energy, total_food, total_authority, net_food, net_energy, net_minerals, net_authority, &mut research_open);
+    top_bar::draw_top_bar(ctx, &clock, &mut speed, total_minerals, total_energy, total_food, total_authority, net_food, net_energy, net_minerals, net_authority, &mut research_open, &mut designer_state);
 
     outline::draw_outline(
         ctx,
@@ -183,6 +186,9 @@ pub fn draw_all_ui(
         &planets,
         &planet_entities,
         &mut system_buildings_q,
+        &hull_registry,
+        &module_registry,
+        &design_registry,
     );
 
     let ship_panel_actions = side_panel::draw_ship_panel(
@@ -196,6 +202,9 @@ pub fn draw_all_ui(
         &command_queues,
         &planets,
         &pending_commands,
+        &hull_registry,
+        &module_registry,
+        clock.elapsed,
     );
 
     // #99: Handle cancel current action (surveying/settling -> docked)
@@ -254,6 +263,24 @@ pub fn draw_all_ui(
             description,
             related_system: None,
         });
+    }
+
+    // #98: Handle ship refit — deduct resources, set state to Refitting
+    if let Some(refit) = ship_panel_actions.refit {
+        // Deduct resources from system stockpile
+        if let Ok((mut stockpile, _)) = system_stockpiles.get_mut(refit.system_entity) {
+            stockpile.minerals = stockpile.minerals.sub(refit.cost_minerals);
+            stockpile.energy = stockpile.energy.sub(refit.cost_energy);
+        }
+        // Set ship state to Refitting
+        if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(refit.ship_entity) {
+            *state = ShipState::Refitting {
+                system: refit.system_entity,
+                started_at: clock.elapsed,
+                completes_at: clock.elapsed + refit.refit_time,
+                new_modules: refit.new_modules,
+            };
+        }
     }
 
     // #76: Collect pending ship commands from context menu (light-speed delay)
@@ -342,5 +369,28 @@ pub fn draw_all_ui(
             research_queue.cancel_research();
         }
         overlays::ResearchAction::None => {}
+    }
+
+    // #98: Ship designer overlay
+    let designer_action = overlays::draw_ship_designer(
+        ctx,
+        &mut designer_state,
+        &hull_registry,
+        &module_registry,
+        &design_registry,
+    );
+
+    match designer_action {
+        overlays::ShipDesignerAction::SaveDesign(design) => {
+            info!("Ship design saved: {} ({})", design.name, design.id);
+            design_registry.insert(design);
+            // Close designer after saving
+            designer_state.open = false;
+            // Reset state for next design
+            designer_state.selected_hull = None;
+            designer_state.selected_modules.clear();
+            designer_state.design_name.clear();
+        }
+        overlays::ShipDesignerAction::None => {}
     }
 }

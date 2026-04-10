@@ -135,6 +135,7 @@ impl Plugin for ShipPlugin {
             deliver_survey_results.after(process_ftl_travel),
             process_surveys,
             process_settling,
+            process_refitting,
             process_pending_ship_commands,
             process_command_queue
                 .after(sublight_movement_system)
@@ -472,6 +473,13 @@ pub enum ShipState {
         system: Entity,
         started_at: i64,
         completes_at: i64,
+    },
+    /// #98: Ship is being refitted (module swap)
+    Refitting {
+        system: Entity,
+        started_at: i64,
+        completes_at: i64,
+        new_modules: Vec<EquippedModule>,
     },
 }
 
@@ -1306,6 +1314,39 @@ pub fn process_settling(
 
             // Consume the colony ship
             commands.entity(ship_entity).despawn();
+        }
+    }
+}
+
+/// #98: Process ships that are being refitted — when complete, swap modules and re-dock.
+pub fn process_refitting(
+    clock: Res<GameClock>,
+    mut ships: Query<(Entity, &mut Ship, &mut ShipState)>,
+    mut events: MessageWriter<GameEvent>,
+    systems: Query<&StarSystem>,
+) {
+    for (entity, mut ship, mut state) in &mut ships {
+        let (system, completes_at, new_modules) = match &*state {
+            ShipState::Refitting { system, completes_at, new_modules, .. } => {
+                (*system, *completes_at, new_modules.clone())
+            }
+            _ => continue,
+        };
+
+        if clock.elapsed >= completes_at {
+            ship.modules = new_modules;
+            *state = ShipState::Docked { system };
+
+            let system_name = systems
+                .get(system)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|_| "Unknown".to_string());
+            events.write(GameEvent {
+                timestamp: clock.elapsed,
+                kind: GameEventKind::ShipBuilt,
+                description: format!("{} refit completed at {}", ship.name, system_name),
+                related_system: Some(system),
+            });
         }
     }
 }

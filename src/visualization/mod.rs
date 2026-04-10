@@ -631,6 +631,14 @@ fn draw_ships(
                     gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
                 }
             }
+            ShipState::Refitting { system, .. } => {
+                // Refitting ships are docked — show them at the system
+                docked_counts
+                    .entry(*system)
+                    .or_default()
+                    .push(ship.design_id.clone());
+                *system_ship_counts.entry(*system).or_insert(0) += 1;
+            }
         }
     }
 
@@ -756,6 +764,11 @@ fn draw_ships(
                     }
                     ShipState::Surveying { target_system, .. } => {
                         stars.get(*target_system).ok().map(|pos| {
+                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
+                        })
+                    }
+                    ShipState::Refitting { system, .. } => {
+                        stars.get(*system).ok().map(|pos| {
                             Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
                         })
                     }

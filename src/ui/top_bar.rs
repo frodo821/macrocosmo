@@ -4,6 +4,7 @@ use crate::amount::{Amt, SignedAmt};
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::ResearchPanelOpen;
+use super::overlays::ShipDesignerState;
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_top_bar(
@@ -19,6 +20,7 @@ pub fn draw_top_bar(
     net_minerals: SignedAmt,
     net_authority: SignedAmt,
     research_open: &mut ResearchPanelOpen,
+    designer_state: &mut ShipDesignerState,
 ) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
@@ -80,6 +82,15 @@ pub fn draw_top_bar(
             };
             if ui.button(r_label).clicked() {
                 research_open.0 = !research_open.0;
+            }
+
+            let d_label = if designer_state.open {
+                "Ship Designer [open]"
+            } else {
+                "Ship Designer"
+            };
+            if ui.button(d_label).clicked() {
+                designer_state.open = !designer_state.open;
             }
         });
     });

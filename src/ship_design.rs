@@ -237,6 +237,74 @@ pub fn load_ship_designs(
     }
 }
 
+/// Compute total cost for a ship design: hull cost + sum of module costs.
+/// Returns (minerals, energy, build_time, maintenance).
+pub fn design_cost(
+    hull: &HullDefinition,
+    modules: &[&ModuleDefinition],
+) -> (Amt, Amt, i64, Amt) {
+    let mut minerals = hull.build_cost_minerals;
+    let mut energy = hull.build_cost_energy;
+    let mut maintenance = hull.maintenance;
+    for m in modules {
+        minerals = minerals.add(m.cost_minerals);
+        energy = energy.add(m.cost_energy);
+        // Each module adds 10% of its mineral cost as maintenance
+        maintenance = maintenance.add(Amt::milli(m.cost_minerals.raw() / 10));
+    }
+    (minerals, energy, hull.build_time, maintenance)
+}
+
+/// Compute total stats for a design: HP, speed, evasion from hull + module modifiers.
+pub fn design_stats(
+    hull: &HullDefinition,
+    modules: &[&ModuleDefinition],
+) -> (f64, f64, f64) {
+    let mut hp = hull.base_hp;
+    let mut speed = hull.base_speed;
+    let mut evasion = hull.base_evasion;
+    for m in modules {
+        for modifier in &m.modifiers {
+            match modifier.target.as_str() {
+                "ship.speed" => speed += modifier.base_add,
+                "ship.evasion" => evasion += modifier.base_add,
+                // HP modifiers affect hull HP
+                _ => {}
+            }
+        }
+    }
+    (hp, speed, evasion)
+}
+
+/// Compute refit cost: new module cost - 50% of old module value.
+/// Returns (minerals, energy, time).
+pub fn refit_cost(
+    old_modules: &[&ModuleDefinition],
+    new_modules: &[&ModuleDefinition],
+    hull: &HullDefinition,
+) -> (Amt, Amt, i64) {
+    let mut old_m = Amt::ZERO;
+    let mut old_e = Amt::ZERO;
+    for m in old_modules {
+        old_m = old_m.add(m.cost_minerals);
+        old_e = old_e.add(m.cost_energy);
+    }
+    let mut new_m = Amt::ZERO;
+    let mut new_e = Amt::ZERO;
+    for m in new_modules {
+        new_m = new_m.add(m.cost_minerals);
+        new_e = new_e.add(m.cost_energy);
+    }
+    // Refund 50% of old module value
+    let refund_m = Amt::milli(old_m.raw() / 2);
+    let refund_e = Amt::milli(old_e.raw() / 2);
+    let cost_m = if new_m > refund_m { new_m.sub(refund_m) } else { Amt::ZERO };
+    let cost_e = if new_e > refund_e { new_e.sub(refund_e) } else { Amt::ZERO };
+    // Refit time: half hull build time
+    let time = hull.build_time / 2;
+    (cost_m, cost_e, time.max(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

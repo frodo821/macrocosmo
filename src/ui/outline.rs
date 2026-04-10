@@ -190,6 +190,7 @@ pub fn draw_outline(
                     ShipState::InFTL { .. } => "FTL",
                     ShipState::Surveying { .. } => "Surveying",
                     ShipState::Settling { .. } => "Settling",
+                    ShipState::Refitting { .. } => continue,
                 };
                 in_transit.push((entity, ship.name.clone(), ship.design_id.clone(), status));
             }
