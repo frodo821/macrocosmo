@@ -3,7 +3,7 @@ use bevy_egui::egui;
 
 use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
 use crate::components::Position;
-use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::galaxy::{Habitability, Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
@@ -102,18 +102,20 @@ pub fn draw_system_panel(
         return;
     };
 
-    // Collect planets in this system using the entity-bearing query
-    let mut system_planets: Vec<(Entity, String, String, bool)> = Vec::new();
+    // Collect planets in this system with attributes for map rendering
     let colonized_planets: std::collections::HashSet<Entity> = colonies
         .iter()
         .filter(|(_, c, _, _, _, _, _, _)| c.system(planets) == Some(sel_entity))
         .map(|(_, c, _, _, _, _, _, _)| c.planet)
         .collect();
 
-    for (planet_entity, planet, _attrs) in planet_entities.iter() {
+    // Collect full planet info: entity, name, type, colonized, habitability
+    let mut system_planets: Vec<(Entity, String, String, bool, Option<Habitability>)> = Vec::new();
+    for (planet_entity, planet, attrs) in planet_entities.iter() {
         if planet.system == sel_entity {
             let is_colonized = colonized_planets.contains(&planet_entity);
-            system_planets.push((planet_entity, planet.name.clone(), planet.planet_type.clone(), is_colonized));
+            let hab = attrs.map(|a| a.habitability);
+            system_planets.push((planet_entity, planet.name.clone(), planet.planet_type.clone(), is_colonized, hab));
         }
     }
     system_planets.sort_by(|a, b| a.1.cmp(&b.1));
@@ -121,13 +123,13 @@ pub fn draw_system_panel(
     // Auto-select planet: if no planet selected or selected planet not in this system,
     // pick first colonized planet, or first planet
     let current_planet_valid = selected_planet.0
-        .map(|pe| system_planets.iter().any(|(e, _, _, _)| *e == pe))
+        .map(|pe| system_planets.iter().any(|(e, _, _, _, _)| *e == pe))
         .unwrap_or(false);
     if !current_planet_valid {
         selected_planet.0 = system_planets.iter()
-            .find(|(_, _, _, colonized)| *colonized)
+            .find(|(_, _, _, colonized, _)| *colonized)
             .or(system_planets.first())
-            .map(|(e, _, _, _)| *e);
+            .map(|(e, _, _, _, _)| *e);
     }
 
     let screen = ctx.screen_rect();
@@ -175,76 +177,111 @@ pub fn draw_system_panel(
                 ui.label(format!("Info age: {} hd ({:.1} yr) [{}]", age, years, freshness));
             }
 
-            // === Planet List ===
+            // === System Map Canvas ===
             if !system_planets.is_empty() {
                 ui.separator();
-                ui.label(egui::RichText::new("Planets").strong());
+                ui.label(egui::RichText::new("System Map").strong());
+                ui.label("Click a planet to view details.");
 
-                for (planet_entity, name, planet_type, is_colonized) in &system_planets {
-                    let is_selected = selected_planet.0 == Some(*planet_entity);
-                    let prefix = if is_selected { "\u{25CF} " } else { "  " };
-                    let status = if *is_colonized { " [COLONIZED]" } else { "" };
-                    let label_text = format!(
-                        "{}{} ({}){}",
-                        prefix, name, format_planet_type(planet_type), status
+                // Calculate map height: reserve space for panels below
+                let map_height = (ui.available_height() - 200.0).max(150.0).min(400.0);
+                let (response, painter) = ui.allocate_painter(
+                    egui::vec2(ui.available_width(), map_height),
+                    egui::Sense::click(),
+                );
+                let rect = response.rect;
+                let center = rect.center();
+
+                // Dark background for the map area
+                painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(10, 10, 20));
+
+                // Draw central star
+                painter.circle_filled(center, 15.0, egui::Color32::from_rgb(255, 220, 80));
+                painter.circle_stroke(center, 15.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 180, 40)));
+
+                // Scale orbits to fit the available space
+                let max_orbit_radius = (rect.width().min(rect.height()) / 2.0 - 30.0).max(50.0);
+                let planet_count = system_planets.len();
+                let orbit_spacing = if planet_count > 1 {
+                    (max_orbit_radius - 40.0) / (planet_count as f32)
+                } else {
+                    max_orbit_radius * 0.5
+                };
+
+                // Draw planets on orbital rings
+                for (i, (planet_entity, name, _planet_type, is_colonized, hab)) in system_planets.iter().enumerate() {
+                    let orbit_r = 40.0 + (i as f32) * orbit_spacing;
+
+                    // Orbit ring
+                    painter.circle_stroke(
+                        center,
+                        orbit_r,
+                        egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(80, 80, 80, 40)),
                     );
 
-                    let label = if *is_colonized {
-                        egui::RichText::new(&label_text).color(egui::Color32::from_rgb(100, 200, 100))
-                    } else {
-                        egui::RichText::new(&label_text)
+                    // Planet position (spread around orbit)
+                    let angle = (i as f32) * 2.1 + 0.5;
+                    let px = center.x + orbit_r * angle.cos();
+                    let py = center.y + orbit_r * angle.sin();
+                    let planet_pos = egui::pos2(px, py);
+
+                    // Planet color based on habitability
+                    let planet_color = match hab {
+                        Some(Habitability::Ideal) => egui::Color32::from_rgb(50, 200, 50),
+                        Some(Habitability::Adequate) => egui::Color32::from_rgb(150, 200, 50),
+                        Some(Habitability::Marginal) => egui::Color32::from_rgb(200, 150, 50),
+                        Some(Habitability::GasGiant) => egui::Color32::from_rgb(200, 130, 80),
+                        Some(Habitability::Barren) => egui::Color32::from_rgb(130, 130, 130),
+                        None => egui::Color32::from_rgb(100, 100, 100),
                     };
 
-                    if ui.selectable_label(is_selected, label).clicked() {
-                        selected_planet.0 = Some(*planet_entity);
+                    let planet_radius = match hab {
+                        Some(Habitability::GasGiant) => 12.0,
+                        _ => 8.0,
+                    };
+
+                    // Selected planet highlight
+                    let is_selected = selected_planet.0 == Some(*planet_entity);
+                    if is_selected {
+                        painter.circle_filled(planet_pos, planet_radius + 4.0, egui::Color32::from_rgba_premultiplied(255, 255, 100, 40));
+                        painter.circle_stroke(planet_pos, planet_radius + 4.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 255, 100)));
                     }
-                }
-            }
 
-            // === Selected Planet Detail ===
-            if let Some(sel_planet_entity) = selected_planet.0 {
-                // Show planet attributes if surveyed
-                if star.surveyed {
-                    if let Ok((_, sel_planet, Some(attrs))) = planet_entities.get(sel_planet_entity) {
-                        ui.separator();
-                        ui.label(egui::RichText::new(format!("{} — Attributes", sel_planet.name)).strong());
-                        ui.label(format!("Habitability: {:?}", attrs.habitability));
-                        ui.label(format!("Minerals: {:?}", attrs.mineral_richness));
-                        ui.label(format!("Energy: {:?}", attrs.energy_potential));
-                        ui.label(format!("Research: {:?}", attrs.research_potential));
-                        ui.label(format!("Building slots: {}", attrs.max_building_slots));
+                    // Planet body
+                    painter.circle_filled(planet_pos, planet_radius, planet_color);
+
+                    // Colonized indicator ring
+                    if *is_colonized {
+                        painter.circle_stroke(planet_pos, planet_radius + 2.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(50, 130, 255)));
                     }
-                }
 
-                // Colony detail section (scrollable)
-                let has_colony_on_planet = colonized_planets.contains(&sel_planet_entity);
-                if has_colony_on_planet {
-                    ui.separator();
+                    // Planet name label
+                    painter.text(
+                        egui::pos2(px, py + planet_radius + 4.0),
+                        egui::Align2::CENTER_TOP,
+                        name,
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::from_rgb(200, 200, 200),
+                    );
 
-                    let planet_attrs = planet_entities.get(sel_planet_entity).ok().and_then(|(_, _, a)| a);
-
-                    egui::ScrollArea::vertical()
-                        .max_height(400.0)
-                        .show(ui, |ui| {
-                            draw_colony_detail(
-                                ui,
-                                sel_planet_entity,
-                                sel_entity,
-                                planet_attrs,
-                                colonies,
-                                system_stockpiles,
-                                ships_query,
-                                construction_params,
-                                planets,
-                                hull_registry,
-                                module_registry,
-                                design_registry,
-                            );
-                        });
+                    // Click detection on this planet
+                    let click_radius = planet_radius + 6.0;
+                    if response.clicked() {
+                        if let Some(pointer_pos) = response.interact_pointer_pos() {
+                            let dx = pointer_pos.x - px;
+                            let dy = pointer_pos.y - py;
+                            if (dx * dx + dy * dy).sqrt() <= click_radius {
+                                selected_planet.0 = Some(*planet_entity);
+                            }
+                        }
+                    }
                 }
             }
 
             // === System Buildings ===
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
             if let Ok((Some(sys_bldgs), sys_bldg_queue)) = system_buildings_q.get_mut(sel_entity) {
                 ui.separator();
                 ui.label(egui::RichText::new("System Buildings").strong());
@@ -467,9 +504,133 @@ pub fn draw_system_panel(
                     }
                 }
             }
+                }); // end ScrollArea
         });
     if close_system_view {
         selected_system.0 = None;
+    }
+
+    // === Planet Info Window (independent floating window) ===
+    draw_planet_window(
+        ctx,
+        sel_entity,
+        selected_planet,
+        &colonized_planets,
+        stars,
+        colonies,
+        system_stockpiles,
+        ships_query,
+        construction_params,
+        planets,
+        planet_entities,
+        hull_registry,
+        module_registry,
+        design_registry,
+    );
+}
+
+/// Draws the floating planet info window when a planet is selected.
+/// Shows planet attributes, colony detail, buildings, and build queue.
+#[allow(clippy::too_many_arguments)]
+fn draw_planet_window(
+    ctx: &egui::Context,
+    system_entity: Entity,
+    selected_planet: &mut SelectedPlanet,
+    colonized_planets: &std::collections::HashSet<Entity>,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+    colonies: &mut Query<(
+        Entity,
+        &Colony,
+        Option<&Production>,
+        Option<&mut BuildQueue>,
+        Option<&Buildings>,
+        Option<&mut BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
+    )>,
+    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
+    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    construction_params: &ConstructionParams,
+    planets: &Query<&Planet>,
+    planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
+    hull_registry: &crate::ship_design::HullRegistry,
+    module_registry: &crate::ship_design::ModuleRegistry,
+    design_registry: &crate::ship_design::ShipDesignRegistry,
+) {
+    let Some(sel_planet_entity) = selected_planet.0 else {
+        return;
+    };
+
+    // Verify planet belongs to this system
+    let Ok((_, sel_planet, attrs)) = planet_entities.get(sel_planet_entity) else {
+        return;
+    };
+    if sel_planet.system != system_entity {
+        return;
+    }
+
+    let is_surveyed = stars.get(system_entity).map(|(_, s, _, _)| s.surveyed).unwrap_or(false);
+    let planet_name = sel_planet.name.clone();
+    let planet_type = format_planet_type(&sel_planet.planet_type);
+
+    let mut open = true;
+    egui::Window::new(format!("{} ({})", planet_name, planet_type))
+        .id(egui::Id::new("planet_info_window"))
+        .default_pos(egui::pos2(400.0, 200.0))
+        .default_size(egui::vec2(350.0, 400.0))
+        .resizable(true)
+        .collapsible(true)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            // Planet attributes (if surveyed)
+            if is_surveyed {
+                if let Some(attrs) = attrs {
+                    ui.label(egui::RichText::new("Attributes").strong());
+                    ui.label(format!("Habitability: {:?}", attrs.habitability));
+                    ui.label(format!("Minerals: {:?}", attrs.mineral_richness));
+                    ui.label(format!("Energy: {:?}", attrs.energy_potential));
+                    ui.label(format!("Research: {:?}", attrs.research_potential));
+                    ui.label(format!("Building slots: {}", attrs.max_building_slots));
+                    ui.separator();
+                }
+            } else {
+                ui.label("System not yet surveyed.");
+                ui.separator();
+            }
+
+            // Colony detail (if colonized)
+            let has_colony_on_planet = colonized_planets.contains(&sel_planet_entity);
+            if has_colony_on_planet {
+                let planet_attrs = planet_entities.get(sel_planet_entity).ok().and_then(|(_, _, a)| a);
+
+                egui::ScrollArea::vertical()
+                    .max_height(500.0)
+                    .show(ui, |ui| {
+                        draw_colony_detail(
+                            ui,
+                            sel_planet_entity,
+                            system_entity,
+                            planet_attrs,
+                            colonies,
+                            system_stockpiles,
+                            ships_query,
+                            construction_params,
+                            planets,
+                            hull_registry,
+                            module_registry,
+                            design_registry,
+                        );
+                    });
+            } else {
+                ui.label(
+                    egui::RichText::new("Uncolonized")
+                        .color(egui::Color32::from_rgb(180, 180, 180)),
+                );
+            }
+        });
+
+    if !open {
+        selected_planet.0 = None;
     }
 }
 
