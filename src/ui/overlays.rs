@@ -243,6 +243,7 @@ pub fn draw_ship_designer(
                             action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
                                 id: unique_id,
                                 name: state.design_name.trim().to_string(),
+                                description: String::new(),
                                 hull_id: hull.id.clone(),
                                 modules,
                             });
@@ -251,6 +252,7 @@ pub fn draw_ship_designer(
                             action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
                                 id: design_id,
                                 name: state.design_name.trim().to_string(),
+                                description: String::new(),
                                 hull_id: hull.id.clone(),
                                 modules,
                             });

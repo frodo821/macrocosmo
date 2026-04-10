@@ -356,6 +356,18 @@ impl BuildingType {
         (Amt::milli(m.raw() / 2), Amt::milli(e.raw() / 2))
     }
 
+    /// Short description for tooltips.
+    pub fn description(&self) -> &'static str {
+        match self {
+            BuildingType::Mine => "Extracts minerals from planetary deposits",
+            BuildingType::PowerPlant => "Generates energy from local resources",
+            BuildingType::ResearchLab => "Conducts scientific research",
+            BuildingType::Shipyard => "Constructs and refits ships",
+            BuildingType::Port => "Reduces FTL travel time from this system",
+            BuildingType::Farm => "Produces food to sustain population",
+        }
+    }
+
     /// Display name for the building type.
     pub fn name(&self) -> &'static str {
         match self {

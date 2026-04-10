@@ -10,6 +10,7 @@ use crate::amount::Amt;
 pub struct BuildingDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub minerals_cost: Amt,
     pub energy_cost: Amt,
     pub build_time: i64,
@@ -51,6 +52,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
 
         // Parse cost table (optional)
         let (minerals_cost, energy_cost) = parse_cost_table(&table)?;
@@ -66,6 +68,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         result.push(BuildingDefinition {
             id,
             name,
+            description,
             minerals_cost,
             energy_cost,
             build_time,
@@ -232,6 +235,7 @@ mod tests {
         registry.insert(BuildingDefinition {
             id: "mine".to_string(),
             name: "Mine".to_string(),
+            description: String::new(),
             minerals_cost: Amt::units(150),
             energy_cost: Amt::units(50),
             build_time: 10,
@@ -251,6 +255,7 @@ mod tests {
         registry.insert(BuildingDefinition {
             id: "farm".to_string(),
             name: "Farm".to_string(),
+            description: String::new(),
             minerals_cost: Amt::units(100),
             energy_cost: Amt::units(50),
             build_time: 20,
@@ -327,6 +332,7 @@ mod tests {
         registry.insert(BuildingDefinition {
             id: "mine".to_string(),
             name: "Mine".to_string(),
+            description: String::new(),
             minerals_cost: Amt::units(150),
             energy_cost: Amt::units(50),
             build_time: 10,
@@ -341,6 +347,7 @@ mod tests {
         registry.insert(BuildingDefinition {
             id: "mine".to_string(),
             name: "Advanced Mine".to_string(),
+            description: String::new(),
             minerals_cost: Amt::units(200),
             energy_cost: Amt::units(75),
             build_time: 15,

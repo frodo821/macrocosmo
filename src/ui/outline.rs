@@ -7,6 +7,18 @@ use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::visualization::{SelectedShip, SelectedSystem};
 
+/// Helper: format a ship status string from ShipState.
+fn ship_status_label(state: &ShipState) -> &'static str {
+    match state {
+        ShipState::Docked { .. } => "Docked",
+        ShipState::SubLight { .. } => "Sub-light",
+        ShipState::InFTL { .. } => "In FTL",
+        ShipState::Surveying { .. } => "Surveying",
+        ShipState::Settling { .. } => "Settling",
+        ShipState::Refitting { .. } => "Refitting",
+    }
+}
+
 /// Draws the left-side outline panel showing owned systems and ships.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_outline(
@@ -85,7 +97,23 @@ pub fn draw_outline(
                             let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
                             let label = format!("  {} ({})", name, design_name);
                             let is_selected = selected_ship.0 == Some(*ship_entity);
-                            if ui.selectable_label(is_selected, &label).clicked() {
+                            let mut response = ui.selectable_label(is_selected, &label);
+                            // Ship tooltip
+                            if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
+                                response = response.on_hover_ui(|ui| {
+                                    ui.label(egui::RichText::new(&ship.name).strong());
+                                    ui.label(format!("Design: {}", design_name));
+                                    ui.label(format!("Status: {}", ship_status_label(&state)));
+                                    ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
+                                    if hp.armor_max > 0.0 {
+                                        ui.label(format!("Armor: {:.0}/{:.0}", hp.armor, hp.armor_max));
+                                    }
+                                    if hp.shield_max > 0.0 {
+                                        ui.label(format!("Shield: {:.0}/{:.0}", hp.shield, hp.shield_max));
+                                    }
+                                });
+                            }
+                            if response.clicked() {
                                 selected_ship.0 = Some(*ship_entity);
                                 // Don't touch selected_system — selections are independent
                             }
@@ -93,8 +121,17 @@ pub fn draw_outline(
                     }
                 });
 
-                // Click on the header to select the system
-                if header_response.header_response.clicked() {
+                // Tooltip for system header + click handling
+                let hr = header_response.header_response.on_hover_ui(|ui| {
+                    ui.label(egui::RichText::new(system_name).strong());
+                    if *is_capital {
+                        ui.label("Capital system");
+                    }
+                    let planet_count = planets.iter().filter(|p| p.system == *system_entity).count();
+                    ui.label(format!("Planets: {}", planet_count));
+                    ui.label("Colonized");
+                });
+                if hr.clicked() {
                     selected_system.0 = Some(*system_entity);
                     // Don't touch selected_ship — selections are independent
                 }
@@ -163,16 +200,35 @@ pub fn draw_outline(
                                         format!("  {} ({})", name, design_name);
                                     let is_selected =
                                         selected_ship.0 == Some(*ship_entity);
-                                    if ui
-                                        .selectable_label(is_selected, &label)
-                                        .clicked()
+                                    let mut response = ui.selectable_label(is_selected, &label);
+                                    if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
+                                        response = response.on_hover_ui(|ui| {
+                                            ui.label(egui::RichText::new(&ship.name).strong());
+                                            ui.label(format!("Design: {}", design_name));
+                                            ui.label(format!("Status: {}", ship_status_label(&state)));
+                                            ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
+                                            if hp.armor_max > 0.0 {
+                                                ui.label(format!("Armor: {:.0}/{:.0}", hp.armor, hp.armor_max));
+                                            }
+                                            if hp.shield_max > 0.0 {
+                                                ui.label(format!("Shield: {:.0}/{:.0}", hp.shield, hp.shield_max));
+                                            }
+                                        });
+                                    }
+                                    if response.clicked()
                                     {
                                         selected_ship.0 = Some(*ship_entity);
                                         // Don't touch selected_system — selections are independent
                                     }
                                 }
                             });
-                            if header_response.header_response.clicked() {
+                            // Tooltip for unowned system header + click handling
+                            let hr = header_response.header_response.on_hover_ui(|ui| {
+                                ui.label(egui::RichText::new(system_name).strong());
+                                let planet_count = planets.iter().filter(|p| p.system == *system_entity).count();
+                                ui.label(format!("Planets: {}", planet_count));
+                            });
+                            if hr.clicked() {
                                 selected_system.0 = Some(*system_entity);
                                 // Don't touch selected_ship — selections are independent
                             }
@@ -203,7 +259,23 @@ pub fn draw_outline(
                         for (entity, name, _ship_type, status) in &in_transit {
                             let label = format!("{} [{}]", name, status);
                             let is_selected = selected_ship.0 == Some(*entity);
-                            if ui.selectable_label(is_selected, &label).clicked() {
+                            let mut response = ui.selectable_label(is_selected, &label);
+                            if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
+                                let design_name = crate::ship::design_preset(&ship.design_id).map(|p| p.design_name).unwrap_or(&ship.design_id);
+                                response = response.on_hover_ui(|ui| {
+                                    ui.label(egui::RichText::new(&ship.name).strong());
+                                    ui.label(format!("Design: {}", design_name));
+                                    ui.label(format!("Status: {}", status));
+                                    ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
+                                    if hp.armor_max > 0.0 {
+                                        ui.label(format!("Armor: {:.0}/{:.0}", hp.armor, hp.armor_max));
+                                    }
+                                    if hp.shield_max > 0.0 {
+                                        ui.label(format!("Shield: {:.0}/{:.0}", hp.shield, hp.shield_max));
+                                    }
+                                });
+                            }
+                            if response.clicked() {
                                 selected_ship.0 = Some(*entity);
                             }
                         }

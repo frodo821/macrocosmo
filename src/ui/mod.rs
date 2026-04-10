@@ -5,7 +5,7 @@ pub mod side_panel;
 pub mod top_bar;
 
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
 use crate::communication::CommandLog;
@@ -47,7 +47,7 @@ pub fn draw_all_ui(
     mut speed: ResMut<GameSpeed>,
     overlay_state: (ResMut<ResearchPanelOpen>, ResMut<overlays::ShipDesignerState>, Res<HullRegistry>, Res<ModuleRegistry>, ResMut<ShipDesignRegistry>),
     mut selected_system: ResMut<SelectedSystem>,
-    selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>, ResMut<EguiWantsPointer>),
+    selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>, ResMut<EguiWantsPointer>, Res<crate::visualization::GalaxyView>, Query<&Window>, Query<(&Camera, &GlobalTransform), With<Camera2d>>),
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<(Entity, &StationedAt, Option<&AboardShip>), With<Player>>,
     mut colonies: Query<(
@@ -79,7 +79,7 @@ pub fn draw_all_ui(
     >,
     mut game_events: MessageWriter<GameEvent>,
 ) {
-    let (mut selected_ship, mut context_menu, mut selected_planet, mut egui_wants_pointer) = selection_state;
+    let (mut selected_ship, mut context_menu, mut selected_planet, mut egui_wants_pointer, galaxy_view, windows, camera_q) = selection_state;
     let (mut research_open, mut designer_state, hull_registry, module_registry, mut design_registry) = overlay_state;
     let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues, roe_query, hostiles_query) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
@@ -175,6 +175,9 @@ pub fn draw_all_ui(
         &mut selected_ship,
         &planets,
     );
+
+    // Galaxy map tooltips: show info when hovering over stars/ships on the map
+    draw_map_tooltips(ctx, &windows, &camera_q, &stars, &ships_query, &planets, &colonies, &clock, &galaxy_view);
 
     let mut colonization_actions = Vec::new();
     side_panel::draw_system_panel(
@@ -456,5 +459,181 @@ pub fn draw_all_ui(
             designer_state.design_name.clear();
         }
         overlays::ShipDesignerAction::None => {}
+    }
+}
+
+/// Draw tooltips when hovering over objects on the galaxy map.
+/// Called from draw_all_ui since it has EguiContexts access.
+#[allow(clippy::too_many_arguments)]
+fn draw_map_tooltips(
+    ctx: &egui::Context,
+    windows: &Query<&Window>,
+    camera_q: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    planets: &Query<&Planet>,
+    colonies: &Query<(
+        Entity,
+        &Colony,
+        Option<&Production>,
+        Option<&mut BuildQueue>,
+        Option<&Buildings>,
+        Option<&mut BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
+    )>,
+    clock: &GameClock,
+    view: &crate::visualization::GalaxyView,
+) {
+    // Don't show map tooltips if pointer is over an egui area (panel, overlay, etc.)
+    if ctx.is_pointer_over_area() {
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, global_transform)) = camera_q.single() else {
+        return;
+    };
+    let Ok(world_pos) = camera.viewport_to_world_2d(global_transform, cursor_pos) else {
+        return;
+    };
+
+    let hover_radius = 15.0_f32;
+
+    // Check for nearest star under cursor
+    let mut best_star: Option<(Entity, f32)> = None;
+    for (entity, _star, pos, _) in stars.iter() {
+        let star_px = bevy::math::Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
+        let dist = world_pos.distance(star_px);
+        if dist < hover_radius {
+            if best_star.is_none() || dist < best_star.unwrap().1 {
+                best_star = Some((entity, dist));
+            }
+        }
+    }
+
+    // Check for nearest in-transit ship under cursor
+    let ship_hover_radius = 12.0_f32;
+    let mut best_ship: Option<(Entity, f32)> = None;
+    for (entity, _ship, state, _, _, _) in ships.iter() {
+        let ship_px = match &*state {
+            ShipState::SubLight {
+                origin,
+                destination,
+                departed_at,
+                arrival_at,
+                ..
+            } => {
+                let total = (*arrival_at - *departed_at) as f64;
+                let elapsed = (clock.elapsed - *departed_at) as f64;
+                let t = if total > 0.0 { (elapsed / total).clamp(0.0, 1.0) } else { 1.0 };
+                let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
+                let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
+                Some(bevy::math::Vec2::new(cx, cy))
+            }
+            ShipState::InFTL {
+                origin_system,
+                destination_system,
+                departed_at,
+                arrival_at,
+            } => {
+                // Need star positions to interpolate FTL position
+                let origin_pos = stars.iter().find(|(e, _, _, _)| *e == *origin_system).map(|(_, _, p, _)| p);
+                let dest_pos = stars.iter().find(|(e, _, _, _)| *e == *destination_system).map(|(_, _, p, _)| p);
+                if let (Some(op), Some(dp)) = (origin_pos, dest_pos) {
+                    let total = (*arrival_at - *departed_at) as f64;
+                    let elapsed = (clock.elapsed - *departed_at) as f64;
+                    let t = if total > 0.0 { (elapsed / total).clamp(0.0, 1.0) } else { 1.0 };
+                    let cx = (op.x + (dp.x - op.x) * t) as f32 * view.scale;
+                    let cy = (op.y + (dp.y - op.y) * t) as f32 * view.scale;
+                    Some(bevy::math::Vec2::new(cx, cy))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(px) = ship_px {
+            let dist = world_pos.distance(px);
+            if dist < ship_hover_radius {
+                if best_ship.is_none() || dist < best_ship.unwrap().1 {
+                    best_ship = Some((entity, dist));
+                }
+            }
+        }
+    }
+
+    // Prefer ship tooltip if ship is closer
+    if let Some((ship_entity, ship_dist)) = best_ship {
+        let star_closer = best_star.is_some_and(|(_, d)| d < ship_dist);
+        if !star_closer {
+            if let Ok((_, ship, state, _, hp, _)) = ships.get(ship_entity) {
+                let design_name = crate::ship::design_preset(&ship.design_id)
+                    .map(|p| p.design_name)
+                    .unwrap_or(&ship.design_id);
+                let status = match &*state {
+                    ShipState::Docked { .. } => "Docked",
+                    ShipState::SubLight { .. } => "Sub-light",
+                    ShipState::InFTL { .. } => "In FTL",
+                    ShipState::Surveying { .. } => "Surveying",
+                    ShipState::Settling { .. } => "Settling",
+                    ShipState::Refitting { .. } => "Refitting",
+                };
+                egui::Tooltip::always_open(
+                    ctx.clone(),
+                    egui::LayerId::background(),
+                    egui::Id::new("map_ship_tooltip"),
+                    egui::PopupAnchor::Pointer,
+                )
+                .gap(12.0)
+                .show(|ui: &mut egui::Ui| {
+                    ui.label(egui::RichText::new(&ship.name).strong());
+                    ui.label(format!("Design: {}", design_name));
+                    ui.label(format!("Status: {}", status));
+                    ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
+                });
+            }
+            return;
+        }
+    }
+
+    // Star tooltip
+    if let Some((star_entity, _)) = best_star {
+        if let Ok((_, star, _, attrs)) = stars.get(star_entity) {
+            let planet_count = planets.iter().filter(|p| p.system == star_entity).count();
+            let has_colony = colonies.iter().any(|(_, c, _, _, _, _, _, _)| {
+                c.system(planets).is_some_and(|sys| sys == star_entity)
+            });
+
+            egui::Tooltip::always_open(
+                ctx.clone(),
+                egui::LayerId::background(),
+                egui::Id::new("map_star_tooltip"),
+                egui::PopupAnchor::Pointer,
+            )
+            .gap(12.0)
+            .show(|ui: &mut egui::Ui| {
+                ui.label(egui::RichText::new(&star.name).strong());
+                if star.is_capital {
+                    ui.label("Capital system");
+                }
+                if star.surveyed {
+                    ui.label(format!("Planets: {}", planet_count));
+                    if let Some(attr) = attrs {
+                        ui.label(format!("Habitability: {:?}", attr.habitability));
+                    }
+                } else {
+                    ui.label(egui::RichText::new("Unsurveyed").weak().italics());
+                }
+                if has_colony {
+                    ui.label(egui::RichText::new("Colonized").color(egui::Color32::from_rgb(100, 255, 100)));
+                }
+            });
+        }
     }
 }

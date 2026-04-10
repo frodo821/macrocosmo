@@ -29,6 +29,7 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let base_hp: f64 = table.get::<Option<f64>>("base_hp")?.unwrap_or(100.0);
         let base_speed: f64 = table.get::<Option<f64>>("base_speed")?.unwrap_or(1.0);
         let base_evasion: f64 = table.get::<Option<f64>>("base_evasion")?.unwrap_or(0.0);
@@ -48,6 +49,7 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
         result.push(HullDefinition {
             id,
             name,
+            description,
             base_hp,
             base_speed,
             base_evasion,
@@ -73,6 +75,7 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let slot_type: String = table.get("slot_type")?;
         let prerequisite_tech: Option<String> = table.get("prerequisite_tech")?;
 
@@ -88,6 +91,7 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
         result.push(ModuleDefinition {
             id,
             name,
+            description,
             slot_type,
             modifiers,
             weapon,
@@ -110,6 +114,7 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let hull_id: String = table.get("hull")?;
 
         // Parse modules array
@@ -118,6 +123,7 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
         result.push(ShipDesignDefinition {
             id,
             name,
+            description,
             hull_id,
             modules,
         });

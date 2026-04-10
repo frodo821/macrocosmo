@@ -13,6 +13,7 @@ use crate::modifier::ModifiedValue;
 pub struct SpeciesDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub base_growth_rate: f64,
     /// job_id -> bonus ModifiedValue (base=1.0 + bonus, modifiers for techs etc.)
     pub job_bonuses: HashMap<String, ModifiedValue>,
@@ -76,6 +77,7 @@ impl ColonyPopulation {
 pub struct JobDefinition {
     pub id: String,
     pub label: String,
+    pub description: String,
     /// resource_type -> amount per pop per hexady
     pub base_output: HashMap<String, Amt>,
 }
@@ -332,6 +334,7 @@ mod tests {
         registry.insert(SpeciesDefinition {
             id: "human".to_string(),
             name: "Human".to_string(),
+            description: String::new(),
             base_growth_rate: 0.01,
             job_bonuses: HashMap::new(),
         });
@@ -349,6 +352,7 @@ mod tests {
         registry.insert(JobDefinition {
             id: "miner".to_string(),
             label: "Miner".to_string(),
+            description: String::new(),
             base_output: {
                 let mut m = HashMap::new();
                 m.insert("minerals".to_string(), Amt::new(0, 600));

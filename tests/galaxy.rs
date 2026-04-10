@@ -18,6 +18,7 @@ fn test_galaxy_generation_uses_types() {
     star_reg.types.push(StarTypeDefinition {
         id: "test_star".to_string(),
         name: "Test Star".to_string(),
+        description: String::new(),
         color: [1.0, 1.0, 1.0],
         planet_lambda: 2.0,
         max_planets: 5,
@@ -30,6 +31,7 @@ fn test_galaxy_generation_uses_types() {
     planet_reg.types.push(PlanetTypeDefinition {
         id: "test_planet".to_string(),
         name: "Test Planet".to_string(),
+        description: String::new(),
         base_habitability: 0.7,
         base_slots: 4,
         resource_bias: ResourceBias {
@@ -90,6 +92,7 @@ fn test_system_modifiers_on_star_systems() {
     star_reg.types.push(StarTypeDefinition {
         id: "test_star".to_string(),
         name: "Test Star".to_string(),
+        description: String::new(),
         color: [1.0, 1.0, 1.0],
         planet_lambda: 2.0,
         max_planets: 3,
@@ -102,6 +105,7 @@ fn test_system_modifiers_on_star_systems() {
     planet_reg.types.push(PlanetTypeDefinition {
         id: "test_planet".to_string(),
         name: "Test Planet".to_string(),
+        description: String::new(),
         base_habitability: 0.7,
         base_slots: 4,
         resource_bias: ResourceBias {

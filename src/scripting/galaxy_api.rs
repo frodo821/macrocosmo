@@ -5,6 +5,7 @@ use bevy::prelude::*;
 pub struct StarTypeDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub color: [f32; 3],
     pub planet_lambda: f64,
     pub max_planets: usize,
@@ -17,6 +18,7 @@ pub struct StarTypeDefinition {
 pub struct PlanetTypeDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub base_habitability: f64,
     pub base_slots: usize,
     pub resource_bias: ResourceBias,
@@ -53,6 +55,7 @@ pub fn parse_star_types(lua: &mlua::Lua) -> Result<Vec<StarTypeDefinition>, mlua
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
 
         let color_table: mlua::Table = table.get("color")?;
         let r: f32 = color_table.get("r")?;
@@ -67,6 +70,7 @@ pub fn parse_star_types(lua: &mlua::Lua) -> Result<Vec<StarTypeDefinition>, mlua
         result.push(StarTypeDefinition {
             id,
             name,
+            description,
             color: [r, g, b],
             planet_lambda,
             max_planets,
@@ -88,6 +92,7 @@ pub fn parse_planet_types(lua: &mlua::Lua) -> Result<Vec<PlanetTypeDefinition>, 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let base_habitability: f64 = table.get("base_habitability")?;
         let base_slots: usize = table.get("base_slots")?;
         let weight: f64 = table.get("weight")?;
@@ -100,6 +105,7 @@ pub fn parse_planet_types(lua: &mlua::Lua) -> Result<Vec<PlanetTypeDefinition>, 
         result.push(PlanetTypeDefinition {
             id,
             name,
+            description,
             base_habitability,
             base_slots,
             resource_bias: ResourceBias {

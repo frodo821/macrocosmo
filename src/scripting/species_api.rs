@@ -14,6 +14,7 @@ pub fn parse_species_definitions(lua: &mlua::Lua) -> Result<Vec<SpeciesDefinitio
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let growth_rate: f64 = table.get::<Option<f64>>("growth_rate")?.unwrap_or(0.01);
 
         // Parse job_bonuses table (optional): { miner = 0.1, researcher = 0.2, ... }
@@ -32,6 +33,7 @@ pub fn parse_species_definitions(lua: &mlua::Lua) -> Result<Vec<SpeciesDefinitio
         result.push(SpeciesDefinition {
             id,
             name,
+            description,
             base_growth_rate: growth_rate,
             job_bonuses,
         });
@@ -50,6 +52,7 @@ pub fn parse_job_definitions(lua: &mlua::Lua) -> Result<Vec<JobDefinition>, mlua
 
         let id: String = table.get("id")?;
         let label: String = table.get("label")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
 
         // Parse base_output table (optional): { minerals = 0.6, energy = 0.5, ... }
         let mut base_output = HashMap::new();
@@ -64,6 +67,7 @@ pub fn parse_job_definitions(lua: &mlua::Lua) -> Result<Vec<JobDefinition>, mlua
         result.push(JobDefinition {
             id,
             label,
+            description,
             base_output,
         });
     }

@@ -318,6 +318,7 @@ fn default_star_types() -> Vec<StarTypeDefinition> {
     vec![StarTypeDefinition {
         id: "default".to_string(),
         name: "Star".to_string(),
+        description: String::new(),
         color: [1.0, 1.0, 0.9],
         planet_lambda: 2.0,
         max_planets: 3,
@@ -331,6 +332,7 @@ fn default_planet_types() -> Vec<PlanetTypeDefinition> {
     vec![PlanetTypeDefinition {
         id: "default".to_string(),
         name: "Planet".to_string(),
+        description: String::new(),
         base_habitability: 0.5,
         base_slots: 4,
         resource_bias: ResourceBias {

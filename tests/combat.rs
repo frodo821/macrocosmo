@@ -36,6 +36,7 @@ fn test_hostile_destroyed_when_hp_zero() {
         macrocosmo::ship_design::ModuleDefinition {
             id: "test_laser".to_string(),
             name: "Test Laser".to_string(),
+            description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -211,6 +212,7 @@ fn test_combat_takes_multiple_ticks() {
         macrocosmo::ship_design::ModuleDefinition {
             id: "small_laser".to_string(),
             name: "Small Laser".to_string(),
+            description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -290,6 +292,7 @@ fn test_shield_regenerates() {
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "shield_gen".to_string(),
             name: "Shield Generator".to_string(),
+            description: String::new(),
             slot_type: "utility".to_string(),
             modifiers: vec![
                 macrocosmo::ship_design::ModuleModifier {
@@ -358,6 +361,7 @@ fn test_shield_regen_caps_at_max() {
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "big_shield".to_string(),
             name: "Big Shield".to_string(),
+            description: String::new(),
             slot_type: "utility".to_string(),
             modifiers: vec![
                 macrocosmo::ship_design::ModuleModifier {
@@ -434,6 +438,7 @@ fn test_combat_damages_3_layers() {
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "armor_plating".to_string(),
             name: "Armor Plating".to_string(),
+            description: String::new(),
             slot_type: "utility".to_string(),
             modifiers: vec![macrocosmo::ship_design::ModuleModifier {
                 target: "ship.armor_max".to_string(),
@@ -445,6 +450,7 @@ fn test_combat_damages_3_layers() {
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "shield_unit".to_string(),
             name: "Shield Unit".to_string(),
+            description: String::new(),
             slot_type: "utility".to_string(),
             modifiers: vec![macrocosmo::ship_design::ModuleModifier {
                 target: "ship.shield_max".to_string(),
@@ -570,6 +576,7 @@ fn test_weapon_cooldown() {
     module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
         id: "fast_gun".to_string(),
         name: "Fast Gun".to_string(),
+            description: String::new(),
         slot_type: "weapon".to_string(),
         modifiers: Vec::new(),
         weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -583,6 +590,7 @@ fn test_weapon_cooldown() {
     module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
         id: "slow_gun".to_string(),
         name: "Slow Gun".to_string(),
+            description: String::new(),
         slot_type: "weapon".to_string(),
         modifiers: Vec::new(),
         weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -668,6 +676,7 @@ fn test_shield_piercing() {
         macrocosmo::ship_design::ModuleDefinition {
             id: "shield_piercer".to_string(),
             name: "Shield Piercer".to_string(),
+            description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -754,6 +763,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
         macrocosmo::ship_design::ModuleDefinition {
             id: "roe_laser".to_string(),
             name: "ROE Laser".to_string(),
+            description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -891,6 +901,7 @@ fn test_aggressive_ships_engage_combat() {
         macrocosmo::ship_design::ModuleDefinition {
             id: "aggro_laser".to_string(),
             name: "Aggro Laser".to_string(),
+            description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -966,6 +977,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
         macrocosmo::ship_design::ModuleDefinition {
             id: "def_laser".to_string(),
             name: "Defensive Laser".to_string(),
+            description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -1041,6 +1053,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
         macrocosmo::ship_design::ModuleDefinition {
             id: "mix_laser".to_string(),
             name: "Mix Laser".to_string(),
+            description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
@@ -1191,6 +1204,7 @@ fn test_galaxy_has_hostiles() {
     star_reg.types.push(StarTypeDefinition {
         id: "test_star".to_string(),
         name: "Test Star".to_string(),
+        description: String::new(),
         color: [1.0, 1.0, 1.0],
         planet_lambda: 2.0,
         max_planets: 3,
@@ -1203,6 +1217,7 @@ fn test_galaxy_has_hostiles() {
     planet_reg.types.push(PlanetTypeDefinition {
         id: "test_planet".to_string(),
         name: "Test Planet".to_string(),
+        description: String::new(),
         base_habitability: 0.7,
         base_slots: 4,
         resource_bias: ResourceBias { minerals: 1.0, energy: 1.0, research: 1.0 },

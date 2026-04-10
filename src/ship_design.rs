@@ -38,6 +38,7 @@ pub struct HullSlot {
 pub struct HullDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub base_hp: f64,
     pub base_speed: f64,
     pub base_evasion: f64,
@@ -95,6 +96,7 @@ pub struct ModuleModifier {
 pub struct ModuleDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub slot_type: String,
     pub modifiers: Vec<ModuleModifier>,
     pub weapon: Option<WeaponStats>,
@@ -130,6 +132,7 @@ pub struct DesignSlotAssignment {
 pub struct ShipDesignDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub hull_id: String,
     pub modules: Vec<DesignSlotAssignment>,
 }
@@ -317,6 +320,7 @@ mod tests {
         registry.insert(HullDefinition {
             id: "corvette".to_string(),
             name: "Corvette".to_string(),
+            description: String::new(),
             base_hp: 50.0,
             base_speed: 0.75,
             base_evasion: 30.0,
@@ -346,6 +350,7 @@ mod tests {
         registry.insert(ModuleDefinition {
             id: "ftl_drive".to_string(),
             name: "FTL Drive".to_string(),
+            description: String::new(),
             slot_type: "engine".to_string(),
             modifiers: vec![ModuleModifier {
                 target: "ship.ftl_range".to_string(),
@@ -375,6 +380,7 @@ mod tests {
         registry.insert(ShipDesignDefinition {
             id: "explorer_mk1".to_string(),
             name: "Explorer Mk.I".to_string(),
+            description: String::new(),
             hull_id: "corvette".to_string(),
             modules: vec![
                 DesignSlotAssignment {

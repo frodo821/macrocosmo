@@ -1385,6 +1385,7 @@ fn test_hull_modifiers_applied_to_ship() {
         hull_registry.insert(HullDefinition {
             id: "scout_hull".to_string(),
             name: "Scout Hull".to_string(),
+            description: String::new(),
             base_hp: 40.0,
             base_speed: 0.85,
             base_evasion: 35.0,
