@@ -1,5 +1,6 @@
 pub mod building_api;
 pub mod event_api;
+pub mod galaxy_api;
 pub mod lifecycle;
 pub mod modifier_api;
 pub mod species_api;
@@ -85,6 +86,32 @@ impl ScriptEngine {
             Ok(())
         })?;
         globals.set("define_building", define_building)?;
+
+        // Accumulator table for star type definitions
+        let star_type_defs = lua.create_table()?;
+        globals.set("_star_type_definitions", star_type_defs)?;
+
+        // define_star_type(table) -- appends a star type definition table
+        let define_star_type = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_star_type_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_star_type", define_star_type)?;
+
+        // Accumulator table for planet type definitions
+        let planet_type_defs = lua.create_table()?;
+        globals.set("_planet_type_definitions", planet_type_defs)?;
+
+        // define_planet_type(table) -- appends a planet type definition table
+        let define_planet_type = lua.create_function(|lua, table: mlua::Table| {
+            let defs: mlua::Table = lua.globals().get("_planet_type_definitions")?;
+            let len = defs.len()?;
+            defs.set(len + 1, table)?;
+            Ok(())
+        })?;
+        globals.set("define_planet_type", define_planet_type)?;
 
         // --- #45: Global param / flag Lua bindings ---
 

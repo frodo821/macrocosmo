@@ -1,7 +1,11 @@
 use bevy::prelude::*;
 use rand::Rng;
+use std::path::Path;
 
 use crate::components::Position;
+use crate::scripting::galaxy_api::{
+    PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition, StarTypeRegistry,
+};
 use crate::ship::Owner;
 use crate::technology::TechKnowledge;
 
@@ -9,7 +13,13 @@ pub struct GalaxyPlugin;
 
 impl Plugin for GalaxyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, generate_galaxy);
+        app.init_resource::<StarTypeRegistry>()
+            .init_resource::<PlanetTypeRegistry>()
+            .add_systems(
+                Startup,
+                load_galaxy_types.after(crate::scripting::init_scripting),
+            )
+            .add_systems(Startup, generate_galaxy.after(load_galaxy_types));
     }
 }
 
@@ -21,6 +31,8 @@ pub struct StarSystem {
     pub surveyed: bool,
     /// Whether this system is the capital
     pub is_capital: bool,
+    /// Star type id from Lua definitions (e.g. "yellow_dwarf")
+    pub star_type: String,
 }
 
 /// A planet orbiting a star system.
@@ -29,9 +41,11 @@ pub struct Planet {
     pub name: String,
     /// The parent star system entity.
     pub system: Entity,
+    /// Planet type id from Lua definitions (e.g. "terrestrial")
+    pub planet_type: String,
 }
 
-/// Convert a 1-based index to a Roman numeral string (up to 10).
+/// Convert a 1-based index to a Roman numeral string (up to 12).
 pub fn roman_numeral(n: usize) -> &'static str {
     match n {
         1 => "I",
@@ -44,6 +58,8 @@ pub fn roman_numeral(n: usize) -> &'static str {
         8 => "VIII",
         9 => "IX",
         10 => "X",
+        11 => "XI",
+        12 => "XII",
         _ => "?",
     }
 }
@@ -129,6 +145,68 @@ pub struct PortFacility {
     pub partner: Entity,
 }
 
+/// Sample from Poisson distribution using Knuth's algorithm.
+/// Clamps result to [1, max].
+pub fn poisson_sample(rng: &mut impl Rng, lambda: f64, max: usize) -> usize {
+    let l = (-lambda).exp();
+    let mut k: usize = 0;
+    let mut p: f64 = 1.0;
+    loop {
+        k += 1;
+        p *= rng.random::<f64>();
+        if p <= l {
+            break;
+        }
+    }
+    (k - 1).max(1).min(max)
+}
+
+/// Convert a continuous habitability score to a Habitability enum value.
+fn habitability_from_score(score: f64) -> Habitability {
+    if score >= 0.8 {
+        Habitability::Ideal
+    } else if score >= 0.5 {
+        Habitability::Adequate
+    } else if score >= 0.2 {
+        Habitability::Marginal
+    } else if score > 0.0 {
+        Habitability::Barren
+    } else {
+        Habitability::GasGiant
+    }
+}
+
+/// Convert a resource bias value to a ResourceLevel using a random roll.
+fn resource_level_from_bias(rng: &mut impl Rng, bias: f64) -> ResourceLevel {
+    let roll: f64 = rng.random::<f64>() * bias;
+    if roll > 0.8 {
+        ResourceLevel::Rich
+    } else if roll > 0.4 {
+        ResourceLevel::Moderate
+    } else if roll > 0.1 {
+        ResourceLevel::Poor
+    } else {
+        ResourceLevel::None
+    }
+}
+
+/// Select a random index from a slice of items using weighted random selection.
+/// Returns None if weights sum to zero or items is empty.
+fn weighted_random_index(rng: &mut impl Rng, weights: &[f64]) -> Option<usize> {
+    let total: f64 = weights.iter().sum();
+    if total <= 0.0 || weights.is_empty() {
+        return None;
+    }
+    let mut roll = rng.random::<f64>() * total;
+    for (i, &w) in weights.iter().enumerate() {
+        roll -= w;
+        if roll <= 0.0 {
+            return Some(i);
+        }
+    }
+    Some(weights.len() - 1)
+}
+
 fn random_habitability(rng: &mut impl Rng) -> Habitability {
     let roll: f32 = rng.random_range(0.0..1.0);
     if roll < 0.10 {
@@ -199,7 +277,98 @@ fn is_habitable(h: Habitability) -> bool {
     !matches!(h, Habitability::GasGiant)
 }
 
-pub fn generate_galaxy(mut commands: Commands) {
+/// Generate planet attributes from a planet type definition and star habitability bonus.
+fn planet_attributes_from_type(
+    rng: &mut impl Rng,
+    planet_type: &PlanetTypeDefinition,
+    habitability_bonus: f64,
+) -> SystemAttributes {
+    let score = (planet_type.base_habitability + habitability_bonus).clamp(0.0, 1.0);
+    let habitability = habitability_from_score(score);
+    SystemAttributes {
+        habitability,
+        mineral_richness: resource_level_from_bias(rng, planet_type.resource_bias.minerals),
+        energy_potential: resource_level_from_bias(rng, planet_type.resource_bias.energy),
+        research_potential: resource_level_from_bias(rng, planet_type.resource_bias.research),
+        max_building_slots: planet_type.base_slots as u8,
+    }
+}
+
+/// Hardcoded fallback star types when no Lua definitions are loaded.
+fn default_star_types() -> Vec<StarTypeDefinition> {
+    vec![StarTypeDefinition {
+        id: "default".to_string(),
+        name: "Star".to_string(),
+        color: [1.0, 1.0, 0.9],
+        planet_lambda: 2.0,
+        max_planets: 3,
+        habitability_bonus: 0.0,
+        weight: 1.0,
+    }]
+}
+
+/// Hardcoded fallback planet types when no Lua definitions are loaded.
+fn default_planet_types() -> Vec<PlanetTypeDefinition> {
+    vec![PlanetTypeDefinition {
+        id: "default".to_string(),
+        name: "Planet".to_string(),
+        base_habitability: 0.5,
+        base_slots: 4,
+        resource_bias: ResourceBias {
+            minerals: 1.0,
+            energy: 1.0,
+            research: 1.0,
+        },
+        weight: 1.0,
+    }]
+}
+
+/// Startup system that loads star and planet type definitions from Lua scripts.
+pub fn load_galaxy_types(
+    engine: Res<crate::scripting::ScriptEngine>,
+    mut star_registry: ResMut<StarTypeRegistry>,
+    mut planet_registry: ResMut<PlanetTypeRegistry>,
+) {
+    // Load star types
+    let star_dir = Path::new("scripts/stars");
+    if star_dir.exists() {
+        if let Err(e) = engine.load_directory(star_dir) {
+            warn!("Failed to load star type scripts: {e}");
+        }
+    }
+    match crate::scripting::galaxy_api::parse_star_types(engine.lua()) {
+        Ok(types) => {
+            info!("Loaded {} star type definitions", types.len());
+            star_registry.types = types;
+        }
+        Err(e) => {
+            warn!("Failed to parse star types: {e}");
+        }
+    }
+
+    // Load planet types
+    let planet_dir = Path::new("scripts/planets");
+    if planet_dir.exists() {
+        if let Err(e) = engine.load_directory(planet_dir) {
+            warn!("Failed to load planet type scripts: {e}");
+        }
+    }
+    match crate::scripting::galaxy_api::parse_planet_types(engine.lua()) {
+        Ok(types) => {
+            info!("Loaded {} planet type definitions", types.len());
+            planet_registry.types = types;
+        }
+        Err(e) => {
+            warn!("Failed to parse planet types: {e}");
+        }
+    }
+}
+
+pub fn generate_galaxy(
+    mut commands: Commands,
+    star_registry: Res<StarTypeRegistry>,
+    planet_registry: Res<PlanetTypeRegistry>,
+) {
     let mut rng = rand::rng();
     let num_systems = 100;
     let num_arms = 3;
@@ -207,6 +376,21 @@ pub fn generate_galaxy(mut commands: Commands) {
     let arm_twist = 2.5; // how tightly the arms spiral
     let arm_spread = 0.4; // angular spread of each arm
     let min_distance = 3.0_f64;
+
+    // Use registries or fallback defaults
+    let star_types = if star_registry.types.is_empty() {
+        default_star_types()
+    } else {
+        star_registry.types.clone()
+    };
+    let planet_types = if planet_registry.types.is_empty() {
+        default_planet_types()
+    } else {
+        planet_registry.types.clone()
+    };
+
+    let star_weights: Vec<f64> = star_types.iter().map(|s| s.weight).collect();
+    let planet_weights: Vec<f64> = planet_types.iter().map(|p| p.weight).collect();
 
     let mut systems: Vec<(String, [f64; 3])> = Vec::new();
     let mut attempts = 0;
@@ -273,14 +457,58 @@ pub fn generate_galaxy(mut commands: Commands) {
 
     let actual_count = systems.len();
 
-    // Generate attributes
-    let mut attributes: Vec<SystemAttributes> = Vec::with_capacity(actual_count);
-    for i in 0..actual_count {
-        if i == 0 {
-            attributes.push(capital_attributes(&mut rng));
+    // Assign a star type to each system
+    let mut system_star_types: Vec<usize> = Vec::with_capacity(actual_count);
+    for _ in 0..actual_count {
+        let idx = weighted_random_index(&mut rng, &star_weights).unwrap_or(0);
+        system_star_types.push(idx);
+    }
+
+    // For the "ensure habitable neighbours" pass we need to track per-system attributes
+    // of the first planet. We'll generate all planet data in a second pass.
+    // First, determine planet counts per system.
+    let mut planet_counts: Vec<usize> = Vec::with_capacity(actual_count);
+    for (i, &star_idx) in system_star_types.iter().enumerate() {
+        let star = &star_types[star_idx];
+        let count = if i == 0 {
+            // Capital always gets at least 2 planets
+            poisson_sample(&mut rng, star.planet_lambda, star.max_planets).max(2)
         } else {
-            attributes.push(random_attributes(&mut rng));
+            poisson_sample(&mut rng, star.planet_lambda, star.max_planets)
+        };
+        planet_counts.push(count);
+    }
+
+    // Generate planet data: Vec of (planet_type_idx, attributes) per system
+    struct PlanetData {
+        type_idx: usize,
+        attrs: SystemAttributes,
+    }
+    let mut all_planets: Vec<Vec<PlanetData>> = Vec::with_capacity(actual_count);
+    for (i, &star_idx) in system_star_types.iter().enumerate() {
+        let star = &star_types[star_idx];
+        let count = planet_counts[i];
+        let mut planets = Vec::with_capacity(count);
+        for p in 0..count {
+            if i == 0 && p == 0 {
+                // Capital's first planet: use capital attributes and a terrestrial type
+                let type_idx = planet_types
+                    .iter()
+                    .position(|pt| pt.id == "terrestrial")
+                    .unwrap_or(0);
+                planets.push(PlanetData {
+                    type_idx,
+                    attrs: capital_attributes(&mut rng),
+                });
+            } else {
+                let type_idx =
+                    weighted_random_index(&mut rng, &planet_weights).unwrap_or(0);
+                let pt = &planet_types[type_idx];
+                let attrs = planet_attributes_from_type(&mut rng, pt, star.habitability_bonus);
+                planets.push(PlanetData { type_idx, attrs });
+            }
         }
+        all_planets.push(planets);
     }
 
     // Ensure at least 2 habitable neighbours within 10 ly of capital
@@ -302,23 +530,33 @@ pub fn generate_galaxy(mut commands: Commands) {
         .map(|(i, _)| *i)
         .collect();
 
+    // Check if nearby systems have at least one habitable planet
     let habitable_count = nearby
         .iter()
-        .filter(|&&i| is_habitable(attributes[i].habitability))
+        .filter(|&&i| {
+            all_planets[i]
+                .iter()
+                .any(|pd| is_habitable(pd.attrs.habitability))
+        })
         .count();
 
-    // Ensure at least 2 habitable neighbours
     let needed = 2_usize.saturating_sub(habitable_count);
     let mut fixed = 0;
     for &idx in &nearby {
         if fixed >= needed {
             break;
         }
-        if !is_habitable(attributes[idx].habitability) {
-            attributes[idx].habitability = Habitability::Adequate;
-            attributes[idx].max_building_slots =
-                building_slots_for(Habitability::Adequate, &mut rng);
-            fixed += 1;
+        let has_habitable = all_planets[idx]
+            .iter()
+            .any(|pd| is_habitable(pd.attrs.habitability));
+        if !has_habitable {
+            // Fix the first planet to be Adequate
+            if let Some(first) = all_planets[idx].first_mut() {
+                first.attrs.habitability = Habitability::Adequate;
+                first.attrs.max_building_slots =
+                    building_slots_for(Habitability::Adequate, &mut rng);
+                fixed += 1;
+            }
         }
     }
 
@@ -329,17 +567,26 @@ pub fn generate_galaxy(mut commands: Commands) {
 
     for (i, (name, position)) in systems.iter().enumerate() {
         let is_capital = i == 0;
+        let star_idx = system_star_types[i];
+        let star_type = &star_types[star_idx];
+
         let star = StarSystem {
             name: name.clone(),
             surveyed: is_capital,
             is_capital,
+            star_type: star_type.id.clone(),
         };
 
         // Capital sovereignty will be set by update_sovereignty once
         // the empire entity is spawned; start with default for all.
         let sovereignty = Sovereignty::default();
 
-        let entity = commands.spawn((star, Position::from(*position), sovereignty, TechKnowledge::default()));
+        let entity = commands.spawn((
+            star,
+            Position::from(*position),
+            sovereignty,
+            TechKnowledge::default(),
+        ));
         let star_entity = entity.id();
 
         if gas_indices.contains(&i) && !is_capital {
@@ -347,32 +594,24 @@ pub fn generate_galaxy(mut commands: Commands) {
         }
 
         // Spawn planets for this star system
-        let num_planets = if is_capital {
-            // Capital always gets at least 2 planets so the first one gets the colony
-            rng.random_range(2..=3)
-        } else {
-            rng.random_range(1..=3)
-        };
-
-        for p in 0..num_planets {
+        for (p, planet_data) in all_planets[i].iter().enumerate() {
             let planet_name = format!("{} {}", name, roman_numeral(p + 1));
-            let planet_attrs = if is_capital && p == 0 {
-                // First planet of capital gets the capital attributes
-                attributes[i].clone()
-            } else {
-                random_attributes(&mut rng)
-            };
+            let planet_type = &planet_types[planet_data.type_idx];
 
             commands.spawn((
                 Planet {
                     name: planet_name,
                     system: star_entity,
+                    planet_type: planet_type.id.clone(),
                 },
-                planet_attrs,
+                planet_data.attrs.clone(),
                 Position::from(*position), // same position as star for now
             ));
         }
     }
 
-    info!("Galaxy generated: {} star systems (spiral, {} arms)", actual_count, num_arms);
+    info!(
+        "Galaxy generated: {} star systems (spiral, {} arms)",
+        actual_count, num_arms
+    );
 }

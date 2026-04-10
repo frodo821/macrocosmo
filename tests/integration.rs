@@ -442,6 +442,7 @@ fn all_systems_no_query_conflict() {
                 name: "Capital".into(),
                 surveyed: true,
                 is_capital: true,
+                star_type: "default".to_string(),
             },
             Position::from([0.0, 0.0, 0.0]),
             Sovereignty {
@@ -455,6 +456,7 @@ fn all_systems_no_query_conflict() {
             Planet {
                 name: "Capital I".into(),
                 system: capital,
+                planet_type: "default".to_string(),
             },
             SystemAttributes {
                 habitability: Habitability::Ideal,
@@ -474,6 +476,7 @@ fn all_systems_no_query_conflict() {
                 name: "Target".into(),
                 surveyed: false,
                 is_capital: false,
+                star_type: "default".to_string(),
             },
             Position::from([5.0, 0.0, 0.0]),
             Sovereignty::default(),
@@ -483,6 +486,7 @@ fn all_systems_no_query_conflict() {
         Planet {
             name: "Target I".into(),
             system: _target,
+            planet_type: "default".to_string(),
         },
         SystemAttributes {
             habitability: Habitability::Adequate,
@@ -501,6 +505,7 @@ fn all_systems_no_query_conflict() {
                 name: "Surveyed".into(),
                 surveyed: true,
                 is_capital: false,
+                star_type: "default".to_string(),
             },
             Position::from([10.0, 3.0, 0.0]),
             Sovereignty::default(),
@@ -510,6 +515,7 @@ fn all_systems_no_query_conflict() {
         Planet {
             name: "Surveyed I".into(),
             system: _surveyed,
+            planet_type: "default".to_string(),
         },
         SystemAttributes {
             habitability: Habitability::Marginal,
@@ -829,6 +835,7 @@ fn spawn_capital_system(world: &mut World, name: &str, pos: [f64; 3]) -> Entity 
                 name: name.to_string(),
                 surveyed: true,
                 is_capital: true,
+                star_type: "default".to_string(),
             },
             Position::from(pos),
             Sovereignty::default(),
@@ -838,6 +845,7 @@ fn spawn_capital_system(world: &mut World, name: &str, pos: [f64; 3]) -> Entity 
         Planet {
             name: format!("{} I", name),
             system: sys,
+            planet_type: "default".to_string(),
         },
         SystemAttributes {
             habitability: Habitability::Ideal,
@@ -3042,13 +3050,14 @@ fn test_tech_propagates_to_capital_immediately() {
             name: "Capital".into(),
             surveyed: true,
             is_capital: true,
+                star_type: "default".to_string(),
         },
         Position::from([0.0, 0.0, 0.0]),
         Sovereignty::default(),
         TechKnowledge::default(),
     )).id();
     app.world_mut().spawn((
-        Planet { name: "Capital I".into(), system: capital },
+        Planet { name: "Capital I".into(), system: capital , planet_type: "default".to_string() },
         SystemAttributes {
             habitability: Habitability::Ideal,
             mineral_richness: ResourceLevel::Moderate,
@@ -3103,13 +3112,14 @@ fn test_tech_propagates_to_remote_with_delay() {
             name: "Capital".into(),
             surveyed: true,
             is_capital: true,
+                star_type: "default".to_string(),
         },
         Position::from([0.0, 0.0, 0.0]),
         Sovereignty::default(),
         TechKnowledge::default(),
     )).id();
     app.world_mut().spawn((
-        Planet { name: "Capital I".into(), system: capital },
+        Planet { name: "Capital I".into(), system: capital , planet_type: "default".to_string() },
         SystemAttributes {
             habitability: Habitability::Ideal,
             mineral_richness: ResourceLevel::Moderate,
@@ -3126,13 +3136,14 @@ fn test_tech_propagates_to_remote_with_delay() {
             name: "Remote".into(),
             surveyed: true,
             is_capital: false,
+                star_type: "default".to_string(),
         },
         Position::from([1.0, 0.0, 0.0]),
         Sovereignty::default(),
         TechKnowledge::default(),
     )).id();
     app.world_mut().spawn((
-        Planet { name: "Remote I".into(), system: remote },
+        Planet { name: "Remote I".into(), system: remote , planet_type: "default".to_string() },
         SystemAttributes {
             habitability: Habitability::Adequate,
             mineral_richness: ResourceLevel::Moderate,
@@ -3214,13 +3225,14 @@ fn test_uncolonized_system_no_propagation() {
             name: "Capital".into(),
             surveyed: true,
             is_capital: true,
+                star_type: "default".to_string(),
         },
         Position::from([0.0, 0.0, 0.0]),
         Sovereignty::default(),
         TechKnowledge::default(),
     )).id();
     app.world_mut().spawn((
-        Planet { name: "Capital I".into(), system: capital },
+        Planet { name: "Capital I".into(), system: capital , planet_type: "default".to_string() },
         SystemAttributes {
             habitability: Habitability::Ideal,
             mineral_richness: ResourceLevel::Moderate,
@@ -3237,6 +3249,7 @@ fn test_uncolonized_system_no_propagation() {
             name: "Uncolonized".into(),
             surveyed: true,
             is_capital: false,
+                star_type: "default".to_string(),
         },
         Position::from([1.0, 0.0, 0.0]),
         Sovereignty::default(),
@@ -4349,4 +4362,81 @@ fn test_alert_cooldown() {
         .filter(|e| e.kind == GameEventKind::ResourceAlert)
         .count();
     assert!(count_3 >= 2, "Alert should fire again after cooldown expires");
+}
+
+// #93: Lua-defined star and planet types
+
+/// Generate a galaxy with star/planet type registries and verify that all stars
+/// and planets have their type fields set.
+#[test]
+fn test_galaxy_generation_uses_types() {
+    use macrocosmo::scripting::galaxy_api::{
+        PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition,
+        StarTypeRegistry,
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+
+    // Insert registries with test data
+    let mut star_reg = StarTypeRegistry::default();
+    star_reg.types.push(StarTypeDefinition {
+        id: "test_star".to_string(),
+        name: "Test Star".to_string(),
+        color: [1.0, 1.0, 1.0],
+        planet_lambda: 2.0,
+        max_planets: 5,
+        habitability_bonus: 0.0,
+        weight: 1.0,
+    });
+    app.insert_resource(star_reg);
+
+    let mut planet_reg = PlanetTypeRegistry::default();
+    planet_reg.types.push(PlanetTypeDefinition {
+        id: "test_planet".to_string(),
+        name: "Test Planet".to_string(),
+        base_habitability: 0.7,
+        base_slots: 4,
+        resource_bias: ResourceBias {
+            minerals: 1.0,
+            energy: 1.0,
+            research: 1.0,
+        },
+        weight: 1.0,
+    });
+    app.insert_resource(planet_reg);
+
+    // Run generate_galaxy as a one-shot system
+    app.add_systems(Startup, macrocosmo::galaxy::generate_galaxy);
+    app.update();
+
+    // Verify all stars have star_type set
+    let star_count = app
+        .world_mut()
+        .query::<&StarSystem>()
+        .iter(app.world())
+        .count();
+    assert!(star_count > 0, "Should have generated star systems");
+
+    for star in app.world_mut().query::<&StarSystem>().iter(app.world()) {
+        assert_eq!(
+            star.star_type, "test_star",
+            "All stars should have star_type 'test_star'"
+        );
+    }
+
+    // Verify all planets have planet_type set
+    let planet_count = app
+        .world_mut()
+        .query::<&Planet>()
+        .iter(app.world())
+        .count();
+    assert!(planet_count > 0, "Should have generated planets");
+
+    for planet in app.world_mut().query::<&Planet>().iter(app.world()) {
+        assert_eq!(
+            planet.planet_type, "test_planet",
+            "All planets should have planet_type 'test_planet'"
+        );
+    }
 }

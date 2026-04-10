@@ -303,6 +303,7 @@ pub fn spawn_test_system_with_planet(
                 name: name.to_string(),
                 surveyed,
                 is_capital: false,
+                star_type: "default".to_string(),
             },
             Position::from(pos),
             Sovereignty::default(),
@@ -315,6 +316,7 @@ pub fn spawn_test_system_with_planet(
             Planet {
                 name: format!("{} I", name),
                 system: sys,
+                planet_type: "default".to_string(),
             },
             SystemAttributes {
                 habitability: hab,
