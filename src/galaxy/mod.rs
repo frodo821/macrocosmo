@@ -19,10 +19,33 @@ pub struct StarSystem {
     pub name: String,
     /// Whether this system has been surveyed (precise data available)
     pub surveyed: bool,
-    /// Whether this system is colonized
-    pub colonized: bool,
     /// Whether this system is the capital
     pub is_capital: bool,
+}
+
+/// A planet orbiting a star system.
+#[derive(Component)]
+pub struct Planet {
+    pub name: String,
+    /// The parent star system entity.
+    pub system: Entity,
+}
+
+/// Convert a 1-based index to a Roman numeral string (up to 10).
+pub fn roman_numeral(n: usize) -> &'static str {
+    match n {
+        1 => "I",
+        2 => "II",
+        3 => "III",
+        4 => "IV",
+        5 => "V",
+        6 => "VI",
+        7 => "VII",
+        8 => "VIII",
+        9 => "IX",
+        10 => "X",
+        _ => "?",
+    }
 }
 
 /// Physical and economic attributes of a star system.
@@ -309,7 +332,6 @@ pub fn generate_galaxy(mut commands: Commands) {
         let star = StarSystem {
             name: name.clone(),
             surveyed: is_capital,
-            colonized: is_capital,
             is_capital,
         };
 
@@ -317,11 +339,38 @@ pub fn generate_galaxy(mut commands: Commands) {
         // the empire entity is spawned; start with default for all.
         let sovereignty = Sovereignty::default();
 
-        let entity = commands.spawn((star, Position::from(*position), attributes[i].clone(), sovereignty, TechKnowledge::default()));
-        let entity_id = entity.id();
+        let entity = commands.spawn((star, Position::from(*position), sovereignty, TechKnowledge::default()));
+        let star_entity = entity.id();
 
         if gas_indices.contains(&i) && !is_capital {
-            commands.entity(entity_id).insert(ObscuredByGas);
+            commands.entity(star_entity).insert(ObscuredByGas);
+        }
+
+        // Spawn planets for this star system
+        let num_planets = if is_capital {
+            // Capital always gets at least 2 planets so the first one gets the colony
+            rng.random_range(2..=3)
+        } else {
+            rng.random_range(1..=3)
+        };
+
+        for p in 0..num_planets {
+            let planet_name = format!("{} {}", name, roman_numeral(p + 1));
+            let planet_attrs = if is_capital && p == 0 {
+                // First planet of capital gets the capital attributes
+                attributes[i].clone()
+            } else {
+                random_attributes(&mut rng)
+            };
+
+            commands.spawn((
+                Planet {
+                    name: planet_name,
+                    system: star_entity,
+                },
+                planet_attrs,
+                Position::from(*position), // same position as star for now
+            ));
         }
     }
 

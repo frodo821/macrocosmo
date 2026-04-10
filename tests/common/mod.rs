@@ -7,7 +7,7 @@ use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
-use macrocosmo::galaxy::{Habitability, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::{Empire, PlayerEmpire};
@@ -275,23 +275,47 @@ pub fn advance_time(app: &mut App, hexadies: i64) {
 }
 
 /// Spawn a star system entity with the given attributes.
+/// Also spawns a default planet. Returns the star system entity.
+/// Use `spawn_test_system_with_planet` to get both entities.
 pub fn spawn_test_system(
     world: &mut World,
     name: &str,
     pos: [f64; 3],
     hab: Habitability,
     surveyed: bool,
-    colonized: bool,
+    _colonized: bool,
 ) -> Entity {
-    world
+    let (sys, _planet) = spawn_test_system_with_planet(world, name, pos, hab, surveyed);
+    sys
+}
+
+/// Spawn a star system with a default planet. Returns (system_entity, planet_entity).
+pub fn spawn_test_system_with_planet(
+    world: &mut World,
+    name: &str,
+    pos: [f64; 3],
+    hab: Habitability,
+    surveyed: bool,
+) -> (Entity, Entity) {
+    let sys = world
         .spawn((
             StarSystem {
                 name: name.to_string(),
                 surveyed,
-                colonized,
                 is_capital: false,
             },
             Position::from(pos),
+            Sovereignty::default(),
+            TechKnowledge::default(),
+        ))
+        .id();
+
+    let planet = world
+        .spawn((
+            Planet {
+                name: format!("{} I", name),
+                system: sys,
+            },
             SystemAttributes {
                 habitability: hab,
                 mineral_richness: ResourceLevel::Moderate,
@@ -299,24 +323,34 @@ pub fn spawn_test_system(
                 research_potential: ResourceLevel::Moderate,
                 max_building_slots: 4,
             },
-            Sovereignty::default(),
-            TechKnowledge::default(),
+            Position::from(pos),
         ))
-        .id()
+        .id();
+
+    (sys, planet)
 }
 
-/// Spawn a colony with all required components at the given system entity.
+/// Spawn a colony with all required components.
+/// `system_or_planet` can be either a StarSystem entity (will auto-find first planet)
+/// or a Planet entity directly.
 pub fn spawn_test_colony(
     world: &mut World,
-    system: Entity,
+    system_or_planet: Entity,
     minerals: Amt,
     energy: Amt,
     buildings: Vec<Option<BuildingType>>,
 ) -> Entity {
+    // Check if the entity is a Planet or a StarSystem; find the planet entity accordingly
+    let planet = if world.get::<Planet>(system_or_planet).is_some() {
+        system_or_planet
+    } else {
+        // It's a system entity; find its first planet
+        find_planet(world, system_or_planet)
+    };
     world
         .spawn((
             Colony {
-                system,
+                planet,
                 population: 100.0,
                 growth_rate: 0.01,
             },
@@ -344,6 +378,23 @@ pub fn spawn_test_colony(
             FoodConsumption::default(),
         ))
         .id()
+}
+
+/// Find the first planet entity belonging to a star system.
+/// Useful in tests when you only have the system entity.
+pub fn find_planet(world: &mut World, system: Entity) -> Entity {
+    let mut query = world.query::<(Entity, &Planet)>();
+    let result: Option<Entity> = {
+        let mut found = None;
+        for (entity, planet) in query.iter(world) {
+            if planet.system == system {
+                found = Some(entity);
+                break;
+            }
+        }
+        found
+    };
+    result.unwrap_or_else(|| panic!("No planet found for system {:?}", system))
 }
 
 /// Spawn a ship with all standard components at the given system.

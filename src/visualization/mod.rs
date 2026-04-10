@@ -6,7 +6,7 @@ use bevy_egui::EguiContexts;
 
 use crate::colony::{Buildings, Colony};
 use crate::components::Position;
-use crate::galaxy::{ObscuredByGas, StarSystem};
+use crate::galaxy::{ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Ship, ShipState, ShipType};
@@ -98,19 +98,28 @@ fn center_camera_on_capital(
 fn spawn_star_visuals(
     mut commands: Commands,
     stars: Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
+    colonies: Query<&Colony>,
+    planets: Query<&Planet>,
     view: Res<GalaxyView>,
 ) {
+    // Build a set of colonized system entities
+    let colonized_systems: std::collections::HashSet<Entity> = colonies
+        .iter()
+        .filter_map(|c| c.system(&planets))
+        .collect();
+
     for (entity, star, pos, obscured) in &stars {
         let x = pos.x as f32 * view.scale;
         let y = pos.y as f32 * view.scale;
         let is_obscured = obscured.is_some();
+        let is_colonized = colonized_systems.contains(&entity);
 
-        let color = star_color(star, is_obscured);
+        let color = star_color(star, is_colonized, is_obscured);
 
         // Determine base size based on star status
         let size = if star.is_capital {
             16.0
-        } else if star.colonized {
+        } else if is_colonized {
             14.0
         } else if star.surveyed {
             12.0
@@ -121,7 +130,7 @@ fn spawn_star_visuals(
         // Spawn glow halo behind the star (skip for obscured stars)
         if !is_obscured {
             let [r, g, b, _] = color.to_srgba().to_f32_array();
-            let glow_alpha = if star.is_capital || star.colonized {
+            let glow_alpha = if star.is_capital || is_colonized {
                 0.2
             } else {
                 0.15
@@ -156,7 +165,7 @@ fn spawn_star_visuals(
         if star.is_capital || star.surveyed {
             let label_alpha = if star.is_capital {
                 1.0
-            } else if star.colonized {
+            } else if is_colonized {
                 0.9
             } else {
                 0.7
@@ -175,12 +184,12 @@ fn spawn_star_visuals(
     }
 }
 
-fn star_color(star: &StarSystem, obscured: bool) -> Color {
+fn star_color(star: &StarSystem, colonized: bool, obscured: bool) -> Color {
     if obscured {
         Color::srgba(0.2, 0.2, 0.25, 0.15) // Barely visible
     } else if star.is_capital {
         Color::srgb(1.0, 0.84, 0.0) // Gold
-    } else if star.colonized {
+    } else if colonized {
         Color::srgb(0.3, 1.0, 0.3) // Bright green, more saturated
     } else if star.surveyed {
         Color::srgb(0.5, 0.7, 1.0) // Bright blue
@@ -195,12 +204,19 @@ fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
     mut visuals: Query<(&StarVisual, &mut Sprite, Option<&StarGlow>, Option<&BaseStarSize>)>,
     empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
+    colonies: Query<&Colony>,
+    planets: Query<&Planet>,
     clock: Res<GameClock>,
     camera_q: Query<&Projection, With<Camera2d>>,
 ) {
     let Ok(knowledge) = empire_q.single() else {
         return;
     };
+    // Build colonized systems set
+    let colonized_systems: std::collections::HashSet<Entity> = colonies
+        .iter()
+        .filter_map(|c| c.system(&planets))
+        .collect();
     // Get the current camera scale for zoom-responsive sizing
     let camera_scale = camera_q
         .iter()
@@ -218,7 +234,8 @@ fn update_star_colors(
 
     for (vis, mut sprite, glow, base_size) in &mut visuals {
         if let Ok((_, star, obscured)) = stars.get(vis.system_entity) {
-            let base_color = star_color(star, obscured.is_some());
+            let is_colonized = colonized_systems.contains(&vis.system_entity);
+            let base_color = star_color(star, is_colonized, obscured.is_some());
             let alpha_multiplier = match knowledge.info_age(vis.system_entity, clock.elapsed) {
                 None => 1.0, // No knowledge: keep base color as-is (already dim for unknown)
                 Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
@@ -228,7 +245,7 @@ fn update_star_colors(
 
             if glow.is_some() {
                 // Glow sprites: use base color with low alpha, also apply age fading
-                let glow_alpha = if star.is_capital || star.colonized {
+                let glow_alpha = if star.is_capital || is_colonized {
                     0.2
                 } else {
                     0.15
@@ -296,7 +313,7 @@ pub fn camera_controls(
 fn draw_galaxy_overlay(
     mut gizmos: Gizmos,
     player_q: Query<&StationedAt, With<Player>>,
-    stars: Query<(&StarSystem, &Position)>,
+    stars: Query<(Entity, &StarSystem, &Position)>,
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
     selected: Res<SelectedSystem>,
@@ -304,6 +321,7 @@ fn draw_galaxy_overlay(
     ships: Query<(Entity, &Ship, &ShipState)>,
     empire_params_q: Query<&GlobalParams, With<PlayerEmpire>>,
     colonies: Query<(&Colony, &Buildings)>,
+    planets: Query<&Planet>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -311,7 +329,7 @@ fn draw_galaxy_overlay(
     let Ok(stationed) = player_q.single() else {
         return;
     };
-    let Ok((_player_star, player_pos)) = stars.get(stationed.system) else {
+    let Ok((_, _player_star, player_pos)) = stars.get(stationed.system) else {
         return;
     };
 
@@ -326,9 +344,15 @@ fn draw_galaxy_overlay(
         Color::srgba(1.0, 0.84, 0.0, pulse),
     );
 
+    // Build colonized systems set
+    let colonized_system_set: std::collections::HashSet<Entity> = colonies
+        .iter()
+        .filter_map(|(c, _)| c.system(&planets))
+        .collect();
+
     // Draw rings around colonized stars
-    for (star, star_pos) in &stars {
-        if star.colonized && !star.is_capital {
+    for (entity, star, star_pos) in &stars {
+        if colonized_system_set.contains(&entity) && !star.is_capital {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
             gizmos.circle_2d(
@@ -364,7 +388,7 @@ fn draw_galaxy_overlay(
         Color::srgba(1.0, 0.6, 0.0, horizon_pulse),
     );
 
-    for (star, star_pos) in &stars {
+    for (_, star, star_pos) in &stars {
         if star.surveyed && !star.is_capital {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
@@ -378,7 +402,7 @@ fn draw_galaxy_overlay(
 
     // Selection ring around selected system
     if let Some(selected_entity) = selected.0 {
-        if let Ok((_star, sel_pos)) = stars.get(selected_entity) {
+        if let Ok((_, _star, sel_pos)) = stars.get(selected_entity) {
             let sx = sel_pos.x as f32 * view.scale;
             let sy = sel_pos.y as f32 * view.scale;
             let sel_pulse = (clock.as_years_f64() as f32 * 4.0).sin() * 0.2 + 0.8;
@@ -397,7 +421,7 @@ fn draw_galaxy_overlay(
             if effective_range > 0.0 {
                 let ship_pos = match state {
                     ShipState::Docked { system } => {
-                        stars.get(*system).ok().map(|(_, pos)| {
+                        stars.get(*system).ok().map(|(_, _, pos)| {
                             Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
                         })
                     }
@@ -419,11 +443,11 @@ fn draw_galaxy_overlay(
     let port_systems: Vec<Entity> = colonies
         .iter()
         .filter(|(_, bldgs)| bldgs.has_port())
-        .map(|(col, _)| col.system)
+        .filter_map(|(col, _)| col.system(&planets))
         .collect();
 
     for system_entity in &port_systems {
-        if let Ok((_star, star_pos)) = stars.get(*system_entity) {
+        if let Ok((_, _star, star_pos)) = stars.get(*system_entity) {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
             let port_pulse = (clock.as_years_f64() as f32 * 2.0).sin() * 0.15 + 0.6;

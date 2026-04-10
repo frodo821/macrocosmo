@@ -101,7 +101,7 @@ fn initialize_capital_knowledge(
         name: capital.name.clone(),
         position: capital_pos.as_array(),
         surveyed: capital.surveyed,
-        colonized: capital.colonized,
+        colonized: true, // Capital is always colonized
         population: 1.0,
         production: 1.0,
         ..default()
@@ -123,6 +123,8 @@ pub fn propagate_knowledge(
     systems: Query<(Entity, &StarSystem, &Position)>,
     positions: Query<&Position>,
     mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    colonies: Query<&crate::colony::Colony>,
+    planets: Query<&crate::galaxy::Planet>,
 ) {
     let Ok(mut store) = empire_q.single_mut() else {
         return;
@@ -154,11 +156,13 @@ pub fn propagate_knowledge(
             continue;
         }
 
+        // Derive colonized status from whether any colony has a planet in this system
+        let is_colonized = colonies.iter().any(|c| c.system(&planets) == Some(entity));
         let snapshot = SystemSnapshot {
             name: star.name.clone(),
             position: sys_pos.as_array(),
             surveyed: star.surveyed,
-            colonized: star.colonized,
+            colonized: is_colonized,
             ..default()
         };
 

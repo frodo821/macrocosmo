@@ -11,7 +11,7 @@ use crate::colony::{AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colon
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{StarSystem, SystemAttributes};
+use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Cargo, CommandQueue, Ship, ShipState};
@@ -61,7 +61,7 @@ pub fn draw_all_ui(
     )>,
     mut ships_query: Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     mut command_queues: Query<&mut CommandQueue>,
-    positions: Query<&Position>,
+    positions_and_planets: (Query<&Position>, Query<&Planet>),
     mut empire_q: Query<
         (
             &KnowledgeStore,
@@ -77,6 +77,7 @@ pub fn draw_all_ui(
     >,
     mut game_events: MessageWriter<GameEvent>,
 ) {
+    let (positions, planets) = positions_and_planets;
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let Ok((knowledge, command_log, global_params, construction_params, tech_tree, research_pool, mut research_queue, authority_params)) =
         empire_q.single_mut()
@@ -119,9 +120,11 @@ pub fn draw_all_ui(
             }
             colony_count += 1;
             // Check if capital
-            if let Ok((_, star, _, _)) = stars.get(colony.system) {
-                if star.is_capital {
-                    has_capital = true;
+            if let Some(sys) = colony.system(&planets) {
+                if let Ok((_, star, _, _)) = stars.get(sys) {
+                    if star.is_capital {
+                        has_capital = true;
+                    }
                 }
             }
         }
@@ -141,6 +144,7 @@ pub fn draw_all_ui(
         &ships_query,
         &mut selected_system,
         &mut selected_ship,
+        &planets,
     );
 
     side_panel::draw_system_panel(
@@ -155,6 +159,7 @@ pub fn draw_all_ui(
         knowledge,
         &clock,
         construction_params,
+        &planets,
     );
 
     let scrap_action = side_panel::draw_ship_panel(
@@ -165,6 +170,7 @@ pub fn draw_all_ui(
         &mut colonies,
         &stars,
         &command_queues,
+        &planets,
     );
 
     // #79: Handle ship scrapping — despawn entity, refund resources, fire events
@@ -191,6 +197,8 @@ pub fn draw_all_ui(
 
     // #76: Collect pending ship commands from context menu (light-speed delay)
     let mut pending_ship_commands = Vec::new();
+    // Need a read-only Colony query for context menu colonization check
+    let colony_ro: Vec<Colony> = colonies.iter().map(|(_, c, _, _, _, _, _, _, _)| Colony { planet: c.planet, population: c.population, growth_rate: c.growth_rate }).collect();
     side_panel::draw_context_menu(
         ctx,
         &mut context_menu,
@@ -203,6 +211,8 @@ pub fn draw_all_ui(
         global_params,
         &player_q,
         &mut pending_ship_commands,
+        &colony_ro,
+        &planets,
     );
     // Spawn any delayed commands as entities
     for pending_cmd in pending_ship_commands {
@@ -217,10 +227,12 @@ pub fn draw_all_ui(
         for (_, colony_data, _, stockpile, _, _, _, _, _) in colonies.iter() {
             if let Some(s) = stockpile {
                 // Check if the colony's system is the capital
-                if let Ok((_, star, _, _)) = stars.get(colony_data.system) {
-                    if star.is_capital {
-                        result = Some((s.minerals, s.energy));
-                        break;
+                if let Some(sys) = colony_data.system(&planets) {
+                    if let Ok((_, star, _, _)) = stars.get(sys) {
+                        if star.is_capital {
+                            result = Some((s.minerals, s.energy));
+                            break;
+                        }
                     }
                 }
             }
@@ -253,11 +265,13 @@ pub fn draw_all_ui(
                 // Find and deduct from capital colony
                 for (_, colony_data, _, stockpile, _, _, _, _, _) in colonies.iter_mut() {
                     if let Some(mut s) = stockpile {
-                        if let Ok((_, star, _, _)) = stars.get(colony_data.system) {
-                            if star.is_capital {
-                                s.minerals = s.minerals.sub(mineral_cost);
-                                s.energy = s.energy.sub(energy_cost);
-                                break;
+                        if let Some(sys) = colony_data.system(&planets) {
+                            if let Ok((_, star, _, _)) = stars.get(sys) {
+                                if star.is_capital {
+                                    s.minerals = s.minerals.sub(mineral_cost);
+                                    s.energy = s.energy.sub(energy_cost);
+                                    break;
+                                }
                             }
                         }
                     }

@@ -3,7 +3,7 @@ use bevy_egui::egui;
 
 use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
 use crate::components::Position;
-use crate::galaxy::{StarSystem, SystemAttributes};
+use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
@@ -48,6 +48,7 @@ pub fn draw_system_panel(
     knowledge: &KnowledgeStore,
     clock: &GameClock,
     construction_params: &ConstructionParams,
+    planets: &Query<&Planet>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -115,8 +116,9 @@ pub fn draw_system_panel(
                 }
             }
 
-            // Colony info
-            if star.colonized {
+            // Colony info: check if any colony's planet belongs to this system
+            let has_colony = colonies.iter().any(|(_, c, _, _, _, _, _, _, _)| c.system(planets) == Some(sel_entity));
+            if has_colony {
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Colony")
@@ -129,7 +131,7 @@ pub fn draw_system_panel(
                 for (_colony_entity, colony, production, stockpile, build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
                     colonies.iter_mut()
                 {
-                    if colony.system != sel_entity {
+                    if colony.system(planets) != Some(sel_entity) {
                         continue;
                     }
 
@@ -221,7 +223,7 @@ pub fn draw_system_panel(
                         let mut ship_maintenance = Amt::ZERO;
                         let mut ships_based_here = 0u32;
                         for (_, ship, _, _) in ships_query.iter() {
-                            if ship.home_port == colony.system {
+                            if colony.system(planets) == Some(ship.home_port) {
                                 ship_maintenance = ship_maintenance.add(ship.ship_type.maintenance_cost());
                                 ships_based_here += 1;
                             }
@@ -611,6 +613,7 @@ pub fn draw_ship_panel(
     )>,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     command_queues: &Query<&mut CommandQueue>,
+    planets: &Query<&Planet>,
 ) -> Option<ShipScrapAction> {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -641,7 +644,7 @@ pub fn draw_ship_panel(
         // Check if docked at a system that has a colony (for "Set Home Port" button)
         let docked_at_colony = docked_system.and_then(|dock_sys| {
             colonies.iter().find_map(|(_, col, _, _, _, _, _, _, _)| {
-                if col.system == dock_sys { Some(dock_sys) } else { None }
+                if col.system(planets) == Some(dock_sys) { Some(dock_sys) } else { None }
             })
         });
         Some((
@@ -700,7 +703,7 @@ pub fn draw_ship_panel(
     // Entity of the colony at the docked system (for cargo transfers)
     let colony_entity_at_dock: Option<Entity> = docked_system.and_then(|dock_sys| {
         colonies.iter().find_map(|(e, col, _, _, _, _, _, _, _)| {
-            if col.system == dock_sys { Some(e) } else { None }
+            if col.system(planets) == Some(dock_sys) { Some(e) } else { None }
         })
     });
 
@@ -897,6 +900,8 @@ pub fn draw_context_menu(
     global_params: &GlobalParams,
     player_q: &Query<&StationedAt, With<Player>>,
     pending_commands_out: &mut Vec<crate::ship::PendingShipCommand>,
+    colonies: &[Colony],
+    planets: &Query<&Planet>,
 ) {
     if !context_menu.open {
         return;
@@ -986,7 +991,7 @@ pub fn draw_context_menu(
     let dist = physics::distance_ly(origin_pos, target_pos);
     let target_name = target_star.name.clone();
     let target_surveyed = target_star.surveyed;
-    let target_colonized = target_star.colonized;
+    let target_colonized = colonies.iter().any(|c| planets.get(c.planet).ok().map(|p| p.system) == Some(target_entity));
     let target_habitable = target_attrs
         .map(|a| {
             a.habitability != crate::galaxy::Habitability::Barren

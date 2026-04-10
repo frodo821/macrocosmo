@@ -5,7 +5,7 @@ use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
-use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::{ModifiedValue, Modifier};
 use macrocosmo::physics::{light_delay_hexadies, sublight_travel_hexadies};
@@ -16,7 +16,7 @@ use macrocosmo::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 use macrocosmo::events::{EventLog, GameEventKind};
 
-use common::{advance_time, full_test_app, spawn_test_colony, spawn_test_system, test_app, test_app_with_event_log};
+use common::{advance_time, find_planet, full_test_app, spawn_test_colony, spawn_test_system, test_app, test_app_with_event_log};
 
 /// Find the player empire entity in the world.
 fn empire_entity(world: &mut World) -> Entity {
@@ -236,9 +236,10 @@ fn test_production_accumulates_resources() {
     );
 
     // Spawn colony with production rates 5/3/1 and zero stockpile
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 50.0,
             growth_rate: 0.005,
         },
@@ -301,9 +302,10 @@ fn test_build_queue_spawns_ship() {
     );
 
     // Colony with ample resources and a build order for an Explorer
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
@@ -433,18 +435,27 @@ fn test_knowledge_propagation_light_delay() {
 fn all_systems_no_query_conflict() {
     let mut app = common::full_test_app();
 
-    let world = app.world_mut();
-
     // Capital star system with all components
-    let capital = world
+    let capital = app.world_mut()
         .spawn((
             StarSystem {
                 name: "Capital".into(),
                 surveyed: true,
-                colonized: true,
                 is_capital: true,
             },
             Position::from([0.0, 0.0, 0.0]),
+            Sovereignty {
+                owner: None,
+                control_score: 100.0,
+            },
+        ))
+        .id();
+    let capital_planet = app.world_mut()
+        .spawn((
+            Planet {
+                name: "Capital I".into(),
+                system: capital,
+            },
             SystemAttributes {
                 habitability: Habitability::Ideal,
                 mineral_richness: ResourceLevel::Moderate,
@@ -452,62 +463,71 @@ fn all_systems_no_query_conflict() {
                 research_potential: ResourceLevel::Moderate,
                 max_building_slots: 6,
             },
-            Sovereignty {
-                owner: None,
-                control_score: 100.0,
-            },
+            Position::from([0.0, 0.0, 0.0]),
         ))
         .id();
 
     // Second star system (unsurveyed target)
-    let _target = world
+    let _target = app.world_mut()
         .spawn((
             StarSystem {
                 name: "Target".into(),
                 surveyed: false,
-                colonized: false,
                 is_capital: false,
             },
             Position::from([5.0, 0.0, 0.0]),
-            SystemAttributes {
-                habitability: Habitability::Adequate,
-                mineral_richness: ResourceLevel::Rich,
-                energy_potential: ResourceLevel::Poor,
-                research_potential: ResourceLevel::Moderate,
-                max_building_slots: 4,
-            },
             Sovereignty::default(),
         ))
         .id();
+    app.world_mut().spawn((
+        Planet {
+            name: "Target I".into(),
+            system: _target,
+        },
+        SystemAttributes {
+            habitability: Habitability::Adequate,
+            mineral_richness: ResourceLevel::Rich,
+            energy_potential: ResourceLevel::Poor,
+            research_potential: ResourceLevel::Moderate,
+            max_building_slots: 4,
+        },
+        Position::from([5.0, 0.0, 0.0]),
+    ));
 
     // Third star system (surveyed, not colonized)
-    let _surveyed = world
+    let _surveyed = app.world_mut()
         .spawn((
             StarSystem {
                 name: "Surveyed".into(),
                 surveyed: true,
-                colonized: false,
                 is_capital: false,
             },
             Position::from([10.0, 3.0, 0.0]),
-            SystemAttributes {
-                habitability: Habitability::Marginal,
-                mineral_richness: ResourceLevel::Poor,
-                energy_potential: ResourceLevel::Rich,
-                research_potential: ResourceLevel::None,
-                max_building_slots: 3,
-            },
             Sovereignty::default(),
         ))
         .id();
+    app.world_mut().spawn((
+        Planet {
+            name: "Surveyed I".into(),
+            system: _surveyed,
+        },
+        SystemAttributes {
+            habitability: Habitability::Marginal,
+            mineral_richness: ResourceLevel::Poor,
+            energy_potential: ResourceLevel::Rich,
+            research_potential: ResourceLevel::None,
+            max_building_slots: 3,
+        },
+        Position::from([10.0, 3.0, 0.0]),
+    ));
 
     // Player stationed at capital
-    world.spawn((Player, StationedAt { system: capital }));
+    app.world_mut().spawn((Player, StationedAt { system: capital }));
 
     // Colony at capital
-    world.spawn((
+    app.world_mut().spawn((
         Colony {
-            system: capital,
+            planet: capital_planet,
             population: 100.0,
             growth_rate: 0.01,
         },
@@ -545,7 +565,7 @@ fn all_systems_no_query_conflict() {
     ));
 
     // Explorer docked at capital
-    world.spawn((
+    app.world_mut().spawn((
         Ship {
             name: "Explorer-1".into(),
             ship_type: ShipType::Explorer,
@@ -564,7 +584,7 @@ fn all_systems_no_query_conflict() {
     ));
 
     // Colony ship docked at capital
-    world.spawn((
+    app.world_mut().spawn((
         Ship {
             name: "Colony Ship-1".into(),
             ship_type: ShipType::ColonyShip,
@@ -583,7 +603,7 @@ fn all_systems_no_query_conflict() {
     ));
 
     // Courier docked at capital
-    world.spawn((
+    app.world_mut().spawn((
         Ship {
             name: "Courier-1".into(),
             ship_type: ShipType::Courier,
@@ -801,27 +821,34 @@ fn test_combat_takes_multiple_ticks() {
 
 // Authority production and consumption (#73)
 
-/// Helper: spawn a star system marked as capital
+/// Helper: spawn a star system marked as capital with a planet
 fn spawn_capital_system(world: &mut World, name: &str, pos: [f64; 3]) -> Entity {
-    world
+    let sys = world
         .spawn((
             StarSystem {
                 name: name.to_string(),
                 surveyed: true,
-                colonized: true,
                 is_capital: true,
             },
             Position::from(pos),
-            SystemAttributes {
-                habitability: Habitability::Ideal,
-                mineral_richness: ResourceLevel::Moderate,
-                energy_potential: ResourceLevel::Moderate,
-                research_potential: ResourceLevel::Moderate,
-                max_building_slots: 4,
-            },
             Sovereignty::default(),
         ))
-        .id()
+        .id();
+    world.spawn((
+        Planet {
+            name: format!("{} I", name),
+            system: sys,
+        },
+        SystemAttributes {
+            habitability: Habitability::Ideal,
+            mineral_richness: ResourceLevel::Moderate,
+            energy_potential: ResourceLevel::Moderate,
+            research_potential: ResourceLevel::Moderate,
+            max_building_slots: 4,
+        },
+        Position::from(pos),
+    ));
+    sys
 }
 
 #[test]
@@ -831,9 +858,10 @@ fn test_capital_produces_authority() {
     let cap_sys = spawn_capital_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0]);
 
     // Spawn capital colony with zero authority
+    let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
     let colony_entity = app.world_mut().spawn((
         Colony {
-            system: cap_sys,
+            planet: planet_cap_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
@@ -887,9 +915,10 @@ fn test_empire_scale_authority_cost() {
     );
 
     // Capital colony starts with some authority
+    let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
     let capital_colony = app.world_mut().spawn((
         Colony {
-            system: cap_sys,
+            planet: planet_cap_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
@@ -916,9 +945,10 @@ fn test_empire_scale_authority_cost() {
     )).id();
 
     // Remote colony (non-capital)
+    let planet_remote_sys = find_planet(app.world_mut(), remote_sys);
     app.world_mut().spawn((
         Colony {
-            system: remote_sys,
+            planet: planet_remote_sys,
             population: 50.0,
             growth_rate: 0.005,
         },
@@ -997,9 +1027,10 @@ fn test_authority_deficit_reduces_non_capital_production() {
 
     // Capital colony: authority = 0, so after tick_authority it stays 0
     // because cost (3 * 0.5 = 1.5) > production (1.0), net = -0.5, capped to 0
+    let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
     app.world_mut().spawn((
         Colony {
-            system: cap_sys,
+            planet: planet_cap_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
@@ -1026,9 +1057,10 @@ fn test_authority_deficit_reduces_non_capital_production() {
     ));
 
     // Three remote colonies with known production rates
+    let planet_remote_sys = find_planet(app.world_mut(), remote_sys);
     let remote_colony = app.world_mut().spawn((
         Colony {
-            system: remote_sys,
+            planet: planet_remote_sys,
             population: 50.0,
             growth_rate: 0.005,
         },
@@ -1054,9 +1086,10 @@ fn test_authority_deficit_reduces_non_capital_production() {
         FoodConsumption::default(),
     )).id();
 
+    let planet_remote_sys2 = find_planet(app.world_mut(), remote_sys2);
     app.world_mut().spawn((
         Colony {
-            system: remote_sys2,
+            planet: planet_remote_sys2,
             population: 50.0,
             growth_rate: 0.005,
         },
@@ -1082,9 +1115,10 @@ fn test_authority_deficit_reduces_non_capital_production() {
         FoodConsumption::default(),
     ));
 
+    let planet_remote_sys3 = find_planet(app.world_mut(), remote_sys3);
     app.world_mut().spawn((
         Colony {
-            system: remote_sys3,
+            planet: planet_remote_sys3,
             population: 50.0,
             growth_rate: 0.005,
         },
@@ -1145,9 +1179,10 @@ fn test_farm_produces_food() {
     );
 
     // Colony with food_per_hexadies=5.0, a Farm building (+5.0 food bonus), starting food=0
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -1227,9 +1262,10 @@ fn test_authority_deficit_penalizes_food_production() {
     app.world_mut().entity_mut(cap_sys).get_mut::<StarSystem>().unwrap().is_capital = true;
 
     // Capital colony with 0 authority (deficit)
+    let planet_cap_sys = find_planet(app.world_mut(), cap_sys);
     app.world_mut().spawn((
         Colony {
-            system: cap_sys,
+            planet: planet_cap_sys,
             population: 1.0,
             growth_rate: 0.0,
         },
@@ -1269,9 +1305,10 @@ fn test_authority_deficit_penalizes_food_production() {
         .collect();
 
     for &sys in &remote_systems {
+        let planet_sys = find_planet(app.world_mut(), sys);
         app.world_mut().spawn((
             Colony {
-                system: sys,
+                planet: planet_sys,
                 population: 1.0,
                 growth_rate: 0.0,
             },
@@ -1299,9 +1336,10 @@ fn test_authority_deficit_penalizes_food_production() {
     advance_time(&mut app, 10);
 
     // Check a remote colony's food: 10.0/hd * 0.5 (penalty) * 10 hd = 50.0, minus consumption
+    let remote_planet_0 = find_planet(app.world_mut(), remote_systems[0]);
     let mut q = app.world_mut().query::<(&Colony, &ResourceStockpile)>();
     for (colony, stockpile) in q.iter(app.world()) {
-        if colony.system == remote_systems[0] {
+        if colony.planet == remote_planet_0 {
             // Without penalty: 100.0 food. With 0.5 penalty: ~50.0 food (minus small consumption)
             assert!(
                 stockpile.food.to_f64() < 60.0,
@@ -1333,9 +1371,10 @@ fn test_maintenance_deducts_energy_integration() {
     );
 
     // Colony with Mine (0.2 E/hd) and Shipyard (1.0 E/hd) = 1.2 E/hd total maintenance
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -1399,9 +1438,11 @@ fn test_population_capped_by_carrying_capacity() {
         true,
     );
 
+    let planet_sys = find_planet(app.world_mut(), sys);
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 70.0,
             growth_rate: 0.05,
         },
@@ -1468,10 +1509,10 @@ fn test_habitability_affects_growth_rate() {
         true,
     );
 
-    let colony_bundle = |sys| {
+    let colony_bundle = |planet_entity: Entity| {
         (
             Colony {
-                system: sys,
+                planet: planet_entity,
                 population: 10.0,
                 growth_rate: 0.05,
             },
@@ -1496,8 +1537,10 @@ fn test_habitability_affects_growth_rate() {
         )
     };
 
-    ideal_app.world_mut().spawn(colony_bundle(ideal_sys));
-    marginal_app.world_mut().spawn(colony_bundle(marginal_sys));
+    let ideal_planet = find_planet(ideal_app.world_mut(), ideal_sys);
+    ideal_app.world_mut().spawn(colony_bundle(ideal_planet));
+    let marginal_planet = find_planet(marginal_app.world_mut(), marginal_sys);
+    marginal_app.world_mut().spawn(colony_bundle(marginal_planet));
 
     for _ in 0..60 {
         advance_time(&mut ideal_app, 1);
@@ -1543,9 +1586,10 @@ fn test_food_limits_carrying_capacity() {
         true,
     );
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 40.0,
             growth_rate: 0.05,
         },
@@ -1599,9 +1643,10 @@ fn test_resource_capacity_clamps_stockpile() {
     );
 
     // Colony with very high production but low capacity
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -1678,9 +1723,10 @@ fn test_modifier_affects_production_output() {
         on_expire_event: None,
     });
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -1743,9 +1789,10 @@ fn test_building_queue_completes_construction() {
     let (minerals_cost, energy_cost) = BuildingType::Mine.build_cost();
     let build_time = BuildingType::Mine.build_time();
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -1811,9 +1858,10 @@ fn test_demolish_building_removes_from_slot() {
     let demo_time = BuildingType::Mine.demolition_time();
     let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -1877,9 +1925,10 @@ fn test_demolish_refunds_resources() {
     let demo_time = BuildingType::Mine.demolition_time();
     let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -1950,9 +1999,10 @@ fn test_demolish_takes_time() {
     let demo_time = BuildingType::Shipyard.demolition_time(); // 30 / 2 = 15
     let (m_refund, e_refund) = BuildingType::Shipyard.demolition_refund();
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -2124,9 +2174,10 @@ fn test_maintenance_modifier_affects_energy() {
         on_expire_event: None,
     });
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -2205,9 +2256,10 @@ fn test_food_consumption_modifier() {
         on_expire_event: None,
     });
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 100.0,
             growth_rate: 0.0,
         },
@@ -2286,9 +2338,10 @@ fn test_authority_params_modifier() {
     // Mark as capital
     app.world_mut().get_mut::<StarSystem>(sys).unwrap().is_capital = true;
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -2343,9 +2396,10 @@ fn test_production_focus_weights() {
         true,
     );
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -2415,9 +2469,10 @@ fn test_build_queue_partial_resources() {
     let (minerals_cost, energy_cost) = BuildingType::Mine.build_cost();
     let build_time = BuildingType::Mine.build_time();
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -2492,9 +2547,10 @@ fn test_build_queue_requires_shipyard() {
     );
 
     // Colony WITHOUT Shipyard, but with a ship build order
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.0,
         },
@@ -2566,9 +2622,10 @@ fn test_starvation_reduces_population() {
         true,
     );
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 100.0,
             growth_rate: 0.01,
         },
@@ -2621,9 +2678,10 @@ fn test_starvation_population_floor() {
         true,
     );
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 1.5,
             growth_rate: 0.01,
         },
@@ -2983,10 +3041,14 @@ fn test_tech_propagates_to_capital_immediately() {
         StarSystem {
             name: "Capital".into(),
             surveyed: true,
-            colonized: true,
             is_capital: true,
         },
         Position::from([0.0, 0.0, 0.0]),
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+    app.world_mut().spawn((
+        Planet { name: "Capital I".into(), system: capital },
         SystemAttributes {
             habitability: Habitability::Ideal,
             mineral_richness: ResourceLevel::Moderate,
@@ -2994,9 +3056,8 @@ fn test_tech_propagates_to_capital_immediately() {
             research_potential: ResourceLevel::Moderate,
             max_building_slots: 4,
         },
-        Sovereignty::default(),
-        TechKnowledge::default(),
-    )).id();
+        Position::from([0.0, 0.0, 0.0]),
+    ));
 
     // Spawn a colony at the capital
     spawn_test_colony(
@@ -3041,10 +3102,14 @@ fn test_tech_propagates_to_remote_with_delay() {
         StarSystem {
             name: "Capital".into(),
             surveyed: true,
-            colonized: true,
             is_capital: true,
         },
         Position::from([0.0, 0.0, 0.0]),
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+    app.world_mut().spawn((
+        Planet { name: "Capital I".into(), system: capital },
         SystemAttributes {
             habitability: Habitability::Ideal,
             mineral_richness: ResourceLevel::Moderate,
@@ -3052,19 +3117,22 @@ fn test_tech_propagates_to_remote_with_delay() {
             research_potential: ResourceLevel::Moderate,
             max_building_slots: 4,
         },
-        Sovereignty::default(),
-        TechKnowledge::default(),
-    )).id();
+        Position::from([0.0, 0.0, 0.0]),
+    ));
 
     // Remote system at 1 LY (light delay = 60 hexadies)
     let remote = app.world_mut().spawn((
         StarSystem {
             name: "Remote".into(),
             surveyed: true,
-            colonized: true,
             is_capital: false,
         },
         Position::from([1.0, 0.0, 0.0]),
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+    app.world_mut().spawn((
+        Planet { name: "Remote I".into(), system: remote },
         SystemAttributes {
             habitability: Habitability::Adequate,
             mineral_richness: ResourceLevel::Moderate,
@@ -3072,9 +3140,8 @@ fn test_tech_propagates_to_remote_with_delay() {
             research_potential: ResourceLevel::Moderate,
             max_building_slots: 4,
         },
-        Sovereignty::default(),
-        TechKnowledge::default(),
-    )).id();
+        Position::from([1.0, 0.0, 0.0]),
+    ));
 
     // Colonies at both systems
     spawn_test_colony(
@@ -3146,10 +3213,14 @@ fn test_uncolonized_system_no_propagation() {
         StarSystem {
             name: "Capital".into(),
             surveyed: true,
-            colonized: true,
             is_capital: true,
         },
         Position::from([0.0, 0.0, 0.0]),
+        Sovereignty::default(),
+        TechKnowledge::default(),
+    )).id();
+    app.world_mut().spawn((
+        Planet { name: "Capital I".into(), system: capital },
         SystemAttributes {
             habitability: Habitability::Ideal,
             mineral_richness: ResourceLevel::Moderate,
@@ -3157,26 +3228,17 @@ fn test_uncolonized_system_no_propagation() {
             research_potential: ResourceLevel::Moderate,
             max_building_slots: 4,
         },
-        Sovereignty::default(),
-        TechKnowledge::default(),
-    )).id();
+        Position::from([0.0, 0.0, 0.0]),
+    ));
 
     // Uncolonized system (no colony spawned for it)
     let _uncolonized = app.world_mut().spawn((
         StarSystem {
             name: "Uncolonized".into(),
             surveyed: true,
-            colonized: false,
             is_capital: false,
         },
         Position::from([1.0, 0.0, 0.0]),
-        SystemAttributes {
-            habitability: Habitability::Adequate,
-            mineral_richness: ResourceLevel::Moderate,
-            energy_potential: ResourceLevel::Moderate,
-            research_potential: ResourceLevel::Moderate,
-            max_building_slots: 4,
-        },
         Sovereignty::default(),
         TechKnowledge::default(),
     )).id();
@@ -3855,9 +3917,10 @@ fn test_job_auto_assignment() {
     );
 
     // Spawn a colony with population 10, job slots [miner:5, farmer:5]
+    let planet_sys = find_planet(app.world_mut(), sys);
     let colony = app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 10.0,
             growth_rate: 0.01,
         },
@@ -3950,9 +4013,10 @@ fn test_job_auto_assignment_excess_population() {
         true,
     );
 
+    let planet_sys = find_planet(app.world_mut(), sys);
     let colony = app.world_mut().spawn((
         Colony {
-            system: sys,
+            planet: planet_sys,
             population: 15.0,
             growth_rate: 0.01,
         },
@@ -4136,8 +4200,9 @@ fn test_food_depletion_alert() {
     );
 
     // Colony with food = 0
+    let planet_sys = find_planet(app.world_mut(), sys);
     let _colony = app.world_mut().spawn((
-        Colony { system: sys, population: 100.0, growth_rate: 0.01 },
+        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
         ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::units(500),
@@ -4185,8 +4250,9 @@ fn test_energy_depletion_alert() {
     );
 
     // Colony with energy = 0
+    let planet_sys = find_planet(app.world_mut(), sys);
     let _colony = app.world_mut().spawn((
-        Colony { system: sys, population: 100.0, growth_rate: 0.01 },
+        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
         ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::ZERO,
@@ -4235,8 +4301,9 @@ fn test_alert_cooldown() {
         true,
     );
     // Colony with food = 0 and no food production
+    let planet_sys = find_planet(app.world_mut(), sys);
     let _colony = app.world_mut().spawn((
-        Colony { system: sys, population: 100.0, growth_rate: 0.01 },
+        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
         ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::units(500),

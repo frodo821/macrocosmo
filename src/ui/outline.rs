@@ -3,7 +3,7 @@ use bevy_egui::egui;
 
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production, ResourceStockpile};
 use crate::components::Position;
-use crate::galaxy::{StarSystem, SystemAttributes};
+use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::ship::{Cargo, Ship, ShipState, ShipType};
 use crate::visualization::{SelectedShip, SelectedSystem};
 
@@ -26,6 +26,7 @@ pub fn draw_outline(
     ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
     selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
+    planets: &Query<&Planet>,
 ) {
     egui::SidePanel::left("outline_panel")
         .min_width(180.0)
@@ -37,10 +38,12 @@ pub fn draw_outline(
             // Collect systems that have colonies (owned systems)
             let mut owned_systems: Vec<(Entity, String, bool)> = Vec::new();
             for (_, colony, _, _, _, _, _, _, _) in colonies.iter() {
-                if let Ok((entity, star, _, _)) = stars.get(colony.system) {
-                    // Avoid duplicates if multiple colonies on same system
-                    if !owned_systems.iter().any(|(e, _, _)| *e == entity) {
-                        owned_systems.push((entity, star.name.clone(), star.is_capital));
+                if let Some(sys) = colony.system(planets) {
+                    if let Ok((entity, star, _, _)) = stars.get(sys) {
+                        // Avoid duplicates if multiple colonies on same system
+                        if !owned_systems.iter().any(|(e, _, _)| *e == entity) {
+                            owned_systems.push((entity, star.name.clone(), star.is_capital));
+                        }
                     }
                 }
             }

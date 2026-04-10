@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::amount::{Amt, SignedAmt};
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{StarSystem, SystemAttributes, Sovereignty};
+use crate::galaxy::{Planet, StarSystem, SystemAttributes, Sovereignty};
 use crate::modifier::{ModifiedValue, Modifier};
 use crate::scripting::building_api::{parse_building_definitions, BuildingRegistry};
 use crate::ship::{spawn_ship, Owner, Ship, ShipState, ShipType};
@@ -54,9 +54,16 @@ impl Plugin for ColonyPlugin {
 
 #[derive(Component)]
 pub struct Colony {
-    pub system: Entity,
+    pub planet: Entity,
     pub population: f64,
     pub growth_rate: f64,
+}
+
+impl Colony {
+    /// Get the star system entity by looking up the planet's parent.
+    pub fn system(&self, planets: &Query<&crate::galaxy::Planet>) -> Option<Entity> {
+        planets.get(self.planet).ok().map(|p| p.system)
+    }
 }
 
 #[derive(Component)]
@@ -445,66 +452,75 @@ pub fn load_building_registry(
 
 pub fn spawn_capital_colony(
     mut commands: Commands,
-    query: Query<(Entity, &StarSystem, &SystemAttributes)>,
+    systems: Query<(Entity, &StarSystem)>,
+    planets: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
 ) {
-    for (entity, system, attributes) in query.iter() {
-        if system.is_capital {
-            let num_slots = attributes.max_building_slots as usize;
-            let mut slots = vec![None; num_slots];
-            // Capital starts with 1 Mine, 1 PowerPlant, 1 Shipyard (#35), and 1 Farm (#72)
-            if num_slots > 0 {
-                slots[0] = Some(BuildingType::Mine);
-            }
-            if num_slots > 1 {
-                slots[1] = Some(BuildingType::PowerPlant);
-            }
-            if num_slots > 2 {
-                slots[2] = Some(BuildingType::Shipyard);
-            }
-            if num_slots > 3 {
-                slots[3] = Some(BuildingType::Farm);
-            }
-            commands.spawn((
-                Colony {
-                    system: entity,
-                    population: 100.0,
-                    growth_rate: 0.01,
-                },
-                ResourceStockpile {
-                    minerals: Amt::units(500),
-                    energy: Amt::units(500),
-                    research: Amt::ZERO,
-                    food: Amt::units(200),
-                    authority: Amt::ZERO,
-                },
-                ResourceCapacity::default(),
-                Production {
-                    minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                    energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                    research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-                    food_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                },
-                BuildQueue {
-                    queue: Vec::new(),
-                },
-                Buildings { slots },
-                BuildingQueue::default(),
-                ProductionFocus::default(),
-                MaintenanceCost::default(),
-                FoodConsumption::default(),
-                ColonyPopulation {
-                    species: vec![ColonySpecies {
-                        species_id: "human".to_string(),
-                        population: 100,
-                    }],
-                },
-                ColonyJobs::default(),
-            ));
-            info!("Capital colony spawned on {}", system.name);
-            return;
-        }
+    // Find the capital star system
+    let capital_system = systems.iter().find(|(_, s)| s.is_capital);
+    let Some((capital_entity, capital_star)) = capital_system else {
+        warn!("No capital star system found; capital colony not created");
+        return;
+    };
+
+    // Find the first planet of the capital system
+    let capital_planet = planets.iter().find(|(_, p, _)| p.system == capital_entity);
+    let Some((planet_entity, _, attributes)) = capital_planet else {
+        warn!("No planet found for capital system; capital colony not created");
+        return;
+    };
+
+    let num_slots = attributes.max_building_slots as usize;
+    let mut slots = vec![None; num_slots];
+    // Capital starts with 1 Mine, 1 PowerPlant, 1 Shipyard (#35), and 1 Farm (#72)
+    if num_slots > 0 {
+        slots[0] = Some(BuildingType::Mine);
     }
-    warn!("No capital star system found; capital colony not created");
+    if num_slots > 1 {
+        slots[1] = Some(BuildingType::PowerPlant);
+    }
+    if num_slots > 2 {
+        slots[2] = Some(BuildingType::Shipyard);
+    }
+    if num_slots > 3 {
+        slots[3] = Some(BuildingType::Farm);
+    }
+    commands.spawn((
+        Colony {
+            planet: planet_entity,
+            population: 100.0,
+            growth_rate: 0.01,
+        },
+        ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(200),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+            food_per_hexadies: ModifiedValue::new(Amt::units(5)),
+        },
+        BuildQueue {
+            queue: Vec::new(),
+        },
+        Buildings { slots },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+        ColonyPopulation {
+            species: vec![ColonySpecies {
+                species_id: "human".to_string(),
+                population: 100,
+            }],
+        },
+        ColonyJobs::default(),
+    ));
+    info!("Capital colony spawned on {}", capital_star.name);
 }
 
 /// Remove expired timed modifiers from all ModifiedValue-containing components.
@@ -648,15 +664,18 @@ pub fn sync_maintenance_modifiers(
     mut colonies: Query<(&Colony, &mut MaintenanceCost, Option<&Buildings>)>,
     ships: Query<(Entity, &Ship)>,
     stars: Query<&StarSystem>,
+    planets: Query<&Planet>,
 ) {
     // Find capital system for fallback
     let capital_entity: Option<Entity> = {
         let mut found = None;
         for (colony, _, _) in colonies.iter() {
-            if let Ok(star) = stars.get(colony.system) {
-                if star.is_capital {
-                    found = Some(colony.system);
-                    break;
+            if let Some(sys) = colony.system(&planets) {
+                if let Ok(star) = stars.get(sys) {
+                    if star.is_capital {
+                        found = Some(sys);
+                        break;
+                    }
                 }
             }
         }
@@ -666,7 +685,7 @@ pub fn sync_maintenance_modifiers(
     // Collect colony system entities for home_port validation
     let colony_systems: std::collections::HashSet<Entity> = colonies
         .iter()
-        .map(|(c, _, _)| c.system)
+        .filter_map(|(c, _, _)| c.system(&planets))
         .collect();
 
     // Collect ship maintenance costs grouped by effective home_port
@@ -715,18 +734,21 @@ pub fn sync_maintenance_modifiers(
         }
 
         // Ship maintenance modifiers
-        if let Some(ship_list) = ship_costs_by_system.get(&colony.system) {
-            for (ship_id, cost) in ship_list {
-                maint.energy_per_hexadies.push_modifier(Modifier {
-                    id: ship_id.clone(),
-                    label: format!("Ship {}", ship_id),
-                    base_add: SignedAmt::from_amt(*cost),
-                    multiplier: SignedAmt::ZERO,
-                    add: SignedAmt::ZERO,
-                    expires_at: None,
-                    on_expire_event: None,
-                });
-                active_ids.insert(ship_id.clone());
+        let colony_sys = colony.system(&planets);
+        if let Some(ref sys) = colony_sys {
+            if let Some(ship_list) = ship_costs_by_system.get(sys) {
+                for (ship_id, cost) in ship_list {
+                    maint.energy_per_hexadies.push_modifier(Modifier {
+                        id: ship_id.clone(),
+                        label: format!("Ship {}", ship_id),
+                        base_add: SignedAmt::from_amt(*cost),
+                        multiplier: SignedAmt::ZERO,
+                        add: SignedAmt::ZERO,
+                        expires_at: None,
+                        on_expire_event: None,
+                    });
+                    active_ids.insert(ship_id.clone());
+                }
             }
         }
 
@@ -767,6 +789,7 @@ pub fn tick_production(
     last_tick: Res<LastProductionTick>,
     mut query: Query<(&Colony, &Production, &mut ResourceStockpile, Option<&ProductionFocus>, Option<&ResourceCapacity>)>,
     stars: Query<&StarSystem>,
+    planets: Query<&Planet>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -777,12 +800,14 @@ pub fn tick_production(
 
     // #73: Check if the capital has an authority deficit.
     let capital_authority = query.iter().find_map(|(colony, _, stockpile, _, _)| {
-        stars.get(colony.system).ok().and_then(|star| {
-            if star.is_capital {
-                Some(stockpile.authority)
-            } else {
-                None
-            }
+        colony.system(&planets).and_then(|sys| {
+            stars.get(sys).ok().and_then(|star| {
+                if star.is_capital {
+                    Some(stockpile.authority)
+                } else {
+                    None
+                }
+            })
         })
     });
     let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
@@ -794,7 +819,7 @@ pub fn tick_production(
         };
 
         // #73: Apply authority deficit penalty to non-capital colonies
-        let is_capital = stars.get(colony.system).is_ok_and(|s| s.is_capital);
+        let is_capital = colony.system(&planets).and_then(|sys| stars.get(sys).ok()).is_some_and(|s| s.is_capital);
         let authority_multiplier = if authority_deficit && !is_capital {
             AUTHORITY_DEFICIT_PENALTY
         } else {
@@ -841,7 +866,7 @@ pub fn tick_population_growth(
         &Production,
         Option<&FoodConsumption>,
     )>,
-    stars: Query<(&StarSystem, &crate::galaxy::SystemAttributes)>,
+    planet_attrs: Query<&crate::galaxy::SystemAttributes, With<Planet>>,
 ) {
     use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
 
@@ -871,9 +896,9 @@ pub fn tick_population_growth(
             colony.population = (colony.population - starvation_loss).max(1.0);
         } else {
             // #69: Logistic growth (f64 domain for population math)
-            let hab_score = stars
-                .get(colony.system)
-                .map(|(_, attr)| attr.habitability.base_score())
+            let hab_score = planet_attrs
+                .get(colony.planet)
+                .map(|attr| attr.habitability.base_score())
                 .unwrap_or(0.5);
 
             // Total food production from ModifiedValue (includes building bonuses)
@@ -904,6 +929,7 @@ pub fn tick_build_queue(
     mut query: Query<(&Colony, &mut BuildQueue, &mut ResourceStockpile, Option<&Buildings>)>,
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
+    planets: Query<&Planet>,
     mut events: MessageWriter<GameEvent>,
     empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
@@ -953,23 +979,26 @@ pub fn tick_build_queue(
                         continue;
                     }
                 };
-                if let Ok(pos) = positions.get(colony.system) {
+                let system_entity = colony.system(&planets);
+                if let Some(sys) = system_entity {
+                if let Ok(pos) = positions.get(sys) {
                     spawn_ship(
                         &mut commands,
                         ship_type,
                         completed.ship_type_name.clone(),
-                        colony.system,
+                        sys,
                         *pos,
                         ship_owner,
                     );
-                    let sys_name = stars.get(colony.system).map(|s| s.name.clone()).unwrap_or_default();
+                    let sys_name = stars.get(sys).map(|s| s.name.clone()).unwrap_or_default();
                     events.write(GameEvent {
                         timestamp: clock.elapsed,
                         kind: GameEventKind::ShipBuilt,
                         description: format!("{} built at {}", completed.ship_type_name, sys_name),
-                        related_system: Some(colony.system),
+                        related_system: Some(sys),
                     });
                     info!("Ship built and launched: {}", completed.ship_type_name);
+                }
                 }
             }
         }
@@ -1079,12 +1108,15 @@ pub fn update_sovereignty(
     colonies: Query<&Colony>,
     mut sovereignties: Query<(Entity, &mut Sovereignty)>,
     empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    planets: Query<&Planet>,
 ) {
     let player_empire = empire_q.single().ok();
 
     let mut colony_pop: std::collections::HashMap<Entity, f64> = std::collections::HashMap::new();
     for colony in &colonies {
-        *colony_pop.entry(colony.system).or_insert(0.0) += colony.population;
+        if let Some(sys) = colony.system(&planets) {
+            *colony_pop.entry(sys).or_insert(0.0) += colony.population;
+        }
     }
 
     for (entity, mut sov) in &mut sovereignties {
@@ -1109,6 +1141,7 @@ pub fn tick_maintenance(
     mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&MaintenanceCost>, Option<&Buildings>)>,
     ships: Query<(&Ship, &ShipState)>,
     stars: Query<&StarSystem>,
+    planets: Query<&Planet>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -1122,10 +1155,12 @@ pub fn tick_maintenance(
     let capital_entity: Option<Entity> = {
         let mut found = None;
         for (colony, _, _, _) in colonies.iter() {
-            if let Ok(star) = stars.get(colony.system) {
-                if star.is_capital {
-                    found = Some(colony.system);
-                    break;
+            if let Some(sys) = colony.system(&planets) {
+                if let Ok(star) = stars.get(sys) {
+                    if star.is_capital {
+                        found = Some(sys);
+                        break;
+                    }
                 }
             }
         }
@@ -1134,7 +1169,7 @@ pub fn tick_maintenance(
 
     let colony_systems: std::collections::HashSet<Entity> = colonies
         .iter()
-        .map(|(c, _, _, _)| c.system)
+        .filter_map(|(c, _, _, _)| c.system(&planets))
         .collect();
 
     let mut ship_maintenance_by_system: std::collections::HashMap<Entity, Amt> =
@@ -1166,8 +1201,10 @@ pub fn tick_maintenance(
                     }
                 }
             }
-            if let Some(&ship_cost) = ship_maintenance_by_system.get(&colony.system) {
-                total = total.add(ship_cost);
+            if let Some(sys) = colony.system(&planets) {
+                if let Some(&ship_cost) = ship_maintenance_by_system.get(&sys) {
+                    total = total.add(ship_cost);
+                }
             }
             total
         };
@@ -1194,6 +1231,7 @@ pub fn tick_authority(
     empire_authority_q: Query<&AuthorityParams, With<crate::player::PlayerEmpire>>,
     mut colonies: Query<(&Colony, &mut ResourceStockpile, Option<&ResourceCapacity>)>,
     stars: Query<&StarSystem>,
+    planets: Query<&Planet>,
 ) {
     let Ok(authority_params) = empire_authority_q.single() else {
         return;
@@ -1208,9 +1246,13 @@ pub fn tick_authority(
     let mut capital_system: Option<Entity> = None;
     let mut non_capital_count: u64 = 0;
     for (colony, _, _) in colonies.iter() {
-        if let Ok(star) = stars.get(colony.system) {
-            if star.is_capital {
-                capital_system = Some(colony.system);
+        if let Some(sys) = colony.system(&planets) {
+            if let Ok(star) = stars.get(sys) {
+                if star.is_capital {
+                    capital_system = Some(sys);
+                } else {
+                    non_capital_count += 1;
+                }
             } else {
                 non_capital_count += 1;
             }
@@ -1232,7 +1274,7 @@ pub fn tick_authority(
     let auth_production = authority_params.production.final_value();
     let auth_cost_per_colony = authority_params.cost_per_colony.final_value();
     for (colony, mut stockpile, capacity) in &mut colonies {
-        if colony.system == cap_sys {
+        if colony.system(&planets) == Some(cap_sys) {
             // Capital produces authority
             stockpile.authority = stockpile.authority.add(auth_production.mul_u64(d));
 
@@ -1283,6 +1325,7 @@ pub fn check_resource_alerts(
         Option<&MaintenanceCost>,
     )>,
     stars: Query<&StarSystem>,
+    planets: Query<&Planet>,
     mut events: MessageWriter<GameEvent>,
     mut alert_cooldowns: ResMut<AlertCooldowns>,
 ) {
@@ -1292,21 +1335,24 @@ pub fn check_resource_alerts(
     }
 
     for (colony, stockpile, food_consumption, _maintenance) in &colonies {
-        let system_name = stars
-            .get(colony.system)
+        let colony_sys = colony.system(&planets);
+        let system_name = colony_sys
+            .and_then(|sys| stars.get(sys).ok())
             .map(|s| s.name.clone())
             .unwrap_or_default();
+        // Use planet entity as alert key (unique per colony)
+        let alert_key = colony.planet;
 
         // Food starvation alert: food == 0
         if stockpile.food == Amt::ZERO {
-            if alert_cooldowns.can_alert("food_starving", colony.system, clock.elapsed) {
+            if alert_cooldowns.can_alert("food_starving", alert_key, clock.elapsed) {
                 events.write(GameEvent {
                     timestamp: clock.elapsed,
                     kind: GameEventKind::ResourceAlert,
                     description: format!("{}: Starvation! Food depleted", system_name),
-                    related_system: Some(colony.system),
+                    related_system: colony_sys,
                 });
-                alert_cooldowns.mark("food_starving", colony.system, clock.elapsed);
+                alert_cooldowns.mark("food_starving", alert_key, clock.elapsed);
             }
         }
 
@@ -1314,7 +1360,7 @@ pub fn check_resource_alerts(
         if let Some(fc) = food_consumption {
             let threshold = fc.food_per_hexadies.final_value().mul_u64(10);
             if stockpile.food < threshold && stockpile.food > Amt::ZERO {
-                if alert_cooldowns.can_alert("food_low", colony.system, clock.elapsed) {
+                if alert_cooldowns.can_alert("food_low", alert_key, clock.elapsed) {
                     events.write(GameEvent {
                         timestamp: clock.elapsed,
                         kind: GameEventKind::ResourceAlert,
@@ -1322,16 +1368,16 @@ pub fn check_resource_alerts(
                             "{}: Food supply low ({} remaining)",
                             system_name, stockpile.food
                         ),
-                        related_system: Some(colony.system),
+                        related_system: colony_sys,
                     });
-                    alert_cooldowns.mark("food_low", colony.system, clock.elapsed);
+                    alert_cooldowns.mark("food_low", alert_key, clock.elapsed);
                 }
             }
         }
 
         // Energy depleted alert
         if stockpile.energy == Amt::ZERO {
-            if alert_cooldowns.can_alert("energy_depleted", colony.system, clock.elapsed) {
+            if alert_cooldowns.can_alert("energy_depleted", alert_key, clock.elapsed) {
                 events.write(GameEvent {
                     timestamp: clock.elapsed,
                     kind: GameEventKind::ResourceAlert,
@@ -1339,9 +1385,9 @@ pub fn check_resource_alerts(
                         "{}: Energy depleted! Maintenance unpaid",
                         system_name
                     ),
-                    related_system: Some(colony.system),
+                    related_system: colony_sys,
                 });
-                alert_cooldowns.mark("energy_depleted", colony.system, clock.elapsed);
+                alert_cooldowns.mark("energy_depleted", alert_key, clock.elapsed);
             }
         }
     }

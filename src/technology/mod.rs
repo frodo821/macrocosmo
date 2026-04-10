@@ -363,6 +363,7 @@ pub fn emit_research(
     colonies: Query<(&Colony, &Production, Option<&ProductionFocus>)>,
     player_q: Query<&StationedAt, With<Player>>,
     positions: Query<&Position>,
+    planets: Query<&crate::galaxy::Planet>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -386,13 +387,19 @@ pub fn emit_research(
             continue;
         }
 
+        let colony_sys = colony.system(&planets);
+
         // Calculate light delay from colony to capital
         let delay = match (capital_system, capital_pos) {
-            (Some(cap_sys), Some(_)) if colony.system == cap_sys => 0,
+            (Some(cap_sys), Some(_)) if colony_sys == Some(cap_sys) => 0,
             (Some(_), Some(cap_pos)) => {
-                if let Ok(colony_pos) = positions.get(colony.system) {
-                    let dist = physics::distance_ly(colony_pos, cap_pos);
-                    physics::light_delay_hexadies(dist)
+                if let Some(sys) = colony_sys {
+                    if let Ok(colony_pos) = positions.get(sys) {
+                        let dist = physics::distance_ly(colony_pos, cap_pos);
+                        physics::light_delay_hexadies(dist)
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 }
@@ -534,6 +541,7 @@ pub fn propagate_tech_knowledge(
     colonies: Query<&Colony>,
     stars: Query<(Entity, &StarSystem, &Position)>,
     mut tech_knowledge: Query<&mut TechKnowledge>,
+    planets: Query<&crate::galaxy::Planet>,
 ) {
     let Ok(mut recently_researched) = empire_q.single_mut() else {
         return;
@@ -551,7 +559,7 @@ pub fn propagate_tech_knowledge(
     let capital_pos = *capital_pos;
 
     // Collect colonized system entities
-    let colonized_systems: HashSet<Entity> = colonies.iter().map(|c| c.system).collect();
+    let colonized_systems: HashSet<Entity> = colonies.iter().filter_map(|c| c.system(&planets)).collect();
 
     for tech_id in recently_researched.techs.drain(..) {
         // Capital gets it immediately

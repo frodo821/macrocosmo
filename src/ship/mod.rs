@@ -766,12 +766,14 @@ fn apply_exploration_event(
 // --- Settling system (#32) ---
 
 /// System that processes ongoing settling operations. When the timer completes,
-/// establishes a colony and despawns the colony ship.
+/// establishes a colony on the first habitable planet and despawns the colony ship.
 pub fn process_settling(
     mut commands: Commands,
     clock: Res<GameClock>,
     ships: Query<(Entity, &Ship, &ShipState)>,
-    mut systems: Query<(&mut StarSystem, Option<&SystemAttributes>)>,
+    systems: Query<&StarSystem>,
+    planet_query: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
+    existing_colonies: Query<&Colony>,
     mut events: MessageWriter<GameEvent>,
 ) {
     for (ship_entity, ship, state) in &ships {
@@ -785,70 +787,78 @@ pub fn process_settling(
         };
 
         if clock.elapsed >= completes_at {
-            let Ok((mut star_system, attrs)) = systems.get_mut(system_entity) else {
+            let Ok(star_system) = systems.get(system_entity) else {
                 continue;
             };
 
-            if star_system.colonized {
+            // Check if any planet in this system already has a colony
+            let already_colonized = existing_colonies.iter().any(|c| {
+                planet_query.get(c.planet).ok().map(|(_, p, _)| p.system) == Some(system_entity)
+            });
+
+            if already_colonized {
                 info!("System {} is already colonized, settling aborted", star_system.name);
                 commands.entity(ship_entity).despawn();
                 continue;
             }
 
-            if let Some(attrs) = attrs {
-                if attrs.habitability == Habitability::GasGiant {
-                    info!("Colony Ship {} cannot colonize gas giant {}", ship.name, star_system.name);
-                    continue;
-                }
+            // Find the first habitable planet in this system
+            let target_planet = planet_query.iter().find(|(_, p, attrs)| {
+                p.system == system_entity && attrs.habitability != Habitability::GasGiant
+            });
 
-                star_system.colonized = true;
-                let system_name = star_system.name.clone();
-                let minerals_rate = resource_production_rate(attrs.mineral_richness);
-                let energy_rate = resource_production_rate(attrs.energy_potential);
-                let research_rate = resource_production_rate(attrs.research_potential);
-                let num_slots = attrs.max_building_slots as usize;
+            let Some((planet_entity, _, attrs)) = target_planet else {
+                info!("Colony Ship {} found no habitable planet at {}", ship.name, star_system.name);
+                commands.entity(ship_entity).despawn();
+                continue;
+            };
 
-                commands.spawn((
-                    Colony {
-                        system: system_entity,
-                        population: 10.0,
-                        growth_rate: 0.005,
-                    },
-                    ResourceStockpile {
-                        minerals: Amt::units(100),
-                        energy: Amt::units(100),
-                        research: Amt::ZERO,
-                        food: Amt::units(50),
-                        authority: Amt::ZERO,
-                    },
-                    ResourceCapacity::default(),
-                    Production {
-                        minerals_per_hexadies: crate::modifier::ModifiedValue::new(minerals_rate),
-                        energy_per_hexadies: crate::modifier::ModifiedValue::new(energy_rate),
-                        research_per_hexadies: crate::modifier::ModifiedValue::new(research_rate),
-                        food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                    },
-                    BuildQueue {
-                        queue: Vec::new(),
-                    },
-                    Buildings {
-                        slots: vec![None; num_slots],
-                    },
-                    BuildingQueue::default(),
-                    ProductionFocus::default(),
-                    MaintenanceCost::default(),
-                    FoodConsumption::default(),
-                ));
+            let system_name = star_system.name.clone();
+            let minerals_rate = resource_production_rate(attrs.mineral_richness);
+            let energy_rate = resource_production_rate(attrs.energy_potential);
+            let research_rate = resource_production_rate(attrs.research_potential);
+            let num_slots = attrs.max_building_slots as usize;
 
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ColonyEstablished,
-                    description: format!("Colony established at {}", system_name),
-                    related_system: Some(system_entity),
-                });
+            commands.spawn((
+                Colony {
+                    planet: planet_entity,
+                    population: 10.0,
+                    growth_rate: 0.005,
+                },
+                ResourceStockpile {
+                    minerals: Amt::units(100),
+                    energy: Amt::units(100),
+                    research: Amt::ZERO,
+                    food: Amt::units(50),
+                    authority: Amt::ZERO,
+                },
+                ResourceCapacity::default(),
+                Production {
+                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(minerals_rate),
+                    energy_per_hexadies: crate::modifier::ModifiedValue::new(energy_rate),
+                    research_per_hexadies: crate::modifier::ModifiedValue::new(research_rate),
+                    food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                },
+                BuildQueue {
+                    queue: Vec::new(),
+                },
+                Buildings {
+                    slots: vec![None; num_slots],
+                },
+                BuildingQueue::default(),
+                ProductionFocus::default(),
+                MaintenanceCost::default(),
+                FoodConsumption::default(),
+            ));
 
-                info!("Colony established at {} (M:{}/E:{}/R:{} per sd)", system_name, minerals_rate, energy_rate, research_rate);
-            }
+            events.write(GameEvent {
+                timestamp: clock.elapsed,
+                kind: GameEventKind::ColonyEstablished,
+                description: format!("Colony established at {}", system_name),
+                related_system: Some(system_entity),
+            });
+
+            info!("Colony established at {} (M:{}/E:{}/R:{} per sd)", system_name, minerals_rate, energy_rate, research_rate);
 
             // Consume the colony ship
             commands.entity(ship_entity).despawn();
@@ -881,6 +891,7 @@ pub fn process_pending_ship_commands(
     mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
+    planets: Query<&crate::galaxy::Planet>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -918,7 +929,7 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
-                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system == docked_system && bldgs.has_port());
+                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system(&planets) == Some(docked_system) && bldgs.has_port());
                 match start_ftl_travel_with_bonus(
                     &mut state,
                     &ship,
@@ -1119,6 +1130,7 @@ pub fn process_command_queue(
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position)>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     colonies: Query<(&crate::colony::Colony, &crate::colony::Buildings)>,
+    planets: Query<&crate::galaxy::Planet>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -1159,7 +1171,7 @@ pub fn process_command_queue(
                     continue;
                 };
                 let origin = Position::from(expected_position);
-                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system == docked_system && bldgs.has_port());
+                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system(&planets) == Some(docked_system) && bldgs.has_port());
                 match start_ftl_travel_with_bonus(
                     &mut state,
                     ship,
