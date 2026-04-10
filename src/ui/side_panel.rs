@@ -405,12 +405,25 @@ fn draw_colony_detail(
                     } else {
                         1.0
                     };
-                    let pct = m_pct.min(e_pct);
+                    let time_pct = if order.build_time_total > 0 {
+                        ((order.build_time_total - order.build_time_remaining) as f32
+                            / order.build_time_total as f32)
+                            .min(1.0)
+                    } else {
+                        1.0
+                    };
+                    let pct = m_pct.min(e_pct).min(time_pct);
                     ui.horizontal(|ui| {
                         ui.label(&order.display_name);
                         let bar = egui::ProgressBar::new(pct)
                             .desired_width(100.0);
                         ui.add(bar);
+                        // Show what's blocking progress
+                        if m_pct < 1.0 || e_pct < 1.0 {
+                            ui.label(egui::RichText::new("(awaiting resources)").weak().small());
+                        } else if time_pct < 1.0 {
+                            ui.label(egui::RichText::new(format!("{} hd", order.build_time_remaining)).weak().small());
+                        }
                     });
                 }
             }
@@ -461,6 +474,37 @@ fn draw_colony_detail(
 
             let mut demolish_request: Option<(usize, BuildingType)> = None;
 
+            // Collect pending building slots so we can show in-progress orders
+            let pending_orders: Vec<(usize, &str, f32)> = building_queue
+                .as_ref()
+                .map(|bq| {
+                    bq.queue
+                        .iter()
+                        .map(|order| {
+                            let (total_m, total_e) = order.building_type.build_cost();
+                            let m_pct = if total_m.raw() > 0 {
+                                1.0 - (order.minerals_remaining.raw() as f32 / total_m.raw() as f32)
+                            } else {
+                                1.0
+                            };
+                            let e_pct = if total_e.raw() > 0 {
+                                1.0 - (order.energy_remaining.raw() as f32 / total_e.raw() as f32)
+                            } else {
+                                1.0
+                            };
+                            let bt_time = order.building_type.build_time();
+                            let time_pct = if bt_time > 0 {
+                                1.0 - (order.build_time_remaining as f32 / bt_time as f32)
+                            } else {
+                                1.0
+                            };
+                            let pct = m_pct.min(e_pct).min(time_pct).max(0.0);
+                            (order.target_slot, order.building_type.name(), pct)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             for (i, slot) in buildings.slots.iter().enumerate() {
                 let is_demolishing = building_queue
                     .as_ref()
@@ -499,7 +543,15 @@ fn draw_colony_detail(
                         });
                     }
                     None => {
-                        ui.label(format!("  [{}] (empty)", i));
+                        if let Some((_, name, pct)) = pending_orders.iter().find(|(s, _, _)| *s == i) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("  [{}] (Building: {})", i, name));
+                                let bar = egui::ProgressBar::new(*pct).desired_width(80.0);
+                                ui.add(bar);
+                            });
+                        } else {
+                            ui.label(format!("  [{}] (empty)", i));
+                        }
                     }
                 }
             }
@@ -518,10 +570,7 @@ fn draw_colony_detail(
                 }
             }
 
-            let pending_slots: Vec<usize> = building_queue
-                .as_ref()
-                .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
-                .unwrap_or_default();
+            let pending_slots: Vec<usize> = pending_orders.iter().map(|(s, _, _)| *s).collect();
             let empty_slot = buildings
                 .slots
                 .iter()
