@@ -413,6 +413,12 @@ pub fn find_planet(world: &mut World, system: Entity) -> Entity {
     result.unwrap_or_else(|| panic!("No planet found for system {:?}", system))
 }
 
+/// Find the player empire entity in the world.
+pub fn empire_entity(world: &mut World) -> Entity {
+    let mut query = world.query_filtered::<Entity, With<PlayerEmpire>>();
+    query.single(world).expect("No player empire found in test world")
+}
+
 /// Spawn a ship with all standard components at the given system.
 pub fn spawn_test_ship(
     world: &mut World,
