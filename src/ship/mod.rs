@@ -10,7 +10,7 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Habitability, HostilePresence, ResourceLevel, StarSystem, SystemAttributes};
 use crate::modifier::{CachedValue, Modifier, ScopedModifiers};
-use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
+use crate::physics::{distance_ly, distance_ly_arr, light_delay_hexadies, sublight_travel_hexadies};
 use crate::knowledge::{KnowledgeStore, SystemKnowledge, SystemSnapshot};
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship_design::ModuleRegistry;
@@ -814,12 +814,23 @@ pub fn process_surveys(
     mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>, &Position), Without<Ship>>,
     hostiles: Query<&HostilePresence>,
     player_q: Query<&StationedAt, With<Player>>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
     mut events: MessageWriter<GameEvent>,
 ) {
     let mut rng = rand::rng();
 
     // Collect player's stationed-at system for auto-return
     let player_system = player_q.iter().next().map(|s| s.system);
+
+    // #110: Pre-compute player system position and FTL speed for light-vs-FTL comparison
+    let player_system_pos: Option<[f64; 3]> = player_system.and_then(|sys| {
+        systems.get(sys).ok().map(|(_, _, pos)| pos.as_array())
+    });
+    let ftl_speed_multiplier = empire_params_q
+        .iter()
+        .next()
+        .map(|p| p.ftl_speed_multiplier)
+        .unwrap_or(1.0);
 
     for (ship_entity, ship, mut state, mut ship_hp, ship_pos, mut cmd_queue) in ships.iter_mut() {
         let (target_system, completes_at) = match *state {
@@ -835,50 +846,72 @@ pub fn process_surveys(
             let has_ftl = ship.ftl_range > 0.0;
 
             if has_ftl {
-                // #103: FTL ship — store data internally, do NOT mark system as surveyed yet
-                if let Ok((star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                // #110: Compare light-speed propagation vs FTL return time
+                let use_light_speed = player_system_pos.map(|player_pos| {
+                    let distance = distance_ly_arr(ship_pos.as_array(), player_pos);
+                    let light_delay = light_delay_hexadies(distance);
+                    let effective_ftl_speed = INITIAL_FTL_SPEED_C * ftl_speed_multiplier;
+                    let ftl_return_time = (distance * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
+                    light_delay <= ftl_return_time
+                }).unwrap_or(false);
+
+                if use_light_speed {
+                    // #110: Light-speed is faster — mark surveyed immediately
+                    if let Ok((mut star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                        star_system.surveyed = true;
+                        let system_name = star_system.name.clone();
+                        info!(
+                            "Survey complete (FTL ship, light-speed propagation): {} surveyed {}",
+                            ship.name, system_name
+                        );
+
+                        events.write(GameEvent {
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::SurveyComplete,
+                            description: format!("{} completed survey of {}", ship.name, system_name),
+                            related_system: Some(target_system),
+                        });
+
+                        let has_hostile = hostiles.iter().any(|h| h.system == target_system);
+                        if has_hostile {
+                            events.write(GameEvent {
+                                timestamp: clock.elapsed,
+                                kind: GameEventKind::HostileDetected,
+                                description: format!("Warning: Hostile presence detected at {}!", system_name),
+                                related_system: Some(target_system),
+                            });
+                        }
+
+                        let event = roll_exploration_event(&mut rng);
+                        apply_exploration_event(&event, &system_name, &ship, &mut ship_hp, attrs, &mut rng, clock.elapsed, target_system, &mut events);
+                    }
+                } else if let Ok((star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                    // #103: FTL return is faster — carry back
                     let system_name = star_system.name.clone();
                     info!(
                         "Survey complete (FTL ship): {} surveyed {} — data stored on ship",
                         ship.name, system_name
                     );
 
-                    // Check for hostile presence (this is immediately visible to the ship)
                     let has_hostile = hostiles.iter().any(|h| h.system == target_system);
                     if has_hostile {
                         events.write(GameEvent {
                             timestamp: clock.elapsed,
                             kind: GameEventKind::HostileDetected,
-                            description: format!(
-                                "Warning: Hostile presence detected at {}!",
-                                system_name,
-                            ),
+                            description: format!("Warning: Hostile presence detected at {}!", system_name),
                             related_system: Some(target_system),
                         });
                     }
 
-                    // Roll exploration event (applied immediately — ship observes it)
                     let event = roll_exploration_event(&mut rng);
-                    apply_exploration_event(
-                        &event,
-                        &system_name,
-                        &ship,
-                        &mut ship_hp,
-                        attrs,
-                        &mut rng,
-                        clock.elapsed,
-                        target_system,
-                        &mut events,
-                    );
+                    apply_exploration_event(&event, &system_name, &ship, &mut ship_hp, attrs, &mut rng, clock.elapsed, target_system, &mut events);
 
-                    // Store survey data on the ship entity
                     commands.entity(ship_entity).insert(SurveyData {
                         target_system,
                         surveyed_at: clock.elapsed,
                         system_name: system_name.clone(),
                     });
 
-                    // Auto-queue FTL return to player's system if command queue is empty
                     let queue_empty = cmd_queue.as_ref().map(|q| q.commands.is_empty()).unwrap_or(true);
                     if queue_empty {
                         if let Some(player_sys) = player_system {

@@ -1254,3 +1254,75 @@ fn test_command_queue_predicted_position() {
     assert_eq!(queue.predicted_system, Some(sys_c));
     assert!((queue.predicted_position[0] - 10.0).abs() < 1e-9);
 }
+
+// --- #110: Light-speed propagation when faster than FTL return ---
+
+#[test]
+fn test_ftl_survey_uses_light_speed_when_faster() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [2.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    // Set ftl_speed_multiplier very low so FTL is slower than light
+    // At 0.05x, effective FTL speed = 0.5c, FTL return at 2 ly = 240 hd, light delay = 120 hd
+    let empire = empire_entity(app.world_mut());
+    {
+        let mut params = app.world_mut().get_mut::<technology::GlobalParams>(empire).unwrap();
+        params.ftl_speed_multiplier = 0.05;
+    }
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [2.0, 0.0, 0.0]);
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
+        target_system: sys_b,
+        started_at: 0,
+        completes_at: SURVEY_DURATION_HEXADIES,
+    };
+
+    common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
+
+    let star = app.world().get::<StarSystem>(sys_b).unwrap();
+    assert!(star.surveyed, "System should be marked surveyed via light-speed propagation");
+
+    let survey_data = app.world().get::<SurveyData>(ship);
+    assert!(survey_data.is_none(), "Ship should not carry survey data when light-speed is faster");
+}
+
+#[test]
+fn test_ftl_survey_uses_carry_back_when_ftl_faster() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        Habitability::Ideal, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [2.0, 0.0, 0.0],
+        Habitability::Adequate, false, false,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [2.0, 0.0, 0.0]);
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
+        target_system: sys_b,
+        started_at: 0,
+        completes_at: SURVEY_DURATION_HEXADIES,
+    };
+
+    common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
+
+    let star = app.world().get::<StarSystem>(sys_b).unwrap();
+    assert!(!star.surveyed, "System should NOT be marked surveyed when FTL return is faster");
+
+    let survey_data = app.world().get::<SurveyData>(ship);
+    assert!(survey_data.is_some(), "Ship should carry survey data for FTL carry-back");
+}
