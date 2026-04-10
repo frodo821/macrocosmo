@@ -1,7 +1,7 @@
 -- Physics branch technologies
 
 define_tech {
-    id = 200,
+    id = "physics_sensor_arrays",
     name = "Advanced Sensor Arrays",
     branch = "physics",
     cost = 100,
@@ -13,7 +13,7 @@ define_tech {
 }
 
 define_tech {
-    id = 201,
+    id = "physics_sublight_drives",
     name = "Improved Sublight Drives",
     branch = "physics",
     cost = 200,
@@ -25,11 +25,11 @@ define_tech {
 }
 
 define_tech {
-    id = 202,
+    id = "physics_ftl_theory",
     name = "FTL Theory",
     branch = "physics",
     cost = 400,
-    prerequisites = { 201 },
+    prerequisites = { "physics_sublight_drives" },
     description = "Theoretical foundations for faster-than-light travel",
     on_researched = function()
         -- TODO: push_empire_modifier("ship.ftl_range", { add = 0.2 })
@@ -37,11 +37,11 @@ define_tech {
 }
 
 define_tech {
-    id = 203,
+    id = "physics_warp_stabilisation",
     name = "Warp Field Stabilisation",
     branch = "physics",
     cost = 600,
-    prerequisites = { 202 },
+    prerequisites = { "physics_ftl_theory" },
     description = "Stabilise warp fields for safer FTL travel",
     on_researched = function()
         -- TODO: push_empire_modifier("ship.ftl_speed", { multiplier = 0.15 })

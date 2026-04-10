@@ -1,7 +1,7 @@
 -- Industrial branch technologies
 
 define_tech {
-    id = 300,
+    id = "industrial_automated_mining",
     name = "Automated Mining",
     branch = "industrial",
     cost = { research = 100, minerals = 50 },
@@ -13,11 +13,11 @@ define_tech {
 }
 
 define_tech {
-    id = 301,
+    id = "industrial_orbital_fabrication",
     name = "Orbital Fabrication",
     branch = "industrial",
     cost = 200,
-    prerequisites = { 300 },
+    prerequisites = { "industrial_automated_mining" },
     description = "Manufacturing facilities in orbit for zero-gravity construction",
     on_researched = function()
         -- TODO: push_empire_modifier("construction.speed", { multiplier = 0.1 })
@@ -25,11 +25,11 @@ define_tech {
 }
 
 define_tech {
-    id = 302,
+    id = "industrial_fusion_power",
     name = "Fusion Power Plants",
     branch = "industrial",
     cost = 300,
-    prerequisites = { 300 },
+    prerequisites = { "industrial_automated_mining" },
     description = "Harness fusion reactions for abundant clean energy",
     on_researched = function()
         -- TODO: push_empire_modifier("production.energy", { multiplier = 0.2 })
@@ -37,11 +37,11 @@ define_tech {
 }
 
 define_tech {
-    id = 303,
+    id = "industrial_nano_assembly",
     name = "Nano-Assembly",
     branch = "industrial",
     cost = 500,
-    prerequisites = { 301 },
+    prerequisites = { "industrial_orbital_fabrication" },
     description = "Molecular-scale construction for unprecedented precision",
     on_researched = function()
         -- TODO: push_empire_modifier("construction.speed", { multiplier = 0.2 })

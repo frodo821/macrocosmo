@@ -1,7 +1,7 @@
 -- Social branch technologies
 
 define_tech {
-    id = 100,
+    id = "social_xenolinguistics",
     name = "Xenolinguistics",
     branch = "social",
     cost = 100,
@@ -13,7 +13,7 @@ define_tech {
 }
 
 define_tech {
-    id = 101,
+    id = "social_colonial_admin",
     name = "Colonial Administration",
     branch = "social",
     cost = 150,
@@ -25,11 +25,11 @@ define_tech {
 }
 
 define_tech {
-    id = 102,
+    id = "social_interstellar_commerce",
     name = "Interstellar Commerce",
     branch = "social",
     cost = 250,
-    prerequisites = { 101 },
+    prerequisites = { "social_colonial_admin" },
     description = "Trade frameworks spanning star systems",
     on_researched = function()
         -- TODO: push_empire_modifier("production.energy", { multiplier = 0.15 })
@@ -37,11 +37,11 @@ define_tech {
 }
 
 define_tech {
-    id = 103,
+    id = "social_cultural_exchange",
     name = "Cultural Exchange Protocols",
     branch = "social",
     cost = 300,
-    prerequisites = { 100 },
+    prerequisites = { "social_xenolinguistics" },
     description = "Formalised frameworks for cross-species cultural interaction",
     on_researched = function()
         -- TODO: push_empire_modifier("diplomacy.range", { add = 0.2 })

@@ -298,7 +298,7 @@ pub fn draw_all_ui(
     match research_action {
         overlays::ResearchAction::StartResearch(tech_id) => {
             // Deduct upfront costs from capital stockpile
-            if let Some(tech) = tech_tree.get(tech_id) {
+            if let Some(tech) = tech_tree.get(&tech_id) {
                 let mineral_cost = tech.cost.minerals;
                 let energy_cost = tech.cost.energy;
 

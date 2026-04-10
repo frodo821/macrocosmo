@@ -14,8 +14,8 @@ fn test_start_research_sets_queue() {
     assert_eq!(queue.accumulated, 0.0);
     assert!(!queue.blocked);
 
-    queue.start_research(TechId(100));
-    assert_eq!(queue.current, Some(TechId(100)));
+    queue.start_research(TechId("social_xenolinguistics".into()));
+    assert_eq!(queue.current, Some(TechId("social_xenolinguistics".into())));
     assert_eq!(queue.accumulated, 0.0);
     assert!(!queue.blocked);
 }
@@ -42,7 +42,7 @@ fn test_block_research_stops_progress() {
 
     // Insert tech tree onto empire entity
     let tree = TechTree::from_vec(vec![Technology {
-        id: TechId(1),
+        id: TechId("test_1".into()),
         name: "Test".into(),
         branch: TechBranch::Physics,
         cost: TechCost::research_only(Amt::units(100)),
@@ -58,7 +58,7 @@ fn test_block_research_stops_progress() {
     {
         let empire = empire_entity(app.world_mut());
         let mut queue = app.world_mut().get_mut::<ResearchQueue>(empire).unwrap();
-        queue.start_research(TechId(1));
+        queue.start_research(TechId("test_1".into()));
         queue.block();
     }
 
@@ -76,7 +76,7 @@ fn test_block_research_stops_progress() {
     let queue = app.world().get::<ResearchQueue>(empire).unwrap();
     assert_eq!(queue.accumulated, 0.0);
     assert!(queue.blocked);
-    assert_eq!(queue.current, Some(TechId(1)));
+    assert_eq!(queue.current, Some(TechId("test_1".into())));
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn test_add_research_progress() {
     use technology::{ResearchQueue, TechId};
 
     let mut queue = ResearchQueue::default();
-    queue.start_research(TechId(1));
+    queue.start_research(TechId("test_1".into()));
     assert_eq!(queue.accumulated, 0.0);
 
     queue.add_progress(25.0);
@@ -99,7 +99,7 @@ fn test_cancel_research_clears_queue() {
     use technology::{ResearchQueue, TechId};
 
     let mut queue = ResearchQueue::default();
-    queue.start_research(TechId(1));
+    queue.start_research(TechId("test_1".into()));
     queue.add_progress(50.0);
 
     queue.cancel_research();
