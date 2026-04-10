@@ -1184,10 +1184,10 @@ pub fn draw_context_menu(
     let effective_ftl_range = ftl_range + global_params.ftl_range_bonus;
     let can_ftl = !same_system && effective_ftl_range > 0.0 && target_surveyed && dist <= effective_ftl_range;
     let can_move = !same_system;
-    // Survey: can survey unsurveyed system (same or remote — #101 auto-inserts move for remote)
-    let can_survey = is_docked && crate::ship::design_can_survey(&design_id) && !target_surveyed;
-    // Colonize: can colonize habitable, uncolonized, surveyed system (same or remote — #101 auto-inserts move for remote)
-    let can_colonize = is_docked && crate::ship::design_can_colonize(&design_id) && target_habitable && !target_colonized && target_surveyed;
+    // Survey: can survey unsurveyed system (docked: immediate/delayed, non-docked: queued)
+    let can_survey = crate::ship::design_can_survey(&design_id) && !target_surveyed;
+    // Colonize: can colonize habitable, uncolonized, surveyed system (docked: immediate/delayed, non-docked: queued)
+    let can_colonize = crate::ship::design_can_colonize(&design_id) && target_habitable && !target_colonized && target_surveyed;
 
     let origin_pos_arr = origin_pos.as_array();
     let target_pos_arr = target_pos.as_array();
@@ -1400,9 +1400,15 @@ pub fn draw_context_menu(
 
             // Survey -- if Explorer + target unsurveyed
             if can_survey {
-                let survey_label = if same_system { "Survey".to_string() } else { format!("{}Survey", queue_prefix) };
+                let survey_label = if !is_docked || !same_system { format!("{}Survey", queue_prefix) } else { "Survey".to_string() };
                 if ui.button(survey_label).clicked() {
-                    if same_system {
+                    if !is_docked {
+                        // Ship in transit: queue survey (process_command_queue will auto-insert move if needed)
+                        queued_command = Some(QueuedCommand::Survey {
+                            system: target_entity,
+                            expected_position: target_pos_arr,
+                        });
+                    } else if same_system {
                         if command_delay == 0 {
                             command = Some(ShipState::Surveying {
                                 target_system: target_entity,
@@ -1415,7 +1421,6 @@ pub fn draw_context_menu(
                     } else {
                         // #101: Remote survey — need move + survey
                         if command_delay > 0 {
-                            // Send FTL/sublight move as delayed command, queue survey for after arrival
                             if can_ftl {
                                 delayed_command = Some(crate::ship::ShipCommand::FTLTo { destination: target_entity });
                             } else {
@@ -1426,7 +1431,6 @@ pub fn draw_context_menu(
                                 expected_position: target_pos_arr,
                             });
                         } else {
-                            // No delay: queue survey directly, process_command_queue will auto-insert move
                             queued_command = Some(QueuedCommand::Survey {
                                 system: target_entity,
                                 expected_position: origin_pos_arr,
@@ -1439,9 +1443,15 @@ pub fn draw_context_menu(
 
             // Colonize -- if ColonyShip + target habitable + uncolonized
             if can_colonize {
-                let colonize_label = if same_system { "Colonize".to_string() } else { format!("{}Colonize", queue_prefix) };
+                let colonize_label = if !is_docked || !same_system { format!("{}Colonize", queue_prefix) } else { "Colonize".to_string() };
                 if ui.button(colonize_label).clicked() {
-                    if same_system {
+                    if !is_docked {
+                        // Ship in transit: queue colonize
+                        queued_command = Some(QueuedCommand::Colonize {
+                            system: target_entity,
+                            expected_position: target_pos_arr,
+                        });
+                    } else if same_system {
                         if command_delay == 0 {
                             command = Some(ShipState::Settling {
                                 system: target_entity,
@@ -1454,7 +1464,6 @@ pub fn draw_context_menu(
                     } else {
                         // #101: Remote colonize — need move + colonize
                         if command_delay > 0 {
-                            // Send FTL/sublight move as delayed command, queue colonize for after arrival
                             if can_ftl {
                                 delayed_command = Some(crate::ship::ShipCommand::FTLTo { destination: target_entity });
                             } else {
@@ -1465,7 +1474,6 @@ pub fn draw_context_menu(
                                 expected_position: target_pos_arr,
                             });
                         } else {
-                            // No delay: queue colonize directly, process_command_queue will auto-insert move
                             queued_command = Some(QueuedCommand::Colonize {
                                 system: target_entity,
                                 expected_position: origin_pos_arr,
