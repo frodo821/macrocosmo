@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -114,7 +114,7 @@ pub fn draw_system_panel(
 
                 // We need to iterate colonies to find the one matching this system.
                 // Because we have a mutable query, we iterate once.
-                for (_colony_entity, colony, production, stockpile, build_queue, buildings, building_queue, maintenance_cost, food_consumption) in
+                for (_colony_entity, colony, production, stockpile, build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
                     colonies.iter_mut()
                 {
                     if colony.system != sel_entity {
@@ -302,10 +302,46 @@ pub fn draw_system_panel(
                     if let Some(buildings) = buildings {
                         ui.separator();
                         ui.label(egui::RichText::new("Buildings").strong());
+
+                        // Collect demolition requests outside the borrow
+                        let mut demolish_request: Option<(usize, BuildingType)> = None;
+
                         for (i, slot) in buildings.slots.iter().enumerate() {
+                            let is_demolishing = building_queue
+                                .as_ref()
+                                .map(|bq| bq.is_demolishing(i))
+                                .unwrap_or(false);
+
                             match slot {
+                                Some(bt) if is_demolishing => {
+                                    let remaining = building_queue
+                                        .as_ref()
+                                        .and_then(|bq| bq.demolition_time_remaining(i))
+                                        .unwrap_or(0);
+                                    ui.label(format!(
+                                        "  [{}] {} — Demolishing... ({} hd remaining)",
+                                        i,
+                                        bt.name(),
+                                        remaining
+                                    ));
+                                }
                                 Some(bt) => {
-                                    ui.label(format!("  [{}] {}", i, bt.name()));
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("  [{}] {}", i, bt.name()));
+                                        let (m_refund, e_refund) = bt.demolition_refund();
+                                        let demo_time = bt.demolition_time();
+                                        let tooltip = format!(
+                                            "Demolish: {} hd | Refund M:{} E:{}",
+                                            demo_time, m_refund, e_refund
+                                        );
+                                        if ui
+                                            .small_button("Demolish")
+                                            .on_hover_text(tooltip)
+                                            .clicked()
+                                        {
+                                            demolish_request = Some((i, *bt));
+                                        }
+                                    });
                                 }
                                 None => {
                                     ui.label(format!("  [{}] (empty)", i));
@@ -313,8 +349,32 @@ pub fn draw_system_panel(
                             }
                         }
 
+                        // Process demolish request
+                        if let Some((slot_idx, bt)) = demolish_request {
+                            if let Some(bq) = building_queue.as_mut() {
+                                let (m_refund, e_refund) = bt.demolition_refund();
+                                bq.demolition_queue.push(DemolitionOrder {
+                                    target_slot: slot_idx,
+                                    building_type: bt,
+                                    time_remaining: bt.demolition_time(),
+                                    minerals_refund: m_refund,
+                                    energy_refund: e_refund,
+                                });
+                                info!("Demolition order added: {:?} in slot {}", bt, slot_idx);
+                            }
+                        }
+
                         // Find first empty slot for building construction
-                        let empty_slot = buildings.slots.iter().position(|s| s.is_none());
+                        // Exclude slots that are targets of pending construction orders
+                        let pending_slots: Vec<usize> = building_queue
+                            .as_ref()
+                            .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
+                            .unwrap_or_default();
+                        let empty_slot = buildings
+                            .slots
+                            .iter()
+                            .enumerate()
+                            .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
 
                         if let Some(slot_idx) = empty_slot {
                             ui.separator();

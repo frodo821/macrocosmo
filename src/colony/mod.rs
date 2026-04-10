@@ -333,6 +333,18 @@ impl BuildingType {
         }
     }
 
+    /// Time to demolish (half of build time).
+    pub fn demolition_time(&self) -> i64 {
+        self.build_time() / 2
+    }
+
+    /// Resource refund from demolition (50% of build cost).
+    /// Returns (minerals_refund, energy_refund).
+    pub fn demolition_refund(&self) -> (Amt, Amt) {
+        let (m, e) = self.build_cost();
+        (Amt::milli(m.raw() / 2), Amt::milli(e.raw() / 2))
+    }
+
     /// Display name for the building type.
     pub fn name(&self) -> &'static str {
         match self {
@@ -366,6 +378,7 @@ impl Buildings {
 #[derive(Component, Default)]
 pub struct BuildingQueue {
     pub queue: Vec<BuildingOrder>,
+    pub demolition_queue: Vec<DemolitionOrder>,
 }
 
 pub struct BuildingOrder {
@@ -374,6 +387,28 @@ pub struct BuildingOrder {
     pub minerals_remaining: Amt,
     pub energy_remaining: Amt,
     pub build_time_remaining: i64,
+}
+
+pub struct DemolitionOrder {
+    pub target_slot: usize,
+    pub building_type: BuildingType,
+    pub time_remaining: i64,
+    pub minerals_refund: Amt,
+    pub energy_refund: Amt,
+}
+
+impl BuildingQueue {
+    /// Check if a given slot is currently being demolished.
+    pub fn is_demolishing(&self, slot: usize) -> bool {
+        self.demolition_queue.iter().any(|d| d.target_slot == slot)
+    }
+
+    /// Get the remaining demolition time for a slot, if any.
+    pub fn demolition_time_remaining(&self, slot: usize) -> Option<i64> {
+        self.demolition_queue.iter()
+            .find(|d| d.target_slot == slot)
+            .map(|d| d.time_remaining)
+    }
 }
 
 /// Load building definitions from Lua scripts into the BuildingRegistry.
@@ -942,13 +977,15 @@ pub fn tick_build_queue(
 pub fn tick_building_queue(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(&mut BuildingQueue, &mut Buildings, &mut ResourceStockpile)>,
+    mut query: Query<(Entity, &mut BuildingQueue, &mut Buildings, &mut ResourceStockpile)>,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
-    for (mut bq, mut buildings, mut stockpile) in &mut query {
+    for (colony_entity, mut bq, mut buildings, mut stockpile) in &mut query {
+        // --- Process construction queue ---
         for _ in 0..delta {
             if bq.queue.is_empty() {
                 break;
@@ -982,6 +1019,41 @@ pub fn tick_building_queue(
                         completed.building_type,
                         completed.target_slot,
                         buildings.slots.len()
+                    );
+                }
+            }
+        }
+
+        // --- Process demolition queue ---
+        let mut completed_demolitions = Vec::new();
+        for demo in bq.demolition_queue.iter_mut() {
+            demo.time_remaining -= delta;
+            if demo.time_remaining <= 0 {
+                completed_demolitions.push(demo.target_slot);
+            }
+        }
+        for slot_idx in completed_demolitions {
+            // Find and remove the completed demolition order
+            if let Some(pos) = bq.demolition_queue.iter().position(|d| d.target_slot == slot_idx) {
+                let completed = bq.demolition_queue.remove(pos);
+                // Remove building from slot
+                if slot_idx < buildings.slots.len() {
+                    let building_name = buildings.slots[slot_idx]
+                        .map(|bt| bt.name())
+                        .unwrap_or("Unknown");
+                    buildings.slots[slot_idx] = None;
+                    // Refund resources
+                    stockpile.minerals = stockpile.minerals.add(completed.minerals_refund);
+                    stockpile.energy = stockpile.energy.add(completed.energy_refund);
+                    info!(
+                        "Building {} demolished in slot {}, refunded M:{} E:{}",
+                        building_name, slot_idx, completed.minerals_refund, completed.energy_refund
+                    );
+                    // Fire event
+                    event_system.fire_event(
+                        "building_demolished",
+                        Some(colony_entity),
+                        clock.elapsed,
                     );
                 }
             }
@@ -1535,5 +1607,38 @@ mod tests {
             population = (population - loss).max(1.0);
         }
         assert_eq!(population, 1.0);
+    }
+
+    #[test]
+    fn demolition_time_is_half_build_time() {
+        assert_eq!(BuildingType::Mine.demolition_time(), BuildingType::Mine.build_time() / 2);
+        assert_eq!(BuildingType::Shipyard.demolition_time(), BuildingType::Shipyard.build_time() / 2);
+        assert_eq!(BuildingType::Farm.demolition_time(), BuildingType::Farm.build_time() / 2);
+    }
+
+    #[test]
+    fn demolition_refund_is_half_build_cost() {
+        let (m, e) = BuildingType::Mine.build_cost();
+        let (mr, er) = BuildingType::Mine.demolition_refund();
+        assert_eq!(mr, Amt::milli(m.raw() / 2));
+        assert_eq!(er, Amt::milli(e.raw() / 2));
+    }
+
+    #[test]
+    fn building_queue_is_demolishing() {
+        let bq = BuildingQueue {
+            queue: Vec::new(),
+            demolition_queue: vec![DemolitionOrder {
+                target_slot: 2,
+                building_type: BuildingType::Mine,
+                time_remaining: 5,
+                minerals_refund: Amt::ZERO,
+                energy_refund: Amt::ZERO,
+            }],
+        };
+        assert!(bq.is_demolishing(2));
+        assert!(!bq.is_demolishing(0));
+        assert_eq!(bq.demolition_time_remaining(2), Some(5));
+        assert_eq!(bq.demolition_time_remaining(0), None);
     }
 }

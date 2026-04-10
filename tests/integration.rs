@@ -1799,6 +1799,7 @@ fn test_building_queue_completes_construction() {
                 energy_remaining: energy_cost,
                 build_time_remaining: build_time,
             }],
+            demolition_queue: Vec::new(),
         },
         ProductionFocus::default(),
         MaintenanceCost::default(),
@@ -1816,6 +1817,232 @@ fn test_building_queue_completes_construction() {
         Some(BuildingType::Mine),
         "Mine should have been built in slot 0"
     );
+}
+
+// =========================================================================
+// Building demolition
+// =========================================================================
+
+#[test]
+fn test_demolish_building_removes_from_slot() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Demo-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let demo_time = BuildingType::Mine.demolition_time();
+    let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings {
+            slots: vec![Some(BuildingType::Mine), None, None, None],
+        },
+        BuildingQueue {
+            queue: Vec::new(),
+            demolition_queue: vec![DemolitionOrder {
+                target_slot: 0,
+                building_type: BuildingType::Mine,
+                time_remaining: demo_time,
+                minerals_refund: m_refund,
+                energy_refund: e_refund,
+            }],
+        },
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    // Advance enough time for demolition to complete
+    advance_time(&mut app, demo_time + 1);
+
+    let mut q = app.world_mut().query::<&Buildings>();
+    let buildings = q.iter(app.world()).next().unwrap();
+    assert_eq!(
+        buildings.slots[0], None,
+        "Slot 0 should be empty after demolition completes"
+    );
+}
+
+#[test]
+fn test_demolish_refunds_resources() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Refund-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let demo_time = BuildingType::Mine.demolition_time();
+    let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings {
+            slots: vec![Some(BuildingType::Mine), None, None, None],
+        },
+        BuildingQueue {
+            queue: Vec::new(),
+            demolition_queue: vec![DemolitionOrder {
+                target_slot: 0,
+                building_type: BuildingType::Mine,
+                time_remaining: demo_time,
+                minerals_refund: m_refund,
+                energy_refund: e_refund,
+            }],
+        },
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    advance_time(&mut app, demo_time + 1);
+
+    let mut q = app.world_mut().query::<&ResourceStockpile>();
+    let stockpile = q.iter(app.world()).next().unwrap();
+    assert!(
+        stockpile.minerals >= m_refund,
+        "Should have received minerals refund: expected at least {}, got {}",
+        m_refund,
+        stockpile.minerals
+    );
+    assert!(
+        stockpile.energy >= e_refund,
+        "Should have received energy refund: expected at least {}, got {}",
+        e_refund,
+        stockpile.energy
+    );
+}
+
+#[test]
+fn test_demolish_takes_time() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Time-System",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let demo_time = BuildingType::Shipyard.demolition_time(); // 30 / 2 = 15
+    let (m_refund, e_refund) = BuildingType::Shipyard.demolition_refund();
+
+    app.world_mut().spawn((
+        Colony {
+            system: sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings {
+            slots: vec![Some(BuildingType::Shipyard), None, None, None],
+        },
+        BuildingQueue {
+            queue: Vec::new(),
+            demolition_queue: vec![DemolitionOrder {
+                target_slot: 0,
+                building_type: BuildingType::Shipyard,
+                time_remaining: demo_time,
+                minerals_refund: m_refund,
+                energy_refund: e_refund,
+            }],
+        },
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    ));
+
+    // Advance only half the demolition time — building should still be present
+    let partial = demo_time / 2;
+    assert!(partial > 0, "Partial time should be > 0 for this test");
+    advance_time(&mut app, partial);
+
+    {
+        let mut q = app.world_mut().query::<&Buildings>();
+        let buildings = q.iter(app.world()).next().unwrap();
+        assert_eq!(
+            buildings.slots[0],
+            Some(BuildingType::Shipyard),
+            "Building should still be present before demolition completes"
+        );
+    }
+
+    // Advance the rest of the time + 1 to complete
+    advance_time(&mut app, demo_time - partial + 1);
+
+    {
+        let mut q = app.world_mut().query::<&Buildings>();
+        let buildings = q.iter(app.world()).next().unwrap();
+        assert_eq!(
+            buildings.slots[0], None,
+            "Building should be removed after demolition completes"
+        );
+    }
 }
 
 // =========================================================================
@@ -2260,6 +2487,7 @@ fn test_build_queue_partial_resources() {
                 energy_remaining: energy_cost,
                 build_time_remaining: build_time,
             }],
+            demolition_queue: Vec::new(),
         },
         ProductionFocus::default(),
         MaintenanceCost::default(),

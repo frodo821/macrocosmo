@@ -17,6 +17,7 @@ pub enum GameEventKind {
     SurveyDiscovery,
     ColonyEstablished,
     ShipBuilt,
+    BuildingDemolished,
     CombatVictory,
     CombatDefeat,
     HostileDetected,
