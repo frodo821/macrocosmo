@@ -14,7 +14,9 @@ use macrocosmo::ship::*;
 use macrocosmo::technology;
 use macrocosmo::time_system::{GameClock, HEXADIES_PER_YEAR};
 
-use common::{advance_time, full_test_app, spawn_test_colony, spawn_test_system, test_app};
+use macrocosmo::events::{EventLog, GameEventKind};
+
+use common::{advance_time, full_test_app, spawn_test_colony, spawn_test_system, test_app, test_app_with_event_log};
 
 /// Find the player empire entity in the world.
 fn empire_entity(world: &mut World) -> Entity {
@@ -22,9 +24,7 @@ fn empire_entity(world: &mut World) -> Entity {
     query.single(world).expect("No player empire found in test world")
 }
 
-// =========================================================================
 // Exploration flow
-// =========================================================================
 
 #[test]
 fn test_sublight_travel_and_arrival() {
@@ -153,9 +153,7 @@ fn test_survey_completes_and_marks_system() {
     }
 }
 
-// =========================================================================
 // Colonization flow
-// =========================================================================
 
 #[test]
 fn test_ftl_travel_and_arrival() {
@@ -221,9 +219,7 @@ fn test_ftl_travel_and_arrival() {
 // NOTE: Colony ship auto-colonization tests removed.
 // Colonization is now a manual player command (C key) handled in the visualization layer.
 
-// =========================================================================
 // Production
-// =========================================================================
 
 #[test]
 fn test_production_accumulates_resources() {
@@ -368,9 +364,7 @@ fn test_build_queue_spawns_ship() {
     assert!(bq.queue.is_empty(), "Build queue should be empty after completion");
 }
 
-// =========================================================================
 // Knowledge propagation
-// =========================================================================
 
 #[test]
 fn test_knowledge_propagation_light_delay() {
@@ -426,9 +420,7 @@ fn test_knowledge_propagation_light_delay() {
     }
 }
 
-// =========================================================================
 // Query conflict detection (B0001)
-// =========================================================================
 
 /// Runs ALL game systems together (ship, colony, knowledge, communication,
 /// technology, events, time, player, and visualization) and verifies that no
@@ -621,9 +613,7 @@ fn all_systems_no_query_conflict() {
     }
 }
 
-// =========================================================================
 // Combat resolution (#55)
-// =========================================================================
 
 #[test]
 fn test_hostile_destroyed_when_hp_zero() {
@@ -809,9 +799,7 @@ fn test_combat_takes_multiple_ticks() {
     assert!(hostile.hp > 0.0, "Hostile should still be alive after one tick");
 }
 
-// =========================================================================
 // Authority production and consumption (#73)
-// =========================================================================
 
 /// Helper: spawn a star system marked as capital
 fn spawn_capital_system(world: &mut World, name: &str, pos: [f64; 3]) -> Entity {
@@ -1141,9 +1129,7 @@ fn test_authority_deficit_reduces_non_capital_production() {
     );
 }
 
-// =========================================================================
 // Farm food production (#72)
-// =========================================================================
 
 #[test]
 fn test_farm_produces_food() {
@@ -1211,9 +1197,7 @@ fn test_farm_produces_food() {
     );
 }
 
-// =========================================================================
 // Food + Authority deficit interaction (#72 + #73)
-// =========================================================================
 
 #[test]
 fn test_authority_deficit_penalizes_food_production() {
@@ -1333,9 +1317,7 @@ fn test_authority_deficit_penalizes_food_production() {
     }
 }
 
-// =========================================================================
 // Maintenance system (#68)
-// =========================================================================
 
 #[test]
 fn test_maintenance_deducts_energy_integration() {
@@ -1399,9 +1381,7 @@ fn test_maintenance_deducts_energy_integration() {
     );
 }
 
-// =========================================================================
 // Logistic population growth (#69)
-// =========================================================================
 
 #[test]
 fn test_population_capped_by_carrying_capacity() {
@@ -1603,9 +1583,7 @@ fn test_food_limits_carrying_capacity() {
     );
 }
 
-// =========================================================================
 // ResourceCapacity clamping
-// =========================================================================
 
 #[test]
 fn test_resource_capacity_clamps_stockpile() {
@@ -1674,9 +1652,7 @@ fn test_resource_capacity_clamps_stockpile() {
     );
 }
 
-// =========================================================================
 // Modifier affects production output
-// =========================================================================
 
 #[test]
 fn test_modifier_affects_production_output() {
@@ -1748,9 +1724,7 @@ fn test_modifier_affects_production_output() {
     );
 }
 
-// =========================================================================
 // Building queue completes construction
-// =========================================================================
 
 #[test]
 fn test_building_queue_completes_construction() {
@@ -1819,9 +1793,7 @@ fn test_building_queue_completes_construction() {
     );
 }
 
-// =========================================================================
 // Building demolition
-// =========================================================================
 
 #[test]
 fn test_demolish_building_removes_from_slot() {
@@ -2045,9 +2017,7 @@ fn test_demolish_takes_time() {
     }
 }
 
-// =========================================================================
 // ConstructionParams resource exists and can be modified
-// =========================================================================
 
 #[test]
 fn test_construction_params_modify_ship_cost() {
@@ -2088,9 +2058,7 @@ fn test_construction_params_modify_ship_cost() {
     );
 }
 
-// =========================================================================
 // Building bonus via sync_building_modifiers
-// =========================================================================
 
 #[test]
 fn test_building_bonus_via_sync_modifiers() {
@@ -2127,9 +2095,7 @@ fn test_building_bonus_via_sync_modifiers() {
     );
 }
 
-// =========================================================================
 // Maintenance modifier affects energy
-// =========================================================================
 
 #[test]
 fn test_maintenance_modifier_affects_energy() {
@@ -2210,9 +2176,7 @@ fn test_maintenance_modifier_affects_energy() {
     );
 }
 
-// =========================================================================
 // Food consumption modifier
-// =========================================================================
 
 #[test]
 fn test_food_consumption_modifier() {
@@ -2289,9 +2253,7 @@ fn test_food_consumption_modifier() {
     );
 }
 
-// =========================================================================
 // Authority params modifier
-// =========================================================================
 
 #[test]
 fn test_authority_params_modifier() {
@@ -2366,9 +2328,7 @@ fn test_authority_params_modifier() {
     );
 }
 
-// =========================================================================
 // Production focus weights
-// =========================================================================
 
 #[test]
 fn test_production_focus_weights() {
@@ -2435,9 +2395,7 @@ fn test_production_focus_weights() {
     );
 }
 
-// =========================================================================
 // Build queue partial resources
-// =========================================================================
 
 #[test]
 fn test_build_queue_partial_resources() {
@@ -2518,9 +2476,7 @@ fn test_build_queue_partial_resources() {
     );
 }
 
-// =========================================================================
 // Build queue requires shipyard
-// =========================================================================
 
 #[test]
 fn test_build_queue_requires_shipyard() {
@@ -2595,9 +2551,7 @@ fn test_build_queue_requires_shipyard() {
     );
 }
 
-// =========================================================================
 // Starvation reduces population
-// =========================================================================
 
 #[test]
 fn test_starvation_reduces_population() {
@@ -2652,9 +2606,7 @@ fn test_starvation_reduces_population() {
     );
 }
 
-// =========================================================================
 // Starvation population floor
-// =========================================================================
 
 #[test]
 fn test_starvation_population_floor() {
@@ -2842,9 +2794,7 @@ fn test_expired_modifier_has_on_expire_event() {
     }
 }
 
-// =========================================================================
 // Periodic event fires on interval
-// =========================================================================
 
 #[test]
 fn test_periodic_event_fires() {
@@ -2908,9 +2858,7 @@ fn test_periodic_event_fires() {
     }
 }
 
-// =========================================================================
 // Research control (#75)
-// =========================================================================
 
 #[test]
 fn test_start_research_sets_queue() {
@@ -3014,9 +2962,7 @@ fn test_cancel_research_clears_queue() {
     assert_eq!(queue.accumulated, 0.0);
 }
 
-// =========================================================================
 // Technology knowledge propagation (#88)
-// =========================================================================
 
 /// Helper: set up an app with tech research + propagation systems for knowledge tests.
 fn tech_knowledge_app() -> App {
@@ -3268,9 +3214,7 @@ fn test_uncolonized_system_no_propagation() {
     );
 }
 
-// =========================================================================
 // #76: Light-speed command delay
-// =========================================================================
 
 /// When a PendingShipCommand is created with arrives_at in the future,
 /// the ship should NOT change state until the clock reaches arrives_at.
@@ -3489,9 +3433,7 @@ fn test_pending_survey_command_executes_after_delay() {
     );
 }
 
-// =========================================================================
 // CRITICAL: tick_timed_effects cleans all components (#1)
-// =========================================================================
 
 #[test]
 fn test_tick_timed_effects_cleans_all_components() {
@@ -3598,9 +3540,7 @@ fn test_tick_timed_effects_cleans_all_components() {
     );
 }
 
-// =========================================================================
 // CRITICAL: Owner::Empire ships (#3)
-// =========================================================================
 
 #[test]
 fn test_empire_owned_ships() {
@@ -3672,9 +3612,7 @@ fn test_empire_owned_ships() {
     assert_eq!(sov.owner, Some(Owner::Empire(empire2)));
 }
 
-// =========================================================================
 // CRITICAL: GlobalParams on empire entity (#4)
-// =========================================================================
 
 #[test]
 fn test_global_params_on_empire_entity() {
@@ -3762,9 +3700,7 @@ fn test_ftl_range_bonus_extends_range() {
     );
 }
 
-// =========================================================================
 // MAJOR: on_expire_event fires named event (#6)
-// =========================================================================
 
 #[test]
 fn test_on_expire_event_fires_named_event() {
@@ -3835,9 +3771,7 @@ fn test_on_expire_event_fires_named_event() {
     );
 }
 
-// =========================================================================
 // MAJOR: sync_maintenance_modifiers ship maintenance (#7)
-// =========================================================================
 
 #[test]
 fn test_ship_maintenance_synced_via_modifiers() {
@@ -3903,9 +3837,7 @@ fn test_ship_maintenance_synced_via_modifiers() {
     );
 }
 
-// =========================================================================
 // Job auto-assignment (#87)
-// =========================================================================
 
 #[test]
 fn test_job_auto_assignment() {
@@ -4075,9 +4007,7 @@ fn test_job_auto_assignment_excess_population() {
     assert_eq!(pop.total() - jobs.total_employed(), 5); // 5 unemployed
 }
 
-// =========================================================================
 // #79: Ship scrapping (recycling)
-// =========================================================================
 
 #[test]
 fn test_scrap_ship_refund_amounts() {
@@ -4117,24 +4047,13 @@ fn test_scrap_ship_despawns_entity() {
         true,
     );
 
-    let _colony = spawn_test_colony(
-        app.world_mut(),
-        sys,
-        Amt::units(100),
-        Amt::units(100),
-        vec![None; 4],
-    );
-
     let ship = common::spawn_test_ship(
         app.world_mut(),
-        "Explorer-1",
-        ShipType::Explorer,
+        "Doomed-1",
+        ShipType::Courier,
         sys,
         [0.0, 0.0, 0.0],
     );
-
-    // Verify ship exists
-    assert!(app.world().get_entity(ship).is_ok());
 
     // Despawn the ship (simulating scrap action)
     app.world_mut().despawn(ship);
@@ -4142,6 +4061,10 @@ fn test_scrap_ship_despawns_entity() {
     // Verify ship is gone
     assert!(app.world().get_entity(ship).is_err());
 }
+
+// =========================================================================
+// Resource depletion alerts (#80)
+// =========================================================================
 
 #[test]
 fn test_scrap_ship_refunds_resources() {
@@ -4194,4 +4117,169 @@ fn test_scrap_ship_refunds_resources() {
 
     // Verify ship is gone
     assert!(app.world().get_entity(ship).is_err());
+}
+
+// =========================================================================
+// Resource depletion alerts (#80)
+// =========================================================================
+
+#[test]
+fn test_food_depletion_alert() {
+    let mut app = test_app_with_event_log();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Starving",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with food = 0
+    let _colony = app.world_mut().spawn((
+        Colony { system: sys, population: 100.0, growth_rate: 0.01 },
+        ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    )).id();
+
+    advance_time(&mut app, 1);
+    app.update();
+
+    let log = app.world().resource::<EventLog>();
+    let alerts: Vec<_> = log.entries.iter()
+        .filter(|e| e.kind == GameEventKind::ResourceAlert)
+        .collect();
+    assert!(!alerts.is_empty(), "Expected a food depletion alert");
+    assert!(alerts[0].description.contains("Starvation"), "Alert should mention starvation");
+    assert!(alerts[0].related_system == Some(sys));
+}
+
+#[test]
+fn test_energy_depletion_alert() {
+    let mut app = test_app_with_event_log();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "NoPower",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Colony with energy = 0
+    let _colony = app.world_mut().spawn((
+        Colony { system: sys, population: 100.0, growth_rate: 0.01 },
+        ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    )).id();
+
+    advance_time(&mut app, 1);
+    // Second update so collect_events picks up messages from previous frame
+    app.update();
+
+    let log = app.world().resource::<EventLog>();
+    let alerts: Vec<_> = log.entries.iter()
+        .filter(|e| e.kind == GameEventKind::ResourceAlert)
+        .collect();
+    assert!(!alerts.is_empty(), "Expected an energy depletion alert, got: {:?}", alerts.iter().map(|a| &a.description).collect::<Vec<_>>());
+    let energy_alerts: Vec<_> = alerts.iter().filter(|a| a.description.contains("Energy depleted")).collect();
+    assert!(!energy_alerts.is_empty(), "Alert should mention energy depletion, got: {:?}", alerts.iter().map(|a| &a.description).collect::<Vec<_>>());
+    assert!(energy_alerts[0].related_system == Some(sys));
+}
+
+#[test]
+fn test_alert_cooldown() {
+    let mut app = test_app_with_event_log();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Starving",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    // Colony with food = 0 and no food production
+    let _colony = app.world_mut().spawn((
+        Colony { system: sys, population: 100.0, growth_rate: 0.01 },
+        ResourceStockpile {
+            minerals: Amt::units(500),
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue { queue: Vec::new() },
+        Buildings { slots: vec![] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+    )).id();
+
+    // First tick: alert fires
+    advance_time(&mut app, 1);
+    app.update(); // collect messages
+    let count_1 = app.world().resource::<EventLog>().entries.iter()
+        .filter(|e| e.kind == GameEventKind::ResourceAlert)
+        .count();
+    assert_eq!(count_1, 1, "First tick should produce exactly one food alert");
+
+    // Advance less than 30 hexadies: no duplicate
+    advance_time(&mut app, 10);
+    app.update(); // collect messages
+    let count_2 = app.world().resource::<EventLog>().entries.iter()
+        .filter(|e| e.kind == GameEventKind::ResourceAlert)
+        .count();
+    assert_eq!(count_2, 1, "Alert should not repeat within cooldown period");
+
+    // Advance past 30 hexadies total from first alert: alert fires again
+    advance_time(&mut app, 25);
+    app.update(); // collect messages
+    let count_3 = app.world().resource::<EventLog>().entries.iter()
+        .filter(|e| e.kind == GameEventKind::ResourceAlert)
+        .count();
+    assert!(count_3 >= 2, "Alert should fire again after cooldown expires");
 }

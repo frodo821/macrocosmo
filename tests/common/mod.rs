@@ -52,6 +52,7 @@ pub fn test_app() -> App {
     app.insert_resource(technology::LastResearchTick(0));
     app.init_resource::<species::SpeciesRegistry>();
     app.init_resource::<species::JobRegistry>();
+    app.init_resource::<AlertCooldowns>();
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -83,6 +84,7 @@ pub fn test_app() -> App {
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            check_resource_alerts,
             advance_production_tick,
         )
             .chain()
@@ -105,6 +107,20 @@ pub fn test_app() -> App {
     app
 }
 
+/// Like test_app() but also registers collect_events so GameEvents are
+/// collected into EventLog. Needed for tests that check EventLog entries.
+/// NOTE: Do not combine with tests that rely on EventSystem.fired_log timing,
+/// because the extra MessageReader<GameEvent> system can alter scheduling.
+pub fn test_app_with_event_log() -> App {
+    let mut app = test_app();
+    app.add_systems(
+        Update,
+        macrocosmo::events::collect_events
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+    app
+}
+
 /// Build a headless Bevy App with ALL game systems registered (including
 /// visualization logic systems) so Bevy validates there are no Query
 /// conflicts (B0001). Systems that require Gizmos are excluded since the
@@ -123,6 +139,7 @@ pub fn full_test_app() -> App {
     app.insert_resource(EventSystem::default());
     app.init_resource::<species::SpeciesRegistry>();
     app.init_resource::<species::JobRegistry>();
+    app.init_resource::<AlertCooldowns>();
     app.add_message::<GameEvent>();
 
     // --- Visualization resources ---
@@ -167,6 +184,7 @@ pub fn full_test_app() -> App {
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            check_resource_alerts,
             advance_production_tick,
         )
             .chain(),

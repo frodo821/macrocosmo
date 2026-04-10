@@ -21,6 +21,7 @@ impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LastProductionTick>()
             .init_resource::<BuildingRegistry>()
+            .init_resource::<AlertCooldowns>()
             .add_systems(
                 Startup,
                 (
@@ -41,6 +42,7 @@ impl Plugin for ColonyPlugin {
                     tick_population_growth,
                     tick_build_queue,
                     tick_building_queue,
+                    check_resource_alerts,
                     advance_production_tick,
                 )
                     .chain()
@@ -1232,6 +1234,104 @@ pub fn tick_authority(
                 stockpile.authority = stockpile.authority.min(cap.authority);
             }
             break;
+        }
+    }
+}
+
+/// Tracks cooldowns for resource alerts to prevent spamming the same alert every tick.
+#[derive(Resource, Default)]
+pub struct AlertCooldowns {
+    cooldowns: std::collections::HashMap<(String, Entity), i64>,
+}
+
+impl AlertCooldowns {
+    /// Minimum hexadies between repeated alerts of the same type for the same system.
+    const COOLDOWN: i64 = 30;
+
+    pub fn can_alert(&self, alert_type: &str, system: Entity, now: i64) -> bool {
+        match self.cooldowns.get(&(alert_type.to_string(), system)) {
+            Some(last) => now - last >= Self::COOLDOWN,
+            None => true,
+        }
+    }
+
+    pub fn mark(&mut self, alert_type: &str, system: Entity, now: i64) {
+        self.cooldowns.insert((alert_type.to_string(), system), now);
+    }
+}
+
+/// Checks colonies for resource depletion and emits `ResourceAlert` events.
+/// Runs after maintenance/growth so stockpiles are up to date.
+pub fn check_resource_alerts(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    colonies: Query<(
+        &Colony,
+        &ResourceStockpile,
+        Option<&FoodConsumption>,
+        Option<&MaintenanceCost>,
+    )>,
+    stars: Query<&StarSystem>,
+    mut events: MessageWriter<GameEvent>,
+    mut alert_cooldowns: ResMut<AlertCooldowns>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+
+    for (colony, stockpile, food_consumption, _maintenance) in &colonies {
+        let system_name = stars
+            .get(colony.system)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+
+        // Food starvation alert: food == 0
+        if stockpile.food == Amt::ZERO {
+            if alert_cooldowns.can_alert("food_starving", colony.system, clock.elapsed) {
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ResourceAlert,
+                    description: format!("{}: Starvation! Food depleted", system_name),
+                    related_system: Some(colony.system),
+                });
+                alert_cooldowns.mark("food_starving", colony.system, clock.elapsed);
+            }
+        }
+
+        // Food low alert: food < food_consumption * 10 (less than 10 hexadies of food)
+        if let Some(fc) = food_consumption {
+            let threshold = fc.food_per_hexadies.final_value().mul_u64(10);
+            if stockpile.food < threshold && stockpile.food > Amt::ZERO {
+                if alert_cooldowns.can_alert("food_low", colony.system, clock.elapsed) {
+                    events.write(GameEvent {
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::ResourceAlert,
+                        description: format!(
+                            "{}: Food supply low ({} remaining)",
+                            system_name, stockpile.food
+                        ),
+                        related_system: Some(colony.system),
+                    });
+                    alert_cooldowns.mark("food_low", colony.system, clock.elapsed);
+                }
+            }
+        }
+
+        // Energy depleted alert
+        if stockpile.energy == Amt::ZERO {
+            if alert_cooldowns.can_alert("energy_depleted", colony.system, clock.elapsed) {
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ResourceAlert,
+                    description: format!(
+                        "{}: Energy depleted! Maintenance unpaid",
+                        system_name
+                    ),
+                    related_system: Some(colony.system),
+                });
+                alert_cooldowns.mark("energy_depleted", colony.system, clock.elapsed);
+            }
         }
     }
 }
