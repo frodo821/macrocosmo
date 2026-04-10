@@ -1254,3 +1254,98 @@ fn test_command_queue_predicted_position() {
     assert_eq!(queue.predicted_system, Some(sys_c));
     assert!((queue.predicted_position[0] - 10.0).abs() < 1e-9);
 }
+
+/// Hull modifiers from HullDefinition should be pushed to ShipModifiers
+/// when sync_ship_module_modifiers runs.
+#[test]
+fn test_hull_modifiers_applied_to_ship() {
+    use macrocosmo::ship_design::{HullDefinition, HullRegistry, HullSlot, ModuleModifier};
+
+    let mut app = test_app();
+
+    // Register a hull with modifiers
+    {
+        let mut hull_registry = app.world_mut().resource_mut::<HullRegistry>();
+        hull_registry.insert(HullDefinition {
+            id: "scout_hull".to_string(),
+            name: "Scout Hull".to_string(),
+            base_hp: 40.0,
+            base_speed: 0.85,
+            base_evasion: 35.0,
+            slots: vec![
+                HullSlot { slot_type: "utility".to_string(), count: 2 },
+                HullSlot { slot_type: "engine".to_string(), count: 1 },
+            ],
+            build_cost_minerals: Amt::units(150),
+            build_cost_energy: Amt::units(80),
+            build_time: 45,
+            maintenance: Amt::new(0, 400),
+            modifiers: vec![
+                ModuleModifier {
+                    target: "ship.survey_speed".to_string(),
+                    base_add: 0.0,
+                    multiplier: 1.3,
+                    add: 0.0,
+                },
+                ModuleModifier {
+                    target: "ship.speed".to_string(),
+                    base_add: 0.0,
+                    multiplier: 1.15,
+                    add: 0.0,
+                },
+            ],
+        });
+    }
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Sol",
+        [0.0, 0.0, 0.0],
+        Habitability::Marginal,
+        true,
+        false,
+    );
+
+    let ship = {
+        let world = app.world_mut();
+        world
+            .spawn((
+                Ship {
+                    name: "Scout".to_string(),
+                    design_id: "scout_mk1".to_string(),
+                    hull_id: "scout_hull".to_string(),
+                    modules: Vec::new(),
+                    owner: Owner::Neutral,
+                    sublight_speed: 0.85,
+                    ftl_range: 10.0,
+                    player_aboard: false,
+                    home_port: sys,
+                },
+                ShipState::Docked { system: sys },
+                Position::from([0.0, 0.0, 0.0]),
+                ShipHitpoints {
+                    hull: 40.0,
+                    hull_max: 40.0,
+                    armor: 0.0,
+                    armor_max: 0.0,
+                    shield: 0.0,
+                    shield_max: 0.0,
+                    shield_regen: 0.0,
+                },
+                CommandQueue::default(),
+                Cargo::default(),
+                ShipModifiers::default(),
+            ))
+            .id()
+    };
+
+    app.update();
+
+    let mods = app.world().get::<ShipModifiers>(ship).unwrap();
+    // survey_speed should have 1 modifier with multiplier 1.3
+    assert_eq!(mods.survey_speed.modifiers().len(), 1);
+    assert_eq!(mods.survey_speed.modifiers()[0].id, "hull_scout_hull_ship.survey_speed");
+    // speed should have 1 modifier with multiplier 1.15
+    assert_eq!(mods.speed.modifiers().len(), 1);
+    assert_eq!(mods.speed.modifiers()[0].id, "hull_scout_hull_ship.speed");
+}

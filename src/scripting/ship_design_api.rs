@@ -42,6 +42,9 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
         // Parse build_cost table
         let (build_cost_minerals, build_cost_energy) = parse_cost_table(&table, "build_cost")?;
 
+        // Parse hull modifiers (optional, same format as module modifiers)
+        let modifiers = parse_module_modifiers(&table)?;
+
         result.push(HullDefinition {
             id,
             name,
@@ -53,6 +56,7 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
             build_cost_energy,
             build_time,
             maintenance,
+            modifiers,
         });
     }
 

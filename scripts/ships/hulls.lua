@@ -47,3 +47,42 @@ define_hull {
     build_time = 240,
     maintenance = 2.0,
 }
+
+define_hull {
+    id = "scout_hull",
+    name = "Scout Hull",
+    base_hp = 40,
+    base_speed = 0.85,
+    base_evasion = 35.0,
+    slots = {
+        { type = "utility", count = 2 },
+        { type = "engine", count = 1 },
+        { type = "weapon", count = 1 },
+    },
+    build_cost = { minerals = 150, energy = 80 },
+    build_time = 45,
+    maintenance = 0.4,
+    modifiers = {
+        { target = "ship.survey_speed", base_add = 0.0, multiplier = 1.3, add = 0.0 },
+        { target = "ship.speed", base_add = 0.0, multiplier = 1.15, add = 0.0 },
+    },
+}
+
+define_hull {
+    id = "courier_hull",
+    name = "Courier Hull",
+    base_hp = 35,
+    base_speed = 0.80,
+    base_evasion = 25.0,
+    slots = {
+        { type = "utility", count = 2 },
+        { type = "engine", count = 2 },
+    },
+    build_cost = { minerals = 100, energy = 50 },
+    build_time = 30,
+    maintenance = 0.3,
+    modifiers = {
+        { target = "ship.cargo_capacity", base_add = 0.0, multiplier = 1.5, add = 0.0 },
+        { target = "ship.ftl_range", base_add = 0.0, multiplier = 1.2, add = 0.0 },
+    },
+}

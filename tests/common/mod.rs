@@ -55,6 +55,7 @@ pub fn test_app() -> App {
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
+    app.init_resource::<macrocosmo::ship_design::HullRegistry>();
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -149,6 +150,7 @@ pub fn full_test_app() -> App {
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
+    app.init_resource::<macrocosmo::ship_design::HullRegistry>();
     app.add_message::<GameEvent>();
 
     // --- Visualization resources ---
