@@ -1168,9 +1168,10 @@ pub fn draw_context_menu(
     let effective_ftl_range = ftl_range + global_params.ftl_range_bonus;
     let can_ftl = !same_system && effective_ftl_range > 0.0 && target_surveyed && dist <= effective_ftl_range;
     let can_move = !same_system;
-    // Survey: can survey nearby unsurveyed system (including from docked at same system if unsurveyed)
+    // Survey: can survey unsurveyed system (same or remote — #101 auto-inserts move for remote)
     let can_survey = is_docked && crate::ship::design_can_survey(&design_id) && !target_surveyed;
-    let can_colonize = is_docked && crate::ship::design_can_colonize(&design_id) && target_habitable && !target_colonized && target_surveyed && same_system;
+    // Colonize: can colonize habitable, uncolonized, surveyed system (same or remote — #101 auto-inserts move for remote)
+    let can_colonize = is_docked && crate::ship::design_can_colonize(&design_id) && target_habitable && !target_colonized && target_surveyed;
 
     let origin_pos_arr = origin_pos.as_array();
     let target_pos_arr = target_pos.as_array();
@@ -1381,34 +1382,53 @@ pub fn draw_context_menu(
                 }
             }
 
-            // Survey -- if Explorer + target unsurveyed (docked only)
+            // Survey -- if Explorer + target unsurveyed
             if can_survey {
-                if ui.button("Survey").clicked() {
-                    if command_delay == 0 {
-                        let survey_time = physics::light_delay_hexadies(dist) * 2 + 5;
-                        command = Some(ShipState::Surveying {
-                            target_system: target_entity,
-                            started_at: clock.elapsed,
-                            completes_at: clock.elapsed + survey_time,
-                        });
+                let survey_label = if same_system { "Survey".to_string() } else { format!("{}Survey", queue_prefix) };
+                if ui.button(survey_label).clicked() {
+                    if same_system {
+                        if command_delay == 0 {
+                            command = Some(ShipState::Surveying {
+                                target_system: target_entity,
+                                started_at: clock.elapsed,
+                                completes_at: clock.elapsed + crate::ship::SURVEY_DURATION_HEXADIES,
+                            });
+                        } else {
+                            delayed_command = Some(crate::ship::ShipCommand::Survey { target: target_entity });
+                        }
                     } else {
-                        delayed_command = Some(crate::ship::ShipCommand::Survey { target: target_entity });
+                        // #101: Remote survey — queue move + survey via command queue
+                        // The command queue processor will auto-insert move before survey
+                        queued_command = Some(QueuedCommand::Survey {
+                            system: target_entity,
+                            expected_position: origin_pos_arr,
+                        });
                     }
                     close_menu = true;
                 }
             }
 
-            // Colonize -- if ColonyShip + target habitable + uncolonized (docked only)
+            // Colonize -- if ColonyShip + target habitable + uncolonized
             if can_colonize {
-                if ui.button("Colonize").clicked() {
-                    if command_delay == 0 {
-                        command = Some(ShipState::Settling {
-                            system: target_entity,
-                            started_at: clock.elapsed,
-                            completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
-                        });
+                let colonize_label = if same_system { "Colonize".to_string() } else { format!("{}Colonize", queue_prefix) };
+                if ui.button(colonize_label).clicked() {
+                    if same_system {
+                        if command_delay == 0 {
+                            command = Some(ShipState::Settling {
+                                system: target_entity,
+                                started_at: clock.elapsed,
+                                completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
+                            });
+                        } else {
+                            delayed_command = Some(crate::ship::ShipCommand::Colonize);
+                        }
                     } else {
-                        delayed_command = Some(crate::ship::ShipCommand::Colonize);
+                        // #101: Remote colonize — queue move + colonize via command queue
+                        // The command queue processor will auto-insert move before colonize
+                        queued_command = Some(QueuedCommand::Colonize {
+                            system: target_entity,
+                            expected_position: origin_pos_arr,
+                        });
                     }
                     close_menu = true;
                 }

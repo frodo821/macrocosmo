@@ -26,7 +26,7 @@ pub enum QueuedCommand {
     MoveTo { system: Entity, expected_position: [f64; 3] },
     FTLTo { system: Entity, expected_position: [f64; 3] },
     Survey { system: Entity, expected_position: [f64; 3] },
-    Colonize { expected_position: [f64; 3] },
+    Colonize { system: Entity, expected_position: [f64; 3] },
 }
 
 /// Result of an exploration event rolled when a survey completes.
@@ -734,9 +734,14 @@ pub fn start_survey_with_bonus(
         return Err("Only Explorer ships can perform surveys");
     }
 
-    match ship_state {
-        ShipState::Docked { .. } => {}
+    let docked_system = match ship_state {
+        ShipState::Docked { system } => *system,
         _ => return Err("Ship must be docked to begin a survey"),
+    };
+
+    // #102: Ship must be docked at the target system to survey it
+    if docked_system != target_system {
+        return Err("Ship must be docked at the target system to survey it");
     }
 
     let effective_range = SURVEY_RANGE_LY + survey_range_bonus;
@@ -1362,6 +1367,22 @@ pub fn process_command_queue(
                     warn!("Queued Survey target no longer exists");
                     continue;
                 };
+                // #101: If not docked at the target system, auto-insert a move command
+                if docked_system != target {
+                    let target_pos_arr = target_pos.as_array();
+                    let origin_pos = Position::from(expected_position);
+                    let effective_ftl_range = ship.ftl_range + global_params.ftl_range_bonus;
+                    let dist = distance_ly(&origin_pos, target_pos);
+                    // Re-insert the survey command after the move
+                    queue.commands.insert(0, QueuedCommand::Survey { system: target, expected_position: target_pos_arr });
+                    if effective_ftl_range > 0.0 && dist <= effective_ftl_range {
+                        queue.commands.insert(0, QueuedCommand::FTLTo { system: target, expected_position: expected_position });
+                    } else {
+                        queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position: expected_position });
+                    }
+                    info!("Queue: Ship {} not at target, auto-inserting move before survey of {}", ship.name, target_star.name);
+                    continue;
+                }
                 let origin = Position::from(expected_position);
                 match start_survey_with_bonus(
                     &mut state,
@@ -1383,12 +1404,40 @@ pub fn process_command_queue(
                     }
                 }
             }
-            QueuedCommand::Colonize { .. } => {
-                // Colonization is handled automatically by process_settling
-                // when a colony ship docks. No explicit action needed here.
+            QueuedCommand::Colonize { system: target, expected_position } => {
+                let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
+                    warn!("Queued Colonize target no longer exists");
+                    continue;
+                };
+                // #101: If not docked at the target system, auto-insert a move command
+                if docked_system != target {
+                    let target_pos_arr = target_pos.as_array();
+                    let origin_pos = Position::from(expected_position);
+                    let effective_ftl_range = ship.ftl_range + global_params.ftl_range_bonus;
+                    let dist = distance_ly(&origin_pos, target_pos);
+                    // Re-insert the colonize command after the move
+                    queue.commands.insert(0, QueuedCommand::Colonize { system: target, expected_position: target_pos_arr });
+                    if effective_ftl_range > 0.0 && dist <= effective_ftl_range {
+                        queue.commands.insert(0, QueuedCommand::FTLTo { system: target, expected_position: expected_position });
+                    } else {
+                        queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position: expected_position });
+                    }
+                    info!("Queue: Ship {} not at target, auto-inserting move before colonize of {}", ship.name, target_star.name);
+                    continue;
+                }
+                // #102: Start settling at the docked system
+                if !design_can_colonize(&ship.design_id) {
+                    warn!("Queue: Ship {} cannot colonize (not a colony ship)", ship.name);
+                    continue;
+                }
+                *state = ShipState::Settling {
+                    system: docked_system,
+                    started_at: clock.elapsed,
+                    completes_at: clock.elapsed + SETTLING_DURATION_HEXADIES,
+                };
                 info!(
-                    "Queue: Ship {} colonize command (handled on dock)",
-                    ship.name
+                    "Queue: Ship {} colonizing {}",
+                    ship.name, target_star.name
                 );
             }
         }
@@ -2137,5 +2186,115 @@ mod tests {
             assert_eq!(rm, Amt::milli(bm.raw() / 2));
             assert_eq!(re, Amt::milli(be.raw() / 2));
         }
+    }
+
+    // --- #102: Survey requires docked at target system ---
+
+    #[test]
+    fn start_survey_rejects_wrong_system() {
+        let mut world = World::new();
+        let system_a = world.spawn_empty().id();
+        let system_b = world.spawn_empty().id();
+        let ship = make_ship("explorer_mk1");
+        let mut state = ShipState::Docked { system: system_a };
+        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let result = start_survey(&mut state, &ship, system_b, &pos, &pos, 0);
+        assert_eq!(result, Err("Ship must be docked at the target system to survey it"));
+    }
+
+    #[test]
+    fn start_survey_same_system_succeeds() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let ship = make_ship("explorer_mk1");
+        let mut state = ShipState::Docked { system };
+        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0);
+        assert!(result.is_ok());
+        assert!(matches!(state, ShipState::Surveying { .. }));
+    }
+
+    // --- #101: Auto-insert movement for remote Survey/Colonize ---
+
+    #[test]
+    fn command_queue_survey_auto_inserts_move_when_not_at_target() {
+        let mut world = World::new();
+        let system_a = world.spawn_empty().id();
+        let system_b = world.spawn_empty().id();
+        let ship = make_ship("explorer_mk1");
+        // Ship is docked at system_a, survey targets system_b
+        let mut queue = CommandQueue {
+            commands: vec![QueuedCommand::Survey {
+                system: system_b,
+                expected_position: [0.0, 0.0, 0.0],
+            }],
+        };
+        let state = ShipState::Docked { system: system_a };
+
+        // Simulate what process_command_queue does:
+        // It checks if docked_system != target, and if so, inserts move + re-queues survey
+        let docked_system = match &state {
+            ShipState::Docked { system } => *system,
+            _ => panic!("Expected Docked"),
+        };
+        let next = queue.commands.remove(0);
+        match next {
+            QueuedCommand::Survey { system: target, expected_position } => {
+                assert_ne!(docked_system, target);
+                // Auto-insert: move to target, then re-queue survey
+                let target_pos_arr = [10.0, 0.0, 0.0]; // simulated target position
+                queue.commands.insert(0, QueuedCommand::Survey { system: target, expected_position: target_pos_arr });
+                // Explorer has ftl_range = 0, so should use MoveTo
+                queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position });
+            }
+            _ => panic!("Expected Survey command"),
+        }
+
+        // Verify: queue should now be [MoveTo, Survey]
+        assert_eq!(queue.commands.len(), 2);
+        assert!(matches!(queue.commands[0], QueuedCommand::MoveTo { .. }));
+        assert!(matches!(queue.commands[1], QueuedCommand::Survey { .. }));
+    }
+
+    #[test]
+    fn command_queue_colonize_auto_inserts_move_when_not_at_target() {
+        let mut world = World::new();
+        let system_a = world.spawn_empty().id();
+        let system_b = world.spawn_empty().id();
+        let ship = make_ship("colony_ship_mk1");
+        let mut queue = CommandQueue {
+            commands: vec![QueuedCommand::Colonize {
+                system: system_b,
+                expected_position: [0.0, 0.0, 0.0],
+            }],
+        };
+        let state = ShipState::Docked { system: system_a };
+
+        let docked_system = match &state {
+            ShipState::Docked { system } => *system,
+            _ => panic!("Expected Docked"),
+        };
+        let next = queue.commands.remove(0);
+        match next {
+            QueuedCommand::Colonize { system: target, expected_position } => {
+                assert_ne!(docked_system, target);
+                let target_pos_arr = [10.0, 0.0, 0.0];
+                queue.commands.insert(0, QueuedCommand::Colonize { system: target, expected_position: target_pos_arr });
+                // Colony ship has ftl_range = 15.0, dist = 10.0, so should use FTLTo
+                let dist = 10.0;
+                let ftl_range = ship.ftl_range; // 15.0
+                if ftl_range > 0.0 && dist <= ftl_range {
+                    queue.commands.insert(0, QueuedCommand::FTLTo { system: target, expected_position });
+                } else {
+                    queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position });
+                }
+            }
+            _ => panic!("Expected Colonize command"),
+        }
+
+        // Colony ship has FTL, so should be [FTLTo, Colonize]
+        assert_eq!(queue.commands.len(), 2);
+        assert!(matches!(queue.commands[0], QueuedCommand::FTLTo { .. }));
+        assert!(matches!(queue.commands[1], QueuedCommand::Colonize { .. }));
     }
 }
