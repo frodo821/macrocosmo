@@ -127,7 +127,7 @@ fn test_remote_command_has_light_delay() {
 
     app.world_mut().spawn(PendingShipCommand {
         ship: ship_entity,
-        command: ShipCommand::FTLTo { destination: sys_c },
+        command: ShipCommand::MoveTo { destination: sys_c },
         arrives_at: current_time + expected_delay,
     });
 
@@ -203,7 +203,7 @@ fn test_pending_command_executes_on_arrival() {
     let arrives_at = current_time + 10; // small delay
     app.world_mut().spawn(PendingShipCommand {
         ship: ship_entity,
-        command: ShipCommand::FTLTo { destination: sys_b },
+        command: ShipCommand::MoveTo { destination: sys_b },
         arrives_at,
     });
 

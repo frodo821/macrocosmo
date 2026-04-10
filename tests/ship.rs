@@ -466,9 +466,8 @@ fn test_ftl_range_bonus_extends_range() {
     // Issue FTL command via command queue
     {
         let mut queue = app.world_mut().get_mut::<CommandQueue>(ship_entity).unwrap();
-        queue.commands.push(QueuedCommand::FTLTo {
+        queue.commands.push(QueuedCommand::MoveTo {
             system: sys_b,
-            expected_position: [0.0, 0.0, 0.0],
         });
     }
 
@@ -633,11 +632,9 @@ fn test_clear_command_queue() {
     let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
     queue.commands.push(QueuedCommand::MoveTo {
         system: sys_b,
-        expected_position: [5.0, 0.0, 0.0],
     });
     queue.commands.push(QueuedCommand::MoveTo {
         system: sys_c,
-        expected_position: [10.0, 0.0, 0.0],
     });
 
     // Verify commands exist
@@ -695,15 +692,12 @@ fn test_cancel_individual_command() {
     let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
     queue.commands.push(QueuedCommand::MoveTo {
         system: sys_a,
-        expected_position: [0.0, 0.0, 0.0],
     });
     queue.commands.push(QueuedCommand::MoveTo {
         system: sys_b,
-        expected_position: [5.0, 0.0, 0.0],
     });
     queue.commands.push(QueuedCommand::MoveTo {
         system: sys_c,
-        expected_position: [10.0, 0.0, 0.0],
     });
 
     // Cancel the middle command (index 1)
@@ -880,7 +874,7 @@ fn test_ftl_survey_auto_queues_return() {
 
     let in_ftl_to_a = matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_a);
     let queued_ftl_to_a = queue.commands.iter().any(|cmd| {
-        matches!(cmd, QueuedCommand::FTLTo { system, .. } if *system == sys_a)
+        matches!(cmd, QueuedCommand::MoveTo { system, .. } if *system == sys_a)
     });
 
     assert!(

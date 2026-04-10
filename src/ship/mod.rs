@@ -18,17 +18,43 @@ use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 // --- #34: Command queue ---
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone)]
 pub struct CommandQueue {
     pub commands: Vec<QueuedCommand>,
+    /// Predicted position after all queued commands execute
+    pub predicted_position: [f64; 3],
+    /// Predicted system after all queued commands execute
+    pub predicted_system: Option<Entity>,
+}
+
+impl CommandQueue {
+    /// Push a command and update predicted position
+    pub fn push(&mut self, cmd: QueuedCommand, system_positions: &impl Fn(Entity) -> Option<[f64; 3]>) {
+        match &cmd {
+            QueuedCommand::MoveTo { system } | QueuedCommand::Survey { system } | QueuedCommand::Colonize { system } => {
+                if let Some(pos) = system_positions(*system) {
+                    self.predicted_position = pos;
+                    self.predicted_system = Some(*system);
+                }
+            }
+        }
+        self.commands.push(cmd);
+    }
+
+    /// Reset prediction to current ship state (call when queue becomes empty or command consumed)
+    pub fn sync_prediction(&mut self, current_pos: [f64; 3], current_system: Option<Entity>) {
+        if self.commands.is_empty() {
+            self.predicted_position = current_pos;
+            self.predicted_system = current_system;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum QueuedCommand {
-    MoveTo { system: Entity, expected_position: [f64; 3] },
-    FTLTo { system: Entity, expected_position: [f64; 3] },
-    Survey { system: Entity, expected_position: [f64; 3] },
-    Colonize { system: Entity, expected_position: [f64; 3] },
+    MoveTo { system: Entity },
+    Survey { system: Entity },
+    Colonize { system: Entity },
 }
 
 /// Result of an exploration event rolled when a survey completes.
@@ -189,8 +215,7 @@ pub struct PendingShipCommand {
 /// The kinds of commands that can be issued to a ship.
 #[derive(Clone, Debug)]
 pub enum ShipCommand {
-    FTLTo { destination: Entity },
-    SubLightTo { destination: Entity },
+    MoveTo { destination: Entity },
     Survey { target: Entity },
     Colonize,
 }
@@ -859,9 +884,8 @@ pub fn process_surveys(
                         if let Some(player_sys) = player_system {
                             if player_sys != target_system {
                                 if let Some(ref mut queue) = cmd_queue {
-                                    queue.commands.push(QueuedCommand::FTLTo {
+                                    queue.commands.push(QueuedCommand::MoveTo {
                                         system: player_sys,
-                                        expected_position: ship_pos.as_array(),
                                     });
                                     info!(
                                         "Auto-queued FTL return to player system for {}",
@@ -1255,7 +1279,7 @@ pub fn process_pending_ship_commands(
         };
 
         match &pending_cmd.command {
-            ShipCommand::FTLTo { destination } => {
+            ShipCommand::MoveTo { destination } => {
                 let dest = *destination;
                 let Ok((dest_star, dest_pos)) = systems.get(dest) else {
                     commands.entity(cmd_entity).despawn();
@@ -1265,6 +1289,7 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
+                // Try FTL first, fall back to sublight
                 let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system(&planets) == Some(docked_system) && bldgs.has_port());
                 match start_ftl_travel_with_bonus(
                     &mut state,
@@ -1280,37 +1305,27 @@ pub fn process_pending_ship_commands(
                 ) {
                     Ok(()) => {
                         info!(
-                            "Remote FTL command executed: {} jumping to {}",
+                            "Remote move command executed: {} FTL jumping to {}",
                             ship.name, dest_star.name,
                         );
                     }
-                    Err(e) => {
+                    Err(_) => {
+                        // Fall back to sublight
+                        start_sublight_travel_with_bonus(
+                            &mut state,
+                            ship_pos,
+                            &ship,
+                            *dest_pos,
+                            Some(dest),
+                            clock.elapsed,
+                            global_params.sublight_speed_bonus,
+                        );
                         info!(
-                            "Remote FTL command for {} failed: {}",
-                            ship.name, e,
+                            "Remote move command executed: {} sub-light to {}",
+                            ship.name, dest_star.name,
                         );
                     }
                 }
-            }
-            ShipCommand::SubLightTo { destination } => {
-                let dest = *destination;
-                let Ok((dest_star, dest_pos)) = systems.get(dest) else {
-                    commands.entity(cmd_entity).despawn();
-                    continue;
-                };
-                start_sublight_travel_with_bonus(
-                    &mut state,
-                    ship_pos,
-                    &ship,
-                    *dest_pos,
-                    Some(dest),
-                    clock.elapsed,
-                    global_params.sublight_speed_bonus,
-                );
-                info!(
-                    "Remote sub-light command executed: {} heading to {}",
-                    ship.name, dest_star.name,
-                );
             }
             ShipCommand::Survey { target } => {
                 let tgt = *target;
@@ -1432,34 +1447,11 @@ pub fn plan_ftl_route(
     None // exceeded max hops
 }
 
-/// Build a command queue of FTL jumps from a route returned by `plan_ftl_route`.
-///
-/// `from_pos` is the ship's current (or expected) position when the first jump begins.
-pub fn build_ftl_command_queue(
-    from_pos: [f64; 3],
-    route: &[Entity],
-    systems: &Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-) -> Vec<QueuedCommand> {
-    let mut commands = Vec::new();
-    let mut current_pos = from_pos;
-
-    for &system in route {
-        commands.push(QueuedCommand::FTLTo {
-            system,
-            expected_position: current_pos,
-        });
-        if let Ok((_, _, pos)) = systems.get(system) {
-            current_pos = pos.as_array();
-        }
-    }
-
-    commands
-}
-
 // --- Command queue processing (#34) ---
 
 /// #45: Uses GlobalParams for tech bonuses
 /// #46: Checks for port facility at origin system
+/// #108: Unified MoveTo with auto-route planning (FTL chain > FTL direct > SubLight)
 pub fn process_command_queue(
     clock: Res<GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
@@ -1471,7 +1463,7 @@ pub fn process_command_queue(
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
-    for (_entity, ship, mut state, mut queue, _ship_pos) in ships.iter_mut() {
+    for (_entity, ship, mut state, mut queue, ship_pos) in ships.iter_mut() {
         // Only process queue when ship is Docked (current command finished)
         let ShipState::Docked { system: docked_system } = *state else {
             continue;
@@ -1484,75 +1476,96 @@ pub fn process_command_queue(
         let next = queue.commands.remove(0);
 
         match next {
-            QueuedCommand::MoveTo { system: target, expected_position } => {
+            QueuedCommand::MoveTo { system: target } => {
                 let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
                     warn!("Queued MoveTo target no longer exists");
+                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
                     continue;
                 };
-                let origin = Position::from(expected_position);
+
+                // Already at target?
+                if docked_system == target {
+                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    continue;
+                }
+
+                let Ok((_, _, origin_pos)) = systems.get(docked_system) else {
+                    warn!("Queue: Origin system no longer exists");
+                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    continue;
+                };
+
+                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system(&planets) == Some(docked_system) && bldgs.has_port());
+                let port_range_bonus = if origin_has_port { PORT_FTL_RANGE_BONUS_LY } else { 0.0 };
+                let effective_ftl_range = ship.ftl_range + global_params.ftl_range_bonus + port_range_bonus;
+
+                // Try FTL route planning first
+                if effective_ftl_range > 0.0 {
+                    if let Some(route) = plan_ftl_route(origin_pos.as_array(), target, effective_ftl_range, &systems) {
+                        // Execute first hop
+                        let first_hop = route[0];
+                        let Ok((_, first_star, first_pos)) = systems.get(first_hop) else {
+                            warn!("Queue: FTL route hop no longer exists");
+                            queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                            continue;
+                        };
+                        match start_ftl_travel_with_bonus(
+                            &mut state,
+                            ship,
+                            docked_system,
+                            first_hop,
+                            origin_pos,
+                            first_pos,
+                            clock.elapsed,
+                            global_params.ftl_range_bonus,
+                            global_params.ftl_speed_multiplier,
+                            origin_has_port,
+                        ) {
+                            Ok(()) => {
+                                // Prepend remaining hops as MoveTo commands
+                                for (i, &hop) in route[1..].iter().enumerate().rev() {
+                                    queue.commands.insert(0, QueuedCommand::MoveTo { system: hop });
+                                }
+                                info!(
+                                    "Queue: Ship {} FTL jumping to {} (route: {} hops)",
+                                    ship.name, first_star.name, route.len()
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                info!("Queue: FTL route first hop failed for {}: {}, falling back to sublight", ship.name, e);
+                            }
+                        }
+                    }
+                }
+
+                // Fall back to sublight
                 start_sublight_travel_with_bonus(
                     &mut state,
-                    &origin,
+                    origin_pos,
                     ship,
                     *target_pos,
                     Some(target),
                     clock.elapsed,
                     global_params.sublight_speed_bonus,
                 );
-                info!("Queue: Ship {} moving to {}", ship.name, target_star.name);
+                info!("Queue: Ship {} sub-light moving to {}", ship.name, target_star.name);
             }
-            QueuedCommand::FTLTo { system: target, expected_position } => {
-                let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
-                    warn!("Queued FTLTo target no longer exists");
-                    continue;
-                };
-                let origin = Position::from(expected_position);
-                let origin_has_port = colonies.iter().any(|(col, bldgs)| col.system(&planets) == Some(docked_system) && bldgs.has_port());
-                match start_ftl_travel_with_bonus(
-                    &mut state,
-                    ship,
-                    docked_system,
-                    target,
-                    &origin,
-                    target_pos,
-                    clock.elapsed,
-                    global_params.ftl_range_bonus,
-                    global_params.ftl_speed_multiplier,
-                    origin_has_port,
-                ) {
-                    Ok(()) => {
-                        info!(
-                            "Queue: Ship {} FTL jumping to {}",
-                            ship.name, target_star.name
-                        );
-                    }
-                    Err(e) => {
-                        warn!("Queue: FTL failed for {}: {}", ship.name, e);
-                    }
-                }
-            }
-            QueuedCommand::Survey { system: target, expected_position } => {
+            QueuedCommand::Survey { system: target } => {
                 let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
                     warn!("Queued Survey target no longer exists");
+                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
                     continue;
                 };
                 // #101: If not docked at the target system, auto-insert a move command
                 if docked_system != target {
-                    let target_pos_arr = target_pos.as_array();
-                    let origin_pos = Position::from(expected_position);
-                    let effective_ftl_range = ship.ftl_range + global_params.ftl_range_bonus;
-                    let dist = distance_ly(&origin_pos, target_pos);
                     // Re-insert the survey command after the move
-                    queue.commands.insert(0, QueuedCommand::Survey { system: target, expected_position: target_pos_arr });
-                    if effective_ftl_range > 0.0 && dist <= effective_ftl_range {
-                        queue.commands.insert(0, QueuedCommand::FTLTo { system: target, expected_position: expected_position });
-                    } else {
-                        queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position: expected_position });
-                    }
+                    queue.commands.insert(0, QueuedCommand::Survey { system: target });
+                    queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
                     info!("Queue: Ship {} not at target, auto-inserting move before survey of {}", ship.name, target_star.name);
                     continue;
                 }
-                let origin = Position::from(expected_position);
+                let origin = Position::from(ship_pos.as_array());
                 match start_survey_with_bonus(
                     &mut state,
                     ship,
@@ -1572,31 +1585,26 @@ pub fn process_command_queue(
                         warn!("Queue: Survey failed for {}: {}", ship.name, e);
                     }
                 }
+                queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
             }
-            QueuedCommand::Colonize { system: target, expected_position } => {
-                let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
+            QueuedCommand::Colonize { system: target } => {
+                let Ok((_target_entity, target_star, _target_pos)) = systems.get(target) else {
                     warn!("Queued Colonize target no longer exists");
+                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
                     continue;
                 };
                 // #101: If not docked at the target system, auto-insert a move command
                 if docked_system != target {
-                    let target_pos_arr = target_pos.as_array();
-                    let origin_pos = Position::from(expected_position);
-                    let effective_ftl_range = ship.ftl_range + global_params.ftl_range_bonus;
-                    let dist = distance_ly(&origin_pos, target_pos);
                     // Re-insert the colonize command after the move
-                    queue.commands.insert(0, QueuedCommand::Colonize { system: target, expected_position: target_pos_arr });
-                    if effective_ftl_range > 0.0 && dist <= effective_ftl_range {
-                        queue.commands.insert(0, QueuedCommand::FTLTo { system: target, expected_position: expected_position });
-                    } else {
-                        queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position: expected_position });
-                    }
+                    queue.commands.insert(0, QueuedCommand::Colonize { system: target });
+                    queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
                     info!("Queue: Ship {} not at target, auto-inserting move before colonize of {}", ship.name, target_star.name);
                     continue;
                 }
                 // #102: Start settling at the docked system
                 if !design_can_colonize(&ship.design_id) {
                     warn!("Queue: Ship {} cannot colonize (not a colony ship)", ship.name);
+                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
                     continue;
                 }
                 *state = ShipState::Settling {
@@ -1608,6 +1616,7 @@ pub fn process_command_queue(
                     "Queue: Ship {} colonizing {}",
                     ship.name, target_star.name
                 );
+                queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
             }
         }
     }
@@ -2390,13 +2399,12 @@ mod tests {
         let mut world = World::new();
         let system_a = world.spawn_empty().id();
         let system_b = world.spawn_empty().id();
-        let ship = make_ship("explorer_mk1");
         // Ship is docked at system_a, survey targets system_b
         let mut queue = CommandQueue {
             commands: vec![QueuedCommand::Survey {
                 system: system_b,
-                expected_position: [0.0, 0.0, 0.0],
             }],
+            ..Default::default()
         };
         let state = ShipState::Docked { system: system_a };
 
@@ -2408,13 +2416,11 @@ mod tests {
         };
         let next = queue.commands.remove(0);
         match next {
-            QueuedCommand::Survey { system: target, expected_position } => {
+            QueuedCommand::Survey { system: target } => {
                 assert_ne!(docked_system, target);
                 // Auto-insert: move to target, then re-queue survey
-                let target_pos_arr = [10.0, 0.0, 0.0]; // simulated target position
-                queue.commands.insert(0, QueuedCommand::Survey { system: target, expected_position: target_pos_arr });
-                // Explorer has ftl_range = 0, so should use MoveTo
-                queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position });
+                queue.commands.insert(0, QueuedCommand::Survey { system: target });
+                queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
             }
             _ => panic!("Expected Survey command"),
         }
@@ -2430,12 +2436,11 @@ mod tests {
         let mut world = World::new();
         let system_a = world.spawn_empty().id();
         let system_b = world.spawn_empty().id();
-        let ship = make_ship("colony_ship_mk1");
         let mut queue = CommandQueue {
             commands: vec![QueuedCommand::Colonize {
                 system: system_b,
-                expected_position: [0.0, 0.0, 0.0],
             }],
+            ..Default::default()
         };
         let state = ShipState::Docked { system: system_a };
 
@@ -2445,25 +2450,18 @@ mod tests {
         };
         let next = queue.commands.remove(0);
         match next {
-            QueuedCommand::Colonize { system: target, expected_position } => {
+            QueuedCommand::Colonize { system: target } => {
                 assert_ne!(docked_system, target);
-                let target_pos_arr = [10.0, 0.0, 0.0];
-                queue.commands.insert(0, QueuedCommand::Colonize { system: target, expected_position: target_pos_arr });
-                // Colony ship has ftl_range = 15.0, dist = 10.0, so should use FTLTo
-                let dist = 10.0;
-                let ftl_range = ship.ftl_range; // 15.0
-                if ftl_range > 0.0 && dist <= ftl_range {
-                    queue.commands.insert(0, QueuedCommand::FTLTo { system: target, expected_position });
-                } else {
-                    queue.commands.insert(0, QueuedCommand::MoveTo { system: target, expected_position });
-                }
+                // Auto-insert: move to target, then re-queue colonize
+                queue.commands.insert(0, QueuedCommand::Colonize { system: target });
+                queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
             }
             _ => panic!("Expected Colonize command"),
         }
 
-        // Colony ship has FTL, so should be [FTLTo, Colonize]
+        // Should be [MoveTo, Colonize] — route planning (FTL vs sublight) is handled by process_command_queue
         assert_eq!(queue.commands.len(), 2);
-        assert!(matches!(queue.commands[0], QueuedCommand::FTLTo { .. }));
+        assert!(matches!(queue.commands[0], QueuedCommand::MoveTo { .. }));
         assert!(matches!(queue.commands[1], QueuedCommand::Colonize { .. }));
     }
 }
