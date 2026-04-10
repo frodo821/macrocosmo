@@ -4,7 +4,7 @@ use bevy_egui::egui;
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production, ResourceStockpile};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
-use crate::ship::{Cargo, Ship, ShipState, ShipType};
+use crate::ship::{Cargo, Ship, ShipState};
 use crate::visualization::{SelectedShip, SelectedSystem};
 
 /// Draws the left-side outline panel showing owned systems and ships.
@@ -82,8 +82,9 @@ pub fn draw_outline(
                                 .italics(),
                         );
                     } else {
-                        for (ship_entity, name, ship_type) in &docked {
-                            let label = format!("  {} ({:?})", name, ship_type);
+                        for (ship_entity, name, design_id) in &docked {
+                            let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
+                            let label = format!("  {} ({})", name, design_name);
                             let is_selected = selected_ship.0 == Some(*ship_entity);
                             if ui.selectable_label(is_selected, &label).clicked() {
                                 selected_ship.0 = Some(*ship_entity);
@@ -105,7 +106,7 @@ pub fn draw_outline(
                 owned_systems.iter().map(|(e, _, _)| *e).collect();
 
             // "Stationed Elsewhere" section for ships docked at unowned systems
-            let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, ShipType)>)> =
+            let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
                 Vec::new();
             for (entity, ship, state, _) in ships.iter() {
                 if let ShipState::Docked { system } = &*state {
@@ -116,12 +117,12 @@ pub fn draw_outline(
                                 .iter_mut()
                                 .find(|(e, _, _)| *e == *system)
                             {
-                                entry.2.push((entity, ship.name.clone(), ship.ship_type));
+                                entry.2.push((entity, ship.name.clone(), ship.design_id.clone()));
                             } else {
                                 unowned_system_ships.push((
                                     *system,
                                     star.name.clone(),
-                                    vec![(entity, ship.name.clone(), ship.ship_type)],
+                                    vec![(entity, ship.name.clone(), ship.design_id.clone())],
                                 ));
                             }
                         }
@@ -157,9 +158,10 @@ pub fn draw_outline(
                             .id_salt(id)
                             .default_open(true)
                             .show(ui, |ui| {
-                                for (ship_entity, name, ship_type) in docked {
+                                for (ship_entity, name, design_id) in docked {
+                                    let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
                                     let label =
-                                        format!("  {} ({:?})", name, ship_type);
+                                        format!("  {} ({})", name, design_name);
                                     let is_selected =
                                         selected_ship.0 == Some(*ship_entity);
                                     if ui
@@ -181,7 +183,7 @@ pub fn draw_outline(
             }
 
             // "In Transit" section for ships not docked
-            let mut in_transit: Vec<(Entity, String, ShipType, &str)> = Vec::new();
+            let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
             for (entity, ship, state, _) in ships.iter() {
                 let status = match &*state {
                     ShipState::Docked { .. } => continue,
@@ -190,7 +192,7 @@ pub fn draw_outline(
                     ShipState::Surveying { .. } => "Surveying",
                     ShipState::Settling { .. } => "Settling",
                 };
-                in_transit.push((entity, ship.name.clone(), ship.ship_type, status));
+                in_transit.push((entity, ship.name.clone(), ship.design_id.clone(), status));
             }
             in_transit.sort_by(|a, b| a.1.cmp(&b.1));
 
@@ -215,13 +217,13 @@ pub fn draw_outline(
 fn ships_docked_at(
     system: Entity,
     ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
-) -> Vec<(Entity, String, ShipType)> {
-    let mut result: Vec<(Entity, String, ShipType)> = ships
+) -> Vec<(Entity, String, String)> {
+    let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _)| {
             if let ShipState::Docked { system: s } = &*state {
                 if *s == system {
-                    return Some((e, ship.name.clone(), ship.ship_type));
+                    return Some((e, ship.name.clone(), ship.design_id.clone()));
                 }
             }
             None
@@ -230,3 +232,4 @@ fn ships_docked_at(
     result.sort_by(|a, b| a.1.cmp(&b.1));
     result
 }
+

@@ -9,7 +9,9 @@ use crate::colony::{
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Habitability, HostilePresence, ResourceLevel, StarSystem, SystemAttributes};
+use crate::modifier::{CachedValue, Modifier, ScopedModifiers};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
+use crate::ship_design::ModuleRegistry;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 // --- #34: Command queue ---
@@ -96,6 +98,7 @@ pub struct ShipPlugin;
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (
+            sync_ship_module_modifiers,
             sublight_movement_system,
             process_ftl_travel,
             process_surveys,
@@ -107,6 +110,56 @@ impl Plugin for ShipPlugin {
                 .after(process_surveys),
             resolve_combat,
         ).after(crate::time_system::advance_game_time));
+    }
+}
+
+/// Syncs module modifiers from equipped modules to ShipModifiers.
+/// Clears and rebuilds module modifiers each time a ship's modules change.
+fn sync_ship_module_modifiers(
+    ships: Query<(Entity, &Ship), Changed<Ship>>,
+    mut ship_mods: Query<&mut ShipModifiers>,
+    module_registry: Res<ModuleRegistry>,
+) {
+    use crate::amount::SignedAmt;
+    for (entity, ship) in &ships {
+        let Ok(mut mods) = ship_mods.get_mut(entity) else { continue };
+        // Reset all module modifiers by creating fresh scoped modifiers
+        // (preserving base values but clearing modifiers)
+        mods.speed = ScopedModifiers::default();
+        mods.ftl_range = ScopedModifiers::default();
+        mods.survey_speed = ScopedModifiers::default();
+        mods.colonize_speed = ScopedModifiers::default();
+        mods.evasion = ScopedModifiers::default();
+        mods.cargo_capacity = ScopedModifiers::default();
+        mods.attack = ScopedModifiers::default();
+        mods.defense = ScopedModifiers::default();
+
+        for (i, equipped) in ship.modules.iter().enumerate() {
+            if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
+                for mod_def in &module_def.modifiers {
+                    let modifier = Modifier {
+                        id: format!("module_{}_{}", equipped.module_id, i),
+                        label: module_def.name.clone(),
+                        base_add: SignedAmt::from_f64(mod_def.base_add),
+                        multiplier: SignedAmt::from_f64(mod_def.multiplier),
+                        add: SignedAmt::from_f64(mod_def.add),
+                        expires_at: None,
+                        on_expire_event: None,
+                    };
+                    match mod_def.target.as_str() {
+                        "ship.speed" => mods.speed.push_modifier(modifier),
+                        "ship.ftl_range" => mods.ftl_range.push_modifier(modifier),
+                        "ship.survey_speed" => mods.survey_speed.push_modifier(modifier),
+                        "ship.colonize_speed" => mods.colonize_speed.push_modifier(modifier),
+                        "ship.evasion" => mods.evasion.push_modifier(modifier),
+                        "ship.cargo_capacity" => mods.cargo_capacity.push_modifier(modifier),
+                        "ship.attack" => mods.attack.push_modifier(modifier),
+                        "ship.defense" => mods.defense.push_modifier(modifier),
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -129,70 +182,155 @@ pub enum ShipCommand {
     Colonize,
 }
 
-#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ShipType {
-    Explorer,
-    ColonyShip,
-    Courier,
+/// A module equipped in a specific slot on a ship.
+#[derive(Clone, Debug)]
+pub struct EquippedModule {
+    pub slot_type: String,
+    pub module_id: String,
 }
 
-impl ShipType {
-    pub fn default_sublight_speed(&self) -> f64 {
-        match self {
-            ShipType::Explorer => 0.75,
-            ShipType::ColonyShip => 0.5,
-            ShipType::Courier => 0.85,
-        }
-    }
+/// Per-ship modifier scopes, driven by equipped modules and tech effects.
+#[derive(Component, Default)]
+pub struct ShipModifiers {
+    pub speed: ScopedModifiers,
+    pub ftl_range: ScopedModifiers,
+    pub survey_speed: ScopedModifiers,
+    pub colonize_speed: ScopedModifiers,
+    pub evasion: ScopedModifiers,
+    pub cargo_capacity: ScopedModifiers,
+    pub attack: ScopedModifiers,
+    pub defense: ScopedModifiers,
+}
 
-    pub fn default_ftl_range(&self) -> f64 {
-        match self {
-            ShipType::Explorer => 0.0,    // No FTL initially
-            ShipType::ColonyShip => 15.0, // Reduced from 30
-            ShipType::Courier => 0.0,     // No FTL initially
-        }
-    }
+/// Cached computed stats for a ship, derived from ShipModifiers.
+#[derive(Component, Default)]
+pub struct ShipStats {
+    pub speed: CachedValue,
+    pub ftl_range: CachedValue,
+    pub survey_speed: CachedValue,
+    pub colonize_speed: CachedValue,
+    pub evasion: CachedValue,
+    pub cargo_capacity: CachedValue,
+    pub maintenance: Amt,
+}
 
-    pub fn default_hp(&self) -> f32 {
-        match self {
-            ShipType::Explorer => 50.0,
-            ShipType::ColonyShip => 100.0,
-            ShipType::Courier => 20.0,
-        }
-    }
+/// Ship design presets for the three legacy ship types.
+/// These provide default stats when registries are not available (e.g. in tests).
+pub struct ShipDesignPreset {
+    pub design_id: &'static str,
+    pub design_name: &'static str,
+    pub hull_id: &'static str,
+    pub sublight_speed: f64,
+    pub ftl_range: f64,
+    pub hp: f64,
+    pub maintenance: Amt,
+    pub build_cost_minerals: Amt,
+    pub build_cost_energy: Amt,
+    pub build_time: i64,
+    pub combat_attack: f64,
+    pub combat_defense: f64,
+    pub can_survey: bool,
+    pub can_colonize: bool,
+}
 
-    /// Energy maintenance cost per hexadies (#51)
-    pub fn maintenance_cost(&self) -> crate::amount::Amt {
-        use crate::amount::Amt;
-        match self {
-            ShipType::Explorer => Amt::new(0, 500),
-            ShipType::ColonyShip => Amt::units(1),
-            ShipType::Courier => Amt::new(0, 300),
-        }
-    }
+pub const EXPLORER_PRESET: ShipDesignPreset = ShipDesignPreset {
+    design_id: "explorer_mk1",
+    design_name: "Explorer",
+    hull_id: "corvette",
+    sublight_speed: 0.75,
+    ftl_range: 0.0,
+    hp: 50.0,
+    maintenance: Amt::new(0, 500),
+    build_cost_minerals: Amt::units(200),
+    build_cost_energy: Amt::units(100),
+    build_time: 60,
+    combat_attack: 1.0,
+    combat_defense: 2.0,
+    can_survey: true,
+    can_colonize: false,
+};
 
-    /// Build cost in (minerals, energy).
-    pub fn build_cost(&self) -> (Amt, Amt) {
-        match self {
-            ShipType::Explorer => (Amt::units(200), Amt::units(100)),
-            ShipType::ColonyShip => (Amt::units(500), Amt::units(300)),
-            ShipType::Courier => (Amt::units(100), Amt::units(50)),
-        }
-    }
+pub const COLONY_SHIP_PRESET: ShipDesignPreset = ShipDesignPreset {
+    design_id: "colony_ship_mk1",
+    design_name: "Colony Ship",
+    hull_id: "freighter",
+    sublight_speed: 0.5,
+    ftl_range: 15.0,
+    hp: 100.0,
+    maintenance: Amt::units(1),
+    build_cost_minerals: Amt::units(500),
+    build_cost_energy: Amt::units(300),
+    build_time: 120,
+    combat_attack: 0.0,
+    combat_defense: 3.0,
+    can_survey: false,
+    can_colonize: true,
+};
 
-    /// Scrap refund: 50% of build cost in both minerals and energy.
-    pub fn scrap_refund(&self) -> (Amt, Amt) {
-        let (m, e) = self.build_cost();
-        (Amt::milli(m.raw() / 2), Amt::milli(e.raw() / 2))
-    }
+pub const COURIER_PRESET: ShipDesignPreset = ShipDesignPreset {
+    design_id: "courier_mk1",
+    design_name: "Courier",
+    hull_id: "corvette",
+    sublight_speed: 0.85,
+    ftl_range: 0.0,
+    hp: 20.0,
+    maintenance: Amt::new(0, 300),
+    build_cost_minerals: Amt::units(100),
+    build_cost_energy: Amt::units(50),
+    build_time: 30,
+    combat_attack: 0.0,
+    combat_defense: 1.0,
+    can_survey: false,
+    can_colonize: false,
+};
 
-    pub fn default_combat_stats(&self) -> CombatStats {
-        match self {
-            ShipType::Explorer => CombatStats { attack: 1.0, defense: 2.0 },
-            ShipType::ColonyShip => CombatStats { attack: 0.0, defense: 3.0 },
-            ShipType::Courier => CombatStats { attack: 0.0, defense: 1.0 },
-        }
+/// Look up a design preset by design_id.
+pub fn design_preset(design_id: &str) -> Option<&'static ShipDesignPreset> {
+    match design_id {
+        "explorer_mk1" => Some(&EXPLORER_PRESET),
+        "colony_ship_mk1" => Some(&COLONY_SHIP_PRESET),
+        "courier_mk1" => Some(&COURIER_PRESET),
+        _ => None,
     }
+}
+
+/// All available design presets.
+pub fn all_design_presets() -> &'static [&'static ShipDesignPreset] {
+    &[&EXPLORER_PRESET, &COLONY_SHIP_PRESET, &COURIER_PRESET]
+}
+
+/// Compute maintenance cost for a ship given its design_id.
+/// Falls back to the design preset if registries are not available.
+pub fn ship_maintenance_cost(design_id: &str) -> Amt {
+    design_preset(design_id).map(|p| p.maintenance).unwrap_or(Amt::new(0, 500))
+}
+
+/// Compute build cost (minerals, energy) for a ship given its design_id.
+pub fn ship_build_cost(design_id: &str) -> (Amt, Amt) {
+    design_preset(design_id)
+        .map(|p| (p.build_cost_minerals, p.build_cost_energy))
+        .unwrap_or((Amt::units(200), Amt::units(100)))
+}
+
+/// Compute build time for a ship given its design_id.
+pub fn ship_build_time(design_id: &str) -> i64 {
+    design_preset(design_id).map(|p| p.build_time).unwrap_or(60)
+}
+
+/// Scrap refund: 50% of build cost in both minerals and energy.
+pub fn ship_scrap_refund(design_id: &str) -> (Amt, Amt) {
+    let (m, e) = ship_build_cost(design_id);
+    (Amt::milli(m.raw() / 2), Amt::milli(e.raw() / 2))
+}
+
+/// Check if a design can perform surveys.
+pub fn design_can_survey(design_id: &str) -> bool {
+    design_preset(design_id).map(|p| p.can_survey).unwrap_or(false)
+}
+
+/// Check if a design can colonize.
+pub fn design_can_colonize(design_id: &str) -> bool {
+    design_preset(design_id).map(|p| p.can_colonize).unwrap_or(false)
 }
 
 #[derive(Component, Debug, Clone)]
@@ -217,12 +355,14 @@ impl Owner {
 #[derive(Component)]
 pub struct Ship {
     pub name: String,
-    pub ship_type: ShipType,
+    pub design_id: String,
+    pub hull_id: String,
+    pub modules: Vec<EquippedModule>,
     pub owner: Owner,
     pub sublight_speed: f64,
     pub ftl_range: f64,
-    pub hp: f32,
-    pub max_hp: f32,
+    pub hp: f64,
+    pub max_hp: f64,
     pub player_aboard: bool,
     /// #64: System entity where maintenance is charged
     pub home_port: Entity,
@@ -331,24 +471,26 @@ pub fn dissolve_fleet(commands: &mut Commands, fleet_entity: Entity, fleet: &Fle
 
 pub fn spawn_ship(
     commands: &mut Commands,
-    ship_type: ShipType,
+    design_id: &str,
     name: String,
     system: Entity,
     initial_position: Position,
     owner: Owner,
 ) -> Entity {
-    let hp = ship_type.default_hp();
-    let combat_stats = ship_type.default_combat_stats();
+    let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
+    let combat_stats = CombatStats { attack: preset.combat_attack, defense: preset.combat_defense };
     commands
         .spawn((
             Ship {
                 name,
-                ship_type,
+                design_id: preset.design_id.to_string(),
+                hull_id: preset.hull_id.to_string(),
+                modules: Vec::new(),
                 owner,
-                sublight_speed: ship_type.default_sublight_speed(),
-                ftl_range: ship_type.default_ftl_range(),
-                hp,
-                max_hp: hp,
+                sublight_speed: preset.sublight_speed,
+                ftl_range: preset.ftl_range,
+                hp: preset.hp,
+                max_hp: preset.hp,
                 player_aboard: false,
                 home_port: system,
             },
@@ -357,6 +499,8 @@ pub fn spawn_ship(
             CommandQueue::default(),
             Cargo::default(),
             combat_stats,
+            ShipModifiers::default(),
+            ShipStats::default(),
         ))
         .id()
 }
@@ -570,7 +714,7 @@ pub fn start_survey_with_bonus(
     current_time: i64,
     survey_range_bonus: f64,
 ) -> Result<(), &'static str> {
-    if ship.ship_type != ShipType::Explorer {
+    if !design_can_survey(&ship.design_id) {
         return Err("Only Explorer ships can perform surveys");
     }
 
@@ -733,7 +877,7 @@ fn apply_exploration_event(
         }
         ExplorationEvent::Danger { .. } => {
             let damage_pct = rng.random_range(0.20..0.50);
-            let damage = ship.max_hp * damage_pct as f32;
+            let damage = ship.max_hp * damage_pct;
             ship.hp = (ship.hp - damage).max(1.0);
             events.write(GameEvent {
                 timestamp,
@@ -998,7 +1142,7 @@ pub fn process_pending_ship_commands(
                 }
             }
             ShipCommand::Colonize => {
-                if ship.ship_type != ShipType::ColonyShip {
+                if !design_can_colonize(&ship.design_id) {
                     info!(
                         "Remote colonize command for {} failed: not a colony ship",
                         ship.name,
@@ -1323,7 +1467,7 @@ pub fn resolve_combat(
 
             for &ship_entity in &docked_ships {
                 if let Ok((_e, mut ship, _stats, _state)) = ships.get_mut(ship_entity) {
-                    ship.hp -= damage_per_ship as f32;
+                    ship.hp -= damage_per_ship;
                     if ship.hp <= 0.0 {
                         destroyed_ships.push((ship_entity, ship.name.clone()));
                     }
@@ -1363,15 +1507,18 @@ mod tests {
     use super::*;
     use bevy::ecs::world::World;
 
-    fn make_ship(ship_type: ShipType) -> Ship {
+    fn make_ship(design_id: &str) -> Ship {
+        let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
         Ship {
             name: "Test Ship".to_string(),
-            ship_type,
+            design_id: preset.design_id.to_string(),
+            hull_id: preset.hull_id.to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
-            sublight_speed: ship_type.default_sublight_speed(),
-            ftl_range: ship_type.default_ftl_range(),
-            hp: ship_type.default_hp(),
-            max_hp: ship_type.default_hp(),
+            sublight_speed: preset.sublight_speed,
+            ftl_range: preset.ftl_range,
+            hp: preset.hp,
+            max_hp: preset.hp,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
         }
@@ -1381,7 +1528,7 @@ mod tests {
     fn start_sublight_sets_correct_arrival_time() {
         let mut world = World::new();
         let system = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip); // 0.5c
+        let ship = make_ship("colony_ship_mk1"); // 0.5c
         let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest = Position { x: 1.0, y: 0.0, z: 0.0 }; // 1 LY away
         let mut state = ShipState::Docked { system };
@@ -1400,7 +1547,7 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::Explorer);
+        let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 1.0, y: 0.0, z: 0.0 };
@@ -1413,7 +1560,7 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip);
+        let ship = make_ship("colony_ship_mk1");
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 50.0, y: 0.0, z: 0.0 };
@@ -1426,7 +1573,7 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip);
+        let ship = make_ship("colony_ship_mk1");
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
@@ -1442,7 +1589,7 @@ mod tests {
     fn start_survey_rejects_non_explorer() {
         let mut world = World::new();
         let system = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip);
+        let ship = make_ship("colony_ship_mk1");
         let mut state = ShipState::Docked { system };
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let result = start_survey(&mut state, &ship, system, &pos, &pos, 0);
@@ -1453,7 +1600,7 @@ mod tests {
     fn start_survey_rejects_non_docked() {
         let mut world = World::new();
         let system = world.spawn_empty().id();
-        let ship = make_ship(ShipType::Explorer);
+        let ship = make_ship("explorer_mk1");
         let mut state = ShipState::SubLight {
             origin: [0.0; 3],
             destination: [1.0, 0.0, 0.0],
@@ -1470,7 +1617,7 @@ mod tests {
     fn start_survey_rejects_out_of_range() {
         let mut world = World::new();
         let system = world.spawn_empty().id();
-        let ship = make_ship(ShipType::Explorer);
+        let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system };
         let ship_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let target_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
@@ -1482,7 +1629,7 @@ mod tests {
     fn start_survey_sets_correct_completion_time() {
         let mut world = World::new();
         let system = world.spawn_empty().id();
-        let ship = make_ship(ShipType::Explorer);
+        let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system };
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let result = start_survey(&mut state, &ship, system, &pos, &pos, 50);
@@ -1566,7 +1713,7 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip);
+        let ship = make_ship("colony_ship_mk1");
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
 
@@ -1597,7 +1744,7 @@ mod tests {
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship(ShipType::ColonyShip); // ftl_range = 15.0
+        let ship = make_ship("colony_ship_mk1"); // ftl_range = 15.0
 
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 20.0, y: 0.0, z: 0.0 }; // 20 ly, beyond base 15 ly range
@@ -1617,9 +1764,9 @@ mod tests {
 
     #[test]
     fn ship_maintenance_costs() {
-        assert_eq!(ShipType::Explorer.maintenance_cost(), Amt::new(0, 500));
-        assert_eq!(ShipType::ColonyShip.maintenance_cost(), Amt::units(1));
-        assert_eq!(ShipType::Courier.maintenance_cost(), Amt::new(0, 300));
+        assert_eq!(ship_maintenance_cost("explorer_mk1"), Amt::new(0, 500));
+        assert_eq!(ship_maintenance_cost("colony_ship_mk1"), Amt::units(1));
+        assert_eq!(ship_maintenance_cost("courier_mk1"), Amt::new(0, 300));
     }
 
     // --- #54: Fleet tests ---
@@ -1629,7 +1776,9 @@ mod tests {
         let mut world = World::new();
         let ship_a = world.spawn(Ship {
             name: "Fast".to_string(),
-            ship_type: ShipType::Courier,
+            design_id: "courier_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.85,
             ftl_range: 0.0,
@@ -1640,7 +1789,9 @@ mod tests {
         }).id();
         let ship_b = world.spawn(Ship {
             name: "Slow".to_string(),
-            ship_type: ShipType::ColonyShip,
+            design_id: "colony_ship_mk1".to_string(),
+            hull_id: "freighter".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
@@ -1667,7 +1818,9 @@ mod tests {
         let mut world = World::new();
         let ship_a = world.spawn(Ship {
             name: "Short Range".to_string(),
-            ship_type: ShipType::ColonyShip,
+            design_id: "colony_ship_mk1".to_string(),
+            hull_id: "freighter".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 10.0,
@@ -1678,7 +1831,9 @@ mod tests {
         }).id();
         let ship_b = world.spawn(Ship {
             name: "Long Range".to_string(),
-            ship_type: ShipType::ColonyShip,
+            design_id: "colony_ship_mk1".to_string(),
+            hull_id: "freighter".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
@@ -1706,14 +1861,14 @@ mod tests {
         let system = world.spawn_empty().id();
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let ship_a = world.spawn((
-            make_ship(ShipType::Explorer),
+            make_ship("explorer_mk1"),
             ShipState::Docked { system },
             pos,
             CommandQueue::default(),
             Cargo::default(),
         )).id();
         let ship_b = world.spawn((
-            make_ship(ShipType::ColonyShip),
+            make_ship("colony_ship_mk1"),
             ShipState::Docked { system },
             pos,
             CommandQueue::default(),
@@ -1746,14 +1901,14 @@ mod tests {
         let system = world.spawn_empty().id();
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let ship_a = world.spawn((
-            make_ship(ShipType::Explorer),
+            make_ship("explorer_mk1"),
             ShipState::Docked { system },
             pos,
             CommandQueue::default(),
             Cargo::default(),
         )).id();
         let ship_b = world.spawn((
-            make_ship(ShipType::ColonyShip),
+            make_ship("colony_ship_mk1"),
             ShipState::Docked { system },
             pos,
             CommandQueue::default(),
@@ -1796,16 +1951,16 @@ mod tests {
 
     #[test]
     fn build_cost_returns_expected_values() {
-        assert_eq!(ShipType::Explorer.build_cost(), (Amt::units(200), Amt::units(100)));
-        assert_eq!(ShipType::ColonyShip.build_cost(), (Amt::units(500), Amt::units(300)));
-        assert_eq!(ShipType::Courier.build_cost(), (Amt::units(100), Amt::units(50)));
+        assert_eq!(ship_build_cost("explorer_mk1"), (Amt::units(200), Amt::units(100)));
+        assert_eq!(ship_build_cost("colony_ship_mk1"), (Amt::units(500), Amt::units(300)));
+        assert_eq!(ship_build_cost("courier_mk1"), (Amt::units(100), Amt::units(50)));
     }
 
     #[test]
     fn scrap_refund_is_half_build_cost() {
-        for st in [ShipType::Explorer, ShipType::ColonyShip, ShipType::Courier] {
-            let (bm, be) = st.build_cost();
-            let (rm, re) = st.scrap_refund();
+        for design_id in ["explorer_mk1", "colony_ship_mk1", "courier_mk1"] {
+            let (bm, be) = ship_build_cost(design_id);
+            let (rm, re) = ship_scrap_refund(design_id);
             assert_eq!(rm, Amt::milli(bm.raw() / 2));
             assert_eq!(re, Amt::milli(be.raw() / 2));
         }

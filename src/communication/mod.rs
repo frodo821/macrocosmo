@@ -133,7 +133,7 @@ pub struct PendingCommand {
 /// The kinds of remote commands a player can issue.
 #[derive(Clone, Debug)]
 pub enum RemoteCommand {
-    BuildShip { ship_type_name: String },
+    BuildShip { design_id: String },
     SetProductionFocus { minerals: f64, energy: f64, research: f64 },
 }
 

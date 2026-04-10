@@ -8,7 +8,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes, Sovereignty};
 use crate::modifier::{ModifiedValue, Modifier};
 use crate::scripting::building_api::{parse_building_definitions, BuildingRegistry};
-use crate::ship::{spawn_ship, Owner, Ship, ShipState, ShipType};
+use crate::ship::{spawn_ship, Owner, Ship, ShipState};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
@@ -254,7 +254,8 @@ pub struct BuildQueue {
 }
 
 pub struct BuildOrder {
-    pub ship_type_name: String,
+    pub design_id: String,
+    pub display_name: String,
     pub minerals_cost: Amt,
     pub minerals_invested: Amt,
     pub energy_cost: Amt,
@@ -272,14 +273,9 @@ impl BuildOrder {
             && self.build_time_remaining <= 0
     }
 
-    /// Returns the build time in hexadies for a given ship type name.
-    pub fn build_time_for(ship_type_name: &str) -> i64 {
-        match ship_type_name {
-            "Explorer" => 60,
-            "Colony Ship" => 120,
-            "Courier" => 30,
-            _ => 60,
-        }
+    /// Returns the build time in hexadies for a given design_id.
+    pub fn build_time_for(design_id: &str) -> i64 {
+        crate::ship::ship_build_time(design_id)
     }
 }
 
@@ -700,7 +696,7 @@ pub fn sync_maintenance_modifiers(
         ship_costs_by_system
             .entry(effective_port)
             .or_default()
-            .push((format!("ship_maint_{:?}", entity), ship.ship_type.maintenance_cost()));
+            .push((format!("ship_maint_{:?}", entity), crate::ship::ship_maintenance_cost(&ship.design_id)));
     }
 
     for (colony, mut maint, buildings) in &mut colonies {
@@ -970,22 +966,13 @@ pub fn tick_build_queue(
 
             if build_queue.queue[0].is_complete() {
                 let completed = build_queue.queue.remove(0);
-                let ship_type = match completed.ship_type_name.as_str() {
-                    "Explorer" => ShipType::Explorer,
-                    "Colony Ship" => ShipType::ColonyShip,
-                    "Courier" => ShipType::Courier,
-                    _ => {
-                        warn!("Unknown ship type: {}", completed.ship_type_name);
-                        continue;
-                    }
-                };
                 let system_entity = colony.system(&planets);
                 if let Some(sys) = system_entity {
                 if let Ok(pos) = positions.get(sys) {
                     spawn_ship(
                         &mut commands,
-                        ship_type,
-                        completed.ship_type_name.clone(),
+                        &completed.design_id,
+                        completed.display_name.clone(),
                         sys,
                         *pos,
                         ship_owner,
@@ -994,10 +981,10 @@ pub fn tick_build_queue(
                     events.write(GameEvent {
                         timestamp: clock.elapsed,
                         kind: GameEventKind::ShipBuilt,
-                        description: format!("{} built at {}", completed.ship_type_name, sys_name),
+                        description: format!("{} built at {}", completed.display_name, sys_name),
                         related_system: Some(sys),
                     });
-                    info!("Ship built and launched: {}", completed.ship_type_name);
+                    info!("Ship built and launched: {}", completed.display_name);
                 }
                 }
             }
@@ -1184,7 +1171,7 @@ pub fn tick_maintenance(
         let entry = ship_maintenance_by_system
             .entry(effective_port)
             .or_insert(Amt::ZERO);
-        *entry = entry.add(ship.ship_type.maintenance_cost());
+        *entry = entry.add(crate::ship::ship_maintenance_cost(&ship.design_id));
     }
 
     for (colony, mut stockpile, maint, buildings) in &mut colonies {
@@ -1404,7 +1391,8 @@ mod tests {
     fn make_order(minerals_cost: Amt, minerals_invested: Amt, energy_cost: Amt, energy_invested: Amt) -> BuildOrder {
         let build_time = 60;
         BuildOrder {
-            ship_type_name: "Explorer".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            display_name: "Explorer".to_string(),
             minerals_cost,
             minerals_invested,
             energy_cost,
@@ -1578,10 +1566,10 @@ mod tests {
 
     #[test]
     fn build_order_build_time_for() {
-        assert_eq!(BuildOrder::build_time_for("Explorer"), 60);
-        assert_eq!(BuildOrder::build_time_for("Colony Ship"), 120);
-        assert_eq!(BuildOrder::build_time_for("Courier"), 30);
-        assert_eq!(BuildOrder::build_time_for("Unknown"), 60);
+        assert_eq!(BuildOrder::build_time_for("explorer_mk1"), 60);
+        assert_eq!(BuildOrder::build_time_for("colony_ship_mk1"), 120);
+        assert_eq!(BuildOrder::build_time_for("courier_mk1"), 30);
+        assert_eq!(BuildOrder::build_time_for("unknown"), 60);
     }
 
     // --- #46: Port tests ---

@@ -56,7 +56,9 @@ fn test_sublight_travel_and_arrival() {
     let ship_entity = app.world_mut().spawn((
         Ship {
             name: "Scout-1".to_string(),
-            ship_type: ShipType::Explorer,
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -119,7 +121,9 @@ fn test_survey_completes_and_marks_system() {
     let ship_entity = app.world_mut().spawn((
         Ship {
             name: "Scout-1".to_string(),
-            ship_type: ShipType::Explorer,
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -181,7 +185,9 @@ fn test_ftl_travel_and_arrival() {
     let ship_entity = app.world_mut().spawn((
         Ship {
             name: "Colony-1".to_string(),
-            ship_type: ShipType::ColonyShip,
+            design_id: "colony_ship_mk1".to_string(),
+            hull_id: "freighter".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
@@ -325,7 +331,8 @@ fn test_build_queue_spawns_ship() {
         },
         BuildQueue {
             queue: vec![BuildOrder {
-                ship_type_name: "Explorer".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                display_name: "Explorer".to_string(),
                 minerals_cost: Amt::units(50),
                 minerals_invested: Amt::ZERO,
                 energy_cost: Amt::units(30),
@@ -357,7 +364,7 @@ fn test_build_queue_spawns_ship() {
     );
 
     // Verify it's an Explorer
-    let new_ship = ships.iter().find(|s| s.ship_type == ShipType::Explorer);
+    let new_ship = ships.iter().find(|s| s.design_id == "explorer_mk1");
     assert!(new_ship.is_some(), "The spawned ship should be an Explorer");
 
     // Build queue should be empty now
@@ -574,7 +581,9 @@ fn all_systems_no_query_conflict() {
     app.world_mut().spawn((
         Ship {
             name: "Explorer-1".into(),
-            ship_type: ShipType::Explorer,
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -593,7 +602,9 @@ fn all_systems_no_query_conflict() {
     app.world_mut().spawn((
         Ship {
             name: "Colony Ship-1".into(),
-            ship_type: ShipType::ColonyShip,
+            design_id: "colony_ship_mk1".to_string(),
+            hull_id: "freighter".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.5,
             ftl_range: 30.0,
@@ -612,7 +623,9 @@ fn all_systems_no_query_conflict() {
     app.world_mut().spawn((
         Ship {
             name: "Courier-1".into(),
-            ship_type: ShipType::Courier,
+            design_id: "courier_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.85,
             ftl_range: 0.0,
@@ -667,7 +680,9 @@ fn test_hostile_destroyed_when_hp_zero() {
     app.world_mut().spawn((
         Ship {
             name: "Warship-1".to_string(),
-            ship_type: ShipType::Explorer,
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -719,7 +734,9 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
     let ship_entity = app.world_mut().spawn((
         Ship {
             name: "Doomed-1".to_string(),
-            ship_type: ShipType::Courier,
+            design_id: "courier_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.85,
             ftl_range: 0.0,
@@ -800,7 +817,9 @@ fn test_combat_takes_multiple_ticks() {
     app.world_mut().spawn((
         Ship {
             name: "Fighter-1".to_string(),
-            ship_type: ShipType::Explorer,
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -2578,7 +2597,8 @@ fn test_build_queue_requires_shipyard() {
         },
         BuildQueue {
             queue: vec![BuildOrder {
-                ship_type_name: "Explorer".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                display_name: "Explorer".to_string(),
                 minerals_cost: Amt::units(100),
                 minerals_invested: Amt::ZERO,
                 energy_cost: Amt::units(50),
@@ -3330,7 +3350,7 @@ fn test_remote_command_has_light_delay() {
     let ship_entity = common::spawn_test_ship(
         app.world_mut(),
         "Explorer-1",
-        ShipType::Explorer,
+        "explorer_mk1",
         sys_b,
         [10.0, 0.0, 0.0],
     );
@@ -3409,7 +3429,7 @@ fn test_pending_command_executes_on_arrival() {
     let ship_entity = common::spawn_test_ship(
         app.world_mut(),
         "Explorer-1",
-        ShipType::Explorer,
+        "explorer_mk1",
         sys_a,
         [0.0, 0.0, 0.0],
     );
@@ -3473,7 +3493,7 @@ fn test_pending_survey_command_executes_after_delay() {
     let ship_entity = common::spawn_test_ship(
         app.world_mut(),
         "Explorer-1",
-        ShipType::Explorer,
+        "explorer_mk1",
         sys_b,
         [3.0, 0.0, 0.0],
     );
@@ -3636,7 +3656,9 @@ fn test_empire_owned_ships() {
     let ship_entity = app.world_mut().spawn((
         Ship {
             name: "Imperial Scout".to_string(),
-            ship_type: ShipType::Explorer,
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Empire(empire),
             sublight_speed: 0.75,
             ftl_range: 10.0,
@@ -3739,7 +3761,9 @@ fn test_ftl_range_bonus_extends_range() {
     let ship_entity = app.world_mut().spawn((
         Ship {
             name: "FTL Scout".to_string(),
-            ship_type: ShipType::Explorer,
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
             owner: Owner::Empire(empire),
             sublight_speed: 0.75,
             ftl_range: 10.0,
@@ -3878,7 +3902,7 @@ fn test_ship_maintenance_synced_via_modifiers() {
     let ship_entity = spawn_test_ship(
         app.world_mut(),
         "Explorer-1",
-        ShipType::Explorer,
+        "explorer_mk1",
         sys,
         [0.0, 0.0, 0.0],
     );
@@ -4089,24 +4113,24 @@ fn test_job_auto_assignment_excess_population() {
 #[test]
 fn test_scrap_ship_refund_amounts() {
     // Verify scrap_refund returns 50% of build_cost for all ship types
-    let (m, e) = ShipType::Explorer.build_cost();
+    let (m, e) = ship_build_cost("explorer_mk1");
     assert_eq!(m, Amt::units(200));
     assert_eq!(e, Amt::units(100));
-    let (rm, re) = ShipType::Explorer.scrap_refund();
+    let (rm, re) = ship_scrap_refund("explorer_mk1");
     assert_eq!(rm, Amt::units(100));
     assert_eq!(re, Amt::units(50));
 
-    let (m, e) = ShipType::ColonyShip.build_cost();
+    let (m, e) = ship_build_cost("colony_ship_mk1");
     assert_eq!(m, Amt::units(500));
     assert_eq!(e, Amt::units(300));
-    let (rm, re) = ShipType::ColonyShip.scrap_refund();
+    let (rm, re) = ship_scrap_refund("colony_ship_mk1");
     assert_eq!(rm, Amt::units(250));
     assert_eq!(re, Amt::units(150));
 
-    let (m, e) = ShipType::Courier.build_cost();
+    let (m, e) = ship_build_cost("courier_mk1");
     assert_eq!(m, Amt::units(100));
     assert_eq!(e, Amt::units(50));
-    let (rm, re) = ShipType::Courier.scrap_refund();
+    let (rm, re) = ship_scrap_refund("courier_mk1");
     assert_eq!(rm, Amt::units(50));
     assert_eq!(re, Amt::units(25));
 }
@@ -4127,7 +4151,7 @@ fn test_scrap_ship_despawns_entity() {
     let ship = common::spawn_test_ship(
         app.world_mut(),
         "Doomed-1",
-        ShipType::Courier,
+        "courier_mk1",
         sys,
         [0.0, 0.0, 0.0],
     );
@@ -4167,13 +4191,13 @@ fn test_scrap_ship_refunds_resources() {
     let ship = common::spawn_test_ship(
         app.world_mut(),
         "Explorer-1",
-        ShipType::Explorer,
+        "explorer_mk1",
         sys,
         [0.0, 0.0, 0.0],
     );
 
     // Get refund amounts
-    let (refund_m, refund_e) = ShipType::Explorer.scrap_refund();
+    let (refund_m, refund_e) = ship_scrap_refund("explorer_mk1");
     assert_eq!(refund_m, Amt::units(100));
     assert_eq!(refund_e, Amt::units(50));
 

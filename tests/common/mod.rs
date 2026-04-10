@@ -404,31 +404,30 @@ pub fn find_planet(world: &mut World, system: Entity) -> Entity {
 pub fn spawn_test_ship(
     world: &mut World,
     name: &str,
-    ship_type: ShipType,
+    design_id: &str,
     system: Entity,
     pos: [f64; 3],
 ) -> Entity {
-    let hp = ship_type.default_hp();
-    let combat_stats = ship_type.default_combat_stats();
+    let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
+    let combat_stats = CombatStats { attack: preset.combat_attack, defense: preset.combat_defense };
     world
         .spawn((
             Ship {
                 name: name.to_string(),
-                ship_type,
+                design_id: preset.design_id.to_string(),
+                hull_id: preset.hull_id.to_string(),
+                modules: Vec::new(),
                 owner: Owner::Neutral,
-                sublight_speed: ship_type.default_sublight_speed(),
-                ftl_range: ship_type.default_ftl_range(),
-                hp,
-                max_hp: hp,
+                sublight_speed: preset.sublight_speed,
+                ftl_range: preset.ftl_range,
+                hp: preset.hp,
+                max_hp: preset.hp,
                 player_aboard: false,
                 home_port: system,
             },
             ShipState::Docked { system },
             Position::from(pos),
-            CombatStats {
-                attack: combat_stats.attack,
-                defense: combat_stats.defense,
-            },
+            combat_stats,
             CommandQueue::default(),
             Cargo::default(),
         ))

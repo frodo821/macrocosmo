@@ -8,7 +8,7 @@ use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::amount::Amt;
-use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState, ShipType};
+use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
@@ -197,12 +197,13 @@ pub fn draw_system_panel(
             let docked_ships = ships_docked_at(sel_entity, ships_query);
             if !docked_ships.is_empty() {
                 ui.label(egui::RichText::new("Docked Ships").strong());
-                for (entity, name, ship_type) in &docked_ships {
+                for (entity, name, design_id) in &docked_ships {
                     let is_selected = selected_ship.0 == Some(*entity);
+                    let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
                     let label = format!(
-                        "{} ({:?}){}",
+                        "{} ({}){}",
                         name,
-                        ship_type,
+                        design_name,
                         if is_selected { " [selected]" } else { "" }
                     );
                     if ui.selectable_label(is_selected, &label).clicked() {
@@ -355,7 +356,7 @@ fn draw_colony_detail(
             let mut ships_based_here = 0u32;
             for (_, ship, _, _) in ships_query.iter() {
                 if colony.system(planets) == Some(ship.home_port) {
-                    ship_maintenance = ship_maintenance.add(ship.ship_type.maintenance_cost());
+                    ship_maintenance = ship_maintenance.add(crate::ship::ship_maintenance_cost(&ship.design_id));
                     ships_based_here += 1;
                 }
             }
@@ -393,7 +394,7 @@ fn draw_colony_detail(
                     };
                     let pct = m_pct.min(e_pct);
                     ui.horizontal(|ui| {
-                        ui.label(&order.ship_type_name);
+                        ui.label(&order.display_name);
                         let bar = egui::ProgressBar::new(pct)
                             .desired_width(100.0);
                         ui.add(bar);
@@ -410,26 +411,25 @@ fn draw_colony_detail(
             use crate::amount::Amt;
             let ship_mod = construction_params.ship_cost_modifier.final_value();
             let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
-            let ships_data: [(&str, Amt, Amt, i64); 3] = [
-                ("Explorer", Amt::units(200), Amt::units(100), 60),
-                ("Colony Ship", Amt::units(500), Amt::units(300), 120),
-                ("Courier", Amt::units(100), Amt::units(50), 30),
-            ];
-            let mut build_request: Option<(&str, Amt, Amt, i64)> = None;
+            let mut build_request: Option<(&str, &str, Amt, Amt, i64)> = None;
             ui.horizontal(|ui| {
-                for &(name, base_m, base_e, base_time) in &ships_data {
+                for preset in crate::ship::all_design_presets() {
+                    let base_m = preset.build_cost_minerals;
+                    let base_e = preset.build_cost_energy;
+                    let base_time = preset.build_time;
                     let eff_m = base_m.mul_amt(ship_mod);
                     let eff_e = base_e.mul_amt(ship_mod);
                     let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
                     let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
-                    if ui.button(name).on_hover_text(tooltip).clicked() {
-                        build_request = Some((name, eff_m, eff_e, eff_time));
+                    if ui.button(preset.design_name).on_hover_text(tooltip).clicked() {
+                        build_request = Some((preset.design_id, preset.design_name, eff_m, eff_e, eff_time));
                     }
                 }
             });
-            if let Some((name, minerals_cost, energy_cost, build_time)) = build_request {
+            if let Some((design_id, display_name, minerals_cost, energy_cost, build_time)) = build_request {
                 bq.queue.push(BuildOrder {
-                    ship_type_name: name.to_string(),
+                    design_id: design_id.to_string(),
+                    display_name: display_name.to_string(),
                     minerals_cost,
                     minerals_invested: Amt::ZERO,
                     energy_cost,
@@ -437,7 +437,7 @@ fn draw_colony_detail(
                     build_time_total: build_time,
                     build_time_remaining: build_time,
                 });
-                info!("Build order added: {}", name);
+                info!("Build order added: {}", display_name);
             }
         }
 
@@ -744,7 +744,7 @@ pub fn draw_ship_panel(
             .get(home_port)
             .map(|(_, s, _, _)| s.name.clone())
             .unwrap_or_else(|_| "Unknown".to_string());
-        let maintenance_cost = ship.ship_type.maintenance_cost();
+        let maintenance_cost = crate::ship::ship_maintenance_cost(&ship.design_id);
         // Check if docked at a system that has a colony (for "Set Home Port" button)
         let docked_at_colony = docked_system.and_then(|dock_sys| {
             colonies.iter().find_map(|(_, col, _, _, _, _, _, _, _)| {
@@ -754,7 +754,7 @@ pub fn draw_ship_panel(
         Some((
             ship_entity,
             ship.name.clone(),
-            ship.ship_type,
+            ship.design_id.clone(),
             ship.hp,
             ship.max_hp,
             ship.ftl_range,
@@ -773,7 +773,7 @@ pub fn draw_ship_panel(
     let Some((
         ship_entity,
         name,
-        ship_type,
+        design_id,
         hp,
         max_hp,
         ftl_range,
@@ -821,7 +821,8 @@ pub fn draw_ship_panel(
                     .strong()
                     .color(egui::Color32::from_rgb(100, 200, 255)),
             );
-            ui.label(format!("Type: {:?}", ship_type));
+            let design_display_name = crate::ship::design_preset(&design_id).map(|p| p.design_name).unwrap_or(&design_id);
+            ui.label(format!("Type: {}", design_display_name));
             ui.label(format!("HP: {:.0}/{:.0}", hp, max_hp));
 
             // #62: Detailed status with progress bar
@@ -869,7 +870,7 @@ pub fn draw_ship_panel(
 
             // Cargo section for Courier ships docked at a colony
             if let Some(_docked_system) = docked_system {
-                if ship_type == ShipType::Courier {
+                if design_id == "courier_mk1" {
                     if let Some((cargo_m, cargo_e)) = cargo_data {
                         ui.separator();
                         ui.label(egui::RichText::new("Cargo").strong());
@@ -907,7 +908,7 @@ pub fn draw_ship_panel(
 
             // #79: Scrap Ship button (only when docked at a colony)
             if let Some(dock_system) = docked_at_colony {
-                let (refund_m, refund_e) = ship_type.scrap_refund();
+                let (refund_m, refund_e) = crate::ship::ship_scrap_refund(&design_id);
                 let scrap_label = format!("Scrap Ship (+{} M, +{} E)", refund_m, refund_e);
                 let response = ui.button(&scrap_label)
                     .on_hover_text("Dismantle this ship and recover 50% of build cost");
@@ -1042,7 +1043,7 @@ pub fn draw_context_menu(
         };
         (
             ship.name.clone(),
-            ship.ship_type,
+            ship.design_id.clone(),
             ship.ftl_range,
             ship.sublight_speed,
             docked_system,
@@ -1050,7 +1051,7 @@ pub fn draw_context_menu(
         )
     };
 
-    let (ship_name, ship_type, ftl_range, sublight_speed, docked_system, current_destination_system) = ship_data;
+    let (ship_name, design_id, ftl_range, sublight_speed, docked_system, current_destination_system) = ship_data;
 
     let is_docked = docked_system.is_some();
 
@@ -1108,8 +1109,8 @@ pub fn draw_context_menu(
     let can_ftl = !same_system && effective_ftl_range > 0.0 && target_surveyed && dist <= effective_ftl_range;
     let can_move = !same_system;
     // Survey: can survey nearby unsurveyed system (including from docked at same system if unsurveyed)
-    let can_survey = is_docked && ship_type == ShipType::Explorer && !target_surveyed;
-    let can_colonize = is_docked && ship_type == ShipType::ColonyShip && target_habitable && !target_colonized && target_surveyed && same_system;
+    let can_survey = is_docked && crate::ship::design_can_survey(&design_id) && !target_surveyed;
+    let can_colonize = is_docked && crate::ship::design_can_colonize(&design_id) && target_habitable && !target_colonized && target_surveyed && same_system;
 
     let origin_pos_arr = origin_pos.as_array();
     let target_pos_arr = target_pos.as_array();
@@ -1396,13 +1397,13 @@ pub fn draw_context_menu(
 fn ships_docked_at(
     system: Entity,
     ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>)>,
-) -> Vec<(Entity, String, ShipType)> {
-    let mut result: Vec<(Entity, String, ShipType)> = ships
+) -> Vec<(Entity, String, String)> {
+    let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _)| {
             if let ShipState::Docked { system: s } = &*state {
                 if *s == system {
-                    return Some((e, ship.name.clone(), ship.ship_type));
+                    return Some((e, ship.name.clone(), ship.design_id.clone()));
                 }
             }
             None

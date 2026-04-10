@@ -9,7 +9,7 @@ use crate::components::Position;
 use crate::galaxy::{ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
-use crate::ship::{Ship, ShipState, ShipType};
+use crate::ship::{Ship, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
 
@@ -471,16 +471,17 @@ fn draw_galaxy_overlay(
 
 // #16: Ship drawing helpers and system
 
-fn ship_color_rgb(ship_type: ShipType) -> (f32, f32, f32) {
-    match ship_type {
-        ShipType::Explorer => (0.2, 1.0, 0.2),
-        ShipType::ColonyShip => (1.0, 1.0, 0.2),
-        ShipType::Courier => (0.2, 1.0, 1.0),
+fn ship_color_rgb(design_id: &str) -> (f32, f32, f32) {
+    match design_id {
+        "explorer_mk1" => (0.2, 1.0, 0.2),
+        "colony_ship_mk1" => (1.0, 1.0, 0.2),
+        "courier_mk1" => (0.2, 1.0, 1.0),
+        _ => (0.8, 0.8, 0.8), // default gray for unknown designs
     }
 }
 
-fn ship_color(ship_type: ShipType) -> Color {
-    let (r, g, b) = ship_color_rgb(ship_type);
+fn ship_color(design_id: &str) -> Color {
+    let (r, g, b) = ship_color_rgb(design_id);
     Color::srgb(r, g, b)
 }
 
@@ -492,7 +493,7 @@ fn draw_ships(
     clock: Res<GameClock>,
 ) {
     // Group docked ships by system so we can offset them.
-    let mut docked_counts: HashMap<Entity, Vec<ShipType>> = HashMap::new();
+    let mut docked_counts: HashMap<Entity, Vec<String>> = HashMap::new();
     // Also count ships per system for badge display.
     let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
 
@@ -502,7 +503,7 @@ fn draw_ships(
                 docked_counts
                     .entry(*system)
                     .or_default()
-                    .push(ship.ship_type);
+                    .push(ship.design_id.clone());
                 *system_ship_counts.entry(*system).or_insert(0) += 1;
             }
             ShipState::SubLight {
@@ -523,7 +524,7 @@ fn draw_ships(
                 let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
                 let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
 
-                let (r, g, b) = ship_color_rgb(ship.ship_type);
+                let (r, g, b) = ship_color_rgb(&ship.design_id);
 
                 // Draw ship marker
                 gizmos.circle_2d(Vec2::new(cx, cy), 3.5, Color::srgb(r, g, b));
@@ -560,7 +561,7 @@ fn draw_ships(
                 if let Ok(sys_pos) = stars.get(*system) {
                     let sx = sys_pos.x as f32 * view.scale;
                     let sy = sys_pos.y as f32 * view.scale;
-                    let (r, g, b) = ship_color_rgb(ship.ship_type);
+                    let (r, g, b) = ship_color_rgb(&ship.design_id);
                     let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
                     gizmos.circle_2d(
                         Vec2::new(sx, sy),
@@ -574,7 +575,7 @@ fn draw_ships(
                 if let Ok(sys_pos) = stars.get(*target_system) {
                     let sx = sys_pos.x as f32 * view.scale;
                     let sy = sys_pos.y as f32 * view.scale;
-                    let (r, g, b) = ship_color_rgb(ship.ship_type);
+                    let (r, g, b) = ship_color_rgb(&ship.design_id);
 
                     // Pulsing indicator
                     let pulse = (clock.as_years_f64() as f32 * 5.0).sin() * 0.3 + 0.7;
@@ -592,15 +593,15 @@ fn draw_ships(
     }
 
     // Draw docked ships offset around their system.
-    for (system_entity, ship_types) in &docked_counts {
+    for (system_entity, design_ids) in &docked_counts {
         let Ok(sys_pos) = stars.get(*system_entity) else {
             continue;
         };
         let sx = sys_pos.x as f32 * view.scale;
         let sy = sys_pos.y as f32 * view.scale;
-        let count = ship_types.len();
+        let count = design_ids.len();
 
-        for (i, ship_type) in ship_types.iter().enumerate() {
+        for (i, design_id) in design_ids.iter().enumerate() {
             let angle = if count == 1 {
                 0.0
             } else {
@@ -610,7 +611,7 @@ fn draw_ships(
             let ox = sx + angle.cos() * offset_radius;
             let oy = sy + angle.sin() * offset_radius;
 
-            let color = ship_color(*ship_type);
+            let color = ship_color(design_id);
             gizmos.circle_2d(Vec2::new(ox, oy), 3.0, color);
         }
     }
