@@ -57,6 +57,15 @@ impl Buildings {
         self.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == id))
     }
 
+    /// Check if any building in slots has the given capability (looked up via BuildingRegistry).
+    pub fn has_capability(&self, capability: &str, registry: &crate::scripting::building_api::BuildingRegistry) -> bool {
+        self.slots.iter().any(|slot| {
+            slot.as_ref().is_some_and(|id| {
+                registry.get(id.as_str()).is_some_and(|def| def.capabilities.contains_key(capability))
+            })
+        })
+    }
+
     /// #35: Check if any slot contains a Shipyard
     pub fn has_shipyard(&self) -> bool {
         self.has_building("shipyard")
@@ -132,6 +141,7 @@ pub fn tick_build_queue(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     design_registry: Res<crate::ship_design::ShipDesignRegistry>,
+    building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
     mut colonies: Query<(&Colony, &mut BuildQueue)>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     positions: Query<&Position>,
@@ -163,8 +173,8 @@ pub fn tick_build_queue(
     for (colony, mut build_queue) in &mut colonies {
         let Some(sys) = colony.system(&planets) else { continue };
 
-        // #35: Skip ship construction if system has no shipyard
-        let has_shipyard = system_buildings.get(sys).is_ok_and(|sb| sb.has_shipyard());
+        // #35: Skip ship construction if system has no shipyard capability
+        let has_shipyard = system_buildings.get(sys).is_ok_and(|sb| sb.has_shipyard(&building_registry));
         if !build_queue.queue.is_empty() && !has_shipyard {
             warn!("System lacks a Shipyard; skipping ship construction");
             continue;

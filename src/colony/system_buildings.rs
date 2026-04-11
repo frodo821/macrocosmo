@@ -26,14 +26,54 @@ impl SystemBuildings {
         self.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == id))
     }
 
+    /// Check if any building in slots has the given capability (looked up via BuildingRegistry).
+    pub fn has_capability(&self, capability: &str, registry: &BuildingRegistry) -> bool {
+        self.slots.iter().any(|slot| {
+            slot.as_ref().is_some_and(|id| {
+                registry.get(id.as_str()).is_some_and(|def| def.capabilities.contains_key(capability))
+            })
+        })
+    }
+
+    /// Get a named parameter from the first building with the given capability.
+    /// Returns None if no building has the capability or the param is not defined.
+    pub fn get_capability_param(&self, capability: &str, param: &str, registry: &BuildingRegistry) -> Option<f64> {
+        for slot in &self.slots {
+            if let Some(id) = slot {
+                if let Some(def) = registry.get(id.as_str()) {
+                    if let Some(cap) = def.capabilities.get(capability) {
+                        return cap.get(param);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Check if any slot contains a Shipyard.
-    pub fn has_shipyard(&self) -> bool {
-        self.has_building("shipyard")
+    /// Delegates to capability check when a registry is available.
+    pub fn has_shipyard(&self, registry: &BuildingRegistry) -> bool {
+        self.has_capability("shipyard", registry)
     }
 
     /// Check if any slot contains a Port.
-    pub fn has_port(&self) -> bool {
-        self.has_building("port")
+    /// Delegates to capability check when a registry is available.
+    pub fn has_port(&self, registry: &BuildingRegistry) -> bool {
+        self.has_capability("port", registry)
+    }
+
+    /// Get the port FTL range bonus from the port capability, if present.
+    /// Falls back to 10.0 if the param is not specified.
+    pub fn port_ftl_range_bonus(&self, registry: &BuildingRegistry) -> f64 {
+        self.get_capability_param("port", "ftl_range_bonus", registry)
+            .unwrap_or(0.0)
+    }
+
+    /// Get the port travel time factor from the port capability, if present.
+    /// Falls back to 1.0 (no reduction) if no port or param not specified.
+    pub fn port_travel_time_factor(&self, registry: &BuildingRegistry) -> f64 {
+        self.get_capability_param("port", "travel_time_factor", registry)
+            .unwrap_or(1.0)
     }
 }
 
@@ -331,6 +371,65 @@ pub fn tick_system_building_queue(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scripting::building_api::{BuildingDefinition, CapabilityParams};
+    use std::collections::HashMap;
+
+    fn test_building_registry() -> BuildingRegistry {
+        let mut registry = BuildingRegistry::default();
+        let mut shipyard_caps = HashMap::new();
+        shipyard_caps.insert("shipyard".to_string(), CapabilityParams {
+            params: {
+                let mut m = HashMap::new();
+                m.insert("concurrent_builds".to_string(), 1.0);
+                m
+            },
+        });
+        registry.insert(BuildingDefinition {
+            id: "shipyard".to_string(),
+            name: "Shipyard".to_string(),
+            description: String::new(),
+            minerals_cost: Amt::ZERO,
+            energy_cost: Amt::ZERO,
+            build_time: 30,
+            maintenance: Amt::ZERO,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            is_system_building: true,
+            capabilities: shipyard_caps,
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+        });
+
+        let mut port_caps = HashMap::new();
+        port_caps.insert("port".to_string(), CapabilityParams {
+            params: {
+                let mut m = HashMap::new();
+                m.insert("ftl_range_bonus".to_string(), 10.0);
+                m.insert("travel_time_factor".to_string(), 0.8);
+                m
+            },
+        });
+        registry.insert(BuildingDefinition {
+            id: "port".to_string(),
+            name: "Port".to_string(),
+            description: String::new(),
+            minerals_cost: Amt::ZERO,
+            energy_cost: Amt::ZERO,
+            build_time: 40,
+            maintenance: Amt::ZERO,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            is_system_building: true,
+            capabilities: port_caps,
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+        });
+        registry
+    }
 
     // --- #113: System vs Planet building classification ---
     // Classification is now Lua-driven via BuildingRegistry.is_system_building()
@@ -338,28 +437,58 @@ mod tests {
 
     #[test]
     fn system_buildings_has_shipyard() {
+        let registry = test_building_registry();
         let sb = SystemBuildings {
             slots: vec![Some(BuildingId::new("shipyard")), None, None],
         };
-        assert!(sb.has_shipyard());
+        assert!(sb.has_shipyard(&registry));
 
         let sb_empty = SystemBuildings {
             slots: vec![Some(BuildingId::new("port")), None, None],
         };
-        assert!(!sb_empty.has_shipyard());
+        assert!(!sb_empty.has_shipyard(&registry));
     }
 
     #[test]
     fn system_buildings_has_port() {
+        let registry = test_building_registry();
         let sb = SystemBuildings {
             slots: vec![None, Some(BuildingId::new("port")), None],
         };
-        assert!(sb.has_port());
+        assert!(sb.has_port(&registry));
 
         let sb_empty = SystemBuildings {
             slots: vec![Some(BuildingId::new("shipyard")), None, None],
         };
-        assert!(!sb_empty.has_port());
+        assert!(!sb_empty.has_port(&registry));
+    }
+
+    #[test]
+    fn system_buildings_has_capability() {
+        let registry = test_building_registry();
+        let sb = SystemBuildings {
+            slots: vec![Some(BuildingId::new("shipyard")), Some(BuildingId::new("port")), None],
+        };
+        assert!(sb.has_capability("shipyard", &registry));
+        assert!(sb.has_capability("port", &registry));
+        assert!(!sb.has_capability("nonexistent", &registry));
+    }
+
+    #[test]
+    fn system_buildings_port_params() {
+        let registry = test_building_registry();
+        let sb = SystemBuildings {
+            slots: vec![None, Some(BuildingId::new("port")), None],
+        };
+        assert_eq!(sb.port_ftl_range_bonus(&registry), 10.0);
+        assert_eq!(sb.port_travel_time_factor(&registry), 0.8);
+
+        // No port: defaults
+        let sb_no_port = SystemBuildings {
+            slots: vec![Some(BuildingId::new("shipyard")), None, None],
+        };
+        assert_eq!(sb_no_port.port_ftl_range_bonus(&registry), 0.0);
+        assert_eq!(sb_no_port.port_travel_time_factor(&registry), 1.0);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use macrocosmo::visualization;
 
 /// Create a BuildingRegistry populated with the standard 6 building definitions for tests.
 pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
-    use macrocosmo::scripting::building_api::BuildingDefinition;
+    use macrocosmo::scripting::building_api::{BuildingDefinition, CapabilityParams};
     use std::collections::HashMap;
     let mut registry = macrocosmo::colony::BuildingRegistry::default();
     registry.insert(BuildingDefinition {
@@ -50,14 +50,27 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         is_system_building: true, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
     });
+    let mut shipyard_caps = HashMap::new();
+    shipyard_caps.insert("shipyard".to_string(), CapabilityParams {
+        params: { let mut m = HashMap::new(); m.insert("concurrent_builds".to_string(), 1.0); m },
+    });
     registry.insert(BuildingDefinition {
         id: "shipyard".into(), name: "Shipyard".into(), description: String::new(),
         minerals_cost: Amt::units(300), energy_cost: Amt::units(200), build_time: 30,
         maintenance: Amt::units(1),
         production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
-        is_system_building: true, capabilities: HashMap::new(),
+        is_system_building: true, capabilities: shipyard_caps,
         upgrade_to: Vec::new(), is_direct_buildable: true,
+    });
+    let mut port_caps = HashMap::new();
+    port_caps.insert("port".to_string(), CapabilityParams {
+        params: {
+            let mut m = HashMap::new();
+            m.insert("ftl_range_bonus".to_string(), 10.0);
+            m.insert("travel_time_factor".to_string(), 0.8);
+            m
+        },
     });
     registry.insert(BuildingDefinition {
         id: "port".into(), name: "Port".into(), description: String::new(),
@@ -65,7 +78,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         maintenance: Amt::new(0, 500),
         production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
-        is_system_building: true, capabilities: HashMap::new(),
+        is_system_building: true, capabilities: port_caps,
         upgrade_to: Vec::new(), is_direct_buildable: true,
     });
     registry.insert(BuildingDefinition {

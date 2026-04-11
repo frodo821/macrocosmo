@@ -55,6 +55,7 @@ pub fn tick_ship_repair(
     last_tick: Res<crate::colony::LastProductionTick>,
     mut ships: Query<(&ShipState, &mut ShipHitpoints)>,
     system_buildings: Query<&crate::colony::SystemBuildings>,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -67,8 +68,9 @@ pub fn tick_ship_repair(
             continue;
         };
 
-        // Check if the system has a Port in system buildings
-        let has_port = system_buildings.get(*system).is_ok_and(|sb| sb.has_port());
+        // Check if the system has a Port capability in system buildings
+        let has_port = system_buildings.get(*system)
+            .is_ok_and(|sb| sb.has_port(&building_registry));
 
         if has_port {
             // Repair armor first, then hull

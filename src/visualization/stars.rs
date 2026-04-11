@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use super::GalaxyView;
-use crate::colony::{Buildings, Colony, SystemBuildings};
+use crate::colony::{BuildingRegistry, Buildings, Colony, SystemBuildings};
 use crate::components::Position;
 use crate::deep_space::{DeepSpaceStructure, StructureHitpoints};
 use crate::galaxy::{GalaxyConfig, HostilePresence, ObscuredByGas, Planet, StarSystem};
@@ -237,6 +237,7 @@ pub fn draw_galaxy_overlay(
     planets: Query<&Planet>,
     galaxy_config: Option<Res<GalaxyConfig>>,
     hostiles: Query<&HostilePresence>,
+    building_registry: Res<BuildingRegistry>,
 ) {
     // Galaxy outline: center marker and boundary circle
     if let Some(ref config) = galaxy_config {
@@ -441,7 +442,7 @@ pub fn draw_galaxy_overlay(
         let mut port_system_entities: Vec<Entity> = Vec::new();
         // Local system ports (real-time)
         for (entity, sb) in &system_buildings {
-            if entity == player_system && sb.has_port() {
+            if entity == player_system && sb.has_port(&building_registry) {
                 port_system_entities.push(entity);
             }
         }
