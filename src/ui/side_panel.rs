@@ -135,8 +135,8 @@ pub fn draw_system_panel(
     let screen = ctx.screen_rect();
     let mut close_system_view = false;
     egui::Window::new(format!("{} ({})", star.name, format_star_type(&star.star_type)))
-        .fixed_pos(egui::pos2(0.0, 30.0))
-        .fixed_size(egui::vec2(screen.width(), screen.height() - 60.0))
+        .default_pos(egui::pos2(0.0, 30.0))
+        .default_size(egui::vec2(screen.width(), screen.height() - 60.0))
         .title_bar(true)
         .collapsible(false)
         .show(ctx, |ui| {
