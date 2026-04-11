@@ -1,7 +1,7 @@
 use crate::amount::Amt;
 use crate::ship_design::{
     DesignSlotAssignment, HullDefinition, HullSlot, ModuleDefinition, ModuleModifier,
-    ShipDesignDefinition, SlotTypeDefinition, WeaponStats,
+    ModuleUpgradePath, ShipDesignDefinition, SlotTypeDefinition, WeaponStats,
 };
 
 /// Parse slot type definitions from the Lua `_slot_type_definitions` global table.
@@ -93,6 +93,9 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
         // Parse cost table
         let (cost_minerals, cost_energy) = parse_cost_table(&table, "cost")?;
 
+        // Parse upgrade_to array (optional)
+        let upgrade_to = parse_module_upgrade_to(&table)?;
+
         result.push(ModuleDefinition {
             id,
             name,
@@ -103,6 +106,7 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
             cost_minerals,
             cost_energy,
             prerequisite_tech,
+            upgrade_to,
         });
     }
 
@@ -249,6 +253,35 @@ fn parse_weapon_stats(table: &mlua::Table) -> Result<Option<WeaponStats>, mlua::
         mlua::Value::Nil => Ok(None),
         _ => Err(mlua::Error::RuntimeError(
             "Expected table or nil for 'weapon' field".to_string(),
+        )),
+    }
+}
+
+/// Parse the `upgrade_to = { { target = ref, cost = { minerals = N, energy = N } }, ... }` array on modules.
+/// The `target` field accepts string IDs, reference tables, or forward_ref tables via `extract_ref_id()`.
+fn parse_module_upgrade_to(table: &mlua::Table) -> Result<Vec<ModuleUpgradePath>, mlua::Error> {
+    let value: mlua::Value = table.get("upgrade_to")?;
+    match value {
+        mlua::Value::Table(arr) => {
+            let mut result = Vec::new();
+            for pair in arr.pairs::<i64, mlua::Table>() {
+                let (_, entry) = pair?;
+                let target_value: mlua::Value = entry.get("target")?;
+                let target_id = crate::scripting::extract_ref_id(&target_value)?;
+
+                let (cost_minerals, cost_energy) = parse_cost_table(&entry, "cost")?;
+
+                result.push(ModuleUpgradePath {
+                    target_id,
+                    cost_minerals,
+                    cost_energy,
+                });
+            }
+            Ok(result)
+        }
+        mlua::Value::Nil => Ok(Vec::new()),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected table or nil for module 'upgrade_to' field".to_string(),
         )),
     }
 }
@@ -555,5 +588,48 @@ mod tests {
         let laser = modules.iter().find(|m| m.id == "weapon_laser");
         assert!(laser.is_some(), "weapon_laser module should be defined");
         assert!(laser.unwrap().weapon.is_some());
+    }
+
+    #[test]
+    fn test_parse_module_with_upgrade_to() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_slot_type { id = "weapon", name = "Weapon Slot" }
+            local laser = define_module {
+                id = "weapon_laser",
+                name = "Laser Battery",
+                slot_type = "weapon",
+                cost = { minerals = 50, energy = 30 },
+                upgrade_to = {
+                    { target = forward_ref("weapon_adv_laser"), cost = { minerals = 80, energy = 50 } },
+                },
+            }
+            define_module {
+                id = "weapon_adv_laser",
+                name = "Advanced Laser",
+                slot_type = "weapon",
+                cost = { minerals = 100, energy = 70 },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_modules(lua).unwrap();
+        assert_eq!(defs.len(), 2);
+
+        let laser = &defs[0];
+        assert_eq!(laser.id, "weapon_laser");
+        assert_eq!(laser.upgrade_to.len(), 1);
+        assert_eq!(laser.upgrade_to[0].target_id, "weapon_adv_laser");
+        assert_eq!(laser.upgrade_to[0].cost_minerals, Amt::units(80));
+        assert_eq!(laser.upgrade_to[0].cost_energy, Amt::units(50));
+
+        let adv = &defs[1];
+        assert_eq!(adv.id, "weapon_adv_laser");
+        assert!(adv.upgrade_to.is_empty());
     }
 }

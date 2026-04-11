@@ -2682,6 +2682,7 @@ mod tests {
             modifiers: vec![],
             weapon: None,
             prerequisite_tech: None,
+            upgrade_to: Vec::new(),
         });
         let modules = vec![
             EquippedModule { slot_type: "weapon".into(), module_id: "test_weapon".into() },

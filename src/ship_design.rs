@@ -91,6 +91,17 @@ pub struct ModuleModifier {
     pub add: f64,
 }
 
+/// An upgrade path from one module to another.
+#[derive(Clone, Debug)]
+pub struct ModuleUpgradePath {
+    /// Target module ID to upgrade to.
+    pub target_id: String,
+    /// Mineral cost of the upgrade.
+    pub cost_minerals: Amt,
+    /// Energy cost of the upgrade.
+    pub cost_energy: Amt,
+}
+
 /// Defines a ship module.
 #[derive(Clone, Debug)]
 pub struct ModuleDefinition {
@@ -103,6 +114,8 @@ pub struct ModuleDefinition {
     pub cost_minerals: Amt,
     pub cost_energy: Amt,
     pub prerequisite_tech: Option<String>,
+    /// Available upgrade paths from this module.
+    pub upgrade_to: Vec<ModuleUpgradePath>,
 }
 
 #[derive(Resource, Default)]
@@ -350,6 +363,7 @@ mod tests {
             cost_minerals: Amt::units(100),
             cost_energy: Amt::units(50),
             prerequisite_tech: None,
+            upgrade_to: Vec::new(),
         });
 
         let ftl = registry.get("ftl_drive").unwrap();

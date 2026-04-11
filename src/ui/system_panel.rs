@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue, UpgradeOrder};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::components::Position;
 use crate::galaxy::{Habitability, Planet, StarSystem, SystemAttributes};
@@ -252,11 +252,18 @@ pub fn draw_system_panel(
                 ui.label(egui::RichText::new("System Buildings").strong());
 
                 let mut sys_demolish_request: Option<(usize, BuildingId)> = None;
+                let mut sys_upgrade_request: Option<(usize, String, Amt, Amt, i64)> = None;
+                let sys_bldg_cost_mod = construction_params.building_cost_modifier.final_value();
+                let sys_bldg_time_mod = construction_params.building_build_time_modifier.final_value();
 
                 for (i, slot) in sys_bldgs.slots.iter().enumerate() {
                     let is_demolishing = sys_bldg_queue
                         .as_ref()
                         .map(|bq| bq.is_demolishing(i))
+                        .unwrap_or(false);
+                    let is_upgrading = sys_bldg_queue
+                        .as_ref()
+                        .map(|bq| bq.is_upgrading(i))
                         .unwrap_or(false);
 
                     match slot {
@@ -269,6 +276,21 @@ pub fn draw_system_panel(
                             ui.label(format!(
                                 "  [{}] {} — Demolishing... ({} hd remaining)",
                                 i, name, remaining
+                            ));
+                        }
+                        Some(bid) if is_upgrading => {
+                            let upgrade_info = sys_bldg_queue
+                                .as_ref()
+                                .and_then(|bq| bq.upgrade_info(i));
+                            let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                            let target_name = upgrade_info
+                                .and_then(|u| building_registry.get(u.target_id.as_str()))
+                                .map(|d| d.name.as_str())
+                                .unwrap_or("?");
+                            let remaining = upgrade_info.map(|u| u.build_time_remaining).unwrap_or(0);
+                            ui.label(format!(
+                                "  [{}] {} — Upgrading to {} ({} hd remaining)",
+                                i, name, target_name, remaining
                             ));
                         }
                         Some(bid) => {
@@ -288,6 +310,31 @@ pub fn draw_system_panel(
                                     .clicked()
                                 {
                                     sys_demolish_request = Some((i, bid.clone()));
+                                }
+                                // Show upgrade buttons if upgrade paths exist
+                                if let Some(src_def) = def {
+                                    for up in &src_def.upgrade_to {
+                                        let target_def = building_registry.get(&up.target_id);
+                                        let target_name = target_def.map(|d| d.name.as_str()).unwrap_or(&up.target_id);
+                                        let eff_m = up.cost_minerals.mul_amt(sys_bldg_cost_mod);
+                                        let eff_e = up.cost_energy.mul_amt(sys_bldg_cost_mod);
+                                        let base_time = up.build_time.unwrap_or_else(|| {
+                                            target_def.map(|d| d.build_time / 2).unwrap_or(5)
+                                        });
+                                        let eff_time = (base_time as f64 * sys_bldg_time_mod.to_f64()).ceil() as i64;
+                                        let tooltip = format!(
+                                            "Upgrade to {} (M:{} E:{} | {} hd)",
+                                            target_name, eff_m, eff_e, eff_time
+                                        );
+                                        let btn_label = format!("-> {}", target_name);
+                                        if ui
+                                            .small_button(&btn_label)
+                                            .on_hover_text(tooltip)
+                                            .clicked()
+                                        {
+                                            sys_upgrade_request = Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
+                                        }
+                                    }
                                 }
                             });
                         }
@@ -310,6 +357,18 @@ pub fn draw_system_panel(
                             energy_refund: e_refund,
                         });
                         info!("System building demolition order added: {} in slot {}", bid, slot_idx);
+                    }
+                }
+                if let Some((slot_idx, target_id, minerals, energy, time)) = sys_upgrade_request {
+                    if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
+                        bq.upgrade_queue.push(UpgradeOrder {
+                            slot_index: slot_idx,
+                            target_id: BuildingId::new(&target_id),
+                            minerals_remaining: minerals,
+                            energy_remaining: energy,
+                            build_time_remaining: time,
+                        });
+                        info!("System building upgrade order added: {} in slot {}", target_id, slot_idx);
                     }
                 }
 
@@ -898,6 +957,7 @@ fn draw_colony_detail(
             ui.label(egui::RichText::new("Planet Buildings").strong());
 
             let mut demolish_request: Option<(usize, BuildingId)> = None;
+            let mut upgrade_request: Option<(usize, String, Amt, Amt, i64)> = None;
 
             // Collect pending building slots so we can show in-progress orders
             let pending_orders: Vec<(usize, String, f32)> = building_queue
@@ -932,10 +992,17 @@ fn draw_colony_detail(
                 })
                 .unwrap_or_default();
 
+            let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
+            let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
+
             for (i, slot) in buildings.slots.iter().enumerate() {
                 let is_demolishing = building_queue
                     .as_ref()
                     .map(|bq| bq.is_demolishing(i))
+                    .unwrap_or(false);
+                let is_upgrading = building_queue
+                    .as_ref()
+                    .map(|bq| bq.is_upgrading(i))
                     .unwrap_or(false);
 
                 match slot {
@@ -948,6 +1015,21 @@ fn draw_colony_detail(
                         ui.label(format!(
                             "  [{}] {} — Demolishing... ({} hd remaining)",
                             i, name, remaining
+                        ));
+                    }
+                    Some(bid) if is_upgrading => {
+                        let upgrade_info = building_queue
+                            .as_ref()
+                            .and_then(|bq| bq.upgrade_info(i));
+                        let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                        let target_name = upgrade_info
+                            .and_then(|u| building_registry.get(u.target_id.as_str()))
+                            .map(|d| d.name.as_str())
+                            .unwrap_or("?");
+                        let remaining = upgrade_info.map(|u| u.build_time_remaining).unwrap_or(0);
+                        ui.label(format!(
+                            "  [{}] {} — Upgrading to {} ({} hd remaining)",
+                            i, name, target_name, remaining
                         ));
                     }
                     Some(bid) => {
@@ -967,6 +1049,31 @@ fn draw_colony_detail(
                                 .clicked()
                             {
                                 demolish_request = Some((i, bid.clone()));
+                            }
+                            // Show upgrade buttons if upgrade paths exist
+                            if let Some(src_def) = def {
+                                for up in &src_def.upgrade_to {
+                                    let target_def = building_registry.get(&up.target_id);
+                                    let target_name = target_def.map(|d| d.name.as_str()).unwrap_or(&up.target_id);
+                                    let eff_m = up.cost_minerals.mul_amt(bldg_cost_mod);
+                                    let eff_e = up.cost_energy.mul_amt(bldg_cost_mod);
+                                    let base_time = up.build_time.unwrap_or_else(|| {
+                                        target_def.map(|d| d.build_time / 2).unwrap_or(5)
+                                    });
+                                    let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                                    let tooltip = format!(
+                                        "Upgrade to {} (M:{} E:{} | {} hd)",
+                                        target_name, eff_m, eff_e, eff_time
+                                    );
+                                    let btn_label = format!("-> {}", target_name);
+                                    if ui
+                                        .small_button(&btn_label)
+                                        .on_hover_text(tooltip)
+                                        .clicked()
+                                    {
+                                        upgrade_request = Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
+                                    }
+                                }
                             }
                         });
                     }
@@ -999,6 +1106,18 @@ fn draw_colony_detail(
                     info!("Demolition order added: {} in slot {}", bid, slot_idx);
                 }
             }
+            if let Some((slot_idx, target_id, minerals, energy, time)) = upgrade_request {
+                if let Some(bq) = building_queue.as_mut() {
+                    bq.upgrade_queue.push(UpgradeOrder {
+                        slot_index: slot_idx,
+                        target_id: BuildingId::new(&target_id),
+                        minerals_remaining: minerals,
+                        energy_remaining: energy,
+                        build_time_remaining: time,
+                    });
+                    info!("Upgrade order added: {} in slot {}", target_id, slot_idx);
+                }
+            }
 
             let pending_slots: Vec<usize> = pending_orders.iter().map(|(s, _, _)| *s).collect();
             let empty_slot = buildings
@@ -1011,8 +1130,6 @@ fn draw_colony_detail(
                 ui.separator();
                 ui.label(egui::RichText::new("Build Planet Building").strong());
                 let planet_building_defs = building_registry.planet_buildings();
-                let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
-                let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
                 let mut build_building_request: Option<BuildingId> = None;
                 for def in &planet_building_defs {
                     let (base_m, base_e) = def.build_cost();

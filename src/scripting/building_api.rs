@@ -4,6 +4,19 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 
+/// An upgrade path from one building to another.
+#[derive(Clone, Debug)]
+pub struct UpgradePath {
+    /// Target building ID to upgrade to.
+    pub target_id: String,
+    /// Mineral cost of the upgrade.
+    pub cost_minerals: Amt,
+    /// Energy cost of the upgrade.
+    pub cost_energy: Amt,
+    /// Override build time for the upgrade (default: target's build_time / 2).
+    pub build_time: Option<i64>,
+}
+
 /// A building definition parsed from Lua `define_building { ... }` calls.
 /// This is the single source of truth for all building properties at runtime.
 #[derive(Clone, Debug)]
@@ -23,6 +36,11 @@ pub struct BuildingDefinition {
     pub is_system_building: bool,
     /// Named capabilities for special behavior (e.g. "shipyard", "port").
     pub capabilities: HashMap<String, CapabilityParams>,
+    /// Available upgrade paths from this building.
+    pub upgrade_to: Vec<UpgradePath>,
+    /// Whether this building can be built directly (true) or only obtained via upgrade (false).
+    /// Buildings with cost = nil in Lua are upgrade-only.
+    pub is_direct_buildable: bool,
 }
 
 /// Parameters for a named building capability.
@@ -69,19 +87,19 @@ impl BuildingRegistry {
         self.buildings.insert(def.id.clone(), def);
     }
 
-    /// Return all planet-level building definitions (is_system_building == false).
+    /// Return all planet-level building definitions that are directly buildable.
     pub fn planet_buildings(&self) -> Vec<&BuildingDefinition> {
         let mut result: Vec<_> = self.buildings.values()
-            .filter(|b| !b.is_system_building)
+            .filter(|b| !b.is_system_building && b.is_direct_buildable)
             .collect();
         result.sort_by(|a, b| a.id.cmp(&b.id));
         result
     }
 
-    /// Return all system-level building definitions (is_system_building == true).
+    /// Return all system-level building definitions that are directly buildable.
     pub fn system_buildings(&self) -> Vec<&BuildingDefinition> {
         let mut result: Vec<_> = self.buildings.values()
-            .filter(|b| b.is_system_building)
+            .filter(|b| b.is_system_building && b.is_direct_buildable)
             .collect();
         result.sort_by(|a, b| a.id.cmp(&b.id));
         result
@@ -136,7 +154,9 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let name: String = table.get("name")?;
         let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
 
-        // Parse cost table (optional)
+        // Parse cost table (optional) — nil means upgrade-only
+        let cost_value_check: mlua::Value = table.get("cost")?;
+        let is_direct_buildable = !matches!(cost_value_check, mlua::Value::Nil);
         let (minerals_cost, energy_cost) = parse_cost_table(&table)?;
 
         let build_time: i64 = table.get::<Option<i64>>("build_time")?.unwrap_or(10);
@@ -149,6 +169,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
 
         let is_system_building: bool = table.get::<Option<bool>>("is_system_building")?.unwrap_or(false);
         let capabilities = parse_capabilities_table(&table)?;
+        let upgrade_to = parse_upgrade_to_table(&table)?;
 
         result.push(BuildingDefinition {
             id,
@@ -164,6 +185,8 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             production_bonus_food: pb_food,
             is_system_building,
             capabilities,
+            upgrade_to,
+            is_direct_buildable,
         });
     }
 
@@ -247,6 +270,51 @@ fn parse_capabilities_table(table: &mlua::Table) -> Result<HashMap<String, Capab
         mlua::Value::Nil => Ok(HashMap::new()),
         _ => Err(mlua::Error::RuntimeError(
             "Expected table or nil for 'capabilities' field".to_string(),
+        )),
+    }
+}
+
+/// Parse the `upgrade_to = { { target = ref, cost = { minerals = N, energy = N }, build_time = N }, ... }` array.
+/// The `target` field accepts string IDs, reference tables, or forward_ref tables via `extract_ref_id()`.
+fn parse_upgrade_to_table(table: &mlua::Table) -> Result<Vec<UpgradePath>, mlua::Error> {
+    let value: mlua::Value = table.get("upgrade_to")?;
+    match value {
+        mlua::Value::Table(arr) => {
+            let mut result = Vec::new();
+            for pair in arr.pairs::<i64, mlua::Table>() {
+                let (_, entry) = pair?;
+                let target_value: mlua::Value = entry.get("target")?;
+                let target_id = crate::scripting::extract_ref_id(&target_value)?;
+
+                let (cost_minerals, cost_energy) = {
+                    let cost_val: mlua::Value = entry.get("cost")?;
+                    match cost_val {
+                        mlua::Value::Table(cost_table) => {
+                            let m: f64 = cost_table.get::<Option<f64>>("minerals")?.unwrap_or(0.0);
+                            let e: f64 = cost_table.get::<Option<f64>>("energy")?.unwrap_or(0.0);
+                            (Amt::from_f64(m), Amt::from_f64(e))
+                        }
+                        mlua::Value::Nil => (Amt::ZERO, Amt::ZERO),
+                        _ => return Err(mlua::Error::RuntimeError(
+                            "Expected table or nil for upgrade 'cost' field".to_string(),
+                        )),
+                    }
+                };
+
+                let build_time: Option<i64> = entry.get::<Option<i64>>("build_time")?;
+
+                result.push(UpgradePath {
+                    target_id,
+                    cost_minerals,
+                    cost_energy,
+                    build_time,
+                });
+            }
+            Ok(result)
+        }
+        mlua::Value::Nil => Ok(Vec::new()),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected table or nil for 'upgrade_to' field".to_string(),
         )),
     }
 }
@@ -361,6 +429,8 @@ mod tests {
             production_bonus_food: Amt::ZERO,
             is_system_building: false,
             capabilities: HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
         });
 
         let mine = registry.get("mine").unwrap();
@@ -383,6 +453,8 @@ mod tests {
             production_bonus_food: Amt::units(5),
             is_system_building: false,
             capabilities: HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -411,8 +483,9 @@ mod tests {
 
         let defs = parse_building_definitions(engine.lua()).unwrap();
 
-        // basic.lua defines 6 buildings: mine, power_plant, research_lab, shipyard, port, farm
-        assert_eq!(defs.len(), 6, "Expected 6 building definitions from basic.lua");
+        // basic.lua defines 8 buildings: mine, power_plant, research_lab, shipyard, port, farm,
+        // advanced_mine, advanced_power_plant
+        assert_eq!(defs.len(), 8, "Expected 8 building definitions from basic.lua");
 
         // Build a registry from the parsed definitions
         let mut registry = BuildingRegistry::default();
@@ -472,6 +545,8 @@ mod tests {
             production_bonus_food: Amt::ZERO,
             is_system_building: false,
             capabilities: HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
         });
 
         // Replace with updated values
@@ -489,11 +564,118 @@ mod tests {
             production_bonus_food: Amt::ZERO,
             is_system_building: false,
             capabilities: HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
         });
 
         assert_eq!(registry.buildings.len(), 1);
         let mine = registry.get("mine").unwrap();
         assert_eq!(mine.name, "Advanced Mine");
         assert_eq!(mine.production_bonus_minerals, Amt::units(5));
+    }
+
+    #[test]
+    fn test_parse_building_with_upgrade_to() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            local mine = define_building {
+                id = "mine",
+                name = "Mine",
+                cost = { minerals = 150, energy = 50 },
+                build_time = 10,
+                maintenance = 0.2,
+                production_bonus = { minerals = 3.0 },
+                upgrade_to = {
+                    { target = forward_ref("advanced_mine"), cost = { minerals = 200, energy = 100 }, build_time = 8 },
+                },
+            }
+            define_building {
+                id = "advanced_mine",
+                name = "Advanced Mine",
+                cost = nil,
+                build_time = 10,
+                maintenance = 0.4,
+                production_bonus = { minerals = 6.0 },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_building_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 2);
+
+        // Mine should have an upgrade path
+        let mine = &defs[0];
+        assert_eq!(mine.id, "mine");
+        assert!(mine.is_direct_buildable);
+        assert_eq!(mine.upgrade_to.len(), 1);
+        assert_eq!(mine.upgrade_to[0].target_id, "advanced_mine");
+        assert_eq!(mine.upgrade_to[0].cost_minerals, Amt::units(200));
+        assert_eq!(mine.upgrade_to[0].cost_energy, Amt::units(100));
+        assert_eq!(mine.upgrade_to[0].build_time, Some(8));
+
+        // Advanced Mine should be upgrade-only
+        let adv_mine = &defs[1];
+        assert_eq!(adv_mine.id, "advanced_mine");
+        assert!(!adv_mine.is_direct_buildable);
+        assert_eq!(adv_mine.minerals_cost, Amt::ZERO);
+        assert_eq!(adv_mine.energy_cost, Amt::ZERO);
+        assert_eq!(adv_mine.production_bonus_minerals, Amt::units(6));
+        assert_eq!(adv_mine.maintenance, Amt::new(0, 400));
+    }
+
+    #[test]
+    fn test_registry_filters_non_direct_buildable() {
+        let mut registry = BuildingRegistry::default();
+
+        // Direct-buildable planet building
+        registry.insert(BuildingDefinition {
+            id: "mine".to_string(),
+            name: "Mine".to_string(),
+            description: String::new(),
+            minerals_cost: Amt::units(150),
+            energy_cost: Amt::units(50),
+            build_time: 10,
+            maintenance: Amt::new(0, 200),
+            production_bonus_minerals: Amt::units(3),
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            is_system_building: false,
+            capabilities: HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+        });
+
+        // Upgrade-only planet building
+        registry.insert(BuildingDefinition {
+            id: "advanced_mine".to_string(),
+            name: "Advanced Mine".to_string(),
+            description: String::new(),
+            minerals_cost: Amt::ZERO,
+            energy_cost: Amt::ZERO,
+            build_time: 10,
+            maintenance: Amt::new(0, 400),
+            production_bonus_minerals: Amt::units(6),
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            is_system_building: false,
+            capabilities: HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: false,
+        });
+
+        // planet_buildings() should only return direct-buildable ones
+        let planet = registry.planet_buildings();
+        assert_eq!(planet.len(), 1);
+        assert_eq!(planet[0].id, "mine");
+
+        // But the registry still has both
+        assert!(registry.get("advanced_mine").is_some());
     }
 }

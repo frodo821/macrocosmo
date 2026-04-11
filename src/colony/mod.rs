@@ -315,6 +315,7 @@ impl Buildings {
 pub struct BuildingQueue {
     pub queue: Vec<BuildingOrder>,
     pub demolition_queue: Vec<DemolitionOrder>,
+    pub upgrade_queue: Vec<UpgradeOrder>,
 }
 
 pub struct BuildingOrder {
@@ -333,6 +334,17 @@ pub struct DemolitionOrder {
     pub energy_refund: Amt,
 }
 
+/// An order to upgrade an existing building in a slot to a new building type.
+/// During the upgrade, the original building remains active. On completion,
+/// the slot's building ID is replaced with the target.
+pub struct UpgradeOrder {
+    pub slot_index: usize,
+    pub target_id: BuildingId,
+    pub minerals_remaining: Amt,
+    pub energy_remaining: Amt,
+    pub build_time_remaining: i64,
+}
+
 impl BuildingQueue {
     /// Check if a given slot is currently being demolished.
     pub fn is_demolishing(&self, slot: usize) -> bool {
@@ -344,6 +356,16 @@ impl BuildingQueue {
         self.demolition_queue.iter()
             .find(|d| d.target_slot == slot)
             .map(|d| d.time_remaining)
+    }
+
+    /// Check if a given slot is currently being upgraded.
+    pub fn is_upgrading(&self, slot: usize) -> bool {
+        self.upgrade_queue.iter().any(|u| u.slot_index == slot)
+    }
+
+    /// Get the upgrade order for a given slot, if any.
+    pub fn upgrade_info(&self, slot: usize) -> Option<&UpgradeOrder> {
+        self.upgrade_queue.iter().find(|u| u.slot_index == slot)
     }
 }
 
@@ -375,6 +397,7 @@ impl SystemBuildings {
 pub struct SystemBuildingQueue {
     pub queue: Vec<BuildingOrder>,
     pub demolition_queue: Vec<DemolitionOrder>,
+    pub upgrade_queue: Vec<UpgradeOrder>,
 }
 
 impl SystemBuildingQueue {
@@ -388,6 +411,16 @@ impl SystemBuildingQueue {
         self.demolition_queue.iter()
             .find(|d| d.target_slot == slot)
             .map(|d| d.time_remaining)
+    }
+
+    /// Check if a given slot is currently being upgraded.
+    pub fn is_upgrading(&self, slot: usize) -> bool {
+        self.upgrade_queue.iter().any(|u| u.slot_index == slot)
+    }
+
+    /// Get the upgrade order for a given slot, if any.
+    pub fn upgrade_info(&self, slot: usize) -> Option<&UpgradeOrder> {
+        self.upgrade_queue.iter().find(|u| u.slot_index == slot)
     }
 }
 
@@ -1312,6 +1345,52 @@ pub fn tick_building_queue(
             }
         }
 
+        // --- Process upgrade queue ---
+        let mut completed_upgrades = Vec::new();
+        for (idx, upgrade) in bq.upgrade_queue.iter_mut().enumerate() {
+            for _ in 0..delta {
+                let minerals_transfer = upgrade.minerals_remaining.min(available_minerals);
+                upgrade.minerals_remaining = upgrade.minerals_remaining.sub(minerals_transfer);
+                available_minerals = available_minerals.sub(minerals_transfer);
+                minerals_consumed = minerals_consumed.add(minerals_transfer);
+
+                let energy_transfer = upgrade.energy_remaining.min(available_energy);
+                upgrade.energy_remaining = upgrade.energy_remaining.sub(energy_transfer);
+                available_energy = available_energy.sub(energy_transfer);
+                energy_consumed = energy_consumed.add(energy_transfer);
+
+                upgrade.build_time_remaining -= 1;
+
+                if upgrade.minerals_remaining == Amt::ZERO
+                    && upgrade.energy_remaining == Amt::ZERO
+                    && upgrade.build_time_remaining <= 0
+                {
+                    completed_upgrades.push(idx);
+                    break;
+                }
+            }
+        }
+        // Process completed upgrades in reverse to keep indices valid
+        for idx in completed_upgrades.into_iter().rev() {
+            let completed = bq.upgrade_queue.remove(idx);
+            if completed.slot_index < buildings.slots.len() {
+                let old_name = buildings.slots[completed.slot_index]
+                    .as_ref()
+                    .map(|bid| bid.0.clone())
+                    .unwrap_or_else(|| "empty".to_string());
+                buildings.slots[completed.slot_index] = Some(completed.target_id.clone());
+                info!(
+                    "Building upgrade completed: {} -> {} in slot {}",
+                    old_name, completed.target_id, completed.slot_index
+                );
+                event_system.fire_event(
+                    "building_upgraded",
+                    Some(colony_entity),
+                    clock.elapsed,
+                );
+            }
+        }
+
         let entry = system_deltas.entry(sys).or_insert(SystemDelta {
             minerals_consumed: Amt::ZERO,
             energy_consumed: Amt::ZERO,
@@ -1416,6 +1495,51 @@ pub fn tick_system_building_queue(
                         clock.elapsed,
                     );
                 }
+            }
+        }
+
+        // --- Process upgrade queue ---
+        let mut completed_upgrades = Vec::new();
+        for (idx, upgrade) in bq.upgrade_queue.iter_mut().enumerate() {
+            for _ in 0..delta {
+                let minerals_transfer = upgrade.minerals_remaining.min(available_minerals);
+                upgrade.minerals_remaining = upgrade.minerals_remaining.sub(minerals_transfer);
+                available_minerals = available_minerals.sub(minerals_transfer);
+                minerals_consumed = minerals_consumed.add(minerals_transfer);
+
+                let energy_transfer = upgrade.energy_remaining.min(available_energy);
+                upgrade.energy_remaining = upgrade.energy_remaining.sub(energy_transfer);
+                available_energy = available_energy.sub(energy_transfer);
+                energy_consumed = energy_consumed.add(energy_transfer);
+
+                upgrade.build_time_remaining -= 1;
+
+                if upgrade.minerals_remaining == Amt::ZERO
+                    && upgrade.energy_remaining == Amt::ZERO
+                    && upgrade.build_time_remaining <= 0
+                {
+                    completed_upgrades.push(idx);
+                    break;
+                }
+            }
+        }
+        for idx in completed_upgrades.into_iter().rev() {
+            let completed = bq.upgrade_queue.remove(idx);
+            if completed.slot_index < buildings.slots.len() {
+                let old_name = buildings.slots[completed.slot_index]
+                    .as_ref()
+                    .map(|bid| bid.0.clone())
+                    .unwrap_or_else(|| "empty".to_string());
+                buildings.slots[completed.slot_index] = Some(completed.target_id.clone());
+                info!(
+                    "System building upgrade completed: {} -> {} in slot {}",
+                    old_name, completed.target_id, completed.slot_index
+                );
+                event_system.fire_event(
+                    "building_upgraded",
+                    Some(system_entity),
+                    clock.elapsed,
+                );
             }
         }
 
@@ -2034,6 +2158,7 @@ mod tests {
                 minerals_refund: Amt::ZERO,
                 energy_refund: Amt::ZERO,
             }],
+            upgrade_queue: Vec::new(),
         };
         assert!(bq.is_demolishing(2));
         assert!(!bq.is_demolishing(0));
@@ -2082,6 +2207,7 @@ mod tests {
                 minerals_refund: Amt::ZERO,
                 energy_refund: Amt::ZERO,
             }],
+            upgrade_queue: Vec::new(),
         };
         assert!(bq.is_demolishing(1));
         assert!(!bq.is_demolishing(0));
