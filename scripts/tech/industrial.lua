@@ -7,8 +7,9 @@ local automated_mining = define_tech {
     cost = { research = 100, minerals = 50 },
     prerequisites = {},
     description = "Robotic systems for autonomous resource extraction",
-    on_researched = function()
-        -- TODO: push_empire_modifier("production.minerals", { multiplier = 0.15 })
+    on_researched = function(scope)
+        scope:push_modifier("production.minerals", { multiplier = 0.15, description = "Automated Mining: +15% mineral production" })
+        scope:set_flag("automated_mining_unlocked", true, { description = "Enables automated mining facilities" })
     end,
 }
 
@@ -19,8 +20,9 @@ local orbital_fabrication = define_tech {
     cost = 200,
     prerequisites = { automated_mining },
     description = "Manufacturing facilities in orbit for zero-gravity construction",
-    on_researched = function()
-        -- TODO: push_empire_modifier("construction.speed", { multiplier = 0.1 })
+    on_researched = function(scope)
+        scope:push_modifier("construction.speed", { multiplier = 0.10, description = "Orbital Fabrication: +10% construction speed" })
+        scope:set_flag("orbital_fabrication_unlocked", true, { description = "Enables orbital fabrication yards" })
     end,
 }
 
@@ -31,8 +33,9 @@ local fusion_power = define_tech {
     cost = 300,
     prerequisites = { automated_mining },
     description = "Harness fusion reactions for abundant clean energy",
-    on_researched = function()
-        -- TODO: push_empire_modifier("production.energy", { multiplier = 0.2 })
+    on_researched = function(scope)
+        scope:push_modifier("production.energy", { multiplier = 0.20, description = "Fusion Power: +20% energy production" })
+        scope:set_flag("fusion_power_unlocked", true, { description = "Enables fusion power plants" })
     end,
 }
 
@@ -43,8 +46,9 @@ local nano_assembly = define_tech {
     cost = 500,
     prerequisites = { orbital_fabrication },
     description = "Molecular-scale construction for unprecedented precision",
-    on_researched = function()
-        -- TODO: push_empire_modifier("construction.speed", { multiplier = 0.2 })
+    on_researched = function(scope)
+        scope:push_modifier("construction.speed", { multiplier = 0.20, description = "Nano-Assembly: +20% construction speed" })
+        scope:push_modifier("production.minerals", { multiplier = 0.10, description = "Nano-Assembly: +10% mineral production" })
     end,
 }
 

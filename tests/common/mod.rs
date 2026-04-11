@@ -334,6 +334,9 @@ pub fn full_test_app() -> App {
         ),
     );
 
+    // --- Technology resources ---
+    app.init_resource::<technology::TechEffectsLog>();
+
     // --- Technology systems (from TechnologyPlugin) ---
     app.add_systems(
         Update,
@@ -344,6 +347,13 @@ pub fn full_test_app() -> App {
             technology::flush_research,
         )
             .chain(),
+    );
+    // apply_tech_effects requires ScriptEngine which is not available in headless tests;
+    // it will early-return. Registered here for query-conflict detection.
+    app.add_systems(
+        Update,
+        technology::apply_tech_effects
+            .after(technology::tick_research),
     );
     app.add_systems(
         Update,

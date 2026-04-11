@@ -1,3 +1,4 @@
+pub mod effects;
 mod parsing;
 mod research;
 mod tree;
@@ -9,6 +10,7 @@ use crate::modifier::ModifiedValue;
 use crate::amount::Amt;
 
 // Re-export everything for backward compatibility
+pub use effects::{apply_tech_effects, TechEffectsLog};
 pub use parsing::{create_initial_tech_tree, create_initial_tech_tree_vec, parse_tech_definitions};
 pub use research::{
     emit_research, flush_research, propagate_tech_knowledge, receive_research,
@@ -28,6 +30,7 @@ impl Plugin for TechnologyPlugin {
                 .after(crate::player::spawn_player_empire),
         )
         .insert_resource(LastResearchTick(0))
+        .init_resource::<TechEffectsLog>()
         .add_systems(
             Update,
             (emit_research, receive_research, tick_research, flush_research)
@@ -36,9 +39,16 @@ impl Plugin for TechnologyPlugin {
         )
         .add_systems(
             Update,
+            apply_tech_effects
+                .after(tick_research)
+                .before(propagate_tech_knowledge)
+                .after(crate::time_system::advance_game_time),
+        )
+        .add_systems(
+            Update,
             (propagate_tech_knowledge, receive_tech_knowledge)
                 .chain()
-                .after(tick_research)
+                .after(apply_tech_effects)
                 .after(crate::time_system::advance_game_time),
         );
     }
