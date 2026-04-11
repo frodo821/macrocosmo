@@ -933,7 +933,7 @@ fn draw_map_tooltips(
                         ui.label(format!("Planets: {}", planet_count));
                     }
                     if let Some(hab) = effective_hab {
-                        ui.label(format!("Habitability: {:?}", hab));
+                        ui.label(format!("Habitability: {}", crate::galaxy::habitability_label(hab)));
                     }
                 } else {
                     ui.label(egui::RichText::new("Unsurveyed").weak().italics());

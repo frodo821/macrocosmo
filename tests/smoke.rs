@@ -5,7 +5,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::time_system::GameClock;
@@ -49,10 +49,10 @@ fn all_systems_no_query_conflict() {
                 planet_type: "default".to_string(),
             },
             SystemAttributes {
-                habitability: Habitability::Ideal,
-                mineral_richness: ResourceLevel::Moderate,
-                energy_potential: ResourceLevel::Moderate,
-                research_potential: ResourceLevel::Moderate,
+                habitability: 1.0,
+                mineral_richness: 0.5,
+                energy_potential: 0.5,
+                research_potential: 0.5,
                 max_building_slots: 6,
             },
             Position::from([0.0, 0.0, 0.0]),
@@ -79,10 +79,10 @@ fn all_systems_no_query_conflict() {
             planet_type: "default".to_string(),
         },
         SystemAttributes {
-            habitability: Habitability::Adequate,
-            mineral_richness: ResourceLevel::Rich,
-            energy_potential: ResourceLevel::Poor,
-            research_potential: ResourceLevel::Moderate,
+            habitability: 0.7,
+            mineral_richness: 0.8,
+            energy_potential: 0.2,
+            research_potential: 0.5,
             max_building_slots: 4,
         },
         Position::from([5.0, 0.0, 0.0]),
@@ -108,10 +108,10 @@ fn all_systems_no_query_conflict() {
             planet_type: "default".to_string(),
         },
         SystemAttributes {
-            habitability: Habitability::Marginal,
-            mineral_richness: ResourceLevel::Poor,
-            energy_potential: ResourceLevel::Rich,
-            research_potential: ResourceLevel::None,
+            habitability: 0.4,
+            mineral_richness: 0.2,
+            energy_potential: 0.8,
+            research_potential: 0.0,
             max_building_slots: 3,
         },
         Position::from([10.0, 3.0, 0.0]),

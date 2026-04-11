@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEventKind};
-use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType};
+use macrocosmo::galaxy::{HostilePresence, HostileType};
 use macrocosmo::player::{AboardShip, Player, StationedAt};
 use macrocosmo::ship::*;
 
@@ -58,7 +58,7 @@ fn test_player_board_ship() {
         app.world_mut(),
         "Home",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -91,7 +91,7 @@ fn test_player_disembark() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -99,7 +99,7 @@ fn test_player_disembark() {
         app.world_mut(),
         "System-B",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -151,7 +151,7 @@ fn test_player_location_updates_with_ship() {
         app.world_mut(),
         "Origin",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -159,7 +159,7 @@ fn test_player_location_updates_with_ship() {
         app.world_mut(),
         "Destination",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -201,7 +201,7 @@ fn test_player_location_stays_during_transit() {
         app.world_mut(),
         "Origin",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -209,7 +209,7 @@ fn test_player_location_stays_during_transit() {
         app.world_mut(),
         "Destination",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -276,10 +276,10 @@ fn test_player_respawn_on_ship_destruction() {
                 planet_type: "default".to_string(),
             },
             macrocosmo::galaxy::SystemAttributes {
-                habitability: Habitability::Adequate,
-                mineral_richness: macrocosmo::galaxy::ResourceLevel::Moderate,
-                energy_potential: macrocosmo::galaxy::ResourceLevel::Moderate,
-                research_potential: macrocosmo::galaxy::ResourceLevel::Moderate,
+                habitability: 0.7,
+                mineral_richness: 0.5,
+                energy_potential: 0.5,
+                research_potential: 0.5,
                 max_building_slots: 4,
             },
             Position::from([0.0, 0.0, 0.0]),
@@ -292,7 +292,7 @@ fn test_player_respawn_on_ship_destruction() {
         app.world_mut(),
         "Danger-Zone",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -394,10 +394,10 @@ fn test_player_respawn_event_fires() {
                 planet_type: "default".to_string(),
             },
             macrocosmo::galaxy::SystemAttributes {
-                habitability: Habitability::Adequate,
-                mineral_richness: macrocosmo::galaxy::ResourceLevel::Moderate,
-                energy_potential: macrocosmo::galaxy::ResourceLevel::Moderate,
-                research_potential: macrocosmo::galaxy::ResourceLevel::Moderate,
+                habitability: 0.7,
+                mineral_richness: 0.5,
+                energy_potential: 0.5,
+                research_potential: 0.5,
                 max_building_slots: 4,
             },
             Position::from([0.0, 0.0, 0.0]),
@@ -409,7 +409,7 @@ fn test_player_respawn_event_fires() {
         app.world_mut(),
         "Danger-Zone",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );

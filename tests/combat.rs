@@ -3,7 +3,7 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{Habitability, HostilePresence, HostileType};
+use macrocosmo::galaxy::{HostilePresence, HostileType};
 use macrocosmo::ship::*;
 
 use common::{advance_time, spawn_test_system, test_app};
@@ -16,7 +16,7 @@ fn test_hostile_destroyed_when_hp_zero() {
         app.world_mut(),
         "Battle-System",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -104,7 +104,7 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
         app.world_mut(),
         "Danger-System",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -163,7 +163,7 @@ fn test_no_combat_when_no_ships_present() {
         app.world_mut(),
         "Empty-System",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -193,7 +193,7 @@ fn test_combat_takes_multiple_ticks() {
         app.world_mut(),
         "Prolonged-Battle",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -283,7 +283,7 @@ fn test_shield_regenerates() {
         app.world_mut(),
         "Shield-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -353,7 +353,7 @@ fn test_shield_regen_caps_at_max() {
         app.world_mut(),
         "Shield-Cap-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -421,7 +421,7 @@ fn test_combat_damages_3_layers() {
         app.world_mut(),
         "Layer-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -517,7 +517,7 @@ fn test_hull_zero_destroys_ship() {
         app.world_mut(),
         "Destroy-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -572,7 +572,7 @@ fn test_weapon_cooldown() {
         app.world_mut(),
         "Cooldown-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -618,7 +618,7 @@ fn test_weapon_cooldown() {
     }).id();
 
     // Hostile B: attacked by slow gun (separate system)
-    let sys_b = spawn_test_system(app.world_mut(), "Cooldown-B", [100.0, 0.0, 0.0], Habitability::Adequate, true, false);
+    let sys_b = spawn_test_system(app.world_mut(), "Cooldown-B", [100.0, 0.0, 0.0], 0.7, true, false);
     let hostile_b = app.world_mut().spawn(HostilePresence {
         system: sys_b, strength: 0.0,
         hp: 10000.0, max_hp: 10000.0,
@@ -674,7 +674,7 @@ fn test_shield_piercing() {
         app.world_mut(),
         "Piercing-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -752,7 +752,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
         app.world_mut(),
         "Retreat-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -832,7 +832,7 @@ fn test_retreat_ships_dont_take_damage() {
         app.world_mut(),
         "Retreat-NoDmg",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -893,7 +893,7 @@ fn test_aggressive_ships_engage_combat() {
         app.world_mut(),
         "Aggro-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -970,7 +970,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
         app.world_mut(),
         "Defensive-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -1046,7 +1046,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
         app.world_mut(),
         "Mixed-ROE",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -1152,7 +1152,7 @@ fn test_set_roe_via_pending_command() {
         app.world_mut(),
         "ROE-Cmd-Test",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -1289,7 +1289,7 @@ fn test_colonize_blocked_by_hostile() {
         app.world_mut(),
         "Hostile-Colony-System",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
     );
 
@@ -1372,7 +1372,7 @@ fn test_hostile_cleared_allows_colonization() {
         app.world_mut(),
         "Cleared-System",
         [0.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
     );
 

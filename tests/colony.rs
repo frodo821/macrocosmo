@@ -5,7 +5,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, StarSystem, SystemAttributes, Sovereignty};
+use macrocosmo::galaxy::{Planet, StarSystem, SystemAttributes, Sovereignty};
 use macrocosmo::ship::*;
 
 use common::{advance_time, find_planet, spawn_test_colony, spawn_test_system, test_app};
@@ -37,10 +37,10 @@ fn spawn_capital_system(world: &mut World, name: &str, pos: [f64; 3]) -> Entity 
             planet_type: "default".to_string(),
         },
         SystemAttributes {
-            habitability: Habitability::Ideal,
-            mineral_richness: ResourceLevel::Moderate,
-            energy_potential: ResourceLevel::Moderate,
-            research_potential: ResourceLevel::Moderate,
+            habitability: 1.0,
+            mineral_richness: 0.5,
+            energy_potential: 0.5,
+            research_potential: 0.5,
             max_building_slots: 4,
         },
         Position::from(pos),
@@ -59,7 +59,7 @@ fn test_production_accumulates_resources() {
         app.world_mut(),
         "Prod-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -123,7 +123,7 @@ fn test_building_queue_completes_construction() {
         app.world_mut(),
         "Build-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -193,7 +193,7 @@ fn test_demolish_building_removes_from_slot() {
         app.world_mut(),
         "Demo-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -260,7 +260,7 @@ fn test_demolish_refunds_resources() {
         app.world_mut(),
         "Refund-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -334,7 +334,7 @@ fn test_demolish_takes_time() {
         app.world_mut(),
         "Time-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -420,7 +420,7 @@ fn test_farm_produces_food() {
         app.world_mut(),
         "Farm-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -489,7 +489,7 @@ fn test_authority_deficit_penalizes_food_production() {
         app.world_mut(),
         "Capital",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -499,7 +499,7 @@ fn test_authority_deficit_penalizes_food_production() {
         app.world_mut(),
         "Remote",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         false,
         true,
     );
@@ -542,7 +542,7 @@ fn test_authority_deficit_penalizes_food_production() {
                 app.world_mut(),
                 &format!("Remote-{}", i),
                 [(i + 1) as f64 * 10.0, 0.0, 0.0],
-                Habitability::Adequate,
+                0.7,
                 false,
                 true,
             )
@@ -604,7 +604,7 @@ fn test_maintenance_deducts_energy_integration() {
         app.world_mut(),
         "Maint-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -671,7 +671,7 @@ fn test_population_capped_by_carrying_capacity() {
         app.world_mut(),
         "Marginal-World",
         [0.0, 0.0, 0.0],
-        Habitability::Marginal,
+        0.4,
         true,
         true,
     );
@@ -732,7 +732,7 @@ fn test_habitability_affects_growth_rate() {
         ideal_app.world_mut(),
         "Ideal-World",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -740,7 +740,7 @@ fn test_habitability_affects_growth_rate() {
         marginal_app.world_mut(),
         "Marginal-World",
         [0.0, 0.0, 0.0],
-        Habitability::Marginal,
+        0.4,
         true,
         true,
     );
@@ -809,7 +809,7 @@ fn test_food_limits_carrying_capacity() {
         app.world_mut(),
         "Food-Limited",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -864,7 +864,7 @@ fn test_resource_capacity_clamps_stockpile() {
         app.world_mut(),
         "Cap-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -936,7 +936,7 @@ fn test_production_focus_weights() {
         app.world_mut(),
         "Focus-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -1003,7 +1003,7 @@ fn test_build_queue_partial_resources() {
         app.world_mut(),
         "Partial-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -1085,7 +1085,7 @@ fn test_build_queue_requires_shipyard() {
         app.world_mut(),
         "NoYard-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -1161,7 +1161,7 @@ fn test_starvation_reduces_population() {
         app.world_mut(),
         "Starve-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -1216,7 +1216,7 @@ fn test_starvation_population_floor() {
         app.world_mut(),
         "Floor-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -1323,7 +1323,7 @@ fn test_empire_scale_authority_cost() {
         app.world_mut(),
         "Remote",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         true,
     );
@@ -1410,7 +1410,7 @@ fn test_authority_deficit_reduces_non_capital_production() {
         app.world_mut(),
         "Remote",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         true,
     );
@@ -1424,7 +1424,7 @@ fn test_authority_deficit_reduces_non_capital_production() {
         app.world_mut(),
         "Remote2",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         true,
     );
@@ -1432,7 +1432,7 @@ fn test_authority_deficit_reduces_non_capital_production() {
         app.world_mut(),
         "Remote3",
         [15.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         true,
     );

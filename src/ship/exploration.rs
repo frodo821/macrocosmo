@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{Anomalies, Anomaly, ResourceLevel, SystemAttributes};
+use crate::galaxy::{Anomalies, Anomaly, SystemAttributes};
 
 use super::{Ship, ShipHitpoints};
 
@@ -38,24 +38,18 @@ pub fn roll_exploration_event(rng: &mut impl Rng) -> ExplorationEvent {
     }
 }
 
-/// Attempt to upgrade a ResourceLevel one tier.
-/// Returns the new level, or None if already Rich.
-pub fn upgrade_resource_level(level: ResourceLevel) -> Option<ResourceLevel> {
-    match level {
-        ResourceLevel::None => Some(ResourceLevel::Poor),
-        ResourceLevel::Poor => Some(ResourceLevel::Moderate),
-        ResourceLevel::Moderate => Some(ResourceLevel::Rich),
-        ResourceLevel::Rich => None,
+/// Attempt to upgrade a resource level by one tier (approximately +0.3).
+/// Returns the new level, or None if already at max (>= 1.0).
+pub fn upgrade_resource_level(level: f64) -> Option<f64> {
+    if level >= 1.0 {
+        None
+    } else {
+        Some((level + 0.3).min(1.0))
     }
 }
 
-pub(crate) fn resource_level_name(level: ResourceLevel) -> &'static str {
-    match level {
-        ResourceLevel::Rich => "Rich",
-        ResourceLevel::Moderate => "Moderate",
-        ResourceLevel::Poor => "Poor",
-        ResourceLevel::None => "None",
-    }
+pub(crate) fn resource_level_name(level: f64) -> &'static str {
+    crate::galaxy::resource_label(level)
 }
 
 /// Apply an exploration event's effects and log it.
@@ -277,7 +271,6 @@ pub(crate) fn roll_and_apply_anomaly(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::galaxy::ResourceLevel;
 
     #[test]
     fn test_roll_exploration_event_does_not_panic() {
@@ -296,18 +289,18 @@ mod tests {
 
     #[test]
     fn test_upgrade_resource_level() {
-        assert_eq!(upgrade_resource_level(ResourceLevel::None), Some(ResourceLevel::Poor));
-        assert_eq!(upgrade_resource_level(ResourceLevel::Poor), Some(ResourceLevel::Moderate));
-        assert_eq!(upgrade_resource_level(ResourceLevel::Moderate), Some(ResourceLevel::Rich));
-        assert_eq!(upgrade_resource_level(ResourceLevel::Rich), None);
+        assert_eq!(upgrade_resource_level(0.0), Some(0.3));
+        assert_eq!(upgrade_resource_level(0.3), Some(0.6));
+        assert_eq!(upgrade_resource_level(0.7), Some(1.0));
+        assert_eq!(upgrade_resource_level(1.0), None);
     }
 
     #[test]
     fn test_resource_level_name() {
-        assert_eq!(resource_level_name(ResourceLevel::Rich), "Rich");
-        assert_eq!(resource_level_name(ResourceLevel::Moderate), "Moderate");
-        assert_eq!(resource_level_name(ResourceLevel::Poor), "Poor");
-        assert_eq!(resource_level_name(ResourceLevel::None), "None");
+        assert_eq!(resource_level_name(0.8), "Rich");
+        assert_eq!(resource_level_name(0.5), "Moderate");
+        assert_eq!(resource_level_name(0.2), "Poor");
+        assert_eq!(resource_level_name(0.0), "None");
     }
 
     #[test]

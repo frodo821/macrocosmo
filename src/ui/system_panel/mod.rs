@@ -7,7 +7,7 @@ use bevy_egui::egui;
 use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue, UpgradeOrder};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::components::Position;
-use crate::galaxy::{Habitability, Planet, StarSystem, SystemAttributes};
+use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
@@ -85,7 +85,7 @@ pub fn draw_system_panel(
         .collect();
 
     // Collect full planet info: entity, name, type, colonized, habitability
-    let mut system_planets: Vec<(Entity, String, String, bool, Option<Habitability>)> = Vec::new();
+    let mut system_planets: Vec<(Entity, String, String, bool, Option<f64>)> = Vec::new();
     for (planet_entity, planet, attrs) in planet_entities.iter() {
         if planet.system == sel_entity {
             let is_colonized = colonized_planets.contains(&planet_entity);
@@ -260,18 +260,18 @@ pub fn draw_system_panel(
                     let py = center.y + orbit_r * angle.sin();
                     let planet_pos = egui::pos2(px, py);
 
-                    // Planet color based on habitability
+                    // Planet color based on habitability score
                     let planet_color = match hab {
-                        Some(Habitability::Ideal) => egui::Color32::from_rgb(50, 200, 50),
-                        Some(Habitability::Adequate) => egui::Color32::from_rgb(150, 200, 50),
-                        Some(Habitability::Marginal) => egui::Color32::from_rgb(200, 150, 50),
-                        Some(Habitability::GasGiant) => egui::Color32::from_rgb(200, 130, 80),
-                        Some(Habitability::Barren) => egui::Color32::from_rgb(130, 130, 130),
+                        Some(v) if *v >= 0.9 => egui::Color32::from_rgb(50, 200, 50),     // Ideal
+                        Some(v) if *v >= 0.6 => egui::Color32::from_rgb(150, 200, 50),    // Adequate
+                        Some(v) if *v >= 0.3 => egui::Color32::from_rgb(200, 150, 50),    // Marginal
+                        Some(v) if *v > 0.0 => egui::Color32::from_rgb(130, 130, 130),    // Barren
+                        Some(_) => egui::Color32::from_rgb(200, 130, 80),                  // Uninhabitable (gas giant)
                         None => egui::Color32::from_rgb(100, 100, 100),
                     };
 
                     let planet_radius = match hab {
-                        Some(Habitability::GasGiant) => 12.0,
+                        Some(v) if *v <= 0.0 => 12.0, // Gas giant size
                         _ => 8.0,
                     };
 
@@ -500,10 +500,7 @@ pub fn draw_system_panel(
                 for (pe, planet, attrs) in planet_entities.iter() {
                     if planet.system == sel_entity
                         && !colonized_planets.contains(&pe)
-                        && attrs.map(|a| {
-                            a.habitability != crate::galaxy::Habitability::Barren
-                                && a.habitability != crate::galaxy::Habitability::GasGiant
-                        }).unwrap_or(false)
+                        && attrs.map(|a| crate::galaxy::is_colonizable(a.habitability)).unwrap_or(false)
                     {
                         // Check not already in colonization queue
                         let in_queue = colonization_queues.get(sel_entity)

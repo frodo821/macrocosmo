@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::amount::Amt;
 use crate::colony::ResourceStockpile;
 use crate::components::Position;
-use crate::galaxy::{Habitability, ResourceLevel, StarSystem};
+use crate::galaxy::StarSystem;
 use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::ship::{Ship, ShipState};
@@ -55,10 +55,10 @@ pub struct SystemSnapshot {
     pub hostile_strength: f64,
     pub has_port: bool,
     pub has_shipyard: bool,
-    pub habitability: Option<Habitability>,
-    pub mineral_richness: Option<ResourceLevel>,
-    pub energy_potential: Option<ResourceLevel>,
-    pub research_potential: Option<ResourceLevel>,
+    pub habitability: Option<f64>,
+    pub mineral_richness: Option<f64>,
+    pub energy_potential: Option<f64>,
+    pub research_potential: Option<f64>,
     pub max_building_slots: Option<u8>,
     pub production_minerals: Amt,
     pub production_energy: Amt,
@@ -269,13 +269,7 @@ pub fn propagate_knowledge(
             .iter()
             .filter(|(p, _)| p.system == entity)
             .map(|(_, a)| a)
-            .max_by_key(|a| match a.habitability {
-                Habitability::Ideal => 4,
-                Habitability::Adequate => 3,
-                Habitability::Marginal => 2,
-                Habitability::GasGiant => 1,
-                Habitability::Barren => 0,
-            });
+            .max_by(|a, b| a.habitability.partial_cmp(&b.habitability).unwrap_or(std::cmp::Ordering::Equal));
         let (habitability, mineral_richness, energy_potential, research_potential, max_building_slots) =
             best_attrs
                 .map(|a| (

@@ -3,7 +3,7 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
-use macrocosmo::galaxy::Habitability;
+
 use macrocosmo::modifier::{ModifiedValue, Modifier};
 use macrocosmo::ship::*;
 
@@ -19,7 +19,7 @@ fn test_modifier_affects_production_output() {
         app.world_mut(),
         "Mod-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -91,7 +91,7 @@ fn test_building_bonus_via_sync_modifiers() {
         app.world_mut(),
         "Sync-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -128,7 +128,7 @@ fn test_maintenance_modifier_affects_energy() {
         app.world_mut(),
         "Maint-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -209,7 +209,7 @@ fn test_food_consumption_modifier() {
         app.world_mut(),
         "Food-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -301,7 +301,7 @@ fn test_authority_params_modifier() {
         app.world_mut(),
         "Auth-System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -406,7 +406,7 @@ fn test_ship_maintenance_synced_via_modifiers() {
         app.world_mut(),
         "Home System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -470,7 +470,7 @@ fn test_timed_modifier_expires_in_game() {
         app.world_mut(),
         "TimedTest",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );

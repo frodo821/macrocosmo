@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
 use macrocosmo::physics::light_delay_hexadies;
 use macrocosmo::player::*;
@@ -28,7 +28,7 @@ fn test_knowledge_propagation_light_delay() {
         app.world_mut(),
         "Capital",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -38,7 +38,7 @@ fn test_knowledge_propagation_light_delay() {
         app.world_mut(),
         "Distant",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -82,7 +82,7 @@ fn test_remote_command_has_light_delay() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -90,7 +90,7 @@ fn test_remote_command_has_light_delay() {
         app.world_mut(),
         "System-B",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -98,7 +98,7 @@ fn test_remote_command_has_light_delay() {
         app.world_mut(),
         "System-C",
         [12.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -160,7 +160,7 @@ fn test_pending_command_executes_on_arrival() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -168,7 +168,7 @@ fn test_pending_command_executes_on_arrival() {
         app.world_mut(),
         "System-B",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -235,7 +235,7 @@ fn test_pending_survey_command_executes_after_delay() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -243,7 +243,7 @@ fn test_pending_survey_command_executes_after_delay() {
         app.world_mut(),
         "System-B",
         [3.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         false, // unsurveyed
         false,
     );
@@ -297,7 +297,7 @@ fn test_enqueue_command_despawned_ship_no_crash() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -305,7 +305,7 @@ fn test_enqueue_command_despawned_ship_no_crash() {
         app.world_mut(),
         "System-B",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -354,7 +354,7 @@ fn test_enqueue_command_adds_to_queue() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -362,7 +362,7 @@ fn test_enqueue_command_adds_to_queue() {
         app.world_mut(),
         "System-B",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -370,7 +370,7 @@ fn test_enqueue_command_adds_to_queue() {
         app.world_mut(),
         "System-C",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -443,10 +443,10 @@ fn test_tech_propagates_to_capital_immediately() {
     app.world_mut().spawn((
         Planet { name: "Capital I".into(), system: capital , planet_type: "default".to_string() },
         SystemAttributes {
-            habitability: Habitability::Ideal,
-            mineral_richness: ResourceLevel::Moderate,
-            energy_potential: ResourceLevel::Moderate,
-            research_potential: ResourceLevel::Moderate,
+            habitability: 1.0,
+            mineral_richness: 0.5,
+            energy_potential: 0.5,
+            research_potential: 0.5,
             max_building_slots: 4,
         },
         Position::from([0.0, 0.0, 0.0]),
@@ -505,10 +505,10 @@ fn test_tech_propagates_to_remote_with_delay() {
     app.world_mut().spawn((
         Planet { name: "Capital I".into(), system: capital , planet_type: "default".to_string() },
         SystemAttributes {
-            habitability: Habitability::Ideal,
-            mineral_richness: ResourceLevel::Moderate,
-            energy_potential: ResourceLevel::Moderate,
-            research_potential: ResourceLevel::Moderate,
+            habitability: 1.0,
+            mineral_richness: 0.5,
+            energy_potential: 0.5,
+            research_potential: 0.5,
             max_building_slots: 4,
         },
         Position::from([0.0, 0.0, 0.0]),
@@ -529,10 +529,10 @@ fn test_tech_propagates_to_remote_with_delay() {
     app.world_mut().spawn((
         Planet { name: "Remote I".into(), system: remote , planet_type: "default".to_string() },
         SystemAttributes {
-            habitability: Habitability::Adequate,
-            mineral_richness: ResourceLevel::Moderate,
-            energy_potential: ResourceLevel::Moderate,
-            research_potential: ResourceLevel::Moderate,
+            habitability: 0.7,
+            mineral_richness: 0.5,
+            energy_potential: 0.5,
+            research_potential: 0.5,
             max_building_slots: 4,
         },
         Position::from([1.0, 0.0, 0.0]),
@@ -618,10 +618,10 @@ fn test_uncolonized_system_no_propagation() {
     app.world_mut().spawn((
         Planet { name: "Capital I".into(), system: capital , planet_type: "default".to_string() },
         SystemAttributes {
-            habitability: Habitability::Ideal,
-            mineral_richness: ResourceLevel::Moderate,
-            energy_potential: ResourceLevel::Moderate,
-            research_potential: ResourceLevel::Moderate,
+            habitability: 1.0,
+            mineral_richness: 0.5,
+            energy_potential: 0.5,
+            research_potential: 0.5,
             max_building_slots: 4,
         },
         Position::from([0.0, 0.0, 0.0]),
@@ -686,7 +686,7 @@ fn test_knowledge_snapshot_hostile_presence() {
         app.world_mut(),
         "Capital",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -696,7 +696,7 @@ fn test_knowledge_snapshot_hostile_presence() {
         app.world_mut(),
         "Hostile System",
         [1.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -733,7 +733,7 @@ fn test_knowledge_snapshot_system_attributes() {
         app.world_mut(),
         "Capital",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -743,7 +743,7 @@ fn test_knowledge_snapshot_system_attributes() {
         app.world_mut(),
         "Remote",
         [1.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -758,7 +758,7 @@ fn test_knowledge_snapshot_system_attributes() {
     let knowledge = store.get(sys_remote).unwrap();
 
     // spawn_test_system creates planets with SystemAttributes containing the given habitability
-    assert_eq!(knowledge.data.habitability, Some(Habitability::Adequate));
+    assert_eq!(knowledge.data.habitability, Some(0.7));
 }
 
 // #175: Ship knowledge tests
@@ -773,7 +773,7 @@ fn test_ship_knowledge_propagation() {
         app.world_mut(),
         "Capital",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -782,7 +782,7 @@ fn test_ship_knowledge_propagation() {
         app.world_mut(),
         "Remote",
         [1.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -835,7 +835,7 @@ fn test_ship_knowledge_local_system_immediate() {
         app.world_mut(),
         "Capital",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );

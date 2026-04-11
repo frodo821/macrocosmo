@@ -153,10 +153,7 @@ pub fn draw_context_menu(
         .collect();
     let has_colonizable_planet = planet_entities.iter().any(|(pe, p, attrs)| {
         p.system == target_entity
-            && attrs.map(|a| {
-                a.habitability != crate::galaxy::Habitability::Barren
-                    && a.habitability != crate::galaxy::Habitability::GasGiant
-            }).unwrap_or(false)
+            && attrs.map(|a| crate::galaxy::is_colonizable(a.habitability)).unwrap_or(false)
             && !colonized_planets.contains(&pe)
     });
 

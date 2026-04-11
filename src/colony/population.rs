@@ -68,7 +68,7 @@ pub fn tick_population_growth(
             };
             let hab_score = planet_attrs
                 .get(colony.planet)
-                .map(|attr| attr.habitability.base_score())
+                .map(|attr| attr.habitability)
                 .unwrap_or(0.5);
             let food_prod = production.food_per_hexadies.final_value();
             Some((colony.planet, colony.population, colony.growth_rate, food_consumed, food_prod, hab_score, sys))

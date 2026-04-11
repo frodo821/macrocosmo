@@ -50,7 +50,7 @@ pub(super) fn draw_colony_detail(
         let carrying_cap = {
             use crate::amount::Amt;
             use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
-            let hab_score = planet_attrs.map(|a| a.habitability.base_score()).unwrap_or(0.5);
+            let hab_score = planet_attrs.map(|a| a.habitability).unwrap_or(0.5);
             let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
             let food_prod = production.map(|p| p.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
             let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {

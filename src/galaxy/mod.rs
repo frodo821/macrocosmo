@@ -75,22 +75,17 @@ pub fn roman_numeral(n: usize) -> &'static str {
 }
 
 /// Physical and economic attributes of a star system.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct SystemAttributes {
-    pub habitability: Habitability,
-    pub mineral_richness: ResourceLevel,
-    pub energy_potential: ResourceLevel,
-    pub research_potential: ResourceLevel,
+    /// Habitability score: 0.0 (uninhabitable) to 1.0 (ideal).
+    pub habitability: f64,
+    /// Mineral richness: 0.0 to 1.0.
+    pub mineral_richness: f64,
+    /// Energy potential: 0.0 to 1.0.
+    pub energy_potential: f64,
+    /// Research potential: 0.0 to 1.0.
+    pub research_potential: f64,
     pub max_building_slots: u8,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Habitability {
-    Ideal,
-    Adequate,
-    Marginal,
-    Barren,
-    GasGiant,
 }
 
 /// Maximum population that a colony can support at hab_score 1.0.
@@ -98,27 +93,43 @@ pub const BASE_CARRYING_CAPACITY: f64 = 200.0;
 /// Food consumed per population per hexadies (as Amt: 0.100).
 pub const FOOD_PER_POP_PER_HEXADIES: crate::amount::Amt = crate::amount::Amt::new(0, 100);
 
-impl Habitability {
-    /// Continuous habitability score in 0.0..=1.0.
-    /// Used for carrying capacity and growth rate scaling.
-    /// Technology bonuses can be added on top of this base value.
-    pub fn base_score(&self) -> f64 {
-        match self {
-            Habitability::Ideal => 1.0,
-            Habitability::Adequate => 0.7,
-            Habitability::Marginal => 0.4,
-            Habitability::Barren => 0.15,
-            Habitability::GasGiant => 0.0,
-        }
+/// Map a numeric habitability value to a human-readable label.
+pub fn habitability_label(value: f64) -> &'static str {
+    if value >= 0.9 {
+        "Ideal"
+    } else if value >= 0.6 {
+        "Adequate"
+    } else if value >= 0.3 {
+        "Marginal"
+    } else if value > 0.0 {
+        "Barren"
+    } else {
+        "Uninhabitable"
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ResourceLevel {
-    Rich,
-    Moderate,
-    Poor,
-    None,
+/// Map a numeric resource level value to a human-readable label.
+pub fn resource_label(value: f64) -> &'static str {
+    if value >= 0.7 {
+        "Rich"
+    } else if value >= 0.4 {
+        "Moderate"
+    } else if value > 0.0 {
+        "Poor"
+    } else {
+        "None"
+    }
+}
+
+/// Returns true if the habitability value allows colonization (> 0.0).
+pub fn is_habitable(habitability: f64) -> bool {
+    habitability > 0.0
+}
+
+/// Returns true if colonization is feasible (not barren or uninhabitable).
+/// Threshold: habitability >= 0.3 (Marginal or better).
+pub fn is_colonizable(habitability: f64) -> bool {
+    habitability >= 0.3
 }
 
 /// Sovereignty status of a star system

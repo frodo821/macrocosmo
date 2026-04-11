@@ -6,7 +6,7 @@ use macrocosmo::colony::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
 use macrocosmo::events::{EventLog, GameEventKind};
-use macrocosmo::galaxy::Habitability;
+
 use macrocosmo::modifier::Modifier;
 
 use common::{advance_time, find_planet, spawn_test_colony, spawn_test_system, test_app, test_app_with_event_log};
@@ -20,7 +20,7 @@ fn test_expired_modifier_has_on_expire_event() {
         app.world_mut(),
         "Expire Event Test",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -146,7 +146,7 @@ fn test_tick_timed_effects_cleans_all_components() {
         app.world_mut(),
         "Test System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -265,7 +265,7 @@ fn test_on_expire_event_fires_named_event() {
         app.world_mut(),
         "Test System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -322,7 +322,7 @@ fn test_food_depletion_alert() {
         app.world_mut(),
         "Starving",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -371,7 +371,7 @@ fn test_energy_depletion_alert() {
         app.world_mut(),
         "NoPower",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -422,7 +422,7 @@ fn test_alert_cooldown() {
         app.world_mut(),
         "Starving",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );

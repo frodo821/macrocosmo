@@ -69,10 +69,10 @@ pub(super) fn draw_planet_window(
             if is_surveyed {
                 if let Some(attrs) = attrs {
                     ui.label(egui::RichText::new("Attributes").strong());
-                    ui.label(format!("Habitability: {:?}", attrs.habitability));
-                    ui.label(format!("Minerals: {:?}", attrs.mineral_richness));
-                    ui.label(format!("Energy: {:?}", attrs.energy_potential));
-                    ui.label(format!("Research: {:?}", attrs.research_potential));
+                    ui.label(format!("Habitability: {} ({:.0}%)", crate::galaxy::habitability_label(attrs.habitability), attrs.habitability * 100.0));
+                    ui.label(format!("Minerals: {} ({:.0}%)", crate::galaxy::resource_label(attrs.mineral_richness), attrs.mineral_richness * 100.0));
+                    ui.label(format!("Energy: {} ({:.0}%)", crate::galaxy::resource_label(attrs.energy_potential), attrs.energy_potential * 100.0));
+                    ui.label(format!("Research: {} ({:.0}%)", crate::galaxy::resource_label(attrs.research_potential), attrs.research_potential * 100.0));
                     ui.label(format!("Building slots: {}", attrs.max_building_slots));
                     ui.separator();
                 }

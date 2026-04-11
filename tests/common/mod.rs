@@ -8,7 +8,7 @@ use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
-use macrocosmo::galaxy::{Anomalies, Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
+use macrocosmo::galaxy::{Anomalies, Planet, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::condition::ScopedFlags;
@@ -408,7 +408,7 @@ pub fn spawn_test_system(
     world: &mut World,
     name: &str,
     pos: [f64; 3],
-    hab: Habitability,
+    hab: f64,
     surveyed: bool,
     _colonized: bool,
 ) -> Entity {
@@ -421,7 +421,7 @@ pub fn spawn_test_system_with_planet(
     world: &mut World,
     name: &str,
     pos: [f64; 3],
-    hab: Habitability,
+    hab: f64,
     surveyed: bool,
 ) -> (Entity, Entity) {
     let sys = world
@@ -449,9 +449,9 @@ pub fn spawn_test_system_with_planet(
             },
             SystemAttributes {
                 habitability: hab,
-                mineral_richness: ResourceLevel::Moderate,
-                energy_potential: ResourceLevel::Moderate,
-                research_potential: ResourceLevel::Moderate,
+                mineral_richness: 0.5,
+                energy_potential: 0.5,
+                research_potential: 0.5,
                 max_building_slots: 4,
             },
             Position::from(pos),

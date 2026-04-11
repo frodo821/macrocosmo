@@ -5,7 +5,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{Habitability, Sovereignty, StarSystem};
+use macrocosmo::galaxy::{Sovereignty, StarSystem};
 use macrocosmo::knowledge::*;
 use macrocosmo::physics::sublight_travel_hexadies;
 use macrocosmo::player::*;
@@ -62,7 +62,7 @@ fn test_sublight_travel_and_arrival() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         false,
     );
@@ -70,7 +70,7 @@ fn test_sublight_travel_and_arrival() {
         app.world_mut(),
         "System-B",
         [1.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         false,
         false,
     );
@@ -129,7 +129,7 @@ fn test_survey_completes_and_marks_system() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         false,
     );
@@ -137,7 +137,7 @@ fn test_survey_completes_and_marks_system() {
         app.world_mut(),
         "System-B",
         [3.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         false, // not yet surveyed
         false,
     );
@@ -196,7 +196,7 @@ fn test_ftl_travel_and_arrival() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -204,7 +204,7 @@ fn test_ftl_travel_and_arrival() {
         app.world_mut(),
         "System-B",
         [20.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         true, // already colonized so colony ship isn't consumed on arrival
     );
@@ -258,7 +258,7 @@ fn test_build_queue_spawns_ship() {
         app.world_mut(),
         "Shipyard",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -345,7 +345,7 @@ fn test_empire_owned_ships() {
         app.world_mut(),
         "Home System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -390,7 +390,7 @@ fn test_empire_owned_ships() {
         app2.world_mut(),
         "Sov System",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -427,7 +427,7 @@ fn test_ftl_range_bonus_extends_range() {
         app.world_mut(),
         "Origin",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -437,7 +437,7 @@ fn test_ftl_range_bonus_extends_range() {
         app.world_mut(),
         "Near",
         [12.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -523,7 +523,7 @@ fn test_scrap_ship_despawns_entity() {
         app.world_mut(),
         "Sol",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -551,7 +551,7 @@ fn test_scrap_ship_refunds_resources() {
         app.world_mut(),
         "Sol",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -609,7 +609,7 @@ fn test_clear_command_queue() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -617,7 +617,7 @@ fn test_clear_command_queue() {
         app.world_mut(),
         "System-B",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -625,7 +625,7 @@ fn test_clear_command_queue() {
         app.world_mut(),
         "System-C",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -669,7 +669,7 @@ fn test_cancel_individual_command() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -677,7 +677,7 @@ fn test_cancel_individual_command() {
         app.world_mut(),
         "System-B",
         [5.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -685,7 +685,7 @@ fn test_cancel_individual_command() {
         app.world_mut(),
         "System-C",
         [10.0, 0.0, 0.0],
-        Habitability::Adequate,
+        0.7,
         true,
         false,
     );
@@ -734,7 +734,7 @@ fn test_cancel_survey_returns_to_docked() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -782,7 +782,7 @@ fn test_cancel_settling_returns_to_docked() {
         app.world_mut(),
         "System-A",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -830,11 +830,11 @@ fn test_ftl_survey_stores_data_on_ship() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
 
     app.world_mut().spawn((Player, StationedAt { system: sys_a }));
@@ -862,11 +862,11 @@ fn test_ftl_survey_auto_queues_return() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
 
     app.world_mut().spawn((Player, StationedAt { system: sys_a }));
@@ -900,11 +900,11 @@ fn test_ftl_survey_delivers_on_dock_at_player_system() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
 
     app.world_mut().spawn((Player, StationedAt { system: sys_a }));
@@ -932,11 +932,11 @@ fn test_non_ftl_survey_marks_system_immediately() {
 
     let _sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
 
     // Courier has ftl_range 0.0 (non-FTL)
@@ -966,11 +966,11 @@ fn test_plan_ftl_route_rejects_unsurveyed_destination() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false, // surveyed=true
+        1.0, true, false, // surveyed=true
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, false, false, // surveyed=false
+        0.7, false, false, // surveyed=false
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
@@ -997,11 +997,11 @@ fn test_plan_ftl_route_allows_surveyed_destination() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false, // surveyed=true
+        1.0, true, false, // surveyed=true
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, true, false, // surveyed=true
+        0.7, true, false, // surveyed=true
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
@@ -1027,11 +1027,11 @@ fn test_survey_return_uses_ftl_to_surveyed_home() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, false, false, // unsurveyed target
+        0.7, false, false, // unsurveyed target
     );
 
     app.world_mut().spawn((Player, StationedAt { system: sys_a }));
@@ -1063,15 +1063,15 @@ fn test_multi_hop_ftl_route() {
     // A --8ly-- B --8ly-- C (all surveyed, FTL range 10ly, can't direct A→C at 16ly)
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let _sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [8.0, 0.0, 0.0],
-        Habitability::Adequate, true, false,
+        0.7, true, false,
     );
     let sys_c = common::spawn_test_system(
         app.world_mut(), "System-C", [16.0, 0.0, 0.0],
-        Habitability::Adequate, true, false,
+        0.7, true, false,
     );
 
     // FTL range 10ly — can reach B from A, C from B, but NOT C from A directly
@@ -1111,15 +1111,15 @@ fn test_hybrid_ftl_sublight_route() {
     // Hybrid: FTL A→B, sublight B→C should be faster than sublight A→C direct
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, true, false, // surveyed
+        0.7, true, false, // surveyed
     );
     let sys_c = common::spawn_test_system(
         app.world_mut(), "System-C", [10.0, 0.0, 0.0],
-        Habitability::Adequate, false, false, // unsurveyed
+        0.7, false, false, // unsurveyed
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
@@ -1153,15 +1153,15 @@ fn test_survey_data_not_delivered_at_wrong_system() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
     let sys_c = common::spawn_test_system(
         app.world_mut(), "System-C", [10.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
 
     // Player stationed at System-A
@@ -1194,11 +1194,11 @@ fn test_queued_survey_auto_inserts_move() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, false, false, // unsurveyed
+        0.7, false, false, // unsurveyed
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
@@ -1240,15 +1240,15 @@ fn test_command_queue_predicted_position() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, true, false,
+        0.7, true, false,
     );
     let sys_c = common::spawn_test_system(
         app.world_mut(), "System-C", [10.0, 0.0, 0.0],
-        Habitability::Adequate, true, false,
+        0.7, true, false,
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
@@ -1276,11 +1276,11 @@ fn test_ftl_survey_uses_light_speed_when_faster() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [2.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
 
     app.world_mut().spawn((Player, StationedAt { system: sys_a }));
@@ -1315,11 +1315,11 @@ fn test_ftl_survey_uses_carry_back_when_ftl_faster() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [2.0, 0.0, 0.0],
-        Habitability::Adequate, false, false,
+        0.7, false, false,
     );
 
     app.world_mut().spawn((Player, StationedAt { system: sys_a }));
@@ -1348,11 +1348,11 @@ fn test_non_ftl_ship_no_ftl_routing_loop() {
 
     let sys_a = common::spawn_test_system(
         app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        Habitability::Ideal, true, false,
+        1.0, true, false,
     );
     let sys_b = common::spawn_test_system(
         app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        Habitability::Adequate, true, false,
+        0.7, true, false,
     );
 
     // Courier has ftl_range: 0.0
@@ -1425,7 +1425,7 @@ fn test_hull_modifiers_applied_to_ship() {
         app.world_mut(),
         "Sol",
         [0.0, 0.0, 0.0],
-        Habitability::Marginal,
+        0.4,
         true,
         false,
     );

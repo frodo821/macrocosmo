@@ -7,7 +7,7 @@ use crate::colony::{
     SystemBuildings, SystemBuildingQueue,
 };
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{Habitability, HostilePresence, ResourceLevel, StarSystem, SystemAttributes};
+use crate::galaxy::{HostilePresence, StarSystem, SystemAttributes};
 use crate::time_system::GameClock;
 
 use super::{Ship, ShipState};
@@ -83,7 +83,7 @@ pub fn process_settling(
                 // Auto-select: find the first habitable, uncolonized planet in this system
                 planet_query.iter().find(|(entity, p, attrs)| {
                     p.system == system_entity
-                        && attrs.habitability != Habitability::GasGiant
+                        && crate::galaxy::is_habitable(attrs.habitability)
                         && !colonized_planets.contains(entity)
                 })
             };
@@ -198,11 +198,13 @@ pub fn process_refitting(
 
 // --- Colony ship arrival (#20) ---
 
-pub fn resource_production_rate(level: ResourceLevel) -> crate::amount::Amt {
-    match level {
-        ResourceLevel::Rich => Amt::units(8),
-        ResourceLevel::Moderate => Amt::units(5),
-        ResourceLevel::Poor => Amt::units(2),
-        ResourceLevel::None => Amt::ZERO,
+/// Convert a continuous resource level (0.0..1.0) to a production rate in Amt.
+/// Scales linearly: 0.0 -> 0, 1.0 -> 8 units per hexadies.
+pub fn resource_production_rate(level: f64) -> crate::amount::Amt {
+    if level <= 0.0 {
+        Amt::ZERO
+    } else {
+        // Scale: 0.0->0, 0.4->3.2, 0.7->5.6, 1.0->8.0
+        Amt::from_f64(level * 8.0)
     }
 }

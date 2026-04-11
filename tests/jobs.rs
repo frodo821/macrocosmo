@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::modifier::ModifiedValue;
-use macrocosmo::galaxy::Habitability;
+
 
 use common::{advance_time, find_planet, spawn_test_system, test_app};
 
@@ -18,7 +18,7 @@ fn test_job_auto_assignment() {
         app.world_mut(),
         "Job Test",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );
@@ -114,7 +114,7 @@ fn test_job_auto_assignment_excess_population() {
         app.world_mut(),
         "Excess Pop",
         [0.0, 0.0, 0.0],
-        Habitability::Ideal,
+        1.0,
         true,
         true,
     );

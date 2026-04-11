@@ -6,8 +6,8 @@ use crate::scripting::galaxy_api::{PlanetTypeDefinition, PlanetTypeRegistry, Sta
 use crate::technology::TechKnowledge;
 
 use super::{
-    Anomalies, GalaxyConfig, Habitability, HostilePresence, HostileType, ObscuredByGas, Planet,
-    ResourceLevel, Sovereignty, StarSystem, SystemAttributes, SystemModifiers,
+    Anomalies, GalaxyConfig, HostilePresence, HostileType, ObscuredByGas, Planet,
+    Sovereignty, StarSystem, SystemAttributes, SystemModifiers,
 };
 use super::types::{default_planet_types, default_star_types};
 
@@ -57,33 +57,10 @@ pub fn poisson_sample(rng: &mut impl Rng, lambda: f64, max: usize) -> usize {
     (k - 1).max(1).min(max)
 }
 
-/// Convert a continuous habitability score to a Habitability enum value.
-fn habitability_from_score(score: f64) -> Habitability {
-    if score >= 0.8 {
-        Habitability::Ideal
-    } else if score >= 0.5 {
-        Habitability::Adequate
-    } else if score >= 0.2 {
-        Habitability::Marginal
-    } else if score > 0.0 {
-        Habitability::Barren
-    } else {
-        Habitability::GasGiant
-    }
-}
-
-/// Convert a resource bias value to a ResourceLevel using a random roll.
-fn resource_level_from_bias(rng: &mut impl Rng, bias: f64) -> ResourceLevel {
-    let roll: f64 = rng.random::<f64>() * bias;
-    if roll > 0.8 {
-        ResourceLevel::Rich
-    } else if roll > 0.4 {
-        ResourceLevel::Moderate
-    } else if roll > 0.1 {
-        ResourceLevel::Poor
-    } else {
-        ResourceLevel::None
-    }
+/// Convert a resource bias value to a continuous resource level (0.0..1.0) using a random roll.
+fn resource_level_from_bias(rng: &mut impl Rng, bias: f64) -> f64 {
+    // Generate a random value scaled by the bias, then clamp to [0.0, 1.0]
+    (rng.random::<f64>() * bias).clamp(0.0, 1.0)
 }
 
 /// Select a random index from a slice of items using weighted random selection.
@@ -103,74 +80,56 @@ fn weighted_random_index(rng: &mut impl Rng, weights: &[f64]) -> Option<usize> {
     Some(weights.len() - 1)
 }
 
-fn random_habitability(rng: &mut impl Rng) -> Habitability {
+/// Generate a random habitability value using a weighted distribution.
+fn random_habitability(rng: &mut impl Rng) -> f64 {
     let roll: f32 = rng.random_range(0.0..1.0);
     if roll < 0.10 {
-        Habitability::Ideal
+        // Ideal range: 0.9-1.0
+        rng.random_range(0.9..=1.0)
     } else if roll < 0.35 {
-        Habitability::Adequate
+        // Adequate range: 0.6-0.9
+        rng.random_range(0.6..0.9)
     } else if roll < 0.65 {
-        Habitability::Marginal
+        // Marginal range: 0.3-0.6
+        rng.random_range(0.3..0.6)
     } else if roll < 0.90 {
-        Habitability::Barren
+        // Barren range: 0.01-0.3
+        rng.random_range(0.01..0.3)
     } else {
-        Habitability::GasGiant
+        // Uninhabitable (gas giant equivalent)
+        0.0
     }
 }
 
-fn random_resource_level(rng: &mut impl Rng) -> ResourceLevel {
-    let roll: f32 = rng.random_range(0.0..1.0);
-    if roll < 0.20 {
-        ResourceLevel::Rich
-    } else if roll < 0.55 {
-        ResourceLevel::Moderate
-    } else if roll < 0.80 {
-        ResourceLevel::Poor
+/// Generate a random resource level value (0.0..1.0).
+fn random_resource_level(rng: &mut impl Rng) -> f64 {
+    rng.random_range(0.0..1.0)
+}
+
+/// Calculate building slots based on habitability score.
+fn building_slots_for(hab: f64, rng: &mut impl Rng) -> u8 {
+    if hab >= 0.9 {
+        rng.random_range(5..=8)
+    } else if hab >= 0.6 {
+        rng.random_range(3..=6)
+    } else if hab >= 0.3 {
+        rng.random_range(2..=4)
+    } else if hab > 0.0 {
+        rng.random_range(1..=2)
     } else {
-        ResourceLevel::None
-    }
-}
-
-fn building_slots_for(hab: Habitability, rng: &mut impl Rng) -> u8 {
-    match hab {
-        Habitability::Ideal => rng.random_range(5..=8),
-        Habitability::Adequate => rng.random_range(3..=6),
-        Habitability::Marginal => rng.random_range(2..=4),
-        Habitability::Barren => rng.random_range(1..=2),
-        Habitability::GasGiant => 0,
-    }
-}
-
-fn random_attributes(rng: &mut impl Rng) -> SystemAttributes {
-    let habitability = random_habitability(rng);
-    SystemAttributes {
-        habitability,
-        mineral_richness: random_resource_level(rng),
-        energy_potential: random_resource_level(rng),
-        research_potential: random_resource_level(rng),
-        max_building_slots: building_slots_for(habitability, rng),
+        0
     }
 }
 
 fn capital_attributes(rng: &mut impl Rng) -> SystemAttributes {
+    let habitability = 1.0;
     SystemAttributes {
-        habitability: Habitability::Ideal,
-        mineral_richness: at_least_moderate(random_resource_level(rng)),
-        energy_potential: at_least_moderate(random_resource_level(rng)),
-        research_potential: at_least_moderate(random_resource_level(rng)),
-        max_building_slots: building_slots_for(Habitability::Ideal, rng),
+        habitability,
+        mineral_richness: random_resource_level(rng).max(0.4),
+        energy_potential: random_resource_level(rng).max(0.4),
+        research_potential: random_resource_level(rng).max(0.4),
+        max_building_slots: building_slots_for(habitability, rng),
     }
-}
-
-fn at_least_moderate(level: ResourceLevel) -> ResourceLevel {
-    match level {
-        ResourceLevel::Poor | ResourceLevel::None => ResourceLevel::Moderate,
-        other => other,
-    }
-}
-
-fn is_habitable(h: Habitability) -> bool {
-    !matches!(h, Habitability::GasGiant)
 }
 
 /// Generate planet attributes from a planet type definition and star habitability bonus.
@@ -179,8 +138,7 @@ fn planet_attributes_from_type(
     planet_type: &PlanetTypeDefinition,
     habitability_bonus: f64,
 ) -> SystemAttributes {
-    let score = (planet_type.base_habitability + habitability_bonus).clamp(0.0, 1.0);
-    let habitability = habitability_from_score(score);
+    let habitability = (planet_type.base_habitability + habitability_bonus).clamp(0.0, 1.0);
     SystemAttributes {
         habitability,
         mineral_richness: resource_level_from_bias(rng, planet_type.resource_bias.minerals),
@@ -427,7 +385,7 @@ pub(crate) fn initialize_systems(
         .filter(|&&i| {
             all_planets[i]
                 .iter()
-                .any(|pd| is_habitable(pd.attrs.habitability))
+                .any(|pd| super::is_habitable(pd.attrs.habitability))
         })
         .count();
 
@@ -439,12 +397,12 @@ pub(crate) fn initialize_systems(
         }
         let has_habitable = all_planets[idx]
             .iter()
-            .any(|pd| is_habitable(pd.attrs.habitability));
+            .any(|pd| super::is_habitable(pd.attrs.habitability));
         if !has_habitable {
-            // Fix the first planet to be Adequate
+            // Fix the first planet to be Adequate (0.7 habitability)
             if let Some(first) = all_planets[idx].first_mut() {
-                first.attrs.habitability = Habitability::Adequate;
-                first.attrs.max_building_slots = building_slots_for(Habitability::Adequate, rng);
+                first.attrs.habitability = 0.7;
+                first.attrs.max_building_slots = building_slots_for(0.7, rng);
                 fixed += 1;
             }
         }
