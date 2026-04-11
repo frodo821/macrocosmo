@@ -4,6 +4,7 @@ mod communication;
 mod components;
 mod condition;
 mod deep_space;
+mod effect;
 mod event_system;
 mod events;
 mod galaxy;

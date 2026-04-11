@@ -2,6 +2,7 @@ pub mod anomaly_api;
 pub mod building_api;
 pub mod condition_ctx;
 pub mod condition_parser;
+pub mod effect_scope;
 pub mod event_api;
 pub mod galaxy_api;
 pub mod lifecycle;
@@ -458,6 +459,15 @@ impl ScriptEngine {
             Ok(())
         })?;
         globals.set("fire_event", fire_event_fn)?;
+
+        // --- Effect descriptor helpers ---
+        // effect_fire_event(event_id, payload?) -- returns a descriptor table (does NOT queue the event)
+        let effect_fire_event_fn = effect_scope::create_fire_event_descriptor(lua)?;
+        globals.set("effect_fire_event", effect_fire_event_fn)?;
+
+        // hide(label, inner_descriptor) -- wraps a descriptor with a display label
+        let hide_fn = effect_scope::create_hide_function(lua)?;
+        globals.set("hide", hide_fn)?;
 
         Ok(())
     }
