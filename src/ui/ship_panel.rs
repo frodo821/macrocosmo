@@ -8,6 +8,7 @@ use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{Cargo, CommandQueue, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 use crate::visualization::{SelectedShip};
 
@@ -246,6 +247,7 @@ pub fn draw_ship_panel(
     pending_commands: &Query<&PendingShipCommand>,
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
+    design_registry: &ShipDesignRegistry,
     clock_elapsed: i64,
     roe_query: &Query<&RulesOfEngagement>,
     positions: &Query<&Position>,
@@ -277,7 +279,7 @@ pub fn draw_ship_panel(
             .get(home_port)
             .map(|(_, s, _, _)| s.name.clone())
             .unwrap_or_else(|_| "Unknown".to_string());
-        let maintenance_cost = crate::ship::ship_maintenance_cost(&ship.design_id);
+        let maintenance_cost = design_registry.maintenance(&ship.design_id);
         // Check if docked at a system that has a colony (for "Set Home Port" button)
         let docked_at_colony = docked_system.and_then(|dock_sys| {
             colonies.iter().find_map(|(_, col, _, _, _, _, _, _)| {
@@ -436,7 +438,7 @@ pub fn draw_ship_panel(
                     .strong()
                     .color(egui::Color32::from_rgb(100, 200, 255)),
             );
-            let design_display_name = crate::ship::design_preset(&design_id).map(|p| p.design_name).unwrap_or(&design_id);
+            let design_display_name = design_registry.get(&design_id).map(|d| d.name.as_str()).unwrap_or(&design_id);
             ui.label(format!("Type: {}", design_display_name));
             // #59: Player aboard indicator
             if is_player_aboard {
@@ -749,7 +751,7 @@ pub fn draw_ship_panel(
 
             // #79: Scrap Ship button (only when docked at a colony)
             if let Some(dock_system) = docked_at_colony {
-                let (refund_m, refund_e) = crate::ship::ship_scrap_refund(&design_id, &ship_modules, module_registry);
+                let (refund_m, refund_e) = design_registry.scrap_refund(&design_id, &ship_modules, module_registry);
                 let scrap_label = format!("Scrap Ship (+{} M, +{} E)", refund_m, refund_e);
                 let response = ui.button(&scrap_label)
                     .on_hover_text("Dismantle this ship and recover 50% of total value (hull + modules)");

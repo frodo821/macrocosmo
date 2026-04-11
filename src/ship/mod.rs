@@ -324,144 +324,7 @@ pub struct ShipStats {
     pub maintenance: Amt,
 }
 
-/// Ship design presets for the three legacy ship types.
-/// These provide default stats when registries are not available (e.g. in tests).
-pub struct ShipDesignPreset {
-    pub design_id: &'static str,
-    pub design_name: &'static str,
-    pub hull_id: &'static str,
-    pub sublight_speed: f64,
-    pub ftl_range: f64,
-    pub hp: f64,
-    pub maintenance: Amt,
-    pub build_cost_minerals: Amt,
-    pub build_cost_energy: Amt,
-    pub build_time: i64,
-    pub can_survey: bool,
-    pub can_colonize: bool,
-}
-
-pub const EXPLORER_PRESET: ShipDesignPreset = ShipDesignPreset {
-    design_id: "explorer_mk1",
-    design_name: "Explorer",
-    hull_id: "corvette",
-    sublight_speed: 0.75,
-    ftl_range: 10.0,
-    hp: 50.0,
-    maintenance: Amt::new(0, 500),
-    build_cost_minerals: Amt::units(200),
-    build_cost_energy: Amt::units(100),
-    build_time: 60,
-    can_survey: true,
-    can_colonize: false,
-};
-
-pub const COLONY_SHIP_PRESET: ShipDesignPreset = ShipDesignPreset {
-    design_id: "colony_ship_mk1",
-    design_name: "Colony Ship",
-    hull_id: "freighter",
-    sublight_speed: 0.5,
-    ftl_range: 15.0,
-    hp: 100.0,
-    maintenance: Amt::units(1),
-    build_cost_minerals: Amt::units(500),
-    build_cost_energy: Amt::units(300),
-    build_time: 120,
-    can_survey: false,
-    can_colonize: true,
-};
-
-pub const COURIER_PRESET: ShipDesignPreset = ShipDesignPreset {
-    design_id: "courier_mk1",
-    design_name: "Courier",
-    hull_id: "courier_hull",
-    sublight_speed: 0.80,
-    ftl_range: 0.0,
-    hp: 35.0,
-    maintenance: Amt::new(0, 300),
-    build_cost_minerals: Amt::units(100),
-    build_cost_energy: Amt::units(50),
-    build_time: 30,
-    can_survey: false,
-    can_colonize: false,
-};
-
-pub const SCOUT_PRESET: ShipDesignPreset = ShipDesignPreset {
-    design_id: "scout_mk1",
-    design_name: "Scout",
-    hull_id: "scout_hull",
-    sublight_speed: 0.85,
-    ftl_range: 10.0,
-    hp: 40.0,
-    maintenance: Amt::new(0, 400),
-    build_cost_minerals: Amt::units(150),
-    build_cost_energy: Amt::units(80),
-    build_time: 45,
-    can_survey: true,
-    can_colonize: false,
-};
-
-/// Look up a design preset by design_id.
-pub fn design_preset(design_id: &str) -> Option<&'static ShipDesignPreset> {
-    match design_id {
-        "explorer_mk1" => Some(&EXPLORER_PRESET),
-        "colony_ship_mk1" => Some(&COLONY_SHIP_PRESET),
-        "courier_mk1" => Some(&COURIER_PRESET),
-        "scout_mk1" => Some(&SCOUT_PRESET),
-        _ => None,
-    }
-}
-
-/// All available design presets.
-pub fn all_design_presets() -> &'static [&'static ShipDesignPreset] {
-    &[&EXPLORER_PRESET, &COLONY_SHIP_PRESET, &COURIER_PRESET, &SCOUT_PRESET]
-}
-
-/// Compute maintenance cost for a ship given its design_id.
-/// Falls back to the design preset if registries are not available.
-pub fn ship_maintenance_cost(design_id: &str) -> Amt {
-    design_preset(design_id).map(|p| p.maintenance).unwrap_or(Amt::new(0, 500))
-}
-
-/// Compute build cost (minerals, energy) for a ship given its design_id.
-pub fn ship_build_cost(design_id: &str) -> (Amt, Amt) {
-    design_preset(design_id)
-        .map(|p| (p.build_cost_minerals, p.build_cost_energy))
-        .unwrap_or((Amt::units(200), Amt::units(100)))
-}
-
-/// Compute build time for a ship given its design_id.
-pub fn ship_build_time(design_id: &str) -> i64 {
-    design_preset(design_id).map(|p| p.build_time).unwrap_or(60)
-}
-
-/// Scrap refund: 50% of (hull build cost + equipped module costs).
-pub fn ship_scrap_refund(
-    design_id: &str,
-    modules: &[EquippedModule],
-    module_registry: &crate::ship_design::ModuleRegistry,
-) -> (Amt, Amt) {
-    let (hull_m, hull_e) = ship_build_cost(design_id);
-    let mut total_m = hull_m;
-    let mut total_e = hull_e;
-    for equipped in modules {
-        if let Some(def) = module_registry.get(&equipped.module_id) {
-            total_m = total_m.add(def.cost_minerals);
-            total_e = total_e.add(def.cost_energy);
-        }
-    }
-    (Amt::milli(total_m.raw() / 2), Amt::milli(total_e.raw() / 2))
-}
-
-/// Check if a design can perform surveys.
-pub fn design_can_survey(design_id: &str) -> bool {
-    design_preset(design_id).map(|p| p.can_survey).unwrap_or(false)
-}
-
-/// Check if a design can colonize.
-pub fn design_can_colonize(design_id: &str) -> bool {
-    design_preset(design_id).map(|p| p.can_colonize).unwrap_or(false)
-}
+use crate::ship_design::ShipDesignRegistry;
 
 /// 3-layer hit point model: shield → armor → hull.
 /// Shield regenerates over time; armor/hull require docking at a Port.
@@ -634,19 +497,23 @@ pub fn spawn_ship(
     system: Entity,
     initial_position: Position,
     owner: Owner,
+    design_registry: &ShipDesignRegistry,
 ) -> Entity {
-    let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
-    let hull_hp = preset.hp;
+    let design = design_registry.get(design_id);
+    let hull_hp = design.map(|d| d.hp).unwrap_or(50.0);
+    let hull_id = design.map(|d| d.hull_id.as_str()).unwrap_or("corvette").to_string();
+    let sublight_speed = design.map(|d| d.sublight_speed).unwrap_or(0.75);
+    let ftl_range = design.map(|d| d.ftl_range).unwrap_or(10.0);
     commands
         .spawn((
             Ship {
                 name,
-                design_id: preset.design_id.to_string(),
-                hull_id: preset.hull_id.to_string(),
+                design_id: design_id.to_string(),
+                hull_id,
                 modules: Vec::new(),
                 owner,
-                sublight_speed: preset.sublight_speed,
-                ftl_range: preset.ftl_range,
+                sublight_speed,
+                ftl_range,
                 player_aboard: false,
                 home_port: system,
             },
@@ -866,8 +733,9 @@ pub fn start_survey(
     ship_pos: &Position,
     system_pos: &Position,
     current_time: i64,
+    design_registry: &ShipDesignRegistry,
 ) -> Result<(), &'static str> {
-    start_survey_with_bonus(ship_state, ship, target_system, ship_pos, system_pos, current_time, 0.0)
+    start_survey_with_bonus(ship_state, ship, target_system, ship_pos, system_pos, current_time, 0.0, design_registry)
 }
 
 pub fn start_survey_with_bonus(
@@ -878,8 +746,9 @@ pub fn start_survey_with_bonus(
     system_pos: &Position,
     current_time: i64,
     survey_range_bonus: f64,
+    design_registry: &ShipDesignRegistry,
 ) -> Result<(), &'static str> {
-    if !design_can_survey(&ship.design_id) {
+    if !design_registry.can_survey(&ship.design_id) {
         return Err("Only Explorer ships can perform surveys");
     }
 
@@ -1600,6 +1469,7 @@ pub fn process_pending_ship_commands(
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
+    design_registry: Res<ShipDesignRegistry>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -1697,7 +1567,7 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
-                match start_survey_with_bonus(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed, global_params.survey_range_bonus) {
+                match start_survey_with_bonus(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed, global_params.survey_range_bonus, &design_registry) {
                     Ok(()) => {
                         info!(
                             "Remote survey command executed: {} surveying {}",
@@ -1713,7 +1583,7 @@ pub fn process_pending_ship_commands(
                 }
             }
             ShipCommand::Colonize => {
-                if !design_can_colonize(&ship.design_id) {
+                if !design_registry.can_colonize(&ship.design_id) {
                     info!(
                         "Remote colonize command for {} failed: not a colony ship",
                         ship.name,
@@ -1843,6 +1713,7 @@ pub fn process_command_queue(
     system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
     mut pending_count: ResMut<routing::RouteCalculationsPending>,
+    design_registry: Res<ShipDesignRegistry>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -1938,6 +1809,7 @@ pub fn process_command_queue(
                             target_pos,
                             clock.elapsed,
                             global_params.survey_range_bonus,
+                            &design_registry,
                         ) {
                             Ok(()) => {
                                 info!(
@@ -1963,7 +1835,7 @@ pub fn process_command_queue(
                             info!("Queue: Ship {} not at target, auto-inserting move before colonize of {}", ship.name, target_star.name);
                             continue;
                         }
-                        if !design_can_colonize(&ship.design_id) {
+                        if !design_registry.can_colonize(&ship.design_id) {
                             warn!("Queue: Ship {} cannot colonize (not a colony ship)", ship.name);
                             queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
                             continue;
@@ -2303,17 +2175,88 @@ pub fn tick_ship_repair(
 mod tests {
     use super::*;
     use bevy::ecs::world::World;
+    use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+
+    fn test_design_registry() -> ShipDesignRegistry {
+        let mut registry = ShipDesignRegistry::default();
+        registry.insert(ShipDesignDefinition {
+            id: "explorer_mk1".to_string(),
+            name: "Explorer Mk.I".to_string(),
+            description: String::new(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            can_survey: true,
+            can_colonize: false,
+            maintenance: Amt::new(0, 500),
+            build_cost_minerals: Amt::units(200),
+            build_cost_energy: Amt::units(100),
+            build_time: 60,
+            hp: 50.0,
+            sublight_speed: 0.75,
+            ftl_range: 10.0,
+        });
+        registry.insert(ShipDesignDefinition {
+            id: "colony_ship_mk1".to_string(),
+            name: "Colony Ship Mk.I".to_string(),
+            description: String::new(),
+            hull_id: "frigate".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: true,
+            maintenance: Amt::units(1),
+            build_cost_minerals: Amt::units(500),
+            build_cost_energy: Amt::units(300),
+            build_time: 120,
+            hp: 100.0,
+            sublight_speed: 0.5,
+            ftl_range: 15.0,
+        });
+        registry.insert(ShipDesignDefinition {
+            id: "courier_mk1".to_string(),
+            name: "Courier Mk.I".to_string(),
+            description: String::new(),
+            hull_id: "courier_hull".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::new(0, 300),
+            build_cost_minerals: Amt::units(100),
+            build_cost_energy: Amt::units(50),
+            build_time: 30,
+            hp: 35.0,
+            sublight_speed: 0.80,
+            ftl_range: 0.0,
+        });
+        registry.insert(ShipDesignDefinition {
+            id: "scout_mk1".to_string(),
+            name: "Scout Mk.I".to_string(),
+            description: String::new(),
+            hull_id: "scout_hull".to_string(),
+            modules: Vec::new(),
+            can_survey: true,
+            can_colonize: false,
+            maintenance: Amt::new(0, 400),
+            build_cost_minerals: Amt::units(150),
+            build_cost_energy: Amt::units(80),
+            build_time: 45,
+            hp: 40.0,
+            sublight_speed: 0.85,
+            ftl_range: 10.0,
+        });
+        registry
+    }
 
     fn make_ship(design_id: &str) -> Ship {
-        let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
+        let registry = test_design_registry();
+        let design = registry.get(design_id).expect("unknown test design");
         Ship {
             name: "Test Ship".to_string(),
-            design_id: preset.design_id.to_string(),
-            hull_id: preset.hull_id.to_string(),
+            design_id: design.id.clone(),
+            hull_id: design.hull_id.clone(),
             modules: Vec::new(),
             owner: Owner::Neutral,
-            sublight_speed: preset.sublight_speed,
-            ftl_range: preset.ftl_range,
+            sublight_speed: design.sublight_speed,
+            ftl_range: design.ftl_range,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
         }
@@ -2387,7 +2330,8 @@ mod tests {
         let ship = make_ship("colony_ship_mk1");
         let mut state = ShipState::Docked { system };
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0);
+        let registry = test_design_registry();
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0, &registry);
         assert_eq!(result, Err("Only Explorer ships can perform surveys"));
     }
 
@@ -2404,7 +2348,8 @@ mod tests {
             arrival_at: 100,
         };
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0);
+        let registry = test_design_registry();
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0, &registry);
         assert_eq!(result, Err("Ship must be docked to begin a survey"));
     }
 
@@ -2416,7 +2361,8 @@ mod tests {
         let mut state = ShipState::Docked { system };
         let ship_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let target_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
-        let result = start_survey(&mut state, &ship, system, &ship_pos, &target_pos, 0);
+        let registry = test_design_registry();
+        let result = start_survey(&mut state, &ship, system, &ship_pos, &target_pos, 0, &registry);
         assert_eq!(result, Err("Target system is beyond survey range"));
     }
 
@@ -2427,7 +2373,8 @@ mod tests {
         let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system };
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let result = start_survey(&mut state, &ship, system, &pos, &pos, 50);
+        let registry = test_design_registry();
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 50, &registry);
         assert!(result.is_ok());
         match state {
             ShipState::Surveying { completes_at, started_at, .. } => {
@@ -2559,9 +2506,10 @@ mod tests {
 
     #[test]
     fn ship_maintenance_costs() {
-        assert_eq!(ship_maintenance_cost("explorer_mk1"), Amt::new(0, 500));
-        assert_eq!(ship_maintenance_cost("colony_ship_mk1"), Amt::units(1));
-        assert_eq!(ship_maintenance_cost("courier_mk1"), Amt::new(0, 300));
+        let registry = test_design_registry();
+        assert_eq!(registry.maintenance("explorer_mk1"), Amt::new(0, 500));
+        assert_eq!(registry.maintenance("colony_ship_mk1"), Amt::units(1));
+        assert_eq!(registry.maintenance("courier_mk1"), Amt::new(0, 300));
     }
 
     // --- #54: Fleet tests ---
@@ -2738,17 +2686,19 @@ mod tests {
 
     #[test]
     fn build_cost_returns_expected_values() {
-        assert_eq!(ship_build_cost("explorer_mk1"), (Amt::units(200), Amt::units(100)));
-        assert_eq!(ship_build_cost("colony_ship_mk1"), (Amt::units(500), Amt::units(300)));
-        assert_eq!(ship_build_cost("courier_mk1"), (Amt::units(100), Amt::units(50)));
+        let registry = test_design_registry();
+        assert_eq!(registry.build_cost("explorer_mk1"), (Amt::units(200), Amt::units(100)));
+        assert_eq!(registry.build_cost("colony_ship_mk1"), (Amt::units(500), Amt::units(300)));
+        assert_eq!(registry.build_cost("courier_mk1"), (Amt::units(100), Amt::units(50)));
     }
 
     #[test]
     fn scrap_refund_is_half_build_cost_without_modules() {
-        let empty_registry = crate::ship_design::ModuleRegistry::default();
+        let design_reg = test_design_registry();
+        let empty_module_registry = crate::ship_design::ModuleRegistry::default();
         for design_id in ["explorer_mk1", "colony_ship_mk1", "courier_mk1"] {
-            let (bm, be) = ship_build_cost(design_id);
-            let (rm, re) = ship_scrap_refund(design_id, &[], &empty_registry);
+            let (bm, be) = design_reg.build_cost(design_id);
+            let (rm, re) = design_reg.scrap_refund(design_id, &[], &empty_module_registry);
             assert_eq!(rm, Amt::milli(bm.raw() / 2));
             assert_eq!(re, Amt::milli(be.raw() / 2));
         }
@@ -2756,8 +2706,9 @@ mod tests {
 
     #[test]
     fn scrap_refund_includes_module_costs() {
-        let mut registry = crate::ship_design::ModuleRegistry::default();
-        registry.insert(crate::ship_design::ModuleDefinition {
+        let design_reg = test_design_registry();
+        let mut module_registry = crate::ship_design::ModuleRegistry::default();
+        module_registry.insert(crate::ship_design::ModuleDefinition {
             id: "test_weapon".into(),
             name: "Test Weapon".into(),
             description: String::new(),
@@ -2772,8 +2723,8 @@ mod tests {
         let modules = vec![
             EquippedModule { slot_type: "weapon".into(), module_id: "test_weapon".into() },
         ];
-        let (bm, be) = ship_build_cost("explorer_mk1");
-        let (rm, re) = ship_scrap_refund("explorer_mk1", &modules, &registry);
+        let (bm, be) = design_reg.build_cost("explorer_mk1");
+        let (rm, re) = design_reg.scrap_refund("explorer_mk1", &modules, &module_registry);
         // Refund = 50% of (hull cost + module cost)
         let expected_m = Amt::milli((bm.raw() + Amt::units(100).raw()) / 2);
         let expected_e = Amt::milli((be.raw() + Amt::units(50).raw()) / 2);
@@ -2791,7 +2742,8 @@ mod tests {
         let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system: system_a };
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let result = start_survey(&mut state, &ship, system_b, &pos, &pos, 0);
+        let registry = test_design_registry();
+        let result = start_survey(&mut state, &ship, system_b, &pos, &pos, 0, &registry);
         assert_eq!(result, Err("Ship must be docked at the target system to survey it"));
     }
 
@@ -2802,7 +2754,8 @@ mod tests {
         let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system };
         let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0);
+        let registry = test_design_registry();
+        let result = start_survey(&mut state, &ship, system, &pos, &pos, 0, &registry);
         assert!(result.is_ok());
         assert!(matches!(state, ShipState::Surveying { .. }));
     }

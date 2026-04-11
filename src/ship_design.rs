@@ -148,6 +148,24 @@ pub struct ShipDesignDefinition {
     pub description: String,
     pub hull_id: String,
     pub modules: Vec<DesignSlotAssignment>,
+    /// Whether this design can perform surveys.
+    pub can_survey: bool,
+    /// Whether this design can colonize planets.
+    pub can_colonize: bool,
+    /// Energy maintenance cost per hexadies.
+    pub maintenance: Amt,
+    /// Mineral cost to build this design.
+    pub build_cost_minerals: Amt,
+    /// Energy cost to build this design.
+    pub build_cost_energy: Amt,
+    /// Build time in hexadies.
+    pub build_time: i64,
+    /// Hull hitpoints.
+    pub hp: f64,
+    /// Sub-light speed (fraction of c).
+    pub sublight_speed: f64,
+    /// FTL range in light-years (0 = no FTL).
+    pub ftl_range: f64,
 }
 
 #[derive(Resource, Default)]
@@ -162,6 +180,63 @@ impl ShipDesignRegistry {
 
     pub fn insert(&mut self, def: ShipDesignDefinition) {
         self.designs.insert(def.id.clone(), def);
+    }
+
+    /// Check if a design can perform surveys.
+    pub fn can_survey(&self, id: &str) -> bool {
+        self.designs.get(id).map(|d| d.can_survey).unwrap_or(false)
+    }
+
+    /// Check if a design can colonize planets.
+    pub fn can_colonize(&self, id: &str) -> bool {
+        self.designs.get(id).map(|d| d.can_colonize).unwrap_or(false)
+    }
+
+    /// Get build cost (minerals, energy) for a design.
+    pub fn build_cost(&self, id: &str) -> (Amt, Amt) {
+        self.designs
+            .get(id)
+            .map(|d| (d.build_cost_minerals, d.build_cost_energy))
+            .unwrap_or((Amt::units(200), Amt::units(100)))
+    }
+
+    /// Get build time in hexadies for a design.
+    pub fn build_time(&self, id: &str) -> i64 {
+        self.designs.get(id).map(|d| d.build_time).unwrap_or(60)
+    }
+
+    /// Get maintenance cost per hexadies for a design.
+    pub fn maintenance(&self, id: &str) -> Amt {
+        self.designs
+            .get(id)
+            .map(|d| d.maintenance)
+            .unwrap_or(Amt::new(0, 500))
+    }
+
+    /// Scrap refund: 50% of (hull build cost + equipped module costs).
+    pub fn scrap_refund(
+        &self,
+        id: &str,
+        modules: &[crate::ship::EquippedModule],
+        module_registry: &ModuleRegistry,
+    ) -> (Amt, Amt) {
+        let (hull_m, hull_e) = self.build_cost(id);
+        let mut total_m = hull_m;
+        let mut total_e = hull_e;
+        for equipped in modules {
+            if let Some(def) = module_registry.get(&equipped.module_id) {
+                total_m = total_m.add(def.cost_minerals);
+                total_e = total_e.add(def.cost_energy);
+            }
+        }
+        (Amt::milli(total_m.raw() / 2), Amt::milli(total_e.raw() / 2))
+    }
+
+    /// Get all design IDs sorted alphabetically.
+    pub fn all_design_ids(&self) -> Vec<String> {
+        let mut ids: Vec<_> = self.designs.keys().cloned().collect();
+        ids.sort();
+        ids
     }
 }
 
@@ -394,6 +469,15 @@ mod tests {
                     module_id: "survey_equipment".to_string(),
                 },
             ],
+            can_survey: true,
+            can_colonize: false,
+            maintenance: Amt::new(0, 500),
+            build_cost_minerals: Amt::units(200),
+            build_cost_energy: Amt::units(100),
+            build_time: 60,
+            hp: 50.0,
+            sublight_speed: 0.75,
+            ftl_range: 10.0,
         });
 
         let explorer = registry.get("explorer_mk1").unwrap();

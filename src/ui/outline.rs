@@ -5,6 +5,7 @@ use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship_design::ShipDesignRegistry;
 use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedSystem};
 
 /// Helper: format a ship status string from ShipState.
@@ -141,6 +142,7 @@ fn draw_ship_list(
     ship_entries: &[(Entity, String, String)],
     ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     selected_ship: &mut SelectedShip,
+    design_registry: &ShipDesignRegistry,
 ) {
     if ship_entries.is_empty() {
         ui.label(
@@ -150,7 +152,7 @@ fn draw_ship_list(
         );
     } else {
         for (ship_entity, name, design_id) in ship_entries {
-            let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
+            let design_name = design_registry.get(design_id).map(|d| d.name.as_str()).unwrap_or(design_id);
             let label = format!("  {} ({})", name, design_name);
             let is_selected = selected_ship.0 == Some(*ship_entity);
             let mut response = ui.selectable_label(is_selected, &label);
@@ -187,6 +189,7 @@ pub fn draw_outline(
     selected_ship: &mut SelectedShip,
     planets: &Query<&Planet>,
     expanded: &mut OutlineExpandedSystems,
+    design_registry: &ShipDesignRegistry,
 ) {
     egui::SidePanel::left("outline_panel")
         .min_width(180.0)
@@ -248,7 +251,7 @@ pub fn draw_outline(
                 if is_expanded {
                     ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
                         let docked = ships_docked_at(*system_entity, ships);
-                        draw_ship_list(ui, &docked, ships, selected_ship);
+                        draw_ship_list(ui, &docked, ships, selected_ship, design_registry);
                     });
                 }
             }
@@ -314,7 +317,7 @@ pub fn draw_outline(
 
                             if is_expanded {
                                 ui.indent(format!("outline_unowned_ships_{:?}", system_entity), |ui| {
-                                    draw_ship_list(ui, docked, ships, selected_ship);
+                                    draw_ship_list(ui, docked, ships, selected_ship, design_registry);
                                 });
                             }
                         }
@@ -346,7 +349,7 @@ pub fn draw_outline(
                             let is_selected = selected_ship.0 == Some(*entity);
                             let mut response = ui.selectable_label(is_selected, &label);
                             if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
-                                let design_name = crate::ship::design_preset(&ship.design_id).map(|p| p.design_name).unwrap_or(&ship.design_id);
+                                let design_name = design_registry.get(&ship.design_id).map(|d| d.name.as_str()).unwrap_or(&ship.design_id);
                                 response = response.on_hover_ui(|ui| {
                                     ship_tooltip(ui, &ship, &_state, &hp, design_name);
                                 });

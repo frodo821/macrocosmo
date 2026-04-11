@@ -534,7 +534,7 @@ pub fn draw_system_panel(
                 ui.label(egui::RichText::new("Docked Ships").strong());
                 for (entity, name, design_id) in &docked_ships {
                     let is_selected = selected_ship.0 == Some(*entity);
-                    let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
+                    let design_name = design_registry.get(design_id).map(|d| d.name.as_str()).unwrap_or(design_id);
                     let label = format!(
                         "{} ({}){}",
                         name,
@@ -829,7 +829,7 @@ fn draw_colony_detail(
             let mut ships_based_here = 0u32;
             for (_, ship, _, _, _, _) in ships_query.iter() {
                 if colony.system(planets) == Some(ship.home_port) {
-                    ship_maintenance = ship_maintenance.add(crate::ship::ship_maintenance_cost(&ship.design_id));
+                    ship_maintenance = ship_maintenance.add(design_registry.maintenance(&ship.design_id));
                     ships_based_here += 1;
                 }
             }
@@ -892,26 +892,21 @@ fn draw_colony_detail(
             ui.label(egui::RichText::new("Build Ship").strong());
         }
 
-        // Build buttons - add orders to the queue
-        // Uses ShipDesignRegistry when available, falls back to presets
+        // Build buttons - add orders to the queue from ShipDesignRegistry
         if let Some(mut bq) = build_queue {
             use crate::amount::Amt;
             let ship_mod = construction_params.ship_cost_modifier.final_value();
             let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
             let mut build_request: Option<(String, String, Amt, Amt, i64)> = None;
 
-            // Collect designs: from registry first, then fallback to presets
-            let has_registry_designs = !design_registry.designs.is_empty();
+            let design_ids = design_registry.all_design_ids();
 
-            if has_registry_designs {
-                let mut design_ids: Vec<_> = design_registry.designs.keys().cloned().collect();
-                design_ids.sort();
-
+            if !design_ids.is_empty() {
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.horizontal(|ui| {
                         for design_id in &design_ids {
                             let design = &design_registry.designs[design_id];
-                            // Calculate cost from hull + modules
+                            // Calculate cost from hull + modules, fallback to design-level values
                             let hull = hull_registry.get(&design.hull_id);
                             let (base_m, base_e, base_time) = if let Some(hull) = hull {
                                 let mods: Vec<_> = design.modules.iter()
@@ -920,10 +915,8 @@ fn draw_colony_detail(
                                 let (m, e, t, _maint) = crate::ship_design::design_cost(hull, &mods);
                                 (m, e, t)
                             } else {
-                                // Fallback to preset if hull not in registry
-                                crate::ship::design_preset(design_id)
-                                    .map(|p| (p.build_cost_minerals, p.build_cost_energy, p.build_time))
-                                    .unwrap_or((Amt::units(200), Amt::units(100), 60))
+                                // Fallback to design-level costs
+                                (design.build_cost_minerals, design.build_cost_energy, design.build_time)
                             };
                             let eff_m = base_m.mul_amt(ship_mod);
                             let eff_e = base_e.mul_amt(ship_mod);
@@ -934,22 +927,6 @@ fn draw_colony_detail(
                             }
                         }
                     });
-                });
-            } else {
-                // Fallback: use hardcoded presets
-                ui.horizontal(|ui| {
-                    for preset in crate::ship::all_design_presets() {
-                        let base_m = preset.build_cost_minerals;
-                        let base_e = preset.build_cost_energy;
-                        let base_time = preset.build_time;
-                        let eff_m = base_m.mul_amt(ship_mod);
-                        let eff_e = base_e.mul_amt(ship_mod);
-                        let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
-                        let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
-                        if ui.button(preset.design_name).on_hover_text(tooltip).clicked() {
-                            build_request = Some((preset.design_id.to_string(), preset.design_name.to_string(), eff_m, eff_e, eff_time));
-                        }
-                    }
                 });
             }
 
