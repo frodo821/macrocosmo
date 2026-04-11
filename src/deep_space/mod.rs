@@ -104,8 +104,8 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
                 CapabilityParams { range: 0.0 },
             )]),
             energy_drain: Amt::milli(500),
-            prerequisites: Some(Condition::Atom(ConditionAtom::HasTech(
-                "ftl_communications".to_string(),
+            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
+                "ftl_communications",
             ))),
         },
         StructureDefinition {
@@ -123,8 +123,8 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
                 CapabilityParams { range: 5.0 },
             )]),
             energy_drain: Amt::units(1),
-            prerequisites: Some(Condition::Atom(ConditionAtom::HasTech(
-                "ftl_interdiction_tech".to_string(),
+            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
+                "ftl_interdiction_tech",
             ))),
         },
     ]
@@ -234,8 +234,8 @@ mod tests {
                 ("detect_ftl".to_string(), CapabilityParams { range: 3.0 }),
             ]),
             energy_drain: Amt::milli(200),
-            prerequisites: Some(Condition::Atom(ConditionAtom::HasTech(
-                "advanced_sensors".to_string(),
+            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
+                "advanced_sensors",
             ))),
         });
 

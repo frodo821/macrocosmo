@@ -1,21 +1,58 @@
-use crate::condition::{Condition, ConditionAtom};
+use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
+
+/// Parse an optional `scope` field from a Lua table and convert to ConditionScope.
+fn parse_scope(table: &mlua::Table) -> Result<ConditionScope, mlua::Error> {
+    let scope_str: Option<String> = table.get("scope")?;
+    match scope_str.as_deref() {
+        None => Ok(ConditionScope::Any),
+        Some("empire") => Ok(ConditionScope::Empire),
+        Some("system") => Ok(ConditionScope::System),
+        Some("planet") => Ok(ConditionScope::Planet),
+        Some("ship") => Ok(ConditionScope::Ship),
+        Some("any") => Ok(ConditionScope::Any),
+        Some(other) => Err(mlua::Error::runtime(format!(
+            "Unknown condition scope: {}",
+            other
+        ))),
+    }
+}
 
 /// Parse a Condition tree from a Lua table produced by the condition helper functions
-/// (`has_tech`, `has_modifier`, `has_building`, `all`, `any`, `one_of`, `not_cond`).
+/// (`has_tech`, `has_modifier`, `has_building`, `has_flag`, `all`, `any`, `one_of`, `not_cond`).
 pub fn parse_condition(table: &mlua::Table) -> Result<Condition, mlua::Error> {
     let cond_type: String = table.get("type")?;
     match cond_type.as_str() {
         "has_tech" => {
             let id: String = table.get("id")?;
-            Ok(Condition::Atom(ConditionAtom::HasTech(id)))
+            let scope = parse_scope(table)?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::HasTech(id),
+                scope,
+            )))
         }
         "has_modifier" => {
             let id: String = table.get("id")?;
-            Ok(Condition::Atom(ConditionAtom::HasModifier(id)))
+            let scope = parse_scope(table)?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::HasModifier(id),
+                scope,
+            )))
         }
         "has_building" => {
             let id: String = table.get("id")?;
-            Ok(Condition::Atom(ConditionAtom::HasBuilding(id)))
+            let scope = parse_scope(table)?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::HasBuilding(id),
+                scope,
+            )))
+        }
+        "has_flag" => {
+            let id: String = table.get("id")?;
+            let scope = parse_scope(table)?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::HasFlag(id),
+                scope,
+            )))
         }
         "all" => {
             let children: mlua::Table = table.get("children")?;
@@ -70,7 +107,7 @@ mod tests {
         let cond = parse_condition(&table).unwrap();
         assert_eq!(
             cond,
-            Condition::Atom(ConditionAtom::HasTech("laser_weapons".into()))
+            Condition::Atom(ConditionAtom::has_tech("laser_weapons"))
         );
     }
 
@@ -86,7 +123,7 @@ mod tests {
         let cond = parse_condition(&table).unwrap();
         assert_eq!(
             cond,
-            Condition::Atom(ConditionAtom::HasModifier("war_economy".into()))
+            Condition::Atom(ConditionAtom::has_modifier("war_economy"))
         );
     }
 
@@ -102,7 +139,23 @@ mod tests {
         let cond = parse_condition(&table).unwrap();
         assert_eq!(
             cond,
-            Condition::Atom(ConditionAtom::HasBuilding("shipyard".into()))
+            Condition::Atom(ConditionAtom::has_building("shipyard"))
+        );
+    }
+
+    #[test]
+    fn test_parse_has_flag() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return has_flag("my_flag")"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::has_flag("my_flag"))
         );
     }
 
@@ -119,8 +172,8 @@ mod tests {
         assert_eq!(
             cond,
             Condition::All(vec![
-                Condition::Atom(ConditionAtom::HasTech("a".into())),
-                Condition::Atom(ConditionAtom::HasTech("b".into())),
+                Condition::Atom(ConditionAtom::has_tech("a")),
+                Condition::Atom(ConditionAtom::has_tech("b")),
             ])
         );
     }
@@ -138,8 +191,8 @@ mod tests {
         assert_eq!(
             cond,
             Condition::Any(vec![
-                Condition::Atom(ConditionAtom::HasTech("a".into())),
-                Condition::Atom(ConditionAtom::HasModifier("b".into())),
+                Condition::Atom(ConditionAtom::has_tech("a")),
+                Condition::Atom(ConditionAtom::has_modifier("b")),
             ])
         );
     }
@@ -157,8 +210,8 @@ mod tests {
         assert_eq!(
             cond,
             Condition::OneOf(vec![
-                Condition::Atom(ConditionAtom::HasTech("a".into())),
-                Condition::Atom(ConditionAtom::HasTech("b".into())),
+                Condition::Atom(ConditionAtom::has_tech("a")),
+                Condition::Atom(ConditionAtom::has_tech("b")),
             ])
         );
     }
@@ -175,8 +228,8 @@ mod tests {
         let cond = parse_condition(&table).unwrap();
         assert_eq!(
             cond,
-            Condition::Not(Box::new(Condition::Atom(ConditionAtom::HasTech(
-                "forbidden".into()
+            Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_tech(
+                "forbidden"
             ))))
         );
     }
@@ -194,11 +247,11 @@ mod tests {
         assert_eq!(
             cond,
             Condition::All(vec![
-                Condition::Atom(ConditionAtom::HasTech("a".into())),
+                Condition::Atom(ConditionAtom::has_tech("a")),
                 Condition::Any(vec![
-                    Condition::Atom(ConditionAtom::HasModifier("m".into())),
-                    Condition::Not(Box::new(Condition::Atom(ConditionAtom::HasBuilding(
-                        "b".into()
+                    Condition::Atom(ConditionAtom::has_modifier("m")),
+                    Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_building(
+                        "b"
                     )))),
                 ]),
             ])
@@ -215,5 +268,65 @@ mod tests {
             .eval()
             .unwrap();
         assert!(parse_condition(&table).is_err());
+    }
+
+    #[test]
+    fn test_parse_has_flag_lua_helper_table_shape() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return has_flag("test_flag")"#)
+            .eval()
+            .unwrap();
+        let typ: String = table.get("type").unwrap();
+        assert_eq!(typ, "has_flag");
+        let id: String = table.get("id").unwrap();
+        assert_eq!(id, "test_flag");
+    }
+
+    #[test]
+    fn test_condition_ctx_scoped_has_tech() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        // Register ConditionCtx as a global for testing
+        lua.globals()
+            .set("ctx", crate::scripting::condition_ctx::ConditionCtx)
+            .unwrap();
+
+        let table: mlua::Table = lua
+            .load(r#"return ctx.empire:has_tech("advanced_sensors")"#)
+            .eval()
+            .unwrap();
+
+        let typ: String = table.get("type").unwrap();
+        assert_eq!(typ, "has_tech");
+        let id: String = table.get("id").unwrap();
+        assert_eq!(id, "advanced_sensors");
+        let scope: String = table.get("scope").unwrap();
+        assert_eq!(scope, "empire");
+    }
+
+    #[test]
+    fn test_condition_ctx_scoped_has_flag() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.globals()
+            .set("ctx", crate::scripting::condition_ctx::ConditionCtx)
+            .unwrap();
+
+        let table: mlua::Table = lua
+            .load(r#"return ctx.system:has_flag("fortified")"#)
+            .eval()
+            .unwrap();
+
+        let typ: String = table.get("type").unwrap();
+        assert_eq!(typ, "has_flag");
+        let id: String = table.get("id").unwrap();
+        assert_eq!(id, "fortified");
+        let scope: String = table.get("scope").unwrap();
+        assert_eq!(scope, "system");
     }
 }

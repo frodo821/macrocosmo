@@ -1,4 +1,5 @@
 pub mod building_api;
+pub mod condition_ctx;
 pub mod condition_parser;
 pub mod event_api;
 pub mod galaxy_api;
@@ -330,6 +331,14 @@ impl ScriptEngine {
         })?;
         globals.set("has_building", has_building)?;
 
+        let has_flag = lua.create_function(|lua, value: mlua::Value| {
+            let t = lua.create_table()?;
+            t.set("type", "has_flag")?;
+            t.set("id", extract_id_from_lua_value(&value)?)?;
+            Ok(t)
+        })?;
+        globals.set("has_flag", has_flag)?;
+
         let all_fn = lua.create_function(|lua, args: mlua::MultiValue| {
             let t = lua.create_table()?;
             t.set("type", "all")?;
@@ -506,7 +515,7 @@ impl ScriptEngine {
 /// Extract an ID string from a Lua value that is either:
 /// - A plain string → used as-is
 /// - A reference table (from `define_xxx` or `forward_ref`) → reads the `id` field
-fn extract_id_from_lua_value(value: &mlua::Value) -> Result<String, mlua::Error> {
+pub fn extract_id_from_lua_value(value: &mlua::Value) -> Result<String, mlua::Error> {
     match value {
         mlua::Value::String(s) => Ok(s.to_str()?.to_string()),
         mlua::Value::Table(t) => t.get::<String>("id"),

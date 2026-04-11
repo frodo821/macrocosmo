@@ -69,6 +69,8 @@ fn parse_cost_table(table: &mlua::Table) -> Result<ResourceCost, mlua::Error> {
 }
 
 /// Parse optional `prerequisites` field as a Condition tree.
+/// Accepts either a condition table (from has_tech/all/any/etc.) or a function
+/// that receives a ConditionCtx and returns a condition table.
 fn parse_prerequisites(table: &mlua::Table) -> Result<Option<crate::condition::Condition>, mlua::Error> {
     let prereq_value: mlua::Value = table.get("prerequisites")?;
     match prereq_value {
@@ -76,9 +78,15 @@ fn parse_prerequisites(table: &mlua::Table) -> Result<Option<crate::condition::C
             let cond = parse_condition(&prereq_table)?;
             Ok(Some(cond))
         }
+        mlua::Value::Function(func) => {
+            let ctx = crate::scripting::condition_ctx::ConditionCtx;
+            let result: mlua::Table = func.call(ctx)?;
+            let cond = parse_condition(&result)?;
+            Ok(Some(cond))
+        }
         mlua::Value::Nil => Ok(None),
         _ => Err(mlua::Error::RuntimeError(
-            "Expected table or nil for 'prerequisites' field".to_string(),
+            "Expected table, function, or nil for 'prerequisites' field".to_string(),
         )),
     }
 }
@@ -106,7 +114,7 @@ fn parse_capabilities_map(table: &mlua::Table) -> Result<HashMap<String, Capabil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::condition::{Condition, ConditionAtom};
+    use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
     use crate::scripting::ScriptEngine;
 
     #[test]
@@ -171,8 +179,8 @@ mod tests {
         assert_eq!(defs[1].energy_drain, Amt::units(1));
         assert_eq!(
             defs[1].prerequisites,
-            Some(Condition::Atom(ConditionAtom::HasTech(
-                "ftl_interdiction_tech".to_string()
+            Some(Condition::Atom(ConditionAtom::has_tech(
+                "ftl_interdiction_tech"
             )))
         );
     }
@@ -232,11 +240,50 @@ mod tests {
         assert_eq!(
             defs[0].prerequisites,
             Some(Condition::All(vec![
-                Condition::Atom(ConditionAtom::HasTech("tech_a".into())),
+                Condition::Atom(ConditionAtom::has_tech("tech_a")),
                 Condition::Any(vec![
-                    Condition::Atom(ConditionAtom::HasModifier("mod_b".into())),
-                    Condition::Atom(ConditionAtom::HasBuilding("bldg_c".into())),
+                    Condition::Atom(ConditionAtom::has_modifier("mod_b")),
+                    Condition::Atom(ConditionAtom::has_building("bldg_c")),
                 ]),
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_parse_structure_with_function_prerequisites() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_structure {
+                id = "scoped_station",
+                name = "Scoped Station",
+                prerequisites = function(ctx)
+                    return all(
+                        ctx.empire:has_tech("advanced_sensors"),
+                        ctx.system:has_building("shipyard")
+                    )
+                end,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_structure_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(
+            defs[0].prerequisites,
+            Some(Condition::All(vec![
+                Condition::Atom(ConditionAtom::scoped(
+                    AtomKind::HasTech("advanced_sensors".into()),
+                    ConditionScope::Empire,
+                )),
+                Condition::Atom(ConditionAtom::scoped(
+                    AtomKind::HasBuilding("shipyard".into()),
+                    ConditionScope::System,
+                )),
             ]))
         );
     }

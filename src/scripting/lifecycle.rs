@@ -2,8 +2,11 @@ use bevy::prelude::*;
 use mlua::Lua;
 use std::collections::HashMap;
 
+use crate::condition::ScopedFlags;
 use crate::event_system::{EventBus, EventSystem};
+use crate::player::PlayerEmpire;
 use crate::scripting::ScriptEngine;
+use crate::technology::GameFlags;
 use crate::time_system::GameClock;
 
 /// Execute all registered on_game_start handlers.
@@ -30,11 +33,43 @@ fn run_handlers(lua: &Lua, table_name: &str) -> Result<(), mlua::Error> {
     Ok(())
 }
 
+/// Drain `_pending_flags` from Lua and return the flag names.
+pub fn drain_pending_flags(lua: &Lua) -> Vec<String> {
+    let Ok(flags) = lua.globals().get::<mlua::Table>("_pending_flags") else {
+        return Vec::new();
+    };
+    let Ok(len) = flags.len() else {
+        return Vec::new();
+    };
+    if len == 0 {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+    for i in 1..=len {
+        if let Ok(flag) = flags.get::<String>(i) {
+            result.push(flag);
+        }
+    }
+
+    // Clear the table by replacing it with a fresh one
+    if let Ok(new_table) = lua.create_table() {
+        let _ = lua.globals().set("_pending_flags", new_table);
+    }
+
+    result
+}
+
 /// Startup system that runs lifecycle hooks after all scripts have been loaded.
 /// Scripts are loaded by `load_all_scripts`; this system only executes callbacks.
 /// Runs on_scripts_loaded and on_game_start hooks (on_game_load is reserved for
 /// save/load which is not yet implemented).
-pub fn run_lifecycle_hooks(engine: Res<ScriptEngine>) {
+/// After hooks execute, drains `_pending_flags` into `GameFlags` and `ScopedFlags`
+/// on the empire entity.
+pub fn run_lifecycle_hooks(
+    engine: Res<ScriptEngine>,
+    mut empire_query: Query<(&mut GameFlags, &mut ScopedFlags), With<PlayerEmpire>>,
+) {
     let lua = engine.lua();
 
     // Run on_scripts_loaded hooks
@@ -47,6 +82,23 @@ pub fn run_lifecycle_hooks(engine: Res<ScriptEngine>) {
     match run_on_game_start(lua) {
         Ok(()) => info!("on_game_start hooks executed"),
         Err(e) => warn!("on_game_start hook error: {e}"),
+    }
+
+    // Drain pending flags into GameFlags and ScopedFlags on the empire entity
+    let pending = drain_pending_flags(lua);
+    if !pending.is_empty() {
+        if let Ok((mut game_flags, mut scoped_flags)) = empire_query.single_mut() {
+            for flag in &pending {
+                game_flags.set(flag);
+                scoped_flags.set(flag);
+            }
+            info!("Drained {} pending flags into empire entity", pending.len());
+        } else {
+            warn!(
+                "Could not find PlayerEmpire entity to drain {} pending flags",
+                pending.len()
+            );
+        }
     }
 }
 
@@ -250,6 +302,39 @@ mod tests {
         run_on_game_start(lua).unwrap();
         run_on_game_load(lua).unwrap();
         run_on_scripts_loaded(lua).unwrap();
+    }
+
+    #[test]
+    fn test_drain_pending_flags() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            set_flag("flag_a")
+            set_flag("flag_b")
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let flags = drain_pending_flags(lua);
+        assert_eq!(flags.len(), 2);
+        assert!(flags.contains(&"flag_a".to_string()));
+        assert!(flags.contains(&"flag_b".to_string()));
+
+        // After draining, the table should be empty
+        let flags_after = drain_pending_flags(lua);
+        assert!(flags_after.is_empty());
+    }
+
+    #[test]
+    fn test_drain_pending_flags_empty() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let flags = drain_pending_flags(lua);
+        assert!(flags.is_empty());
     }
 
     /// CRITICAL #2: Verify fire_event from Lua queues into _pending_script_events.

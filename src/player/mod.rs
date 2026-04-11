@@ -7,6 +7,7 @@ use crate::galaxy::StarSystem;
 use crate::ship::{Ship, ShipState};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
+use crate::condition::ScopedFlags;
 use crate::technology::{
     EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
     TechTree,
@@ -43,6 +44,7 @@ pub fn spawn_player_empire(mut commands: Commands) {
         GlobalParams::default(),
         KnowledgeStore::default(),
         CommandLog::default(),
+        ScopedFlags::default(),
     ));
     info!("Player empire entity spawned");
 }

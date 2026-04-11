@@ -10,6 +10,7 @@ use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo::condition::ScopedFlags;
 use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::ship::*;
 use macrocosmo::technology::{self, TechKnowledge};
@@ -36,6 +37,7 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
             technology::GlobalParams::default(),
             KnowledgeStore::default(),
             CommandLog::default(),
+            ScopedFlags::default(),
         ))
         .id()
 }
