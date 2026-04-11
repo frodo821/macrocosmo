@@ -1,8 +1,10 @@
 pub mod bottom_bar;
+pub mod context_menu;
 pub mod outline;
 pub mod overlays;
 pub mod params;
-pub mod side_panel;
+pub mod ship_panel;
+pub mod system_panel;
 pub mod top_bar;
 
 use bevy::prelude::*;
@@ -378,7 +380,7 @@ fn draw_main_panels_system(
 
     // --- System panel ---
     let mut colonization_actions = Vec::new();
-    side_panel::draw_system_panel(
+    system_panel::draw_system_panel(
         ctx,
         &mut selection.selected_system,
         &mut selection.selected_ship,
@@ -411,7 +413,7 @@ fn draw_main_panels_system(
     }
 
     // --- Ship panel ---
-    let ship_panel_actions = side_panel::draw_ship_panel(
+    let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
         &mut ships_query,
@@ -556,7 +558,7 @@ fn draw_main_panels_system(
         .iter()
         .map(|h| h.system)
         .collect();
-    side_panel::draw_context_menu(
+    context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,
         &mut selection.selected_ship,
