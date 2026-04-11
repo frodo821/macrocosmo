@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
+use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::species;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
@@ -16,6 +17,62 @@ use macrocosmo::ship::*;
 use macrocosmo::technology::{self, TechKnowledge};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
+
+/// Create a BuildingRegistry populated with the standard 6 building definitions for tests.
+pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
+    use macrocosmo::scripting::building_api::BuildingDefinition;
+    use std::collections::HashMap;
+    let mut registry = macrocosmo::colony::BuildingRegistry::default();
+    registry.insert(BuildingDefinition {
+        id: "mine".into(), name: "Mine".into(), description: String::new(),
+        minerals_cost: Amt::units(150), energy_cost: Amt::units(50), build_time: 10,
+        maintenance: Amt::new(0, 200),
+        production_bonus_minerals: Amt::units(3), production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        is_system_building: false, capabilities: HashMap::new(),
+    });
+    registry.insert(BuildingDefinition {
+        id: "power_plant".into(), name: "PowerPlant".into(), description: String::new(),
+        minerals_cost: Amt::units(50), energy_cost: Amt::units(150), build_time: 10,
+        maintenance: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::units(3),
+        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        is_system_building: false, capabilities: HashMap::new(),
+    });
+    registry.insert(BuildingDefinition {
+        id: "research_lab".into(), name: "ResearchLab".into(), description: String::new(),
+        minerals_cost: Amt::units(100), energy_cost: Amt::units(100), build_time: 15,
+        maintenance: Amt::new(0, 500),
+        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::units(2), production_bonus_food: Amt::ZERO,
+        is_system_building: true, capabilities: HashMap::new(),
+    });
+    registry.insert(BuildingDefinition {
+        id: "shipyard".into(), name: "Shipyard".into(), description: String::new(),
+        minerals_cost: Amt::units(300), energy_cost: Amt::units(200), build_time: 30,
+        maintenance: Amt::units(1),
+        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        is_system_building: true, capabilities: HashMap::new(),
+    });
+    registry.insert(BuildingDefinition {
+        id: "port".into(), name: "Port".into(), description: String::new(),
+        minerals_cost: Amt::units(400), energy_cost: Amt::units(300), build_time: 40,
+        maintenance: Amt::new(0, 500),
+        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        is_system_building: true, capabilities: HashMap::new(),
+    });
+    registry.insert(BuildingDefinition {
+        id: "farm".into(), name: "Farm".into(), description: String::new(),
+        minerals_cost: Amt::units(100), energy_cost: Amt::units(50), build_time: 20,
+        maintenance: Amt::new(0, 300),
+        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::units(5),
+        is_system_building: false, capabilities: HashMap::new(),
+    });
+    registry
+}
 
 /// Spawn a player empire entity with all empire-level components.
 /// Returns the empire entity.
@@ -56,6 +113,7 @@ pub fn test_app() -> App {
     app.init_resource::<species::SpeciesRegistry>();
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
+    app.insert_resource(create_test_building_registry());
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.init_resource::<macrocosmo::ship_design::HullRegistry>();
     app.add_message::<GameEvent>();
@@ -164,6 +222,7 @@ pub fn full_test_app() -> App {
     app.init_resource::<species::SpeciesRegistry>();
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
+    app.insert_resource(create_test_building_registry());
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.init_resource::<macrocosmo::ship_design::HullRegistry>();
     app.add_message::<GameEvent>();
@@ -373,7 +432,7 @@ pub fn spawn_test_colony(
     system_or_planet: Entity,
     minerals: Amt,
     energy: Amt,
-    buildings: Vec<Option<BuildingType>>,
+    buildings: Vec<Option<BuildingId>>,
 ) -> Entity {
     // Check if the entity is a Planet or a StarSystem; find the planet entity accordingly
     let (planet, system) = if world.get::<Planet>(system_or_planet).is_some() {
@@ -386,19 +445,22 @@ pub fn spawn_test_colony(
         (planet, system_or_planet)
     };
 
+    // Known system building ids
+    let system_building_ids = ["shipyard", "research_lab", "port"];
+
     // Separate buildings into planet and system buildings
     let mut planet_buildings = Vec::new();
-    let mut system_building_slots: Vec<Option<BuildingType>> = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
+    let mut system_building_slots: Vec<Option<BuildingId>> = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
     let mut sys_slot_idx = 0;
     for b in &buildings {
-        if let Some(bt) = b {
-            if bt.is_system_building() {
+        if let Some(bid) = b {
+            if system_building_ids.contains(&bid.as_str()) {
                 if sys_slot_idx < system_building_slots.len() {
-                    system_building_slots[sys_slot_idx] = Some(*bt);
+                    system_building_slots[sys_slot_idx] = Some(bid.clone());
                     sys_slot_idx += 1;
                 }
             } else {
-                planet_buildings.push(Some(*bt));
+                planet_buildings.push(Some(bid.clone()));
             }
         } else {
             planet_buildings.push(None);

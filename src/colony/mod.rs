@@ -5,7 +5,10 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes, Sovereignty};
 use crate::modifier::{ModifiedValue, Modifier};
-use crate::scripting::building_api::{parse_building_definitions, BuildingRegistry};
+// Re-export BuildingId and BuildingRegistry for consumers of the colony module
+pub use crate::scripting::building_api::{BuildingId, BuildingRegistry};
+
+use crate::scripting::building_api::parse_building_definitions;
 use crate::ship::{spawn_ship, Owner, Ship, ShipState};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
@@ -283,126 +286,28 @@ impl BuildOrder {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BuildingType {
-    Mine,         // +3 minerals/sd
-    PowerPlant,   // +3 energy/sd
-    ResearchLab,  // +2 research/sd
-    Shipyard,     // 2x build speed
-    Port,         // Reduces FTL travel time from this system
-    Farm,         // +5 food/hd
-}
-
-impl BuildingType {
-    pub fn production_bonus(&self) -> (Amt, Amt, Amt, Amt) {
-        // (minerals, energy, research, food) per hexadies
-        match self {
-            BuildingType::Mine => (Amt::units(3), Amt::ZERO, Amt::ZERO, Amt::ZERO),
-            BuildingType::PowerPlant => (Amt::ZERO, Amt::units(3), Amt::ZERO, Amt::ZERO),
-            BuildingType::ResearchLab => (Amt::ZERO, Amt::ZERO, Amt::units(2), Amt::ZERO),
-            BuildingType::Shipyard => (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO),
-            BuildingType::Port => (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO),
-            BuildingType::Farm => (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::units(5)),
-        }
-    }
-
-    pub fn build_cost(&self) -> (Amt, Amt) {
-        // (minerals, energy)
-        match self {
-            BuildingType::Mine => (Amt::units(150), Amt::units(50)),
-            BuildingType::PowerPlant => (Amt::units(50), Amt::units(150)),
-            BuildingType::ResearchLab => (Amt::units(100), Amt::units(100)),
-            BuildingType::Shipyard => (Amt::units(300), Amt::units(200)),
-            BuildingType::Port => (Amt::units(400), Amt::units(300)),
-            BuildingType::Farm => (Amt::units(100), Amt::units(50)),
-        }
-    }
-
-    pub fn build_time(&self) -> i64 {
-        // hexadies to build
-        match self {
-            BuildingType::Mine => 10,
-            BuildingType::PowerPlant => 10,
-            BuildingType::ResearchLab => 15,
-            BuildingType::Shipyard => 30,
-            BuildingType::Port => 40,
-            BuildingType::Farm => 20,
-        }
-    }
-
-    /// Energy maintenance cost per hexadies (#51)
-    pub fn maintenance_cost(&self) -> Amt {
-        match self {
-            BuildingType::Mine => Amt::new(0, 200),          // 0.2
-            BuildingType::PowerPlant => Amt::ZERO,            // self-powered
-            BuildingType::ResearchLab => Amt::new(0, 500),    // 0.5
-            BuildingType::Shipyard => Amt::units(1),          // 1.0
-            BuildingType::Port => Amt::new(0, 500),           // 0.5
-            BuildingType::Farm => Amt::new(0, 300),           // 0.3
-        }
-    }
-
-    /// Time to demolish (half of build time).
-    pub fn demolition_time(&self) -> i64 {
-        self.build_time() / 2
-    }
-
-    /// Resource refund from demolition (50% of build cost).
-    /// Returns (minerals_refund, energy_refund).
-    pub fn demolition_refund(&self) -> (Amt, Amt) {
-        let (m, e) = self.build_cost();
-        (Amt::milli(m.raw() / 2), Amt::milli(e.raw() / 2))
-    }
-
-    /// Short description for tooltips.
-    pub fn description(&self) -> &'static str {
-        match self {
-            BuildingType::Mine => "Extracts minerals from planetary deposits",
-            BuildingType::PowerPlant => "Generates energy from local resources",
-            BuildingType::ResearchLab => "Conducts scientific research",
-            BuildingType::Shipyard => "Constructs and refits ships",
-            BuildingType::Port => "Reduces FTL travel time from this system",
-            BuildingType::Farm => "Produces food to sustain population",
-        }
-    }
-
-    /// Display name for the building type.
-    pub fn name(&self) -> &'static str {
-        match self {
-            BuildingType::Mine => "Mine",
-            BuildingType::PowerPlant => "PowerPlant",
-            BuildingType::ResearchLab => "ResearchLab",
-            BuildingType::Shipyard => "Shipyard",
-            BuildingType::Port => "Port",
-            BuildingType::Farm => "Farm",
-        }
-    }
-
-    /// Whether this building type is a system-level building (Shipyard, ResearchLab, Port).
-    pub fn is_system_building(&self) -> bool {
-        matches!(self, BuildingType::Shipyard | BuildingType::ResearchLab | BuildingType::Port)
-    }
-
-    /// Whether this building type is a planet-level building (Mine, PowerPlant, Farm).
-    pub fn is_planet_building(&self) -> bool {
-        !self.is_system_building()
-    }
-}
+// BuildingType enum has been removed. Use BuildingId + BuildingRegistry instead.
+// BuildingId is defined in scripting::building_api.
 
 #[derive(Component)]
 pub struct Buildings {
-    pub slots: Vec<Option<BuildingType>>, // None = empty slot
+    pub slots: Vec<Option<BuildingId>>, // None = empty slot
 }
 
 impl Buildings {
+    /// Check if any slot contains a building with the given id.
+    pub fn has_building(&self, id: &str) -> bool {
+        self.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == id))
+    }
+
     /// #35: Check if any slot contains a Shipyard
     pub fn has_shipyard(&self) -> bool {
-        self.slots.iter().any(|s| *s == Some(BuildingType::Shipyard))
+        self.has_building("shipyard")
     }
 
     /// #46: Check if any slot contains a Port
     pub fn has_port(&self) -> bool {
-        self.slots.iter().any(|s| *s == Some(BuildingType::Port))
+        self.has_building("port")
     }
 }
 
@@ -413,7 +318,7 @@ pub struct BuildingQueue {
 }
 
 pub struct BuildingOrder {
-    pub building_type: BuildingType,
+    pub building_id: BuildingId,
     pub target_slot: usize,
     pub minerals_remaining: Amt,
     pub energy_remaining: Amt,
@@ -422,7 +327,7 @@ pub struct BuildingOrder {
 
 pub struct DemolitionOrder {
     pub target_slot: usize,
-    pub building_type: BuildingType,
+    pub building_id: BuildingId,
     pub time_remaining: i64,
     pub minerals_refund: Amt,
     pub energy_refund: Amt,
@@ -445,18 +350,23 @@ impl BuildingQueue {
 /// System-level buildings (Shipyard, ResearchLab, Port) placed on StarSystem entities.
 #[derive(Component)]
 pub struct SystemBuildings {
-    pub slots: Vec<Option<BuildingType>>,
+    pub slots: Vec<Option<BuildingId>>,
 }
 
 impl SystemBuildings {
+    /// Check if any slot contains a building with the given id.
+    pub fn has_building(&self, id: &str) -> bool {
+        self.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == id))
+    }
+
     /// Check if any slot contains a Shipyard.
     pub fn has_shipyard(&self) -> bool {
-        self.slots.iter().any(|s| *s == Some(BuildingType::Shipyard))
+        self.has_building("shipyard")
     }
 
     /// Check if any slot contains a Port.
     pub fn has_port(&self) -> bool {
-        self.slots.iter().any(|s| *s == Some(BuildingType::Port))
+        self.has_building("port")
     }
 }
 
@@ -558,18 +468,18 @@ pub fn spawn_capital_colony(
     let mut slots = vec![None; num_slots];
     // Capital starts with 1 Mine, 1 PowerPlant, and 1 Farm (#72) as planet buildings
     if num_slots > 0 {
-        slots[0] = Some(BuildingType::Mine);
+        slots[0] = Some(BuildingId::new("mine"));
     }
     if num_slots > 1 {
-        slots[1] = Some(BuildingType::PowerPlant);
+        slots[1] = Some(BuildingId::new("power_plant"));
     }
     if num_slots > 2 {
-        slots[2] = Some(BuildingType::Farm);
+        slots[2] = Some(BuildingId::new("farm"));
     }
 
     // System buildings: capital starts with 1 Shipyard (#35)
     let mut system_slots = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
-    system_slots[0] = Some(BuildingType::Shipyard);
+    system_slots[0] = Some(BuildingId::new("shipyard"));
     commands.spawn((
         Colony {
             planet: planet_entity,
@@ -674,6 +584,7 @@ pub fn tick_timed_effects(
 /// For empty slots, any previously set modifier is removed.
 /// Runs BEFORE tick_production so that `.final_value()` reflects current buildings.
 pub fn sync_building_modifiers(
+    registry: Res<BuildingRegistry>,
     mut query: Query<(&Buildings, &mut Production)>,
 ) {
     for (buildings, mut prod) in &mut query {
@@ -682,9 +593,13 @@ pub fn sync_building_modifiers(
             let id_e = format!("building_slot_{}_energy", slot_idx);
             let id_r = format!("building_slot_{}_research", slot_idx);
             let id_f = format!("building_slot_{}_food", slot_idx);
-            if let Some(bt) = slot {
-                let (m, e, r, f) = bt.production_bonus();
-                let label = format!("{} (slot {})", bt.name(), slot_idx);
+            if let Some(bid) = slot {
+                let Some(def) = registry.get(bid.as_str()) else {
+                    warn!("Building '{}' not found in registry", bid);
+                    continue;
+                };
+                let (m, e, r, f) = def.production_bonus();
+                let label = format!("{} (slot {})", def.name, slot_idx);
                 if m != Amt::ZERO {
                     prod.minerals_per_hexadies.push_modifier(Modifier {
                         id: id_m,
@@ -752,6 +667,7 @@ pub fn sync_building_modifiers(
 /// ship whose home_port matches the colony's system.
 /// Runs BEFORE tick_maintenance so that `.final_value()` is up-to-date.
 pub fn sync_maintenance_modifiers(
+    registry: Res<BuildingRegistry>,
     mut colonies: Query<(&Colony, &mut MaintenanceCost, Option<&Buildings>)>,
     ships: Query<(Entity, &Ship)>,
     stars: Query<&StarSystem>,
@@ -802,12 +718,13 @@ pub fn sync_maintenance_modifiers(
         if let Some(buildings) = buildings {
             for (slot_idx, slot) in buildings.slots.iter().enumerate() {
                 let id = format!("building_maint_{}", slot_idx);
-                if let Some(bt) = slot {
-                    let cost = bt.maintenance_cost();
+                if let Some(bid) = slot {
+                    let cost = registry.get(bid.as_str()).map(|d| d.maintenance).unwrap_or(Amt::ZERO);
+                    let name = registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
                     if cost != Amt::ZERO {
                         maint.energy_per_hexadies.push_modifier(Modifier {
                             id: id.clone(),
-                            label: format!("{} (slot {})", bt.name(), slot_idx),
+                            label: format!("{} (slot {})", name, slot_idx),
                             base_add: SignedAmt::from_amt(cost),
                             multiplier: SignedAmt::ZERO,
                             add: SignedAmt::ZERO,
@@ -861,6 +778,7 @@ pub fn sync_maintenance_modifiers(
 /// System buildings' maintenance costs are pushed into the first colony of each system.
 /// System buildings' production bonuses (e.g. ResearchLab) are also pushed to the first colony.
 pub fn sync_system_building_maintenance(
+    registry: Res<BuildingRegistry>,
     system_buildings_q: Query<(Entity, &SystemBuildings)>,
     mut colonies: Query<(&Colony, &mut MaintenanceCost, &mut Production)>,
     planets: Query<&Planet>,
@@ -885,12 +803,20 @@ pub fn sync_system_building_maintenance(
                 let prod_id_e = format!("sys_building_{}_energy", slot_idx);
                 let prod_id_r = format!("sys_building_{}_research", slot_idx);
                 let prod_id_f = format!("sys_building_{}_food", slot_idx);
-                if let Some(bt) = slot {
-                    let cost = bt.maintenance_cost();
+                if let Some(bid) = slot {
+                    let Some(def) = registry.get(bid.as_str()) else {
+                        maint.energy_per_hexadies.pop_modifier(&maint_id);
+                        prod.minerals_per_hexadies.pop_modifier(&prod_id_m);
+                        prod.energy_per_hexadies.pop_modifier(&prod_id_e);
+                        prod.research_per_hexadies.pop_modifier(&prod_id_r);
+                        prod.food_per_hexadies.pop_modifier(&prod_id_f);
+                        continue;
+                    };
+                    let cost = def.maintenance;
                     if cost != Amt::ZERO {
                         maint.energy_per_hexadies.push_modifier(Modifier {
                             id: maint_id,
-                            label: format!("{} (sys slot {})", bt.name(), slot_idx),
+                            label: format!("{} (sys slot {})", def.name, slot_idx),
                             base_add: SignedAmt::from_amt(cost),
                             multiplier: SignedAmt::ZERO,
                             add: SignedAmt::ZERO,
@@ -902,8 +828,8 @@ pub fn sync_system_building_maintenance(
                     }
 
                     // Production bonuses from system buildings (e.g. ResearchLab)
-                    let (m, e, r, f) = bt.production_bonus();
-                    let label = format!("{} (sys slot {})", bt.name(), slot_idx);
+                    let (m, e, r, f) = def.production_bonus();
+                    let label = format!("{} (sys slot {})", def.name, slot_idx);
                     if m != Amt::ZERO {
                         prod.minerals_per_hexadies.push_modifier(Modifier {
                             id: prod_id_m,
@@ -1328,15 +1254,15 @@ pub fn tick_building_queue(
             {
                 let completed = bq.queue.remove(0);
                 if completed.target_slot < buildings.slots.len() {
-                    buildings.slots[completed.target_slot] = Some(completed.building_type);
                     info!(
-                        "Building {:?} completed in slot {}",
-                        completed.building_type, completed.target_slot
+                        "Building '{}' completed in slot {}",
+                        completed.building_id, completed.target_slot
                     );
+                    buildings.slots[completed.target_slot] = Some(completed.building_id);
                 } else {
                     warn!(
-                        "Building {:?} completed but target slot {} is out of range (max {})",
-                        completed.building_type,
+                        "Building '{}' completed but target slot {} is out of range (max {})",
+                        completed.building_id,
                         completed.target_slot,
                         buildings.slots.len()
                     );
@@ -1357,8 +1283,9 @@ pub fn tick_building_queue(
                 let completed = bq.demolition_queue.remove(pos);
                 if slot_idx < buildings.slots.len() {
                     let building_name = buildings.slots[slot_idx]
-                        .map(|bt| bt.name())
-                        .unwrap_or("Unknown");
+                        .as_ref()
+                        .map(|bid| bid.0.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
                     buildings.slots[slot_idx] = None;
                     minerals_refunded = minerals_refunded.add(completed.minerals_refund);
                     energy_refunded = energy_refunded.add(completed.energy_refund);
@@ -1373,7 +1300,7 @@ pub fn tick_building_queue(
                     );
                     let mut payload = std::collections::HashMap::new();
                     payload.insert("cause".to_string(), "demolished".to_string());
-                    payload.insert("building_id".to_string(), building_name.to_string());
+                    payload.insert("building_id".to_string(), building_name);
                     payload.insert("slot".to_string(), slot_idx.to_string());
                     event_system.fire_event_with_payload(
                         "macrocosmo:building_lost",
@@ -1451,11 +1378,11 @@ pub fn tick_system_building_queue(
             {
                 let completed = bq.queue.remove(0);
                 if completed.target_slot < buildings.slots.len() {
-                    buildings.slots[completed.target_slot] = Some(completed.building_type);
                     info!(
-                        "System building {:?} completed in slot {}",
-                        completed.building_type, completed.target_slot
+                        "System building '{}' completed in slot {}",
+                        completed.building_id, completed.target_slot
                     );
+                    buildings.slots[completed.target_slot] = Some(completed.building_id);
                 }
             }
         }
@@ -1473,15 +1400,16 @@ pub fn tick_system_building_queue(
                 let completed = bq.demolition_queue.remove(pos);
                 if slot_idx < buildings.slots.len() {
                     let building_name = buildings.slots[slot_idx]
-                        .map(|bt| bt.name())
+                        .as_ref()
+                        .map(|bid| bid.0.as_str())
                         .unwrap_or("Unknown");
-                    buildings.slots[slot_idx] = None;
-                    minerals_refunded = minerals_refunded.add(completed.minerals_refund);
-                    energy_refunded = energy_refunded.add(completed.energy_refund);
                     info!(
                         "System building {} demolished in slot {}, refunded M:{} E:{}",
                         building_name, slot_idx, completed.minerals_refund, completed.energy_refund
                     );
+                    buildings.slots[slot_idx] = None;
+                    minerals_refunded = minerals_refunded.add(completed.minerals_refund);
+                    energy_refunded = energy_refunded.add(completed.energy_refund);
                     event_system.fire_event(
                         "building_demolished",
                         Some(system_entity),
@@ -1660,6 +1588,7 @@ pub fn update_sovereignty(
 /// Ship home_port reassignment to capital is now handled in sync_maintenance_modifiers.
 /// Runs after production so that newly generated energy is available.
 pub fn tick_maintenance(
+    registry: Res<BuildingRegistry>,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     colonies: Query<(&Colony, Option<&MaintenanceCost>, Option<&Buildings>)>,
@@ -1722,8 +1651,8 @@ pub fn tick_maintenance(
             let mut total = Amt::ZERO;
             if let Some(buildings) = buildings {
                 for slot in &buildings.slots {
-                    if let Some(building) = slot {
-                        total = total.add(building.maintenance_cost());
+                    if let Some(bid) = slot {
+                        total = total.add(registry.get(bid.as_str()).map(|d| d.maintenance).unwrap_or(Amt::ZERO));
                     }
                 }
             }
@@ -1971,69 +1900,9 @@ mod tests {
         assert!(!order.is_complete());
     }
 
-    #[test]
-    fn mine_production_bonus() {
-        let (m, e, r, f) = BuildingType::Mine.production_bonus();
-        assert_eq!(m, Amt::units(3));
-        assert_eq!(e, Amt::ZERO);
-        assert_eq!(r, Amt::ZERO);
-        assert_eq!(f, Amt::ZERO);
-    }
-
-    #[test]
-    fn power_plant_production_bonus() {
-        let (m, e, r, f) = BuildingType::PowerPlant.production_bonus();
-        assert_eq!(m, Amt::ZERO);
-        assert_eq!(e, Amt::units(3));
-        assert_eq!(r, Amt::ZERO);
-        assert_eq!(f, Amt::ZERO);
-    }
-
-    #[test]
-    fn research_lab_production_bonus() {
-        let (m, e, r, f) = BuildingType::ResearchLab.production_bonus();
-        assert_eq!(m, Amt::ZERO);
-        assert_eq!(e, Amt::ZERO);
-        assert_eq!(r, Amt::units(2));
-        assert_eq!(f, Amt::ZERO);
-    }
-
-    #[test]
-    fn shipyard_production_bonus() {
-        let (m, e, r, f) = BuildingType::Shipyard.production_bonus();
-        assert_eq!(m, Amt::ZERO);
-        assert_eq!(e, Amt::ZERO);
-        assert_eq!(r, Amt::ZERO);
-        assert_eq!(f, Amt::ZERO);
-    }
-
-    #[test]
-    fn mine_build_cost() {
-        assert_eq!(BuildingType::Mine.build_cost(), (Amt::units(150), Amt::units(50)));
-    }
-
-    #[test]
-    fn power_plant_build_cost() {
-        assert_eq!(BuildingType::PowerPlant.build_cost(), (Amt::units(50), Amt::units(150)));
-    }
-
-    #[test]
-    fn research_lab_build_cost() {
-        assert_eq!(BuildingType::ResearchLab.build_cost(), (Amt::units(100), Amt::units(100)));
-    }
-
-    #[test]
-    fn shipyard_build_cost() {
-        assert_eq!(BuildingType::Shipyard.build_cost(), (Amt::units(300), Amt::units(200)));
-    }
-
-    #[test]
-    fn build_times() {
-        assert_eq!(BuildingType::Mine.build_time(), 10);
-        assert_eq!(BuildingType::PowerPlant.build_time(), 10);
-        assert_eq!(BuildingType::ResearchLab.build_time(), 15);
-        assert_eq!(BuildingType::Shipyard.build_time(), 30);
-    }
+    // BuildingType enum tests replaced with BuildingId + BuildingRegistry tests.
+    // Production bonus, build cost, build time, and maintenance values are now
+    // tested in scripting::building_api tests (loaded from Lua).
 
     #[test]
     fn buildings_slots_empty() {
@@ -2049,45 +1918,18 @@ mod tests {
         let mut buildings = Buildings {
             slots: vec![None; 5],
         };
-        buildings.slots[0] = Some(BuildingType::Mine);
-        buildings.slots[2] = Some(BuildingType::PowerPlant);
+        buildings.slots[0] = Some(BuildingId::new("mine"));
+        buildings.slots[2] = Some(BuildingId::new("power_plant"));
 
-        assert_eq!(buildings.slots[0], Some(BuildingType::Mine));
+        assert_eq!(buildings.slots[0], Some(BuildingId::new("mine")));
         assert_eq!(buildings.slots[1], None);
-        assert_eq!(buildings.slots[2], Some(BuildingType::PowerPlant));
-    }
-
-    #[test]
-    fn buildings_total_production_bonus() {
-        let buildings = Buildings {
-            slots: vec![
-                Some(BuildingType::Mine),
-                Some(BuildingType::Mine),
-                Some(BuildingType::PowerPlant),
-                Some(BuildingType::ResearchLab),
-                None,
-            ],
-        };
-        let (mut m, mut e, mut r, mut f) = (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO);
-        for slot in &buildings.slots {
-            if let Some(bt) = slot {
-                let (bm, be, br, bf) = bt.production_bonus();
-                m = m.add(bm);
-                e = e.add(be);
-                r = r.add(br);
-                f = f.add(bf);
-            }
-        }
-        assert_eq!(m, Amt::units(6));
-        assert_eq!(e, Amt::units(3));
-        assert_eq!(r, Amt::units(2));
-        assert_eq!(f, Amt::ZERO);
+        assert_eq!(buildings.slots[2], Some(BuildingId::new("power_plant")));
     }
 
     #[test]
     fn has_shipyard_true() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard), None],
+            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None],
         };
         assert!(buildings.has_shipyard());
     }
@@ -2095,7 +1937,7 @@ mod tests {
     #[test]
     fn has_shipyard_false() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingType::Mine), Some(BuildingType::PowerPlant), None],
+            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("power_plant")), None],
         };
         assert!(!buildings.has_shipyard());
     }
@@ -2121,7 +1963,7 @@ mod tests {
     #[test]
     fn has_port_true() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Port), None],
+            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("port")), None],
         };
         assert!(buildings.has_port());
     }
@@ -2129,69 +1971,9 @@ mod tests {
     #[test]
     fn has_port_false() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard), None],
+            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None],
         };
         assert!(!buildings.has_port());
-    }
-
-    #[test]
-    fn port_build_cost() {
-        assert_eq!(BuildingType::Port.build_cost(), (Amt::units(400), Amt::units(300)));
-    }
-
-    #[test]
-    fn port_build_time() {
-        assert_eq!(BuildingType::Port.build_time(), 40);
-    }
-
-    #[test]
-    fn port_production_bonus() {
-        let (m, e, r, f) = BuildingType::Port.production_bonus();
-        assert_eq!(m, Amt::ZERO);
-        assert_eq!(e, Amt::ZERO);
-        assert_eq!(r, Amt::ZERO);
-        assert_eq!(f, Amt::ZERO);
-    }
-
-    #[test]
-    fn port_name() {
-        assert_eq!(BuildingType::Port.name(), "Port");
-    }
-
-    // --- #51: Maintenance cost tests ---
-
-    #[test]
-    fn building_maintenance_costs() {
-        assert_eq!(BuildingType::Mine.maintenance_cost(), Amt::new(0, 200));
-        assert_eq!(BuildingType::PowerPlant.maintenance_cost(), Amt::ZERO);
-        assert_eq!(BuildingType::ResearchLab.maintenance_cost(), Amt::new(0, 500));
-        assert_eq!(BuildingType::Shipyard.maintenance_cost(), Amt::units(1));
-        assert_eq!(BuildingType::Port.maintenance_cost(), Amt::new(0, 500));
-    }
-
-    #[test]
-    fn maintenance_deducts_from_stockpile() {
-        let buildings = Buildings {
-            slots: vec![
-                Some(BuildingType::Mine),       // 0.2
-                Some(BuildingType::Shipyard),    // 1.0
-                Some(BuildingType::PowerPlant),  // 0.0
-                None,
-            ],
-        };
-        let mut energy = Amt::units(100);
-        let delta = Amt::units(5);
-
-        let mut total_maintenance = Amt::ZERO;
-        for slot in &buildings.slots {
-            if let Some(bt) = slot {
-                total_maintenance = total_maintenance.add(bt.maintenance_cost());
-            }
-        }
-        assert_eq!(total_maintenance, Amt::new(1, 200));
-
-        energy = energy.sub(total_maintenance.mul_amt(delta));
-        assert_eq!(energy, Amt::units(94));
     }
 
     #[test]
@@ -2203,63 +1985,6 @@ mod tests {
         // total_maintenance * delta = 5, energy = 2, saturating sub => 0
         energy = energy.sub(total_maintenance.mul_amt(delta));
         assert_eq!(energy, Amt::ZERO);
-    }
-
-    // --- #72: Farm and food tests ---
-
-    #[test]
-    fn farm_production_bonus() {
-        let (m, e, r, f) = BuildingType::Farm.production_bonus();
-        assert_eq!(m, Amt::ZERO);
-        assert_eq!(e, Amt::ZERO);
-        assert_eq!(r, Amt::ZERO);
-        assert_eq!(f, Amt::units(5));
-    }
-
-    #[test]
-    fn farm_build_cost() {
-        assert_eq!(BuildingType::Farm.build_cost(), (Amt::units(100), Amt::units(50)));
-    }
-
-    #[test]
-    fn farm_build_time() {
-        assert_eq!(BuildingType::Farm.build_time(), 20);
-    }
-
-    #[test]
-    fn farm_maintenance_cost() {
-        assert_eq!(BuildingType::Farm.maintenance_cost(), Amt::new(0, 300));
-    }
-
-    #[test]
-    fn farm_name() {
-        assert_eq!(BuildingType::Farm.name(), "Farm");
-    }
-
-    #[test]
-    fn buildings_total_production_with_farm() {
-        let buildings = Buildings {
-            slots: vec![
-                Some(BuildingType::Mine),
-                Some(BuildingType::Farm),
-                Some(BuildingType::Farm),
-                None,
-            ],
-        };
-        let (mut m, mut e, mut r, mut f) = (Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO);
-        for slot in &buildings.slots {
-            if let Some(bt) = slot {
-                let (bm, be, br, bf) = bt.production_bonus();
-                m = m.add(bm);
-                e = e.add(be);
-                r = r.add(br);
-                f = f.add(bf);
-            }
-        }
-        assert_eq!(m, Amt::units(3));
-        assert_eq!(e, Amt::ZERO);
-        assert_eq!(r, Amt::ZERO);
-        assert_eq!(f, Amt::units(10));
     }
 
     #[test]
@@ -2299,27 +2024,12 @@ mod tests {
     }
 
     #[test]
-    fn demolition_time_is_half_build_time() {
-        assert_eq!(BuildingType::Mine.demolition_time(), BuildingType::Mine.build_time() / 2);
-        assert_eq!(BuildingType::Shipyard.demolition_time(), BuildingType::Shipyard.build_time() / 2);
-        assert_eq!(BuildingType::Farm.demolition_time(), BuildingType::Farm.build_time() / 2);
-    }
-
-    #[test]
-    fn demolition_refund_is_half_build_cost() {
-        let (m, e) = BuildingType::Mine.build_cost();
-        let (mr, er) = BuildingType::Mine.demolition_refund();
-        assert_eq!(mr, Amt::milli(m.raw() / 2));
-        assert_eq!(er, Amt::milli(e.raw() / 2));
-    }
-
-    #[test]
     fn building_queue_is_demolishing() {
         let bq = BuildingQueue {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
                 target_slot: 2,
-                building_type: BuildingType::Mine,
+                building_id: BuildingId::new("mine"),
                 time_remaining: 5,
                 minerals_refund: Amt::ZERO,
                 energy_refund: Amt::ZERO,
@@ -2332,29 +2042,18 @@ mod tests {
     }
 
     // --- #113: System vs Planet building classification ---
-
-    #[test]
-    fn building_type_classification() {
-        assert!(BuildingType::Mine.is_planet_building());
-        assert!(BuildingType::PowerPlant.is_planet_building());
-        assert!(BuildingType::Farm.is_planet_building());
-        assert!(!BuildingType::Mine.is_system_building());
-
-        assert!(BuildingType::Shipyard.is_system_building());
-        assert!(BuildingType::ResearchLab.is_system_building());
-        assert!(BuildingType::Port.is_system_building());
-        assert!(!BuildingType::Shipyard.is_planet_building());
-    }
+    // Classification is now Lua-driven via BuildingRegistry.is_system_building()
+    // Tested in scripting::building_api tests.
 
     #[test]
     fn system_buildings_has_shipyard() {
         let sb = SystemBuildings {
-            slots: vec![Some(BuildingType::Shipyard), None, None],
+            slots: vec![Some(BuildingId::new("shipyard")), None, None],
         };
         assert!(sb.has_shipyard());
 
         let sb_empty = SystemBuildings {
-            slots: vec![Some(BuildingType::Port), None, None],
+            slots: vec![Some(BuildingId::new("port")), None, None],
         };
         assert!(!sb_empty.has_shipyard());
     }
@@ -2362,12 +2061,12 @@ mod tests {
     #[test]
     fn system_buildings_has_port() {
         let sb = SystemBuildings {
-            slots: vec![None, Some(BuildingType::Port), None],
+            slots: vec![None, Some(BuildingId::new("port")), None],
         };
         assert!(sb.has_port());
 
         let sb_empty = SystemBuildings {
-            slots: vec![Some(BuildingType::Shipyard), None, None],
+            slots: vec![Some(BuildingId::new("shipyard")), None, None],
         };
         assert!(!sb_empty.has_port());
     }
@@ -2378,7 +2077,7 @@ mod tests {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
                 target_slot: 1,
-                building_type: BuildingType::Shipyard,
+                building_id: BuildingId::new("shipyard"),
                 time_remaining: 15,
                 minerals_refund: Amt::ZERO,
                 energy_refund: Amt::ZERO,

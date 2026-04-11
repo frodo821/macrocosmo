@@ -145,8 +145,8 @@ fn all_systems_no_query_conflict() {
         },
         Buildings {
             slots: vec![
-                Some(BuildingType::Mine),
-                Some(BuildingType::Shipyard),
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("shipyard")),
                 None,
                 None,
                 None,

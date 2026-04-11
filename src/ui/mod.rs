@@ -27,6 +27,7 @@ use crate::ship::{
     SurveyData,
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
+use crate::scripting::building_api::BuildingRegistry;
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{
@@ -325,6 +326,7 @@ fn draw_main_panels_system(
     ui_state: Res<UiState>,
     mut selection: MainPanelSelection,
     registries: MainPanelRegistries,
+    building_registry: Res<BuildingRegistry>,
     mut world: MainPanelWorldQueries,
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<(Entity, &StationedAt, Option<&AboardShip>), With<Player>>,
@@ -402,6 +404,7 @@ fn draw_main_panels_system(
         &registries.design_registry,
         &world.colonization_queues,
         &mut colonization_actions,
+        &building_registry,
     );
 
     for action in colonization_actions {

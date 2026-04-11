@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::amount::Amt;
 
 /// A building definition parsed from Lua `define_building { ... }` calls.
-/// Mirrors the hardcoded `BuildingType` methods but is data-driven.
+/// This is the single source of truth for all building properties at runtime.
 #[derive(Clone, Debug)]
 pub struct BuildingDefinition {
     pub id: String,
@@ -19,11 +19,40 @@ pub struct BuildingDefinition {
     pub production_bonus_energy: Amt,
     pub production_bonus_research: Amt,
     pub production_bonus_food: Amt,
+    /// Whether this building is placed on a StarSystem (true) or Colony/Planet (false).
+    pub is_system_building: bool,
+    /// Named capabilities for special behavior (e.g. "shipyard", "port").
+    pub capabilities: HashMap<String, CapabilityParams>,
+}
+
+/// Parameters for a named building capability.
+#[derive(Clone, Debug, Default)]
+pub struct CapabilityParams {
+    pub value: f64,
+}
+
+/// Strongly-typed building identifier. Wraps the string id from BuildingDefinition.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BuildingId(pub String);
+
+impl BuildingId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for BuildingId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 /// Registry of all building definitions loaded from Lua scripts.
-/// Parallel data source to the hardcoded `BuildingType` enum.
-/// Future work will migrate BuildingType consumers to read from this registry.
+/// Single source of truth for building properties at runtime.
 #[derive(Resource, Default)]
 pub struct BuildingRegistry {
     pub buildings: HashMap<String, BuildingDefinition>,
@@ -38,6 +67,59 @@ impl BuildingRegistry {
     /// Insert a building definition, replacing any existing definition with the same id.
     pub fn insert(&mut self, def: BuildingDefinition) {
         self.buildings.insert(def.id.clone(), def);
+    }
+
+    /// Return all planet-level building definitions (is_system_building == false).
+    pub fn planet_buildings(&self) -> Vec<&BuildingDefinition> {
+        let mut result: Vec<_> = self.buildings.values()
+            .filter(|b| !b.is_system_building)
+            .collect();
+        result.sort_by(|a, b| a.id.cmp(&b.id));
+        result
+    }
+
+    /// Return all system-level building definitions (is_system_building == true).
+    pub fn system_buildings(&self) -> Vec<&BuildingDefinition> {
+        let mut result: Vec<_> = self.buildings.values()
+            .filter(|b| b.is_system_building)
+            .collect();
+        result.sort_by(|a, b| a.id.cmp(&b.id));
+        result
+    }
+
+    /// Check if a building id represents a system building.
+    pub fn is_system_building(&self, id: &str) -> bool {
+        self.get(id).is_some_and(|b| b.is_system_building)
+    }
+}
+
+impl BuildingDefinition {
+    /// Production bonus tuple: (minerals, energy, research, food).
+    pub fn production_bonus(&self) -> (Amt, Amt, Amt, Amt) {
+        (
+            self.production_bonus_minerals,
+            self.production_bonus_energy,
+            self.production_bonus_research,
+            self.production_bonus_food,
+        )
+    }
+
+    /// Build cost tuple: (minerals, energy).
+    pub fn build_cost(&self) -> (Amt, Amt) {
+        (self.minerals_cost, self.energy_cost)
+    }
+
+    /// Time to demolish (half of build time).
+    pub fn demolition_time(&self) -> i64 {
+        self.build_time / 2
+    }
+
+    /// Resource refund from demolition (50% of build cost).
+    pub fn demolition_refund(&self) -> (Amt, Amt) {
+        (
+            Amt::milli(self.minerals_cost.raw() / 2),
+            Amt::milli(self.energy_cost.raw() / 2),
+        )
     }
 }
 
@@ -65,6 +147,9 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let (pb_minerals, pb_energy, pb_research, pb_food) =
             parse_production_bonus_table(&table)?;
 
+        let is_system_building: bool = table.get::<Option<bool>>("is_system_building")?.unwrap_or(false);
+        let capabilities = parse_capabilities_table(&table)?;
+
         result.push(BuildingDefinition {
             id,
             name,
@@ -77,6 +162,8 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             production_bonus_energy: pb_energy,
             production_bonus_research: pb_research,
             production_bonus_food: pb_food,
+            is_system_building,
+            capabilities,
         });
     }
 
@@ -132,6 +219,34 @@ fn parse_production_bonus_table(
         mlua::Value::Nil => Ok((Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO)),
         _ => Err(mlua::Error::RuntimeError(
             "Expected table or nil for 'production_bonus' field".to_string(),
+        )),
+    }
+}
+
+/// Parse the `capabilities = { name = { value = N }, ... }` sub-table.
+/// Also supports `capabilities = { name = true }` (value defaults to 0).
+fn parse_capabilities_table(table: &mlua::Table) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
+    let cap_value: mlua::Value = table.get("capabilities")?;
+    match cap_value {
+        mlua::Value::Table(cap_table) => {
+            let mut result = HashMap::new();
+            for pair in cap_table.pairs::<String, mlua::Value>() {
+                let (key, val) = pair?;
+                let params = match val {
+                    mlua::Value::Table(param_table) => {
+                        let value: f64 = param_table.get::<Option<f64>>("value")?.unwrap_or(0.0);
+                        CapabilityParams { value }
+                    }
+                    mlua::Value::Boolean(true) => CapabilityParams::default(),
+                    _ => CapabilityParams::default(),
+                };
+                result.insert(key, params);
+            }
+            Ok(result)
+        }
+        mlua::Value::Nil => Ok(HashMap::new()),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected table or nil for 'capabilities' field".to_string(),
         )),
     }
 }
@@ -244,6 +359,8 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            is_system_building: false,
+            capabilities: HashMap::new(),
         });
 
         let mine = registry.get("mine").unwrap();
@@ -264,6 +381,8 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::units(5),
+            is_system_building: false,
+            capabilities: HashMap::new(),
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -315,7 +434,7 @@ mod tests {
         assert_eq!(farm.name, "Farm");
         assert_eq!(farm.production_bonus_food, Amt::units(5));
 
-        // Verify Shipyard has no production bonus
+        // Verify Shipyard has no production bonus and is a system building
         let shipyard = registry.get("shipyard").expect("Shipyard should be in registry");
         assert_eq!(shipyard.name, "Shipyard");
         assert_eq!(shipyard.production_bonus_minerals, Amt::ZERO);
@@ -323,6 +442,16 @@ mod tests {
         assert_eq!(shipyard.production_bonus_research, Amt::ZERO);
         assert_eq!(shipyard.production_bonus_food, Amt::ZERO);
         assert_eq!(shipyard.maintenance, Amt::units(1));
+        assert!(shipyard.is_system_building);
+        assert!(shipyard.capabilities.contains_key("shipyard"));
+
+        // Verify Mine is a planet building
+        assert!(!mine.is_system_building);
+
+        // Verify Port has port capability
+        let port = registry.get("port").expect("Port should be in registry");
+        assert!(port.is_system_building);
+        assert!(port.capabilities.contains_key("port"));
     }
 
     #[test]
@@ -341,6 +470,8 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            is_system_building: false,
+            capabilities: HashMap::new(),
         });
 
         // Replace with updated values
@@ -356,6 +487,8 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            is_system_building: false,
+            capabilities: HashMap::new(),
         });
 
         assert_eq!(registry.buildings.len(), 1);
