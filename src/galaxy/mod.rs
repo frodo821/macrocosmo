@@ -387,55 +387,64 @@ pub fn load_galaxy_types(
     }
 }
 
-pub fn generate_galaxy(
-    mut commands: Commands,
-    star_registry: Res<StarTypeRegistry>,
-    planet_registry: Res<PlanetTypeRegistry>,
-) {
-    let mut rng = rand::rng();
-    let num_systems = 150;
-    let num_arms = 3;
-    let galaxy_radius = 80.0_f64; // light-years
-    let arm_twist = 2.5; // how tightly the arms spiral
-    let arm_spread = 0.4; // angular spread of each arm
-    let min_distance = 2.0_f64;
-    let max_neighbor_distance = 8.0_f64; // isolation threshold
+/// Galaxy generation parameters.
+struct GalaxyParams {
+    num_systems: usize,
+    num_arms: usize,
+    galaxy_radius: f64,
+    arm_twist: f64,
+    arm_spread: f64,
+    min_distance: f64,
+    max_neighbor_distance: f64,
+}
 
-    // Use registries or fallback defaults
-    let star_types = if star_registry.types.is_empty() {
-        default_star_types()
-    } else {
-        star_registry.types.clone()
-    };
-    let planet_types = if planet_registry.types.is_empty() {
-        default_planet_types()
-    } else {
-        planet_registry.types.clone()
-    };
+/// An empty star system produced by Phase A (position + star type, no planets yet).
+struct EmptySystem {
+    name: String,
+    position: [f64; 3],
+    star_type_idx: usize,
+}
 
-    let star_weights: Vec<f64> = star_types.iter().map(|s| s.weight).collect();
-    let planet_weights: Vec<f64> = planet_types.iter().map(|p| p.weight).collect();
+/// Capital assignments produced by Phase B.
+struct CapitalAssignments {
+    /// Index into the systems vec that is the capital (always 0 after swap).
+    capital_idx: usize,
+}
 
+/// Planet data generated during Phase C initialization.
+struct PlanetData {
+    type_idx: usize,
+    attrs: SystemAttributes,
+}
+
+/// Phase A: Generate star system positions (spiral arms + bridge pass) and assign star types.
+/// Returns a Vec of EmptySystem — no ECS entities are spawned yet.
+fn generate_empty_systems(
+    rng: &mut impl Rng,
+    params: &GalaxyParams,
+    star_weights: &[f64],
+) -> Vec<EmptySystem> {
     let mut systems: Vec<(String, [f64; 3])> = Vec::new();
     let mut attempts = 0;
 
-    while systems.len() < num_systems && attempts < num_systems * 50 {
+    while systems.len() < params.num_systems && attempts < params.num_systems * 50 {
         attempts += 1;
 
         // Choose a random arm
-        let arm = rng.random_range(0..num_arms) as f64;
-        let arm_base_angle = arm * std::f64::consts::TAU / num_arms as f64;
+        let arm = rng.random_range(0..params.num_arms) as f64;
+        let arm_base_angle = arm * std::f64::consts::TAU / params.num_arms as f64;
 
         // Random radius (biased toward middle, not too close to center)
-        let r = rng.random_range(3.0_f64..galaxy_radius);
+        let r = rng.random_range(3.0_f64..params.galaxy_radius);
         // Apply sqrt for more uniform radial distribution, but with slight center bias
-        let r = r.sqrt() / galaxy_radius.sqrt() * galaxy_radius;
+        let r = r.sqrt() / params.galaxy_radius.sqrt() * params.galaxy_radius;
 
         // Spiral angle increases with distance
-        let spiral_angle = arm_base_angle + r / galaxy_radius * arm_twist * std::f64::consts::TAU;
+        let spiral_angle =
+            arm_base_angle + r / params.galaxy_radius * params.arm_twist * std::f64::consts::TAU;
 
         // Add random spread
-        let angle_noise = rng.random_range(-arm_spread..arm_spread);
+        let angle_noise = rng.random_range(-params.arm_spread..params.arm_spread);
         let final_angle = spiral_angle + angle_noise;
 
         // Some extra noise in radius for natural look
@@ -451,7 +460,7 @@ pub fn generate_galaxy(
             let dx = pos[0] - x;
             let dy = pos[1] - y;
             let dz = pos[2] - z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < min_distance
+            (dx * dx + dy * dy + dz * dz).sqrt() < params.min_distance
         });
         if too_close {
             continue;
@@ -489,7 +498,9 @@ pub fn generate_galaxy(
                     nearest_j = j;
                 }
             }
-            if nearest_dist > max_neighbor_distance && nearest_dist > worst_nearest_dist {
+            if nearest_dist > params.max_neighbor_distance
+                && nearest_dist > worst_nearest_dist
+            {
                 worst_nearest_dist = nearest_dist;
                 worst_nearest_idx = nearest_j;
                 worst_idx = Some(i);
@@ -513,7 +524,7 @@ pub fn generate_galaxy(
             let dx = pos[0] - mid[0];
             let dy = pos[1] - mid[1];
             let dz = pos[2] - mid[2];
-            (dx * dx + dy * dy + dz * dz).sqrt() < min_distance
+            (dx * dx + dy * dy + dz * dz).sqrt() < params.min_distance
         });
         if !too_close {
             let name = format!("System-{:03}", systems.len());
@@ -521,14 +532,37 @@ pub fn generate_galaxy(
         }
     }
 
-    // Choose capital: find system closest to ~20 ly from center (1/3 galaxy radius)
+    // Assign a star type to each system and build the result
+    systems
+        .into_iter()
+        .map(|(name, position)| {
+            let star_type_idx = weighted_random_index(rng, star_weights).unwrap_or(0);
+            EmptySystem {
+                name,
+                position,
+                star_type_idx,
+            }
+        })
+        .collect()
+}
+
+/// Phase B: Choose which systems become faction capitals.
+/// Currently selects the single player capital (~20 ly from center) and swaps it to index 0.
+/// Returns capital assignments without modifying ECS state.
+fn choose_faction_capitals(systems: &mut Vec<EmptySystem>) -> CapitalAssignments {
     let target_capital_radius = 20.0_f64;
     let capital_idx = systems
         .iter()
         .enumerate()
-        .min_by(|(_, (_, a)), (_, (_, b))| {
-            let ra = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-            let rb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+        .min_by(|(_, a), (_, b)| {
+            let ra = (a.position[0] * a.position[0]
+                + a.position[1] * a.position[1]
+                + a.position[2] * a.position[2])
+                .sqrt();
+            let rb = (b.position[0] * b.position[0]
+                + b.position[1] * b.position[1]
+                + b.position[2] * b.position[2])
+                .sqrt();
             let da = (ra - target_capital_radius).abs();
             let db = (rb - target_capital_radius).abs();
             da.partial_cmp(&db).unwrap()
@@ -539,42 +573,43 @@ pub fn generate_galaxy(
     // Swap capital to index 0 so the rest of the code treats systems[0] as capital
     systems.swap(0, capital_idx);
 
+    CapitalAssignments { capital_idx: 0 }
+}
+
+/// Phase C: Initialize all systems — generate planets, spawn ECS entities, place hostiles.
+fn initialize_systems(
+    commands: &mut Commands,
+    rng: &mut impl Rng,
+    systems: &[EmptySystem],
+    capitals: &CapitalAssignments,
+    params: &GalaxyParams,
+    star_types: &[StarTypeDefinition],
+    planet_types: &[PlanetTypeDefinition],
+    planet_weights: &[f64],
+) {
     let actual_count = systems.len();
 
-    // Assign a star type to each system
-    let mut system_star_types: Vec<usize> = Vec::with_capacity(actual_count);
-    for _ in 0..actual_count {
-        let idx = weighted_random_index(&mut rng, &star_weights).unwrap_or(0);
-        system_star_types.push(idx);
-    }
-
-    // For the "ensure habitable neighbours" pass we need to track per-system attributes
-    // of the first planet. We'll generate all planet data in a second pass.
-    // First, determine planet counts per system.
+    // Determine planet counts per system
     let mut planet_counts: Vec<usize> = Vec::with_capacity(actual_count);
-    for (i, &star_idx) in system_star_types.iter().enumerate() {
-        let star = &star_types[star_idx];
-        let count = if i == 0 {
+    for (i, sys) in systems.iter().enumerate() {
+        let star = &star_types[sys.star_type_idx];
+        let count = if i == capitals.capital_idx {
             // Capital always gets at least 2 planets
-            poisson_sample(&mut rng, star.planet_lambda, star.max_planets).max(2)
+            poisson_sample(rng, star.planet_lambda, star.max_planets).max(2)
         } else {
-            poisson_sample(&mut rng, star.planet_lambda, star.max_planets)
+            poisson_sample(rng, star.planet_lambda, star.max_planets)
         };
         planet_counts.push(count);
     }
 
     // Generate planet data: Vec of (planet_type_idx, attributes) per system
-    struct PlanetData {
-        type_idx: usize,
-        attrs: SystemAttributes,
-    }
     let mut all_planets: Vec<Vec<PlanetData>> = Vec::with_capacity(actual_count);
-    for (i, &star_idx) in system_star_types.iter().enumerate() {
-        let star = &star_types[star_idx];
+    for (i, sys) in systems.iter().enumerate() {
+        let star = &star_types[sys.star_type_idx];
         let count = planet_counts[i];
         let mut planets = Vec::with_capacity(count);
         for p in 0..count {
-            if i == 0 && p == 0 {
+            if i == capitals.capital_idx && p == 0 {
                 // Capital's first planet: use capital attributes and a terrestrial type
                 let type_idx = planet_types
                     .iter()
@@ -582,13 +617,12 @@ pub fn generate_galaxy(
                     .unwrap_or(0);
                 planets.push(PlanetData {
                     type_idx,
-                    attrs: capital_attributes(&mut rng),
+                    attrs: capital_attributes(rng),
                 });
             } else {
-                let type_idx =
-                    weighted_random_index(&mut rng, &planet_weights).unwrap_or(0);
+                let type_idx = weighted_random_index(rng, planet_weights).unwrap_or(0);
                 let pt = &planet_types[type_idx];
-                let attrs = planet_attributes_from_type(&mut rng, pt, star.habitability_bonus);
+                let attrs = planet_attributes_from_type(rng, pt, star.habitability_bonus);
                 planets.push(PlanetData { type_idx, attrs });
             }
         }
@@ -596,10 +630,10 @@ pub fn generate_galaxy(
     }
 
     // Ensure at least 2 habitable neighbours within 10 ly of capital
-    let capital_pos = systems[0].1;
+    let capital_pos = systems[capitals.capital_idx].position;
     let mut neighbours: Vec<(usize, f64)> = (1..actual_count)
         .map(|i| {
-            let p = systems[i].1;
+            let p = systems[i].position;
             let dx = p[0] - capital_pos[0];
             let dy = p[1] - capital_pos[1];
             let dz = p[2] - capital_pos[2];
@@ -637,8 +671,7 @@ pub fn generate_galaxy(
             // Fix the first planet to be Adequate
             if let Some(first) = all_planets[idx].first_mut() {
                 first.attrs.habitability = Habitability::Adequate;
-                first.attrs.max_building_slots =
-                    building_slots_for(Habitability::Adequate, &mut rng);
+                first.attrs.max_building_slots = building_slots_for(Habitability::Adequate, rng);
                 fixed += 1;
             }
         }
@@ -652,13 +685,12 @@ pub fn generate_galaxy(
     // Track spawned system entities and positions for hostile spawning
     let mut spawned_systems: Vec<(Entity, [f64; 3], bool)> = Vec::with_capacity(actual_count);
 
-    for (i, (name, position)) in systems.iter().enumerate() {
-        let is_capital = i == 0;
-        let star_idx = system_star_types[i];
-        let star_type = &star_types[star_idx];
+    for (i, sys) in systems.iter().enumerate() {
+        let is_capital = i == capitals.capital_idx;
+        let star_type = &star_types[sys.star_type_idx];
 
         let star = StarSystem {
-            name: name.clone(),
+            name: sys.name.clone(),
             surveyed: is_capital,
             is_capital,
             star_type: star_type.id.clone(),
@@ -670,7 +702,7 @@ pub fn generate_galaxy(
 
         let entity = commands.spawn((
             star,
-            Position::from(*position),
+            Position::from(sys.position),
             sovereignty,
             TechKnowledge::default(),
             SystemModifiers::default(),
@@ -678,7 +710,7 @@ pub fn generate_galaxy(
         ));
         let star_entity = entity.id();
 
-        spawned_systems.push((star_entity, *position, is_capital));
+        spawned_systems.push((star_entity, sys.position, is_capital));
 
         if gas_indices.contains(&i) && !is_capital {
             commands.entity(star_entity).insert(ObscuredByGas);
@@ -686,7 +718,7 @@ pub fn generate_galaxy(
 
         // Spawn planets for this star system
         for (p, planet_data) in all_planets[i].iter().enumerate() {
-            let planet_name = format!("{} {}", name, roman_numeral(p + 1));
+            let planet_name = format!("{} {}", sys.name, roman_numeral(p + 1));
             let planet_type = &planet_types[planet_data.type_idx];
 
             commands.spawn((
@@ -696,13 +728,13 @@ pub fn generate_galaxy(
                     planet_type: planet_type.id.clone(),
                 },
                 planet_data.attrs.clone(),
-                Position::from(*position), // same position as star for now
+                Position::from(sys.position), // same position as star for now
             ));
         }
     }
 
     commands.insert_resource(GalaxyConfig {
-        radius: galaxy_radius,
+        radius: params.galaxy_radius,
         num_systems: actual_count,
     });
 
@@ -730,7 +762,7 @@ pub fn generate_galaxy(
 
         // Scale strength by distance from galaxy center
         let center_dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
-        let strength_mult = 1.0 + (center_dist / galaxy_radius) * 2.0;
+        let strength_mult = 1.0 + (center_dist / params.galaxy_radius) * 2.0;
 
         let hostile_type = if rng.random::<f64>() < 0.7 {
             HostileType::SpaceCreature
@@ -761,6 +793,56 @@ pub fn generate_galaxy(
 
     info!(
         "Galaxy generated: {} star systems (spiral, {} arms), {} hostile presences",
-        actual_count, num_arms, hostile_count
+        actual_count, params.num_arms, hostile_count
+    );
+}
+
+pub fn generate_galaxy(
+    mut commands: Commands,
+    star_registry: Res<StarTypeRegistry>,
+    planet_registry: Res<PlanetTypeRegistry>,
+) {
+    let mut rng = rand::rng();
+    let params = GalaxyParams {
+        num_systems: 150,
+        num_arms: 3,
+        galaxy_radius: 80.0,
+        arm_twist: 2.5,
+        arm_spread: 0.4,
+        min_distance: 2.0,
+        max_neighbor_distance: 8.0,
+    };
+
+    // Use registries or fallback defaults
+    let star_types = if star_registry.types.is_empty() {
+        default_star_types()
+    } else {
+        star_registry.types.clone()
+    };
+    let planet_types = if planet_registry.types.is_empty() {
+        default_planet_types()
+    } else {
+        planet_registry.types.clone()
+    };
+
+    let star_weights: Vec<f64> = star_types.iter().map(|s| s.weight).collect();
+    let planet_weights: Vec<f64> = planet_types.iter().map(|p| p.weight).collect();
+
+    // Phase A: Generate empty star systems (positions + star types only)
+    let mut systems = generate_empty_systems(&mut rng, &params, &star_weights);
+
+    // Phase B: Choose faction capitals
+    let capitals = choose_faction_capitals(&mut systems);
+
+    // Phase C: Initialize all systems (planets, resources, hostiles, ECS entities)
+    initialize_systems(
+        &mut commands,
+        &mut rng,
+        &systems,
+        &capitals,
+        &params,
+        &star_types,
+        &planet_types,
+        &planet_weights,
     );
 }
