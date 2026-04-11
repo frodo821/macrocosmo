@@ -672,3 +672,267 @@ fn test_uncolonized_system_no_propagation() {
         "No propagation should be created for uncolonized systems"
     );
 }
+
+// #176: Snapshot extended fields tests
+
+#[test]
+fn test_knowledge_snapshot_hostile_presence() {
+    use macrocosmo::galaxy::HostilePresence;
+
+    let mut app = test_app();
+
+    // Player at origin
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Remote system at 1 LY with hostiles
+    let sys_hostile = spawn_test_system(
+        app.world_mut(),
+        "Hostile System",
+        [1.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    // Spawn player
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Spawn hostile presence at remote system
+    app.world_mut().spawn(HostilePresence {
+        system: sys_hostile,
+        strength: 5.0,
+        hp: 100.0,
+        max_hp: 100.0,
+        hostile_type: macrocosmo::galaxy::HostileType::SpaceCreature,
+        evasion: 0.0,
+    });
+
+    // Advance past light delay (1 LY = 60 hexadies)
+    advance_time(&mut app, 61);
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let knowledge = store.get(sys_hostile).unwrap();
+
+    assert!(knowledge.data.has_hostile, "Should have hostile presence in snapshot");
+    assert!((knowledge.data.hostile_strength - 5.0).abs() < 0.01, "Hostile strength should be 5.0");
+}
+
+#[test]
+fn test_knowledge_snapshot_system_attributes() {
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    // Remote system at 1 LY with specific attributes
+    let sys_remote = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [1.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Advance past light delay
+    advance_time(&mut app, 61);
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let knowledge = store.get(sys_remote).unwrap();
+
+    // spawn_test_system creates planets with SystemAttributes containing the given habitability
+    assert_eq!(knowledge.data.habitability, Some(Habitability::Adequate));
+}
+
+// #175: Ship knowledge tests
+
+#[test]
+fn test_ship_knowledge_propagation() {
+    use macrocosmo::knowledge::ShipSnapshotState;
+
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    let sys_remote = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [1.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Spawn ship at remote system
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Scout-1",
+        "explorer_mk1",
+        sys_remote,
+        [1.0, 0.0, 0.0],
+    );
+
+    // Before light delay: no ship knowledge
+    app.update();
+    {
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        assert!(
+            store.get_ship(ship_entity).is_none(),
+            "Should have no ship knowledge before light delay"
+        );
+    }
+
+    // After light delay (1 LY = 60 hexadies)
+    advance_time(&mut app, 61);
+
+    {
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        let ship_snap = store.get_ship(ship_entity);
+        assert!(ship_snap.is_some(), "Should have ship knowledge after light delay");
+        let snap = ship_snap.unwrap();
+        assert_eq!(snap.name, "Scout-1");
+        assert_eq!(snap.design_id, "explorer_mk1");
+        assert_eq!(snap.last_known_state, ShipSnapshotState::Docked);
+        assert_eq!(snap.last_known_system, Some(sys_remote));
+    }
+}
+
+#[test]
+fn test_ship_knowledge_local_system_immediate() {
+    use macrocosmo::knowledge::ShipSnapshotState;
+
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Spawn ship at capital (local system — 0 light delay)
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Local-Ship",
+        "explorer_mk1",
+        sys_capital,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Even at time 0, local ships should be known immediately
+    app.update();
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let ship_snap = store.get_ship(ship_entity);
+    assert!(ship_snap.is_some(), "Local ship should be known immediately");
+    assert_eq!(ship_snap.unwrap().last_known_state, ShipSnapshotState::Docked);
+}
+
+#[test]
+fn test_knowledge_store_ship_update_newer_replaces() {
+    use macrocosmo::knowledge::{ShipSnapshot, ShipSnapshotState};
+    use bevy::ecs::world::World;
+
+    let mut world = World::new();
+    let entity = world.spawn_empty().id();
+    let system_entity = world.spawn_empty().id();
+
+    let mut store = KnowledgeStore::default();
+
+    store.update_ship(ShipSnapshot {
+        entity,
+        name: "Ship".into(),
+        design_id: "test".into(),
+        last_known_state: ShipSnapshotState::Docked,
+        last_known_system: Some(system_entity),
+        observed_at: 10,
+        hp: 100.0,
+        hp_max: 100.0,
+    });
+
+    store.update_ship(ShipSnapshot {
+        entity,
+        name: "Ship".into(),
+        design_id: "test".into(),
+        last_known_state: ShipSnapshotState::InTransit,
+        last_known_system: None,
+        observed_at: 20,
+        hp: 80.0,
+        hp_max: 100.0,
+    });
+
+    let snap = store.get_ship(entity).unwrap();
+    assert_eq!(snap.observed_at, 20);
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransit);
+}
+
+#[test]
+fn test_knowledge_store_ship_older_does_not_replace() {
+    use macrocosmo::knowledge::{ShipSnapshot, ShipSnapshotState};
+    use bevy::ecs::world::World;
+
+    let mut world = World::new();
+    let entity = world.spawn_empty().id();
+    let system_entity = world.spawn_empty().id();
+
+    let mut store = KnowledgeStore::default();
+
+    store.update_ship(ShipSnapshot {
+        entity,
+        name: "Ship".into(),
+        design_id: "test".into(),
+        last_known_state: ShipSnapshotState::InTransit,
+        last_known_system: None,
+        observed_at: 20,
+        hp: 80.0,
+        hp_max: 100.0,
+    });
+
+    store.update_ship(ShipSnapshot {
+        entity,
+        name: "Ship".into(),
+        design_id: "test".into(),
+        last_known_state: ShipSnapshotState::Docked,
+        last_known_system: Some(system_entity),
+        observed_at: 10,
+        hp: 100.0,
+        hp_max: 100.0,
+    });
+
+    let snap = store.get_ship(entity).unwrap();
+    assert_eq!(snap.observed_at, 20, "Newer observation should not be replaced by older");
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransit);
+}

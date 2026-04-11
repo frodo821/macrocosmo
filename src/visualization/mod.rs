@@ -220,6 +220,7 @@ fn star_color(star: &StarSystem, colonized: bool, obscured: bool) -> Color {
 
 // #17: Enhanced update_star_colors with KnowledgeStore-based alpha fading
 // #40: Also handles zoom-responsive sizing and glow color updates
+// #176: Uses KnowledgeStore for remote system colonized status
 fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
     mut visuals: Query<(&StarVisual, &mut Sprite, Option<&StarGlow>, Option<&BaseStarSize>)>,
@@ -228,15 +229,19 @@ fn update_star_colors(
     planets: Query<&Planet>,
     clock: Res<GameClock>,
     camera_q: Query<&Projection, With<Camera2d>>,
+    player_q: Query<&StationedAt, With<Player>>,
 ) {
     let Ok(knowledge) = empire_q.single() else {
         return;
     };
-    // Build colonized systems set
-    let colonized_systems: std::collections::HashSet<Entity> = colonies
+    let player_system = player_q.iter().next().map(|s| s.system);
+
+    // Build colonized systems set for local system only (real-time)
+    let local_colonized: std::collections::HashSet<Entity> = colonies
         .iter()
         .filter_map(|c| c.system(&planets))
         .collect();
+
     // Get the current camera scale for zoom-responsive sizing
     let camera_scale = camera_q
         .iter()
@@ -254,8 +259,30 @@ fn update_star_colors(
 
     for (vis, mut sprite, glow, base_size) in &mut visuals {
         if let Ok((_, star, obscured)) = stars.get(vis.system_entity) {
-            let is_colonized = colonized_systems.contains(&vis.system_entity);
-            let base_color = star_color(star, is_colonized, obscured.is_some());
+            // #176: Local system uses real-time colonized status, remote uses KnowledgeStore
+            let is_colonized = if player_system == Some(vis.system_entity) {
+                local_colonized.contains(&vis.system_entity)
+            } else {
+                knowledge.get(vis.system_entity)
+                    .map(|k| k.data.colonized)
+                    .unwrap_or(false)
+            };
+            // #176: For remote systems, use knowledge-based survey status
+            let effective_surveyed = if player_system == Some(vis.system_entity) {
+                star.surveyed
+            } else {
+                knowledge.get(vis.system_entity)
+                    .map(|k| k.data.surveyed)
+                    .unwrap_or(star.surveyed)
+            };
+            // Create a temporary view of the star with knowledge-based survey status
+            let effective_star = StarSystem {
+                name: star.name.clone(),
+                star_type: star.star_type.clone(),
+                surveyed: effective_surveyed,
+                is_capital: star.is_capital,
+            };
+            let base_color = star_color(&effective_star, is_colonized, obscured.is_some());
             let alpha_multiplier = match knowledge.info_age(vis.system_entity, clock.elapsed) {
                 None => 1.0, // No knowledge: keep base color as-is (already dim for unknown)
                 Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
@@ -347,7 +374,7 @@ fn draw_galaxy_overlay(
     selected: Res<SelectedSystem>,
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
-    empire_params_q: Query<&GlobalParams, With<PlayerEmpire>>,
+    empire_params_q: Query<(&GlobalParams, &KnowledgeStore), With<PlayerEmpire>>,
     system_buildings: Query<(Entity, &SystemBuildings)>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
@@ -377,13 +404,14 @@ fn draw_galaxy_overlay(
         );
     }
 
-    let Ok(global_params) = empire_params_q.single() else {
+    let Ok((global_params, knowledge)) = empire_params_q.single() else {
         return;
     };
     let Ok(stationed) = player_q.single() else {
         return;
     };
-    let Ok((_, _player_star, player_pos)) = stars.get(stationed.system) else {
+    let player_system = stationed.system;
+    let Ok((_, _player_star, player_pos)) = stars.get(player_system) else {
         return;
     };
 
@@ -398,15 +426,22 @@ fn draw_galaxy_overlay(
         Color::srgba(1.0, 0.84, 0.0, pulse),
     );
 
-    // Build colonized systems set
-    let colonized_system_set: std::collections::HashSet<Entity> = colonies
+    // #176: Build colonized systems set using KnowledgeStore for remote, real-time for local
+    let local_colonized: std::collections::HashSet<Entity> = colonies
         .iter()
         .filter_map(|(c, _)| c.system(&planets))
         .collect();
 
     // Draw rings around colonized stars
     for (entity, star, star_pos) in &stars {
-        if colonized_system_set.contains(&entity) && !star.is_capital {
+        let is_colonized = if entity == player_system {
+            local_colonized.contains(&entity)
+        } else {
+            knowledge.get(entity)
+                .map(|k| k.data.colonized)
+                .unwrap_or(false)
+        };
+        if is_colonized && !star.is_capital {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
             gizmos.circle_2d(
@@ -442,8 +477,16 @@ fn draw_galaxy_overlay(
         Color::srgba(1.0, 0.6, 0.0, horizon_pulse),
     );
 
-    for (_, star, star_pos) in &stars {
-        if star.surveyed && !star.is_capital {
+    // #176: Survey lines use KnowledgeStore for remote systems
+    for (entity, star, star_pos) in &stars {
+        let is_surveyed = if entity == player_system {
+            star.surveyed
+        } else {
+            knowledge.get(entity)
+                .map(|k| k.data.surveyed)
+                .unwrap_or(false)
+        };
+        if is_surveyed && !star.is_capital {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
             gizmos.line_2d(
@@ -493,45 +536,84 @@ fn draw_galaxy_overlay(
         }
     }
 
-    // #52/#56: Hostile presence markers — red X on surveyed systems with hostiles
-    for hostile in &hostiles {
-        let Ok((_, star, star_pos)) = stars.get(hostile.system) else {
-            continue;
-        };
-        // Only show hostile marker if system has been surveyed (survey reveals hostiles)
-        if !star.surveyed {
-            continue;
-        }
-        let sx = star_pos.x as f32 * view.scale;
-        let sy = star_pos.y as f32 * view.scale;
-        let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
-        let s = 5.0_f32;
-        gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
-        gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
-    }
-
-    // #46: Port facility markers - draw a diamond icon on systems with ports
-    let port_systems: Vec<Entity> = system_buildings
-        .iter()
-        .filter(|(_, sb)| sb.has_port())
-        .map(|(entity, _)| entity)
-        .collect();
-
-    for system_entity in &port_systems {
-        if let Ok((_, _star, star_pos)) = stars.get(*system_entity) {
+    // #52/#56/#176: Hostile presence markers — red X on surveyed systems with hostiles
+    // Local system: read HostilePresence directly. Remote: use KnowledgeStore.
+    {
+        // Local system hostiles (real-time)
+        for hostile in &hostiles {
+            if hostile.system != player_system {
+                continue;
+            }
+            let Ok((_, star, star_pos)) = stars.get(hostile.system) else {
+                continue;
+            };
+            if !star.surveyed {
+                continue;
+            }
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
-            let port_pulse = (clock.as_years_f64() as f32 * 2.0).sin() * 0.15 + 0.6;
-            let d = 6.0_f32;
-            let top = Vec2::new(sx, sy + d);
-            let right = Vec2::new(sx + d, sy);
-            let bottom = Vec2::new(sx, sy - d);
-            let left = Vec2::new(sx - d, sy);
-            let port_color = Color::srgba(0.8, 0.5, 1.0, port_pulse);
-            gizmos.line_2d(top, right, port_color);
-            gizmos.line_2d(right, bottom, port_color);
-            gizmos.line_2d(bottom, left, port_color);
-            gizmos.line_2d(left, top, port_color);
+            let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
+            let s = 5.0_f32;
+            gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
+            gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
+        }
+        // Remote system hostiles (from KnowledgeStore)
+        for (_entity, k) in knowledge.iter() {
+            if k.system == player_system {
+                continue;
+            }
+            if !k.data.has_hostile || !k.data.surveyed {
+                continue;
+            }
+            let Ok((_, _, star_pos)) = stars.get(k.system) else {
+                continue;
+            };
+            let sx = star_pos.x as f32 * view.scale;
+            let sy = star_pos.y as f32 * view.scale;
+            let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
+            let s = 5.0_f32;
+            gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
+            gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
+        }
+    }
+
+    // #46/#176: Port facility markers - draw a diamond icon on systems with ports
+    // Local system: read SystemBuildings directly. Remote: use KnowledgeStore.
+    {
+        // Collect port systems: local from ECS, remote from knowledge
+        let mut port_system_entities: Vec<Entity> = Vec::new();
+        // Local system ports (real-time)
+        for (entity, sb) in &system_buildings {
+            if entity == player_system && sb.has_port() {
+                port_system_entities.push(entity);
+            }
+        }
+        // Remote system ports (from KnowledgeStore)
+        for (_entity, k) in knowledge.iter() {
+            if k.system == player_system {
+                continue;
+            }
+            if k.data.has_port {
+                port_system_entities.push(k.system);
+            }
+        }
+
+        for system_entity in &port_system_entities {
+            if let Ok((_, _star, star_pos)) = stars.get(*system_entity) {
+                let sx = star_pos.x as f32 * view.scale;
+                let sy = star_pos.y as f32 * view.scale;
+                let port_pulse = (clock.as_years_f64() as f32 * 2.0).sin() * 0.15 + 0.6;
+                let d = 6.0_f32;
+                let top = Vec2::new(sx, sy + d);
+                let right = Vec2::new(sx + d, sy);
+                let bottom = Vec2::new(sx, sy - d);
+                let left = Vec2::new(sx - d, sy);
+                let port_color = Color::srgba(0.8, 0.5, 1.0, port_pulse);
+                gizmos.line_2d(top, right, port_color);
+                gizmos.line_2d(right, bottom, port_color);
+                gizmos.line_2d(bottom, left, port_color);
+                gizmos.line_2d(left, top, port_color);
+            }
         }
     }
 }

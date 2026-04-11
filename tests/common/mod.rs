@@ -194,6 +194,7 @@ pub fn test_app() -> App {
             .after(tick_timed_effects),
     );
     app.add_systems(Update, propagate_knowledge);
+    app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
     // #59: Player location tracking (after ship movement systems)
     app.add_systems(
         Update,
@@ -321,6 +322,7 @@ pub fn full_test_app() -> App {
 
     // --- Knowledge system (from KnowledgePlugin) ---
     app.add_systems(Update, propagate_knowledge);
+    app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
 
     // --- Communication systems (from CommunicationPlugin) ---
     app.add_systems(

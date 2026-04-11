@@ -256,12 +256,14 @@ fn draw_top_bar_system(
 fn draw_outline_and_tooltips_system(
     mut contexts: EguiContexts,
     clock: Res<GameClock>,
+    ui_state: Res<UiState>,
     mut selected_system: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
     mut egui_wants_pointer: ResMut<EguiWantsPointer>,
     mut outline_expanded: ResMut<OutlineExpandedSystems>,
     galaxy_view: Res<crate::visualization::GalaxyView>,
     design_registry: Res<ShipDesignRegistry>,
+    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     colonies: Query<(
         Entity,
@@ -288,6 +290,8 @@ fn draw_outline_and_tooltips_system(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    let knowledge = empire_q.single().ok();
+    let player_system = ui_state.player_system;
 
     egui_wants_pointer.0 = ctx.wants_pointer_input();
 
@@ -314,6 +318,8 @@ fn draw_outline_and_tooltips_system(
         &clock,
         &galaxy_view,
         &design_registry,
+        knowledge,
+        player_system,
     );
 }
 
@@ -561,11 +567,26 @@ fn draw_main_panels_system(
             growth_rate: c.growth_rate,
         })
         .collect();
-    let hostile_systems: std::collections::HashSet<Entity> = world
-        .hostile_presence
-        .iter()
-        .map(|h| h.system)
-        .collect();
+    // #176: Build hostile_systems using real-time for local, KnowledgeStore for remote
+    let hostile_systems: std::collections::HashSet<Entity> = {
+        let mut set: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+        // Local system: real-time HostilePresence
+        for h in world.hostile_presence.iter() {
+            if Some(h.system) == player_system {
+                set.insert(h.system);
+            }
+        }
+        // Remote systems: from KnowledgeStore
+        for (_entity, k) in knowledge.iter() {
+            if Some(k.system) == player_system {
+                continue;
+            }
+            if k.data.has_hostile {
+                set.insert(k.system);
+            }
+        }
+        set
+    };
     context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,
@@ -732,6 +753,8 @@ fn draw_map_tooltips(
     clock: &GameClock,
     view: &crate::visualization::GalaxyView,
     design_registry: &ShipDesignRegistry,
+    knowledge: Option<&KnowledgeStore>,
+    player_system: Option<Entity>,
 ) {
     // Don't show map tooltips if pointer is over an egui area (panel, overlay, etc.)
     if ctx.is_pointer_over_area() {
@@ -864,13 +887,32 @@ fn draw_map_tooltips(
         }
     }
 
-    // Star tooltip
+    // Star tooltip — #176: use KnowledgeStore for remote systems
     if let Some((star_entity, _)) = best_star {
         if let Ok((_, star, _, attrs)) = stars.get(star_entity) {
-            let planet_count = planets.iter().filter(|p| p.system == star_entity).count();
-            let has_colony = colonies.iter().any(|(_, c, _, _, _, _, _, _)| {
-                c.system(planets).is_some_and(|sys| sys == star_entity)
-            });
+            let is_local = player_system == Some(star_entity);
+            let k_data = if is_local { None } else { knowledge.and_then(|k| k.get(star_entity)) };
+
+            // For remote systems, derive info from KnowledgeStore
+            let effective_surveyed = if is_local {
+                star.surveyed
+            } else {
+                k_data.map(|k| k.data.surveyed).unwrap_or(false)
+            };
+
+            let has_colony = if is_local {
+                colonies.iter().any(|(_, c, _, _, _, _, _, _)| {
+                    c.system(planets).is_some_and(|sys| sys == star_entity)
+                })
+            } else {
+                k_data.map(|k| k.data.colonized).unwrap_or(false)
+            };
+
+            let effective_hab = if is_local {
+                attrs.map(|a| a.habitability)
+            } else {
+                k_data.and_then(|k| k.data.habitability)
+            };
 
             egui::Tooltip::always_open(
                 ctx.clone(),
@@ -884,13 +926,26 @@ fn draw_map_tooltips(
                 if star.is_capital {
                     ui.label("Capital system");
                 }
-                if star.surveyed {
-                    ui.label(format!("Planets: {}", planet_count));
-                    if let Some(attr) = attrs {
-                        ui.label(format!("Habitability: {:?}", attr.habitability));
+                if effective_surveyed {
+                    // Local: show actual planet count. Remote: planet count not in snapshot, skip.
+                    if is_local {
+                        let planet_count = planets.iter().filter(|p| p.system == star_entity).count();
+                        ui.label(format!("Planets: {}", planet_count));
+                    }
+                    if let Some(hab) = effective_hab {
+                        ui.label(format!("Habitability: {:?}", hab));
                     }
                 } else {
                     ui.label(egui::RichText::new("Unsurveyed").weak().italics());
+                }
+                if !is_local {
+                    if let Some(k) = k_data {
+                        let age = clock.elapsed - k.observed_at;
+                        let years = age as f64 / crate::time_system::HEXADIES_PER_YEAR as f64;
+                        ui.label(egui::RichText::new(format!("Info age: {:.1} yr", years)).weak().small());
+                    } else if !star.is_capital {
+                        ui.label(egui::RichText::new("No intelligence").weak().italics());
+                    }
                 }
                 if has_colony {
                     ui.label(

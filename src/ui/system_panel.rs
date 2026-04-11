@@ -68,6 +68,11 @@ pub fn draw_system_panel(
         return;
     };
 
+    // #176: Determine if this is the player's local system
+    let player_system = player_q.iter().next().map(|(_, s, _)| s.system);
+    let is_local_system = player_system == Some(sel_entity);
+    let k_data = if is_local_system { None } else { knowledge.get(sel_entity) };
+
     // Collect planets in this system with attributes for map rendering
     let colonized_planets: std::collections::HashSet<Entity> = colonies
         .iter()
@@ -122,7 +127,13 @@ pub fn draw_system_panel(
                 }
             }
 
-            if star.surveyed {
+            // #176: Survey status from knowledge for remote systems
+            let effective_surveyed = if is_local_system {
+                star.surveyed
+            } else {
+                k_data.map(|k| k.data.surveyed).unwrap_or(false)
+            };
+            if effective_surveyed {
                 ui.label("Status: Surveyed");
             } else {
                 ui.label("Status: Unsurveyed");
@@ -141,6 +152,44 @@ pub fn draw_system_panel(
                     "VERY OLD"
                 };
                 ui.label(format!("Info age: {} hd ({:.1} yr) [{}]", age, years, freshness));
+            }
+
+            // #176: Remote system knowledge summary
+            if !is_local_system {
+                if let Some(k) = k_data {
+                    let snap = &k.data;
+                    ui.separator();
+                    ui.label(egui::RichText::new("Remote Intelligence (light-speed delayed)").strong()
+                        .color(egui::Color32::from_rgb(200, 180, 100)));
+                    if snap.colonized {
+                        ui.label(format!("Stockpile: M {} | E {} | F {} | A {}",
+                            snap.minerals, snap.energy, snap.food, snap.authority));
+                        if snap.production_minerals > Amt::ZERO || snap.production_energy > Amt::ZERO
+                            || snap.production_food > Amt::ZERO || snap.production_research > Amt::ZERO
+                        {
+                            ui.label(format!("Production/hd: M {} | E {} | F {} | R {}",
+                                snap.production_minerals, snap.production_energy,
+                                snap.production_food, snap.production_research));
+                        }
+                        if snap.maintenance_energy > Amt::ZERO {
+                            ui.label(format!("Maintenance: E {}/hd", snap.maintenance_energy));
+                        }
+                    }
+                    if snap.has_hostile {
+                        ui.label(egui::RichText::new(format!("Hostile presence (str: {:.1})", snap.hostile_strength))
+                            .color(egui::Color32::from_rgb(255, 100, 100)));
+                    }
+                    if snap.has_port {
+                        ui.label("Port facility present");
+                    }
+                    if snap.has_shipyard {
+                        ui.label("Shipyard present");
+                    }
+                } else if !star.is_capital {
+                    ui.separator();
+                    ui.label(egui::RichText::new("No intelligence available for this system.")
+                        .weak().italics());
+                }
             }
 
             // === Anomalies / Points of Interest ===
