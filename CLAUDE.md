@@ -58,7 +58,8 @@ src/
 │   ├── mod.rs           # Star visuals, ship drawing, ghost markers, camera controls
 │   └── territory.rs     # TerritoryMaterial (Material2d shader), authority field 1/r²
 ├── ui/                  # bevy_egui panels
-│   ├── mod.rs           # draw_all_ui (single system), map tooltips
+│   ├── mod.rs           # UiState, 6 chained systems, map tooltips
+│   ├── params.rs        # SystemParam bundles (MainPanelWorldQueries, etc.)
 │   ├── top_bar.rs       # Time, speed, resources, ship designer button
 │   ├── side_panel.rs    # System view (full-screen), planet window, ship panel, context menu
 │   ├── outline.rs       # Left tree view (empire overview, tooltips)
@@ -85,7 +86,7 @@ tests/                   # 370 tests (263 unit + 107 integration, 11 test files)
 
 ### Key Design Patterns
 
-**egui must run in a single system.** All UI panels are drawn from `draw_all_ui` in `src/ui/mod.rs`, registered in `EguiPrimaryContextPass` schedule. Sub-modules export plain functions that take `&egui::Context`, not Bevy systems. This avoids the "available_rect() before Context::run()" panic.
+**egui systems are chained in `EguiPrimaryContextPass`.** UI is split into 6 chained systems (`compute_ui_state` -> `draw_top_bar_system` -> `draw_outline_and_tooltips_system` -> `draw_main_panels_system` -> `draw_overlays_system` -> `draw_bottom_bar_system`). Each system gets its own `EguiContexts` parameter. Shared data (player info, resource totals) flows through `UiState` resource. Sub-modules still export plain functions that take `&egui::Context`, not Bevy systems. `SystemParam` bundles in `src/ui/params.rs` keep parameter counts under Bevy's 16-param limit.
 
 **Bevy Query conflicts (B0001).** Never have two queries accessing the same component as both `&T` and `&mut T` in one system. Use a single mutable query and extract data into locals before mutation. `full_test_app()` in tests catches these at CI time.
 
@@ -178,7 +179,7 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 ## Common Pitfalls
 
 1. **System ordering:** All game logic systems MUST use `.after(crate::time_system::advance_game_time)`. Without this, delta-based systems (tick_production, movement, etc.) may see delta=0 every frame if they run before the clock advances.
-2. **egui schedule:** Use `EguiPrimaryContextPass`, not `Update`, for egui systems
+2. **egui schedule:** Use `EguiPrimaryContextPass`, not `Update`, for egui systems. Chain new egui systems with the existing chain in `UiPlugin`.
 3. **Query conflicts:** `Query<&Ship>` + `Query<&mut Ship>` in same system = B0001 panic. Merge into one mutable query.
 4. **hexadies naming:** All code uses "hexadies". Never "sexadies".
 5. **Ship selection regression:** Don't set `selected_ship.0 = None` when changing SelectedSystem in `click_select_system`
