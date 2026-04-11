@@ -912,6 +912,7 @@ fn test_ftl_survey_delivers_on_dock_at_player_system() {
         target_system: sys_b,
         surveyed_at: 10,
         system_name: "System-B".to_string(),
+        anomaly_id: None,
     });
 
     common::advance_time(&mut app, 1);
@@ -1170,6 +1171,7 @@ fn test_survey_data_not_delivered_at_wrong_system() {
         target_system: sys_b,
         surveyed_at: 10,
         system_name: "System-B".to_string(),
+        anomaly_id: None,
     });
 
     common::advance_time(&mut app, 1);

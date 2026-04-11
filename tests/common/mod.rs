@@ -8,7 +8,7 @@ use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
-use macrocosmo::galaxy::{Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
+use macrocosmo::galaxy::{Anomalies, Habitability, Planet, ResourceLevel, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::condition::ScopedFlags;
@@ -400,6 +400,7 @@ pub fn spawn_test_system_with_planet(
             Sovereignty::default(),
             TechKnowledge::default(),
             SystemModifiers::default(),
+            Anomalies::default(),
         ))
         .id();
 

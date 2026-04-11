@@ -9,7 +9,7 @@ use crate::colony::{
 };
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{Habitability, HostilePresence, ResourceLevel, StarSystem, SystemAttributes};
+use crate::galaxy::{Anomalies, Anomaly, Habitability, HostilePresence, ResourceLevel, StarSystem, SystemAttributes};
 use crate::modifier::{CachedValue, Modifier, ScopedModifiers};
 use crate::physics::{distance_ly, distance_ly_arr, light_delay_hexadies, sublight_travel_hexadies};
 use crate::knowledge::{KnowledgeStore, SystemKnowledge, SystemSnapshot};
@@ -547,6 +547,8 @@ pub struct SurveyData {
     pub surveyed_at: i64,
     /// Name of the surveyed system (cached for event descriptions).
     pub system_name: String,
+    /// #127: Anomaly discovered during survey (if any), delivered with survey results.
+    pub anomaly_id: Option<String>,
 }
 
 // --- #54: Fleet formation system ---
@@ -906,10 +908,11 @@ pub fn process_surveys(
     mut commands: Commands,
     clock: Res<GameClock>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut ShipHitpoints, &Position, Option<&mut CommandQueue>)>,
-    mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>, &Position), Without<Ship>>,
+    mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>, &Position, Option<&mut Anomalies>), Without<Ship>>,
     hostiles: Query<&HostilePresence>,
     player_q: Query<&StationedAt, With<Player>>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
+    anomaly_registry: Option<Res<crate::scripting::anomaly_api::AnomalyRegistry>>,
     mut events: MessageWriter<GameEvent>,
 ) {
     let mut rng = rand::rng();
@@ -919,7 +922,7 @@ pub fn process_surveys(
 
     // #110: Pre-compute player system position and FTL speed for light-vs-FTL comparison
     let player_system_pos: Option<[f64; 3]> = player_system.and_then(|sys| {
-        systems.get(sys).ok().map(|(_, _, pos)| pos.as_array())
+        systems.get(sys).ok().map(|(_, _, pos, _)| pos.as_array())
     });
     let ftl_speed_multiplier = empire_params_q
         .iter()
@@ -952,7 +955,7 @@ pub fn process_surveys(
 
                 if use_light_speed {
                     // #110: Light-speed is faster — mark surveyed immediately
-                    if let Ok((mut star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                    if let Ok((mut star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
                         star_system.surveyed = true;
                         let system_name = star_system.name.clone();
                         info!(
@@ -977,10 +980,14 @@ pub fn process_surveys(
                             });
                         }
 
-                        let event = roll_exploration_event(&mut rng);
-                        apply_exploration_event(&event, &system_name, &ship, &mut ship_hp, attrs, &mut rng, clock.elapsed, target_system, &mut events);
+                        // #127: Roll anomaly discovery (with fallback to legacy exploration events)
+                        let anomaly_id = roll_and_apply_anomaly(
+                            &anomaly_registry, &mut rng, &system_name, &ship, &mut ship_hp,
+                            attrs, anomalies, clock.elapsed, target_system, &mut events,
+                        );
+                        let _ = anomaly_id; // light-speed: anomaly applied immediately, no need to carry
                     }
-                } else if let Ok((star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                } else if let Ok((star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
                     // #103: FTL return is faster — carry back
                     let system_name = star_system.name.clone();
                     info!(
@@ -998,14 +1005,18 @@ pub fn process_surveys(
                         });
                     }
 
-                    let event = roll_exploration_event(&mut rng);
-                    apply_exploration_event(&event, &system_name, &ship, &mut ship_hp, attrs, &mut rng, clock.elapsed, target_system, &mut events);
+                    // #127: Roll anomaly discovery; effects applied immediately, event deferred
+                    let anomaly_id = roll_and_apply_anomaly(
+                        &anomaly_registry, &mut rng, &system_name, &ship, &mut ship_hp,
+                        attrs, anomalies, clock.elapsed, target_system, &mut events,
+                    );
 
                     // Use try_insert: ship may have been despawned by combat in the same frame
                     commands.entity(ship_entity).try_insert(SurveyData {
                         target_system,
                         surveyed_at: clock.elapsed,
                         system_name: system_name.clone(),
+                        anomaly_id,
                     });
 
                     let queue_empty = cmd_queue.as_ref().map(|q| q.commands.is_empty()).unwrap_or(true);
@@ -1027,7 +1038,7 @@ pub fn process_surveys(
                 }
             } else {
                 // Non-FTL ship — existing behavior: mark surveyed immediately
-                if let Ok((mut star_system, attrs, _sys_pos)) = systems.get_mut(target_system) {
+                if let Ok((mut star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
                     star_system.surveyed = true;
                     let system_name = star_system.name.clone();
                     info!(
@@ -1056,18 +1067,10 @@ pub fn process_surveys(
                         });
                     }
 
-                    // Roll an exploration event
-                    let event = roll_exploration_event(&mut rng);
-                    apply_exploration_event(
-                        &event,
-                        &system_name,
-                        &ship,
-                        &mut ship_hp,
-                        attrs,
-                        &mut rng,
-                        clock.elapsed,
-                        target_system,
-                        &mut events,
+                    // #127: Roll anomaly discovery (with fallback to legacy exploration events)
+                    roll_and_apply_anomaly(
+                        &anomaly_registry, &mut rng, &system_name, &ship, &mut ship_hp,
+                        attrs, anomalies, clock.elapsed, target_system, &mut events,
                     );
                 }
             }
@@ -1141,6 +1144,19 @@ pub fn deliver_survey_results(
             ),
             related_system: Some(target),
         });
+
+        // #127: If anomaly was discovered, fire AnomalyDiscovered event on delivery
+        if let Some(ref anomaly_id) = survey_data.anomaly_id {
+            events.write(GameEvent {
+                timestamp: clock.elapsed,
+                kind: GameEventKind::AnomalyDiscovered,
+                description: format!(
+                    "{} reports anomaly '{}' discovered at {} (surveyed at t={})",
+                    ship.name, anomaly_id, survey_data.system_name, survey_data.surveyed_at
+                ),
+                related_system: Some(target),
+            });
+        }
 
         // Clear survey data from the ship
         commands.entity(ship_entity).remove::<SurveyData>();
@@ -1243,6 +1259,124 @@ fn apply_exploration_event(
             }
         }
     }
+}
+
+/// #127: Roll for anomaly discovery using the AnomalyRegistry, apply effects,
+/// record in Anomalies component, and fire events. Falls back to legacy
+/// ExplorationEvent if no anomaly registry is available.
+/// Returns the anomaly ID if one was discovered (for deferred delivery via SurveyData).
+fn roll_and_apply_anomaly(
+    anomaly_registry: &Option<Res<crate::scripting::anomaly_api::AnomalyRegistry>>,
+    rng: &mut impl Rng,
+    system_name: &str,
+    ship: &Ship,
+    ship_hp: &mut ShipHitpoints,
+    mut attrs: Option<Mut<SystemAttributes>>,
+    anomalies: Option<Mut<Anomalies>>,
+    timestamp: i64,
+    target_system: Entity,
+    events: &mut MessageWriter<GameEvent>,
+) -> Option<String> {
+    use crate::scripting::anomaly_api::AnomalyEffectDef;
+
+    if let Some(registry) = anomaly_registry {
+        if let Some(anomaly_def) = registry.roll_discovery(rng) {
+            let anomaly_id = anomaly_def.id.clone();
+            let anomaly_name = anomaly_def.name.clone();
+            let anomaly_desc = anomaly_def.description.clone();
+
+            // Record in Anomalies component
+            if let Some(mut anomalies) = anomalies {
+                anomalies.discoveries.push(Anomaly {
+                    id: anomaly_id.clone(),
+                    name: anomaly_name.clone(),
+                    description: anomaly_desc.clone(),
+                    discovered_at: timestamp,
+                });
+            }
+
+            // Apply effects
+            for effect in &anomaly_def.effects {
+                match effect {
+                    AnomalyEffectDef::ResourceBonus { resource } => {
+                        if let Some(ref mut attrs) = attrs {
+                            let (name, old_level) = match resource.as_str() {
+                                "minerals" => ("minerals", attrs.mineral_richness),
+                                "energy" => ("energy", attrs.energy_potential),
+                                _ => ("research", attrs.research_potential),
+                            };
+                            if let Some(new_level) = upgrade_resource_level(old_level) {
+                                match resource.as_str() {
+                                    "minerals" => attrs.mineral_richness = new_level,
+                                    "energy" => attrs.energy_potential = new_level,
+                                    _ => attrs.research_potential = new_level,
+                                }
+                                events.write(GameEvent {
+                                    timestamp,
+                                    kind: GameEventKind::AnomalyDiscovered,
+                                    description: format!(
+                                        "{}: {} — {} deposits upgraded ({} -> {})",
+                                        system_name, anomaly_name, name,
+                                        resource_level_name(old_level),
+                                        resource_level_name(new_level),
+                                    ),
+                                    related_system: Some(target_system),
+                                });
+                            }
+                        }
+                    }
+                    AnomalyEffectDef::ResearchBonus { amount } => {
+                        events.write(GameEvent {
+                            timestamp,
+                            kind: GameEventKind::AnomalyDiscovered,
+                            description: format!(
+                                "{}: {} — Research bonus: {:.0} RP",
+                                system_name, anomaly_name, amount,
+                            ),
+                            related_system: Some(target_system),
+                        });
+                    }
+                    AnomalyEffectDef::BuildingSlots { extra } => {
+                        if let Some(ref mut attrs) = attrs {
+                            attrs.max_building_slots += extra;
+                            events.write(GameEvent {
+                                timestamp,
+                                kind: GameEventKind::AnomalyDiscovered,
+                                description: format!(
+                                    "{}: {} — {} additional building site(s)",
+                                    system_name, anomaly_name, extra,
+                                ),
+                                related_system: Some(target_system),
+                            });
+                        }
+                    }
+                    AnomalyEffectDef::Hazard { damage_percent } => {
+                        let damage_frac = damage_percent / 100.0;
+                        let damage = ship_hp.hull_max * damage_frac;
+                        ship_hp.hull = (ship_hp.hull - damage).max(1.0);
+                        events.write(GameEvent {
+                            timestamp,
+                            kind: GameEventKind::AnomalyDiscovered,
+                            description: format!(
+                                "{}: {} — Ship {} took {:.0} damage ({:.0}% hull)",
+                                system_name, anomaly_name, ship.name, damage, damage_percent,
+                            ),
+                            related_system: Some(target_system),
+                        });
+                    }
+                }
+            }
+
+            return Some(anomaly_id);
+        }
+        // No anomaly discovered
+        return None;
+    }
+
+    // Fallback: no anomaly registry available, use legacy exploration events
+    let event = roll_exploration_event(rng);
+    apply_exploration_event(&event, system_name, ship, ship_hp, attrs, rng, timestamp, target_system, events);
+    None
 }
 
 // --- Settling system (#32) ---

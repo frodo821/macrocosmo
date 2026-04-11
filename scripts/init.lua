@@ -22,6 +22,9 @@ require("ships")
 -- Structures (reference techs via conditions)
 require("structures")
 
+-- Anomalies (survey discovery definitions)
+require("anomalies")
+
 -- Events
 require("events")
 

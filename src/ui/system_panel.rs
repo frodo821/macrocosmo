@@ -58,6 +58,7 @@ pub fn draw_system_panel(
     colonization_queues: &Query<&ColonizationQueue>,
     colonization_actions_out: &mut Vec<ColonizationAction>,
     building_registry: &BuildingRegistry,
+    anomalies_q: &Query<&crate::galaxy::Anomalies>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -140,6 +141,22 @@ pub fn draw_system_panel(
                     "VERY OLD"
                 };
                 ui.label(format!("Info age: {} hd ({:.1} yr) [{}]", age, years, freshness));
+            }
+
+            // === Anomalies / Points of Interest ===
+            if let Ok(anomalies) = anomalies_q.get(sel_entity) {
+                if !anomalies.discoveries.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new(format!("Anomalies ({})", anomalies.discoveries.len())).strong());
+                    for anomaly in &anomalies.discoveries {
+                        let discovered_yr = anomaly.discovered_at as f64 / crate::time_system::HEXADIES_PER_YEAR as f64;
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&anomaly.name).color(egui::Color32::from_rgb(200, 180, 100)));
+                            ui.label(egui::RichText::new(format!("(t={:.1}yr)", discovered_yr)).weak().small());
+                        });
+                        ui.label(egui::RichText::new(&anomaly.description).weak().small());
+                    }
+                }
             }
 
             // === System Map Canvas ===
