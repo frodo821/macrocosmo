@@ -10,7 +10,7 @@ pub mod structure_api;
 
 use bevy::prelude::*;
 use mlua::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct ScriptingPlugin;
 
@@ -52,67 +52,103 @@ pub fn init_scripting(mut commands: Commands) {
 /// falling back to loading individual directories for backward compatibility.
 /// Other startup systems that parse definitions should use `.after(load_all_scripts)`.
 pub fn load_all_scripts(engine: Res<ScriptEngine>) {
-    let init_path = Path::new("scripts/init.lua");
+    let scripts_dir = engine.scripts_dir();
+    let init_path = scripts_dir.join("init.lua");
     if init_path.exists() {
-        match engine.load_file(init_path) {
+        match engine.load_file(&init_path) {
             Ok(()) => {
-                info!("All scripts loaded via scripts/init.lua");
+                info!("All scripts loaded via {}", init_path.display());
                 return;
             }
             Err(e) => {
-                warn!("Failed to load scripts/init.lua: {e}; falling back to directory loading");
+                warn!("Failed to load {}: {e}; falling back to directory loading", init_path.display());
             }
         }
     }
 
     // Fallback: load directories individually (legacy path, used when init.lua is absent)
-    let dirs = [
-        "scripts/stars",
-        "scripts/planets",
-        "scripts/jobs",
-        "scripts/species",
-        "scripts/buildings",
-        "scripts/tech",
-        "scripts/ships",
-        "scripts/structures",
-        "scripts/events",
+    let subdirs = [
+        "stars", "planets", "jobs", "species", "buildings",
+        "tech", "ships", "structures", "events",
     ];
-    for dir in &dirs {
-        let path = Path::new(dir);
-        if let Err(e) = engine.load_directory(path) {
-            warn!("Failed to load scripts from {dir}: {e}");
+    for subdir in &subdirs {
+        let path = scripts_dir.join(subdir);
+        if path.is_dir() {
+            if let Err(e) = engine.load_directory(&path) {
+                warn!("Failed to load scripts from {}: {e}", path.display());
+            }
         }
     }
+}
+
+/// Resolve the scripts directory by searching multiple locations.
+/// Priority: 1) next to executable, 2) CWD, 3) CARGO_MANIFEST_DIR (dev)
+pub fn resolve_scripts_dir() -> PathBuf {
+    // 1. Next to the executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join("scripts");
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+    }
+
+    // 2. CWD
+    let cwd = PathBuf::from("scripts");
+    if cwd.is_dir() {
+        return cwd;
+    }
+
+    // 3. CARGO_MANIFEST_DIR (development)
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let candidate = PathBuf::from(manifest_dir).join("scripts");
+        if candidate.is_dir() {
+            return candidate;
+        }
+    }
+
+    // Fallback to CWD-relative (will fail gracefully later)
+    PathBuf::from("scripts")
 }
 
 #[derive(Resource)]
 pub struct ScriptEngine {
     lua: Lua,
+    scripts_dir: PathBuf,
 }
 
 impl ScriptEngine {
     pub fn new() -> Result<Self, mlua::Error> {
+        let scripts_dir = resolve_scripts_dir();
         // Sandbox: only load safe libraries (no io, os, debug, ffi)
         let lua = Lua::new_with(
             LuaStdLib::TABLE | LuaStdLib::STRING | LuaStdLib::MATH
                 | LuaStdLib::PACKAGE | LuaStdLib::BIT,
             mlua::LuaOptions::default(),
         )?;
-        Self::setup_globals(&lua)?;
-        Ok(Self { lua })
+        Self::setup_globals(&lua, &scripts_dir)?;
+        info!("Lua scripts directory: {}", scripts_dir.display());
+        Ok(Self { lua, scripts_dir })
+    }
+
+    /// The resolved scripts directory path.
+    pub fn scripts_dir(&self) -> &Path {
+        &self.scripts_dir
     }
 
     /// Configure global tables and functions available to all Lua scripts.
-    pub fn setup_globals(lua: &Lua) -> Result<(), mlua::Error> {
+    pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         let globals = lua.globals();
 
         // --- Sandbox: disable dangerous globals ---
         globals.set("loadfile", mlua::Value::Nil)?;
         globals.set("dofile", mlua::Value::Nil)?;
 
-        // --- Set up require() search path ---
+        // --- Set up require() search path using resolved absolute path ---
         let package: mlua::Table = globals.get("package")?;
-        package.set("path", "scripts/?.lua;scripts/?/init.lua")?;
+        let dir = scripts_dir.display();
+        package.set("path", format!("{dir}/?.lua;{dir}/?/init.lua"))?;
         package.set("cpath", "")?; // disable C module loading
 
         // Create the macrocosmo namespace table

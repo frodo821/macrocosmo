@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn test_parse_lua_tech_definitions() {
         let lua = mlua::Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
 
         lua.load(
             r#"
@@ -866,7 +866,7 @@ mod tests {
     #[test]
     fn test_parse_lua_tech_table_cost() {
         let lua = mlua::Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
 
         lua.load(
             r#"

@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn test_event_bus_fire_calls_handler() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
 
         // Register a handler via on() and fire an event
         lua.load(
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn test_event_bus_filter_match() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
 
         lua.load(
             r#"
@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn test_event_bus_no_filter_matches_all() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
 
         lua.load(
             r#"
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn test_event_bus_wrong_event_id_not_called() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
 
         lua.load(
             r#"
