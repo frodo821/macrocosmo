@@ -987,7 +987,8 @@ pub fn process_surveys(
                     let event = roll_exploration_event(&mut rng);
                     apply_exploration_event(&event, &system_name, &ship, &mut ship_hp, attrs, &mut rng, clock.elapsed, target_system, &mut events);
 
-                    commands.entity(ship_entity).insert(SurveyData {
+                    // Use try_insert: ship may have been despawned by combat in the same frame
+                    commands.entity(ship_entity).try_insert(SurveyData {
                         target_system,
                         surveyed_at: clock.elapsed,
                         system_name: system_name.clone(),
@@ -1560,7 +1561,8 @@ pub fn process_pending_ship_commands(
                     "Remote ROE command executed: {} set to {:?}",
                     ship.name, roe_val,
                 );
-                commands.entity(pending_cmd.ship).insert(roe_val);
+                // Use try_insert: ship may have been despawned by combat
+                commands.entity(pending_cmd.ship).try_insert(roe_val);
             }
         }
 
