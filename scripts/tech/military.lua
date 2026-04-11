@@ -1,6 +1,6 @@
 -- Military branch technologies
 
-define_tech {
+local kinetic_weapons = define_tech {
     id = "military_kinetic_weapons",
     name = "Kinetic Weapons",
     branch = "military",
@@ -12,7 +12,7 @@ define_tech {
     end,
 }
 
-define_tech {
+local deflector_shields = define_tech {
     id = "military_deflector_shields",
     name = "Deflector Shields",
     branch = "military",
@@ -24,14 +24,20 @@ define_tech {
     end,
 }
 
-define_tech {
+local composite_armor = define_tech {
     id = "military_composite_armor",
     name = "Composite Armor",
     branch = "military",
     cost = 250,
-    prerequisites = { "military_kinetic_weapons" },
+    prerequisites = { kinetic_weapons },
     description = "Multi-layered hull plating for enhanced protection",
     on_researched = function()
         -- TODO: push_empire_modifier("combat.armor", { multiplier = 0.2 })
     end,
+}
+
+return {
+    kinetic_weapons = kinetic_weapons,
+    deflector_shields = deflector_shields,
+    composite_armor = composite_armor,
 }

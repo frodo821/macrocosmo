@@ -155,7 +155,7 @@ impl Plugin for SpeciesPlugin {
             .init_resource::<JobRegistry>()
             .add_systems(
                 Startup,
-                load_species_and_jobs.after(crate::scripting::init_scripting),
+                load_species_and_jobs.after(crate::scripting::load_all_scripts),
             )
             .add_systems(
                 Update,
@@ -164,63 +164,39 @@ impl Plugin for SpeciesPlugin {
     }
 }
 
-/// Startup system that loads species and job definitions from Lua scripts.
+/// Parse species and job definitions from Lua accumulators.
+/// Scripts are loaded by `load_all_scripts`; this system only parses the results.
 pub fn load_species_and_jobs(
     engine: Res<crate::scripting::ScriptEngine>,
     mut species_registry: ResMut<SpeciesRegistry>,
     mut job_registry: ResMut<JobRegistry>,
 ) {
     use crate::scripting::species_api::{parse_job_definitions, parse_species_definitions};
-    use std::path::Path;
 
-    // Load species scripts
-    let species_dir = Path::new("scripts/species");
-    if species_dir.exists() {
-        match engine.load_directory(species_dir) {
-            Err(e) => {
-                warn!("Failed to load species scripts: {e}; species registry will be empty");
+    match parse_species_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            for def in defs {
+                species_registry.insert(def);
             }
-            Ok(()) => match parse_species_definitions(engine.lua()) {
-                Ok(defs) => {
-                    let count = defs.len();
-                    for def in defs {
-                        species_registry.insert(def);
-                    }
-                    info!("Species registry loaded with {} definitions", count);
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to parse species definitions: {e}; species registry will be empty"
-                    );
-                }
-            },
+            info!("Species registry loaded with {} definitions", count);
         }
-    } else {
-        info!("scripts/species directory not found; species registry will be empty");
+        Err(e) => {
+            warn!("Failed to parse species definitions: {e}; species registry will be empty");
+        }
     }
 
-    // Load job scripts
-    let jobs_dir = Path::new("scripts/jobs");
-    if jobs_dir.exists() {
-        match engine.load_directory(jobs_dir) {
-            Err(e) => {
-                warn!("Failed to load job scripts: {e}; job registry will be empty");
+    match parse_job_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            for def in defs {
+                job_registry.insert(def);
             }
-            Ok(()) => match parse_job_definitions(engine.lua()) {
-                Ok(defs) => {
-                    let count = defs.len();
-                    for def in defs {
-                        job_registry.insert(def);
-                    }
-                    info!("Job registry loaded with {} definitions", count);
-                }
-                Err(e) => {
-                    warn!("Failed to parse job definitions: {e}; job registry will be empty");
-                }
-            },
+            info!("Job registry loaded with {} definitions", count);
         }
-    } else {
-        info!("scripts/jobs directory not found; job registry will be empty");
+        Err(e) => {
+            warn!("Failed to parse job definitions: {e}; job registry will be empty");
+        }
     }
 }
 

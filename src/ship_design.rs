@@ -163,13 +163,13 @@ impl Plugin for ShipDesignPlugin {
             .init_resource::<ShipDesignRegistry>()
             .add_systems(
                 Startup,
-                load_ship_designs.after(crate::scripting::init_scripting),
+                load_ship_designs.after(crate::scripting::load_all_scripts),
             );
     }
 }
 
-/// Load ship design definitions from Lua scripts into registries.
-/// Falls back to empty registries if scripts are missing or fail to parse.
+/// Parse ship design definitions from Lua accumulators into registries.
+/// Scripts are loaded by `load_all_scripts`; this system only parses the results.
 pub fn load_ship_designs(
     engine: Res<crate::scripting::ScriptEngine>,
     mut slot_types: ResMut<SlotTypeRegistry>,
@@ -178,18 +178,6 @@ pub fn load_ship_designs(
     mut designs: ResMut<ShipDesignRegistry>,
 ) {
     use crate::scripting::ship_design_api;
-    use std::path::Path;
-
-    let ships_dir = Path::new("scripts/ships");
-    if !ships_dir.exists() {
-        info!("scripts/ships directory not found; ship design registries will be empty");
-        return;
-    }
-
-    if let Err(e) = engine.load_directory(ships_dir) {
-        warn!("Failed to load ship design scripts: {e}; registries will be empty");
-        return;
-    }
 
     // Parse slot types
     match ship_design_api::parse_slot_types(engine.lua()) {

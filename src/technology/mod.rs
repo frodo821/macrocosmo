@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use crate::amount::Amt;
 use crate::colony::{Colony, Production, ProductionFocus};
@@ -18,7 +17,7 @@ impl Plugin for TechnologyPlugin {
         app.add_systems(
             Startup,
             load_technologies
-                .after(crate::scripting::init_scripting)
+                .after(crate::scripting::load_all_scripts)
                 .after(crate::player::spawn_player_empire),
         )
         .insert_resource(LastResearchTick(0))
@@ -98,33 +97,24 @@ impl GameFlags {
     }
 }
 
+/// Parse technology definitions from Lua accumulators.
+/// Scripts are loaded by `load_all_scripts`; this system only parses the results.
+/// Falls back to hardcoded definitions if parsing fails or yields nothing.
 pub fn load_technologies(
     mut commands: Commands,
     engine: Res<crate::scripting::ScriptEngine>,
     empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
-    let tech_dir = Path::new("scripts/tech");
-    let techs = if tech_dir.exists() {
-        match engine.load_directory(tech_dir) {
-            Err(e) => {
-                warn!("Failed to load tech scripts: {e}; falling back to hardcoded definitions");
-                create_initial_tech_tree_vec()
-            }
-            Ok(()) => match parse_tech_definitions(engine.lua()) {
-                Ok(parsed) if !parsed.is_empty() => parsed,
-                Ok(_) => {
-                    info!("No tech definitions found in scripts; using hardcoded fallback");
-                    create_initial_tech_tree_vec()
-                }
-                Err(e) => {
-                    warn!("Failed to parse tech definitions: {e}; falling back to hardcoded definitions");
-                    create_initial_tech_tree_vec()
-                }
-            },
+    let techs = match parse_tech_definitions(engine.lua()) {
+        Ok(parsed) if !parsed.is_empty() => parsed,
+        Ok(_) => {
+            info!("No tech definitions found in scripts; using hardcoded fallback");
+            create_initial_tech_tree_vec()
         }
-    } else {
-        info!("scripts/tech directory not found; using hardcoded tech definitions");
-        create_initial_tech_tree_vec()
+        Err(e) => {
+            warn!("Failed to parse tech definitions: {e}; falling back to hardcoded definitions");
+            create_initial_tech_tree_vec()
+        }
     };
 
     let tree = TechTree::from_vec(techs);
@@ -654,8 +644,11 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
 
         let prereqs_table: mlua::Table = table.get("prerequisites")?;
         let prerequisites: Vec<TechId> = prereqs_table
-            .sequence_values::<String>()
-            .map(|r| r.map(TechId))
+            .sequence_values::<mlua::Value>()
+            .map(|r| {
+                let val = r?;
+                crate::scripting::extract_ref_id(&val).map(TechId)
+            })
             .collect::<Result<_, _>>()?;
 
         let description: String = table
@@ -902,10 +895,11 @@ mod tests {
     #[test]
     fn test_load_lua_files_from_disk() {
         let engine = crate::scripting::ScriptEngine::new().unwrap();
-        let tech_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tech");
+        let init_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/init.lua");
         engine
-            .load_directory(&tech_dir)
-            .expect("Failed to load tech scripts from disk");
+            .load_file(&init_path)
+            .expect("Failed to load scripts via init.lua");
         let techs = parse_tech_definitions(engine.lua()).expect("Failed to parse tech scripts");
         // Should load all 15 technologies from the 4 Lua files
         assert_eq!(techs.len(), 15);

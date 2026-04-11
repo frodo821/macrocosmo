@@ -1,7 +1,10 @@
 -- Deep Space Structure definitions
 -- Loaded by the StructureRegistry at startup.
 
-define_structure {
+-- Note: ftl_communications and ftl_interdiction_tech are forward references
+-- to techs not yet defined. Using forward_ref() to express this intent.
+
+local sensor_buoy = define_structure {
     id = "sensor_buoy",
     name = "Sensor Buoy",
     description = "Detects sublight vessel movements.",
@@ -14,7 +17,7 @@ define_structure {
     energy_drain = 100, -- millis (0.1 units per hexady)
 }
 
-define_structure {
+local ftl_comm_relay = define_structure {
     id = "ftl_comm_relay",
     name = "FTL Comm Relay",
     description = "Enables faster-than-light communication across systems.",
@@ -25,10 +28,10 @@ define_structure {
         ftl_comm = { range = 0.0 },
     },
     energy_drain = 500, -- millis (0.5 units per hexady)
-    prerequisites = has_tech("ftl_communications"),
+    prerequisites = has_tech(forward_ref("ftl_communications")),
 }
 
-define_structure {
+local interdictor = define_structure {
     id = "interdictor",
     name = "Interdictor",
     description = "Disrupts FTL travel within its interdiction range.",
@@ -39,5 +42,11 @@ define_structure {
         ftl_interdiction = { range = 5.0 },
     },
     energy_drain = 1000, -- millis (1.0 units per hexady)
-    prerequisites = has_tech("ftl_interdiction_tech"),
+    prerequisites = has_tech(forward_ref("ftl_interdiction_tech")),
+}
+
+return {
+    sensor_buoy = sensor_buoy,
+    ftl_comm_relay = ftl_comm_relay,
+    interdictor = interdictor,
 }

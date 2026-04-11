@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 
 use bevy::prelude::*;
 
@@ -138,55 +137,36 @@ impl Plugin for DeepSpacePlugin {
         app.init_resource::<StructureRegistry>()
             .add_systems(
                 Startup,
-                load_structure_definitions.after(crate::scripting::init_scripting),
+                load_structure_definitions.after(crate::scripting::load_all_scripts),
             );
     }
 }
 
-/// Startup system that loads structure definitions from Lua scripts, falling back
-/// to hardcoded defaults if the scripts directory is missing.
+/// Parse structure definitions from Lua accumulators, falling back to defaults.
+/// Scripts are loaded by `load_all_scripts`; this system only parses the results.
 pub fn load_structure_definitions(
     engine: Res<crate::scripting::ScriptEngine>,
     mut registry: ResMut<StructureRegistry>,
 ) {
-    let structure_dir = Path::new("scripts/structures");
-    if structure_dir.exists() {
-        match engine.load_directory(structure_dir) {
-            Err(e) => {
-                warn!("Failed to load structure scripts: {e}; using default definitions");
-                for def in default_structure_definitions() {
-                    registry.insert(def);
-                }
+    match crate::scripting::structure_api::parse_structure_definitions(engine.lua()) {
+        Ok(defs) if !defs.is_empty() => {
+            let count = defs.len();
+            for def in defs {
+                registry.insert(def);
             }
-            Ok(()) => match crate::scripting::structure_api::parse_structure_definitions(
-                engine.lua(),
-            ) {
-                Ok(defs) => {
-                    if defs.is_empty() {
-                        info!("No structure definitions found in scripts; using defaults");
-                        for def in default_structure_definitions() {
-                            registry.insert(def);
-                        }
-                    } else {
-                        let count = defs.len();
-                        for def in defs {
-                            registry.insert(def);
-                        }
-                        info!("Structure registry loaded with {} definitions", count);
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to parse structure definitions: {e}; using defaults");
-                    for def in default_structure_definitions() {
-                        registry.insert(def);
-                    }
-                }
-            },
+            info!("Structure registry loaded with {} definitions", count);
         }
-    } else {
-        info!("scripts/structures directory not found; using default structure definitions");
-        for def in default_structure_definitions() {
-            registry.insert(def);
+        Ok(_) => {
+            info!("No structure definitions found in scripts; using defaults");
+            for def in default_structure_definitions() {
+                registry.insert(def);
+            }
+        }
+        Err(e) => {
+            warn!("Failed to parse structure definitions: {e}; using defaults");
+            for def in default_structure_definitions() {
+                registry.insert(def);
+            }
         }
     }
 }

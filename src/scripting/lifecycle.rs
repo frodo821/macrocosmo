@@ -31,19 +31,11 @@ fn run_handlers(lua: &Lua, table_name: &str) -> Result<(), mlua::Error> {
 }
 
 /// Startup system that runs lifecycle hooks after all scripts have been loaded.
+/// Scripts are loaded by `load_all_scripts`; this system only executes callbacks.
 /// Runs on_scripts_loaded and on_game_start hooks (on_game_load is reserved for
 /// save/load which is not yet implemented).
 pub fn run_lifecycle_hooks(engine: Res<ScriptEngine>) {
     let lua = engine.lua();
-
-    // Load lifecycle scripts
-    let lifecycle_dir = std::path::Path::new("scripts/lifecycle");
-    if lifecycle_dir.exists() {
-        match engine.load_directory(lifecycle_dir) {
-            Ok(()) => info!("Lifecycle scripts loaded"),
-            Err(e) => warn!("Failed to load lifecycle scripts: {e}"),
-        }
-    }
 
     // Run on_scripts_loaded hooks
     match run_on_scripts_loaded(lua) {

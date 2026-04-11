@@ -32,7 +32,7 @@ src/
 ├── knowledge/           # KnowledgeStore, light-speed info propagation
 ├── communication/       # Messages, PendingCommand, CommandLog
 ├── technology/          # TechTree, GlobalParams, GameFlags, research (Lua-loaded)
-├── scripting/           # LuaJIT ScriptEngine, define_tech(), define_building() API
+├── scripting/           # LuaJIT ScriptEngine, require(), define_xxx() API, reference system
 ├── events.rs            # GameEvent, EventLog, auto-pause
 ├── player/              # Player, StationedAt
 ├── physics/             # Distance, light delay, travel time calculations
@@ -46,8 +46,18 @@ src/
 │   ├── bottom_bar.rs    # Event log
 │   └── overlays.rs      # Research panel
 ├── setup/               # Initial fleet spawn
-scripts/tech/            # Lua technology definitions (15 techs, 4 branches)
-scripts/buildings/       # Lua building definitions (6 building types)
+scripts/
+├── init.lua             # Single entrypoint — require() loads everything in order
+├── tech/                # Technology definitions (15 techs, 4 branches)
+├── ships/               # Slot types, hulls, modules, designs
+├── buildings/           # Building definitions (6 types)
+├── structures/          # Deep space structure definitions
+├── species/             # Species definitions
+├── jobs/                # Job definitions
+├── stars/               # Star type definitions
+├── planets/             # Planet type definitions
+├── events/              # Event definitions
+└── lifecycle/           # Lifecycle hooks (on_game_start, etc.)
 tests/                   # 145+ tests (unit + integration)
 ```
 
@@ -91,13 +101,43 @@ tests/                   # 145+ tests (unit + integration)
 - `click_select_system` excluded from full_test_app (needs EguiContexts)
 
 ### Lua Scripting
-- Tech definitions in `scripts/tech/*.lua`
-- `define_tech { id, name, branch, cost, prerequisites, effects, description }`
-- Building definitions in `scripts/buildings/*.lua`
-- `define_building { id, name, cost, build_time, maintenance, production_bonus }`
+
+**Single entrypoint.** `scripts/init.lua` is the sole entrypoint for all Lua definitions. It uses `require()` to load subsystems in dependency order. Individual plugins no longer call `load_directory()` — they only parse accumulators after `load_all_scripts` runs.
+
+**Startup ordering:**
+```
+init_scripting → load_all_scripts → [load_galaxy_types, load_building_registry,
+                                      load_technologies, load_ship_designs,
+                                      load_structure_definitions, load_species_and_jobs]
+                                   → run_lifecycle_hooks
+```
+
+**`define_xxx` returns references.** Every `define_xxx { id = "..." }` call returns the table it received, tagged with `_def_type`. This enables return-value based cross-references instead of string IDs:
+```lua
+-- scripts/tech/industrial.lua
+local automated_mining = define_tech { id = "industrial_automated_mining", ... }
+local orbital_fabrication = define_tech {
+    id = "industrial_orbital_fabrication",
+    prerequisites = { automated_mining },  -- reference, not string
+    ...
+}
+return { automated_mining = automated_mining, orbital_fabrication = orbital_fabrication }
+```
+
+**`require()` for dependencies.** Lua scripts use standard `require()` to import definitions from other modules:
+```lua
+-- scripts/ships/designs.lua
+local hulls = require("ships.hulls")
+local modules = require("ships.modules")
+define_ship_design { hull = hulls.corvette, modules = { ... } }
+```
+
+**`forward_ref(id)` for not-yet-defined items.** Returns a placeholder table `{ _def_type = "forward_ref", id = id }` for items that will be defined later.
+
+**Backward compatibility.** Rust-side parsers accept both string IDs and reference tables via `extract_ref_id()`. Condition helpers (`has_tech`, `has_building`, `has_modifier`) also accept both forms.
+
 - BuildingRegistry resource loaded at startup; BuildingType enum still used for runtime logic
-- Fallback: `create_initial_tech_tree()` if scripts/ directory is missing (for tests)
-- Future: events, ships also Lua-defined; BuildingType to be replaced by BuildingRegistry
+- Fallback: `create_initial_tech_tree()` if scripts are missing (for tests)
 
 ## Common Pitfalls
 
