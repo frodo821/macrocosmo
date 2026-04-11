@@ -489,25 +489,27 @@ fn test_ftl_range_bonus_extends_range() {
 
 #[test]
 fn test_scrap_ship_refund_amounts() {
-    // Verify scrap_refund returns 50% of build_cost for all ship types
+    // Verify scrap_refund returns 50% of build_cost for all ship types (no modules)
+    let empty_registry = macrocosmo::ship_design::ModuleRegistry::default();
+
     let (m, e) = ship_build_cost("explorer_mk1");
     assert_eq!(m, Amt::units(200));
     assert_eq!(e, Amt::units(100));
-    let (rm, re) = ship_scrap_refund("explorer_mk1");
+    let (rm, re) = ship_scrap_refund("explorer_mk1", &[], &empty_registry);
     assert_eq!(rm, Amt::units(100));
     assert_eq!(re, Amt::units(50));
 
     let (m, e) = ship_build_cost("colony_ship_mk1");
     assert_eq!(m, Amt::units(500));
     assert_eq!(e, Amt::units(300));
-    let (rm, re) = ship_scrap_refund("colony_ship_mk1");
+    let (rm, re) = ship_scrap_refund("colony_ship_mk1", &[], &empty_registry);
     assert_eq!(rm, Amt::units(250));
     assert_eq!(re, Amt::units(150));
 
     let (m, e) = ship_build_cost("courier_mk1");
     assert_eq!(m, Amt::units(100));
     assert_eq!(e, Amt::units(50));
-    let (rm, re) = ship_scrap_refund("courier_mk1");
+    let (rm, re) = ship_scrap_refund("courier_mk1", &[], &empty_registry);
     assert_eq!(rm, Amt::units(50));
     assert_eq!(re, Amt::units(25));
 }
@@ -569,8 +571,9 @@ fn test_scrap_ship_refunds_resources() {
         [0.0, 0.0, 0.0],
     );
 
-    // Get refund amounts
-    let (refund_m, refund_e) = ship_scrap_refund("explorer_mk1");
+    // Get refund amounts (no modules equipped in test ship)
+    let empty_registry = macrocosmo::ship_design::ModuleRegistry::default();
+    let (refund_m, refund_e) = ship_scrap_refund("explorer_mk1", &[], &empty_registry);
     assert_eq!(refund_m, Amt::units(100));
     assert_eq!(refund_e, Amt::units(50));
 

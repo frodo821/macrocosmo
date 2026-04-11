@@ -749,10 +749,10 @@ pub fn draw_ship_panel(
 
             // #79: Scrap Ship button (only when docked at a colony)
             if let Some(dock_system) = docked_at_colony {
-                let (refund_m, refund_e) = crate::ship::ship_scrap_refund(&design_id);
+                let (refund_m, refund_e) = crate::ship::ship_scrap_refund(&design_id, &ship_modules, module_registry);
                 let scrap_label = format!("Scrap Ship (+{} M, +{} E)", refund_m, refund_e);
                 let response = ui.button(&scrap_label)
-                    .on_hover_text("Dismantle this ship and recover 50% of build cost");
+                    .on_hover_text("Dismantle this ship and recover 50% of total value (hull + modules)");
                 if response.clicked() {
                     // Use system entity for stockpile refund
                     if let Some(sys_e) = system_entity_at_dock {

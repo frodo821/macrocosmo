@@ -424,10 +424,22 @@ pub fn ship_build_time(design_id: &str) -> i64 {
     design_preset(design_id).map(|p| p.build_time).unwrap_or(60)
 }
 
-/// Scrap refund: 50% of build cost in both minerals and energy.
-pub fn ship_scrap_refund(design_id: &str) -> (Amt, Amt) {
-    let (m, e) = ship_build_cost(design_id);
-    (Amt::milli(m.raw() / 2), Amt::milli(e.raw() / 2))
+/// Scrap refund: 50% of (hull build cost + equipped module costs).
+pub fn ship_scrap_refund(
+    design_id: &str,
+    modules: &[EquippedModule],
+    module_registry: &crate::ship_design::ModuleRegistry,
+) -> (Amt, Amt) {
+    let (hull_m, hull_e) = ship_build_cost(design_id);
+    let mut total_m = hull_m;
+    let mut total_e = hull_e;
+    for equipped in modules {
+        if let Some(def) = module_registry.get(&equipped.module_id) {
+            total_m = total_m.add(def.cost_minerals);
+            total_e = total_e.add(def.cost_energy);
+        }
+    }
+    (Amt::milli(total_m.raw() / 2), Amt::milli(total_e.raw() / 2))
 }
 
 /// Check if a design can perform surveys.
@@ -2647,13 +2659,40 @@ mod tests {
     }
 
     #[test]
-    fn scrap_refund_is_half_build_cost() {
+    fn scrap_refund_is_half_build_cost_without_modules() {
+        let empty_registry = crate::ship_design::ModuleRegistry::default();
         for design_id in ["explorer_mk1", "colony_ship_mk1", "courier_mk1"] {
             let (bm, be) = ship_build_cost(design_id);
-            let (rm, re) = ship_scrap_refund(design_id);
+            let (rm, re) = ship_scrap_refund(design_id, &[], &empty_registry);
             assert_eq!(rm, Amt::milli(bm.raw() / 2));
             assert_eq!(re, Amt::milli(be.raw() / 2));
         }
+    }
+
+    #[test]
+    fn scrap_refund_includes_module_costs() {
+        let mut registry = crate::ship_design::ModuleRegistry::default();
+        registry.insert(crate::ship_design::ModuleDefinition {
+            id: "test_weapon".into(),
+            name: "Test Weapon".into(),
+            description: String::new(),
+            slot_type: "weapon".into(),
+            cost_minerals: Amt::units(100),
+            cost_energy: Amt::units(50),
+            modifiers: vec![],
+            weapon: None,
+            prerequisite_tech: None,
+        });
+        let modules = vec![
+            EquippedModule { slot_type: "weapon".into(), module_id: "test_weapon".into() },
+        ];
+        let (bm, be) = ship_build_cost("explorer_mk1");
+        let (rm, re) = ship_scrap_refund("explorer_mk1", &modules, &registry);
+        // Refund = 50% of (hull cost + module cost)
+        let expected_m = Amt::milli((bm.raw() + Amt::units(100).raw()) / 2);
+        let expected_e = Amt::milli((be.raw() + Amt::units(50).raw()) / 2);
+        assert_eq!(rm, expected_m);
+        assert_eq!(re, expected_e);
     }
 
     // --- #102: Survey requires docked at target system ---
