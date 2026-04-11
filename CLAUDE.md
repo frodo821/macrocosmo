@@ -62,7 +62,9 @@ src/
 │   ├── mod.rs           # UiState, 6 chained systems, map tooltips
 │   ├── params.rs        # SystemParam bundles (MainPanelWorldQueries, etc.)
 │   ├── top_bar.rs       # Time, speed, resources, ship designer button
-│   ├── side_panel.rs    # System view (full-screen), planet window, ship panel, context menu
+│   ├── system_panel.rs  # System view (full-screen), planet window, colony detail
+│   ├── ship_panel.rs    # Ship detail panel, action types, shared helpers
+│   ├── context_menu.rs  # Right-click ship command menu
 │   ├── outline.rs       # Left tree view (empire overview, tooltips)
 │   ├── bottom_bar.rs    # Event log
 │   └── overlays.rs      # Research panel, ship designer
