@@ -18,7 +18,7 @@ use crate::ship::{Cargo, CommandQueue, PendingShipCommand, RulesOfEngagement, Sh
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
-use crate::visualization::{ContextMenu, EguiWantsPointer, SelectedPlanet, SelectedShip, SelectedSystem};
+use crate::visualization::{ContextMenu, EguiWantsPointer, OutlineExpandedSystems, SelectedPlanet, SelectedShip, SelectedSystem};
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
@@ -47,7 +47,7 @@ pub fn draw_all_ui(
     mut speed: ResMut<GameSpeed>,
     overlay_state: (ResMut<ResearchPanelOpen>, ResMut<overlays::ShipDesignerState>, Res<HullRegistry>, Res<ModuleRegistry>, ResMut<ShipDesignRegistry>),
     mut selected_system: ResMut<SelectedSystem>,
-    selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>, ResMut<EguiWantsPointer>, Res<crate::visualization::GalaxyView>, Query<&Window>, Query<(&Camera, &GlobalTransform), With<Camera2d>>),
+    selection_state: (ResMut<SelectedShip>, ResMut<ContextMenu>, ResMut<SelectedPlanet>, ResMut<EguiWantsPointer>, Res<crate::visualization::GalaxyView>, Query<&Window>, Query<(&Camera, &GlobalTransform), With<Camera2d>>, ResMut<OutlineExpandedSystems>),
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     player_q: Query<(Entity, &StationedAt, Option<&AboardShip>), With<Player>>,
     mut colonies: Query<(
@@ -79,7 +79,7 @@ pub fn draw_all_ui(
     >,
     mut game_events: MessageWriter<GameEvent>,
 ) {
-    let (mut selected_ship, mut context_menu, mut selected_planet, mut egui_wants_pointer, galaxy_view, windows, camera_q) = selection_state;
+    let (mut selected_ship, mut context_menu, mut selected_planet, mut egui_wants_pointer, galaxy_view, windows, camera_q, mut outline_expanded) = selection_state;
     let (mut research_open, mut designer_state, hull_registry, module_registry, mut design_registry) = overlay_state;
     let (positions, planets, planet_entities, mut system_stockpiles, mut system_buildings_q, colonization_queues, roe_query, hostiles_query) = positions_planets_stockpiles;
     let Ok(ctx) = contexts.ctx_mut() else { return };
@@ -174,6 +174,7 @@ pub fn draw_all_ui(
         &mut selected_system,
         &mut selected_ship,
         &planets,
+        &mut outline_expanded,
     );
 
     // Galaxy map tooltips: show info when hovering over stars/ships on the map

@@ -38,6 +38,7 @@ impl Plugin for VisualizationPlugin {
         .insert_resource(SelectedShip::default())
         .insert_resource(SelectedPlanet::default())
         .insert_resource(ContextMenu::default())
+        .insert_resource(OutlineExpandedSystems::default())
         .add_systems(Startup, setup_camera)
         .add_systems(PostStartup, (spawn_star_visuals, center_camera_on_capital))
         .add_systems(Update, (
@@ -59,6 +60,16 @@ pub struct SelectedShip(pub Option<Entity>);
 
 #[derive(Resource, Default)]
 pub struct SelectedPlanet(pub Option<Entity>);
+
+/// Tracks which systems are expanded in the outline panel.
+#[derive(Resource)]
+pub struct OutlineExpandedSystems(pub std::collections::HashSet<Entity>);
+
+impl Default for OutlineExpandedSystems {
+    fn default() -> Self {
+        Self(std::collections::HashSet::new())
+    }
+}
 
 #[derive(Resource)]
 pub struct GalaxyView {

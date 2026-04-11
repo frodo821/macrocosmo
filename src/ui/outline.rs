@@ -5,7 +5,7 @@ use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
-use crate::visualization::{SelectedShip, SelectedSystem};
+use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedSystem};
 
 /// Helper: format a ship status string from ShipState.
 fn ship_status_label(state: &ShipState) -> &'static str {
@@ -16,6 +16,154 @@ fn ship_status_label(state: &ShipState) -> &'static str {
         ShipState::Surveying { .. } => "Surveying",
         ShipState::Settling { .. } => "Settling",
         ShipState::Refitting { .. } => "Refitting",
+    }
+}
+
+/// Draw a ship tooltip on hover.
+fn ship_tooltip(ui: &mut egui::Ui, ship: &Ship, state: &ShipState, hp: &ShipHitpoints, design_name: &str) {
+    ui.label(egui::RichText::new(&ship.name).strong());
+    ui.label(format!("Design: {}", design_name));
+    ui.label(format!("Status: {}", ship_status_label(state)));
+    ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
+    if hp.armor_max > 0.0 {
+        ui.label(format!("Armor: {:.0}/{:.0}", hp.armor, hp.armor_max));
+    }
+    if hp.shield_max > 0.0 {
+        ui.label(format!("Shield: {:.0}/{:.0}", hp.shield, hp.shield_max));
+    }
+}
+
+/// Draw an expandable system header with separate collapse toggle and selection.
+/// Returns whether the section is expanded.
+fn draw_system_header(
+    ui: &mut egui::Ui,
+    system_entity: Entity,
+    system_name: &str,
+    is_capital: bool,
+    is_selected: bool,
+    expanded: &mut OutlineExpandedSystems,
+    selected_system: &mut SelectedSystem,
+    planets: &Query<&Planet>,
+) -> bool {
+    let is_expanded = expanded.0.contains(&system_entity);
+
+    ui.horizontal(|ui| {
+        // Collapse/expand toggle
+        let arrow = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
+        if ui.small_button(arrow).clicked() {
+            if is_expanded {
+                expanded.0.remove(&system_entity);
+            } else {
+                expanded.0.insert(system_entity);
+            }
+        }
+
+        // System name as selectable label
+        let display_name = if is_capital {
+            format!("{} \u{2605}", system_name)
+        } else {
+            system_name.to_string()
+        };
+        let label_color = if is_selected {
+            egui::Color32::from_rgb(0, 255, 255)
+        } else {
+            egui::Color32::from_rgb(200, 200, 200)
+        };
+        let response = ui.selectable_label(
+            is_selected,
+            egui::RichText::new(&display_name).color(label_color),
+        );
+        let response = response.on_hover_ui(|ui| {
+            ui.label(egui::RichText::new(system_name).strong());
+            if is_capital {
+                ui.label("Capital system");
+            }
+            let planet_count = planets.iter().filter(|p| p.system == system_entity).count();
+            ui.label(format!("Planets: {}", planet_count));
+            ui.label("Colonized");
+        });
+        if response.clicked() {
+            selected_system.0 = Some(system_entity);
+            // Don't touch selected_ship -- selections are independent
+        }
+    });
+
+    is_expanded
+}
+
+/// Draw an expandable header for an unowned system (ships stationed elsewhere).
+fn draw_unowned_system_header(
+    ui: &mut egui::Ui,
+    system_entity: Entity,
+    system_name: &str,
+    is_selected: bool,
+    expanded: &mut OutlineExpandedSystems,
+    selected_system: &mut SelectedSystem,
+    planets: &Query<&Planet>,
+) -> bool {
+    let is_expanded = expanded.0.contains(&system_entity);
+
+    ui.horizontal(|ui| {
+        let arrow = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
+        if ui.small_button(arrow).clicked() {
+            if is_expanded {
+                expanded.0.remove(&system_entity);
+            } else {
+                expanded.0.insert(system_entity);
+            }
+        }
+
+        let label_color = if is_selected {
+            egui::Color32::from_rgb(0, 255, 255)
+        } else {
+            egui::Color32::from_rgb(160, 160, 160)
+        };
+        let response = ui.selectable_label(
+            is_selected,
+            egui::RichText::new(system_name).color(label_color),
+        );
+        let response = response.on_hover_ui(|ui| {
+            ui.label(egui::RichText::new(system_name).strong());
+            let planet_count = planets.iter().filter(|p| p.system == system_entity).count();
+            ui.label(format!("Planets: {}", planet_count));
+        });
+        if response.clicked() {
+            selected_system.0 = Some(system_entity);
+        }
+    });
+
+    is_expanded
+}
+
+/// Draw the ship list for an expanded system section.
+fn draw_ship_list(
+    ui: &mut egui::Ui,
+    ship_entries: &[(Entity, String, String)],
+    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    selected_ship: &mut SelectedShip,
+) {
+    if ship_entries.is_empty() {
+        ui.label(
+            egui::RichText::new("  (no ships)")
+                .weak()
+                .italics(),
+        );
+    } else {
+        for (ship_entity, name, design_id) in ship_entries {
+            let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
+            let label = format!("  {} ({})", name, design_name);
+            let is_selected = selected_ship.0 == Some(*ship_entity);
+            let mut response = ui.selectable_label(is_selected, &label);
+            if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
+                response = response.on_hover_ui(|ui| {
+                    ship_tooltip(ui, &ship, &state, &hp, design_name);
+                });
+            }
+            if response.clicked() {
+                selected_ship.0 = Some(*ship_entity);
+                // Don't touch selected_system -- selections are independent
+            }
+        }
     }
 }
 
@@ -38,6 +186,7 @@ pub fn draw_outline(
     selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
     planets: &Query<&Planet>,
+    expanded: &mut OutlineExpandedSystems,
 ) {
     egui::SidePanel::left("outline_panel")
         .min_width(180.0)
@@ -64,76 +213,43 @@ pub fn draw_outline(
                 b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1))
             });
 
-            for (system_entity, system_name, is_capital) in &owned_systems {
-                let header_text = if *is_capital {
-                    format!("{} \u{2605}", system_name)
-                } else {
-                    system_name.clone()
-                };
+            // Auto-expand capital system on first encounter
+            for (entity, _, is_capital) in &owned_systems {
+                if *is_capital && !expanded.0.contains(entity) {
+                    // Check if we've ever toggled this -- use a sentinel approach:
+                    // On first frame, expand capital systems by default.
+                    // We use a simple heuristic: if expanded set is empty, initialize defaults.
+                }
+            }
+            // Initialize defaults: if the expanded set has never been populated,
+            // expand capital systems by default.
+            if expanded.0.is_empty() && !owned_systems.is_empty() {
+                for (entity, _, is_capital) in &owned_systems {
+                    if *is_capital {
+                        expanded.0.insert(*entity);
+                    }
+                }
+            }
 
+            for (system_entity, system_name, is_capital) in &owned_systems {
                 let is_system_selected = selected_system.0 == Some(*system_entity);
 
-                let id = ui.make_persistent_id(format!("outline_sys_{:?}", system_entity));
-                let header_response = egui::CollapsingHeader::new(
-                    egui::RichText::new(&header_text).color(if is_system_selected {
-                        egui::Color32::from_rgb(0, 255, 255)
-                    } else {
-                        egui::Color32::from_rgb(200, 200, 200)
-                    }),
-                )
-                .id_salt(id)
-                .default_open(*is_capital)
-                .show(ui, |ui| {
-                    // List docked ships at this system
-                    let docked = ships_docked_at(*system_entity, ships);
-                    if docked.is_empty() {
-                        ui.label(
-                            egui::RichText::new("  (no ships)")
-                                .weak()
-                                .italics(),
-                        );
-                    } else {
-                        for (ship_entity, name, design_id) in &docked {
-                            let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
-                            let label = format!("  {} ({})", name, design_name);
-                            let is_selected = selected_ship.0 == Some(*ship_entity);
-                            let mut response = ui.selectable_label(is_selected, &label);
-                            // Ship tooltip
-                            if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
-                                response = response.on_hover_ui(|ui| {
-                                    ui.label(egui::RichText::new(&ship.name).strong());
-                                    ui.label(format!("Design: {}", design_name));
-                                    ui.label(format!("Status: {}", ship_status_label(&state)));
-                                    ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
-                                    if hp.armor_max > 0.0 {
-                                        ui.label(format!("Armor: {:.0}/{:.0}", hp.armor, hp.armor_max));
-                                    }
-                                    if hp.shield_max > 0.0 {
-                                        ui.label(format!("Shield: {:.0}/{:.0}", hp.shield, hp.shield_max));
-                                    }
-                                });
-                            }
-                            if response.clicked() {
-                                selected_ship.0 = Some(*ship_entity);
-                                // Don't touch selected_system — selections are independent
-                            }
-                        }
-                    }
-                });
+                let is_expanded = draw_system_header(
+                    ui,
+                    *system_entity,
+                    system_name,
+                    *is_capital,
+                    is_system_selected,
+                    expanded,
+                    selected_system,
+                    planets,
+                );
 
-                // Tooltip for system header + click handling
-                let hr = header_response.header_response.on_hover_ui(|ui| {
-                    ui.label(egui::RichText::new(system_name).strong());
-                    if *is_capital {
-                        ui.label("Capital system");
-                    }
-                    let planet_count = planets.iter().filter(|p| p.system == *system_entity).count();
-                    ui.label(format!("Planets: {}", planet_count));
-                    ui.label("Colonized");
-                });
-                if hr.clicked() {
-                    selected_system.0 = Some(*system_entity);
-                    // Don't touch selected_ship — selections are independent
+                if is_expanded {
+                    ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
+                        let docked = ships_docked_at(*system_entity, ships);
+                        draw_ship_list(ui, &docked, ships, selected_ship);
+                    });
                 }
             }
 
@@ -175,62 +291,31 @@ pub fn draw_outline(
                 egui::CollapsingHeader::new("Stationed Elsewhere")
                     .default_open(true)
                     .show(ui, |ui| {
+                        // Auto-expand unowned system headers on first encounter
+                        for (system_entity, _, _) in &unowned_system_ships {
+                            if !expanded.0.contains(system_entity) {
+                                expanded.0.insert(*system_entity);
+                            }
+                        }
+
                         for (system_entity, system_name, docked) in &unowned_system_ships {
                             let is_system_selected =
                                 selected_system.0 == Some(*system_entity);
-                            let id = ui.make_persistent_id(format!(
-                                "outline_unowned_{:?}",
-                                system_entity
-                            ));
-                            let header_response = egui::CollapsingHeader::new(
-                                egui::RichText::new(system_name).color(
-                                    if is_system_selected {
-                                        egui::Color32::from_rgb(0, 255, 255)
-                                    } else {
-                                        egui::Color32::from_rgb(160, 160, 160)
-                                    },
-                                ),
-                            )
-                            .id_salt(id)
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                for (ship_entity, name, design_id) in docked {
-                                    let design_name = crate::ship::design_preset(design_id).map(|p| p.design_name).unwrap_or(design_id);
-                                    let label =
-                                        format!("  {} ({})", name, design_name);
-                                    let is_selected =
-                                        selected_ship.0 == Some(*ship_entity);
-                                    let mut response = ui.selectable_label(is_selected, &label);
-                                    if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
-                                        response = response.on_hover_ui(|ui| {
-                                            ui.label(egui::RichText::new(&ship.name).strong());
-                                            ui.label(format!("Design: {}", design_name));
-                                            ui.label(format!("Status: {}", ship_status_label(&state)));
-                                            ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
-                                            if hp.armor_max > 0.0 {
-                                                ui.label(format!("Armor: {:.0}/{:.0}", hp.armor, hp.armor_max));
-                                            }
-                                            if hp.shield_max > 0.0 {
-                                                ui.label(format!("Shield: {:.0}/{:.0}", hp.shield, hp.shield_max));
-                                            }
-                                        });
-                                    }
-                                    if response.clicked()
-                                    {
-                                        selected_ship.0 = Some(*ship_entity);
-                                        // Don't touch selected_system — selections are independent
-                                    }
-                                }
-                            });
-                            // Tooltip for unowned system header + click handling
-                            let hr = header_response.header_response.on_hover_ui(|ui| {
-                                ui.label(egui::RichText::new(system_name).strong());
-                                let planet_count = planets.iter().filter(|p| p.system == *system_entity).count();
-                                ui.label(format!("Planets: {}", planet_count));
-                            });
-                            if hr.clicked() {
-                                selected_system.0 = Some(*system_entity);
-                                // Don't touch selected_ship — selections are independent
+
+                            let is_expanded = draw_unowned_system_header(
+                                ui,
+                                *system_entity,
+                                system_name,
+                                is_system_selected,
+                                expanded,
+                                selected_system,
+                                planets,
+                            );
+
+                            if is_expanded {
+                                ui.indent(format!("outline_unowned_ships_{:?}", system_entity), |ui| {
+                                    draw_ship_list(ui, docked, ships, selected_ship);
+                                });
                             }
                         }
                     });
@@ -263,16 +348,7 @@ pub fn draw_outline(
                             if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
                                 let design_name = crate::ship::design_preset(&ship.design_id).map(|p| p.design_name).unwrap_or(&ship.design_id);
                                 response = response.on_hover_ui(|ui| {
-                                    ui.label(egui::RichText::new(&ship.name).strong());
-                                    ui.label(format!("Design: {}", design_name));
-                                    ui.label(format!("Status: {}", status));
-                                    ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
-                                    if hp.armor_max > 0.0 {
-                                        ui.label(format!("Armor: {:.0}/{:.0}", hp.armor, hp.armor_max));
-                                    }
-                                    if hp.shield_max > 0.0 {
-                                        ui.label(format!("Shield: {:.0}/{:.0}", hp.shield, hp.shield_max));
-                                    }
+                                    ship_tooltip(ui, &ship, &_state, &hp, design_name);
                                 });
                             }
                             if response.clicked() {
@@ -303,4 +379,3 @@ fn ships_docked_at(
     result.sort_by(|a, b| a.1.cmp(&b.1));
     result
 }
-
