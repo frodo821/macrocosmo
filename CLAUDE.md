@@ -136,6 +136,8 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 
 **Backward compatibility.** Rust-side parsers accept both string IDs and reference tables via `extract_ref_id()`. Condition helpers (`has_tech`, `has_building`, `has_modifier`) also accept both forms.
 
+**Lua sandbox.** `ScriptEngine` uses `Lua::new_with()` to load only safe libraries (table, string, math, package, bit). `io`, `os`, `debug`, `ffi` are not loaded. `loadfile` and `dofile` are explicitly set to nil. Only `scripts/` directory files are loadable via `require()`.
+
 - BuildingRegistry resource loaded at startup; BuildingType enum still used for runtime logic
 - Fallback: `create_initial_tech_tree()` if scripts are missing (for tests)
 

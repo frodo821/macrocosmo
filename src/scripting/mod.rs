@@ -92,7 +92,12 @@ pub struct ScriptEngine {
 
 impl ScriptEngine {
     pub fn new() -> Result<Self, mlua::Error> {
-        let lua = Lua::new();
+        // Sandbox: only load safe libraries (no io, os, debug, ffi)
+        let lua = Lua::new_with(
+            LuaStdLib::TABLE | LuaStdLib::STRING | LuaStdLib::MATH
+                | LuaStdLib::PACKAGE | LuaStdLib::BIT,
+            mlua::LuaOptions::default(),
+        )?;
         Self::setup_globals(&lua)?;
         Ok(Self { lua })
     }
@@ -100,6 +105,10 @@ impl ScriptEngine {
     /// Configure global tables and functions available to all Lua scripts.
     pub fn setup_globals(lua: &Lua) -> Result<(), mlua::Error> {
         let globals = lua.globals();
+
+        // --- Sandbox: disable dangerous globals ---
+        globals.set("loadfile", mlua::Value::Nil)?;
+        globals.set("dofile", mlua::Value::Nil)?;
 
         // --- Set up require() search path ---
         let package: mlua::Table = globals.get("package")?;
