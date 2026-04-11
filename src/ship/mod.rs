@@ -274,6 +274,8 @@ pub enum ShipCommand {
     Survey { target: Entity },
     Colonize,
     SetROE { roe: RulesOfEngagement },
+    /// Enqueue a command into the ship's CommandQueue (for in-transit ships).
+    EnqueueCommand(QueuedCommand),
 }
 
 /// A module equipped in a specific slot on a ship.
@@ -1437,6 +1439,7 @@ pub fn process_pending_ship_commands(
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
     pending: Query<(Entity, &PendingShipCommand)>,
     mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
+    mut command_queues: Query<&mut CommandQueue>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
@@ -1453,6 +1456,19 @@ pub fn process_pending_ship_commands(
             commands.entity(cmd_entity).despawn();
             continue;
         };
+
+        // EnqueueCommand works regardless of ship state — it just adds to the queue
+        if let ShipCommand::EnqueueCommand(queued_cmd) = &pending_cmd.command {
+            if let Ok(mut queue) = command_queues.get_mut(pending_cmd.ship) {
+                info!(
+                    "Delayed queue command arrived for {}: {:?}",
+                    ship.name, queued_cmd,
+                );
+                queue.commands.push(queued_cmd.clone());
+            }
+            commands.entity(cmd_entity).despawn();
+            continue;
+        }
 
         let docked_system = match *state {
             ShipState::Docked { system } => system,
@@ -1564,6 +1580,7 @@ pub fn process_pending_ship_commands(
                 // Use try_insert: ship may have been despawned by combat
                 commands.entity(pending_cmd.ship).try_insert(roe_val);
             }
+            ShipCommand::EnqueueCommand(_) => unreachable!("handled above"),
         }
 
         commands.entity(cmd_entity).despawn();
