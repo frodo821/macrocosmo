@@ -125,6 +125,7 @@ pub fn test_app() -> App {
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
+    app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
     app.add_systems(Update, macrocosmo::time_system::advance_game_time);
     app.add_systems(
         Update,
@@ -143,6 +144,18 @@ pub fn test_app() -> App {
             tick_ship_repair,
         )
             .chain()
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    // #128: Poll route tasks after Commands from process_command_queue are flushed.
+    app.add_systems(
+        Update,
+        (
+            bevy::ecs::schedule::ApplyDeferred,
+            macrocosmo::ship::routing::poll_pending_routes,
+        )
+            .chain()
+            .after(process_command_queue)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
@@ -247,6 +260,9 @@ pub fn full_test_app() -> App {
     // --- Technology resources (only LastResearchTick remains as a global resource) ---
     app.insert_resource(technology::LastResearchTick(0));
 
+    // --- Routing resource ---
+    app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(
         Update,
@@ -264,6 +280,16 @@ pub fn full_test_app() -> App {
             resolve_combat,
             tick_ship_repair,
         ),
+    );
+    // #128: Poll route tasks after Commands from process_command_queue are flushed.
+    app.add_systems(
+        Update,
+        (
+            bevy::ecs::schedule::ApplyDeferred,
+            macrocosmo::ship::routing::poll_pending_routes,
+        )
+            .chain()
+            .after(process_command_queue),
     );
 
     // --- Colony systems (from ColonyPlugin) ---

@@ -93,8 +93,13 @@ pub fn advance_game_time(
     real_time: Res<Time>,
     mut clock: ResMut<GameClock>,
     speed: Res<GameSpeed>,
+    pending_routes: Option<Res<crate::ship::routing::RouteCalculationsPending>>,
 ) {
     if speed.hexadies_per_second <= 0.0 {
+        return;
+    }
+    // #128: Suppress time advancement while route calculations are pending.
+    if pending_routes.is_some_and(|r| r.count > 0) {
         return;
     }
     clock.accumulator += real_time.delta_secs_f64() * speed.hexadies_per_second;
