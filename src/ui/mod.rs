@@ -261,6 +261,7 @@ fn draw_outline_and_tooltips_system(
     mut egui_wants_pointer: ResMut<EguiWantsPointer>,
     mut outline_expanded: ResMut<OutlineExpandedSystems>,
     galaxy_view: Res<crate::visualization::GalaxyView>,
+    design_registry: Res<ShipDesignRegistry>,
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     colonies: Query<(
         Entity,
@@ -299,6 +300,7 @@ fn draw_outline_and_tooltips_system(
         &mut selected_ship,
         &planets,
         &mut outline_expanded,
+        &design_registry,
     );
 
     draw_map_tooltips(
@@ -311,6 +313,7 @@ fn draw_outline_and_tooltips_system(
         &colonies,
         &clock,
         &galaxy_view,
+        &design_registry,
     );
 }
 
@@ -430,6 +433,7 @@ fn draw_main_panels_system(
         &world.pending_commands,
         &registries.hull_registry,
         &registries.module_registry,
+        &registries.design_registry,
         clock.elapsed,
         &world.roe,
         &world.positions,
@@ -578,6 +582,7 @@ fn draw_main_panels_system(
         &world.planets,
         &world.planet_entities,
         &hostile_systems,
+        &registries.design_registry,
     );
     for pending_cmd in pending_ship_commands {
         commands.spawn(pending_cmd);
@@ -726,6 +731,7 @@ fn draw_map_tooltips(
     )>,
     clock: &GameClock,
     view: &crate::visualization::GalaxyView,
+    design_registry: &ShipDesignRegistry,
 ) {
     // Don't show map tooltips if pointer is over an egui area (panel, overlay, etc.)
     if ctx.is_pointer_over_area() {
@@ -829,8 +835,8 @@ fn draw_map_tooltips(
         let star_closer = best_star.is_some_and(|(_, d)| d < ship_dist);
         if !star_closer {
             if let Ok((_, ship, state, _, hp, _)) = ships.get(ship_entity) {
-                let design_name = crate::ship::design_preset(&ship.design_id)
-                    .map(|p| p.design_name)
+                let design_name = design_registry.get(&ship.design_id)
+                    .map(|d| d.name.as_str())
                     .unwrap_or(&ship.design_id);
                 let status = match &*state {
                     ShipState::Docked { .. } => "Docked",

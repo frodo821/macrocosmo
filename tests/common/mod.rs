@@ -122,6 +122,7 @@ pub fn test_app() -> App {
     app.insert_resource(create_test_building_registry());
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.init_resource::<macrocosmo::ship_design::HullRegistry>();
+    app.insert_resource(create_test_design_registry());
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -244,6 +245,7 @@ pub fn full_test_app() -> App {
     app.insert_resource(create_test_building_registry());
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.init_resource::<macrocosmo::ship_design::HullRegistry>();
+    app.insert_resource(create_test_design_registry());
     app.add_message::<GameEvent>();
 
     // --- Visualization resources ---
@@ -570,6 +572,77 @@ pub fn empire_entity(world: &mut World) -> Entity {
     query.single(world).expect("No player empire found in test world")
 }
 
+/// Create a ShipDesignRegistry populated with the standard 4 ship designs for tests.
+pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegistry {
+    use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+    let mut registry = ShipDesignRegistry::default();
+    registry.insert(ShipDesignDefinition {
+        id: "explorer_mk1".to_string(),
+        name: "Explorer Mk.I".to_string(),
+        description: String::new(),
+        hull_id: "corvette".to_string(),
+        modules: Vec::new(),
+        can_survey: true,
+        can_colonize: false,
+        maintenance: Amt::new(0, 500),
+        build_cost_minerals: Amt::units(200),
+        build_cost_energy: Amt::units(100),
+        build_time: 60,
+        hp: 50.0,
+        sublight_speed: 0.75,
+        ftl_range: 10.0,
+    });
+    registry.insert(ShipDesignDefinition {
+        id: "colony_ship_mk1".to_string(),
+        name: "Colony Ship Mk.I".to_string(),
+        description: String::new(),
+        hull_id: "frigate".to_string(),
+        modules: Vec::new(),
+        can_survey: false,
+        can_colonize: true,
+        maintenance: Amt::units(1),
+        build_cost_minerals: Amt::units(500),
+        build_cost_energy: Amt::units(300),
+        build_time: 120,
+        hp: 100.0,
+        sublight_speed: 0.5,
+        ftl_range: 15.0,
+    });
+    registry.insert(ShipDesignDefinition {
+        id: "courier_mk1".to_string(),
+        name: "Courier Mk.I".to_string(),
+        description: String::new(),
+        hull_id: "courier_hull".to_string(),
+        modules: Vec::new(),
+        can_survey: false,
+        can_colonize: false,
+        maintenance: Amt::new(0, 300),
+        build_cost_minerals: Amt::units(100),
+        build_cost_energy: Amt::units(50),
+        build_time: 30,
+        hp: 35.0,
+        sublight_speed: 0.80,
+        ftl_range: 0.0,
+    });
+    registry.insert(ShipDesignDefinition {
+        id: "scout_mk1".to_string(),
+        name: "Scout Mk.I".to_string(),
+        description: String::new(),
+        hull_id: "scout_hull".to_string(),
+        modules: Vec::new(),
+        can_survey: true,
+        can_colonize: false,
+        maintenance: Amt::new(0, 400),
+        build_cost_minerals: Amt::units(150),
+        build_cost_energy: Amt::units(80),
+        build_time: 45,
+        hp: 40.0,
+        sublight_speed: 0.85,
+        ftl_range: 10.0,
+    });
+    registry
+}
+
 /// Spawn a ship with all standard components at the given system.
 pub fn spawn_test_ship(
     world: &mut World,
@@ -578,18 +651,19 @@ pub fn spawn_test_ship(
     system: Entity,
     pos: [f64; 3],
 ) -> Entity {
-    let preset = design_preset(design_id).unwrap_or(&EXPLORER_PRESET);
-    let hull_hp = preset.hp;
+    let design_registry = create_test_design_registry();
+    let design = design_registry.get(design_id).expect(&format!("unknown test design: {}", design_id));
+    let hull_hp = design.hp;
     world
         .spawn((
             Ship {
                 name: name.to_string(),
-                design_id: preset.design_id.to_string(),
-                hull_id: preset.hull_id.to_string(),
+                design_id: design.id.clone(),
+                hull_id: design.hull_id.clone(),
                 modules: Vec::new(),
                 owner: Owner::Neutral,
-                sublight_speed: preset.sublight_speed,
-                ftl_range: preset.ftl_range,
+                sublight_speed: design.sublight_speed,
+                ftl_range: design.ftl_range,
                 player_aboard: false,
                 home_port: system,
             },

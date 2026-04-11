@@ -240,21 +240,59 @@ pub fn draw_ship_designer(
                                 unique_id = format!("{}_{}", design_id, counter);
                             }
                             let modules = build_design_modules(state, hull);
+                            let mod_defs: Vec<_> = modules.iter()
+                                .filter_map(|a| module_registry.get(&a.module_id))
+                                .collect();
+                            let (cost_m, cost_e, build_time, maintenance) = crate::ship_design::design_cost(hull, &mod_defs);
+                            let (hp, sublight_speed, _evasion) = crate::ship_design::design_stats(hull, &mod_defs);
+                            let ftl_range = mod_defs.iter()
+                                .flat_map(|m| m.modifiers.iter())
+                                .filter(|m| m.target == "ship.ftl_range")
+                                .map(|m| m.base_add)
+                                .sum::<f64>();
                             action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
                                 id: unique_id,
                                 name: state.design_name.trim().to_string(),
                                 description: String::new(),
                                 hull_id: hull.id.clone(),
                                 modules,
+                                can_survey: false,
+                                can_colonize: false,
+                                maintenance,
+                                build_cost_minerals: cost_m,
+                                build_cost_energy: cost_e,
+                                build_time,
+                                hp,
+                                sublight_speed,
+                                ftl_range,
                             });
                         } else {
                             let modules = build_design_modules(state, hull);
+                            let mod_defs: Vec<_> = modules.iter()
+                                .filter_map(|a| module_registry.get(&a.module_id))
+                                .collect();
+                            let (cost_m, cost_e, build_time, maintenance) = crate::ship_design::design_cost(hull, &mod_defs);
+                            let (hp, sublight_speed, _evasion) = crate::ship_design::design_stats(hull, &mod_defs);
+                            let ftl_range = mod_defs.iter()
+                                .flat_map(|m| m.modifiers.iter())
+                                .filter(|m| m.target == "ship.ftl_range")
+                                .map(|m| m.base_add)
+                                .sum::<f64>();
                             action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
                                 id: design_id,
                                 name: state.design_name.trim().to_string(),
                                 description: String::new(),
                                 hull_id: hull.id.clone(),
                                 modules,
+                                can_survey: false,
+                                can_colonize: false,
+                                maintenance,
+                                build_cost_minerals: cost_m,
+                                build_cost_energy: cost_e,
+                                build_time,
+                                hp,
+                                sublight_speed,
+                                ftl_range,
                             });
                         }
                     }

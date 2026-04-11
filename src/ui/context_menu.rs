@@ -7,6 +7,7 @@ use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship_design::ShipDesignRegistry;
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
 use crate::visualization::SelectedShip;
@@ -30,6 +31,7 @@ pub fn draw_context_menu(
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
     hostile_systems: &std::collections::HashSet<Entity>,
+    design_registry: &ShipDesignRegistry,
 ) {
     if !context_menu.open {
         return;
@@ -161,11 +163,11 @@ pub fn draw_context_menu(
     // #108: Unified move — auto-route picks FTL vs sublight
     let can_move = !same_system;
     // Survey: can survey unsurveyed system (docked: immediate/delayed, non-docked: queued)
-    let can_survey = crate::ship::design_can_survey(&design_id) && !target_surveyed;
+    let can_survey = design_registry.can_survey(&design_id) && !target_surveyed;
     // #52/#56: Check for hostile presence at target system
     let target_has_hostile = hostile_systems.contains(&target_entity);
     // Colonize: can colonize surveyed system with at least one habitable uncolonized planet and no hostiles
-    let can_colonize = crate::ship::design_can_colonize(&design_id) && has_colonizable_planet && target_surveyed && !target_has_hostile;
+    let can_colonize = design_registry.can_colonize(&design_id) && has_colonizable_planet && target_surveyed && !target_has_hostile;
 
     let mut command: Option<ShipState> = None;
     let mut queued_command: Option<QueuedCommand> = None;

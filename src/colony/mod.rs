@@ -281,8 +281,8 @@ impl BuildOrder {
     }
 
     /// Returns the build time in hexadies for a given design_id.
-    pub fn build_time_for(design_id: &str) -> i64 {
-        crate::ship::ship_build_time(design_id)
+    pub fn build_time_for(design_id: &str, design_registry: &crate::ship_design::ShipDesignRegistry) -> i64 {
+        design_registry.build_time(design_id)
     }
 }
 
@@ -701,6 +701,7 @@ pub fn sync_building_modifiers(
 /// Runs BEFORE tick_maintenance so that `.final_value()` is up-to-date.
 pub fn sync_maintenance_modifiers(
     registry: Res<BuildingRegistry>,
+    design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     mut colonies: Query<(&Colony, &mut MaintenanceCost, Option<&Buildings>)>,
     ships: Query<(Entity, &Ship)>,
     stars: Query<&StarSystem>,
@@ -740,7 +741,7 @@ pub fn sync_maintenance_modifiers(
         ship_costs_by_system
             .entry(effective_port)
             .or_default()
-            .push((format!("ship_maint_{:?}", entity), crate::ship::ship_maintenance_cost(&ship.design_id)));
+            .push((format!("ship_maint_{:?}", entity), design_registry.maintenance(&ship.design_id)));
     }
 
     for (colony, mut maint, buildings) in &mut colonies {
@@ -1110,6 +1111,7 @@ pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
+    design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     mut colonies: Query<(&Colony, &mut BuildQueue)>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     positions: Query<&Position>,
@@ -1206,6 +1208,7 @@ pub fn tick_build_queue(
                     result.system,
                     *pos,
                     ship_owner,
+                    &design_registry,
                 );
                 let sys_name = stars.get(result.system).map(|s| s.name.clone()).unwrap_or_default();
                 events.write(GameEvent {
@@ -1713,6 +1716,7 @@ pub fn update_sovereignty(
 /// Runs after production so that newly generated energy is available.
 pub fn tick_maintenance(
     registry: Res<BuildingRegistry>,
+    design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     colonies: Query<(&Colony, Option<&MaintenanceCost>, Option<&Buildings>)>,
@@ -1761,7 +1765,7 @@ pub fn tick_maintenance(
         let entry = ship_maintenance_by_system
             .entry(effective_port)
             .or_insert(Amt::ZERO);
-        *entry = entry.add(crate::ship::ship_maintenance_cost(&ship.design_id));
+        *entry = entry.add(design_registry.maintenance(&ship.design_id));
     }
 
     // Collect maintenance costs per system
@@ -1984,6 +1988,60 @@ pub fn advance_production_tick(clock: Res<GameClock>, mut last_tick: ResMut<Last
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+
+    fn test_design_registry() -> ShipDesignRegistry {
+        let mut registry = ShipDesignRegistry::default();
+        registry.insert(ShipDesignDefinition {
+            id: "explorer_mk1".to_string(),
+            name: "Explorer Mk.I".to_string(),
+            description: String::new(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            can_survey: true,
+            can_colonize: false,
+            maintenance: Amt::new(0, 500),
+            build_cost_minerals: Amt::units(200),
+            build_cost_energy: Amt::units(100),
+            build_time: 60,
+            hp: 50.0,
+            sublight_speed: 0.75,
+            ftl_range: 10.0,
+        });
+        registry.insert(ShipDesignDefinition {
+            id: "colony_ship_mk1".to_string(),
+            name: "Colony Ship Mk.I".to_string(),
+            description: String::new(),
+            hull_id: "frigate".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: true,
+            maintenance: Amt::units(1),
+            build_cost_minerals: Amt::units(500),
+            build_cost_energy: Amt::units(300),
+            build_time: 120,
+            hp: 100.0,
+            sublight_speed: 0.5,
+            ftl_range: 15.0,
+        });
+        registry.insert(ShipDesignDefinition {
+            id: "courier_mk1".to_string(),
+            name: "Courier Mk.I".to_string(),
+            description: String::new(),
+            hull_id: "courier_hull".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::new(0, 300),
+            build_cost_minerals: Amt::units(100),
+            build_cost_energy: Amt::units(50),
+            build_time: 30,
+            hp: 35.0,
+            sublight_speed: 0.80,
+            ftl_range: 0.0,
+        });
+        registry
+    }
 
     fn make_order(minerals_cost: Amt, minerals_invested: Amt, energy_cost: Amt, energy_invested: Amt) -> BuildOrder {
         let build_time = 60;
@@ -2076,10 +2134,11 @@ mod tests {
 
     #[test]
     fn build_order_build_time_for() {
-        assert_eq!(BuildOrder::build_time_for("explorer_mk1"), 60);
-        assert_eq!(BuildOrder::build_time_for("colony_ship_mk1"), 120);
-        assert_eq!(BuildOrder::build_time_for("courier_mk1"), 30);
-        assert_eq!(BuildOrder::build_time_for("unknown"), 60);
+        let registry = test_design_registry();
+        assert_eq!(BuildOrder::build_time_for("explorer_mk1", &registry), 60);
+        assert_eq!(BuildOrder::build_time_for("colony_ship_mk1", &registry), 120);
+        assert_eq!(BuildOrder::build_time_for("courier_mk1", &registry), 30);
+        assert_eq!(BuildOrder::build_time_for("unknown", &registry), 60);
     }
 
     // --- #46: Port tests ---

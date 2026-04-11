@@ -130,12 +130,32 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
         // Parse modules array
         let modules = parse_design_modules(&table)?;
 
+        // Design-level overrides / capability flags
+        let can_survey: bool = table.get::<Option<bool>>("can_survey")?.unwrap_or(false);
+        let can_colonize: bool = table.get::<Option<bool>>("can_colonize")?.unwrap_or(false);
+        let maintenance_f64: f64 = table.get::<Option<f64>>("maintenance")?.unwrap_or(0.0);
+        let maintenance = Amt::from_f64(maintenance_f64);
+        let (build_cost_minerals, build_cost_energy) = parse_cost_table(&table, "build_cost")?;
+        let build_time: i64 = table.get::<Option<i64>>("build_time")?.unwrap_or(60);
+        let hp: f64 = table.get::<Option<f64>>("hp")?.unwrap_or(100.0);
+        let sublight_speed: f64 = table.get::<Option<f64>>("sublight_speed")?.unwrap_or(0.5);
+        let ftl_range: f64 = table.get::<Option<f64>>("ftl_range")?.unwrap_or(0.0);
+
         result.push(ShipDesignDefinition {
             id,
             name,
             description,
             hull_id,
             modules,
+            can_survey,
+            can_colonize,
+            maintenance,
+            build_cost_minerals,
+            build_cost_energy,
+            build_time,
+            hp,
+            sublight_speed,
+            ftl_range,
         });
     }
 

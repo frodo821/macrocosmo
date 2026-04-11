@@ -4,6 +4,7 @@ use crate::components::Position;
 use crate::galaxy::StarSystem;
 use crate::player::PlayerEmpire;
 use crate::ship::{spawn_ship, Owner};
+use crate::ship_design::ShipDesignRegistry;
 
 pub struct GameSetupPlugin;
 
@@ -22,6 +23,7 @@ fn spawn_initial_ships(
     mut commands: Commands,
     capitals: Query<(Entity, &StarSystem, &Position)>,
     empire_q: Query<Entity, With<PlayerEmpire>>,
+    design_registry: Res<ShipDesignRegistry>,
 ) {
     let Some((capital_entity, capital_system, capital_pos)) =
         capitals.iter().find(|(_, sys, _)| sys.is_capital)
@@ -40,10 +42,10 @@ fn spawn_initial_ships(
 
     let pos = *capital_pos;
 
-    spawn_ship(&mut commands, "explorer_mk1", "Explorer-1".to_string(), capital_entity, pos, owner);
-    spawn_ship(&mut commands, "explorer_mk1", "Explorer-2".to_string(), capital_entity, pos, owner);
-    spawn_ship(&mut commands, "courier_mk1", "Courier-1".to_string(), capital_entity, pos, owner);
-    spawn_ship(&mut commands, "colony_ship_mk1", "Colony Ship-1".to_string(), capital_entity, pos, owner);
+    spawn_ship(&mut commands, "explorer_mk1", "Explorer-1".to_string(), capital_entity, pos, owner, &design_registry);
+    spawn_ship(&mut commands, "explorer_mk1", "Explorer-2".to_string(), capital_entity, pos, owner, &design_registry);
+    spawn_ship(&mut commands, "courier_mk1", "Courier-1".to_string(), capital_entity, pos, owner, &design_registry);
+    spawn_ship(&mut commands, "colony_ship_mk1", "Colony Ship-1".to_string(), capital_entity, pos, owner, &design_registry);
 
     info!(
         "Initial fleet spawned at capital {}: 2 explorers, 1 courier, 1 colony ship",
