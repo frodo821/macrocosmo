@@ -44,9 +44,23 @@ pub struct BuildingDefinition {
 }
 
 /// Parameters for a named building capability.
+/// Supports arbitrary named parameters (e.g. `ftl_range_bonus`, `travel_time_factor`).
+/// For simple capabilities, `params` may be empty or contain a single "value" entry.
 #[derive(Clone, Debug, Default)]
 pub struct CapabilityParams {
-    pub value: f64,
+    pub params: HashMap<String, f64>,
+}
+
+impl CapabilityParams {
+    /// Get a named parameter value, or None if not present.
+    pub fn get(&self, key: &str) -> Option<f64> {
+        self.params.get(key).copied()
+    }
+
+    /// Get a named parameter value, or a default if not present.
+    pub fn get_or(&self, key: &str, default: f64) -> f64 {
+        self.params.get(key).copied().unwrap_or(default)
+    }
 }
 
 /// Strongly-typed building identifier. Wraps the string id from BuildingDefinition.
@@ -246,8 +260,11 @@ fn parse_production_bonus_table(
     }
 }
 
-/// Parse the `capabilities = { name = { value = N }, ... }` sub-table.
-/// Also supports `capabilities = { name = true }` (value defaults to 0).
+/// Parse the `capabilities = { name = { param = N, ... }, ... }` sub-table.
+/// Supports:
+/// - `capabilities = { name = true }` — empty params
+/// - `capabilities = { name = { ftl_range_bonus = 10.0, travel_time_factor = 0.8 } }` — named params
+/// - `capabilities = { name = { value = N } }` — legacy single-value form
 fn parse_capabilities_table(table: &mlua::Table) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
     let cap_value: mlua::Value = table.get("capabilities")?;
     match cap_value {
@@ -257,8 +274,12 @@ fn parse_capabilities_table(table: &mlua::Table) -> Result<HashMap<String, Capab
                 let (key, val) = pair?;
                 let params = match val {
                     mlua::Value::Table(param_table) => {
-                        let value: f64 = param_table.get::<Option<f64>>("value")?.unwrap_or(0.0);
-                        CapabilityParams { value }
+                        let mut map = HashMap::new();
+                        for kv in param_table.pairs::<String, f64>() {
+                            let (k, v) = kv?;
+                            map.insert(k, v);
+                        }
+                        CapabilityParams { params: map }
                     }
                     mlua::Value::Boolean(true) => CapabilityParams::default(),
                     _ => CapabilityParams::default(),

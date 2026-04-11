@@ -8,11 +8,13 @@ use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 use super::{Ship, ShipState, INITIAL_FTL_SPEED_C};
 
-/// Port FTL range bonus in light-years (#46)
-pub const PORT_FTL_RANGE_BONUS_LY: f64 = 10.0;
+/// Default port FTL range bonus in light-years (#46).
+/// Used as fallback when BuildingRegistry is unavailable; canonical values live in Lua.
+pub const DEFAULT_PORT_FTL_RANGE_BONUS_LY: f64 = 10.0;
 
-/// Port FTL travel time reduction factor (#46): 20% reduction
-pub const PORT_TRAVEL_TIME_FACTOR: f64 = 0.8;
+/// Default port FTL travel time reduction factor (#46): 20% reduction.
+/// Used as fallback when BuildingRegistry is unavailable; canonical values live in Lua.
+pub const DEFAULT_PORT_TRAVEL_TIME_FACTOR: f64 = 0.8;
 
 // --- Sub-light travel ---
 
@@ -119,7 +121,7 @@ pub fn start_ftl_travel(
     dest_pos: &Position,
     current_time: i64,
 ) -> Result<(), &'static str> {
-    start_ftl_travel_with_bonus(ship_state, ship, origin_system, destination_system, origin_pos, dest_pos, current_time, 0.0, 1.0, false)
+    start_ftl_travel_with_bonus(ship_state, ship, origin_system, destination_system, origin_pos, dest_pos, current_time, 0.0, 1.0, PortParams::NONE)
 }
 
 pub fn start_ftl_travel_with_bonus(
@@ -132,14 +134,13 @@ pub fn start_ftl_travel_with_bonus(
     current_time: i64,
     ftl_range_bonus: f64,
     ftl_speed_multiplier: f64,
-    origin_has_port: bool,
+    port_params: PortParams,
 ) -> Result<(), &'static str> {
     if ship.ftl_range <= 0.0 {
         return Err("Ship has no FTL capability");
     }
 
-    let port_range_bonus = if origin_has_port { PORT_FTL_RANGE_BONUS_LY } else { 0.0 };
-    let effective_range = ship.ftl_range + ftl_range_bonus + port_range_bonus;
+    let effective_range = ship.ftl_range + ftl_range_bonus + port_params.ftl_range_bonus;
     let dist = distance_ly(origin_pos, dest_pos);
     if dist > effective_range {
         return Err("Destination is beyond FTL range");
@@ -147,8 +148,8 @@ pub fn start_ftl_travel_with_bonus(
 
     let effective_ftl_speed = INITIAL_FTL_SPEED_C * ftl_speed_multiplier;
     let mut travel_hexadies = (dist * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
-    if origin_has_port {
-        travel_hexadies = (travel_hexadies as f64 * PORT_TRAVEL_TIME_FACTOR).ceil() as i64;
+    if port_params.has_port {
+        travel_hexadies = (travel_hexadies as f64 * port_params.travel_time_factor).ceil() as i64;
     }
 
     *ship_state = ShipState::InFTL {
@@ -159,6 +160,53 @@ pub fn start_ftl_travel_with_bonus(
     };
 
     Ok(())
+}
+
+/// Port facility parameters extracted from building capabilities.
+/// Encapsulates all port-related bonuses for FTL travel.
+#[derive(Clone, Copy, Debug)]
+pub struct PortParams {
+    pub has_port: bool,
+    pub ftl_range_bonus: f64,
+    pub travel_time_factor: f64,
+}
+
+impl PortParams {
+    /// No port — zero bonuses.
+    pub const NONE: PortParams = PortParams {
+        has_port: false,
+        ftl_range_bonus: 0.0,
+        travel_time_factor: 1.0,
+    };
+
+    /// Create PortParams from SystemBuildings and BuildingRegistry.
+    pub fn from_system_buildings(
+        sb: &crate::colony::SystemBuildings,
+        registry: &crate::scripting::building_api::BuildingRegistry,
+    ) -> Self {
+        if sb.has_port(registry) {
+            PortParams {
+                has_port: true,
+                ftl_range_bonus: sb.port_ftl_range_bonus(registry),
+                travel_time_factor: sb.port_travel_time_factor(registry),
+            }
+        } else {
+            Self::NONE
+        }
+    }
+
+    /// Create PortParams from a boolean (legacy compatibility, uses default constants).
+    pub fn from_bool(origin_has_port: bool) -> Self {
+        if origin_has_port {
+            PortParams {
+                has_port: true,
+                ftl_range_bonus: DEFAULT_PORT_FTL_RANGE_BONUS_LY,
+                travel_time_factor: DEFAULT_PORT_TRAVEL_TIME_FACTOR,
+            }
+        } else {
+            Self::NONE
+        }
+    }
 }
 
 pub fn process_ftl_travel(

@@ -502,15 +502,16 @@ mod tests {
 
         // Without port
         let mut state_no_port = ShipState::Docked { system: origin };
-        let _ = start_ftl_travel_with_bonus(&mut state_no_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, false);
+        let _ = start_ftl_travel_with_bonus(&mut state_no_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, PortParams::NONE);
         let time_no_port = match state_no_port {
             ShipState::InFTL { arrival_at, .. } => arrival_at,
             _ => panic!("Expected InFTL state"),
         };
 
-        // With port
+        // With port (using Lua-defined values)
         let mut state_port = ShipState::Docked { system: origin };
-        let _ = start_ftl_travel_with_bonus(&mut state_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, true);
+        let port_params = PortParams { has_port: true, ftl_range_bonus: 10.0, travel_time_factor: 0.8 };
+        let _ = start_ftl_travel_with_bonus(&mut state_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, port_params);
         let time_port = match state_port {
             ShipState::InFTL { arrival_at, .. } => arrival_at,
             _ => panic!("Expected InFTL state"),
@@ -518,7 +519,7 @@ mod tests {
 
         // Port should reduce travel time by 20%
         assert!(time_port < time_no_port, "Port should reduce FTL travel time");
-        let expected = (time_no_port as f64 * PORT_TRAVEL_TIME_FACTOR).ceil() as i64;
+        let expected = (time_no_port as f64 * 0.8).ceil() as i64;
         assert_eq!(time_port, expected);
     }
 
@@ -534,13 +535,14 @@ mod tests {
 
         // Without port: should fail
         let mut state = ShipState::Docked { system: origin };
-        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, false);
+        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, PortParams::NONE);
         assert_eq!(result, Err("Destination is beyond FTL range"));
 
         // With port: +10 ly range, so 25 ly total, should succeed
         let mut state = ShipState::Docked { system: origin };
-        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, true);
-        assert!(result.is_ok(), "Port should extend FTL range by {} ly", PORT_FTL_RANGE_BONUS_LY);
+        let port_params = PortParams { has_port: true, ftl_range_bonus: 10.0, travel_time_factor: 0.8 };
+        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, port_params);
+        assert!(result.is_ok(), "Port should extend FTL range by 10 ly");
     }
 
     // --- #51: Ship maintenance cost tests ---

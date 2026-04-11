@@ -17,7 +17,7 @@ use crate::time_system::HEXADIES_PER_YEAR;
 use super::{
     CommandQueue, Ship, ShipState, QueuedCommand,
     start_ftl_travel_with_bonus, start_sublight_travel_with_bonus,
-    INITIAL_FTL_SPEED_C, PORT_FTL_RANGE_BONUS_LY,
+    PortParams,
 };
 
 /// Maximum sublight edge distance in light-years (caps edge count in A*).
@@ -314,6 +314,7 @@ pub fn poll_pending_routes(
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     system_buildings: Query<&crate::colony::SystemBuildings>,
     mut pending_count: ResMut<RouteCalculationsPending>,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -420,7 +421,9 @@ pub fn poll_pending_routes(
                     queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
                     continue;
                 };
-                let origin_has_port = system_buildings.get(docked_system).is_ok_and(|sb| sb.has_port());
+                let port_params = system_buildings.get(docked_system)
+                    .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
+                    .unwrap_or(PortParams::NONE);
                 match start_ftl_travel_with_bonus(
                     &mut state,
                     ship,
@@ -431,7 +434,7 @@ pub fn poll_pending_routes(
                     clock.elapsed,
                     global_params.ftl_range_bonus,
                     global_params.ftl_speed_multiplier,
-                    origin_has_port,
+                    port_params,
                 ) {
                     Ok(()) => {
                         info!(

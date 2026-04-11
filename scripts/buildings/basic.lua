@@ -45,7 +45,7 @@ local shipyard = define_building {
     build_time = 30,
     maintenance = 1.0,
     is_system_building = true,
-    capabilities = { shipyard = true },
+    capabilities = { shipyard = { concurrent_builds = 1 } },
 }
 
 local port = define_building {
@@ -56,7 +56,7 @@ local port = define_building {
     build_time = 40,
     maintenance = 0.5,
     is_system_building = true,
-    capabilities = { port = true },
+    capabilities = { port = { ftl_range_bonus = 10.0, travel_time_factor = 0.8 } },
 }
 
 local farm = define_building {

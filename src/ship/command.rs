@@ -6,7 +6,7 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
 use super::movement::{
-    start_ftl_travel_with_bonus, start_sublight_travel_with_bonus, PORT_FTL_RANGE_BONUS_LY,
+    start_ftl_travel_with_bonus, start_sublight_travel_with_bonus, PortParams,
 };
 use super::survey::start_survey_with_bonus;
 use super::settlement::SETTLING_DURATION_HEXADIES;
@@ -32,6 +32,7 @@ pub fn process_pending_ship_commands(
     system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
     design_registry: Res<ShipDesignRegistry>,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -86,7 +87,9 @@ pub fn process_pending_ship_commands(
                     continue;
                 };
                 // Try FTL first, fall back to sublight
-                let origin_has_port = system_buildings.get(docked_system).is_ok_and(|sb| sb.has_port());
+                let port_params = system_buildings.get(docked_system)
+                    .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
+                    .unwrap_or(PortParams::NONE);
                 match start_ftl_travel_with_bonus(
                     &mut state,
                     &ship,
@@ -97,7 +100,7 @@ pub fn process_pending_ship_commands(
                     clock.elapsed,
                     global_params.ftl_range_bonus,
                     global_params.ftl_speed_multiplier,
-                    origin_has_port,
+                    port_params,
                 ) {
                     Ok(()) => {
                         info!(
@@ -195,6 +198,7 @@ pub fn process_command_queue(
     _planets: Query<&crate::galaxy::Planet>,
     mut pending_count: ResMut<routing::RouteCalculationsPending>,
     design_registry: Res<ShipDesignRegistry>,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
@@ -236,10 +240,11 @@ pub fn process_command_queue(
                     continue;
                 };
 
-                let origin_has_port = system_buildings.get(docked_system).is_ok_and(|sb| sb.has_port());
-                let port_range_bonus = if origin_has_port { PORT_FTL_RANGE_BONUS_LY } else { 0.0 };
+                let port_params = system_buildings.get(docked_system)
+                    .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
+                    .unwrap_or(PortParams::NONE);
                 let effective_ftl_range = if ship.ftl_range > 0.0 {
-                    ship.ftl_range + global_params.ftl_range_bonus + port_range_bonus
+                    ship.ftl_range + global_params.ftl_range_bonus + port_params.ftl_range_bonus
                 } else {
                     0.0
                 };

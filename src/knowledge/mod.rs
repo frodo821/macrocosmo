@@ -208,6 +208,7 @@ pub fn propagate_knowledge(
     planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
     hostiles: Query<&crate::galaxy::HostilePresence>,
     ships: Query<(Entity, &Ship, &ShipState, &crate::ship::ShipHitpoints)>,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     let Ok(mut store) = empire_q.single_mut() else {
         return;
@@ -260,9 +261,9 @@ pub fn propagate_knowledge(
         let has_hostile = hostile.is_some();
         let hostile_strength = hostile.map(|h| h.strength).unwrap_or(0.0);
 
-        // #176: System buildings info
-        let has_port = sys_buildings.map(|sb| sb.has_port()).unwrap_or(false);
-        let has_shipyard = sys_buildings.map(|sb| sb.has_building("shipyard")).unwrap_or(false);
+        // #176: System buildings info (capability-based check via BuildingRegistry)
+        let has_port = sys_buildings.map(|sb| sb.has_port(&building_registry)).unwrap_or(false);
+        let has_shipyard = sys_buildings.map(|sb| sb.has_shipyard(&building_registry)).unwrap_or(false);
 
         // #176: System attributes — derive from best planet in the system
         let best_attrs = planet_attrs
