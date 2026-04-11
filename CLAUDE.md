@@ -27,7 +27,7 @@ src/
 ├── lib.rs               # pub mod re-exports for tests
 ├── amount.rs            # Amt (u64 fixed-point ×1000), SignedAmt
 ├── modifier.rs          # Modifier, ModifiedValue, ScopedModifiers, CachedValue
-├── condition.rs         # Condition tree (All/Any/OneOf/Not) for prerequisites
+├── condition.rs         # Condition tree (All/Any/OneOf/Not), ConditionScope, ScopedFlags, EvalContext
 ├── components.rs        # Position
 ├── galaxy/              # StarSystem, Planet, SystemAttributes, Sovereignty, HostilePresence, generate_galaxy
 ├── ship/                # Ship, ShipState, movement, FTL, survey, settling, command queue, ROE, combat
@@ -39,7 +39,8 @@ src/
 ├── technology/          # TechTree, GlobalParams, GameFlags, research (Lua-loaded)
 ├── scripting/           # LuaJIT ScriptEngine, require(), define_xxx() API, reference system
 │   ├── mod.rs           # ScriptEngine, sandbox, load_all_scripts, setup_globals
-│   ├── condition_parser.rs # Condition tree parsing from Lua tables
+│   ├── condition_parser.rs # Condition tree parsing from Lua tables (incl. scope)
+│   ├── condition_ctx.rs    # ConditionCtx + ScopeHandle UserData for Lua function prerequisites
 │   ├── ship_design_api.rs  # Hull/Module/Design parsing
 │   ├── building_api.rs     # Building definition parsing
 │   ├── structure_api.rs    # DeepSpaceStructure definition parsing
@@ -81,7 +82,7 @@ scripts/
 assets/
 └── shaders/
     └── territory.wgsl   # Territory visualization fragment shader
-tests/                   # 370 tests (263 unit + 107 integration, 11 test files)
+tests/                   # 382 tests (275 unit + 107 integration, 11 test files)
 ```
 
 ### Key Design Patterns
@@ -99,6 +100,10 @@ tests/                   # 370 tests (263 unit + 107 integration, 11 test files)
 **Unified MoveTo command.** No separate FTL/SubLight commands. `QueuedCommand::MoveTo { system }` auto-routes via `plan_ftl_route` (FTL chain → hybrid FTL+sublight → sublight fallback). FTL requires surveyed destination.
 
 **Capability-based definitions.** Deep space structures and future entities use `capabilities: HashMap<String, CapabilityParams>` instead of hardcoded enum variants. Specific behavior is Lua-defined.
+
+**Scoped Conditions.** `ConditionAtom { kind: AtomKind, scope: ConditionScope }` — atoms carry scope (Any/Empire/System/Planet/Ship). `EvalContext` has named scope slots with `ScopeData` (flags, buildings). `ConditionScope::Any` searches ship→planet→system→empire. Lua supports both static tables (`has_tech("x")`) and function-based prerequisites (`function(ctx) return ctx.empire:has_tech("x") end`). `ConditionCtx` UserData is stateless — builds condition tables, doesn't evaluate.
+
+**ScopedFlags.** `ScopedFlags` component on PlayerEmpire entity (future: StarSystem/Planet/Ship). Parallel to `GameFlags` (staged migration). `_pending_flags` drained from Lua into both in lifecycle hooks.
 
 ## Development Workflow
 
