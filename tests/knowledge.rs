@@ -288,6 +288,136 @@ fn test_pending_survey_command_executes_after_delay() {
     );
 }
 
+/// EnqueueCommand on a despawned ship should not crash.
+#[test]
+fn test_enqueue_command_despawned_ship_no_crash() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "System-B",
+        [10.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Doomed-Ship",
+        "explorer_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
+    );
+
+    let current_time = 100;
+    app.world_mut().resource_mut::<macrocosmo::time_system::GameClock>().elapsed = current_time;
+
+    // Queue an EnqueueCommand that arrives after delay
+    app.world_mut().spawn(PendingShipCommand {
+        ship: ship_entity,
+        command: ShipCommand::EnqueueCommand(QueuedCommand::MoveTo { system: sys_b }),
+        arrives_at: current_time + 50,
+    });
+
+    // Despawn the ship before the command arrives
+    app.world_mut().despawn(ship_entity);
+
+    // Advance past arrives_at — should not crash
+    advance_time(&mut app, 100);
+
+    // PendingShipCommand should be cleaned up
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingShipCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(pending_count, 0, "Pending command should be cleaned up");
+}
+
+/// EnqueueCommand should add to CommandQueue when ship is alive and in transit.
+#[test]
+fn test_enqueue_command_adds_to_queue() {
+    let mut app = test_app();
+
+    let sys_a = spawn_test_system(
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        Habitability::Ideal,
+        true,
+        true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+    let sys_c = spawn_test_system(
+        app.world_mut(),
+        "System-C",
+        [10.0, 0.0, 0.0],
+        Habitability::Adequate,
+        true,
+        false,
+    );
+
+    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Transit-Ship",
+        "explorer_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
+    );
+
+    // Put ship in FTL transit to sys_b (arrives well after the test ends)
+    *app.world_mut().get_mut::<ShipState>(ship_entity).unwrap() = ShipState::InFTL {
+        origin_system: sys_a,
+        destination_system: sys_b,
+        departed_at: 50,
+        arrival_at: 9999,
+    };
+
+    let current_time = 100;
+    app.world_mut().resource_mut::<macrocosmo::time_system::GameClock>().elapsed = current_time;
+
+    // Queue an EnqueueCommand to move to sys_c after delay
+    app.world_mut().spawn(PendingShipCommand {
+        ship: ship_entity,
+        command: ShipCommand::EnqueueCommand(QueuedCommand::MoveTo { system: sys_c }),
+        arrives_at: current_time + 150,
+    });
+
+    // Before arrival: command queue should be empty
+    advance_time(&mut app, 50);
+    let queue = app.world().get::<CommandQueue>(ship_entity).unwrap();
+    assert!(queue.commands.is_empty(), "Queue should be empty before command arrives");
+
+    // After arrival: command should be in queue (ship still in FTL, so queue not consumed)
+    advance_time(&mut app, 150);
+    let queue = app.world().get::<CommandQueue>(ship_entity).unwrap();
+    assert_eq!(queue.commands.len(), 1, "Queue should have 1 command after arrival");
+    assert!(
+        matches!(queue.commands[0], QueuedCommand::MoveTo { system } if system == sys_c),
+        "Queued command should be MoveTo sys_c"
+    );
+}
+
 // Technology knowledge propagation (#88)
 
 #[test]

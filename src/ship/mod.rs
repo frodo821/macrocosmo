@@ -1464,7 +1464,10 @@ pub fn process_pending_ship_commands(
                     "Delayed queue command arrived for {}: {:?}",
                     ship.name, queued_cmd,
                 );
-                queue.commands.push(queued_cmd.clone());
+                let sys_query = &systems;
+                queue.push(queued_cmd.clone(), &|sys| {
+                    sys_query.get(sys).ok().map(|(_, pos)| pos.as_array())
+                });
             }
             commands.entity(cmd_entity).despawn();
             continue;
