@@ -2,6 +2,7 @@ mod amount;
 mod colony;
 mod communication;
 mod components;
+mod condition;
 mod deep_space;
 mod event_system;
 mod events;

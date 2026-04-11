@@ -1,4 +1,5 @@
 pub mod building_api;
+pub mod condition_parser;
 pub mod event_api;
 pub mod galaxy_api;
 pub mod lifecycle;
@@ -327,6 +328,78 @@ impl ScriptEngine {
             Ok(())
         })?;
         globals.set("define_structure", define_structure)?;
+
+        // --- Condition helper functions ---
+        // These return Lua tables that represent condition nodes, parsed by condition_parser.
+
+        let has_tech = lua.create_function(|lua, id: String| {
+            let t = lua.create_table()?;
+            t.set("type", "has_tech")?;
+            t.set("id", id)?;
+            Ok(t)
+        })?;
+        globals.set("has_tech", has_tech)?;
+
+        let has_modifier = lua.create_function(|lua, id: String| {
+            let t = lua.create_table()?;
+            t.set("type", "has_modifier")?;
+            t.set("id", id)?;
+            Ok(t)
+        })?;
+        globals.set("has_modifier", has_modifier)?;
+
+        let has_building = lua.create_function(|lua, id: String| {
+            let t = lua.create_table()?;
+            t.set("type", "has_building")?;
+            t.set("id", id)?;
+            Ok(t)
+        })?;
+        globals.set("has_building", has_building)?;
+
+        let all_fn = lua.create_function(|lua, args: mlua::MultiValue| {
+            let t = lua.create_table()?;
+            t.set("type", "all")?;
+            let children = lua.create_table()?;
+            for (i, arg) in args.into_iter().enumerate() {
+                children.set(i + 1, arg)?;
+            }
+            t.set("children", children)?;
+            Ok(t)
+        })?;
+        globals.set("all", all_fn)?;
+
+        let any_fn = lua.create_function(|lua, args: mlua::MultiValue| {
+            let t = lua.create_table()?;
+            t.set("type", "any")?;
+            let children = lua.create_table()?;
+            for (i, arg) in args.into_iter().enumerate() {
+                children.set(i + 1, arg)?;
+            }
+            t.set("children", children)?;
+            Ok(t)
+        })?;
+        globals.set("any", any_fn)?;
+
+        let one_of_fn = lua.create_function(|lua, args: mlua::MultiValue| {
+            let t = lua.create_table()?;
+            t.set("type", "one_of")?;
+            let children = lua.create_table()?;
+            for (i, arg) in args.into_iter().enumerate() {
+                children.set(i + 1, arg)?;
+            }
+            t.set("children", children)?;
+            Ok(t)
+        })?;
+        globals.set("one_of", one_of_fn)?;
+
+        // "not" is a Lua keyword, so we use "not_cond" as the function name.
+        let not_cond_fn = lua.create_function(|lua, child: mlua::Table| {
+            let t = lua.create_table()?;
+            t.set("type", "not")?;
+            t.set("child", child)?;
+            Ok(t)
+        })?;
+        globals.set("not_cond", not_cond_fn)?;
 
         // mtth_trigger(params) -- constructor that tags a table as type "mtth"
         let mtth_trigger = lua.create_function(|_, table: mlua::Table| {

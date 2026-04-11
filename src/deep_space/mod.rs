@@ -4,6 +4,7 @@ use std::path::Path;
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::condition::Condition;
 use crate::ship::Owner;
 
 /// A structure placed at arbitrary galactic coordinates, not attached to any star system.
@@ -21,20 +22,32 @@ pub struct StructureHitpoints {
     pub max: f64,
 }
 
+/// Resource cost for building a structure.
+#[derive(Clone, Debug, Default)]
+pub struct ResourceCost {
+    pub minerals: Amt,
+    pub energy: Amt,
+}
+
+/// Parameters for a named capability (e.g. detection range for sensors).
+#[derive(Clone, Debug, Default)]
+pub struct CapabilityParams {
+    pub range: f64,
+    // Extensible: add more fields as needed.
+}
+
 /// Data-driven definition of a structure type, loaded from Lua or hardcoded fallback.
 #[derive(Clone, Debug)]
 pub struct StructureDefinition {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub max_hp: f64,
-    pub build_cost_minerals: Amt,
-    pub build_cost_energy: Amt,
+    pub cost: ResourceCost,
     pub build_time: i64, // hexadies
-    pub capabilities: Vec<String>,
-    pub detection_range: f64,    // ly, for sensor types
-    pub interdiction_range: f64, // ly, for interdictor types
-    pub energy_drain: Amt,       // per hexady maintenance
-    pub prerequisite_tech: Option<String>,
+    pub energy_drain: Amt, // per hexady maintenance
+    pub prerequisites: Option<Condition>,
+    pub capabilities: HashMap<String, CapabilityParams>,
 }
 
 /// Registry of all structure definitions.
@@ -57,45 +70,63 @@ impl StructureRegistry {
 
 /// Default structure definitions used when Lua scripts are not available (e.g. in tests).
 pub fn default_structure_definitions() -> Vec<StructureDefinition> {
+    use crate::condition::ConditionAtom;
+
     vec![
         StructureDefinition {
             id: "sensor_buoy".to_string(),
             name: "Sensor Buoy".to_string(),
+            description: "Detects sublight vessel movements.".to_string(),
             max_hp: 20.0,
-            build_cost_minerals: Amt::units(50),
-            build_cost_energy: Amt::units(30),
+            cost: ResourceCost {
+                minerals: Amt::units(50),
+                energy: Amt::units(30),
+            },
             build_time: 15,
-            capabilities: vec!["detect_sublight".to_string()],
-            detection_range: 3.0,
-            interdiction_range: 0.0,
+            capabilities: HashMap::from([(
+                "detect_sublight".to_string(),
+                CapabilityParams { range: 3.0 },
+            )]),
             energy_drain: Amt::milli(100),
-            prerequisite_tech: None,
+            prerequisites: None,
         },
         StructureDefinition {
             id: "ftl_comm_relay".to_string(),
             name: "FTL Comm Relay".to_string(),
+            description: "Enables faster-than-light communication across systems.".to_string(),
             max_hp: 50.0,
-            build_cost_minerals: Amt::units(200),
-            build_cost_energy: Amt::units(150),
+            cost: ResourceCost {
+                minerals: Amt::units(200),
+                energy: Amt::units(150),
+            },
             build_time: 30,
-            capabilities: vec!["ftl_comm".to_string()],
-            detection_range: 0.0,
-            interdiction_range: 0.0,
+            capabilities: HashMap::from([(
+                "ftl_comm".to_string(),
+                CapabilityParams { range: 0.0 },
+            )]),
             energy_drain: Amt::milli(500),
-            prerequisite_tech: Some("ftl_communications".to_string()),
+            prerequisites: Some(Condition::Atom(ConditionAtom::HasTech(
+                "ftl_communications".to_string(),
+            ))),
         },
         StructureDefinition {
             id: "interdictor".to_string(),
             name: "Interdictor".to_string(),
+            description: "Disrupts FTL travel within its interdiction range.".to_string(),
             max_hp: 80.0,
-            build_cost_minerals: Amt::units(300),
-            build_cost_energy: Amt::units(200),
+            cost: ResourceCost {
+                minerals: Amt::units(300),
+                energy: Amt::units(200),
+            },
             build_time: 45,
-            capabilities: vec!["ftl_interdiction".to_string()],
-            detection_range: 0.0,
-            interdiction_range: 5.0,
+            capabilities: HashMap::from([(
+                "ftl_interdiction".to_string(),
+                CapabilityParams { range: 5.0 },
+            )]),
             energy_drain: Amt::units(1),
-            prerequisite_tech: Some("ftl_interdiction_tech".to_string()),
+            prerequisites: Some(Condition::Atom(ConditionAtom::HasTech(
+                "ftl_interdiction_tech".to_string(),
+            ))),
         },
     ]
 }
@@ -164,6 +195,7 @@ pub fn load_structure_definitions(
 mod tests {
     use super::*;
     use crate::components::Position;
+    use crate::condition::ConditionAtom;
 
     #[test]
     fn test_default_structure_definitions() {
@@ -186,17 +218,17 @@ mod tests {
         let buoy = registry.get("sensor_buoy").unwrap();
         assert_eq!(buoy.name, "Sensor Buoy");
         assert_eq!(buoy.max_hp, 20.0);
-        assert!(buoy.capabilities.contains(&"detect_sublight".to_string()));
-        assert_eq!(buoy.detection_range, 3.0);
+        assert!(buoy.capabilities.contains_key("detect_sublight"));
+        assert_eq!(buoy.capabilities["detect_sublight"].range, 3.0);
 
         let relay = registry.get("ftl_comm_relay").unwrap();
         assert_eq!(relay.name, "FTL Comm Relay");
-        assert!(relay.capabilities.contains(&"ftl_comm".to_string()));
+        assert!(relay.capabilities.contains_key("ftl_comm"));
 
         let interdictor = registry.get("interdictor").unwrap();
         assert_eq!(interdictor.name, "Interdictor");
-        assert!(interdictor.capabilities.contains(&"ftl_interdiction".to_string()));
-        assert_eq!(interdictor.interdiction_range, 5.0);
+        assert!(interdictor.capabilities.contains_key("ftl_interdiction"));
+        assert_eq!(interdictor.capabilities["ftl_interdiction"].range, 5.0);
     }
 
     #[test]
@@ -210,22 +242,28 @@ mod tests {
         registry.insert(StructureDefinition {
             id: "sensor_buoy".to_string(),
             name: "Advanced Sensor Buoy".to_string(),
+            description: "Enhanced sensor buoy.".to_string(),
             max_hp: 40.0,
-            build_cost_minerals: Amt::units(100),
-            build_cost_energy: Amt::units(60),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::units(60),
+            },
             build_time: 20,
-            capabilities: vec!["detect_sublight".to_string(), "detect_ftl".to_string()],
-            detection_range: 5.0,
-            interdiction_range: 0.0,
+            capabilities: HashMap::from([
+                ("detect_sublight".to_string(), CapabilityParams { range: 5.0 }),
+                ("detect_ftl".to_string(), CapabilityParams { range: 3.0 }),
+            ]),
             energy_drain: Amt::milli(200),
-            prerequisite_tech: Some("advanced_sensors".to_string()),
+            prerequisites: Some(Condition::Atom(ConditionAtom::HasTech(
+                "advanced_sensors".to_string(),
+            ))),
         });
 
         assert_eq!(registry.definitions.len(), 3);
         let buoy = registry.get("sensor_buoy").unwrap();
         assert_eq!(buoy.name, "Advanced Sensor Buoy");
         assert_eq!(buoy.max_hp, 40.0);
-        assert_eq!(buoy.detection_range, 5.0);
+        assert_eq!(buoy.capabilities["detect_sublight"].range, 5.0);
     }
 
     #[test]

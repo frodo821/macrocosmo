@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use crate::amount::Amt;
-use crate::deep_space::StructureDefinition;
+use crate::deep_space::{CapabilityParams, ResourceCost, StructureDefinition};
+use crate::scripting::condition_parser::parse_condition;
 
 /// Parse structure definitions from the Lua `_structure_definitions` global table.
 /// Each entry should have at minimum `id` and `name` fields.
@@ -12,58 +15,88 @@ pub fn parse_structure_definitions(lua: &mlua::Lua) -> Result<Vec<StructureDefin
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let max_hp: f64 = table.get::<Option<f64>>("max_hp")?.unwrap_or(100.0);
 
-        let build_cost_minerals_raw: f64 = table.get::<Option<f64>>("build_cost_minerals")?.unwrap_or(0.0);
-        let build_cost_energy_raw: f64 = table.get::<Option<f64>>("build_cost_energy")?.unwrap_or(0.0);
-        let build_cost_minerals = Amt::from_f64(build_cost_minerals_raw);
-        let build_cost_energy = Amt::from_f64(build_cost_energy_raw);
+        // Parse cost as a sub-table: { minerals = N, energy = N }
+        let cost = parse_cost_table(&table)?;
 
         let build_time: i64 = table.get::<Option<i64>>("build_time")?.unwrap_or(10);
-
-        // Parse capabilities array
-        let capabilities = parse_capabilities(&table)?;
-
-        let detection_range: f64 = table.get::<Option<f64>>("detection_range")?.unwrap_or(0.0);
-        let interdiction_range: f64 = table.get::<Option<f64>>("interdiction_range")?.unwrap_or(0.0);
 
         let energy_drain_raw: f64 = table.get::<Option<f64>>("energy_drain")?.unwrap_or(0.0);
         // energy_drain is specified in millis in Lua (e.g. 100 = 0.1 units)
         let energy_drain = Amt::milli(energy_drain_raw as u64);
 
-        let prerequisite_tech: Option<String> = table.get("prerequisite_tech")?;
+        // Parse prerequisites as an optional Condition table
+        let prerequisites = parse_prerequisites(&table)?;
+
+        // Parse capabilities as a table of tables: { cap_name = { range = N }, ... }
+        let capabilities = parse_capabilities_map(&table)?;
 
         result.push(StructureDefinition {
             id,
             name,
+            description,
             max_hp,
-            build_cost_minerals,
-            build_cost_energy,
+            cost,
             build_time,
-            capabilities,
-            detection_range,
-            interdiction_range,
             energy_drain,
-            prerequisite_tech,
+            prerequisites,
+            capabilities,
         });
     }
 
     Ok(result)
 }
 
-/// Parse the `capabilities = { "detect_sublight", "ftl_comm" }` array from a Lua table.
-fn parse_capabilities(table: &mlua::Table) -> Result<Vec<String>, mlua::Error> {
+/// Parse the `cost = { minerals = N, energy = N }` sub-table.
+fn parse_cost_table(table: &mlua::Table) -> Result<ResourceCost, mlua::Error> {
+    let cost_value: mlua::Value = table.get("cost")?;
+    match cost_value {
+        mlua::Value::Table(cost_table) => {
+            let minerals_raw: f64 = cost_table.get::<Option<f64>>("minerals")?.unwrap_or(0.0);
+            let energy_raw: f64 = cost_table.get::<Option<f64>>("energy")?.unwrap_or(0.0);
+            Ok(ResourceCost {
+                minerals: Amt::from_f64(minerals_raw),
+                energy: Amt::from_f64(energy_raw),
+            })
+        }
+        mlua::Value::Nil => Ok(ResourceCost::default()),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected table or nil for 'cost' field".to_string(),
+        )),
+    }
+}
+
+/// Parse optional `prerequisites` field as a Condition tree.
+fn parse_prerequisites(table: &mlua::Table) -> Result<Option<crate::condition::Condition>, mlua::Error> {
+    let prereq_value: mlua::Value = table.get("prerequisites")?;
+    match prereq_value {
+        mlua::Value::Table(prereq_table) => {
+            let cond = parse_condition(&prereq_table)?;
+            Ok(Some(cond))
+        }
+        mlua::Value::Nil => Ok(None),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected table or nil for 'prerequisites' field".to_string(),
+        )),
+    }
+}
+
+/// Parse `capabilities = { cap_name = { range = N }, ... }` as a HashMap.
+fn parse_capabilities_map(table: &mlua::Table) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
     let caps_value: mlua::Value = table.get("capabilities")?;
     match caps_value {
         mlua::Value::Table(caps_table) => {
-            let mut caps = Vec::new();
-            for pair in caps_table.pairs::<i64, String>() {
-                let (_, cap) = pair?;
-                caps.push(cap);
+            let mut caps = HashMap::new();
+            for pair in caps_table.pairs::<String, mlua::Table>() {
+                let (key, params_table) = pair?;
+                let range: f64 = params_table.get::<Option<f64>>("range")?.unwrap_or(0.0);
+                caps.insert(key, CapabilityParams { range });
             }
             Ok(caps)
         }
-        mlua::Value::Nil => Ok(Vec::new()),
+        mlua::Value::Nil => Ok(HashMap::new()),
         _ => Err(mlua::Error::RuntimeError(
             "Expected table or nil for 'capabilities' field".to_string(),
         )),
@@ -73,6 +106,7 @@ fn parse_capabilities(table: &mlua::Table) -> Result<Vec<String>, mlua::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::condition::{Condition, ConditionAtom};
     use crate::scripting::ScriptEngine;
 
     #[test]
@@ -85,25 +119,27 @@ mod tests {
             define_structure {
                 id = "sensor_buoy",
                 name = "Sensor Buoy",
+                description = "Detects sublight vessel movements.",
                 max_hp = 20,
-                build_cost_minerals = 50,
-                build_cost_energy = 30,
+                cost = { minerals = 50, energy = 30 },
                 build_time = 15,
-                capabilities = { "detect_sublight" },
-                detection_range = 3.0,
+                capabilities = {
+                    detect_sublight = { range = 3.0 },
+                },
                 energy_drain = 100,
             }
             define_structure {
                 id = "interdictor",
                 name = "Interdictor",
+                description = "Disrupts FTL travel.",
                 max_hp = 80,
-                build_cost_minerals = 300,
-                build_cost_energy = 200,
+                cost = { minerals = 300, energy = 200 },
                 build_time = 45,
-                capabilities = { "ftl_interdiction" },
-                interdiction_range = 5.0,
+                capabilities = {
+                    ftl_interdiction = { range = 5.0 },
+                },
                 energy_drain = 1000,
-                prerequisite_tech = "ftl_interdiction_tech",
+                prerequisites = has_tech("ftl_interdiction_tech"),
             }
             "#,
         )
@@ -116,24 +152,29 @@ mod tests {
         // Sensor Buoy
         assert_eq!(defs[0].id, "sensor_buoy");
         assert_eq!(defs[0].name, "Sensor Buoy");
+        assert_eq!(defs[0].description, "Detects sublight vessel movements.");
         assert_eq!(defs[0].max_hp, 20.0);
-        assert_eq!(defs[0].build_cost_minerals, Amt::units(50));
-        assert_eq!(defs[0].build_cost_energy, Amt::units(30));
+        assert_eq!(defs[0].cost.minerals, Amt::units(50));
+        assert_eq!(defs[0].cost.energy, Amt::units(30));
         assert_eq!(defs[0].build_time, 15);
-        assert_eq!(defs[0].capabilities, vec!["detect_sublight"]);
-        assert_eq!(defs[0].detection_range, 3.0);
-        assert_eq!(defs[0].interdiction_range, 0.0);
+        assert!(defs[0].capabilities.contains_key("detect_sublight"));
+        assert_eq!(defs[0].capabilities["detect_sublight"].range, 3.0);
         assert_eq!(defs[0].energy_drain, Amt::milli(100));
-        assert!(defs[0].prerequisite_tech.is_none());
+        assert!(defs[0].prerequisites.is_none());
 
         // Interdictor
         assert_eq!(defs[1].id, "interdictor");
         assert_eq!(defs[1].name, "Interdictor");
         assert_eq!(defs[1].max_hp, 80.0);
-        assert_eq!(defs[1].capabilities, vec!["ftl_interdiction"]);
-        assert_eq!(defs[1].interdiction_range, 5.0);
+        assert!(defs[1].capabilities.contains_key("ftl_interdiction"));
+        assert_eq!(defs[1].capabilities["ftl_interdiction"].range, 5.0);
         assert_eq!(defs[1].energy_drain, Amt::units(1));
-        assert_eq!(defs[1].prerequisite_tech, Some("ftl_interdiction_tech".to_string()));
+        assert_eq!(
+            defs[1].prerequisites,
+            Some(Condition::Atom(ConditionAtom::HasTech(
+                "ftl_interdiction_tech".to_string()
+            )))
+        );
     }
 
     #[test]
@@ -156,15 +197,48 @@ mod tests {
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id, "basic");
         assert_eq!(defs[0].name, "Basic Structure");
+        assert_eq!(defs[0].description, "");
         assert_eq!(defs[0].max_hp, 100.0); // default
-        assert_eq!(defs[0].build_cost_minerals, Amt::ZERO);
-        assert_eq!(defs[0].build_cost_energy, Amt::ZERO);
+        assert_eq!(defs[0].cost.minerals, Amt::ZERO);
+        assert_eq!(defs[0].cost.energy, Amt::ZERO);
         assert_eq!(defs[0].build_time, 10); // default
         assert!(defs[0].capabilities.is_empty());
-        assert_eq!(defs[0].detection_range, 0.0);
-        assert_eq!(defs[0].interdiction_range, 0.0);
         assert_eq!(defs[0].energy_drain, Amt::ZERO);
-        assert!(defs[0].prerequisite_tech.is_none());
+        assert!(defs[0].prerequisites.is_none());
+    }
+
+    #[test]
+    fn test_parse_structure_with_complex_prerequisites() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_structure {
+                id = "advanced",
+                name = "Advanced Structure",
+                prerequisites = all(
+                    has_tech("tech_a"),
+                    any(has_modifier("mod_b"), has_building("bldg_c"))
+                ),
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_structure_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(
+            defs[0].prerequisites,
+            Some(Condition::All(vec![
+                Condition::Atom(ConditionAtom::HasTech("tech_a".into())),
+                Condition::Any(vec![
+                    Condition::Atom(ConditionAtom::HasModifier("mod_b".into())),
+                    Condition::Atom(ConditionAtom::HasBuilding("bldg_c".into())),
+                ]),
+            ]))
+        );
     }
 
     #[test]
@@ -193,12 +267,12 @@ mod tests {
 
         let buoy = map.get("sensor_buoy").expect("sensor_buoy should exist");
         assert_eq!(buoy.name, "Sensor Buoy");
-        assert!(buoy.capabilities.contains(&"detect_sublight".to_string()));
+        assert!(buoy.capabilities.contains_key("detect_sublight"));
 
         let relay = map.get("ftl_comm_relay").expect("ftl_comm_relay should exist");
-        assert!(relay.capabilities.contains(&"ftl_comm".to_string()));
+        assert!(relay.capabilities.contains_key("ftl_comm"));
 
         let interdictor = map.get("interdictor").expect("interdictor should exist");
-        assert!(interdictor.capabilities.contains(&"ftl_interdiction".to_string()));
+        assert!(interdictor.capabilities.contains_key("ftl_interdiction"));
     }
 }
