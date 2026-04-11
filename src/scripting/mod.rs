@@ -10,7 +10,7 @@ pub mod structure_api;
 
 use bevy::prelude::*;
 use mlua::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct ScriptingPlugin;
 
@@ -19,8 +19,12 @@ impl Plugin for ScriptingPlugin {
         app.add_systems(Startup, init_scripting)
             .add_systems(
                 Startup,
+                load_all_scripts.after(init_scripting),
+            )
+            .add_systems(
+                Startup,
                 lifecycle::run_lifecycle_hooks
-                    .after(init_scripting)
+                    .after(load_all_scripts)
                     .after(crate::colony::load_building_registry)
                     .after(crate::technology::load_technologies),
             )
@@ -44,77 +48,150 @@ pub fn init_scripting(mut commands: Commands) {
     commands.insert_resource(engine);
 }
 
+/// Startup system that loads all Lua scripts via `scripts/init.lua` (if it exists),
+/// falling back to loading individual directories for backward compatibility.
+/// Other startup systems that parse definitions should use `.after(load_all_scripts)`.
+pub fn load_all_scripts(engine: Res<ScriptEngine>) {
+    let scripts_dir = engine.scripts_dir();
+    let init_path = scripts_dir.join("init.lua");
+    if init_path.exists() {
+        match engine.load_file(&init_path) {
+            Ok(()) => {
+                info!("All scripts loaded via {}", init_path.display());
+                return;
+            }
+            Err(e) => {
+                warn!("Failed to load {}: {e}; falling back to directory loading", init_path.display());
+            }
+        }
+    }
+
+    // Fallback: load directories individually (legacy path, used when init.lua is absent)
+    let subdirs = [
+        "stars", "planets", "jobs", "species", "buildings",
+        "tech", "ships", "structures", "events",
+    ];
+    for subdir in &subdirs {
+        let path = scripts_dir.join(subdir);
+        if path.is_dir() {
+            if let Err(e) = engine.load_directory(&path) {
+                warn!("Failed to load scripts from {}: {e}", path.display());
+            }
+        }
+    }
+}
+
+/// Resolve the scripts directory by searching multiple locations.
+/// Priority: 1) next to executable, 2) CWD, 3) CARGO_MANIFEST_DIR (dev)
+pub fn resolve_scripts_dir() -> PathBuf {
+    // 1. Next to the executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join("scripts");
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+    }
+
+    // 2. CWD
+    let cwd = PathBuf::from("scripts");
+    if cwd.is_dir() {
+        return cwd;
+    }
+
+    // 3. CARGO_MANIFEST_DIR (development)
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let candidate = PathBuf::from(manifest_dir).join("scripts");
+        if candidate.is_dir() {
+            return candidate;
+        }
+    }
+
+    // Fallback to CWD-relative (will fail gracefully later)
+    PathBuf::from("scripts")
+}
+
 #[derive(Resource)]
 pub struct ScriptEngine {
     lua: Lua,
+    scripts_dir: PathBuf,
 }
 
 impl ScriptEngine {
     pub fn new() -> Result<Self, mlua::Error> {
-        let lua = Lua::new();
-        Self::setup_globals(&lua)?;
-        Ok(Self { lua })
+        let scripts_dir = resolve_scripts_dir();
+        // Sandbox: only load safe libraries (no io, os, debug, ffi)
+        let lua = Lua::new_with(
+            LuaStdLib::TABLE | LuaStdLib::STRING | LuaStdLib::MATH
+                | LuaStdLib::PACKAGE | LuaStdLib::BIT,
+            mlua::LuaOptions::default(),
+        )?;
+        Self::setup_globals(&lua, &scripts_dir)?;
+        info!("Lua scripts directory: {}", scripts_dir.display());
+        Ok(Self { lua, scripts_dir })
+    }
+
+    /// The resolved scripts directory path.
+    pub fn scripts_dir(&self) -> &Path {
+        &self.scripts_dir
     }
 
     /// Configure global tables and functions available to all Lua scripts.
-    pub fn setup_globals(lua: &Lua) -> Result<(), mlua::Error> {
+    pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         let globals = lua.globals();
+
+        // --- Sandbox: disable dangerous globals ---
+        globals.set("loadfile", mlua::Value::Nil)?;
+        globals.set("dofile", mlua::Value::Nil)?;
+
+        // --- Set up require() search path using resolved absolute path ---
+        let package: mlua::Table = globals.get("package")?;
+        let dir = scripts_dir.display();
+        package.set("path", format!("{dir}/?.lua;{dir}/?/init.lua"))?;
+        package.set("cpath", "")?; // disable C module loading
 
         // Create the macrocosmo namespace table
         let mc = lua.create_table()?;
         globals.set("macrocosmo", mc)?;
 
-        // Accumulator table for tech definitions
-        let tech_defs = lua.create_table()?;
-        globals.set("_tech_definitions", tech_defs)?;
-
-        // define_tech(table) -- appends a tech definition table to _tech_definitions
-        let define_tech = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_tech_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
+        // forward_ref(id) -- creates a placeholder reference for not-yet-defined items
+        let forward_ref = lua.create_function(|lua, id: String| {
+            let t = lua.create_table()?;
+            t.set("_def_type", "forward_ref")?;
+            t.set("id", id)?;
+            Ok(t)
         })?;
-        globals.set("define_tech", define_tech)?;
+        globals.set("forward_ref", forward_ref)?;
 
-        // Accumulator table for building definitions
-        let building_defs = lua.create_table()?;
-        globals.set("_building_definitions", building_defs)?;
+        // --- Define accumulator tables and define_xxx functions ---
+        // Each define_xxx appends to its accumulator AND returns the table
+        // with a _def_type tag, enabling return-value based references.
 
-        // define_building(table) -- appends a building definition table to _building_definitions
-        let define_building = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_building_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_building", define_building)?;
+        Self::register_define_fn(lua, "tech", "_tech_definitions")?;
+        Self::register_define_fn(lua, "building", "_building_definitions")?;
+        Self::register_define_fn(lua, "star_type", "_star_type_definitions")?;
+        Self::register_define_fn(lua, "planet_type", "_planet_type_definitions")?;
 
-        // Accumulator table for star type definitions
-        let star_type_defs = lua.create_table()?;
-        globals.set("_star_type_definitions", star_type_defs)?;
+        // --- Species and job definition Lua bindings ---
 
-        // define_star_type(table) -- appends a star type definition table
-        let define_star_type = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_star_type_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_star_type", define_star_type)?;
+        Self::register_define_fn(lua, "species", "_species_definitions")?;
+        Self::register_define_fn(lua, "job", "_job_definitions")?;
 
-        // Accumulator table for planet type definitions
-        let planet_type_defs = lua.create_table()?;
-        globals.set("_planet_type_definitions", planet_type_defs)?;
+        // --- Event definition ---
 
-        // define_planet_type(table) -- appends a planet type definition table
-        let define_planet_type = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_planet_type_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_planet_type", define_planet_type)?;
+        Self::register_define_fn(lua, "event", "_event_definitions")?;
+
+        // --- Ship design Lua bindings ---
+
+        Self::register_define_fn(lua, "slot_type", "_slot_type_definitions")?;
+        Self::register_define_fn(lua, "hull", "_hull_definitions")?;
+        Self::register_define_fn(lua, "module", "_module_definitions")?;
+        Self::register_define_fn(lua, "ship_design", "_ship_design_definitions")?;
+
+        // --- Structure definition ---
+
+        Self::register_define_fn(lua, "structure", "_structure_definitions")?;
 
         // --- #45: Global param / flag Lua bindings ---
 
@@ -160,34 +237,6 @@ impl ScriptEngine {
             Ok(result)
         })?;
         globals.set("check_flag", check_flag)?;
-
-        // --- Species and job definition Lua bindings ---
-
-        // Accumulator table for species definitions
-        let species_defs = lua.create_table()?;
-        globals.set("_species_definitions", species_defs)?;
-
-        // define_species(table) -- appends a species definition table to _species_definitions
-        let define_species = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_species_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_species", define_species)?;
-
-        // Accumulator table for job definitions
-        let job_defs = lua.create_table()?;
-        globals.set("_job_definitions", job_defs)?;
-
-        // define_job(table) -- appends a job definition table to _job_definitions
-        let define_job = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_job_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_job", define_job)?;
 
         // --- EventBus handler registration ---
 
@@ -252,106 +301,31 @@ impl ScriptEngine {
         })?;
         globals.set("on", on_fn)?;
 
-        // --- Event system Lua bindings ---
-
-        // Accumulator table for event definitions
-        let event_defs = lua.create_table()?;
-        globals.set("_event_definitions", event_defs)?;
-
-        // define_event(table) -- appends an event definition table to _event_definitions
-        let define_event = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_event_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_event", define_event)?;
-
-        // --- Ship design Lua bindings ---
-
-        // Accumulator table for slot type definitions
-        let slot_type_defs = lua.create_table()?;
-        globals.set("_slot_type_definitions", slot_type_defs)?;
-
-        let define_slot_type = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_slot_type_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_slot_type", define_slot_type)?;
-
-        // Accumulator table for hull definitions
-        let hull_defs = lua.create_table()?;
-        globals.set("_hull_definitions", hull_defs)?;
-
-        let define_hull = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_hull_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_hull", define_hull)?;
-
-        // Accumulator table for module definitions
-        let module_defs = lua.create_table()?;
-        globals.set("_module_definitions", module_defs)?;
-
-        let define_module = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_module_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_module", define_module)?;
-
-        // Accumulator table for ship design definitions
-        let ship_design_defs = lua.create_table()?;
-        globals.set("_ship_design_definitions", ship_design_defs)?;
-
-        let define_ship_design = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_ship_design_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_ship_design", define_ship_design)?;
-
-        // Accumulator table for structure definitions
-        let structure_defs = lua.create_table()?;
-        globals.set("_structure_definitions", structure_defs)?;
-
-        let define_structure = lua.create_function(|lua, table: mlua::Table| {
-            let defs: mlua::Table = lua.globals().get("_structure_definitions")?;
-            let len = defs.len()?;
-            defs.set(len + 1, table)?;
-            Ok(())
-        })?;
-        globals.set("define_structure", define_structure)?;
-
         // --- Condition helper functions ---
         // These return Lua tables that represent condition nodes, parsed by condition_parser.
 
-        let has_tech = lua.create_function(|lua, id: String| {
+        // has_tech / has_modifier / has_building accept either a string ID
+        // or a reference table (returned by define_xxx) from which the id is extracted.
+        let has_tech = lua.create_function(|lua, value: mlua::Value| {
             let t = lua.create_table()?;
             t.set("type", "has_tech")?;
-            t.set("id", id)?;
+            t.set("id", extract_id_from_lua_value(&value)?)?;
             Ok(t)
         })?;
         globals.set("has_tech", has_tech)?;
 
-        let has_modifier = lua.create_function(|lua, id: String| {
+        let has_modifier = lua.create_function(|lua, value: mlua::Value| {
             let t = lua.create_table()?;
             t.set("type", "has_modifier")?;
-            t.set("id", id)?;
+            t.set("id", extract_id_from_lua_value(&value)?)?;
             Ok(t)
         })?;
         globals.set("has_modifier", has_modifier)?;
 
-        let has_building = lua.create_function(|lua, id: String| {
+        let has_building = lua.create_function(|lua, value: mlua::Value| {
             let t = lua.create_table()?;
             t.set("type", "has_building")?;
-            t.set("id", id)?;
+            t.set("id", extract_id_from_lua_value(&value)?)?;
             Ok(t)
         })?;
         globals.set("has_building", has_building)?;
@@ -470,6 +444,30 @@ impl ScriptEngine {
         Ok(())
     }
 
+    /// Register a `define_xxx` global function that:
+    /// 1. Creates an accumulator table `_xxx_definitions`
+    /// 2. Registers `define_xxx(table)` which appends to the accumulator and
+    ///    tags the table with `_def_type = def_type`, then returns it as a reference.
+    fn register_define_fn(lua: &Lua, def_type: &str, accumulator_name: &str) -> Result<(), mlua::Error> {
+        let globals = lua.globals();
+
+        let acc = lua.create_table()?;
+        globals.set(accumulator_name, acc)?;
+
+        let acc_name = accumulator_name.to_string();
+        let dtype = def_type.to_string();
+        let func = lua.create_function(move |lua, table: mlua::Table| {
+            table.set("_def_type", dtype.as_str())?;
+            let defs: mlua::Table = lua.globals().get(acc_name.as_str())?;
+            let len = defs.len()?;
+            defs.set(len + 1, table.clone())?;
+            Ok(table)
+        })?;
+        globals.set(format!("define_{def_type}"), func)?;
+
+        Ok(())
+    }
+
     /// Load and execute a single Lua file.
     pub fn load_file(&self, path: &Path) -> Result<(), mlua::Error> {
         let code = std::fs::read_to_string(path).map_err(|e| {
@@ -503,6 +501,25 @@ impl ScriptEngine {
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
+}
+
+/// Extract an ID string from a Lua value that is either:
+/// - A plain string → used as-is
+/// - A reference table (from `define_xxx` or `forward_ref`) → reads the `id` field
+fn extract_id_from_lua_value(value: &mlua::Value) -> Result<String, mlua::Error> {
+    match value {
+        mlua::Value::String(s) => Ok(s.to_str()?.to_string()),
+        mlua::Value::Table(t) => t.get::<String>("id"),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected string ID or reference table".into(),
+        )),
+    }
+}
+
+/// Extract an ID from a Lua value, accepting both string IDs and reference tables.
+/// This is the public API for use by Rust-side parsers.
+pub fn extract_ref_id(value: &mlua::Value) -> Result<String, mlua::Error> {
+    extract_id_from_lua_value(value)
 }
 
 #[cfg(test)]
@@ -686,5 +703,120 @@ mod tests {
 
         let handlers: mlua::Table = lua.globals().get("_event_handlers").unwrap();
         assert_eq!(handlers.len().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_define_tech_returns_reference() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let result: mlua::Table = lua
+            .load(r#"return define_tech { id = "test_tech", name = "Test" }"#)
+            .eval()
+            .unwrap();
+
+        let def_type: String = result.get("_def_type").unwrap();
+        assert_eq!(def_type, "tech");
+        let id: String = result.get("id").unwrap();
+        assert_eq!(id, "test_tech");
+    }
+
+    #[test]
+    fn test_define_xxx_reference_in_prerequisites() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            local base = define_tech { id = "base_tech", name = "Base", branch = "physics", cost = 100, prerequisites = {} }
+            define_tech { id = "advanced_tech", name = "Adv", branch = "physics", cost = 200, prerequisites = { base } }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs: mlua::Table = lua.globals().get("_tech_definitions").unwrap();
+        assert_eq!(defs.len().unwrap(), 2);
+        // The second tech's prerequisites should contain a reference table
+        let second: mlua::Table = defs.get(2).unwrap();
+        let prereqs: mlua::Table = second.get("prerequisites").unwrap();
+        let first_prereq: mlua::Table = prereqs.get(1).unwrap();
+        let prereq_id: String = first_prereq.get("id").unwrap();
+        assert_eq!(prereq_id, "base_tech");
+    }
+
+    #[test]
+    fn test_forward_ref() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let result: mlua::Table = lua
+            .load(r#"return forward_ref("future_tech")"#)
+            .eval()
+            .unwrap();
+
+        let def_type: String = result.get("_def_type").unwrap();
+        assert_eq!(def_type, "forward_ref");
+        let id: String = result.get("id").unwrap();
+        assert_eq!(id, "future_tech");
+    }
+
+    #[test]
+    fn test_has_tech_accepts_reference() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        // String form (backward compatible)
+        let cond_str: mlua::Table = lua
+            .load(r#"return has_tech("my_tech")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(cond_str.get::<String>("id").unwrap(), "my_tech");
+
+        // Reference form
+        let cond_ref: mlua::Table = lua
+            .load(r#"
+                local t = define_tech { id = "ref_tech", name = "Ref" }
+                return has_tech(t)
+            "#)
+            .eval()
+            .unwrap();
+        assert_eq!(cond_ref.get::<String>("id").unwrap(), "ref_tech");
+    }
+
+    #[test]
+    fn test_require_support() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        // package.path should be set
+        let package: mlua::Table = lua.globals().get("package").unwrap();
+        let path: String = package.get("path").unwrap();
+        assert!(path.contains("scripts/?.lua"));
+        assert!(path.contains("scripts/?/init.lua"));
+
+        // cpath should be empty
+        let cpath: String = package.get("cpath").unwrap();
+        assert!(cpath.is_empty());
+    }
+
+    #[test]
+    fn test_extract_ref_id() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        // String value
+        let s = mlua::Value::String(lua.create_string("hello").unwrap());
+        assert_eq!(extract_ref_id(&s).unwrap(), "hello");
+
+        // Table with id
+        let t = lua.create_table().unwrap();
+        t.set("id", "world").unwrap();
+        let v = mlua::Value::Table(t);
+        assert_eq!(extract_ref_id(&v).unwrap(), "world");
+
+        // Number should fail
+        let n = mlua::Value::Number(42.0);
+        assert!(extract_ref_id(&n).is_err());
     }
 }

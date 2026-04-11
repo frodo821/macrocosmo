@@ -26,7 +26,7 @@ impl Plugin for GalaxyPlugin {
             .init_resource::<PlanetTypeRegistry>()
             .add_systems(
                 Startup,
-                load_galaxy_types.after(crate::scripting::init_scripting),
+                load_galaxy_types.after(crate::scripting::load_all_scripts),
             )
             .add_systems(Startup, generate_galaxy.after(load_galaxy_types));
     }
@@ -344,19 +344,13 @@ fn default_planet_types() -> Vec<PlanetTypeDefinition> {
     }]
 }
 
-/// Startup system that loads star and planet type definitions from Lua scripts.
+/// Startup system that parses star and planet type definitions from Lua accumulators.
+/// Scripts are loaded by `load_all_scripts`; this system only parses the results.
 pub fn load_galaxy_types(
     engine: Res<crate::scripting::ScriptEngine>,
     mut star_registry: ResMut<StarTypeRegistry>,
     mut planet_registry: ResMut<PlanetTypeRegistry>,
 ) {
-    // Load star types
-    let star_dir = Path::new("scripts/stars");
-    if star_dir.exists() {
-        if let Err(e) = engine.load_directory(star_dir) {
-            warn!("Failed to load star type scripts: {e}");
-        }
-    }
     match crate::scripting::galaxy_api::parse_star_types(engine.lua()) {
         Ok(types) => {
             info!("Loaded {} star type definitions", types.len());
@@ -367,13 +361,6 @@ pub fn load_galaxy_types(
         }
     }
 
-    // Load planet types
-    let planet_dir = Path::new("scripts/planets");
-    if planet_dir.exists() {
-        if let Err(e) = engine.load_directory(planet_dir) {
-            warn!("Failed to load planet type scripts: {e}");
-        }
-    }
     match crate::scripting::galaxy_api::parse_planet_types(engine.lua()) {
         Ok(types) => {
             info!("Loaded {} planet type definitions", types.len());

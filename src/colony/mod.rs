@@ -1,7 +1,5 @@
 use bevy::prelude::*;
 
-use std::path::Path;
-
 use crate::amount::{Amt, SignedAmt};
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
@@ -25,7 +23,7 @@ impl Plugin for ColonyPlugin {
             .add_systems(
                 Startup,
                 (
-                    load_building_registry.after(crate::scripting::init_scripting),
+                    load_building_registry.after(crate::scripting::load_all_scripts),
                     spawn_capital_colony.after(crate::galaxy::generate_galaxy),
                 ),
             )
@@ -517,33 +515,23 @@ pub struct PendingColonizationOrder {
     pub source_colony: Entity,
 }
 
-/// Load building definitions from Lua scripts into the BuildingRegistry.
-/// Falls back to an empty registry if scripts are missing or fail to parse.
+/// Parse building definitions from Lua accumulators into the BuildingRegistry.
+/// Scripts are loaded by `load_all_scripts`; this system only parses the results.
 pub fn load_building_registry(
     engine: Res<crate::scripting::ScriptEngine>,
     mut registry: ResMut<BuildingRegistry>,
 ) {
-    let building_dir = Path::new("scripts/buildings");
-    if building_dir.exists() {
-        match engine.load_directory(building_dir) {
-            Err(e) => {
-                warn!("Failed to load building scripts: {e}; building registry will be empty");
+    match parse_building_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            for def in defs {
+                registry.insert(def);
             }
-            Ok(()) => match parse_building_definitions(engine.lua()) {
-                Ok(defs) => {
-                    let count = defs.len();
-                    for def in defs {
-                        registry.insert(def);
-                    }
-                    info!("Building registry loaded with {} definitions", count);
-                }
-                Err(e) => {
-                    warn!("Failed to parse building definitions: {e}; building registry will be empty");
-                }
-            },
+            info!("Building registry loaded with {} definitions", count);
         }
-    } else {
-        info!("scripts/buildings directory not found; building registry will be empty");
+        Err(e) => {
+            warn!("Failed to parse building definitions: {e}; building registry will be empty");
+        }
     }
 }
 

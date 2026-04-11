@@ -1,4 +1,4 @@
-define_species {
+local human = define_species {
     id = "human",
     name = "Human",
     growth_rate = 0.01,
@@ -7,4 +7,8 @@ define_species {
         researcher = 0.1,
         farmer = 0.0,
     },
+}
+
+return {
+    human = human,
 }

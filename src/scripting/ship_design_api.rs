@@ -76,8 +76,13 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
         let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
-        let slot_type: String = table.get("slot_type")?;
-        let prerequisite_tech: Option<String> = table.get("prerequisite_tech")?;
+        let slot_type_value: mlua::Value = table.get("slot_type")?;
+        let slot_type = crate::scripting::extract_ref_id(&slot_type_value)?;
+        let prereq_value: mlua::Value = table.get("prerequisite_tech")?;
+        let prerequisite_tech = match prereq_value {
+            mlua::Value::Nil => None,
+            v => Some(crate::scripting::extract_ref_id(&v)?),
+        };
 
         // Parse modifiers array
         let modifiers = parse_module_modifiers(&table)?;
@@ -115,7 +120,8 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
         let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
-        let hull_id: String = table.get("hull")?;
+        let hull_value: mlua::Value = table.get("hull")?;
+        let hull_id = crate::scripting::extract_ref_id(&hull_value)?;
 
         // Parse modules array
         let modules = parse_design_modules(&table)?;
@@ -157,6 +163,7 @@ fn parse_cost_table(
 }
 
 /// Parse the `slots = { { type = "weapon", count = 2 }, ... }` array.
+/// The `type` field accepts both a string ID and a reference table from `define_slot_type`.
 fn parse_hull_slots(table: &mlua::Table) -> Result<Vec<HullSlot>, mlua::Error> {
     let slots_value: mlua::Value = table.get("slots")?;
     match slots_value {
@@ -164,7 +171,8 @@ fn parse_hull_slots(table: &mlua::Table) -> Result<Vec<HullSlot>, mlua::Error> {
             let mut slots = Vec::new();
             for pair in slots_table.pairs::<i64, mlua::Table>() {
                 let (_, slot_table) = pair?;
-                let slot_type: String = slot_table.get("type")?;
+                let type_value: mlua::Value = slot_table.get("type")?;
+                let slot_type = crate::scripting::extract_ref_id(&type_value)?;
                 let count: u32 = slot_table.get::<Option<u32>>("count")?.unwrap_or(1);
                 slots.push(HullSlot { slot_type, count });
             }
@@ -246,6 +254,7 @@ fn parse_weapon_stats(table: &mlua::Table) -> Result<Option<WeaponStats>, mlua::
 }
 
 /// Parse the `modules = { { slot_type = "...", module = "..." }, ... }` array.
+/// Both `slot_type` and `module` accept string IDs or reference tables.
 fn parse_design_modules(
     table: &mlua::Table,
 ) -> Result<Vec<DesignSlotAssignment>, mlua::Error> {
@@ -255,8 +264,10 @@ fn parse_design_modules(
             let mut assignments = Vec::new();
             for pair in mods_table.pairs::<i64, mlua::Table>() {
                 let (_, mod_table) = pair?;
-                let slot_type: String = mod_table.get("slot_type")?;
-                let module_id: String = mod_table.get("module")?;
+                let slot_type_value: mlua::Value = mod_table.get("slot_type")?;
+                let slot_type = crate::scripting::extract_ref_id(&slot_type_value)?;
+                let module_value: mlua::Value = mod_table.get("module")?;
+                let module_id = crate::scripting::extract_ref_id(&module_value)?;
                 assignments.push(DesignSlotAssignment {
                     slot_type,
                     module_id,
@@ -491,16 +502,16 @@ mod tests {
     fn test_ship_design_scripts_load() {
         let engine = ScriptEngine::new().unwrap();
 
-        let ships_dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/ships");
-        if !ships_dir.exists() {
+        let init_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/init.lua");
+        if !init_path.exists() {
             panic!(
-                "scripts/ships directory not found at {:?}",
-                ships_dir
+                "scripts/init.lua not found at {:?}",
+                init_path
             );
         }
 
-        engine.load_directory(&ships_dir).unwrap();
+        engine.load_file(&init_path).unwrap();
 
         // Slot types
         let slot_types = parse_slot_types(engine.lua()).unwrap();
