@@ -576,6 +576,7 @@ fn draw_planet_window(
     let mut open = true;
     egui::Window::new(format!("{} ({})", planet_name, planet_type))
         .id(egui::Id::new("planet_info_window"))
+        .order(egui::Order::Foreground)
         .default_pos(egui::pos2(400.0, 200.0))
         .default_size(egui::vec2(350.0, 400.0))
         .resizable(true)
