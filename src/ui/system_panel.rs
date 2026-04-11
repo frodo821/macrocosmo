@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, BuildingType, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
+use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::components::Position;
 use crate::galaxy::{Habitability, Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -56,6 +57,7 @@ pub fn draw_system_panel(
     design_registry: &crate::ship_design::ShipDesignRegistry,
     colonization_queues: &Query<&ColonizationQueue>,
     colonization_actions_out: &mut Vec<ColonizationAction>,
+    building_registry: &BuildingRegistry,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -249,7 +251,7 @@ pub fn draw_system_panel(
                 ui.separator();
                 ui.label(egui::RichText::new("System Buildings").strong());
 
-                let mut sys_demolish_request: Option<(usize, BuildingType)> = None;
+                let mut sys_demolish_request: Option<(usize, BuildingId)> = None;
 
                 for (i, slot) in sys_bldgs.slots.iter().enumerate() {
                     let is_demolishing = sys_bldg_queue
@@ -258,23 +260,24 @@ pub fn draw_system_panel(
                         .unwrap_or(false);
 
                     match slot {
-                        Some(bt) if is_demolishing => {
+                        Some(bid) if is_demolishing => {
                             let remaining = sys_bldg_queue
                                 .as_ref()
                                 .and_then(|bq| bq.demolition_time_remaining(i))
                                 .unwrap_or(0);
+                            let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
                             ui.label(format!(
                                 "  [{}] {} — Demolishing... ({} hd remaining)",
-                                i,
-                                bt.name(),
-                                remaining
+                                i, name, remaining
                             ));
                         }
-                        Some(bt) => {
+                        Some(bid) => {
+                            let def = building_registry.get(bid.as_str());
+                            let name = def.map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                            let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                            let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                             ui.horizontal(|ui| {
-                                ui.label(format!("  [{}] {}", i, bt.name()));
-                                let (m_refund, e_refund) = bt.demolition_refund();
-                                let demo_time = bt.demolition_time();
+                                ui.label(format!("  [{}] {}", i, name));
                                 let tooltip = format!(
                                     "Demolish: {} hd | Refund M:{} E:{}",
                                     demo_time, m_refund, e_refund
@@ -284,7 +287,7 @@ pub fn draw_system_panel(
                                     .on_hover_text(tooltip)
                                     .clicked()
                                 {
-                                    sys_demolish_request = Some((i, *bt));
+                                    sys_demolish_request = Some((i, bid.clone()));
                                 }
                             });
                         }
@@ -294,17 +297,19 @@ pub fn draw_system_panel(
                     }
                 }
 
-                if let Some((slot_idx, bt)) = sys_demolish_request {
+                if let Some((slot_idx, bid)) = sys_demolish_request {
                     if let Some(mut bq) = sys_bldg_queue {
-                        let (m_refund, e_refund) = bt.demolition_refund();
+                        let def = building_registry.get(bid.as_str());
+                        let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                        let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                         bq.demolition_queue.push(DemolitionOrder {
                             target_slot: slot_idx,
-                            building_type: bt,
-                            time_remaining: bt.demolition_time(),
+                            building_id: bid.clone(),
+                            time_remaining: demo_time,
                             minerals_refund: m_refund,
                             energy_refund: e_refund,
                         });
-                        info!("System building demolition order added: {:?} in slot {}", bt, slot_idx);
+                        info!("System building demolition order added: {} in slot {}", bid, slot_idx);
                     }
                 }
 
@@ -322,38 +327,36 @@ pub fn draw_system_panel(
                     if let Some(slot_idx) = empty_slot {
                         ui.separator();
                         ui.label(egui::RichText::new("Build System Building").strong());
-                        let system_building_types = [
-                            BuildingType::Shipyard,
-                            BuildingType::ResearchLab,
-                            BuildingType::Port,
-                        ];
+                        let system_building_defs = building_registry.system_buildings();
                         let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
                         let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
-                        let mut build_sys_building_request: Option<BuildingType> = None;
-                        for bt in &system_building_types {
-                            let (base_m, base_e) = bt.build_cost();
+                        let mut build_sys_building_request: Option<BuildingId> = None;
+                        for def in &system_building_defs {
+                            let (base_m, base_e) = def.build_cost();
                             let eff_m = base_m.mul_amt(bldg_cost_mod);
                             let eff_e = base_e.mul_amt(bldg_cost_mod);
-                            let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                            let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
                             let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
-                            if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
-                                build_sys_building_request = Some(*bt);
+                            if ui.button(&def.name).on_hover_text(tooltip).clicked() {
+                                build_sys_building_request = Some(BuildingId::new(&def.id));
                             }
                         }
-                        if let Some(bt) = build_sys_building_request {
+                        if let Some(bid) = build_sys_building_request {
                             if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
-                                let (base_m, base_e) = bt.build_cost();
+                                let def = building_registry.get(bid.as_str());
+                                let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                                let base_time = def.map(|d| d.build_time).unwrap_or(10);
                                 let eff_m = base_m.mul_amt(bldg_cost_mod);
                                 let eff_e = base_e.mul_amt(bldg_cost_mod);
-                                let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                                let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
                                 bq.queue.push(BuildingOrder {
-                                    building_type: bt,
+                                    building_id: bid.clone(),
                                     target_slot: slot_idx,
                                     minerals_remaining: eff_m,
                                     energy_remaining: eff_e,
                                     build_time_remaining: eff_time,
                                 });
-                                info!("System building order added: {:?} in slot {}", bt, slot_idx);
+                                info!("System building order added: {} in slot {}", bid, slot_idx);
                             }
                         }
                     }
@@ -489,6 +492,7 @@ pub fn draw_system_panel(
         hull_registry,
         module_registry,
         design_registry,
+        building_registry,
     );
 }
 
@@ -519,6 +523,7 @@ fn draw_planet_window(
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
+    building_registry: &BuildingRegistry,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
         return;
@@ -583,6 +588,7 @@ fn draw_planet_window(
                             hull_registry,
                             module_registry,
                             design_registry,
+                            building_registry,
                         );
                     });
             } else {
@@ -642,6 +648,7 @@ fn draw_colony_detail(
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
+    building_registry: &BuildingRegistry,
 ) {
     ui.label(
         egui::RichText::new("Colony")
@@ -735,8 +742,10 @@ fn draw_colony_detail(
             let mut building_maintenance = Amt::ZERO;
             if let Some(b) = buildings {
                 for slot in &b.slots {
-                    if let Some(bt) = slot {
-                        building_maintenance = building_maintenance.add(bt.maintenance_cost());
+                    if let Some(bid) = slot {
+                        building_maintenance = building_maintenance.add(
+                            building_registry.get(bid.as_str()).map(|d| d.maintenance).unwrap_or(Amt::ZERO)
+                        );
                     }
                 }
             }
@@ -888,16 +897,17 @@ fn draw_colony_detail(
             ui.separator();
             ui.label(egui::RichText::new("Planet Buildings").strong());
 
-            let mut demolish_request: Option<(usize, BuildingType)> = None;
+            let mut demolish_request: Option<(usize, BuildingId)> = None;
 
             // Collect pending building slots so we can show in-progress orders
-            let pending_orders: Vec<(usize, &str, f32)> = building_queue
+            let pending_orders: Vec<(usize, String, f32)> = building_queue
                 .as_ref()
                 .map(|bq| {
                     bq.queue
                         .iter()
                         .map(|order| {
-                            let (total_m, total_e) = order.building_type.build_cost();
+                            let def = building_registry.get(order.building_id.as_str());
+                            let (total_m, total_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
                             let m_pct = if total_m.raw() > 0 {
                                 1.0 - (order.minerals_remaining.raw() as f32 / total_m.raw() as f32)
                             } else {
@@ -908,14 +918,15 @@ fn draw_colony_detail(
                             } else {
                                 1.0
                             };
-                            let bt_time = order.building_type.build_time();
+                            let bt_time = def.map(|d| d.build_time).unwrap_or(10);
                             let time_pct = if bt_time > 0 {
                                 1.0 - (order.build_time_remaining as f32 / bt_time as f32)
                             } else {
                                 1.0
                             };
                             let pct = m_pct.min(e_pct).min(time_pct).max(0.0);
-                            (order.target_slot, order.building_type.name(), pct)
+                            let name = def.map(|d| d.name.clone()).unwrap_or_else(|| order.building_id.0.clone());
+                            (order.target_slot, name, pct)
                         })
                         .collect()
                 })
@@ -928,23 +939,24 @@ fn draw_colony_detail(
                     .unwrap_or(false);
 
                 match slot {
-                    Some(bt) if is_demolishing => {
+                    Some(bid) if is_demolishing => {
                         let remaining = building_queue
                             .as_ref()
                             .and_then(|bq| bq.demolition_time_remaining(i))
                             .unwrap_or(0);
+                        let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
                         ui.label(format!(
                             "  [{}] {} — Demolishing... ({} hd remaining)",
-                            i,
-                            bt.name(),
-                            remaining
+                            i, name, remaining
                         ));
                     }
-                    Some(bt) => {
+                    Some(bid) => {
+                        let def = building_registry.get(bid.as_str());
+                        let name = def.map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                        let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                        let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                         ui.horizontal(|ui| {
-                            ui.label(format!("  [{}] {}", i, bt.name()));
-                            let (m_refund, e_refund) = bt.demolition_refund();
-                            let demo_time = bt.demolition_time();
+                            ui.label(format!("  [{}] {}", i, name));
                             let tooltip = format!(
                                 "Demolish: {} hd | Refund M:{} E:{}",
                                 demo_time, m_refund, e_refund
@@ -954,7 +966,7 @@ fn draw_colony_detail(
                                 .on_hover_text(tooltip)
                                 .clicked()
                             {
-                                demolish_request = Some((i, *bt));
+                                demolish_request = Some((i, bid.clone()));
                             }
                         });
                     }
@@ -972,17 +984,19 @@ fn draw_colony_detail(
                 }
             }
 
-            if let Some((slot_idx, bt)) = demolish_request {
+            if let Some((slot_idx, bid)) = demolish_request {
                 if let Some(bq) = building_queue.as_mut() {
-                    let (m_refund, e_refund) = bt.demolition_refund();
+                    let def = building_registry.get(bid.as_str());
+                    let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                    let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                     bq.demolition_queue.push(DemolitionOrder {
                         target_slot: slot_idx,
-                        building_type: bt,
-                        time_remaining: bt.demolition_time(),
+                        building_id: bid.clone(),
+                        time_remaining: demo_time,
                         minerals_refund: m_refund,
                         energy_refund: e_refund,
                     });
-                    info!("Demolition order added: {:?} in slot {}", bt, slot_idx);
+                    info!("Demolition order added: {} in slot {}", bid, slot_idx);
                 }
             }
 
@@ -996,38 +1010,36 @@ fn draw_colony_detail(
             if let Some(slot_idx) = empty_slot {
                 ui.separator();
                 ui.label(egui::RichText::new("Build Planet Building").strong());
-                let building_types = [
-                    BuildingType::Mine,
-                    BuildingType::PowerPlant,
-                    BuildingType::Farm,
-                ];
+                let planet_building_defs = building_registry.planet_buildings();
                 let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
                 let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
-                let mut build_building_request: Option<BuildingType> = None;
-                for bt in &building_types {
-                    let (base_m, base_e) = bt.build_cost();
+                let mut build_building_request: Option<BuildingId> = None;
+                for def in &planet_building_defs {
+                    let (base_m, base_e) = def.build_cost();
                     let eff_m = base_m.mul_amt(bldg_cost_mod);
                     let eff_e = base_e.mul_amt(bldg_cost_mod);
-                    let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                    let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
                     let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
-                    if ui.button(bt.name()).on_hover_text(tooltip).clicked() {
-                        build_building_request = Some(*bt);
+                    if ui.button(&def.name).on_hover_text(tooltip).clicked() {
+                        build_building_request = Some(BuildingId::new(&def.id));
                     }
                 }
-                if let Some(bt) = build_building_request {
+                if let Some(bid) = build_building_request {
                     if let Some(mut bq) = building_queue {
-                        let (base_m, base_e) = bt.build_cost();
+                        let def = building_registry.get(bid.as_str());
+                        let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                        let base_time = def.map(|d| d.build_time).unwrap_or(10);
                         let eff_m = base_m.mul_amt(bldg_cost_mod);
                         let eff_e = base_e.mul_amt(bldg_cost_mod);
-                        let eff_time = (bt.build_time() as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                        let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
                         bq.queue.push(BuildingOrder {
-                            building_type: bt,
+                            building_id: bid.clone(),
                             target_slot: slot_idx,
                             minerals_remaining: eff_m,
                             energy_remaining: eff_e,
                             build_time_remaining: eff_time,
                         });
-                        info!("Building order added: {:?} in slot {}", bt, slot_idx);
+                        info!("Building order added: {} in slot {}", bid, slot_idx);
                     }
                 }
             }

@@ -129,8 +129,8 @@ fn test_building_queue_completes_construction() {
     );
 
     // Colony with enough resources and an empty slot; queue a Mine
-    let (minerals_cost, energy_cost) = BuildingType::Mine.build_cost();
-    let build_time = BuildingType::Mine.build_time();
+    let (minerals_cost, energy_cost) = (Amt::units(150), Amt::units(50));
+    let build_time = 10;
 
     let planet_sys = find_planet(app.world_mut(), sys);
     set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
@@ -156,7 +156,7 @@ fn test_building_queue_completes_construction() {
         Buildings { slots: vec![None, None, None, None] },
         BuildingQueue {
             queue: vec![BuildingOrder {
-                building_type: BuildingType::Mine,
+                building_id: BuildingId::new("mine"),
                 target_slot: 0,
                 minerals_remaining: minerals_cost,
                 energy_remaining: energy_cost,
@@ -177,7 +177,7 @@ fn test_building_queue_completes_construction() {
 
     assert_eq!(
         buildings.slots[0],
-        Some(BuildingType::Mine),
+        Some(BuildingId::new("mine")),
         "Mine should have been built in slot 0"
     );
 }
@@ -197,8 +197,8 @@ fn test_demolish_building_removes_from_slot() {
         true,
     );
 
-    let demo_time = BuildingType::Mine.demolition_time();
-    let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
+    let demo_time = 5;
+    let (m_refund, e_refund) = (Amt::milli(150000/2), Amt::milli(50000/2));
 
     let planet_sys = find_planet(app.world_mut(), sys);
     set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
@@ -222,13 +222,13 @@ fn test_demolish_building_removes_from_slot() {
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
-            slots: vec![Some(BuildingType::Mine), None, None, None],
+            slots: vec![Some(BuildingId::new("mine")), None, None, None],
         },
         BuildingQueue {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
                 target_slot: 0,
-                building_type: BuildingType::Mine,
+                building_id: BuildingId::new("mine"),
                 time_remaining: demo_time,
                 minerals_refund: m_refund,
                 energy_refund: e_refund,
@@ -263,8 +263,8 @@ fn test_demolish_refunds_resources() {
         true,
     );
 
-    let demo_time = BuildingType::Mine.demolition_time();
-    let (m_refund, e_refund) = BuildingType::Mine.demolition_refund();
+    let demo_time = 5;
+    let (m_refund, e_refund) = (Amt::milli(150000/2), Amt::milli(50000/2));
 
     let planet_sys = find_planet(app.world_mut(), sys);
     set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
@@ -288,13 +288,13 @@ fn test_demolish_refunds_resources() {
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
-            slots: vec![Some(BuildingType::Mine), None, None, None],
+            slots: vec![Some(BuildingId::new("mine")), None, None, None],
         },
         BuildingQueue {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
                 target_slot: 0,
-                building_type: BuildingType::Mine,
+                building_id: BuildingId::new("mine"),
                 time_remaining: demo_time,
                 minerals_refund: m_refund,
                 energy_refund: e_refund,
@@ -336,8 +336,8 @@ fn test_demolish_takes_time() {
         true,
     );
 
-    let demo_time = BuildingType::Shipyard.demolition_time(); // 30 / 2 = 15
-    let (m_refund, e_refund) = BuildingType::Shipyard.demolition_refund();
+    let demo_time = 15; // 30 / 2 = 15
+    let (m_refund, e_refund) = (Amt::milli(300000/2), Amt::milli(200000/2));
 
     let planet_sys = find_planet(app.world_mut(), sys);
     set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
@@ -361,13 +361,13 @@ fn test_demolish_takes_time() {
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
-            slots: vec![Some(BuildingType::Shipyard), None, None, None],
+            slots: vec![Some(BuildingId::new("shipyard")), None, None, None],
         },
         BuildingQueue {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
                 target_slot: 0,
-                building_type: BuildingType::Shipyard,
+                building_id: BuildingId::new("shipyard"),
                 time_remaining: demo_time,
                 minerals_refund: m_refund,
                 energy_refund: e_refund,
@@ -388,7 +388,7 @@ fn test_demolish_takes_time() {
         let buildings = q.iter(app.world()).next().unwrap();
         assert_eq!(
             buildings.slots[0],
-            Some(BuildingType::Shipyard),
+            Some(BuildingId::new("shipyard")),
             "Building should still be present before demolition completes"
         );
     }
@@ -444,7 +444,7 @@ fn test_farm_produces_food() {
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
-            slots: vec![Some(BuildingType::Farm)],
+            slots: vec![Some(BuildingId::new("farm"))],
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
@@ -628,7 +628,7 @@ fn test_maintenance_deducts_energy_integration() {
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
-            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard)],
+            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard"))],
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
@@ -1006,8 +1006,8 @@ fn test_build_queue_partial_resources() {
 
     // Colony with only 20 minerals, building order costs 150 minerals + 50 energy
     // Mine build_time = 10 hd
-    let (minerals_cost, energy_cost) = BuildingType::Mine.build_cost();
-    let build_time = BuildingType::Mine.build_time();
+    let (minerals_cost, energy_cost) = (Amt::units(150), Amt::units(50));
+    let build_time = 10;
 
     let planet_sys = find_planet(app.world_mut(), sys);
     set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
@@ -1033,7 +1033,7 @@ fn test_build_queue_partial_resources() {
         Buildings { slots: vec![None, None, None, None] },
         BuildingQueue {
             queue: vec![BuildingOrder {
-                building_type: BuildingType::Mine,
+                building_id: BuildingId::new("mine"),
                 target_slot: 0,
                 minerals_remaining: minerals_cost,
                 energy_remaining: energy_cost,
@@ -1065,7 +1065,7 @@ fn test_build_queue_partial_resources() {
     let buildings = q.iter(app.world()).next().unwrap();
     assert_eq!(
         buildings.slots[0],
-        Some(BuildingType::Mine),
+        Some(BuildingId::new("mine")),
         "Mine should be complete after enough time with ongoing production"
     );
 }
@@ -1118,7 +1118,7 @@ fn test_build_queue_requires_shipyard() {
                 build_time_remaining: 60,
             }],
         },
-        Buildings { slots: vec![Some(BuildingType::Mine), None, None, None] }, // No Shipyard!
+        Buildings { slots: vec![Some(BuildingId::new("mine")), None, None, None] }, // No Shipyard!
         BuildingQueue::default(),
         ProductionFocus::default(),
         MaintenanceCost::default(),

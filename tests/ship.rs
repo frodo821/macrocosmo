@@ -273,7 +273,7 @@ fn test_build_queue_spawns_ship() {
             authority: Amt::ZERO,
         }, ResourceCapacity::default(),
         SystemBuildings {
-            slots: vec![Some(BuildingType::Shipyard), None, None, None, None, None],
+            slots: vec![Some(BuildingId::new("shipyard")), None, None, None, None, None],
         },
         SystemBuildingQueue::default(),
     ));

@@ -102,7 +102,7 @@ fn test_building_bonus_via_sync_modifiers() {
         sys,
         Amt::ZERO,
         Amt::ZERO,
-        vec![Some(BuildingType::Mine), None, None, None],
+        vec![Some(BuildingId::new("mine")), None, None, None],
     );
 
     // Run one update to trigger sync_building_modifiers
@@ -169,7 +169,7 @@ fn test_maintenance_modifier_affects_energy() {
         },
         BuildQueue { queue: Vec::new() },
         Buildings {
-            slots: vec![Some(BuildingType::Mine), Some(BuildingType::Shipyard), None, None],
+            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None, None],
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
