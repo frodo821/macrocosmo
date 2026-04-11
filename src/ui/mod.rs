@@ -405,6 +405,7 @@ fn draw_main_panels_system(
         &world.colonization_queues,
         &mut colonization_actions,
         &building_registry,
+        &world.anomalies,
     );
 
     for action in colonization_actions {

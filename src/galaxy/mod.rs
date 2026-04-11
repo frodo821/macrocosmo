@@ -155,6 +155,21 @@ pub struct PortFacility {
     pub partner: Entity,
 }
 
+/// Persistent anomalies/points of interest discovered during surveys.
+#[derive(Component, Default, Clone, Debug)]
+pub struct Anomalies {
+    pub discoveries: Vec<Anomaly>,
+}
+
+/// A single anomaly discovered during a survey.
+#[derive(Clone, Debug)]
+pub struct Anomaly {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub discovered_at: i64,
+}
+
 /// Modifiers that apply to all ships in a star system.
 /// Example: solar storm reducing speed, nebula boosting shields.
 #[derive(Component, Default)]
@@ -659,6 +674,7 @@ pub fn generate_galaxy(
             sovereignty,
             TechKnowledge::default(),
             SystemModifiers::default(),
+            Anomalies::default(),
         ));
         let star_entity = entity.id();
 

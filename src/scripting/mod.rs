@@ -1,3 +1,4 @@
+pub mod anomaly_api;
 pub mod building_api;
 pub mod condition_ctx;
 pub mod condition_parser;
@@ -21,6 +22,10 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Startup,
                 load_all_scripts.after(init_scripting),
+            )
+            .add_systems(
+                Startup,
+                anomaly_api::load_anomaly_registry.after(load_all_scripts),
             )
             .add_systems(
                 Startup,
@@ -193,6 +198,10 @@ impl ScriptEngine {
         // --- Structure definition ---
 
         Self::register_define_fn(lua, "structure", "_structure_definitions")?;
+
+        // --- Anomaly definition ---
+
+        Self::register_define_fn(lua, "anomaly", "_anomaly_definitions")?;
 
         // --- #45: Global param / flag Lua bindings ---
 
