@@ -30,8 +30,13 @@ impl Plugin for ScriptingPlugin {
             )
             .add_systems(
                 Startup,
+                load_event_definitions.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
                 lifecycle::run_lifecycle_hooks
                     .after(load_all_scripts)
+                    .after(load_event_definitions)
                     .after(crate::colony::load_building_registry)
                     .after(crate::technology::load_technologies),
             )
@@ -84,6 +89,25 @@ pub fn load_all_scripts(engine: Res<ScriptEngine>) {
             if let Err(e) = engine.load_directory(&path) {
                 warn!("Failed to load scripts from {}: {e}", path.display());
             }
+        }
+    }
+}
+
+/// Startup system that parses Lua event definitions and registers them in EventSystem.
+fn load_event_definitions(
+    engine: Res<ScriptEngine>,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
+) {
+    match event_api::parse_event_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            for def in defs {
+                event_system.register(def);
+            }
+            info!("Loaded {} event definitions from Lua", count);
+        }
+        Err(e) => {
+            warn!("Failed to parse event definitions: {e}");
         }
     }
 }
