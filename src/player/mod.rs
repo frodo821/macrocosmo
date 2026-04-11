@@ -33,6 +33,10 @@ pub fn spawn_player_empire(mut commands: Commands) {
             name: "Human Federation".into(),
         },
         PlayerEmpire,
+        Faction {
+            id: "humanity_empire".into(),
+            name: "Terran Federation".into(),
+        },
         TechTree::default(),
         ResearchQueue::default(),
         ResearchPool::default(),
@@ -74,6 +78,14 @@ pub struct Empire {
 /// Marker component for the player's empire entity.
 #[derive(Component)]
 pub struct PlayerEmpire;
+
+/// Faction identity component. Defines which faction an empire belongs to.
+/// The `id` matches a FactionDefinition loaded from Lua scripts.
+#[derive(Component, Clone, Debug)]
+pub struct Faction {
+    pub id: String,
+    pub name: String,
+}
 
 pub fn spawn_player(
     mut commands: Commands,
