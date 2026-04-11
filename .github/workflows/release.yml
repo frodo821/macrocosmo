@@ -90,6 +90,7 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/macrocosmo dist/
           cp -r scripts dist/ 2>/dev/null || true
+          cp -r assets dist/ 2>/dev/null || true
           tar -czf ${{ matrix.artifact }}.tar.gz -C dist .
 
       - name: Package (Windows)
@@ -99,6 +100,7 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/macrocosmo.exe dist/
           cp -r scripts dist/ 2>/dev/null || true
+          cp -r assets dist/ 2>/dev/null || true
           7z a ${{ matrix.artifact }}.zip dist/*
 
       - name: Attest build provenance
