@@ -3,6 +3,11 @@ use rand::Rng;
 
 use crate::components::Position;
 use crate::scripting::galaxy_api::{PlanetTypeDefinition, PlanetTypeRegistry, StarTypeDefinition, StarTypeRegistry};
+use crate::scripting::galaxy_gen_ctx::{
+    self, ChooseCapitalsCtx, GalaxyGenerateCtx, GenerationSettings, InitializeSystemActions,
+    InitializeSystemCtx, PlanetAttrsOverride, SystemSnapshot,
+};
+use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
 use super::{
@@ -39,9 +44,14 @@ pub(crate) struct CapitalAssignments {
 }
 
 /// Planet data generated during Phase C initialization.
+#[derive(Clone, Debug)]
 pub(crate) struct PlanetData {
     pub type_idx: usize,
     pub attrs: SystemAttributes,
+    /// Lua-spawned planets carry their explicit name here; default-generated
+    /// planets leave this `None` and receive the standard
+    /// `"{system} {roman}"` name.
+    pub name_override: Option<String>,
 }
 
 /// Build a Modifier from a StarTypeModifier, using the star type id as a stable id prefix.
@@ -185,9 +195,13 @@ fn planet_attributes_from_type(
     }
 }
 
-/// Phase A: Generate star system positions (spiral arms + bridge pass) and assign star types.
-/// Returns a Vec of EmptySystem — no ECS entities are spawned yet.
-pub(crate) fn generate_empty_systems(
+/// Phase A (default): Generate star system positions (spiral arms + bridge pass)
+/// and assign star types. Returns a Vec of EmptySystem — no ECS entities are
+/// spawned yet.
+///
+/// This is the Rust built-in that runs when no `on_galaxy_generate_empty`
+/// hook is registered in Lua.
+pub(crate) fn default_generate_empty_systems(
     rng: &mut impl Rng,
     params: &GalaxyParams,
     star_weights: &[f64],
@@ -314,10 +328,14 @@ pub(crate) fn generate_empty_systems(
         .collect()
 }
 
-/// Phase B: Choose which systems become faction capitals.
-/// Currently selects the single player capital (~20 ly from center) and swaps it to index 0.
-/// Returns capital assignments without modifying ECS state.
-pub(crate) fn choose_faction_capitals(systems: &mut Vec<EmptySystem>) -> CapitalAssignments {
+/// Phase B (default): Choose which systems become faction capitals.
+/// Currently selects the single player capital (~20 ly from center) and swaps
+/// it to index 0. Returns capital assignments without modifying ECS state.
+///
+/// Runs when no `on_choose_capitals` hook is registered.
+pub(crate) fn default_choose_faction_capitals(
+    systems: &mut Vec<EmptySystem>,
+) -> CapitalAssignments {
     let target_capital_radius = 20.0_f64;
     let capital_idx = systems
         .iter()
@@ -344,7 +362,25 @@ pub(crate) fn choose_faction_capitals(systems: &mut Vec<EmptySystem>) -> Capital
     CapitalAssignments { capital_idx: 0 }
 }
 
-/// Phase C: Initialize all systems — generate planets, spawn ECS entities, place hostiles.
+/// Per-system override produced by the `on_initialize_system` Lua hook.
+/// Consumed by `initialize_systems` after the default planet data has been
+/// computed — if present, the default planets for that system are replaced.
+#[derive(Default, Clone, Debug)]
+pub(crate) struct SystemInitOverride {
+    /// Lua-spawned planets for this system, awaiting planet-type resolution
+    /// against the `PlanetTypeRegistry`.
+    pub pending_planets: Vec<PendingPlanet>,
+    /// If true, replace defaults with `pending_planets` (which may be empty
+    /// to intentionally suppress planets).
+    pub override_planets: bool,
+    /// Optional override for system name.
+    pub name: Option<String>,
+    /// Optional override for the surveyed flag.
+    pub surveyed: Option<bool>,
+}
+
+/// Phase C: Initialize all systems — generate planets, spawn ECS entities,
+/// place hostiles. `overrides[i]` (if present) is applied to system `i`.
 pub(crate) fn initialize_systems(
     commands: &mut Commands,
     rng: &mut impl Rng,
@@ -354,6 +390,7 @@ pub(crate) fn initialize_systems(
     star_types: &[StarTypeDefinition],
     planet_types: &[PlanetTypeDefinition],
     planet_weights: &[f64],
+    overrides: &[SystemInitOverride],
 ) {
     let actual_count = systems.len();
 
@@ -370,9 +407,21 @@ pub(crate) fn initialize_systems(
         planet_counts.push(count);
     }
 
-    // Generate planet data: Vec of (planet_type_idx, attributes) per system
+    // Generate planet data: Vec of (planet_type_idx, attributes) per system.
+    // If a Lua `on_initialize_system` hook provided override planets for a
+    // system, those replace the default-generated set.
     let mut all_planets: Vec<Vec<PlanetData>> = Vec::with_capacity(actual_count);
     for (i, sys) in systems.iter().enumerate() {
+        // Respect hook override (if provided).
+        if overrides.get(i).map(|o| o.override_planets).unwrap_or(false) {
+            let resolved = resolve_pending_planets(
+                &overrides[i].pending_planets,
+                planet_types,
+                &star_types[sys.star_type_idx],
+            );
+            all_planets.push(resolved);
+            continue;
+        }
         let star = &star_types[sys.star_type_idx];
         let count = planet_counts[i];
         let mut planets = Vec::with_capacity(count);
@@ -386,12 +435,17 @@ pub(crate) fn initialize_systems(
                 planets.push(PlanetData {
                     type_idx,
                     attrs: capital_attributes(rng),
+                    name_override: None,
                 });
             } else {
                 let type_idx = weighted_random_index(rng, planet_weights).unwrap_or(0);
                 let pt = &planet_types[type_idx];
                 let attrs = planet_attributes_from_type(rng, pt, star.habitability_bonus);
-                planets.push(PlanetData { type_idx, attrs });
+                planets.push(PlanetData {
+                    type_idx,
+                    attrs,
+                    name_override: None,
+                });
             }
         }
         all_planets.push(planets);
@@ -457,9 +511,18 @@ pub(crate) fn initialize_systems(
         let is_capital = i == capitals.capital_idx;
         let star_type = &star_types[sys.star_type_idx];
 
+        // Apply optional per-system name / surveyed override.
+        let sys_override = overrides.get(i);
+        let name = sys_override
+            .and_then(|o| o.name.clone())
+            .unwrap_or_else(|| sys.name.clone());
+        let surveyed = sys_override
+            .and_then(|o| o.surveyed)
+            .unwrap_or(is_capital);
+
         let star = StarSystem {
-            name: sys.name.clone(),
-            surveyed: is_capital,
+            name: name.clone(),
+            surveyed,
             is_capital,
             star_type: star_type.id.clone(),
         };
@@ -492,9 +555,14 @@ pub(crate) fn initialize_systems(
             commands.entity(star_entity).insert(ObscuredByGas);
         }
 
-        // Spawn planets for this star system
+        // Spawn planets for this star system. Planet names from
+        // `spawn_planet` hook calls are used verbatim; default-generated
+        // planets keep the `"{system} {roman}"` convention.
         for (p, planet_data) in all_planets[i].iter().enumerate() {
-            let planet_name = format!("{} {}", sys.name, super::roman_numeral(p + 1));
+            let planet_name = planet_data
+                .name_override
+                .clone()
+                .unwrap_or_else(|| format!("{} {}", name, super::roman_numeral(p + 1)));
             let planet_type = &planet_types[planet_data.type_idx];
 
             commands.spawn((
@@ -577,6 +645,7 @@ pub fn generate_galaxy(
     mut commands: Commands,
     star_registry: Res<StarTypeRegistry>,
     planet_registry: Res<PlanetTypeRegistry>,
+    engine: Option<Res<ScriptEngine>>,
 ) {
     let mut rng = rand::rng();
     let params = GalaxyParams {
@@ -604,11 +673,17 @@ pub fn generate_galaxy(
     let star_weights: Vec<f64> = star_types.iter().map(|s| s.weight).collect();
     let planet_weights: Vec<f64> = planet_types.iter().map(|p| p.weight).collect();
 
-    // Phase A: Generate empty star systems (positions + star types only)
-    let mut systems = generate_empty_systems(&mut rng, &params, &star_weights);
+    let lua = engine.as_deref().map(|e| e.lua());
 
-    // Phase B: Choose faction capitals
-    let capitals = choose_faction_capitals(&mut systems);
+    // Phase A: Generate empty star systems (positions + star types only).
+    // Honors `on_galaxy_generate_empty` if registered.
+    let mut systems = run_phase_a(lua, &mut rng, &params, &star_types, &star_weights);
+
+    // Phase B: Choose faction capitals. Honors `on_choose_capitals` if registered.
+    let capitals = run_phase_b(lua, &mut systems, &star_types);
+
+    // Phase C per-system hook: gather overrides before entity spawning.
+    let overrides = run_phase_c_hooks(lua, &systems, &capitals, &star_types);
 
     // Phase C: Initialize all systems (planets, resources, hostiles, ECS entities)
     initialize_systems(
@@ -620,5 +695,254 @@ pub fn generate_galaxy(
         &star_types,
         &planet_types,
         &planet_weights,
+        &overrides,
     );
+}
+
+// --- Hook dispatchers -------------------------------------------------
+
+/// Phase A dispatcher: if an `on_galaxy_generate_empty` hook is registered,
+/// run it and convert the recorded `SpawnedEmptySystemSpec`s into
+/// `EmptySystem`s. Otherwise fall back to the default Rust implementation.
+///
+/// Lua-provided star-type ids that don't match any definition are rejected —
+/// the system is skipped with a warning rather than silently defaulting to
+/// index 0.
+fn run_phase_a(
+    lua: Option<&mlua::Lua>,
+    rng: &mut impl Rng,
+    params: &GalaxyParams,
+    star_types: &[StarTypeDefinition],
+    star_weights: &[f64],
+) -> Vec<EmptySystem> {
+    let Some(lua) = lua else {
+        return default_generate_empty_systems(rng, params, star_weights);
+    };
+    let Some(func) =
+        galaxy_gen_ctx::last_registered_hook(lua, galaxy_gen_ctx::GENERATE_EMPTY_HANDLERS)
+            .ok()
+            .flatten()
+    else {
+        return default_generate_empty_systems(rng, params, star_weights);
+    };
+
+    let settings = GenerationSettings {
+        num_systems: params.num_systems,
+        num_arms: params.num_arms,
+        galaxy_radius: params.galaxy_radius,
+        arm_twist: params.arm_twist,
+        arm_spread: params.arm_spread,
+        min_distance: params.min_distance,
+        max_neighbor_distance: params.max_neighbor_distance,
+    };
+    let ctx = GalaxyGenerateCtx::new(settings);
+    if let Err(e) = func.call::<()>(ctx.clone()) {
+        warn!("on_galaxy_generate_empty hook error: {e}; falling back to default");
+        return default_generate_empty_systems(rng, params, star_weights);
+    }
+    let actions = ctx.take_actions();
+    if actions.spawned_systems.is_empty() {
+        warn!("on_galaxy_generate_empty produced no systems; falling back to default");
+        return default_generate_empty_systems(rng, params, star_weights);
+    }
+
+    let mut out = Vec::with_capacity(actions.spawned_systems.len());
+    for spec in actions.spawned_systems {
+        let Some(idx) = star_types.iter().position(|s| s.id == spec.star_type) else {
+            warn!(
+                "on_galaxy_generate_empty: unknown star_type '{}' for system '{}' — skipping",
+                spec.star_type, spec.name
+            );
+            continue;
+        };
+        out.push(EmptySystem {
+            name: spec.name,
+            position: spec.position,
+            star_type_idx: idx,
+        });
+    }
+    out
+}
+
+/// Phase B dispatcher.
+///
+/// Semantics when the hook is registered: the hook SHOULD call
+/// `ctx:assign_capital(idx, faction_id)` for every capital it wants to mark.
+/// We interpret the *first* assignment as the player's capital (swapped to
+/// index 0), matching legacy behavior. If the hook does not assign any
+/// capital, we fall back to the default heuristic.
+fn run_phase_b(
+    lua: Option<&mlua::Lua>,
+    systems: &mut Vec<EmptySystem>,
+    star_types: &[StarTypeDefinition],
+) -> CapitalAssignments {
+    let Some(lua) = lua else {
+        return default_choose_faction_capitals(systems);
+    };
+    let Some(func) = galaxy_gen_ctx::last_registered_hook(
+        lua,
+        galaxy_gen_ctx::CHOOSE_CAPITALS_HANDLERS,
+    )
+    .ok()
+    .flatten()
+    else {
+        return default_choose_faction_capitals(systems);
+    };
+
+    let snapshots: Vec<SystemSnapshot> = systems
+        .iter()
+        .map(|s| SystemSnapshot {
+            name: s.name.clone(),
+            position: s.position,
+            star_type: star_types
+                .get(s.star_type_idx)
+                .map(|st| st.id.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+    // TODO(#182): expose defined faction ids via FactionRegistry once that
+    // resource is available at galaxy-generation time. For now pass empty —
+    // hooks typically know their own faction ids.
+    let ctx = ChooseCapitalsCtx::new(snapshots, Vec::new());
+    if let Err(e) = func.call::<()>(ctx.clone()) {
+        warn!("on_choose_capitals hook error: {e}; falling back to default");
+        return default_choose_faction_capitals(systems);
+    }
+    let actions = ctx.take_actions();
+    let Some(first) = actions.assignments.first() else {
+        warn!("on_choose_capitals made no assignments; falling back to default");
+        return default_choose_faction_capitals(systems);
+    };
+    let idx = first.system_index;
+    if idx == 0 || idx > systems.len() {
+        warn!(
+            "on_choose_capitals: capital index {} out of range (1..={}); falling back to default",
+            idx,
+            systems.len()
+        );
+        return default_choose_faction_capitals(systems);
+    }
+    // Swap the selected capital to index 0, matching default behavior.
+    systems.swap(0, idx - 1);
+    CapitalAssignments { capital_idx: 0 }
+}
+
+/// Phase C hook dispatcher: for each system, optionally invoke the
+/// `on_initialize_system` hook and collect the resulting per-system
+/// override. Systems with no hook (or with a hook that records no planet
+/// spawns / attribute overrides) get a default `SystemInitOverride`.
+fn run_phase_c_hooks(
+    lua: Option<&mlua::Lua>,
+    systems: &[EmptySystem],
+    capitals: &CapitalAssignments,
+    star_types: &[StarTypeDefinition],
+) -> Vec<SystemInitOverride> {
+    let Some(lua) = lua else {
+        return vec![SystemInitOverride::default(); systems.len()];
+    };
+    let Some(func) = galaxy_gen_ctx::last_registered_hook(
+        lua,
+        galaxy_gen_ctx::INITIALIZE_SYSTEM_HANDLERS,
+    )
+    .ok()
+    .flatten()
+    else {
+        return vec![SystemInitOverride::default(); systems.len()];
+    };
+
+    let mut out = Vec::with_capacity(systems.len());
+    for (i, sys) in systems.iter().enumerate() {
+        let star_type_id = star_types
+            .get(sys.star_type_idx)
+            .map(|st| st.id.clone())
+            .unwrap_or_default();
+        let ctx = InitializeSystemCtx::new(
+            i + 1,
+            sys.name.clone(),
+            star_type_id,
+            sys.position,
+            i == capitals.capital_idx,
+        );
+        if let Err(e) = func.call::<()>(ctx.clone()) {
+            warn!(
+                "on_initialize_system hook error (system {}): {e}; using default planets",
+                sys.name
+            );
+            out.push(SystemInitOverride::default());
+            continue;
+        }
+        let actions = ctx.take_actions();
+        out.push(convert_initialize_actions(actions));
+    }
+    out
+}
+
+/// Convert Lua-recorded `InitializeSystemActions` into a `SystemInitOverride`
+/// consumable by `initialize_systems`. Planet-type ids are resolved later
+/// against the planet_types registry in `initialize_systems`.
+fn convert_initialize_actions(actions: InitializeSystemActions) -> SystemInitOverride {
+    let pending = actions
+        .spawned_planets
+        .into_iter()
+        .map(|p| PendingPlanet {
+            name: p.name,
+            type_id: p.planet_type,
+            attrs: p.attrs,
+        })
+        .collect();
+    SystemInitOverride {
+        pending_planets: pending,
+        override_planets: actions.override_default_planets,
+        name: actions.name,
+        surveyed: actions.surveyed,
+    }
+}
+
+/// Unresolved planet record from the Lua hook, awaiting `type_id` lookup
+/// against the planet_types registry in `initialize_systems`.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingPlanet {
+    pub name: String,
+    pub type_id: String,
+    pub attrs: PlanetAttrsOverride,
+}
+
+/// Resolve a list of `PendingPlanet` (from a Lua hook) into `PlanetData`
+/// ready for `initialize_systems` to consume.
+///
+/// Missing attribute fields are filled from the planet type definition's
+/// defaults (base_habitability + habitability_bonus from the star, base_slots,
+/// zero resource levels). Unknown planet-type ids are skipped with a warning.
+fn resolve_pending_planets(
+    pending: &[PendingPlanet],
+    planet_types: &[PlanetTypeDefinition],
+    star: &StarTypeDefinition,
+) -> Vec<PlanetData> {
+    let mut out = Vec::with_capacity(pending.len());
+    for p in pending {
+        let Some(type_idx) = planet_types.iter().position(|pt| pt.id == p.type_id) else {
+            warn!(
+                "on_initialize_system: unknown planet_type '{}' for planet '{}' — skipping",
+                p.type_id, p.name
+            );
+            continue;
+        };
+        let pt = &planet_types[type_idx];
+        let attrs = SystemAttributes {
+            habitability: p
+                .attrs
+                .habitability
+                .unwrap_or((pt.base_habitability + star.habitability_bonus).clamp(0.0, 1.0)),
+            mineral_richness: p.attrs.mineral_richness.unwrap_or(0.0),
+            energy_potential: p.attrs.energy_potential.unwrap_or(0.0),
+            research_potential: p.attrs.research_potential.unwrap_or(0.0),
+            max_building_slots: p.attrs.max_building_slots.unwrap_or(pt.base_slots as u8),
+        };
+        out.push(PlanetData {
+            type_idx,
+            attrs,
+            name_override: Some(p.name.clone()),
+        });
+    }
+    out
 }

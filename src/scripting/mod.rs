@@ -7,6 +7,7 @@ pub mod engine;
 pub mod event_api;
 pub mod faction_api;
 pub mod galaxy_api;
+pub mod galaxy_gen_ctx;
 pub mod game_rng;
 pub mod game_start_ctx;
 pub mod globals;
