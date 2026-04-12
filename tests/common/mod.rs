@@ -320,6 +320,14 @@ pub fn test_app() -> App {
             .after(process_ftl_travel),
     );
 
+    // #171: Light-speed delayed diplomatic actions (drains arrived
+    // PendingDiplomaticAction entities into FactionRelations).
+    app.add_systems(
+        Update,
+        macrocosmo::faction::tick_diplomatic_actions
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+
     // Spawn the empire entity
     spawn_test_empire(app.world_mut());
 
@@ -522,6 +530,9 @@ pub fn full_test_app() -> App {
             visualization::camera_controls,
         ),
     );
+
+    // --- Faction systems (#171) ---
+    app.add_systems(Update, macrocosmo::faction::tick_diplomatic_actions);
 
     // Spawn the empire entity
     spawn_test_empire(app.world_mut());

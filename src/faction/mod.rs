@@ -30,6 +30,19 @@
 //! Scope (this issue, #167): data model + helpers only. Combat integration
 //! (#168), ROE updates (#169), Lua API (#170), light-speed propagation (#171),
 //! and diplomatic UI (#174) are tracked separately.
+//!
+//! # Light-speed delayed diplomacy (#171)
+//!
+//! [`DiplomaticAction`] + [`PendingDiplomaticAction`] model formal diplomatic
+//! actions that propagate at light-speed. Helpers such as
+//! [`declare_war_with_delay`] apply the **sender side** immediately and spawn a
+//! `PendingDiplomaticAction` that the [`tick_diplomatic_actions`] system applies
+//! to the **receiver** when `arrives_at <= clock.elapsed`. Mutual-agreement
+//! actions (peace, alliance) use a two-leg pattern: the proposal arrives at the
+//! receiver (one-way delay), which auto-accepts and queues a reply that arrives
+//! at the sender after another one-way delay. This produces the round-trip
+//! delay that opens a window for surprise attacks (declare-war that is still
+//! in flight).
 
 use std::collections::HashMap;
 
@@ -53,6 +66,10 @@ impl Plugin for FactionRelationsPlugin {
                 Startup,
                 attach_hostile_faction_owners
                     .after(spawn_hostile_factions),
+            )
+            .add_systems(
+                Update,
+                tick_diplomatic_actions.after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -356,6 +373,276 @@ impl FactionRelations {
             view.state = RelationState::Peace;
         }
     }
+
+    /// Set `from`'s view of `to` to [`RelationState::Peace`], preserving
+    /// existing standing. Inserts a default view first if none exists.
+    /// Used by [`tick_diplomatic_actions`] to apply mutual-agreement results.
+    pub fn make_peace(&mut self, from: Entity, to: Entity) {
+        let view = self
+            .relations
+            .entry((from, to))
+            .or_insert_with(FactionView::default);
+        view.state = RelationState::Peace;
+    }
+
+    /// Set `from`'s view of `to` to [`RelationState::Alliance`], preserving
+    /// existing standing. Inserts a default view first if none exists.
+    pub fn make_alliance(&mut self, from: Entity, to: Entity) {
+        let view = self
+            .relations
+            .entry((from, to))
+            .or_insert_with(FactionView::default);
+        view.state = RelationState::Alliance;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #171: Light-speed delayed diplomacy
+// ---------------------------------------------------------------------------
+
+/// Type of diplomatic action carried by a [`PendingDiplomaticAction`].
+///
+/// - **Unilateral** ([`DeclareWar`](DiplomaticAction::DeclareWar),
+///   [`BreakAlliance`](DiplomaticAction::BreakAlliance)): the sender's view
+///   changes immediately when the helper is called; this variant is delivered
+///   to the receiver after a one-way light-speed delay.
+/// - **Mutual** ([`ProposePeace`](DiplomaticAction::ProposePeace),
+///   [`ProposeAlliance`](DiplomaticAction::ProposeAlliance)): the proposal
+///   travels to the receiver (one-way), which auto-accepts and queues an
+///   [`AcceptPeace`](DiplomaticAction::AcceptPeace) /
+///   [`AcceptAlliance`](DiplomaticAction::AcceptAlliance) for the return trip.
+/// - **Acceptance** ([`AcceptPeace`](DiplomaticAction::AcceptPeace),
+///   [`AcceptAlliance`](DiplomaticAction::AcceptAlliance)): emitted internally
+///   by [`tick_diplomatic_actions`] for the return leg of a mutual proposal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiplomaticAction {
+    DeclareWar,
+    ProposePeace,
+    ProposeAlliance,
+    BreakAlliance,
+    AcceptPeace,
+    AcceptAlliance,
+}
+
+/// In-flight diplomatic message awaiting delivery.
+///
+/// Spawned by helpers such as [`declare_war_with_delay`] and drained by
+/// [`tick_diplomatic_actions`] when `arrives_at <= clock.elapsed`. Each
+/// message carries the `from`/`to` faction entities, the [`DiplomaticAction`]
+/// to apply, the absolute hexadies timestamp at which it should land, and the
+/// one-way delay used to schedule it (so a mutual-agreement proposal can
+/// queue an acceptance for the return leg with the same delay).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PendingDiplomaticAction {
+    /// Faction that originated the action.
+    pub from: Entity,
+    /// Faction the action is delivered to.
+    pub to: Entity,
+    /// What to apply on arrival.
+    pub action: DiplomaticAction,
+    /// Absolute hexadies timestamp at which the action is delivered.
+    pub arrives_at: i64,
+    /// One-way light-speed delay (hexadies) used when this message was
+    /// scheduled. Reused by [`tick_diplomatic_actions`] to schedule the
+    /// return leg of mutual-agreement proposals at the same cadence.
+    pub one_way_delay_hexadies: i64,
+}
+
+/// Sender-side immediate war declaration plus a delayed receiver-side war
+/// transition.
+///
+/// `from`'s view of `to` is set to [`RelationState::War`] right away (sender
+/// "knows" they declared war). A [`PendingDiplomaticAction`] entity is spawned
+/// so that `to`'s view of `from` flips to `War` only after `delay_hexadies`
+/// have elapsed. The window between the two updates is the surprise-attack
+/// window — the receiver still sees `Peace`/`Neutral` and a `Defensive` ROE
+/// will not retaliate.
+pub fn declare_war_with_delay(
+    commands: &mut Commands,
+    relations: &mut FactionRelations,
+    clock: &crate::time_system::GameClock,
+    from: Entity,
+    to: Entity,
+    delay_hexadies: i64,
+) {
+    let delay = delay_hexadies.max(0);
+    relations.declare_war(from, to);
+    commands.spawn(PendingDiplomaticAction {
+        from,
+        to,
+        action: DiplomaticAction::DeclareWar,
+        arrives_at: clock.elapsed + delay,
+        one_way_delay_hexadies: delay,
+    });
+}
+
+/// Sender-side immediate alliance termination plus a delayed receiver-side
+/// transition. Mirrors [`declare_war_with_delay`] but transitions to
+/// [`RelationState::Peace`] rather than `War`.
+///
+/// If `from`'s view of `to` is not currently `Alliance` the call is a no-op
+/// on the sender side (matching [`FactionRelations::break_alliance`]); the
+/// pending message is still spawned so the receiver finds out (and the
+/// receiver-side handler is itself a no-op if their view is no longer
+/// `Alliance`).
+pub fn break_alliance_with_delay(
+    commands: &mut Commands,
+    relations: &mut FactionRelations,
+    clock: &crate::time_system::GameClock,
+    from: Entity,
+    to: Entity,
+    delay_hexadies: i64,
+) {
+    let delay = delay_hexadies.max(0);
+    relations.break_alliance(from, to);
+    commands.spawn(PendingDiplomaticAction {
+        from,
+        to,
+        action: DiplomaticAction::BreakAlliance,
+        arrives_at: clock.elapsed + delay,
+        one_way_delay_hexadies: delay,
+    });
+}
+
+/// Spawn a peace proposal in flight to `to`.
+///
+/// Implemented as auto-accept (AI-driven acceptance is #189). When the
+/// proposal arrives, `to`'s view of `from` is set to [`RelationState::Peace`]
+/// and an [`DiplomaticAction::AcceptPeace`] is queued for the return trip;
+/// when that lands, `from`'s view of `to` becomes `Peace`. Total round-trip
+/// time is `2 * delay_hexadies`.
+pub fn propose_peace_with_delay(
+    commands: &mut Commands,
+    clock: &crate::time_system::GameClock,
+    from: Entity,
+    to: Entity,
+    delay_hexadies: i64,
+) {
+    let delay = delay_hexadies.max(0);
+    commands.spawn(PendingDiplomaticAction {
+        from,
+        to,
+        action: DiplomaticAction::ProposePeace,
+        arrives_at: clock.elapsed + delay,
+        one_way_delay_hexadies: delay,
+    });
+}
+
+/// Spawn an alliance proposal in flight to `to`. See
+/// [`propose_peace_with_delay`] for the round-trip semantics.
+pub fn propose_alliance_with_delay(
+    commands: &mut Commands,
+    clock: &crate::time_system::GameClock,
+    from: Entity,
+    to: Entity,
+    delay_hexadies: i64,
+) {
+    let delay = delay_hexadies.max(0);
+    commands.spawn(PendingDiplomaticAction {
+        from,
+        to,
+        action: DiplomaticAction::ProposeAlliance,
+        arrives_at: clock.elapsed + delay,
+        one_way_delay_hexadies: delay,
+    });
+}
+
+/// System: drain every [`PendingDiplomaticAction`] whose `arrives_at` has
+/// passed and apply its effect to [`FactionRelations`].
+///
+/// **Ordering.** Must run `.after(advance_game_time)` so that newly elapsed
+/// hexadies are visible. Registered by [`FactionRelationsPlugin`].
+///
+/// **Mutual-agreement return leg.** When a `ProposePeace` /
+/// `ProposeAlliance` arrives at the receiver, the receiver's view is
+/// updated immediately and a return-leg `AcceptPeace` / `AcceptAlliance`
+/// pending message is spawned with the same delay (the round-trip equals
+/// 2× the one-way delay). The auto-acceptance models a friendly NPC; a
+/// future AI (#189) will replace this with a decision step.
+pub fn tick_diplomatic_actions(
+    mut commands: Commands,
+    clock: Res<crate::time_system::GameClock>,
+    mut relations: ResMut<FactionRelations>,
+    pending: Query<(Entity, &PendingDiplomaticAction)>,
+) {
+    let now = clock.elapsed;
+    // Snapshot the arrived messages so we can despawn / spawn freely.
+    let arrived: Vec<(Entity, PendingDiplomaticAction)> = pending
+        .iter()
+        .filter(|(_, p)| p.arrives_at <= now)
+        .map(|(e, p)| (e, *p))
+        .collect();
+
+    for (entity, msg) in arrived {
+        match msg.action {
+            DiplomaticAction::DeclareWar => {
+                // Receiver's view (to → from) flips to War.
+                relations.declare_war(msg.to, msg.from);
+            }
+            DiplomaticAction::BreakAlliance => {
+                // Receiver's view (to → from) drops Alliance → Peace.
+                relations.break_alliance(msg.to, msg.from);
+            }
+            DiplomaticAction::ProposePeace => {
+                // Receiver auto-accepts: their view of the proposer becomes
+                // Peace immediately, and an acceptance is queued for the
+                // return leg with the same one-way delay.
+                relations.make_peace(msg.to, msg.from);
+                commands.spawn(PendingDiplomaticAction {
+                    from: msg.to,
+                    to: msg.from,
+                    action: DiplomaticAction::AcceptPeace,
+                    arrives_at: now + msg.one_way_delay_hexadies,
+                    one_way_delay_hexadies: msg.one_way_delay_hexadies,
+                });
+            }
+            DiplomaticAction::ProposeAlliance => {
+                relations.make_alliance(msg.to, msg.from);
+                commands.spawn(PendingDiplomaticAction {
+                    from: msg.to,
+                    to: msg.from,
+                    action: DiplomaticAction::AcceptAlliance,
+                    arrives_at: now + msg.one_way_delay_hexadies,
+                    one_way_delay_hexadies: msg.one_way_delay_hexadies,
+                });
+            }
+            DiplomaticAction::AcceptPeace => {
+                // Acceptance lands at original sender; their view of the
+                // (now-accepted) target becomes Peace.
+                relations.make_peace(msg.to, msg.from);
+            }
+            DiplomaticAction::AcceptAlliance => {
+                relations.make_alliance(msg.to, msg.from);
+            }
+        }
+
+        commands.entity(entity).despawn();
+    }
+}
+
+/// Convenience: look up a [`FactionTypeRegistry`] entry for `faction` (via
+/// its [`crate::scripting::faction_api::FactionDefinition`] id) and return
+/// `true` iff the type is marked `can_diplomacy`. Used as a guard on the
+/// public diplomatic helpers so callers don't accidentally try to negotiate
+/// with passive factions (e.g. `space_creature`).
+///
+/// Returns `false` when the faction has no `Faction` component or when its
+/// declared `faction_type` is not registered. Callers that want to skip the
+/// guard (e.g. tests, internal lifecycle hooks) can call the per-action
+/// helpers directly — this function is purely advisory.
+pub fn faction_can_diplomacy(
+    faction_entity: Entity,
+    factions: &Query<&crate::player::Faction>,
+    faction_registry: &crate::scripting::faction_api::FactionRegistry,
+    type_registry: &crate::scripting::faction_api::FactionTypeRegistry,
+) -> bool {
+    let Ok(faction) = factions.get(faction_entity) else { return false; };
+    let Some(def) = faction_registry.factions.get(&faction.id) else { return false; };
+    let Some(type_id) = def.faction_type.as_ref() else { return false; };
+    type_registry
+        .get(type_id)
+        .map(|t| t.can_diplomacy)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -824,5 +1111,377 @@ mod tests {
         app.update();
 
         assert!(app.world().get::<FactionOwner>(h).is_none());
+    }
+
+    // ---- #171: light-speed delayed diplomacy ----
+
+    use crate::time_system::GameClock;
+
+    /// Build a minimal App that has the resources/systems needed by
+    /// [`tick_diplomatic_actions`]. Returns the app plus two spawned
+    /// faction entities (`from`, `to`).
+    fn diplo_app() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.insert_resource(GameClock::new(0));
+        app.init_resource::<FactionRelations>();
+        app.add_systems(Update, tick_diplomatic_actions);
+        let from = app.world_mut().spawn_empty().id();
+        let to = app.world_mut().spawn_empty().id();
+        (app, from, to)
+    }
+
+    /// Step the clock forward by `n` hexadies and run one update cycle so
+    /// `tick_diplomatic_actions` sees the new time.
+    fn diplo_tick(app: &mut App, n: i64) {
+        app.world_mut().resource_mut::<GameClock>().elapsed += n;
+        app.update();
+    }
+
+    #[test]
+    fn declare_war_with_delay_sender_immediate_receiver_delayed() {
+        let (mut app, a, b) = diplo_app();
+
+        // Run the helper inside a system so we have access to Commands.
+        app.add_systems(
+            Update,
+            (move |mut c: Commands,
+                   mut r: ResMut<FactionRelations>,
+                   clk: Res<GameClock>| {
+                declare_war_with_delay(&mut c, &mut r, &clk, a, b, 60);
+            })
+                .before(tick_diplomatic_actions),
+        );
+        app.update(); // T=0: helper runs, sender now at War, pending spawned
+
+        // Sender side already at War.
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::War
+        );
+        // Receiver side still default (Neutral).
+        assert!(app.world().resource::<FactionRelations>().get(b, a).is_none());
+
+        // Drop the helper system so subsequent updates don't keep firing it.
+        // (We rebuild a fresh app instead — schedule mutation isn't allowed.)
+    }
+
+    #[test]
+    fn declare_war_receiver_flips_after_arrival() {
+        let (mut app, a, b) = diplo_app();
+        // Schedule the message manually (one-time) so we can advance time.
+        app.world_mut().resource_mut::<FactionRelations>().declare_war(a, b);
+        app.world_mut().spawn(PendingDiplomaticAction {
+            from: a,
+            to: b,
+            action: DiplomaticAction::DeclareWar,
+            arrives_at: 60,
+            one_way_delay_hexadies: 60,
+        });
+
+        // Before arrival.
+        diplo_tick(&mut app, 30);
+        assert!(app.world().resource::<FactionRelations>().get(b, a).is_none());
+
+        // At arrival — clock=60.
+        diplo_tick(&mut app, 30);
+        let view = app
+            .world()
+            .resource::<FactionRelations>()
+            .get(b, a)
+            .expect("receiver view set on arrival");
+        assert_eq!(view.state, RelationState::War);
+    }
+
+    #[test]
+    fn break_alliance_with_delay_propagates() {
+        let (mut app, a, b) = diplo_app();
+        // Pre-set Alliance on both sides.
+        {
+            let mut r = app.world_mut().resource_mut::<FactionRelations>();
+            r.set(a, b, FactionView::new(RelationState::Alliance, 50.0));
+            r.set(b, a, FactionView::new(RelationState::Alliance, 50.0));
+        }
+        // Schedule break manually.
+        app.world_mut().resource_mut::<FactionRelations>().break_alliance(a, b);
+        app.world_mut().spawn(PendingDiplomaticAction {
+            from: a,
+            to: b,
+            action: DiplomaticAction::BreakAlliance,
+            arrives_at: 60,
+            one_way_delay_hexadies: 60,
+        });
+
+        // Sender already at Peace.
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::Peace
+        );
+        // Receiver still Alliance.
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            RelationState::Alliance
+        );
+
+        diplo_tick(&mut app, 60);
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            RelationState::Peace
+        );
+    }
+
+    #[test]
+    fn propose_peace_one_way_then_round_trip() {
+        let (mut app, a, b) = diplo_app();
+        // Both sides at War (we want to verify peace transitions).
+        {
+            let mut r = app.world_mut().resource_mut::<FactionRelations>();
+            r.set(a, b, FactionView::new(RelationState::War, -80.0));
+            r.set(b, a, FactionView::new(RelationState::War, -80.0));
+        }
+
+        // Spawn proposal manually with one_way_delay=60.
+        app.world_mut().spawn(PendingDiplomaticAction {
+            from: a,
+            to: b,
+            action: DiplomaticAction::ProposePeace,
+            arrives_at: 60,
+            one_way_delay_hexadies: 60,
+        });
+
+        // Before arrival both sides still War.
+        diplo_tick(&mut app, 30);
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            RelationState::War
+        );
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::War
+        );
+
+        // At T=60: receiver flips to Peace; sender still War.
+        diplo_tick(&mut app, 30);
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            RelationState::Peace
+        );
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::War
+        );
+
+        // Acceptance return leg arrives at T=120.
+        diplo_tick(&mut app, 60);
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::Peace
+        );
+    }
+
+    #[test]
+    fn propose_alliance_round_trip() {
+        let (mut app, a, b) = diplo_app();
+        // Both sides at Peace.
+        {
+            let mut r = app.world_mut().resource_mut::<FactionRelations>();
+            r.set(a, b, FactionView::new(RelationState::Peace, 0.0));
+            r.set(b, a, FactionView::new(RelationState::Peace, 0.0));
+        }
+        app.world_mut().spawn(PendingDiplomaticAction {
+            from: a,
+            to: b,
+            action: DiplomaticAction::ProposeAlliance,
+            arrives_at: 30,
+            one_way_delay_hexadies: 30,
+        });
+
+        diplo_tick(&mut app, 30);
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            RelationState::Alliance
+        );
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::Peace
+        );
+
+        diplo_tick(&mut app, 30);
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::Alliance
+        );
+    }
+
+    #[test]
+    fn pending_action_at_zero_delay_lands_immediately() {
+        let (mut app, a, b) = diplo_app();
+        // delay_hexadies=0 (e.g. cohabitating capitals): both sides should
+        // be in sync after the next update.
+        app.world_mut().resource_mut::<FactionRelations>().declare_war(a, b);
+        app.world_mut().spawn(PendingDiplomaticAction {
+            from: a,
+            to: b,
+            action: DiplomaticAction::DeclareWar,
+            arrives_at: 0,
+            one_way_delay_hexadies: 0,
+        });
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            RelationState::War
+        );
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            RelationState::War
+        );
+    }
+
+    #[test]
+    fn surprise_attack_window_receiver_still_neutral() {
+        // Sender declares war and a fleet is en route. Until the war
+        // declaration arrives at the receiver, the receiver's view of the
+        // sender is still Neutral/Peace and `can_attack_aggressive` from
+        // the receiver's side returns false (Defensive ROE would hold fire).
+        let (mut app, sender, receiver) = diplo_app();
+        // Receiver previously had Peace with sender (positive standing).
+        app.world_mut()
+            .resource_mut::<FactionRelations>()
+            .set(receiver, sender, FactionView::new(RelationState::Peace, 20.0));
+
+        app.world_mut().resource_mut::<FactionRelations>().declare_war(sender, receiver);
+        app.world_mut().spawn(PendingDiplomaticAction {
+            from: sender,
+            to: receiver,
+            action: DiplomaticAction::DeclareWar,
+            arrives_at: 60,
+            one_way_delay_hexadies: 60,
+        });
+
+        // Mid-flight: receiver still sees Peace.
+        diplo_tick(&mut app, 30);
+        let receiver_view = app
+            .world()
+            .resource::<FactionRelations>()
+            .get(receiver, sender)
+            .unwrap();
+        assert_eq!(receiver_view.state, RelationState::Peace);
+        assert!(
+            !receiver_view.can_attack_aggressive(),
+            "receiver under Peace + standing>0 must not retaliate"
+        );
+
+        // After arrival: receiver also at War.
+        diplo_tick(&mut app, 30);
+        let receiver_view = app
+            .world()
+            .resource::<FactionRelations>()
+            .get(receiver, sender)
+            .unwrap();
+        assert_eq!(receiver_view.state, RelationState::War);
+        assert!(receiver_view.can_attack_aggressive());
+    }
+
+    #[test]
+    fn negative_delay_clamped_to_zero() {
+        // Ensure the helper coerces negative input to a 0-delay rather than
+        // scheduling a message into the past indefinitely.
+        let (mut app, a, b) = diplo_app();
+        app.world_mut().resource_mut::<GameClock>().elapsed = 100;
+
+        app.add_systems(
+            Update,
+            (move |mut c: Commands,
+                   mut r: ResMut<FactionRelations>,
+                   clk: Res<GameClock>| {
+                declare_war_with_delay(&mut c, &mut r, &clk, a, b, -10);
+            })
+                .before(tick_diplomatic_actions),
+        );
+        app.update();
+
+        // Pending action should have arrived in the same frame.
+        assert_eq!(
+            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            RelationState::War
+        );
+    }
+
+    #[test]
+    fn faction_can_diplomacy_returns_false_for_unregistered_faction() {
+        use crate::scripting::faction_api::{FactionRegistry, FactionTypeRegistry};
+
+        let mut app = App::new();
+        app.init_resource::<FactionRegistry>();
+        app.init_resource::<FactionTypeRegistry>();
+        let f = app.world_mut().spawn(crate::player::Faction {
+            id: "unknown".into(),
+            name: "Unknown".into(),
+        }).id();
+
+        // Run inside a system to get Query access.
+        let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let result_w = result.clone();
+        app.add_systems(
+            Update,
+            move |q: Query<&crate::player::Faction>,
+                  fr: Res<FactionRegistry>,
+                  tr: Res<FactionTypeRegistry>| {
+                let v = faction_can_diplomacy(f, &q, &fr, &tr);
+                *result_w.lock().unwrap() = Some(v);
+            },
+        );
+        app.update();
+        assert_eq!(*result.lock().unwrap(), Some(false));
+    }
+
+    #[test]
+    fn faction_can_diplomacy_true_when_type_allows() {
+        use crate::scripting::faction_api::{
+            FactionDefinition, FactionRegistry, FactionTypeDefinition, FactionTypeRegistry,
+        };
+
+        let mut app = App::new();
+        let mut freg = FactionRegistry::default();
+        freg.factions.insert(
+            "empire_x".into(),
+            FactionDefinition {
+                id: "empire_x".into(),
+                name: "Empire X".into(),
+                faction_type: Some("empire".into()),
+                has_on_game_start: false,
+            },
+        );
+        let mut treg = FactionTypeRegistry::default();
+        treg.types.insert(
+            "empire".into(),
+            FactionTypeDefinition {
+                id: "empire".into(),
+                can_diplomacy: true,
+                default_standing: 0.0,
+                default_state: RelationState::Neutral,
+            },
+        );
+        app.insert_resource(freg);
+        app.insert_resource(treg);
+
+        let f = app.world_mut().spawn(crate::player::Faction {
+            id: "empire_x".into(),
+            name: "Empire X".into(),
+        }).id();
+
+        let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let result_w = result.clone();
+        app.add_systems(
+            Update,
+            move |q: Query<&crate::player::Faction>,
+                  fr: Res<FactionRegistry>,
+                  tr: Res<FactionTypeRegistry>| {
+                let v = faction_can_diplomacy(f, &q, &fr, &tr);
+                *result_w.lock().unwrap() = Some(v);
+            },
+        );
+        app.update();
+        assert_eq!(*result.lock().unwrap(), Some(true));
     }
 }
