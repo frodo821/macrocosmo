@@ -32,6 +32,11 @@ pub(crate) struct GalaxyParams {
     pub arm_spread: f64,
     pub min_distance: f64,
     pub max_neighbor_distance: f64,
+    /// #199: Baseline FTL range used by Lua-side connectivity loops (exposed
+    /// via `ctx.settings.initial_ftl_range`). Independent from per-ship FTL
+    /// values; this is the reference threshold for generation-time FTL
+    /// reachability checks.
+    pub initial_ftl_range: f64,
 }
 
 /// An empty star system produced by Phase A (position + star type, no planets yet).
@@ -693,6 +698,7 @@ pub fn generate_galaxy(
         arm_spread: 0.4,
         min_distance: 2.0,
         max_neighbor_distance: 8.0,
+        initial_ftl_range: 10.0,
     };
 
     // Use registries or fallback defaults
@@ -732,6 +738,10 @@ pub fn generate_galaxy(
         predefined_arc.clone(),
         active_map_type.as_deref(),
     );
+
+    // Phase A' (#199): run `on_after_phase_a` hook if registered, to allow
+    // Lua-driven connectivity enforcement (FTL-reachability bridges).
+    run_after_phase_a(lua, &mut systems, &params, &star_types, predefined_arc.clone());
 
     // Phase B: Choose faction capitals. Honors `on_choose_capitals` if registered.
     let capitals = run_phase_b(lua, &mut systems, &star_types);
@@ -814,6 +824,7 @@ fn run_phase_a(
         arm_spread: params.arm_spread,
         min_distance: params.min_distance,
         max_neighbor_distance: params.max_neighbor_distance,
+        initial_ftl_range: params.initial_ftl_range,
     };
     let mut ctx = GalaxyGenerateCtx::new(settings);
     if let Some(reg) = predefined {
@@ -911,6 +922,100 @@ fn run_phase_b(
     // Swap the selected capital to index 0, matching default behavior.
     systems.swap(0, idx - 1);
     CapitalAssignments { capital_idx: 0 }
+}
+
+/// Phase A' dispatcher (#199): run the `on_after_phase_a` hook if registered.
+///
+/// The hook is given a fresh `GalaxyGenerateCtx` seeded with the current list
+/// of systems (reconstructed as `SpawnedEmptySystemSpec` records). Any newly
+/// spawned systems / bridges recorded via `ctx:insert_bridge_at` or
+/// `ctx:spawn_empty_system` are merged back into the `systems` vector.
+///
+/// Unknown star-type ids on newly recorded systems are skipped with a
+/// warning (matching `run_phase_a` behavior).
+fn run_after_phase_a(
+    lua: Option<&mlua::Lua>,
+    systems: &mut Vec<EmptySystem>,
+    params: &GalaxyParams,
+    star_types: &[StarTypeDefinition],
+    predefined: Option<Arc<PredefinedSystemRegistry>>,
+) {
+    let Some(lua) = lua else {
+        return;
+    };
+    let Some(func) = galaxy_gen_ctx::last_registered_hook(
+        lua,
+        galaxy_gen_ctx::AFTER_PHASE_A_HANDLERS,
+    )
+    .ok()
+    .flatten()
+    else {
+        return;
+    };
+
+    // Rebuild a ctx that reflects post-Phase-A state. The hook can inspect
+    // `ctx.systems` / `ctx:build_ftl_graph(...)` and append new systems via
+    // `ctx:insert_bridge_at` / `ctx:spawn_empty_system`.
+    let settings = GenerationSettings {
+        num_systems: params.num_systems,
+        num_arms: params.num_arms,
+        galaxy_radius: params.galaxy_radius,
+        arm_twist: params.arm_twist,
+        arm_spread: params.arm_spread,
+        min_distance: params.min_distance,
+        max_neighbor_distance: params.max_neighbor_distance,
+        initial_ftl_range: params.initial_ftl_range,
+    };
+    let mut ctx = GalaxyGenerateCtx::new(settings);
+    if let Some(reg) = predefined {
+        ctx = ctx.with_predefined(reg);
+    }
+    // Seed the ctx with already-generated systems so `ctx.systems` and graph
+    // methods reflect the current state.
+    {
+        let mut actions = ctx.actions.lock().unwrap();
+        for sys in systems.iter() {
+            let star_id = star_types
+                .get(sys.star_type_idx)
+                .map(|st| st.id.clone())
+                .unwrap_or_default();
+            actions.spawned_systems.push(
+                crate::scripting::galaxy_gen_ctx::SpawnedEmptySystemSpec {
+                    name: sys.name.clone(),
+                    position: sys.position,
+                    star_type: star_id,
+                    planets: crate::scripting::galaxy_gen_ctx::PredefinedPlanetsForSpawn {
+                        planets: sys.predefined_planets.clone(),
+                    },
+                    capital_for_faction: sys.capital_for_faction.clone(),
+                },
+            );
+        }
+    }
+    let before = systems.len();
+
+    if let Err(e) = func.call::<()>(ctx.clone()) {
+        warn!("on_after_phase_a hook error: {e}; skipping");
+        return;
+    }
+    let actions = ctx.take_actions();
+    // Append any systems recorded beyond the seeded ones.
+    for spec in actions.spawned_systems.into_iter().skip(before) {
+        let Some(idx) = star_types.iter().position(|s| s.id == spec.star_type) else {
+            warn!(
+                "on_after_phase_a: unknown star_type '{}' for system '{}' — skipping",
+                spec.star_type, spec.name
+            );
+            continue;
+        };
+        systems.push(EmptySystem {
+            name: spec.name,
+            position: spec.position,
+            star_type_idx: idx,
+            predefined_planets: spec.planets.planets,
+            capital_for_faction: spec.capital_for_faction,
+        });
+    }
 }
 
 /// Phase C hook dispatcher: for each system, optionally invoke the

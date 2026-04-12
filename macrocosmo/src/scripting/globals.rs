@@ -461,6 +461,10 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         super::galaxy_gen_ctx::INITIALIZE_SYSTEM_HANDLERS,
         lua.create_table()?,
     )?;
+    globals.set(
+        super::galaxy_gen_ctx::AFTER_PHASE_A_HANDLERS,
+        lua.create_table()?,
+    )?;
 
     let on_galaxy_generate_empty = lua.create_function(|lua, func: mlua::Function| {
         let handlers: mlua::Table = lua
@@ -491,6 +495,19 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         Ok(())
     })?;
     globals.set("on_initialize_system", on_initialize_system)?;
+
+    // #199: on_after_phase_a(ctx) — runs after Phase A completes regardless
+    // of which generator populated systems. Used for Lua-driven connectivity
+    // enforcement (e.g. FTL-reachability bridge insertion).
+    let on_after_phase_a = lua.create_function(|lua, func: mlua::Function| {
+        let handlers: mlua::Table = lua
+            .globals()
+            .get(super::galaxy_gen_ctx::AFTER_PHASE_A_HANDLERS)?;
+        let len = handlers.len()?;
+        handlers.set(len + 1, func)?;
+        Ok(())
+    })?;
+    globals.set("on_after_phase_a", on_after_phase_a)?;
 
     // fire_event(event_id, target?) -- queues an event to be fired from Lua
     let fire_event_fn = lua.create_function(|lua, args: (String, Option<u64>)| {
