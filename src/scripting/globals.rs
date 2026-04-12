@@ -277,6 +277,44 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     let pending_script_events = lua.create_table()?;
     globals.set("_pending_script_events", pending_script_events)?;
 
+    // --- #151: Notification banner API ---
+
+    // Pending notifications table — drained by `drain_pending_notifications`
+    let pending_notifications = lua.create_table()?;
+    globals.set("_pending_notifications", pending_notifications)?;
+
+    // show_notification { title, description, icon?, priority?, target_system? }
+    // priority defaults to "medium". target_system can be a star system entity
+    // bits value (number). The notification is enqueued until the next frame's
+    // drain system applies it.
+    let show_notification_fn = lua.create_function(|lua, params: mlua::Table| {
+        let pending: mlua::Table = lua.globals().get("_pending_notifications")?;
+        let len = pending.len()?;
+
+        let entry = lua.create_table()?;
+        let title: String = params.get("title").unwrap_or_default();
+        let description: String = params.get("description").unwrap_or_default();
+        entry.set("title", title)?;
+        entry.set("description", description)?;
+        if let Ok(icon) = params.get::<String>("icon") {
+            entry.set("icon", icon)?;
+        }
+        let priority: String = params
+            .get::<String>("priority")
+            .unwrap_or_else(|_| "medium".to_string());
+        entry.set("priority", priority)?;
+        // target_system can be a numeric Entity::to_bits value if scripts
+        // ever expose them. Numeric only — reference tables to actual entities
+        // are not yet stable from the script side.
+        if let Ok(target) = params.get::<u64>("target_system") {
+            entry.set("target_system", target)?;
+        }
+
+        pending.set(len + 1, entry)?;
+        Ok(())
+    })?;
+    globals.set("show_notification", show_notification_fn)?;
+
     // --- Lifecycle hook registration ---
 
     // Handler tables for lifecycle hooks

@@ -425,6 +425,46 @@ mod tests {
         assert!(cpath.is_empty());
     }
 
+    /// #151: show_notification queues a Lua-side notification entry that the
+    /// drain system can later pull into the NotificationQueue.
+    #[test]
+    fn test_show_notification_lua_queues_entry() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            show_notification {
+                title = "Discovery",
+                description = "Ancient ruins",
+                priority = "high",
+                icon = "anomaly",
+            }
+            show_notification {
+                title = "Heads-up",
+                description = "Just FYI",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let pending: mlua::Table = lua.globals().get("_pending_notifications").unwrap();
+        assert_eq!(pending.len().unwrap(), 2);
+
+        let first: mlua::Table = pending.get(1).unwrap();
+        assert_eq!(first.get::<String>("title").unwrap(), "Discovery");
+        assert_eq!(first.get::<String>("description").unwrap(), "Ancient ruins");
+        assert_eq!(first.get::<String>("priority").unwrap(), "high");
+        assert_eq!(first.get::<String>("icon").unwrap(), "anomaly");
+
+        // Defaults: medium priority, no icon
+        let second: mlua::Table = pending.get(2).unwrap();
+        assert_eq!(second.get::<String>("priority").unwrap(), "medium");
+        let icon: mlua::Value = second.get("icon").unwrap();
+        assert!(matches!(icon, mlua::Value::Nil));
+    }
+
     #[test]
     fn test_extract_ref_id() {
         let engine = ScriptEngine::new().unwrap();

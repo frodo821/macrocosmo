@@ -10,6 +10,7 @@ mod events;
 mod galaxy;
 mod knowledge;
 mod modifier;
+mod notifications;
 mod physics;
 mod player;
 mod scripting;
@@ -53,6 +54,7 @@ fn main() {
         .add_plugins((
             deep_space::DeepSpacePlugin,
             setup::GameSetupPlugin,
+            notifications::NotificationsPlugin,
         ))
         .add_plugins(ui::UiPlugin)
         .run();
