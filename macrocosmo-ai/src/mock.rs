@@ -148,6 +148,55 @@ pub fn emit_command(
     bus.emit_command(Command::new(kind, issuer, at).with_priority(priority));
 }
 
+/// Build a `RecordingBus` wrapping the canonical preconfigured bus. The
+/// recorder has no declarations of its own yet — the underlying bus's
+/// declarations are already in place so emits will succeed, but callers
+/// should re-declare via the recorder if they want those declarations to
+/// appear in the resulting `Playthrough`.
+#[cfg(feature = "playthrough")]
+pub fn preconfigured_recording_bus() -> crate::playthrough::RecordingBus {
+    use crate::playthrough::RecordingBus;
+
+    let mut rb = RecordingBus::new(AiBus::with_warning_mode(WarningMode::Silent));
+
+    rb.declare_metric(
+        metric_ids::fleet_readiness(),
+        MetricSpec::ratio(Retention::Medium, "fleet readiness (0..1)"),
+    );
+    rb.declare_metric(
+        metric_ids::economic_capacity(),
+        MetricSpec::ratio(Retention::Medium, "economic capacity (0..1)"),
+    );
+    rb.declare_metric(
+        metric_ids::local_force_ratio(),
+        MetricSpec::gauge(Retention::Short, "own/enemy force ratio"),
+    );
+
+    rb.declare_command(
+        command_kinds::attack_target(),
+        CommandSpec::new("issue an attack against a target"),
+    );
+    rb.declare_command(
+        command_kinds::reposition(),
+        CommandSpec::new("move fleet to a tactical position"),
+    );
+    rb.declare_command(
+        command_kinds::retreat(),
+        CommandSpec::new("fall back from engagement"),
+    );
+
+    rb.declare_evidence(
+        evidence_kinds::hostile_engagement(),
+        EvidenceSpec::new(Retention::Long, "hostile engaged our assets"),
+    );
+    rb.declare_evidence(
+        evidence_kinds::fleet_loss(),
+        EvidenceSpec::new(Retention::Long, "we lost a fleet asset"),
+    );
+
+    rb
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

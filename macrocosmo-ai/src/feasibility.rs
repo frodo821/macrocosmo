@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::bus::AiBus;
 use crate::eval::EvalContext;
 use crate::time::Tick;
-use crate::value_expr::{ScriptRef, ValueExpr};
+use crate::value_expr::{ScriptRef, Value, ValueExpr};
 
 /// A single weighted term in a `WeightedSum` formula.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,7 +49,10 @@ pub fn evaluate(
     match formula {
         FeasibilityFormula::WeightedSum(terms) => terms
             .iter()
-            .map(|t| t.weight * t.expr.evaluate(&ctx))
+            .filter_map(|t| match t.expr.evaluate_value(&ctx) {
+                Value::Number(v) => Some(t.weight * v),
+                Value::Missing => None,
+            })
             .sum(),
         FeasibilityFormula::Custom(_) => 0.0,
     }
@@ -114,6 +117,18 @@ mod tests {
         let b = bus();
         let f = FeasibilityFormula::Custom(ScriptRef::from("myscript"));
         assert_eq!(evaluate(&f, &b, 0, None), 0.0);
+    }
+
+    #[test]
+    fn weighted_sum_skips_missing_term() {
+        let b = bus();
+        // Missing term contributes 0; other terms dominate.
+        let f = FeasibilityFormula::WeightedSum(vec![
+            FeasibilityTerm::new(1.0, ValueExpr::Literal(2.0)),
+            FeasibilityTerm::new(100.0, ValueExpr::Missing),
+            FeasibilityTerm::new(1.0, ValueExpr::Literal(3.0)),
+        ]);
+        assert_eq!(evaluate(&f, &b, 0, None), 5.0);
     }
 
     #[test]
