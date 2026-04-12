@@ -633,6 +633,7 @@ fn draw_overlays_system(
         (&TechTree, &ResearchPool, &mut ResearchQueue),
         With<PlayerEmpire>,
     >,
+    branch_registry: Res<crate::technology::TechBranchRegistry>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -652,6 +653,7 @@ fn draw_overlays_system(
         tech_tree,
         &research_queue,
         research_pool,
+        &branch_registry,
         capital_refs,
         clock.elapsed,
     );

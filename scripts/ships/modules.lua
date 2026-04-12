@@ -1,28 +1,39 @@
 local slot_types = require("ships.slot_types")
 local tech = require("tech")
 
--- Engine modules
+-- FTL drive modules (ftl slot)
 local ftl_drive = define_module {
     id = "ftl_drive",
     name = "FTL Drive",
-    slot_type = slot_types.engine,
+    slot_type = slot_types.ftl,
     modifiers = {
         { target = "ship.ftl_range", base_add = 15.0 },
     },
     cost = { minerals = 100, energy = 50 },
 }
 
+-- Sublight engine modules (sublight slot)
 local afterburner = define_module {
     id = "afterburner",
     name = "Afterburner",
-    slot_type = slot_types.engine,
+    slot_type = slot_types.sublight,
     modifiers = {
         { target = "ship.speed", multiplier = 0.2 },
     },
     cost = { minerals = 60, energy = 40 },
 }
 
--- Weapon modules
+local ion_thruster = define_module {
+    id = "ion_thruster",
+    name = "Ion Thruster",
+    slot_type = slot_types.sublight,
+    modifiers = {
+        { target = "ship.speed", base_add = 0.1 },
+    },
+    cost = { minerals = 40, energy = 30 },
+}
+
+-- Weapon modules (weapon slot)
 local weapon_laser = define_module {
     id = "weapon_laser",
     name = "Laser Battery",
@@ -65,11 +76,11 @@ local weapon_missile = define_module {
     cost = { minerals = 80, energy = 60 },
 }
 
--- Utility modules
+-- Defense modules (defense slot)
 local armor_plating = define_module {
     id = "armor_plating",
     name = "Armor Plating",
-    slot_type = slot_types.utility,
+    slot_type = slot_types.defense,
     modifiers = {
         { target = "ship.armor_max", base_add = 30.0 },
         { target = "ship.speed", multiplier = -0.05 },
@@ -80,7 +91,7 @@ local armor_plating = define_module {
 local shield_generator = define_module {
     id = "shield_generator",
     name = "Shield Generator",
-    slot_type = slot_types.utility,
+    slot_type = slot_types.defense,
     prerequisite_tech = tech.military.deflector_shields,
     modifiers = {
         { target = "ship.shield_max", base_add = 40.0 },
@@ -89,6 +100,7 @@ local shield_generator = define_module {
     cost = { minerals = 60, energy = 50 },
 }
 
+-- Utility modules (utility slot)
 local survey_equipment = define_module {
     id = "survey_equipment",
     name = "Survey Equipment",
@@ -109,21 +121,32 @@ local cargo_bay = define_module {
     cost = { minerals = 30 },
 }
 
--- Special modules
 local colony_module = define_module {
     id = "colony_module",
     name = "Colony Module",
-    slot_type = slot_types.special,
+    slot_type = slot_types.utility,
     modifiers = {
         { target = "ship.colonize_speed", base_add = 1.0 },
     },
     cost = { minerals = 300, energy = 200 },
 }
 
+-- Power modules (power slot)
+local fusion_reactor = define_module {
+    id = "fusion_reactor",
+    name = "Fusion Reactor",
+    slot_type = slot_types.power,
+    modifiers = {
+        { target = "ship.shield_regen", base_add = 0.5 },
+    },
+    cost = { minerals = 80, energy = 0 },
+}
+
+-- Command modules (command slot)
 local command_array = define_module {
     id = "command_array",
     name = "Fleet Command Array",
-    slot_type = slot_types.special,
+    slot_type = slot_types.command,
     modifiers = {
         { target = "fleet.attack", multiplier = 0.05 },
         { target = "fleet.defense", multiplier = 0.05 },
@@ -134,6 +157,7 @@ local command_array = define_module {
 return {
     ftl_drive = ftl_drive,
     afterburner = afterburner,
+    ion_thruster = ion_thruster,
     weapon_laser = weapon_laser,
     weapon_railgun = weapon_railgun,
     weapon_missile = weapon_missile,
@@ -142,5 +166,6 @@ return {
     survey_equipment = survey_equipment,
     cargo_bay = cargo_bay,
     colony_module = colony_module,
+    fusion_reactor = fusion_reactor,
     command_array = command_array,
 }

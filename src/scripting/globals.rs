@@ -35,6 +35,7 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     // Each define_xxx appends to its accumulator AND returns the table
     // with a _def_type tag, enabling return-value based references.
 
+    register_define_fn(lua, "tech_branch", "_tech_branch_definitions")?;
     register_define_fn(lua, "tech", "_tech_definitions")?;
     register_define_fn(lua, "building", "_building_definitions")?;
     register_define_fn(lua, "star_type", "_star_type_definitions")?;

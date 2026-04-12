@@ -349,7 +349,7 @@ mod tests {
             r#"
             define_slot_type { id = "weapon", name = "Weapon Slot" }
             define_slot_type { id = "utility", name = "Utility Slot" }
-            define_slot_type { id = "engine", name = "Engine Slot" }
+            define_slot_type { id = "ftl", name = "FTL Drive Slot" }
             "#,
         )
         .exec()
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(defs[0].id, "weapon");
         assert_eq!(defs[0].name, "Weapon Slot");
         assert_eq!(defs[1].id, "utility");
-        assert_eq!(defs[2].id, "engine");
+        assert_eq!(defs[2].id, "ftl");
     }
 
     #[test]
@@ -379,7 +379,7 @@ mod tests {
                 slots = {
                     { type = "weapon", count = 2 },
                     { type = "utility", count = 1 },
-                    { type = "engine", count = 1 },
+                    { type = "ftl", count = 1 },
                 },
                 build_cost = { minerals = 200, energy = 100 },
                 build_time = 60,
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(corvette.slots[0].count, 2);
         assert_eq!(corvette.slots[1].slot_type, "utility");
         assert_eq!(corvette.slots[1].count, 1);
-        assert_eq!(corvette.slots[2].slot_type, "engine");
+        assert_eq!(corvette.slots[2].slot_type, "ftl");
         assert_eq!(corvette.slots[2].count, 1);
         assert_eq!(corvette.build_cost_minerals, Amt::units(200));
         assert_eq!(corvette.build_cost_energy, Amt::units(100));
@@ -422,7 +422,7 @@ mod tests {
             define_module {
                 id = "ftl_drive",
                 name = "FTL Drive",
-                slot_type = "engine",
+                slot_type = "ftl",
                 modifiers = {
                     { target = "ship.ftl_range", base_add = 15.0 },
                 },
@@ -450,7 +450,7 @@ mod tests {
         let ftl = &defs[0];
         assert_eq!(ftl.id, "ftl_drive");
         assert_eq!(ftl.name, "FTL Drive");
-        assert_eq!(ftl.slot_type, "engine");
+        assert_eq!(ftl.slot_type, "ftl");
         assert_eq!(ftl.modifiers.len(), 1);
         assert_eq!(ftl.modifiers[0].target, "ship.ftl_range");
         assert_eq!(ftl.modifiers[0].base_add, 15.0);
@@ -527,7 +527,7 @@ mod tests {
                 name = "Explorer Mk.I",
                 hull = "corvette",
                 modules = {
-                    { slot_type = "engine", module = "ftl_drive" },
+                    { slot_type = "ftl", module = "ftl_drive" },
                     { slot_type = "utility", module = "survey_equipment" },
                 },
             }
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(explorer.name, "Explorer Mk.I");
         assert_eq!(explorer.hull_id, "corvette");
         assert_eq!(explorer.modules.len(), 2);
-        assert_eq!(explorer.modules[0].slot_type, "engine");
+        assert_eq!(explorer.modules[0].slot_type, "ftl");
         assert_eq!(explorer.modules[0].module_id, "ftl_drive");
         assert_eq!(explorer.modules[1].slot_type, "utility");
         assert_eq!(explorer.modules[1].module_id, "survey_equipment");

@@ -6,33 +6,80 @@ use crate::amount::Amt;
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TechId(pub String);
 
-/// The branch a technology belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TechBranch {
-    Social,
-    Physics,
-    Industrial,
-    Military,
+/// A tech branch definition loaded from Lua via `define_tech_branch { ... }`.
+/// Branches group related technologies for UI organisation. Their identity is
+/// purely string-based; the engine never special-cases individual branch IDs.
+#[derive(Debug, Clone)]
+pub struct TechBranchDefinition {
+    /// Stable string identifier (e.g. "social", "industrial").
+    pub id: String,
+    /// Display name shown in the research panel.
+    pub name: String,
+    /// RGB colour (each channel 0.0..=1.0) for branch UI elements.
+    pub color: [f32; 3],
+    /// Optional icon identifier (asset path or registry key).
+    pub icon: Option<String>,
 }
 
-impl TechBranch {
-    pub fn all() -> &'static [TechBranch] {
-        &[
-            TechBranch::Social,
-            TechBranch::Physics,
-            TechBranch::Industrial,
-            TechBranch::Military,
-        ]
+/// Registry of all tech branch definitions, indexed by id.
+#[derive(bevy::prelude::Resource, Default, Debug, Clone)]
+pub struct TechBranchRegistry {
+    pub branches: HashMap<String, TechBranchDefinition>,
+    /// Insertion order so the UI presents branches in a stable, script-defined order.
+    pub order: Vec<String>,
+}
+
+impl TechBranchRegistry {
+    /// Insert a branch definition. Last write wins on duplicate id.
+    pub fn insert(&mut self, def: TechBranchDefinition) {
+        if !self.branches.contains_key(&def.id) {
+            self.order.push(def.id.clone());
+        }
+        self.branches.insert(def.id.clone(), def);
     }
 
-    pub fn name(&self) -> &'static str {
-        match self {
-            TechBranch::Social => "Social",
-            TechBranch::Physics => "Physics",
-            TechBranch::Industrial => "Industrial",
-            TechBranch::Military => "Military",
-        }
+    pub fn get(&self, id: &str) -> Option<&TechBranchDefinition> {
+        self.branches.get(id)
     }
+
+    /// Iterate branches in definition order.
+    pub fn iter_ordered(&self) -> impl Iterator<Item = &TechBranchDefinition> {
+        self.order.iter().filter_map(|id| self.branches.get(id))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.branches.is_empty()
+    }
+}
+
+/// Default branch definitions used when Lua scripts are unavailable (e.g. tests).
+pub fn default_tech_branches() -> Vec<TechBranchDefinition> {
+    vec![
+        TechBranchDefinition {
+            id: "social".into(),
+            name: "Social".into(),
+            color: [0.4, 0.6, 0.9],
+            icon: None,
+        },
+        TechBranchDefinition {
+            id: "physics".into(),
+            name: "Physics".into(),
+            color: [0.5, 0.4, 0.9],
+            icon: None,
+        },
+        TechBranchDefinition {
+            id: "industrial".into(),
+            name: "Industrial".into(),
+            color: [0.7, 0.5, 0.3],
+            icon: None,
+        },
+        TechBranchDefinition {
+            id: "military".into(),
+            name: "Military".into(),
+            color: [0.9, 0.3, 0.3],
+            icon: None,
+        },
+    ]
 }
 
 /// Upfront resource cost to begin researching a technology.
@@ -64,7 +111,8 @@ pub struct Technology {
     pub id: TechId,
     pub name: String,
     pub description: String,
-    pub branch: TechBranch,
+    /// Branch id matching a `TechBranchDefinition` registered via `define_tech_branch`.
+    pub branch: String,
     pub cost: TechCost,
     pub prerequisites: Vec<TechId>,
 }
@@ -127,20 +175,20 @@ impl TechTree {
         self.researched.insert(id);
     }
 
-    /// Return all technologies in a given branch.
-    pub fn branch(&self, branch: TechBranch) -> Vec<&Technology> {
+    /// Return all technologies in a given branch (by branch id).
+    pub fn branch(&self, branch_id: &str) -> Vec<&Technology> {
         self.technologies
             .values()
-            .filter(|t| t.branch == branch)
+            .filter(|t| t.branch == branch_id)
             .collect()
     }
 
-    /// Get all technologies for a branch, sorted by cost.
-    pub fn techs_in_branch(&self, branch: TechBranch) -> Vec<&Technology> {
+    /// Get all technologies for a branch (by branch id), sorted by research cost.
+    pub fn techs_in_branch(&self, branch_id: &str) -> Vec<&Technology> {
         let mut techs: Vec<&Technology> = self
             .technologies
             .values()
-            .filter(|t| t.branch == branch)
+            .filter(|t| t.branch == branch_id)
             .collect();
         techs.sort_by(|a, b| a.cost.research.cmp(&b.cost.research));
         techs
@@ -173,7 +221,7 @@ mod tests {
         let tree = TechTree::from_vec(vec![Technology {
             id: TechId("test_1".into()),
             name: "Basic".into(),
-            branch: TechBranch::Physics,
+            branch: "physics".into(),
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
@@ -187,7 +235,7 @@ mod tests {
             Technology {
                 id: TechId("test_1".into()),
                 name: "Basic".into(),
-                branch: TechBranch::Physics,
+                branch: "physics".into(),
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),
@@ -195,7 +243,7 @@ mod tests {
             Technology {
                 id: TechId("test_2".into()),
                 name: "Advanced".into(),
-                branch: TechBranch::Physics,
+                branch: "physics".into(),
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
@@ -210,7 +258,7 @@ mod tests {
             Technology {
                 id: TechId("test_1".into()),
                 name: "Basic".into(),
-                branch: TechBranch::Physics,
+                branch: "physics".into(),
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),
@@ -218,7 +266,7 @@ mod tests {
             Technology {
                 id: TechId("test_2".into()),
                 name: "Advanced".into(),
-                branch: TechBranch::Physics,
+                branch: "physics".into(),
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
@@ -233,7 +281,7 @@ mod tests {
         let mut tree = TechTree::from_vec(vec![Technology {
             id: TechId("test_1".into()),
             name: "Basic".into(),
-            branch: TechBranch::Physics,
+            branch: "physics".into(),
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
@@ -247,7 +295,7 @@ mod tests {
         let mut tree = TechTree::from_vec(vec![Technology {
             id: TechId("test_1".into()),
             name: "Basic".into(),
-            branch: TechBranch::Physics,
+            branch: "physics".into(),
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
@@ -263,7 +311,7 @@ mod tests {
             Technology {
                 id: TechId("test_1".into()),
                 name: "Basic".into(),
-                branch: TechBranch::Physics,
+                branch: "physics".into(),
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),
@@ -271,7 +319,7 @@ mod tests {
             Technology {
                 id: TechId("test_2".into()),
                 name: "Advanced".into(),
-                branch: TechBranch::Physics,
+                branch: "physics".into(),
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
@@ -279,7 +327,7 @@ mod tests {
             Technology {
                 id: TechId("test_3".into()),
                 name: "Other".into(),
-                branch: TechBranch::Social,
+                branch: "social".into(),
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),

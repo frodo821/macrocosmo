@@ -23,7 +23,7 @@ fn test_start_research_sets_queue() {
 
 #[test]
 fn test_block_research_stops_progress() {
-    use technology::{ResearchQueue, ResearchPool, TechId, TechTree, Technology, TechBranch, TechCost, LastResearchTick};
+    use technology::{ResearchQueue, ResearchPool, TechId, TechTree, Technology, TechCost, LastResearchTick};
     use macrocosmo::amount::Amt;
 
     let mut app = test_app();
@@ -45,7 +45,7 @@ fn test_block_research_stops_progress() {
     let tree = TechTree::from_vec(vec![Technology {
         id: TechId("test_1".into()),
         name: "Test".into(),
-        branch: TechBranch::Physics,
+        branch: "physics".into(),
         cost: TechCost::research_only(Amt::units(100)),
         prerequisites: vec![],
         description: String::new(),
@@ -133,7 +133,7 @@ fn test_on_researched_fires_and_applies_effects() {
     use macrocosmo::amount::Amt;
     use macrocosmo::scripting::ScriptEngine;
     use technology::{
-        GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue, TechBranch,
+        GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
         TechCost, TechEffectsLog, TechId, TechTree, Technology,
     };
 
@@ -177,7 +177,7 @@ fn test_on_researched_fires_and_applies_effects() {
     let tree = TechTree::from_vec(vec![Technology {
         id: TechId("test_on_researched_tech".into()),
         name: "Test On Researched".into(),
-        branch: TechBranch::Physics,
+        branch: "physics".into(),
         cost: TechCost::research_only(Amt::units(10)),
         prerequisites: vec![],
         description: String::new(),

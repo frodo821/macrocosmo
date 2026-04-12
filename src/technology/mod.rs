@@ -11,24 +11,36 @@ use crate::amount::Amt;
 
 // Re-export everything for backward compatibility
 pub use effects::{apply_tech_effects, TechEffectsLog};
-pub use parsing::{create_initial_tech_tree, create_initial_tech_tree_vec, parse_tech_definitions};
+pub use parsing::{
+    create_initial_tech_tree, create_initial_tech_tree_vec, parse_tech_branch_definitions,
+    parse_tech_definitions,
+};
 pub use research::{
     emit_research, flush_research, propagate_tech_knowledge, receive_research,
     receive_tech_knowledge, tick_research, LastResearchTick, PendingKnowledgePropagation,
     PendingResearch, RecentlyResearched, ResearchPool, ResearchQueue, TechKnowledge,
 };
-pub use tree::{TechBranch, TechCost, TechId, TechTree, Technology};
+pub use tree::{
+    default_tech_branches, TechBranchDefinition, TechBranchRegistry, TechCost, TechId, TechTree,
+    Technology,
+};
 
 pub struct TechnologyPlugin;
 
 impl Plugin for TechnologyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Startup,
-            load_technologies
-                .after(crate::scripting::load_all_scripts)
-                .after(crate::player::spawn_player_empire),
-        )
+        app.init_resource::<TechBranchRegistry>()
+            .add_systems(
+                Startup,
+                load_tech_branches.after(crate::scripting::load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                load_technologies
+                    .after(crate::scripting::load_all_scripts)
+                    .after(load_tech_branches)
+                    .after(crate::player::spawn_player_empire),
+            )
         .insert_resource(LastResearchTick(0))
         .init_resource::<TechEffectsLog>()
         .add_systems(
@@ -114,12 +126,44 @@ impl GameFlags {
     }
 }
 
+/// Parse tech branch definitions from Lua and populate the TechBranchRegistry.
+/// Falls back to `default_tech_branches()` when no scripts define any branches
+/// (e.g. minimal test setups). Runs before `load_technologies` so that tech
+/// definitions can be validated against the registry.
+pub fn load_tech_branches(
+    engine: Res<crate::scripting::ScriptEngine>,
+    mut registry: ResMut<TechBranchRegistry>,
+) {
+    let branches = match parse_tech_branch_definitions(engine.lua()) {
+        Ok(parsed) if !parsed.is_empty() => parsed,
+        Ok(_) => {
+            info!("No tech branch definitions found in scripts; using defaults");
+            default_tech_branches()
+        }
+        Err(e) => {
+            warn!("Failed to parse tech branch definitions: {e}; using defaults");
+            default_tech_branches()
+        }
+    };
+
+    let count = branches.len();
+    for def in branches {
+        registry.insert(def);
+    }
+    info!("Tech branch registry loaded with {} branches", count);
+}
+
 /// Parse technology definitions from Lua accumulators.
 /// Scripts are loaded by `load_all_scripts`; this system only parses the results.
 /// Falls back to hardcoded definitions if parsing fails or yields nothing.
+///
+/// Validates each tech's `branch` against the loaded `TechBranchRegistry` and
+/// emits a warning (not an error) for unknown branches — the tech is still
+/// registered to keep the game playable in the face of script typos.
 pub fn load_technologies(
     mut commands: Commands,
     engine: Res<crate::scripting::ScriptEngine>,
+    branch_registry: Res<TechBranchRegistry>,
     empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
     let techs = match parse_tech_definitions(engine.lua()) {
@@ -133,6 +177,18 @@ pub fn load_technologies(
             create_initial_tech_tree_vec()
         }
     };
+
+    // Validate branches against registry — warn (don't fail) on unknown branches.
+    if !branch_registry.is_empty() {
+        for tech in &techs {
+            if branch_registry.get(&tech.branch).is_none() {
+                warn!(
+                    "Tech '{}' references unknown branch '{}'",
+                    tech.id.0, tech.branch
+                );
+            }
+        }
+    }
 
     let tree = TechTree::from_vec(techs);
     info!(

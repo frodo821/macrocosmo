@@ -7,7 +7,7 @@ local explorer_mk1 = define_ship_design {
     name = "Explorer Mk.I",
     hull = hulls.corvette,
     modules = {
-        { slot_type = "engine", module = modules.ftl_drive },
+        { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.survey_equipment },
     },
     can_survey = true,
@@ -25,8 +25,8 @@ local colony_ship_mk1 = define_ship_design {
     name = "Colony Ship Mk.I",
     hull = hulls.frigate,
     modules = {
-        { slot_type = "engine", module = modules.ftl_drive },
-        { slot_type = "special", module = modules.colony_module },
+        { slot_type = "ftl", module = modules.ftl_drive },
+        { slot_type = "utility", module = modules.colony_module },
     },
     can_survey = false,
     can_colonize = true,
@@ -43,8 +43,8 @@ local courier_mk1 = define_ship_design {
     name = "Courier Mk.I",
     hull = hulls.courier_hull,
     modules = {
-        { slot_type = "engine", module = modules.ftl_drive },
-        { slot_type = "engine", module = modules.ftl_drive },
+        { slot_type = "ftl", module = modules.ftl_drive },
+        { slot_type = "sublight", module = modules.afterburner },
         { slot_type = "utility", module = modules.cargo_bay },
     },
     can_survey = false,
@@ -62,7 +62,7 @@ local scout_mk1 = define_ship_design {
     name = "Scout Mk.I",
     hull = hulls.scout_hull,
     modules = {
-        { slot_type = "engine", module = modules.ftl_drive },
+        { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.survey_equipment },
     },
     can_survey = true,
@@ -82,8 +82,8 @@ local patrol_corvette = define_ship_design {
     modules = {
         { slot_type = "weapon", module = modules.weapon_laser },
         { slot_type = "weapon", module = modules.weapon_laser },
-        { slot_type = "engine", module = modules.ftl_drive },
-        { slot_type = "utility", module = modules.armor_plating },
+        { slot_type = "ftl", module = modules.ftl_drive },
+        { slot_type = "defense", module = modules.armor_plating },
     },
     can_survey = false,
     can_colonize = false,

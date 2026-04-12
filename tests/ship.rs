@@ -1398,7 +1398,7 @@ fn test_hull_modifiers_applied_to_ship() {
             base_evasion: 35.0,
             slots: vec![
                 HullSlot { slot_type: "utility".to_string(), count: 2 },
-                HullSlot { slot_type: "engine".to_string(), count: 1 },
+                HullSlot { slot_type: "ftl".to_string(), count: 1 },
             ],
             build_cost_minerals: Amt::units(150),
             build_cost_energy: Amt::units(80),

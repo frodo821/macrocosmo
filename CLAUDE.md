@@ -194,6 +194,8 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 7. **FTL requires surveyed destination:** `plan_ftl_route` rejects unsurveyed systems. Ships use sublight to reach unsurveyed targets.
 8. **Non-FTL ships must not enter FTL routing:** Gate FTL route planning on `ship.ftl_range > 0.0`, not just `effective_ftl_range > 0.0` (tech bonuses can make effective > 0 even for non-FTL ships).
 9. **New game elements must be Lua-defined:** Rust provides the engine/framework, Lua defines specific content. No hardcoded enum variants for game content.
+10. **Use ModifiedValue for game-affecting numbers.** When touching a numeric value that could be affected by tech, modules, events, or modifiers, make it a `ModifiedValue` (or `ScopedModifiers`). Don't refactor untouched code, but apply this when adding/changing features.
+11. **Ship design fields are computed from hull + modules.** `ShipDesignDefinition` stats (hp, speed, ftl_range, build_cost, maintenance) must be calculated from hull + module definitions at registry time, not directly specified in Lua. `can_survey` = `survey_speed > 0`, `can_colonize` = `colonization_speed > 0` (no capability flags).
 
 ## Game Design Principles
 

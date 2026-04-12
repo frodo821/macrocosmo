@@ -168,6 +168,169 @@ pub struct ShipDesignDefinition {
     pub ftl_range: f64,
 }
 
+/// An error raised when validating a ShipDesignDefinition against its hull/module registries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShipDesignValidationError {
+    /// The design's referenced hull is not in the HullRegistry.
+    HullNotFound { design_id: String, hull_id: String },
+    /// A slot assignment references a module not in the ModuleRegistry.
+    ModuleNotFound {
+        design_id: String,
+        module_id: String,
+    },
+    /// The slot_type declared on a slot assignment doesn't exist on the hull.
+    UnknownSlotType {
+        design_id: String,
+        hull_id: String,
+        slot_type: String,
+    },
+    /// The module's slot_type doesn't match the slot it's being assigned to.
+    SlotTypeMismatch {
+        design_id: String,
+        module_id: String,
+        expected: String,
+        actual: String,
+    },
+    /// Too many modules of a given slot_type are assigned (exceeds hull's count).
+    SlotOverfilled {
+        design_id: String,
+        hull_id: String,
+        slot_type: String,
+        available: u32,
+        requested: u32,
+    },
+}
+
+impl std::fmt::Display for ShipDesignValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HullNotFound { design_id, hull_id } => write!(
+                f,
+                "ship design '{}' references unknown hull '{}'",
+                design_id, hull_id
+            ),
+            Self::ModuleNotFound {
+                design_id,
+                module_id,
+            } => write!(
+                f,
+                "ship design '{}' references unknown module '{}'",
+                design_id, module_id
+            ),
+            Self::UnknownSlotType {
+                design_id,
+                hull_id,
+                slot_type,
+            } => write!(
+                f,
+                "ship design '{}' uses slot_type '{}' not declared on hull '{}'",
+                design_id, slot_type, hull_id
+            ),
+            Self::SlotTypeMismatch {
+                design_id,
+                module_id,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "ship design '{}' assigns module '{}' (slot_type='{}') into a '{}' slot",
+                design_id, module_id, actual, expected
+            ),
+            Self::SlotOverfilled {
+                design_id,
+                hull_id,
+                slot_type,
+                available,
+                requested,
+            } => write!(
+                f,
+                "ship design '{}' fills {} '{}' slot(s) but hull '{}' only provides {}",
+                design_id, requested, slot_type, hull_id, available
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ShipDesignValidationError {}
+
+impl ShipDesignDefinition {
+    /// Validate this design: the hull exists, each module exists, and every slot
+    /// assignment's slot_type exists on the hull and matches the module's slot_type.
+    pub fn validate(
+        &self,
+        hulls: &HullRegistry,
+        modules: &ModuleRegistry,
+    ) -> Result<(), ShipDesignValidationError> {
+        let hull = hulls
+            .get(&self.hull_id)
+            .ok_or_else(|| ShipDesignValidationError::HullNotFound {
+                design_id: self.id.clone(),
+                hull_id: self.hull_id.clone(),
+            })?;
+
+        // Tally requested slot assignments per slot_type for overfill checks.
+        let mut per_slot_count: HashMap<&str, u32> = HashMap::new();
+
+        for assignment in &self.modules {
+            // The slot_type on the assignment must exist on the hull.
+            if !hull
+                .slots
+                .iter()
+                .any(|s| s.slot_type == assignment.slot_type)
+            {
+                return Err(ShipDesignValidationError::UnknownSlotType {
+                    design_id: self.id.clone(),
+                    hull_id: self.hull_id.clone(),
+                    slot_type: assignment.slot_type.clone(),
+                });
+            }
+
+            // The referenced module must exist.
+            let module = modules.get(&assignment.module_id).ok_or_else(|| {
+                ShipDesignValidationError::ModuleNotFound {
+                    design_id: self.id.clone(),
+                    module_id: assignment.module_id.clone(),
+                }
+            })?;
+
+            // The module's slot_type must match the slot it's being assigned to.
+            if module.slot_type != assignment.slot_type {
+                return Err(ShipDesignValidationError::SlotTypeMismatch {
+                    design_id: self.id.clone(),
+                    module_id: assignment.module_id.clone(),
+                    expected: assignment.slot_type.clone(),
+                    actual: module.slot_type.clone(),
+                });
+            }
+
+            *per_slot_count
+                .entry(assignment.slot_type.as_str())
+                .or_insert(0) += 1;
+        }
+
+        // Ensure we haven't exceeded the hull's slot counts.
+        for (slot_type, requested) in &per_slot_count {
+            let available: u32 = hull
+                .slots
+                .iter()
+                .filter(|s| s.slot_type == *slot_type)
+                .map(|s| s.count)
+                .sum();
+            if *requested > available {
+                return Err(ShipDesignValidationError::SlotOverfilled {
+                    design_id: self.id.clone(),
+                    hull_id: self.hull_id.clone(),
+                    slot_type: slot_type.to_string(),
+                    available,
+                    requested: *requested,
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct ShipDesignRegistry {
     pub designs: HashMap<String, ShipDesignDefinition>,
@@ -303,14 +466,27 @@ pub fn load_ship_designs(
         Err(e) => warn!("Failed to parse module definitions: {e}"),
     }
 
-    // Parse ship designs
+    // Parse ship designs and validate each against the hull/module registries.
     match ship_design_api::parse_ship_designs(engine.lua()) {
         Ok(defs) => {
-            let count = defs.len();
+            let mut loaded = 0usize;
+            let mut rejected = 0usize;
             for def in defs {
-                designs.insert(def);
+                match def.validate(&hulls, &modules) {
+                    Ok(()) => {
+                        designs.insert(def);
+                        loaded += 1;
+                    }
+                    Err(err) => {
+                        warn!("Rejected ship design: {err}");
+                        rejected += 1;
+                    }
+                }
             }
-            info!("Loaded {} ship design definitions", count);
+            info!(
+                "Loaded {} ship design definitions ({} rejected)",
+                loaded, rejected
+            );
         }
         Err(e) => warn!("Failed to parse ship design definitions: {e}"),
     }
@@ -402,7 +578,7 @@ mod tests {
             base_evasion: 30.0,
             slots: vec![
                 HullSlot { slot_type: "weapon".to_string(), count: 2 },
-                HullSlot { slot_type: "engine".to_string(), count: 1 },
+                HullSlot { slot_type: "ftl".to_string(), count: 1 },
             ],
             build_cost_minerals: Amt::units(200),
             build_cost_energy: Amt::units(100),
@@ -427,7 +603,7 @@ mod tests {
             id: "ftl_drive".to_string(),
             name: "FTL Drive".to_string(),
             description: String::new(),
-            slot_type: "engine".to_string(),
+            slot_type: "ftl".to_string(),
             modifiers: vec![ModuleModifier {
                 target: "ship.ftl_range".to_string(),
                 base_add: 15.0,
@@ -443,7 +619,7 @@ mod tests {
 
         let ftl = registry.get("ftl_drive").unwrap();
         assert_eq!(ftl.name, "FTL Drive");
-        assert_eq!(ftl.slot_type, "engine");
+        assert_eq!(ftl.slot_type, "ftl");
         assert_eq!(ftl.modifiers.len(), 1);
         assert_eq!(ftl.modifiers[0].target, "ship.ftl_range");
         assert!(ftl.weapon.is_none());
@@ -461,7 +637,7 @@ mod tests {
             hull_id: "corvette".to_string(),
             modules: vec![
                 DesignSlotAssignment {
-                    slot_type: "engine".to_string(),
+                    slot_type: "ftl".to_string(),
                     module_id: "ftl_drive".to_string(),
                 },
                 DesignSlotAssignment {
@@ -485,5 +661,181 @@ mod tests {
         assert_eq!(explorer.hull_id, "corvette");
         assert_eq!(explorer.modules.len(), 2);
         assert_eq!(explorer.modules[0].module_id, "ftl_drive");
+    }
+
+    // ---------------------------------------------------------------------
+    // ShipDesignDefinition::validate tests
+    // ---------------------------------------------------------------------
+
+    /// Build a small hull/module registry pair used by the validation tests.
+    fn validation_fixture() -> (HullRegistry, ModuleRegistry) {
+        let mut hulls = HullRegistry::default();
+        hulls.insert(HullDefinition {
+            id: "corvette".to_string(),
+            name: "Corvette".to_string(),
+            description: String::new(),
+            base_hp: 50.0,
+            base_speed: 0.75,
+            base_evasion: 30.0,
+            slots: vec![
+                HullSlot { slot_type: "ftl".to_string(), count: 1 },
+                HullSlot { slot_type: "weapon".to_string(), count: 2 },
+                HullSlot { slot_type: "utility".to_string(), count: 1 },
+            ],
+            build_cost_minerals: Amt::units(200),
+            build_cost_energy: Amt::units(100),
+            build_time: 60,
+            maintenance: Amt::new(0, 500),
+            modifiers: vec![],
+        });
+
+        let mut modules = ModuleRegistry::default();
+        let make = |id: &str, slot: &str| ModuleDefinition {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            slot_type: slot.to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisite_tech: None,
+            upgrade_to: Vec::new(),
+        };
+        modules.insert(make("ftl_drive", "ftl"));
+        modules.insert(make("weapon_laser", "weapon"));
+        modules.insert(make("survey_equipment", "utility"));
+        modules.insert(make("shield_generator", "defense"));
+
+        (hulls, modules)
+    }
+
+    fn make_design(id: &str, modules: Vec<DesignSlotAssignment>) -> ShipDesignDefinition {
+        ShipDesignDefinition {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            hull_id: "corvette".to_string(),
+            modules,
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            hp: 50.0,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_design() {
+        let (hulls, modules) = validation_fixture();
+        let design = make_design(
+            "ok",
+            vec![
+                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
+                DesignSlotAssignment { slot_type: "weapon".into(), module_id: "weapon_laser".into() },
+                DesignSlotAssignment { slot_type: "utility".into(), module_id: "survey_equipment".into() },
+            ],
+        );
+        assert!(design.validate(&hulls, &modules).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_slot_type_mismatch() {
+        let (hulls, modules) = validation_fixture();
+        // Putting an ftl module into a "weapon" slot assignment is invalid.
+        let design = make_design(
+            "mismatch",
+            vec![DesignSlotAssignment {
+                slot_type: "weapon".into(),
+                module_id: "ftl_drive".into(),
+            }],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::SlotTypeMismatch { actual, expected, .. }) => {
+                assert_eq!(actual, "ftl");
+                assert_eq!(expected, "weapon");
+            }
+            other => panic!("expected SlotTypeMismatch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unknown_slot_type_on_hull() {
+        let (hulls, modules) = validation_fixture();
+        // Hull has no "defense" slot.
+        let design = make_design(
+            "unknown_slot",
+            vec![DesignSlotAssignment {
+                slot_type: "defense".into(),
+                module_id: "shield_generator".into(),
+            }],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::UnknownSlotType { slot_type, .. }) => {
+                assert_eq!(slot_type, "defense");
+            }
+            other => panic!("expected UnknownSlotType, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unknown_module() {
+        let (hulls, modules) = validation_fixture();
+        let design = make_design(
+            "missing_mod",
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "nonexistent".into(),
+            }],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::ModuleNotFound { module_id, .. }) => {
+                assert_eq!(module_id, "nonexistent");
+            }
+            other => panic!("expected ModuleNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unknown_hull() {
+        let (hulls, modules) = validation_fixture();
+        let mut design = make_design("bad_hull", vec![]);
+        design.hull_id = "nonexistent_hull".into();
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::HullNotFound { hull_id, .. }) => {
+                assert_eq!(hull_id, "nonexistent_hull");
+            }
+            other => panic!("expected HullNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_overfilled_slot() {
+        let (hulls, modules) = validation_fixture();
+        // Corvette only provides 1 ftl slot; try to fill 2.
+        let design = make_design(
+            "too_many",
+            vec![
+                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
+                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
+            ],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::SlotOverfilled {
+                slot_type,
+                available,
+                requested,
+                ..
+            }) => {
+                assert_eq!(slot_type, "ftl");
+                assert_eq!(available, 1);
+                assert_eq!(requested, 2);
+            }
+            other => panic!("expected SlotOverfilled, got {:?}", other),
+        }
     }
 }

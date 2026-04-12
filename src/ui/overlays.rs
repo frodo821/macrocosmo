@@ -5,7 +5,7 @@ use crate::amount::Amt;
 use crate::ship_design::{
     DesignSlotAssignment, HullRegistry, ModuleRegistry, ShipDesignDefinition, ShipDesignRegistry,
 };
-use crate::technology::{ResearchPool, ResearchQueue, TechBranch, TechId, TechTree};
+use crate::technology::{ResearchPool, ResearchQueue, TechBranchRegistry, TechId, TechTree};
 
 use super::ResearchPanelOpen;
 
@@ -357,6 +357,7 @@ pub fn draw_overlays(
     tech_tree: &TechTree,
     research_queue: &ResearchQueue,
     research_pool: &ResearchPool,
+    branch_registry: &TechBranchRegistry,
     capital_stockpile: Option<(&Amt, &Amt)>,
     _clock_elapsed: i64,
 ) -> ResearchAction {
@@ -431,10 +432,31 @@ pub fn draw_overlays(
                 .memory(|m| m.data.get_temp(selected_branch_id))
                 .unwrap_or(0);
 
-            let branches = TechBranch::all();
+            let branches: Vec<&crate::technology::TechBranchDefinition> =
+                branch_registry.iter_ordered().collect();
+            if branches.is_empty() {
+                ui.label(
+                    egui::RichText::new("No tech branches defined.")
+                        .weak()
+                        .italics(),
+                );
+                return;
+            }
+
+            if selected_idx >= branches.len() {
+                selected_idx = 0;
+            }
+
             ui.horizontal(|ui| {
                 for (i, branch) in branches.iter().enumerate() {
-                    if ui.selectable_label(selected_idx == i, branch.name()).clicked() {
+                    let [r, g, b] = branch.color;
+                    let color = egui::Color32::from_rgb(
+                        (r.clamp(0.0, 1.0) * 255.0) as u8,
+                        (g.clamp(0.0, 1.0) * 255.0) as u8,
+                        (b.clamp(0.0, 1.0) * 255.0) as u8,
+                    );
+                    let label = egui::RichText::new(&branch.name).color(color);
+                    if ui.selectable_label(selected_idx == i, label).clicked() {
                         selected_idx = i;
                     }
                 }
@@ -449,7 +471,7 @@ pub fn draw_overlays(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let techs = tech_tree.techs_in_branch(selected_branch);
+                    let techs = tech_tree.techs_in_branch(&selected_branch.id);
                     for tech in &techs {
                         let is_researched = tech_tree.is_researched(&tech.id);
                         let is_current = research_queue.current.as_ref() == Some(&tech.id);
