@@ -1,36 +1,50 @@
-//! macrocosmo-ai — 疎結合 AI クレート。
+//! macrocosmo-ai — engine-agnostic AI core for macrocosmo.
 //!
-//! macrocosmo engine が提供する FactionRelations / KnowledgeStore / Ship 等を
-//! 読み取り専用で参照し、CommandQueue / PendingDiplomaticAction / ScopedFlags
-//! への書き込みのみを行う。
+//! 設計方針:
+//! - **Typed topic bus** アーキテクチャ。`AiBus` に metric / command / evidence の
+//!   3 種類のトピックを型付きで保持する。
+//! - **Callback は ai_core に流れ込まない**。game 側は bus に emit し、
+//!   純粋関数 (feasibility::evaluate, nash::solve_*, Condition::evaluate 等) を
+//!   呼ぶ。ai_core から game への呼び戻しは存在しない。
+//! - **依存方向**: `macrocosmo → macrocosmo-ai` (逆は禁止)。本 crate は
+//!   bevy / macrocosmo / mlua に依存しない。型変換レイヤは macrocosmo 側の
+//!   `src/ai/` モジュール (#203) で実装される。
 //!
-//! 境界ルール:
-//! - 他 faction の真値にはアクセスしない (KnowledgeStore 経由のみ)
-//! - Lua Engine には間接アクセス (engine の提供する Command 型経由)
-//!
-//! 初期段階では空の Plugin のみ提供。個別 AI 機能 (#189-#194) は段階的に
-//! ここに実装される。
-
-use bevy::prelude::*;
-
-/// AI 基盤 Plugin。
-///
-/// 登録方法: 現状の macrocosmo クレートは lib + bin の単一クレートのため、
-/// macrocosmo → macrocosmo-ai の循環依存を避けて **本プラグインは bin から
-/// 登録されない**。AI 実装時 (#189 以降) に以下のどちらかで統合予定:
-///
-/// 1. `macrocosmo-bin` を別 crate として切り出し、両者を依存する
-///    (案 B、0.3.0 完成後)
-/// 2. macrocosmo engine に AiPlugin 用の hook trait を定義し、macrocosmo-ai
-///    がそれを実装する形 (案 C)
-///
-/// いずれも #189 AI umbrella 実装時に決定。現段階では空プラグインとして用意。
-pub struct AiPlugin;
-
-impl Plugin for AiPlugin {
-    fn build(&self, _app: &mut App) {
-        // #189 以降の AI system がここに登録される。
-    }
-}
+//! Phase 1 + 2 の範囲については issue #195 を参照。
 
 pub mod ai_params;
+pub mod bus;
+pub mod campaign;
+pub mod command;
+pub mod condition;
+pub mod eval;
+pub mod evidence;
+pub mod feasibility;
+pub mod ids;
+pub mod nash;
+pub mod objective;
+pub mod projection;
+pub mod retention;
+pub mod spec;
+pub mod time;
+pub mod value_expr;
+pub mod warning;
+
+#[cfg(any(test, feature = "mock"))]
+pub mod mock;
+
+pub use bus::AiBus;
+pub use condition::{Condition, ConditionAtom};
+pub use eval::EvalContext;
+pub use value_expr::{MetricRef, ScriptRef, ValueExpr};
+
+pub use command::{Command, CommandParams, CommandValue};
+pub use evidence::StandingEvidence;
+pub use ids::{
+    CommandKindId, EntityRef, EvidenceKindId, FactionId, FactionRef, MetricId, ObjectiveId,
+    SystemRef,
+};
+pub use retention::Retention;
+pub use spec::{CommandSpec, EvidenceSpec, MetricSpec, MetricType};
+pub use time::{Tick, TimestampedValue};
+pub use warning::WarningMode;

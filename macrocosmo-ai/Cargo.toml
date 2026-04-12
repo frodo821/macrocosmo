@@ -2,7 +2,19 @@
 name = "macrocosmo-ai"
 version.workspace = true
 edition.workspace = true
+description = "Engine-agnostic AI core for macrocosmo: typed topic bus, feasibility, campaigns."
+
+[features]
+default = []
+mock = []
 
 [dependencies]
-bevy = "0.18.1"
-macrocosmo = { path = "../macrocosmo" }
+ahash = { version = "0.8", features = ["serde"] }
+serde = { version = "1", features = ["derive", "rc"] }
+thiserror = "2"
+log = "0.4"
+
+[dev-dependencies]
+# Self-reference with `mock` feature activates the mock module for
+# integration tests in `tests/` without forcing the feature on consumers.
+macrocosmo-ai = { path = ".", features = ["mock"] }
