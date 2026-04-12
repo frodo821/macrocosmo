@@ -17,6 +17,7 @@ fn ship_status_label(state: &ShipState) -> &'static str {
         ShipState::Surveying { .. } => "Surveying",
         ShipState::Settling { .. } => "Settling",
         ShipState::Refitting { .. } => "Refitting",
+        ShipState::Loitering { .. } => "Loitering",
     }
 }
 
@@ -334,6 +335,7 @@ pub fn draw_outline(
                     ShipState::Surveying { .. } => "Surveying",
                     ShipState::Settling { .. } => "Settling",
                     ShipState::Refitting { .. } => continue,
+                    ShipState::Loitering { .. } => "Loitering",
                 };
                 in_transit.push((entity, ship.name.clone(), ship.design_id.clone(), status));
             }

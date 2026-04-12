@@ -1079,6 +1079,7 @@ fn draw_map_tooltips(
                     ShipState::Surveying { .. } => "Surveying",
                     ShipState::Settling { .. } => "Settling",
                     ShipState::Refitting { .. } => "Refitting",
+                    ShipState::Loitering { .. } => "Loitering",
                 };
                 egui::Tooltip::always_open(
                     ctx.clone(),

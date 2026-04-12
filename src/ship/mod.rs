@@ -49,6 +49,11 @@ impl CommandQueue {
                     self.predicted_system = Some(*system);
                 }
             }
+            QueuedCommand::MoveToCoordinates { target } => {
+                // #185: After a deep-space loiter move, the ship is no longer in any system.
+                self.predicted_position = *target;
+                self.predicted_system = None;
+            }
         }
         self.commands.push(cmd);
     }
@@ -67,6 +72,8 @@ pub enum QueuedCommand {
     MoveTo { system: Entity },
     Survey { system: Entity },
     Colonize { system: Entity, planet: Option<Entity> },
+    /// #185: Travel sublight to an arbitrary point in deep space and loiter there.
+    MoveToCoordinates { target: [f64; 3] },
 }
 
 /// Initial FTL speed as a multiple of light speed
@@ -283,6 +290,14 @@ pub enum ShipState {
         completes_at: i64,
         new_modules: Vec<EquippedModule>,
         target_revision: u64,
+    },
+    /// #185: Loitering at an arbitrary deep-space coordinate.
+    /// Reached when a SubLight move with `target_system = None` arrives, or
+    /// (future) when a ship is interdicted out of FTL or engaged in deep-space
+    /// ship-vs-ship combat. Loitering ships are NOT subject to `resolve_combat`,
+    /// which currently only operates on Docked ships in star systems.
+    Loitering {
+        position: [f64; 3],
     },
 }
 

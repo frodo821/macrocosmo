@@ -89,6 +89,8 @@ pub enum ShipSnapshotState {
     Settling,
     Refitting,
     Destroyed,
+    /// #185: Ship is loitering at a deep-space coordinate (not in any system).
+    Loitering { position: [f64; 3] },
 }
 
 #[derive(Resource, Component, Default)]
@@ -311,27 +313,59 @@ pub fn propagate_knowledge(
         });
     }
 
-    // #175: Ship knowledge propagation
+    // #175 / #188: Ship knowledge propagation.
     // Ships are visible based on the light delay from their position to the player.
-    // For docked ships, use the system position. For in-transit ships, use interpolated position.
+    // For docked / surveying / settling / refitting ships, use the system's position.
+    // For SubLight ships, interpolate the current position from origin/destination
+    // and apply the resulting light-speed delay (#188 fix — previously SubLight was
+    // delivered with distance=0 because the position lookup returned None).
+    // For Loitering ships, use the loitering coordinate directly (#185).
+    let player_pos_arr = player_pos.as_array();
     for (ship_entity, ship, state, hp) in &ships {
-        let ship_pos = match state {
-            ShipState::Docked { system } => positions.get(*system).ok(),
-            ShipState::Surveying { target_system, .. } => positions.get(*target_system).ok(),
-            ShipState::Settling { system, .. } => positions.get(*system).ok(),
-            ShipState::Refitting { system, .. } => positions.get(*system).ok(),
-            // For in-transit ships, use their current system (origin or destination)
-            ShipState::InFTL { origin_system, .. } => positions.get(*origin_system).ok(),
-            ShipState::SubLight { .. } => {
-                // Sublight ships don't have a system entity for position lookup;
-                // use the origin position encoded in the state
-                None
+        // Compute the ship's current world position as an [f64; 3].
+        let ship_pos_arr: Option<[f64; 3]> = match state {
+            ShipState::Docked { system } => positions.get(*system).ok().map(|p| p.as_array()),
+            ShipState::Surveying { target_system, .. } => {
+                positions.get(*target_system).ok().map(|p| p.as_array())
             }
+            ShipState::Settling { system, .. } => positions.get(*system).ok().map(|p| p.as_array()),
+            ShipState::Refitting { system, .. } => positions.get(*system).ok().map(|p| p.as_array()),
+            ShipState::InFTL { origin_system, .. } => {
+                // FTL ships are typically invisible to baseline sensors anyway, but use
+                // the origin system as a coarse reference (matches existing behavior).
+                positions.get(*origin_system).ok().map(|p| p.as_array())
+            }
+            ShipState::SubLight {
+                origin,
+                destination,
+                departed_at,
+                arrival_at,
+                ..
+            } => {
+                // #188: Interpolate sublight position so the light delay reflects the
+                // ship's actual deep-space location, not (0,0,0).
+                let total = (*arrival_at - *departed_at) as f64;
+                let elapsed = (clock.elapsed - *departed_at) as f64;
+                let t = if total > 0.0 {
+                    (elapsed / total).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                Some([
+                    origin[0] + (destination[0] - origin[0]) * t,
+                    origin[1] + (destination[1] - origin[1]) * t,
+                    origin[2] + (destination[2] - origin[2]) * t,
+                ])
+            }
+            // #185: Loitering — coordinate is encoded in the state itself.
+            ShipState::Loitering { position } => Some(*position),
         };
 
-        let distance = ship_pos
-            .map(|pos| physics::distance_ly(player_pos, pos))
-            .unwrap_or(0.0);
+        let Some(ship_pos_arr) = ship_pos_arr else {
+            continue;
+        };
+
+        let distance = physics::distance_ly_arr(player_pos_arr, ship_pos_arr);
         let delay = physics::light_delay_hexadies(distance);
         let observed_at = clock.elapsed - delay;
 
@@ -353,6 +387,12 @@ pub fn propagate_knowledge(
             ShipState::Surveying { target_system, .. } => (ShipSnapshotState::Surveying, Some(*target_system)),
             ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
             ShipState::Refitting { system, .. } => (ShipSnapshotState::Refitting, Some(*system)),
+            // #185: Loitering snapshot carries its position so the UI can render the
+            // ship's last-known location even after it has moved on.
+            ShipState::Loitering { position } => (
+                ShipSnapshotState::Loitering { position: *position },
+                None,
+            ),
         };
 
         store.update_ship(ShipSnapshot {

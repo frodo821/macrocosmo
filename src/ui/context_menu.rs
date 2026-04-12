@@ -66,6 +66,9 @@ pub fn draw_context_menu(
             ShipState::Settling { system, .. } => Some(*system),
             ShipState::Docked { .. } => None, // handled via docked_system
             ShipState::Refitting { system, .. } => Some(*system),
+            // #185: Loitering ships have no associated system; commands will be queued
+            // and routed via MoveTo (which handles loitering->system sublight).
+            ShipState::Loitering { .. } => None,
         };
         (
             ship.name.clone(),

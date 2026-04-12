@@ -250,6 +250,11 @@ pub fn sensor_buoy_detect_system(
                 crate::ship::ShipState::Refitting { system, .. } => {
                     (ShipSnapshotState::Refitting, Some(*system))
                 }
+                // #185: Loitering ship — encode position in snapshot state.
+                crate::ship::ShipState::Loitering { position } => (
+                    ShipSnapshotState::Loitering { position: *position },
+                    None,
+                ),
             };
 
             store.update_ship(ShipSnapshot {

@@ -188,6 +188,10 @@ pub fn click_select_system(
                 let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32 * view.scale;
                 Vec2::new(cx, cy)
             }
+            // #185: Loitering ships are selectable in deep space.
+            ShipState::Loitering { position } => {
+                Vec2::new(position[0] as f32 * view.scale, position[1] as f32 * view.scale)
+            }
             // Docked ships selected via outline panel
             _ => continue,
         };
