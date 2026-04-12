@@ -1,4 +1,5 @@
 pub mod amount;
+pub mod choice;
 pub mod colony;
 pub mod communication;
 pub mod components;
