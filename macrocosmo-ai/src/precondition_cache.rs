@@ -280,6 +280,21 @@ impl ConditionAtom {
                 h.write_i64(*window);
                 h.write_u64(rate_per_tick.to_bits());
             }
+            ConditionAtom::StandingBelow { target, threshold } => {
+                h.write_u8(8);
+                h.write_u32(target.0);
+                h.write_u64(threshold.to_bits());
+            }
+            ConditionAtom::StandingAbove { target, threshold } => {
+                h.write_u8(9);
+                h.write_u32(target.0);
+                h.write_u64(threshold.to_bits());
+            }
+            ConditionAtom::StandingConfidenceAbove { target, threshold } => {
+                h.write_u8(10);
+                h.write_u32(target.0);
+                h.write_u64(threshold.to_bits());
+            }
         }
     }
 }
