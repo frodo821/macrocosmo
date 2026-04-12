@@ -18,7 +18,11 @@ pub mod species_api;
 pub mod structure_api;
 
 // Re-exports for backward compatibility
-pub use engine::{resolve_scripts_dir, ScriptEngine};
+pub use engine::{
+    find_scripts_dir_upwards, resolve_scripts_dir, resolve_scripts_dir_from,
+    try_resolve_scripts_dir, ScriptEngine, ScriptsDirError, ScriptsDirInputs,
+    SCRIPTS_DIR_ENV_VAR,
+};
 pub use game_rng::{register_game_rand, GameRng};
 pub use helpers::{extract_id_from_lua_value, extract_ref_id};
 
