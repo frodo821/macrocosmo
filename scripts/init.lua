@@ -2,6 +2,11 @@
 -- All game data definitions are loaded through this file via require().
 -- Order matters: definitions must be loaded before they are referenced.
 
+-- Reusable Lua helper libraries (no game definitions; just functions exposed
+-- as globals like `initialize_default_capital`). Loaded first so faction
+-- on_game_start callbacks defined later can use them.
+require("lib.capital")
+
 -- Base definitions (no cross-references)
 require("stars")
 require("planets")
