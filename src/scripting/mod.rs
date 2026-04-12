@@ -7,6 +7,7 @@ pub mod engine;
 pub mod event_api;
 pub mod faction_api;
 pub mod galaxy_api;
+pub mod game_rng;
 pub mod game_start_ctx;
 pub mod globals;
 pub mod helpers;
@@ -18,6 +19,7 @@ pub mod structure_api;
 
 // Re-exports for backward compatibility
 pub use engine::{resolve_scripts_dir, ScriptEngine};
+pub use game_rng::{register_game_rand, GameRng};
 pub use helpers::{extract_id_from_lua_value, extract_ref_id};
 
 use bevy::prelude::*;
@@ -26,7 +28,8 @@ pub struct ScriptingPlugin;
 
 impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, init_scripting)
+        app.init_resource::<GameRng>()
+            .add_systems(Startup, init_scripting)
             .add_systems(
                 Startup,
                 load_all_scripts.after(init_scripting),
@@ -66,8 +69,9 @@ impl Plugin for ScriptingPlugin {
 
 /// Startup system that initialises the Lua scripting engine and inserts it as a
 /// Bevy resource. Other startup systems can depend on this via `.after(init_scripting)`.
-pub fn init_scripting(mut commands: Commands) {
-    let engine = ScriptEngine::new().expect("Failed to initialize Lua scripting engine");
+pub fn init_scripting(mut commands: Commands, rng: Res<GameRng>) {
+    let engine = ScriptEngine::new_with_rng(rng.handle())
+        .expect("Failed to initialize Lua scripting engine");
     commands.insert_resource(engine);
 }
 

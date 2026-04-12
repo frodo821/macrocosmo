@@ -1,7 +1,10 @@
 use bevy::prelude::*;
 use mlua::prelude::*;
+use rand::rngs::SmallRng;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+use super::game_rng::{register_game_rand, GameRng};
 use super::globals;
 
 /// Resolve the scripts directory by searching multiple locations.
@@ -42,7 +45,18 @@ pub struct ScriptEngine {
 }
 
 impl ScriptEngine {
+    /// Create a new ScriptEngine with a freshly-seeded RNG handle.
+    /// Convenient for tests; production code should prefer
+    /// [`Self::new_with_rng`] so the engine shares the Bevy [`GameRng`]
+    /// resource.
     pub fn new() -> Result<Self, mlua::Error> {
+        let rng = GameRng::default();
+        Self::new_with_rng(rng.handle())
+    }
+
+    /// Create a new ScriptEngine wired to the given RNG handle. The handle
+    /// is used to back the `game_rand` Lua global.
+    pub fn new_with_rng(rng: Arc<Mutex<SmallRng>>) -> Result<Self, mlua::Error> {
         let scripts_dir = resolve_scripts_dir();
         // Sandbox: only load safe libraries (no io, os, debug, ffi)
         let lua = Lua::new_with(
@@ -51,6 +65,7 @@ impl ScriptEngine {
             mlua::LuaOptions::default(),
         )?;
         globals::setup_globals(&lua, &scripts_dir)?;
+        register_game_rand(&lua, rng)?;
         info!("Lua scripts directory: {}", scripts_dir.display());
         Ok(Self { lua, scripts_dir })
     }
