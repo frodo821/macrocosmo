@@ -9,6 +9,7 @@ mod common;
 
 use bevy::prelude::*;
 use macrocosmo::ai::emit::AiBusWriter;
+use macrocosmo::ai::schema::ids;
 use macrocosmo::ai::{AiBusResource, AiPlugin};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo_ai::{MetricId, MetricSpec, Retention, WarningMode};
@@ -107,4 +108,40 @@ fn ai_plugin_coexists_with_test_app() {
         app.update();
     }
     assert!(app.world().get_resource::<AiBusResource>().is_some());
+}
+
+/// Startup-time schema declarations (#198) register every Tier 1 topic
+/// so downstream producers and evaluators observe a stable vocabulary
+/// as soon as the plugin runs its `Startup` system.
+#[test]
+fn ai_plugin_declares_tier1_schema_on_startup() {
+    let mut app = minimal_ai_app();
+    // A single tick is enough — `schema::declare_all` is registered on
+    // `Startup`, which runs before the first `Update`.
+    app.update();
+    let bus = app
+        .world()
+        .get_resource::<AiBusResource>()
+        .expect("AiBusResource missing after AiPlugin::build");
+
+    // Metrics — spot-check one per catalogue category.
+    assert!(bus.has_metric(&ids::metric::my_strength()));
+    assert!(bus.has_metric(&ids::metric::net_production_minerals()));
+    assert!(bus.has_metric(&ids::metric::stockpile_energy()));
+    assert!(bus.has_metric(&ids::metric::population_total()));
+    assert!(bus.has_metric(&ids::metric::colony_count()));
+    assert!(bus.has_metric(&ids::metric::tech_total_researched()));
+    assert!(bus.has_metric(&ids::metric::systems_with_shipyard()));
+    assert!(bus.has_metric(&ids::metric::game_elapsed_time()));
+
+    // Commands.
+    assert!(bus.has_command_kind(&ids::command::attack_target()));
+    assert!(bus.has_command_kind(&ids::command::colonize_system()));
+    assert!(bus.has_command_kind(&ids::command::research_focus()));
+    assert!(bus.has_command_kind(&ids::command::declare_war()));
+
+    // Evidence kinds.
+    assert!(bus.has_evidence_kind(&ids::evidence::direct_attack()));
+    assert!(bus.has_evidence_kind(&ids::evidence::gift_given()));
+    assert!(bus.has_evidence_kind(&ids::evidence::major_military_buildup()));
 }
