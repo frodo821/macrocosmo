@@ -355,6 +355,55 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     })?;
     globals.set("on_scripts_loaded", on_scripts_loaded)?;
 
+    // --- #181: Galaxy generation hook registration ----------------------
+    //
+    // Each hook replaces the corresponding default phase in `generate_galaxy`.
+    // If multiple callbacks are registered for the same hook, the LAST one
+    // wins (replacement semantics, not composition). If no hook is registered,
+    // the built-in Rust default runs.
+    globals.set(
+        super::galaxy_gen_ctx::GENERATE_EMPTY_HANDLERS,
+        lua.create_table()?,
+    )?;
+    globals.set(
+        super::galaxy_gen_ctx::CHOOSE_CAPITALS_HANDLERS,
+        lua.create_table()?,
+    )?;
+    globals.set(
+        super::galaxy_gen_ctx::INITIALIZE_SYSTEM_HANDLERS,
+        lua.create_table()?,
+    )?;
+
+    let on_galaxy_generate_empty = lua.create_function(|lua, func: mlua::Function| {
+        let handlers: mlua::Table = lua
+            .globals()
+            .get(super::galaxy_gen_ctx::GENERATE_EMPTY_HANDLERS)?;
+        let len = handlers.len()?;
+        handlers.set(len + 1, func)?;
+        Ok(())
+    })?;
+    globals.set("on_galaxy_generate_empty", on_galaxy_generate_empty)?;
+
+    let on_choose_capitals = lua.create_function(|lua, func: mlua::Function| {
+        let handlers: mlua::Table = lua
+            .globals()
+            .get(super::galaxy_gen_ctx::CHOOSE_CAPITALS_HANDLERS)?;
+        let len = handlers.len()?;
+        handlers.set(len + 1, func)?;
+        Ok(())
+    })?;
+    globals.set("on_choose_capitals", on_choose_capitals)?;
+
+    let on_initialize_system = lua.create_function(|lua, func: mlua::Function| {
+        let handlers: mlua::Table = lua
+            .globals()
+            .get(super::galaxy_gen_ctx::INITIALIZE_SYSTEM_HANDLERS)?;
+        let len = handlers.len()?;
+        handlers.set(len + 1, func)?;
+        Ok(())
+    })?;
+    globals.set("on_initialize_system", on_initialize_system)?;
+
     // fire_event(event_id, target?) -- queues an event to be fired from Lua
     let fire_event_fn = lua.create_function(|lua, args: (String, Option<u64>)| {
         let events: mlua::Table = lua.globals().get("_pending_script_events")?;
