@@ -49,6 +49,7 @@ fn test_block_research_stops_progress() {
         cost: TechCost::research_only(Amt::units(100)),
         prerequisites: vec![],
         description: String::new(),
+        dangerous: false,
     }]);
     {
         let empire = empire_entity(app.world_mut());
@@ -181,6 +182,7 @@ fn test_on_researched_fires_and_applies_effects() {
         cost: TechCost::research_only(Amt::units(10)),
         prerequisites: vec![],
         description: String::new(),
+        dangerous: false,
     }]);
     {
         let empire = empire_entity(app.world_mut());

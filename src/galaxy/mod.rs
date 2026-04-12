@@ -190,3 +190,12 @@ pub struct SystemModifiers {
     pub ship_attack: ScopedModifiers,
     pub ship_defense: ScopedModifiers,
 }
+
+/// Raw star-type modifier definitions attached to a system at generation.
+/// Retained for inspection and for targets that are not yet wired into
+/// typed scopes (e.g. "system.research_bonus"). Targets with known typed
+/// scopes are additionally applied to `SystemModifiers` etc.
+#[derive(Component, Default, Clone, Debug)]
+pub struct StarTypeModifierSet {
+    pub entries: Vec<crate::scripting::galaxy_api::StarTypeModifier>,
+}

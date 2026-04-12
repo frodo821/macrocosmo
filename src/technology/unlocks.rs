@@ -230,6 +230,7 @@ mod tests {
             branch: "physics".to_string(),
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: prereqs.into_iter().map(|s| TechId(s.to_string())).collect(),
+            dangerous: false,
         }
     }
 

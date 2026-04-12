@@ -611,6 +611,7 @@ mod tests {
             cost: TechCost::research_only(crate::amount::Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
+            dangerous: false,
         }]);
 
         let preview = run_preview(
@@ -646,6 +647,7 @@ mod tests {
             cost: TechCost::research_only(crate::amount::Amt::units(50)),
             prerequisites: vec![],
             description: String::new(),
+            dangerous: false,
         }]);
 
         let preview = run_preview(
@@ -676,6 +678,7 @@ mod tests {
             cost: TechCost::research_only(crate::amount::Amt::units(75)),
             prerequisites: vec![],
             description: String::new(),
+            dangerous: false,
         }]);
 
         // The callback uses both scope methods (which the preview *should*
