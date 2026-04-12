@@ -21,6 +21,7 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
+use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::ship::{
     Cargo, CommandQueue, CourierRoute, PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints,
@@ -73,6 +74,7 @@ impl Plugin for UiPlugin {
                 (
                     compute_ui_state,
                     draw_top_bar_system,
+                    draw_notifications_system,
                     draw_outline_and_tooltips_system,
                     draw_main_panels_system,
                     draw_overlays_system,
@@ -246,6 +248,118 @@ fn draw_top_bar_system(
         &mut research_open,
         &mut designer_state,
     );
+}
+
+// ---------------------------------------------------------------------------
+// System 2.5: draw_notifications_system — banner stack at the top (#151)
+// ---------------------------------------------------------------------------
+
+fn draw_notifications_system(
+    mut contexts: EguiContexts,
+    mut queue: ResMut<NotificationQueue>,
+    mut selected_system: ResMut<SelectedSystem>,
+) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    // Snapshot the items so we can iterate without holding a borrow on the
+    // resource while we also mutate it (dismiss, jump).
+    let items: Vec<crate::notifications::Notification> = queue.items.clone();
+    if items.is_empty() {
+        return;
+    }
+
+    let mut to_dismiss: Vec<u64> = Vec::new();
+    let mut jump_target: Option<Entity> = None;
+
+    egui::Area::new(egui::Id::new("notification_banners"))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 48.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(420.0);
+                for n in &items {
+                    let (border, fill) = match n.priority {
+                        NotificationPriority::High => (
+                            egui::Color32::from_rgb(220, 80, 80),
+                            egui::Color32::from_rgba_premultiplied(60, 14, 14, 230),
+                        ),
+                        NotificationPriority::Medium => (
+                            egui::Color32::from_rgb(230, 200, 90),
+                            egui::Color32::from_rgba_premultiplied(40, 36, 14, 220),
+                        ),
+                        NotificationPriority::Low => (
+                            egui::Color32::DARK_GRAY,
+                            egui::Color32::from_rgba_premultiplied(20, 20, 20, 200),
+                        ),
+                    };
+
+                    egui::Frame::group(ui.style())
+                        .stroke(egui::Stroke::new(1.5, border))
+                        .fill(fill)
+                        .inner_margin(egui::Margin::same(8))
+                        .show(ui, |ui| {
+                            ui.set_min_width(380.0);
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&n.title)
+                                            .strong()
+                                            .color(egui::Color32::WHITE),
+                                    );
+                                    if !n.description.is_empty() {
+                                        ui.label(
+                                            egui::RichText::new(&n.description)
+                                                .color(egui::Color32::LIGHT_GRAY),
+                                        );
+                                    }
+                                    if let Some(remaining) = n.remaining_seconds {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "auto-dismiss in {:.0}s",
+                                                remaining.max(0.0),
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                    }
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::TOP),
+                                    |ui| {
+                                        if ui
+                                            .button(egui::RichText::new("✕").strong())
+                                            .on_hover_text("Dismiss")
+                                            .clicked()
+                                        {
+                                            to_dismiss.push(n.id);
+                                        }
+                                        if let Some(target) = n.target_system {
+                                            if ui
+                                                .button("Jump")
+                                                .on_hover_text("Select target system")
+                                                .clicked()
+                                            {
+                                                jump_target = Some(target);
+                                                to_dismiss.push(n.id);
+                                            }
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+        });
+
+    for id in to_dismiss {
+        queue.dismiss(id);
+    }
+    if let Some(target) = jump_target {
+        selected_system.0 = Some(target);
+    }
 }
 
 // ---------------------------------------------------------------------------
