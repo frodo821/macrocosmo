@@ -250,6 +250,7 @@ pub fn test_app() -> App {
             process_command_queue,
             resolve_combat,
             tick_ship_repair,
+            macrocosmo::ship::pursuit::detect_hostiles_system,
         )
             .chain()
             .after(macrocosmo::time_system::advance_game_time)
@@ -402,6 +403,7 @@ pub fn full_test_app() -> App {
             process_command_queue,
             resolve_combat,
             tick_ship_repair,
+            macrocosmo::ship::pursuit::detect_hostiles_system,
         ),
     );
     // #128: Poll route tasks after Commands from process_command_queue are flushed.
