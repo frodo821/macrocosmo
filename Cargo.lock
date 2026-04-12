@@ -3508,6 +3508,7 @@ dependencies = [
  "macrocosmo-ai",
  "mlua",
  "rand",
+ "serde_json",
 ]
 
 [[package]]
