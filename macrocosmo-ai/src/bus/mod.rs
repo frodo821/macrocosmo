@@ -127,6 +127,19 @@ impl AiBus {
         self.metrics.get(id).and_then(|s| s.at_or_before(t))
     }
 
+    /// Timestamp of the latest sample for a metric, or `None` if undeclared /
+    /// never emitted. Used by `ConditionAtom::MetricStale`.
+    pub fn latest_at(&self, id: &MetricId) -> Option<Tick> {
+        self.metrics.get(id).and_then(MetricStore::latest_at)
+    }
+
+    /// Monotonic version counter for a metric. Bumped on every accepted
+    /// `emit`. Returns `0` for undeclared metrics. Used by the precondition
+    /// cache for fine-grained invalidation.
+    pub fn metric_version(&self, id: &MetricId) -> u64 {
+        self.metrics.get(id).map(|s| s.version).unwrap_or(0)
+    }
+
     // ---- Command topic --------------------------------------------------
 
     /// Declare a command kind. Re-declaring overrides the spec and warns.
@@ -233,6 +246,12 @@ impl AiBus {
             .values()
             .flat_map(move |store| store.window(now, duration))
             .filter(move |e| e.observer == observer)
+    }
+
+    /// Monotonic version counter for an evidence kind. Bumped on every
+    /// accepted `emit_evidence`. Returns `0` for undeclared kinds.
+    pub fn evidence_version(&self, kind: &EvidenceKindId) -> u64 {
+        self.evidence.get(kind).map(|s| s.version).unwrap_or(0)
     }
 
     /// Evidence for a given observer and kind within the window. More

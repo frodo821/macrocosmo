@@ -13,6 +13,8 @@ use crate::time::Tick;
 pub(crate) struct EvidenceStore {
     pub(crate) spec: EvidenceSpec,
     pub(crate) entries: Vec<StandingEvidence>,
+    /// Monotonic counter bumped on every accepted push.
+    pub(crate) version: u64,
 }
 
 impl EvidenceStore {
@@ -20,6 +22,7 @@ impl EvidenceStore {
         Self {
             spec,
             entries: Vec::new(),
+            version: 0,
         }
     }
 
@@ -33,6 +36,7 @@ impl EvidenceStore {
         let newest = ev.at;
         self.entries.push(ev);
         self.evict(newest);
+        self.version = self.version.wrapping_add(1);
         true
     }
 
