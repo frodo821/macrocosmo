@@ -58,6 +58,11 @@ pub struct GenerationSettings {
     pub arm_spread: f64,
     pub min_distance: f64,
     pub max_neighbor_distance: f64,
+    /// #199: Baseline FTL range used by Lua-side connectivity loops to decide
+    /// which system pairs are FTL-adjacent during galaxy generation. Independent
+    /// of per-ship/tech values — this is the reference threshold for the
+    /// generator only.
+    pub initial_ftl_range: f64,
 }
 
 /// Actions recorded by a `on_galaxy_generate_empty` callback.
@@ -126,7 +131,32 @@ impl mlua::UserData for GalaxyGenerateCtx {
             t.set("arm_spread", this.settings.arm_spread)?;
             t.set("min_distance", this.settings.min_distance)?;
             t.set("max_neighbor_distance", this.settings.max_neighbor_distance)?;
+            t.set("initial_ftl_range", this.settings.initial_ftl_range)?;
             Ok(t)
+        });
+
+        // Read-only sequence of systems recorded so far (same shape as
+        // Phase B `ctx.systems`). Useful for after-Phase-A connectivity
+        // loops to inspect what Phase A produced.
+        fields.add_field_method_get("systems", |lua, this| {
+            let actions = this.actions.lock().unwrap();
+            let arr = lua.create_table()?;
+            for (i, sys) in actions.spawned_systems.iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("name", sys.name.as_str())?;
+                entry.set("star_type", sys.star_type.as_str())?;
+                let pos = lua.create_table()?;
+                pos.set(1, sys.position[0])?;
+                pos.set(2, sys.position[1])?;
+                pos.set(3, sys.position[2])?;
+                pos.set("x", sys.position[0])?;
+                pos.set("y", sys.position[1])?;
+                pos.set("z", sys.position[2])?;
+                entry.set("position", pos)?;
+                entry.set("index", (i + 1) as i64)?;
+                arr.set(i + 1, entry)?;
+            }
+            Ok(arr)
         });
     }
 
@@ -206,6 +236,318 @@ impl mlua::UserData for GalaxyGenerateCtx {
                     capital_for_faction: def.capital_for_faction.clone(),
                 });
                 Ok(())
+            },
+        );
+
+        // ctx:insert_bridge_at(position [, star_type])
+        //
+        // #199: Append a bridge system at an intermediate position. Used by
+        // Lua-side connectivity loops to fill FTL-reachability gaps. Default
+        // star_type is "yellow_dwarf"; callers can pass any string id or a
+        // `define_star_type` reference. The system gets an auto-generated
+        // `Bridge-NNN` name.
+        methods.add_method(
+            "insert_bridge_at",
+            |_,
+             this,
+             (position, star_type): (mlua::Table, Option<mlua::Value>)| {
+                let pos = parse_position(&position)?;
+                let star_type_id = match star_type {
+                    Some(v) => extract_id_from_lua_value(&v)?,
+                    None => "yellow_dwarf".to_string(),
+                };
+                let mut actions = this.actions.lock().unwrap();
+                let idx = actions.spawned_systems.len();
+                actions.spawned_systems.push(SpawnedEmptySystemSpec {
+                    name: format!("Bridge-{:03}", idx),
+                    position: pos,
+                    star_type: star_type_id,
+                    planets: PredefinedPlanetsForSpawn::default(),
+                    capital_for_faction: None,
+                });
+                Ok(())
+            },
+        );
+
+        // ctx:pick_provisional_capital()
+        //
+        // #199: Return the system closest to origin (0,0,0), used as a proxy
+        // for the future Phase B capital while the real capital is not yet
+        // selected. Returns nil if no systems have been spawned.
+        methods.add_method("pick_provisional_capital", |lua, this, ()| {
+            let actions = this.actions.lock().unwrap();
+            let mut best: Option<(usize, f64)> = None;
+            for (i, sys) in actions.spawned_systems.iter().enumerate() {
+                let d2 = sys.position[0] * sys.position[0]
+                    + sys.position[1] * sys.position[1]
+                    + sys.position[2] * sys.position[2];
+                match best {
+                    Some((_, bd)) if bd <= d2 => {}
+                    _ => best = Some((i, d2)),
+                }
+            }
+            let Some((idx, _)) = best else {
+                return Ok(mlua::Value::Nil);
+            };
+            let sys = &actions.spawned_systems[idx];
+            let entry = lua.create_table()?;
+            entry.set("name", sys.name.as_str())?;
+            entry.set("star_type", sys.star_type.as_str())?;
+            let pos = lua.create_table()?;
+            pos.set(1, sys.position[0])?;
+            pos.set(2, sys.position[1])?;
+            pos.set(3, sys.position[2])?;
+            pos.set("x", sys.position[0])?;
+            pos.set("y", sys.position[1])?;
+            pos.set("z", sys.position[2])?;
+            entry.set("position", pos)?;
+            entry.set("index", (idx + 1) as i64)?;
+            Ok(mlua::Value::Table(entry))
+        });
+
+        // ctx:build_ftl_graph(ftl_range)
+        //
+        // #199: Compute an FtlGraph snapshot of currently-spawned systems.
+        // Edges connect systems within `ftl_range` of each other. Returned
+        // UserData offers queries used by connectivity loops
+        // (`unreachable_from`, `connected_components`,
+        // `closest_cross_cluster_pair`).
+        methods.add_method("build_ftl_graph", |_, this, ftl_range: f64| {
+            let actions = this.actions.lock().unwrap();
+            let nodes: Vec<FtlNode> = actions
+                .spawned_systems
+                .iter()
+                .enumerate()
+                .map(|(i, sys)| FtlNode {
+                    index: i + 1,
+                    name: sys.name.clone(),
+                    star_type: sys.star_type.clone(),
+                    position: sys.position,
+                })
+                .collect();
+            Ok(FtlGraph::build(nodes, ftl_range))
+        });
+    }
+}
+
+// --- #199: FtlGraph UserData -------------------------------------------
+
+/// A node in an FtlGraph snapshot.
+#[derive(Clone, Debug)]
+pub struct FtlNode {
+    /// 1-based index matching Phase A `ctx.systems` ordering.
+    pub index: usize,
+    pub name: String,
+    pub star_type: String,
+    pub position: PositionF64,
+}
+
+/// A snapshot of the FTL-reachability graph for a set of systems, under a
+/// given FTL range. Edges are undirected: a pair `(i, j)` is connected iff
+/// `distance(i, j) <= ftl_range`.
+///
+/// Union-Find based: `component[i]` is a representative index. The actual
+/// component membership queries recompute sets on demand.
+#[derive(Clone, Debug)]
+pub struct FtlGraph {
+    pub nodes: Vec<FtlNode>,
+    pub ftl_range: f64,
+    /// Union-Find parent array, sized like nodes.
+    parent: Vec<usize>,
+}
+
+impl FtlGraph {
+    pub fn build(nodes: Vec<FtlNode>, ftl_range: f64) -> Self {
+        let n = nodes.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        fn union(parent: &mut [usize], a: usize, b: usize) {
+            let ra = find(parent, a);
+            let rb = find(parent, b);
+            if ra != rb {
+                parent[ra] = rb;
+            }
+        }
+        let r2 = ftl_range * ftl_range;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dx = nodes[i].position[0] - nodes[j].position[0];
+                let dy = nodes[i].position[1] - nodes[j].position[1];
+                let dz = nodes[i].position[2] - nodes[j].position[2];
+                let d2 = dx * dx + dy * dy + dz * dz;
+                if d2 <= r2 {
+                    union(&mut parent, i, j);
+                }
+            }
+        }
+        Self {
+            nodes,
+            ftl_range,
+            parent,
+        }
+    }
+
+    /// Resolve the Union-Find root of a node index (0-based).
+    fn root(&self, mut x: usize) -> usize {
+        while self.parent[x] != x {
+            x = self.parent[x];
+        }
+        x
+    }
+
+    /// Return the Union-Find roots, one per node (0-based).
+    fn roots(&self) -> Vec<usize> {
+        (0..self.nodes.len()).map(|i| self.root(i)).collect()
+    }
+}
+
+fn resolve_system_index(
+    value: &mlua::Value,
+    node_count: usize,
+) -> Result<usize, mlua::Error> {
+    let idx = match value {
+        mlua::Value::Integer(i) => *i as usize,
+        mlua::Value::Number(f) => *f as usize,
+        mlua::Value::Table(t) => {
+            let i: i64 = t.get("index")?;
+            i as usize
+        }
+        _ => {
+            return Err(mlua::Error::RuntimeError(
+                "FtlGraph query: expected a system index or a system table with `index`".into(),
+            ));
+        }
+    };
+    if idx == 0 || idx > node_count {
+        return Err(mlua::Error::RuntimeError(format!(
+            "FtlGraph query: system index {} out of range (1..={})",
+            idx, node_count
+        )));
+    }
+    Ok(idx - 1) // convert to 0-based
+}
+
+fn node_to_lua_table<'lua>(
+    lua: &'lua mlua::Lua,
+    node: &FtlNode,
+) -> Result<mlua::Table, mlua::Error> {
+    let entry = lua.create_table()?;
+    entry.set("index", node.index as i64)?;
+    entry.set("name", node.name.as_str())?;
+    entry.set("star_type", node.star_type.as_str())?;
+    let pos = lua.create_table()?;
+    pos.set(1, node.position[0])?;
+    pos.set(2, node.position[1])?;
+    pos.set(3, node.position[2])?;
+    pos.set("x", node.position[0])?;
+    pos.set("y", node.position[1])?;
+    pos.set("z", node.position[2])?;
+    entry.set("position", pos)?;
+    Ok(entry)
+}
+
+impl mlua::UserData for FtlGraph {
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("ftl_range", |_, this| Ok(this.ftl_range));
+        fields.add_field_method_get("size", |_, this| Ok(this.nodes.len() as i64));
+    }
+
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        // graph:unreachable_from(system) → list of system entries not in the
+        // same FTL component as `system`.
+        methods.add_method("unreachable_from", |lua, this, from: mlua::Value| {
+            let arr = lua.create_table()?;
+            if this.nodes.is_empty() {
+                return Ok(arr);
+            }
+            let origin = resolve_system_index(&from, this.nodes.len())?;
+            let origin_root = this.root(origin);
+            let mut written = 0_i64;
+            for i in 0..this.nodes.len() {
+                if this.root(i) != origin_root {
+                    written += 1;
+                    arr.set(written, node_to_lua_table(lua, &this.nodes[i])?)?;
+                }
+            }
+            Ok(arr)
+        });
+
+        // graph:connected_components() → list of components. Each component
+        // is itself a list of system entries.
+        methods.add_method("connected_components", |lua, this, ()| {
+            let outer = lua.create_table()?;
+            if this.nodes.is_empty() {
+                return Ok(outer);
+            }
+            let roots = this.roots();
+            // Group nodes by root. Use a stable ordering: first-seen root.
+            let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+            for (i, r) in roots.iter().enumerate() {
+                if let Some((_, members)) =
+                    groups.iter_mut().find(|(root, _)| root == r)
+                {
+                    members.push(i);
+                } else {
+                    groups.push((*r, vec![i]));
+                }
+            }
+            for (gi, (_, members)) in groups.iter().enumerate() {
+                let inner = lua.create_table()?;
+                for (mi, &node_idx) in members.iter().enumerate() {
+                    inner.set(mi as i64 + 1, node_to_lua_table(lua, &this.nodes[node_idx])?)?;
+                }
+                outer.set(gi as i64 + 1, inner)?;
+            }
+            Ok(outer)
+        });
+
+        // graph:closest_cross_cluster_pair(from_system)
+        //     → system_a, system_b (or nil, nil)
+        //
+        // Returns the closest pair of systems (a, b) where `a` is in the
+        // same component as `from_system` and `b` is in a different
+        // component. Used by connectivity loops to decide where to insert
+        // a bridge.
+        methods.add_method(
+            "closest_cross_cluster_pair",
+            |lua, this, from: mlua::Value| {
+                if this.nodes.is_empty() {
+                    return Ok((mlua::Value::Nil, mlua::Value::Nil));
+                }
+                let origin = resolve_system_index(&from, this.nodes.len())?;
+                let origin_root = this.root(origin);
+                let mut best: Option<(f64, usize, usize)> = None;
+                for i in 0..this.nodes.len() {
+                    if this.root(i) != origin_root {
+                        continue;
+                    }
+                    for j in 0..this.nodes.len() {
+                        if this.root(j) == origin_root {
+                            continue;
+                        }
+                        let dx = this.nodes[i].position[0] - this.nodes[j].position[0];
+                        let dy = this.nodes[i].position[1] - this.nodes[j].position[1];
+                        let dz = this.nodes[i].position[2] - this.nodes[j].position[2];
+                        let d2 = dx * dx + dy * dy + dz * dz;
+                        match best {
+                            Some((bd2, _, _)) if bd2 <= d2 => {}
+                            _ => best = Some((d2, i, j)),
+                        }
+                    }
+                }
+                match best {
+                    Some((_, a, b)) => Ok((
+                        mlua::Value::Table(node_to_lua_table(lua, &this.nodes[a])?),
+                        mlua::Value::Table(node_to_lua_table(lua, &this.nodes[b])?),
+                    )),
+                    None => Ok((mlua::Value::Nil, mlua::Value::Nil)),
+                }
             },
         );
     }
@@ -531,6 +873,13 @@ impl mlua::UserData for InitializeSystemCtx {
 pub const GENERATE_EMPTY_HANDLERS: &str = "_on_galaxy_generate_empty_handlers";
 pub const CHOOSE_CAPITALS_HANDLERS: &str = "_on_choose_capitals_handlers";
 pub const INITIALIZE_SYSTEM_HANDLERS: &str = "_on_initialize_system_handlers";
+/// #199: Hook that runs after Phase A completes, regardless of whether Phase A
+/// was driven by an active `map_type` generator, the `on_galaxy_generate_empty`
+/// hook, or the built-in Rust spiral. Receives the same `GalaxyGenerateCtx`
+/// used by Phase A (with `ctx.systems` / `build_ftl_graph` / `insert_bridge_at`
+/// / `pick_provisional_capital` available) so Lua can enforce connectivity
+/// guarantees before Phase B selects capitals.
+pub const AFTER_PHASE_A_HANDLERS: &str = "_on_after_phase_a_handlers";
 
 /// Return the last registered hook function from the given handlers table, if any.
 /// "Last wins" matches the semantics expected of a single-replacement hook.
@@ -563,6 +912,7 @@ mod tests {
             arm_spread: 0.4,
             min_distance: 2.0,
             max_neighbor_distance: 8.0,
+            initial_ftl_range: 10.0,
         }
     }
 
@@ -819,6 +1169,224 @@ mod tests {
         let actions = ctx.take_actions();
         assert!(actions.override_default_planets);
         assert!(actions.spawned_planets.is_empty());
+    }
+
+    // --- #199: FtlGraph + connectivity API tests -----------------------
+
+    fn spawn(ctx: &GalaxyGenerateCtx, name: &str, pos: [f64; 3]) {
+        ctx.actions
+            .lock()
+            .unwrap()
+            .spawned_systems
+            .push(SpawnedEmptySystemSpec {
+                name: name.into(),
+                position: pos,
+                star_type: "yellow_dwarf".into(),
+                planets: PredefinedPlanetsForSpawn::default(),
+                capital_for_faction: None,
+            });
+    }
+
+    #[test]
+    fn test_ftl_graph_connected_components_basic() {
+        // Cluster A at origin (two nodes within range), Cluster B far away.
+        let graph = FtlGraph::build(
+            vec![
+                FtlNode {
+                    index: 1,
+                    name: "A1".into(),
+                    star_type: "yellow_dwarf".into(),
+                    position: [0.0, 0.0, 0.0],
+                },
+                FtlNode {
+                    index: 2,
+                    name: "A2".into(),
+                    star_type: "yellow_dwarf".into(),
+                    position: [5.0, 0.0, 0.0],
+                },
+                FtlNode {
+                    index: 3,
+                    name: "B1".into(),
+                    star_type: "yellow_dwarf".into(),
+                    position: [100.0, 0.0, 0.0],
+                },
+            ],
+            10.0,
+        );
+        // A1 and A2 should be in same component; B1 isolated.
+        assert_eq!(graph.root(0), graph.root(1));
+        assert_ne!(graph.root(0), graph.root(2));
+    }
+
+    #[test]
+    fn test_ctx_build_ftl_graph_unreachable_from() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        spawn(&ctx, "A1", [0.0, 0.0, 0.0]);
+        spawn(&ctx, "A2", [5.0, 0.0, 0.0]);
+        spawn(&ctx, "B1", [100.0, 0.0, 0.0]);
+        spawn(&ctx, "B2", [105.0, 0.0, 0.0]);
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+
+        let count: i64 = lua
+            .load(
+                r#"
+                local g = ctx:build_ftl_graph(10.0)
+                local unreach = g:unreachable_from(1)
+                return #unreach
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(count, 2, "A1 should see B1, B2 as unreachable");
+    }
+
+    #[test]
+    fn test_ctx_build_ftl_graph_connected_components_count() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        spawn(&ctx, "A1", [0.0, 0.0, 0.0]);
+        spawn(&ctx, "A2", [5.0, 0.0, 0.0]);
+        spawn(&ctx, "B1", [100.0, 0.0, 0.0]);
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+
+        let (num_components, largest): (i64, i64) = lua
+            .load(
+                r#"
+                local g = ctx:build_ftl_graph(10.0)
+                local comps = g:connected_components()
+                local largest = 0
+                for _, c in ipairs(comps) do
+                    if #c > largest then largest = #c end
+                end
+                return #comps, largest
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(num_components, 2);
+        assert_eq!(largest, 2);
+    }
+
+    #[test]
+    fn test_ctx_closest_cross_cluster_pair() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        spawn(&ctx, "A1", [0.0, 0.0, 0.0]);
+        spawn(&ctx, "A2", [5.0, 0.0, 0.0]);
+        spawn(&ctx, "B1", [30.0, 0.0, 0.0]);
+        spawn(&ctx, "B2", [40.0, 0.0, 0.0]);
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+
+        let (a_name, b_name): (String, String) = lua
+            .load(
+                r#"
+                local g = ctx:build_ftl_graph(10.0)
+                local a, b = g:closest_cross_cluster_pair(1)
+                return a.name, b.name
+                "#,
+            )
+            .eval()
+            .unwrap();
+        // Closest cross-cluster pair from A-cluster should be A2 (5) and B1 (30).
+        assert_eq!(a_name, "A2");
+        assert_eq!(b_name, "B1");
+    }
+
+    #[test]
+    fn test_ctx_insert_bridge_at_appends_system() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+        lua.load(r#"ctx:insert_bridge_at({10.0, 20.0, 0.0}, "yellow_dwarf")"#)
+            .exec()
+            .unwrap();
+        let actions = ctx.take_actions();
+        assert_eq!(actions.spawned_systems.len(), 1);
+        assert_eq!(actions.spawned_systems[0].position, [10.0, 20.0, 0.0]);
+        assert_eq!(actions.spawned_systems[0].star_type, "yellow_dwarf");
+        assert!(actions.spawned_systems[0].name.starts_with("Bridge-"));
+    }
+
+    #[test]
+    fn test_ctx_insert_bridge_at_default_star_type() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+        lua.load(r#"ctx:insert_bridge_at({ x = 1.0, y = 2.0, z = 3.0 })"#)
+            .exec()
+            .unwrap();
+        let actions = ctx.take_actions();
+        assert_eq!(actions.spawned_systems[0].star_type, "yellow_dwarf");
+    }
+
+    #[test]
+    fn test_ctx_pick_provisional_capital_closest_to_origin() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        spawn(&ctx, "Far", [100.0, 0.0, 0.0]);
+        spawn(&ctx, "Near", [2.0, 0.0, 0.0]);
+        spawn(&ctx, "Mid", [10.0, 0.0, 0.0]);
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+
+        let name: String = lua
+            .load(
+                r#"
+                local cap = ctx:pick_provisional_capital()
+                return cap.name
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(name, "Near");
+    }
+
+    #[test]
+    fn test_ctx_pick_provisional_capital_nil_when_empty() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+        let nil: bool = lua
+            .load(r#"return ctx:pick_provisional_capital() == nil"#)
+            .eval()
+            .unwrap();
+        assert!(nil);
+    }
+
+    #[test]
+    fn test_ctx_settings_exposes_initial_ftl_range() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+        let v: f64 = lua
+            .load("return ctx.settings.initial_ftl_range")
+            .eval()
+            .unwrap();
+        assert!((v - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ctx_systems_field_reflects_spawns() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GalaxyGenerateCtx::new(test_settings());
+        spawn(&ctx, "S1", [1.0, 2.0, 3.0]);
+        spawn(&ctx, "S2", [4.0, 5.0, 6.0]);
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+        let (count, name): (i64, String) = lua
+            .load(r#"return #ctx.systems, ctx.systems[2].name"#)
+            .eval()
+            .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(name, "S2");
     }
 
     #[test]
