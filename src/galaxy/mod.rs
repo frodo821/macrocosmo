@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use crate::modifier::ScopedModifiers;
 use crate::scripting::galaxy_api::{PlanetTypeRegistry, StarTypeRegistry};
+use crate::scripting::map_api::{MapTypeRegistry, PredefinedSystemRegistry};
 use crate::ship::Owner;
 
 // Re-exports for backward compatibility
@@ -17,11 +18,19 @@ impl Plugin for GalaxyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StarTypeRegistry>()
             .init_resource::<PlanetTypeRegistry>()
+            .init_resource::<PredefinedSystemRegistry>()
+            .init_resource::<MapTypeRegistry>()
             .add_systems(
                 Startup,
                 load_galaxy_types.after(crate::scripting::load_all_scripts),
             )
-            .add_systems(Startup, generate_galaxy.after(load_galaxy_types));
+            .add_systems(
+                Startup,
+                generate_galaxy
+                    .after(load_galaxy_types)
+                    .after(crate::scripting::load_predefined_system_registry)
+                    .after(crate::scripting::load_map_type_registry),
+            );
     }
 }
 

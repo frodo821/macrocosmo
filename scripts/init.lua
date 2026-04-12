@@ -12,6 +12,9 @@ require("stars")
 require("planets")
 require("jobs")
 
+-- #182: Map types (includes `default`, registered without a generator).
+require("galaxy.map_types")
+
 -- Species (references jobs by string key — no require dependency)
 require("species")
 

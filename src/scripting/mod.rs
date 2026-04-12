@@ -13,6 +13,7 @@ pub mod game_start_ctx;
 pub mod globals;
 pub mod helpers;
 pub mod lifecycle;
+pub mod map_api;
 pub mod modifier_api;
 pub mod ship_design_api;
 pub mod species_api;
@@ -56,6 +57,14 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Startup,
                 anomaly_api::load_anomaly_registry.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                load_predefined_system_registry.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                load_map_type_registry.after(load_all_scripts),
             )
             .add_systems(
                 Startup,
@@ -184,6 +193,50 @@ pub fn load_diplomatic_action_registry(mut commands: Commands, engine: Res<Scrip
             commands.insert_resource(faction_api::DiplomaticActionRegistry::default());
         }
     }
+}
+
+/// #182: Startup system that parses Lua `define_predefined_system` blocks
+/// into [`map_api::PredefinedSystemRegistry`]. Runs after `load_all_scripts`.
+pub fn load_predefined_system_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+    match map_api::parse_predefined_systems(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            let mut registry = map_api::PredefinedSystemRegistry::default();
+            for def in defs {
+                registry.systems.insert(def.id.clone(), def);
+            }
+            commands.insert_resource(registry);
+            info!("Loaded {} predefined system definitions from Lua", count);
+        }
+        Err(e) => {
+            warn!("Failed to parse predefined system definitions: {e}");
+            commands.insert_resource(map_api::PredefinedSystemRegistry::default());
+        }
+    }
+}
+
+/// #182: Startup system that parses Lua `define_map_type` blocks into
+/// [`map_api::MapTypeRegistry`] and reads the active map type id from the
+/// `_active_map_type` global.
+pub fn load_map_type_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+    let mut registry = map_api::MapTypeRegistry::default();
+    match map_api::parse_map_types(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            for def in defs {
+                registry.types.insert(def.id.clone(), def);
+            }
+            registry.current = map_api::read_active_map_type(engine.lua());
+            info!(
+                "Loaded {} map type definitions from Lua (active: {:?})",
+                count, registry.current
+            );
+        }
+        Err(e) => {
+            warn!("Failed to parse map type definitions: {e}");
+        }
+    }
+    commands.insert_resource(registry);
 }
 
 /// Startup system that parses Lua event definitions and registers them in EventSystem.
