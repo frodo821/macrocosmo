@@ -46,6 +46,7 @@ impl Plugin for VisualizationPlugin {
             stars::draw_galaxy_overlay,
             ships::draw_ships,
             stars::draw_deep_space_structures,
+            stars::draw_forbidden_regions,
         ));
     }
 }

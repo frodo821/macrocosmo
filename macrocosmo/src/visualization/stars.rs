@@ -493,3 +493,50 @@ pub fn draw_deep_space_structures(
         gizmos.line_2d(Vec2::new(x - size, y), Vec2::new(x, y - size), color);
     }
 }
+
+/// #145: Draw forbidden regions as a loose union of 2D discs.
+///
+/// Each effective sphere (`sphere_radius / sqrt(threshold)`) is rendered as a
+/// filled-looking circle via nested outlines at decreasing alpha. A proper
+/// metaball iso-surface shader is a 1.0.0 task — this is intentionally coarse
+/// but makes the no-go volume unambiguous on the galaxy map.
+pub fn draw_forbidden_regions(
+    mut gizmos: Gizmos,
+    regions: Query<&crate::galaxy::ForbiddenRegion>,
+    region_types: Res<crate::galaxy::RegionTypeRegistry>,
+    view: Res<GalaxyView>,
+) {
+    for region in &regions {
+        // Visual style from the type definition (fallback to muted purple).
+        let (r, g, b, density) = match region_types.types.get(&region.type_id) {
+            Some(t) => (
+                t.visual_color[0],
+                t.visual_color[1],
+                t.visual_color[2],
+                t.visual_density,
+            ),
+            None => (0.3, 0.1, 0.5, 0.6),
+        };
+        let base_alpha = (density * 0.6).clamp(0.1, 0.9);
+
+        for (center, radius) in &region.spheres {
+            let eff = crate::galaxy::effective_radius(*radius, region.threshold);
+            if eff <= 0.0 {
+                continue;
+            }
+            let cx = center[0] as f32 * view.scale;
+            let cy = center[1] as f32 * view.scale;
+            let screen_r = eff as f32 * view.scale;
+
+            // Nested rings: outer faint, inner denser.
+            for (i, frac) in [1.0_f32, 0.75, 0.5, 0.25].iter().enumerate() {
+                let alpha = base_alpha * (0.25 + i as f32 * 0.18);
+                gizmos.circle_2d(
+                    Vec2::new(cx, cy),
+                    screen_r * frac,
+                    Color::srgba(r, g, b, alpha),
+                );
+            }
+        }
+    }
+}

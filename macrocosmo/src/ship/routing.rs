@@ -18,7 +18,8 @@ use std::collections::BinaryHeap;
 use std::cmp::Ordering;
 
 use crate::components::Position;
-use crate::galaxy::StarSystem;
+use crate::galaxy::region::RegionBlockSnapshot;
+use crate::galaxy::{ForbiddenRegion, StarSystem};
 use crate::physics::distance_ly_arr;
 use crate::time_system::HEXADIES_PER_YEAR;
 
@@ -141,7 +142,7 @@ pub fn plan_route(
     ftl_speed: f64,
     systems: &[RouteSystemSnapshot],
 ) -> Option<PlannedRoute> {
-    plan_route_with_roe(
+    plan_route_full(
         origin_pos,
         destination_index,
         ftl_range,
@@ -151,6 +152,7 @@ pub fn plan_route(
         // Default ROE = Defensive = no avoidance, behavioural parity with
         // pre-#187 callers that haven't been updated to pass an ROE.
         RulesOfEngagement::Defensive,
+        &[],
     )
 }
 
@@ -166,6 +168,32 @@ pub fn plan_route_with_roe(
     ftl_speed: f64,
     systems: &[RouteSystemSnapshot],
     roe: RulesOfEngagement,
+) -> Option<PlannedRoute> {
+    plan_route_full(
+        origin_pos,
+        destination_index,
+        ftl_range,
+        sublight_speed,
+        ftl_speed,
+        systems,
+        roe,
+        &[],
+    )
+}
+
+/// #145: Full-featured variant. In addition to [`plan_route_with_roe`], takes
+/// a list of FTL-blocking [`RegionBlockSnapshot`]s. FTL edges whose segment
+/// intersects any blocking region's effective bounding spheres are dropped.
+/// SubLight edges are unaffected (ships can still crawl through at sublight).
+pub fn plan_route_full(
+    origin_pos: [f64; 3],
+    destination_index: usize,
+    ftl_range: f64,
+    sublight_speed: f64,
+    ftl_speed: f64,
+    systems: &[RouteSystemSnapshot],
+    roe: RulesOfEngagement,
+    ftl_blockers: &[RegionBlockSnapshot],
 ) -> Option<PlannedRoute> {
     if destination_index >= systems.len() {
         return None;
@@ -250,8 +278,15 @@ pub fn plan_route_with_roe(
             };
 
             if can_ftl && ftl_range > 0.0 && target.surveyed && dist <= ftl_range {
-                let cost = dist * HEXADIES_PER_YEAR as f64 / ftl_speed;
-                edges.push((EdgeKind::FTL, cost));
+                // #145: reject FTL edges that cross a forbidden region's
+                // bounding sphere union (sublight edges still permitted).
+                let blocked_by_region = ftl_blockers
+                    .iter()
+                    .any(|b| b.blocks_segment(current_pos, target.pos));
+                if !blocked_by_region {
+                    let cost = dist * HEXADIES_PER_YEAR as f64 / ftl_speed;
+                    edges.push((EdgeKind::FTL, cost));
+                }
             }
 
             // SubLight edge: to any system within MAX_SUBLIGHT_EDGE_LY.
@@ -406,11 +441,36 @@ pub fn spawn_route_task_with_roe(
     systems: Vec<RouteSystemSnapshot>,
     roe: RulesOfEngagement,
 ) -> Task<Option<PlannedRoute>> {
+    spawn_route_task_full(
+        origin_pos,
+        destination,
+        ftl_range,
+        sublight_speed,
+        ftl_speed,
+        systems,
+        roe,
+        Vec::new(),
+    )
+}
+
+/// #145: Full-featured async spawner. Accepts `ftl_blockers` as captured
+/// `RegionBlockSnapshot` for FTL edge rejection. Equivalent to
+/// [`spawn_route_task_with_roe`] when `ftl_blockers` is empty.
+pub fn spawn_route_task_full(
+    origin_pos: [f64; 3],
+    destination: Entity,
+    ftl_range: f64,
+    sublight_speed: f64,
+    ftl_speed: f64,
+    systems: Vec<RouteSystemSnapshot>,
+    roe: RulesOfEngagement,
+    ftl_blockers: Vec<RegionBlockSnapshot>,
+) -> Task<Option<PlannedRoute>> {
     let pool = AsyncComputeTaskPool::get();
     let dest_index = systems.iter().position(|s| s.entity == destination);
     pool.spawn(async move {
         let dest_idx = dest_index?;
-        plan_route_with_roe(
+        plan_route_full(
             origin_pos,
             dest_idx,
             ftl_range,
@@ -418,8 +478,22 @@ pub fn spawn_route_task_with_roe(
             ftl_speed,
             &systems,
             roe,
+            &ftl_blockers,
         )
     })
+}
+
+/// #145: Build a list of [`RegionBlockSnapshot`] from all forbidden regions
+/// that carry the `blocks_ftl` capability. Pure ECS-to-snapshot conversion;
+/// safe to call from sync systems and hand off to async tasks.
+pub fn collect_ftl_blockers(
+    regions: &Query<&ForbiddenRegion>,
+) -> Vec<RegionBlockSnapshot> {
+    regions
+        .iter()
+        .filter(|r| r.has_capability("blocks_ftl"))
+        .map(RegionBlockSnapshot::from_region)
+        .collect()
 }
 
 /// System that polls pending route computations and applies completed routes.

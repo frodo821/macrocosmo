@@ -15,6 +15,7 @@ pub mod helpers;
 pub mod lifecycle;
 pub mod map_api;
 pub mod modifier_api;
+pub mod region_api;
 pub mod ship_design_api;
 pub mod species_api;
 pub mod structure_api;
@@ -65,6 +66,14 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Startup,
                 load_map_type_registry.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                load_region_type_registry.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                load_region_spec_queue.after(load_all_scripts),
             )
             .add_systems(
                 Startup,
@@ -237,6 +246,44 @@ pub fn load_map_type_registry(mut commands: Commands, engine: Res<ScriptEngine>)
         }
     }
     commands.insert_resource(registry);
+}
+
+/// #145: Startup system that parses Lua `define_region_type` blocks into
+/// [`crate::galaxy::region::RegionTypeRegistry`].
+pub fn load_region_type_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+    use crate::galaxy::region::RegionTypeRegistry;
+    let mut registry = RegionTypeRegistry::default();
+    match region_api::parse_region_type_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            for def in defs {
+                registry.types.insert(def.id.clone(), def);
+            }
+            info!("Loaded {} region type definitions from Lua", count);
+        }
+        Err(e) => {
+            warn!("Failed to parse region type definitions: {e}");
+        }
+    }
+    commands.insert_resource(registry);
+}
+
+/// #145: Startup system that drains `_pending_region_specs` into the
+/// [`crate::galaxy::region::RegionSpecQueue`] resource consumed by
+/// `place_forbidden_regions` at galaxy-generation time.
+pub fn load_region_spec_queue(mut commands: Commands, engine: Res<ScriptEngine>) {
+    use crate::galaxy::region::RegionSpecQueue;
+    let mut queue = RegionSpecQueue::default();
+    match region_api::parse_region_specs(engine.lua()) {
+        Ok(specs) => {
+            queue.specs = specs;
+            info!("Loaded {} region placement specs from Lua", queue.specs.len());
+        }
+        Err(e) => {
+            warn!("Failed to parse region placement specs: {e}");
+        }
+    }
+    commands.insert_resource(queue);
 }
 
 /// Startup system that parses Lua event definitions and registers them in EventSystem.

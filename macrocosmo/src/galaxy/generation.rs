@@ -1078,3 +1078,64 @@ fn resolve_pending_planets(
     }
     out
 }
+
+/// #145: Place forbidden regions (nebulae, subspace storms) into the galaxy.
+///
+/// Runs after `generate_galaxy` (so all star systems exist) and after the
+/// region type + spec registries have been loaded. Drains
+/// `RegionSpecQueue` and spawns one `ForbiddenRegion` entity per placed region.
+///
+/// Hard-constrained placement enforces C1 (capital sanctuary), C2 (capital
+/// escape), C3 (connectivity) and C4 (no large orphan clusters). Violators
+/// are shrunk or dropped — region count is best-effort, not guaranteed.
+pub fn place_forbidden_regions(
+    mut commands: Commands,
+    stars: Query<(&StarSystem, &Position)>,
+    region_types: Res<super::region::RegionTypeRegistry>,
+    mut region_specs: ResMut<super::region::RegionSpecQueue>,
+) {
+    use super::region::{place_regions, PlacementInputs};
+
+    if region_specs.specs.is_empty() {
+        return;
+    }
+    if region_types.types.is_empty() {
+        warn!("place_forbidden_regions: specs queued but no region types registered");
+        region_specs.specs.clear();
+        return;
+    }
+
+    // Snapshot system positions + find the capital.
+    let mut system_positions: Vec<[f64; 3]> = Vec::new();
+    let mut capital_idx = 0;
+    for (i, (star, pos)) in stars.iter().enumerate() {
+        if star.is_capital {
+            capital_idx = i;
+        }
+        system_positions.push(pos.as_array());
+    }
+    if system_positions.is_empty() {
+        region_specs.specs.clear();
+        return;
+    }
+
+    // Galaxy radius approximation: max distance from origin.
+    let galaxy_radius = system_positions
+        .iter()
+        .map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt())
+        .fold(0.0_f64, f64::max)
+        .max(20.0);
+
+    let inputs = PlacementInputs::new(&system_positions, capital_idx, galaxy_radius);
+    let specs = std::mem::take(&mut region_specs.specs);
+    let mut rng = rand::rng();
+
+    let output = place_regions(&mut rng, &inputs, &region_types.types, &specs);
+    let count = output.regions.len();
+
+    for region in output.regions {
+        commands.spawn(region);
+    }
+
+    info!("Placed {} forbidden regions", count);
+}

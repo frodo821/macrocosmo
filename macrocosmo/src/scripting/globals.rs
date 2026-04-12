@@ -45,6 +45,38 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "predefined_system", "_predefined_system_definitions")?;
     register_define_fn(lua, "map_type", "_map_type_definitions")?;
 
+    // --- #145: Forbidden regions (nebulae, subspace storms) ---
+    //
+    // `define_region_type { id, name, capabilities, visual }` — declares a
+    // placeable region type. Placement specs are added separately via
+    // `galaxy_generation.add_region_spec { type=..., count_range=...}`
+    // (registered further down alongside other generator helpers).
+    register_define_fn(lua, "region_type", "_region_type_definitions")?;
+
+    // Shared `_pending_region_specs` table, populated by
+    // `galaxy_generation.add_region_spec`. Accumulates across script runs
+    // and is drained at galaxy-generation time.
+    globals.set("_pending_region_specs", lua.create_table()?)?;
+
+    // `galaxy_generation` helper namespace. We create it if absent and attach
+    // `add_region_spec` onto it — if other #145/#182 style helpers want to
+    // share the namespace later, they can extend it without re-creating.
+    let galaxy_generation: mlua::Table = match globals.get::<mlua::Value>("galaxy_generation")? {
+        mlua::Value::Table(t) => t,
+        _ => {
+            let t = lua.create_table()?;
+            globals.set("galaxy_generation", t.clone())?;
+            t
+        }
+    };
+    let add_region_spec = lua.create_function(|lua, table: mlua::Table| {
+        let pending: mlua::Table = lua.globals().get("_pending_region_specs")?;
+        let len = pending.len()?;
+        pending.set(len + 1, table)?;
+        Ok(())
+    })?;
+    galaxy_generation.set("add_region_spec", add_region_spec)?;
+
     // set_active_map_type(id_or_ref) — selects which map_type the engine uses
     // when generate_galaxy runs. Accepts a string id or a `define_map_type`
     // reference table. Writes to the global `_active_map_type`, consumed by

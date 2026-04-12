@@ -419,7 +419,16 @@ pub fn relay_knowledge_propagate_system(
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
     positions: Query<&crate::components::Position>,
     mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    // #145: Forbidden regions that block FTL comm propagation.
+    ftl_comm_blocking_regions: Query<&crate::galaxy::ForbiddenRegion>,
 ) {
+    // Build region blockers (pairs segment check); only regions carrying the
+    // `blocks_ftl_comm` capability matter here.
+    let comm_blockers: Vec<crate::galaxy::RegionBlockSnapshot> = ftl_comm_blocking_regions
+        .iter()
+        .filter(|r| r.has_capability("blocks_ftl_comm"))
+        .map(crate::galaxy::RegionBlockSnapshot::from_region)
+        .collect();
     use crate::knowledge::{ShipSnapshot, ShipSnapshotState};
 
     let Ok(mut store) = empire_q.single_mut() else {
@@ -466,6 +475,18 @@ pub fn relay_knowledge_propagate_system(
         // Check player-in-partner-range.
         let player_to_partner = crate::physics::distance_ly(player_pos, partner_pos);
         if partner_range > 0.0 && player_to_partner > partner_range {
+            continue;
+        }
+
+        // #145: If any forbidden region with `blocks_ftl_comm` intersects the
+        // pair segment, skip this pair entirely — knowledge falls back to
+        // light-speed propagation (handled elsewhere, not here).
+        let source_arr = source_pos.as_array();
+        let partner_arr = partner_pos.as_array();
+        if comm_blockers
+            .iter()
+            .any(|b| b.blocks_segment(source_arr, partner_arr))
+        {
             continue;
         }
 
