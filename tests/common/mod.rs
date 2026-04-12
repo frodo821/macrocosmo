@@ -210,6 +210,15 @@ pub fn test_app() -> App {
     );
     app.add_systems(Update, propagate_knowledge);
     app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
+    // #118: Sensor Buoy detection
+    app.init_resource::<macrocosmo::deep_space::StructureRegistry>();
+    app.add_systems(
+        Update,
+        macrocosmo::deep_space::sensor_buoy_detect_system
+            .after(macrocosmo::time_system::advance_game_time)
+            .after(sublight_movement_system)
+            .after(process_ftl_travel),
+    );
     // #59: Player location tracking (after ship movement systems)
     app.add_systems(
         Update,
@@ -340,6 +349,10 @@ pub fn full_test_app() -> App {
     // --- Knowledge system (from KnowledgePlugin) ---
     app.add_systems(Update, propagate_knowledge);
     app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
+
+    // --- Deep space (from DeepSpacePlugin) ---
+    app.init_resource::<macrocosmo::deep_space::StructureRegistry>();
+    app.add_systems(Update, macrocosmo::deep_space::sensor_buoy_detect_system);
 
     // --- Communication systems (from CommunicationPlugin) ---
     app.add_systems(
