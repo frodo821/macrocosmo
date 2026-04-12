@@ -90,6 +90,27 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         "_diplomatic_action_definitions",
     )?;
 
+    // --- #160: Balance constants Lua binding ---
+    // `define_balance { ... }` is expected to be called AT MOST ONCE from
+    // `scripts/config/balance.lua`. Subsequent calls overwrite the stored
+    // table with a warning logged on the Rust side at parse time
+    // (last-wins). Stores the raw Lua table under the global
+    // `_balance_definition` for `load_game_balance` to pick up.
+    globals.set("_balance_definition", mlua::Value::Nil)?;
+    let define_balance = lua.create_function(|lua, table: mlua::Table| {
+        let existing: mlua::Value = lua.globals().get("_balance_definition")?;
+        if !matches!(existing, mlua::Value::Nil) {
+            // Lua-side warning via print; Rust will log on parse.
+            let _ = lua
+                .load("print('[warn] define_balance called more than once; last-wins')")
+                .exec();
+        }
+        table.set("_def_type", "balance")?;
+        lua.globals().set("_balance_definition", table.clone())?;
+        Ok(table)
+    })?;
+    globals.set("define_balance", define_balance)?;
+
     // --- #45: Global param / flag Lua bindings ---
 
     // Pending modifications table: scripts call modify_global/set_flag/check_flag

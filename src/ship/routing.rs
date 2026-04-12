@@ -24,7 +24,7 @@ use crate::time_system::HEXADIES_PER_YEAR;
 
 use super::{
     CommandQueue, Ship, ShipState, QueuedCommand, RulesOfEngagement,
-    start_ftl_travel_with_bonus, start_sublight_travel_with_bonus,
+    start_sublight_travel_with_bonus,
     PortParams,
 };
 
@@ -433,6 +433,7 @@ pub fn poll_pending_routes(
     mut commands: Commands,
     clock: Res<crate::time_system::GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    balance: Res<crate::technology::GameBalance>,
     mut ships: Query<(
         Entity,
         &Ship,
@@ -449,6 +450,7 @@ pub fn poll_pending_routes(
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
+    let base_ftl_speed = balance.initial_ftl_speed_c();
 
     // Collect ship entities first to avoid borrow conflicts.
     let ship_entities: Vec<Entity> = ships.iter().map(|(e, ..)| e).collect();
@@ -554,7 +556,7 @@ pub fn poll_pending_routes(
                 let port_params = system_buildings.get(docked_system)
                     .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
                     .unwrap_or(PortParams::NONE);
-                match start_ftl_travel_with_bonus(
+                match crate::ship::movement::start_ftl_travel_full(
                     &mut state,
                     ship,
                     docked_system,
@@ -565,6 +567,7 @@ pub fn poll_pending_routes(
                     global_params.ftl_range_bonus,
                     global_params.ftl_speed_multiplier,
                     port_params,
+                    base_ftl_speed,
                 ) {
                     Ok(()) => {
                         info!(

@@ -7,6 +7,11 @@
 -- on_game_start callbacks defined later can use them.
 require("lib.capital")
 
+-- #160: Balance constants. Loaded before anything else so that tech / event
+-- definitions can reference `balance.*` modifier targets with confidence the
+-- baseline values are populated by the time modifiers apply.
+require("config.balance")
+
 -- Base definitions (no cross-references)
 require("stars")
 require("planets")

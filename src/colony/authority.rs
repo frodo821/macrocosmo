@@ -10,10 +10,12 @@ use super::{
     Colony, LastProductionTick, ResourceCapacity, ResourceStockpile,
 };
 
-/// Base authority produced per hexady by the capital colony.
+/// Default authority produced per hexady by the capital colony.
+/// #160: canonical value is `GameBalance.base_authority_per_hexadies`.
 pub const BASE_AUTHORITY_PER_HEXADIES: Amt = Amt::units(1);
 
-/// Authority cost per hexady for each non-capital colony (empire scale cost).
+/// Default authority cost per hexady for each non-capital colony.
+/// #160: canonical value is `GameBalance.authority_cost_per_colony`.
 pub const AUTHORITY_COST_PER_COLONY: Amt = Amt::new(0, 500);
 
 /// Production efficiency multiplier applied to non-capital colonies when

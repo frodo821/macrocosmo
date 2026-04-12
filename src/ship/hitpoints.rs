@@ -46,9 +46,9 @@ pub fn tick_shield_regen(
     }
 }
 
-/// Repair armor and hull for ships docked at a system with a Port building.
-/// Repair rate: 5.0 HP per hexadies.
-const REPAIR_RATE_PER_HEXADIES: f64 = 5.0;
+/// Default armor/hull repair rate at a Port, per hexady.
+/// #160: canonical value lives in `GameBalance.repair_rate_per_hexadies`.
+pub const REPAIR_RATE_PER_HEXADIES: f64 = 5.0;
 
 pub fn tick_ship_repair(
     clock: Res<GameClock>,
@@ -56,12 +56,13 @@ pub fn tick_ship_repair(
     mut ships: Query<(&ShipState, &mut ShipHitpoints)>,
     system_buildings: Query<&crate::colony::SystemBuildings>,
     building_registry: Res<crate::colony::BuildingRegistry>,
+    balance: Res<crate::technology::GameBalance>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
-    let repair_amount = REPAIR_RATE_PER_HEXADIES * delta as f64;
+    let repair_amount = balance.repair_rate_per_hexadies() * delta as f64;
 
     for (state, mut hp) in &mut ships {
         let ShipState::Docked { system } = state else {
