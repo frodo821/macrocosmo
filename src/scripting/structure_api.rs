@@ -317,7 +317,7 @@ mod tests {
         assert!(buoy.capabilities.contains_key("detect_sublight"));
 
         let relay = map.get("ftl_comm_relay").expect("ftl_comm_relay should exist");
-        assert!(relay.capabilities.contains_key("ftl_comm"));
+        assert!(relay.capabilities.contains_key("ftl_comm_relay"));
 
         let interdictor = map.get("interdictor").expect("interdictor should exist");
         assert!(interdictor.capabilities.contains_key("ftl_interdiction"));
