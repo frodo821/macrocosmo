@@ -1,3 +1,4 @@
+pub mod ai_debug;
 pub mod bottom_bar;
 pub mod context_menu;
 pub mod outline;
@@ -71,6 +72,8 @@ impl Plugin for UiPlugin {
             .init_resource::<overlays::ShipDesignerState>()
             .init_resource::<EguiWantsPointer>()
             .init_resource::<UiState>()
+            .init_resource::<ai_debug::AiDebugUi>()
+            .add_systems(Update, ai_debug::toggle_ai_debug)
             .add_systems(
                 EguiPrimaryContextPass,
                 (
@@ -81,6 +84,8 @@ impl Plugin for UiPlugin {
                     draw_main_panels_system,
                     draw_overlays_system,
                     draw_choice_dialog_system,
+                    ai_debug::sample_ai_debug_stream,
+                    ai_debug::draw_ai_debug_system,
                     draw_bottom_bar_system,
                 )
                     .chain(),
