@@ -14,6 +14,7 @@ pub mod galaxy;
 pub mod knowledge;
 pub mod modifier;
 pub mod notifications;
+pub mod observer;
 pub mod physics;
 pub mod player;
 pub mod scripting;

@@ -1,0 +1,114 @@
+//! Observer mode (#214) — run the game without a Player entity.
+//!
+//! Observer mode is activated via `--no-player` on the command line. It:
+//!
+//! * spawns one full NPC Empire per registered Faction (no `PlayerEmpire`);
+//! * gates player-specific systems and command-issuance UI;
+//! * provides a top-bar faction selector synced with the AI Debug UI Governor tab;
+//! * exits automatically on `--time-horizon`, all-empires-eliminated, or Esc.
+//!
+//! Reproducibility helpers (also available outside observer mode):
+//!
+//! * `--seed N` — deterministic galaxy generation seed
+//! * `--speed S` — initial game speed (hexadies per real second)
+//!
+//! See `cli.rs` for the CLI parser.
+
+pub mod cli;
+mod exit;
+
+pub use cli::CliArgs;
+pub use exit::{check_all_empires_eliminated, check_time_horizon, esc_to_exit};
+
+use bevy::prelude::*;
+
+use crate::time_system::GameSpeed;
+
+/// Global observer-mode resource. `enabled = false` in normal play.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ObserverMode {
+    pub enabled: bool,
+    /// Optional deterministic seed (copied from `RngSeed` for convenience).
+    pub seed: Option<u64>,
+    /// Auto-exit hexadies. `None` = manual termination only.
+    pub time_horizon: Option<i64>,
+    /// Initial `GameSpeed.hexadies_per_second`. Applied at Startup.
+    pub initial_speed: Option<f64>,
+}
+
+/// Current faction the observer is inspecting. One-way mirrored to
+/// `AiDebugUi::governor::GovernorState::faction` so the F10 panel follows
+/// the top-bar selector.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ObserverView {
+    /// The `Faction` entity being focused. `None` until the selector has
+    /// been initialised from the spawned empire list.
+    pub viewing: Option<Entity>,
+}
+
+/// Global RNG seed for galaxy generation. Populated from the CLI whether
+/// or not observer mode is enabled so the flag is useful for bug repros.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct RngSeed(pub Option<u64>);
+
+/// Run-condition: observer mode is active.
+pub fn in_observer_mode(o: Res<ObserverMode>) -> bool {
+    o.enabled
+}
+
+/// Run-condition: observer mode is not active (normal single-player).
+pub fn not_in_observer_mode(o: Res<ObserverMode>) -> bool {
+    !o.enabled
+}
+
+/// Bevy plugin that registers observer resources, exit systems, and
+/// wiring that must run regardless of whether observer mode is enabled
+/// (run-conditions short-circuit inside each system).
+pub struct ObserverPlugin;
+
+impl Plugin for ObserverPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<ObserverMode>()
+            .init_resource::<ObserverView>()
+            .init_resource::<RngSeed>()
+            .add_systems(
+                Startup,
+                apply_initial_speed.run_if(in_observer_mode),
+            )
+            .add_systems(
+                Update,
+                (
+                    check_time_horizon,
+                    check_all_empires_eliminated,
+                    esc_to_exit,
+                    sync_observer_view_to_governor,
+                )
+                    .run_if(in_observer_mode),
+            );
+    }
+}
+
+/// Startup system that applies `ObserverMode.initial_speed` to
+/// `GameSpeed`. Gated on `in_observer_mode` at registration.
+pub fn apply_initial_speed(mode: Res<ObserverMode>, mut speed: ResMut<GameSpeed>) {
+    if let Some(s) = mode.initial_speed {
+        speed.hexadies_per_second = s;
+        if s > 0.0 {
+            speed.previous_speed = s;
+        }
+        info!("Observer mode: initial speed set to {} hd/s", s);
+    }
+}
+
+/// One-way mirror from `ObserverView.viewing` (Faction entity) to
+/// `AiDebugUi::GovernorState::faction` (`u32` from `to_ai_faction`). This
+/// makes the F10 Governor tab follow the top-bar selector.
+pub fn sync_observer_view_to_governor(
+    view: Res<ObserverView>,
+    mut ui: ResMut<crate::ui::ai_debug::AiDebugUi>,
+) {
+    if let Some(faction_entity) = view.viewing {
+        let id = crate::ai::convert::to_ai_faction(faction_entity);
+        ui.governor.faction = id.0;
+    }
+}
