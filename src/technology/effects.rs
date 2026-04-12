@@ -19,6 +19,108 @@ pub struct TechEffectsLog {
     pub effects: HashMap<TechId, Vec<DescriptiveEffect>>,
 }
 
+/// Pre-computed preview of effects each technology would produce when researched.
+///
+/// Built once at startup by dry-running each tech's `on_researched` callback
+/// against a fresh `EffectScope` (effects are only collected, not applied to
+/// game state). Consumed by the research panel UI so players can see what
+/// every tech does before unlocking it.
+///
+/// This is distinct from `TechEffectsLog`, which records effects only after
+/// a tech has actually been researched.
+#[derive(Resource, Default, Debug)]
+pub struct TechEffectsPreview {
+    pub effects: HashMap<TechId, Vec<DescriptiveEffect>>,
+}
+
+impl TechEffectsPreview {
+    /// Returns the previewed effects for a tech, or an empty slice if none
+    /// (either the tech has no `on_researched` callback or it failed to
+    /// preview cleanly).
+    pub fn for_tech(&self, tech_id: &TechId) -> &[DescriptiveEffect] {
+        self.effects
+            .get(tech_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+}
+
+/// Startup system that builds `TechEffectsPreview` by dry-running each tech's
+/// `on_researched` callback. Side effects are NOT applied to game state — the
+/// `EffectScope` simply collects `DescriptiveEffect` records, which we read out
+/// and discard the rest (pending flags / global mods are dropped).
+///
+/// Runs after `load_technologies` and `load_all_scripts` so all tech
+/// definitions are available in `_tech_definitions`.
+pub fn build_tech_effects_preview(
+    engine: Option<Res<ScriptEngine>>,
+    tech_trees: Query<&crate::technology::TechTree>,
+    tech_tree_res: Option<Res<crate::technology::TechTree>>,
+    mut preview: ResMut<TechEffectsPreview>,
+) {
+    preview.effects.clear();
+
+    let Some(engine) = engine else {
+        return;
+    };
+    let lua = engine.lua();
+
+    // Snapshot tech IDs so we don't borrow the world during Lua execution.
+    let tech_ids: Vec<TechId> = if let Some(tree) = tech_trees.iter().next() {
+        tree.technologies.keys().cloned().collect()
+    } else if let Some(tree) = tech_tree_res.as_deref() {
+        tree.technologies.keys().cloned().collect()
+    } else {
+        return;
+    };
+
+    let Ok(tech_defs) = lua.globals().get::<mlua::Table>("_tech_definitions") else {
+        return;
+    };
+
+    for tech_id in tech_ids {
+        let Some(func) = find_on_researched(&tech_defs, &tech_id.0) else {
+            continue;
+        };
+        let scope = EffectScope::new();
+        let result = match func.call::<mlua::Value>(scope.clone()) {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(
+                    "preview: on_researched for tech {} failed: {e}",
+                    tech_id.0
+                );
+                continue;
+            }
+        };
+        let effects = match collect_effects(&scope, result) {
+            Ok(e) => e,
+            Err(e) => {
+                debug!(
+                    "preview: collect_effects for tech {} failed: {e}",
+                    tech_id.0
+                );
+                continue;
+            }
+        };
+        // Drain side-effect tables that the callback may have populated, so
+        // they don't leak into real research later. (Real research re-runs
+        // the callback through `apply_tech_effects`, which both collects and
+        // applies; the preview pass must leave game state untouched.)
+        let _ = drain_pending_global_mods(lua);
+        let _ = crate::scripting::lifecycle::drain_pending_flags(lua);
+
+        if !effects.is_empty() {
+            preview.effects.insert(tech_id, effects);
+        }
+    }
+
+    info!(
+        "TechEffectsPreview built: {} techs with previewable effects",
+        preview.effects.len()
+    );
+}
+
 /// Drain `_pending_global_mods` from Lua and return (param_name, value) pairs.
 pub fn drain_pending_global_mods(lua: &Lua) -> Vec<(String, f64)> {
     let Ok(mods) = lua.globals().get::<mlua::Table>("_pending_global_mods") else {
@@ -476,5 +578,147 @@ mod tests {
         }];
         log.effects.insert(tech_id.clone(), effects);
         assert_eq!(log.effects.get(&tech_id).unwrap().len(), 1);
+    }
+
+    // ---------------------------------------------------------------
+    // #156: TechEffectsPreview (research-panel UI dry-run preview)
+    // ---------------------------------------------------------------
+
+    /// Build a preview by running the system in a fresh ECS world with the
+    /// given Lua source and tech tree. Returns the populated resource.
+    fn run_preview(lua_src: &str, tree: crate::technology::TechTree) -> TechEffectsPreview {
+        let engine = ScriptEngine::new().unwrap();
+        engine.lua().load(lua_src).exec().unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(engine);
+        app.init_resource::<TechEffectsPreview>();
+        app.insert_resource(tree);
+        app.add_systems(Update, build_tech_effects_preview);
+        app.update();
+        app.world_mut()
+            .remove_resource::<TechEffectsPreview>()
+            .expect("TechEffectsPreview should exist after update")
+    }
+
+    #[test]
+    fn preview_collects_effects_from_on_researched() {
+        use crate::technology::tree::{TechCost, Technology};
+        let tree = crate::technology::TechTree::from_vec(vec![Technology {
+            id: TechId("automated_mining".into()),
+            name: "Automated Mining".into(),
+            branch: "industrial".into(),
+            cost: TechCost::research_only(crate::amount::Amt::units(100)),
+            prerequisites: vec![],
+            description: String::new(),
+        }]);
+
+        let preview = run_preview(
+            r#"
+            define_tech {
+                id = "automated_mining",
+                name = "Automated Mining",
+                on_researched = function(scope)
+                    scope:push_modifier("production.minerals", { multiplier = 0.15, description = "Mineral production +15%" })
+                    scope:set_flag("automated_mining_unlocked", true, { description = "Enables automated mining facilities" })
+                end,
+            }
+            "#,
+            tree,
+        );
+
+        let effects = preview.for_tech(&TechId("automated_mining".into()));
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].display_text(), "Mineral production +15%");
+        assert_eq!(
+            effects[1].display_text(),
+            "Enables automated mining facilities"
+        );
+    }
+
+    #[test]
+    fn preview_skips_techs_without_on_researched() {
+        use crate::technology::tree::{TechCost, Technology};
+        let tree = crate::technology::TechTree::from_vec(vec![Technology {
+            id: TechId("plain".into()),
+            name: "Plain".into(),
+            branch: "physics".into(),
+            cost: TechCost::research_only(crate::amount::Amt::units(50)),
+            prerequisites: vec![],
+            description: String::new(),
+        }]);
+
+        let preview = run_preview(
+            r#"
+            define_tech { id = "plain", name = "Plain" }
+            "#,
+            tree,
+        );
+
+        // No on_researched -> no entry, but the resource exists and is empty.
+        assert!(preview.for_tech(&TechId("plain".into())).is_empty());
+        assert!(preview.effects.is_empty());
+    }
+
+    #[test]
+    fn preview_for_tech_returns_empty_for_unknown_id() {
+        let preview = TechEffectsPreview::default();
+        assert!(preview.for_tech(&TechId("nonexistent".into())).is_empty());
+    }
+
+    #[test]
+    fn preview_does_not_leak_pending_global_mods() {
+        use crate::technology::tree::{TechCost, Technology};
+        let tree = crate::technology::TechTree::from_vec(vec![Technology {
+            id: TechId("speedy".into()),
+            name: "Speedy".into(),
+            branch: "physics".into(),
+            cost: TechCost::research_only(crate::amount::Amt::units(75)),
+            prerequisites: vec![],
+            description: String::new(),
+        }]);
+
+        // The callback uses both scope methods (which the preview *should*
+        // capture) and modify_global / set_flag (which the preview must
+        // drain so they don't leak into the next real research event).
+        let engine = ScriptEngine::new().unwrap();
+        engine
+            .lua()
+            .load(
+                r#"
+            define_tech {
+                id = "speedy",
+                name = "Speedy",
+                on_researched = function(scope)
+                    scope:push_modifier("ship.sublight_speed", { add = 0.5, description = "Speed +0.5" })
+                    modify_global("sublight_speed_bonus", 0.5)
+                    set_flag("speedy_unlocked")
+                end,
+            }
+            "#,
+            )
+            .exec()
+            .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(engine);
+        app.init_resource::<TechEffectsPreview>();
+        app.insert_resource(tree);
+        app.add_systems(Update, build_tech_effects_preview);
+        app.update();
+
+        // Side-effect tables must be empty after the preview pass.
+        let engine = app.world().resource::<ScriptEngine>();
+        let lua = engine.lua();
+        let pending_mods: mlua::Table = lua.globals().get("_pending_global_mods").unwrap();
+        assert_eq!(pending_mods.len().unwrap(), 0);
+        let pending_flags: mlua::Table = lua.globals().get("_pending_flags").unwrap();
+        assert_eq!(pending_flags.len().unwrap(), 0);
+
+        // But the preview captured the scope effect.
+        let preview = app.world().resource::<TechEffectsPreview>();
+        let effects = preview.for_tech(&TechId("speedy".into()));
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].display_text(), "Speed +0.5");
     }
 }

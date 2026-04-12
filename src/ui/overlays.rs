@@ -5,7 +5,10 @@ use crate::amount::Amt;
 use crate::ship_design::{
     DesignSlotAssignment, HullRegistry, ModuleRegistry, ShipDesignDefinition, ShipDesignRegistry,
 };
-use crate::technology::{ResearchPool, ResearchQueue, TechBranchRegistry, TechId, TechTree};
+use crate::technology::{
+    ResearchPool, ResearchQueue, TechBranchRegistry, TechEffectsPreview, TechId, TechTree,
+    TechUnlockIndex, UnlockKind,
+};
 
 use super::ResearchPanelOpen;
 
@@ -430,6 +433,7 @@ pub enum ResearchAction {
 ///
 /// Returns a `ResearchAction` so the caller can apply mutations that require
 /// mutable access to colony stockpiles (upfront cost deduction).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_overlays(
     ctx: &egui::Context,
     research_open: &mut ResearchPanelOpen,
@@ -437,6 +441,8 @@ pub fn draw_overlays(
     research_queue: &ResearchQueue,
     research_pool: &ResearchPool,
     branch_registry: &TechBranchRegistry,
+    effects_preview: &TechEffectsPreview,
+    unlock_index: &TechUnlockIndex,
     capital_stockpile: Option<(&Amt, &Amt)>,
     _clock_elapsed: i64,
 ) -> ResearchAction {
@@ -621,6 +627,47 @@ pub fn draw_overlays(
                                         .weak()
                                         .italics(),
                                 );
+                            }
+
+                            // #156: Effects + Unlocks (collapsible per tech).
+                            // Only render the section when there's something
+                            // to show, to keep already-cluttered tech rows
+                            // readable.
+                            let preview = effects_preview.for_tech(&tech.id);
+                            let unlocks = unlock_index.for_tech(&tech.id.0);
+                            if !preview.is_empty() || !unlocks.is_empty() {
+                                let header_id =
+                                    egui::Id::new(("research_details", &tech.id.0));
+                                egui::CollapsingHeader::new("Details")
+                                    .id_salt(header_id)
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        if !preview.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new("Effects:").strong(),
+                                            );
+                                            for effect in preview {
+                                                ui.label(format!("  - {}", effect.display_text()));
+                                            }
+                                        }
+                                        if !unlocks.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new("Unlocks:").strong(),
+                                            );
+                                            for entry in unlocks {
+                                                let kind_label = match entry.kind {
+                                                    UnlockKind::Module => "Module",
+                                                    UnlockKind::Building => "Building",
+                                                    UnlockKind::Structure => "Structure",
+                                                    UnlockKind::Tech => "Tech",
+                                                };
+                                                ui.label(format!(
+                                                    "  - {}: {}",
+                                                    kind_label, entry.name
+                                                ));
+                                            }
+                                        }
+                                    });
                             }
 
                             // Action row
