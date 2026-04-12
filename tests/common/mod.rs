@@ -307,7 +307,11 @@ pub fn test_app() -> App {
     app.init_resource::<macrocosmo::deep_space::StructureRegistry>();
     app.add_systems(
         Update,
-        macrocosmo::deep_space::sensor_buoy_detect_system
+        (
+            macrocosmo::deep_space::sensor_buoy_detect_system,
+            macrocosmo::deep_space::verify_relay_pairings_system,
+            macrocosmo::deep_space::relay_knowledge_propagate_system,
+        )
             .after(macrocosmo::time_system::advance_game_time)
             .after(sublight_movement_system)
             .after(process_ftl_travel),
@@ -457,7 +461,14 @@ pub fn full_test_app() -> App {
 
     // --- Deep space (from DeepSpacePlugin) ---
     app.init_resource::<macrocosmo::deep_space::StructureRegistry>();
-    app.add_systems(Update, macrocosmo::deep_space::sensor_buoy_detect_system);
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::deep_space::sensor_buoy_detect_system,
+            macrocosmo::deep_space::verify_relay_pairings_system,
+            macrocosmo::deep_space::relay_knowledge_propagate_system,
+        ),
+    );
 
     // --- Communication systems (from CommunicationPlugin) ---
     app.add_systems(

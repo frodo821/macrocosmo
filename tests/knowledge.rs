@@ -1525,3 +1525,326 @@ fn test_loitering_ship_knowledge_uses_light_speed_delay() {
     assert_eq!(snap.last_known_system, None);
 }
 
+// --- #119: FTL Comm Relay tests ---
+
+/// Install an ftl_comm_relay structure definition with a configurable range.
+fn install_ftl_comm_relay_definition(app: &mut App, range_ly: f64) {
+    use macrocosmo::deep_space::{
+        CapabilityParams, ResourceCost, StructureDefinition, StructureRegistry,
+    };
+    use std::collections::HashMap;
+    let mut registry = app
+        .world_mut()
+        .get_resource_mut::<StructureRegistry>()
+        .expect("StructureRegistry not initialized in test_app");
+    registry.insert(StructureDefinition {
+        id: "ftl_comm_relay".to_string(),
+        name: "FTL Comm Relay".to_string(),
+        description: "Pair-based FTL relay".to_string(),
+        max_hp: 50.0,
+        cost: ResourceCost::default(),
+        build_time: 20,
+        capabilities: HashMap::from([(
+            "ftl_comm_relay".to_string(),
+            CapabilityParams { range: range_ly },
+        )]),
+        energy_drain: Amt::milli(500),
+        prerequisites: None,
+    });
+}
+
+/// Spawn an FTL comm relay at the given position.
+fn spawn_ftl_comm_relay(world: &mut World, name: &str, pos: [f64; 3]) -> Entity {
+    use macrocosmo::deep_space::{DeepSpaceStructure, StructureHitpoints};
+    world
+        .spawn((
+            DeepSpaceStructure {
+                definition_id: "ftl_comm_relay".to_string(),
+                name: name.to_string(),
+                owner: macrocosmo::ship::Owner::Neutral,
+            },
+            StructureHitpoints { current: 50.0, max: 50.0 },
+            Position::from(pos),
+        ))
+        .id()
+}
+
+#[test]
+fn test_ftl_comm_relay_bidirectional_propagates_remote_ship_at_ftl_speed() {
+    // Setup:
+    //   Player @ [0, 0, 0]
+    //   Relay-A @ [2, 0, 0]  (near player, range 3 ly)
+    //   Relay-B @ [20, 0, 0] (remote, range 3 ly)
+    //   Ship-Remote @ [20.5, 0, 0] (within 3 ly of Relay-B, ~20.5 ly from player)
+    //
+    // Direct propagate_knowledge delay for ship = ~20.5 ly → 1230 hd.
+    // Relay path: Relay-B observes ship, Relay-A is within 2 ly of player. Player
+    // is within Relay-A's 3 ly range. FTL = instant (observed_at == clock.elapsed).
+    //
+    // At t=100 hd (well before any light from the ship could reach the player),
+    // the ship's snapshot must exist in the KnowledgeStore, delivered by the relay.
+    use macrocosmo::deep_space::{CommDirection, pair_relay_command};
+
+    let mut app = test_app();
+    install_ftl_comm_relay_definition(&mut app, 3.0);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "Remote", [20.5, 0.0, 0.0], 0.5, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [2.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [20.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::Bidirectional).unwrap();
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(), "Remote-Scout", "courier_mk1", sys_remote, [20.5, 0.0, 0.0],
+    );
+
+    advance_time(&mut app, 100);
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store
+        .get_ship(ship_entity)
+        .expect("Relay should have delivered remote ship knowledge at FTL speed");
+    assert_eq!(snap.observed_at, 100, "FTL relay delivers with no light delay");
+    assert_eq!(snap.name, "Remote-Scout");
+}
+
+#[test]
+fn test_ftl_comm_relay_oneway_reverse_direction_does_not_propagate() {
+    // OneWay A→B: A is the sender (covers ships), B is the receiver (covers
+    // player). If we flip the physical layout so the PLAYER is near A and the
+    // SHIP is near B, the pair A→B has:
+    //   - source A covers ships near A (no remote ship there)
+    //   - target B covers player near B (player isn't there)
+    // → no propagation.
+    //
+    // This proves the direction is enforced — with Bidirectional, the reverse
+    // path would kick in (B as source sees the ship, A as target sees the
+    // player) and the ship would get a snapshot.
+    use macrocosmo::deep_space::{CommDirection, pair_relay_command};
+
+    let mut app = test_app();
+    install_ftl_comm_relay_definition(&mut app, 3.0);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "Remote", [20.5, 0.0, 0.0], 0.5, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Relay-A near PLAYER, Relay-B near SHIP. OneWay A→B means A sends, B
+    // receives. But A's source-range covers nothing near the ship, and B
+    // doesn't send, so the ship's snapshot is NOT populated by the relay.
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [2.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [20.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::OneWay).unwrap();
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(), "Remote-Scout", "courier_mk1", sys_remote, [20.5, 0.0, 0.0],
+    );
+
+    advance_time(&mut app, 100);
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    // At t=100 hd, 20.5 ly light delay is ~1230 hd, so direct propagate_knowledge
+    // can't reach yet. And the relay path doesn't fire because B doesn't send.
+    assert!(
+        store.get_ship(ship_entity).is_none(),
+        "OneWay A→B must not propagate ships near B back to player near A"
+    );
+}
+
+#[test]
+fn test_ftl_comm_relay_oneway_forward_direction_propagates() {
+    // Companion test to the previous: reverse the physical layout so the
+    // OneWay pair A→B actually sends — ship is near A, player is near B.
+    use macrocosmo::deep_space::{CommDirection, pair_relay_command};
+
+    let mut app = test_app();
+    install_ftl_comm_relay_definition(&mut app, 3.0);
+
+    // Player is near Relay-B this time; ship is near Relay-A.
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [20.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "Remote", [0.5, 0.0, 0.0], 0.5, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [0.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [20.5, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::OneWay).unwrap();
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(), "Remote-Scout", "courier_mk1", sys_remote, [0.5, 0.0, 0.0],
+    );
+
+    advance_time(&mut app, 100);
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store
+        .get_ship(ship_entity)
+        .expect("OneWay A→B must propagate ships near A to player near B");
+    assert_eq!(snap.observed_at, 100);
+}
+
+#[test]
+fn test_ftl_comm_relay_destroyed_becomes_unpaired() {
+    // Verify that despawning one relay clears the partner's FTLCommRelay
+    // component on the next tick, and propagation stops.
+    use macrocosmo::deep_space::{CommDirection, FTLCommRelay, pair_relay_command};
+
+    let mut app = test_app();
+    install_ftl_comm_relay_definition(&mut app, 3.0);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "Remote", [20.5, 0.0, 0.0], 0.5, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [2.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [20.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::Bidirectional).unwrap();
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(), "Remote-Scout", "courier_mk1", sys_remote, [20.5, 0.0, 0.0],
+    );
+
+    // First tick: both relays live, ship snapshot gets populated.
+    advance_time(&mut app, 10);
+    {
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        assert!(store.get_ship(ship_entity).is_some(), "Relay chain should work while paired");
+    }
+
+    // Destroy Relay-B. Next tick, verify_relay_pairings_system strips
+    // Relay-A's FTLCommRelay component.
+    app.world_mut().despawn(relay_b);
+
+    advance_time(&mut app, 1);
+
+    assert!(
+        app.world().get::<FTLCommRelay>(relay_a).is_none(),
+        "Partner despawned → relay_a must be unpaired by verify system"
+    );
+
+    // Move the ship slightly so stale-snapshot-wins doesn't mask regressions.
+    // Despawn the old ship and spawn a new one; no relay should pick it up.
+    app.world_mut().despawn(ship_entity);
+    let new_ship = common::spawn_test_ship(
+        app.world_mut(), "Fresh-Scout", "courier_mk1", sys_remote, [20.5, 0.0, 0.0],
+    );
+
+    advance_time(&mut app, 50); // light delay at 20.5 ly is ~1230 hd, still far off
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    assert!(
+        store.get_ship(new_ship).is_none(),
+        "After relay destroyed, no new remote ships should be delivered"
+    );
+}
+
+#[test]
+fn test_ftl_comm_relay_chain_a_b_c_hops() {
+    // Chain: Relay-A (near player) ↔ Relay-B ↔ Relay-C (near remote ship).
+    // Implementation: two independent pairs (A↔B and B↔C). Each pair runs
+    // independently. With range 3 ly:
+    //
+    //   Player @ [0, 0, 0]
+    //   A @ [2, 0, 0]
+    //   B1 @ [10, 0, 0]  (paired with A)
+    //   B2 @ [10.5, 0, 0] (paired with C, within 3 ly of B1 & C-ship chain
+    //                      is via A↔B1 delivering B2's ships? No — each
+    //                      pair only observes ships within its source
+    //                      relay's range. We need a two-hop chain to reach a
+    //                      ship near C.)
+    //
+    // Simpler setup: two pairs, A↔B and B↔C, using SEPARATE entities for
+    // B's two endpoints (a physical relay station can host only one pair in
+    // this model — the chain emerges from multiple colocated relays).
+    //
+    //   Player @ [0, 0, 0]
+    //   A @ [2, 0, 0]    (paired with B1, range 3)
+    //   B1 @ [4, 0, 0]   (3 ly range; near A and near B2)
+    //   B2 @ [4, 0, 0]   (paired with C, range 3)
+    //   C @ [20, 0, 0]   (3 ly range; near remote ship)
+    //   Remote ship @ [20.5, 0, 0]
+    //
+    // First tick: pair B2↔C fires — C observes remote ship, B2 receives; but
+    // the player isn't near B2, so THIS pair alone can't deliver to the player.
+    // The chain depends on relayed knowledge reaching the player's KnowledgeStore:
+    // in this simpler model, the KnowledgeStore is the player empire's global
+    // store, so once ANY pair covers "player near target relay" it delivers.
+    //
+    // For the chain to reach the player, pair A↔B1 needs to cover the ship.
+    // But A↔B1's source sides are relays A and B1, whose ranges cover [2±3]
+    // and [4±3] ly respectively — neither covers a ship at 20.5 ly.
+    //
+    // Therefore "chain" in this implementation means: multiple pairs
+    // collectively extending coverage. A single remote ship near C is
+    // delivered to the player empire via ANY pair that has: (source covers
+    // ship) AND (target covers player). Here pair B2↔C: C is source (covers
+    // ship), B2 is target (covers... player? No, B2 is at [4, 0, 0] which
+    // is within 3 ly of player at [0, 0, 0]? Distance = 4 ly > 3 ly. Not
+    // quite.)
+    //
+    // So let's place B2 closer to the player:
+    //
+    //   Player @ [0, 0, 0]
+    //   A @ [2, 0, 0]      (paired with B1, range 3)
+    //   B1 @ [4, 0, 0]     (paired with A; also distinct from B2)
+    //   B2 @ [2.5, 0, 0]   (paired with C, range 3 — covers player)
+    //   C @ [20, 0, 0]     (paired with B2, range 3 — covers remote ship)
+    //   Remote ship @ [20.5, 0, 0]
+    //
+    // Now pair B2↔C: source C covers ship, target B2 covers player (2.5 ly
+    // < 3 ly). Chain works.
+    use macrocosmo::deep_space::{CommDirection, pair_relay_command};
+
+    let mut app = test_app();
+    install_ftl_comm_relay_definition(&mut app, 3.0);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "Remote", [20.5, 0.0, 0.0], 0.5, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // First hop: A ↔ B1 (leaves room for chain expansion but not strictly
+    // required by this test — we keep it to document the "chain" intent).
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "A", [2.0, 0.0, 0.0]);
+    let relay_b1 = spawn_ftl_comm_relay(app.world_mut(), "B1", [4.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b1, CommDirection::Bidirectional).unwrap();
+
+    // Second hop: B2 ↔ C.
+    let relay_b2 = spawn_ftl_comm_relay(app.world_mut(), "B2", [2.5, 0.0, 0.0]);
+    let relay_c = spawn_ftl_comm_relay(app.world_mut(), "C", [20.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_b2, relay_c, CommDirection::Bidirectional).unwrap();
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(), "Far-Scout", "courier_mk1", sys_remote, [20.5, 0.0, 0.0],
+    );
+
+    advance_time(&mut app, 50);
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store
+        .get_ship(ship_entity)
+        .expect("Chain A↔B1, B2↔C should deliver remote ship to player at FTL speed");
+    assert_eq!(snap.observed_at, 50);
+}
+

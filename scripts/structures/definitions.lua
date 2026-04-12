@@ -25,7 +25,10 @@ local ftl_comm_relay = define_structure {
     cost = { minerals = 200, energy = 150 },
     build_time = 30,
     capabilities = {
-        ftl_comm = { range = 0.0 },
+        -- range_ly: source relay observes ships within this range; receiver
+        -- relay requires the player be within its own range_ly. A value of 0
+        -- is treated as "infinite" by the relay_knowledge_propagate_system.
+        ftl_comm_relay = { range = 5.0 },
     },
     energy_drain = 500, -- millis (0.5 units per hexady)
     prerequisites = has_tech(forward_ref("ftl_communications")),
