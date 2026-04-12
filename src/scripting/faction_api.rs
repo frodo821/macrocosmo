@@ -7,6 +7,9 @@ use bevy::prelude::*;
 pub struct FactionDefinition {
     pub id: String,
     pub name: String,
+    /// Whether this faction defines an `on_game_start` callback.
+    /// The actual function is looked up from `_faction_definitions` at call time.
+    pub has_on_game_start: bool,
 }
 
 /// Registry of all faction definitions loaded from Lua.
@@ -25,11 +28,40 @@ pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinitio
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
+        let has_on_game_start = matches!(
+            table.get::<mlua::Value>("on_game_start").unwrap_or(mlua::Value::Nil),
+            mlua::Value::Function(_)
+        );
 
-        result.push(FactionDefinition { id, name });
+        result.push(FactionDefinition {
+            id,
+            name,
+            has_on_game_start,
+        });
     }
 
     Ok(result)
+}
+
+/// Look up the `on_game_start` Lua function for the given faction id, if any.
+/// Returns Ok(None) if the faction is not defined or has no callback.
+pub fn lookup_on_game_start(
+    lua: &mlua::Lua,
+    faction_id: &str,
+) -> Result<Option<mlua::Function>, mlua::Error> {
+    let defs: mlua::Table = lua.globals().get("_faction_definitions")?;
+    for pair in defs.pairs::<i64, mlua::Table>() {
+        let (_, table) = pair?;
+        let id: String = table.get("id")?;
+        if id == faction_id {
+            let value: mlua::Value = table.get("on_game_start")?;
+            if let mlua::Value::Function(f) = value {
+                return Ok(Some(f));
+            }
+            return Ok(None);
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -61,8 +93,73 @@ mod tests {
         assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].id, "humanity_empire");
         assert_eq!(defs[0].name, "Terran Federation");
+        assert!(!defs[0].has_on_game_start);
         assert_eq!(defs[1].id, "alien_hive");
         assert_eq!(defs[1].name, "Zyx Collective");
+        assert!(!defs[1].has_on_game_start);
+    }
+
+    #[test]
+    fn test_parse_faction_with_on_game_start() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction {
+                id = "humanity_empire",
+                name = "Terran Federation",
+                on_game_start = function(ctx) end,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert!(defs[0].has_on_game_start);
+    }
+
+    #[test]
+    fn test_lookup_on_game_start_returns_function() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction {
+                id = "humanity_empire",
+                name = "Terran Federation",
+                on_game_start = function(ctx) return 42 end,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let func = lookup_on_game_start(lua, "humanity_empire").unwrap();
+        assert!(func.is_some());
+        let result: i64 = func.unwrap().call(()).unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_lookup_on_game_start_missing() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"define_faction { id = "humanity_empire", name = "Terran Federation" }"#,
+        )
+        .exec()
+        .unwrap();
+
+        let func = lookup_on_game_start(lua, "humanity_empire").unwrap();
+        assert!(func.is_none());
+
+        let func2 = lookup_on_game_start(lua, "nonexistent").unwrap();
+        assert!(func2.is_none());
     }
 
     #[test]

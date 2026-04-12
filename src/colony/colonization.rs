@@ -4,7 +4,6 @@ use crate::amount::Amt;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::modifier::ModifiedValue;
 use crate::events::{GameEvent, GameEventKind};
-use crate::scripting::building_api::BuildingId;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
@@ -45,6 +44,9 @@ pub struct PendingColonizationOrder {
     pub source_colony: Entity,
 }
 
+/// Create the capital colony scaffolding (Colony, Buildings, SystemBuildings, ResourceStockpile)
+/// with EMPTY building slots. Buildings and initial ships are added by the faction's
+/// on_game_start Lua callback (see `run_faction_on_game_start` in `scripting::game_start_ctx`).
 pub fn spawn_capital_colony(
     mut commands: Commands,
     systems: Query<(Entity, &StarSystem)>,
@@ -65,21 +67,9 @@ pub fn spawn_capital_colony(
     };
 
     let num_slots = attributes.max_building_slots as usize;
-    let mut slots = vec![None; num_slots];
-    // Capital starts with 1 Mine, 1 PowerPlant, and 1 Farm (#72) as planet buildings
-    if num_slots > 0 {
-        slots[0] = Some(BuildingId::new("mine"));
-    }
-    if num_slots > 1 {
-        slots[1] = Some(BuildingId::new("power_plant"));
-    }
-    if num_slots > 2 {
-        slots[2] = Some(BuildingId::new("farm"));
-    }
+    let slots = vec![None; num_slots];
+    let system_slots = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
 
-    // System buildings: capital starts with 1 Shipyard (#35)
-    let mut system_slots = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
-    system_slots[0] = Some(BuildingId::new("shipyard"));
     commands.spawn((
         Colony {
             planet: planet_entity,
@@ -121,7 +111,7 @@ pub fn spawn_capital_colony(
         SystemBuildings { slots: system_slots },
         SystemBuildingQueue::default(),
     ));
-    info!("Capital colony spawned on {}", capital_star.name);
+    info!("Capital colony scaffold created on {}", capital_star.name);
 }
 
 /// #114: Process colonization orders on star systems.
