@@ -6,10 +6,14 @@ use crate::colony::{
     ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue, SystemBuildings,
     DEFAULT_SYSTEM_BUILDING_SLOTS,
 };
+use crate::communication::CommandLog;
 use crate::components::Position;
+use crate::condition::ScopedFlags;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::knowledge::KnowledgeStore;
 use crate::modifier::ModifiedValue;
-use crate::player::{Faction, PlayerEmpire};
+use crate::observer::{in_observer_mode, not_in_observer_mode};
+use crate::player::{Empire, Faction, PlayerEmpire};
 use crate::scripting::building_api::BuildingId;
 use crate::scripting::faction_api::{lookup_on_game_start, FactionRegistry};
 use crate::scripting::game_start_ctx::{
@@ -19,6 +23,10 @@ use crate::scripting::ScriptEngine;
 use crate::ship::{spawn_ship, Owner};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
+use crate::technology::{
+    EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
+    TechTree,
+};
 
 pub struct GameSetupPlugin;
 
@@ -31,8 +39,45 @@ impl Plugin for GameSetupPlugin {
                 .after(crate::player::spawn_player_empire)
                 .after(crate::colony::spawn_capital_colony)
                 .after(crate::scripting::load_all_scripts)
-                .after(crate::scripting::load_faction_registry),
+                .after(crate::scripting::load_faction_registry)
+                .run_if(not_in_observer_mode),
+        )
+        .add_systems(
+            Startup,
+            run_all_factions_on_game_start
+                .after(crate::galaxy::generate_galaxy)
+                .after(crate::colony::spawn_capital_colony)
+                .after(crate::scripting::load_all_scripts)
+                .after(crate::scripting::load_faction_registry)
+                .run_if(in_observer_mode),
+        )
+        .add_systems(
+            Startup,
+            init_observer_view
+                .after(run_all_factions_on_game_start)
+                .run_if(in_observer_mode),
         );
+    }
+}
+
+/// Startup system (observer mode only) that sets `ObserverView.viewing` to
+/// the first spawned `Empire` entity, so the top-bar selector and Governor
+/// tab have a sensible default.
+pub fn init_observer_view(
+    mut view: ResMut<crate::observer::ObserverView>,
+    empires: Query<(Entity, &Faction), With<Empire>>,
+) {
+    if view.viewing.is_some() {
+        return;
+    }
+    let mut items: Vec<(Entity, String)> = empires
+        .iter()
+        .map(|(e, f)| (e, f.name.clone()))
+        .collect();
+    items.sort_by(|a, b| a.1.cmp(&b.1));
+    if let Some((e, name)) = items.into_iter().next() {
+        view.viewing = Some(e);
+        info!("Observer mode: focus set to faction '{}'", name);
     }
 }
 
@@ -41,6 +86,135 @@ fn player_faction_id(world: &mut World) -> Option<String> {
     let mut q = world.query_filtered::<&Faction, With<PlayerEmpire>>();
     let f = q.iter(world).next()?;
     Some(f.id.clone())
+}
+
+/// Build the full set of empire-level components for a spawned Empire. This
+/// mirrors `crate::player::spawn_player_empire` so observer-mode empires are
+/// indistinguishable from the player empire (aside from the `PlayerEmpire`
+/// marker).
+fn empire_bundle(
+    name: String,
+    faction_id: String,
+    faction_name: String,
+) -> impl Bundle {
+    (
+        Empire { name },
+        Faction {
+            id: faction_id,
+            name: faction_name,
+        },
+        TechTree::default(),
+        ResearchQueue::default(),
+        ResearchPool::default(),
+        RecentlyResearched::default(),
+        crate::colony::AuthorityParams::default(),
+        crate::colony::ConstructionParams::default(),
+        EmpireModifiers::default(),
+        GameFlags::default(),
+        GlobalParams::default(),
+        KnowledgeStore::default(),
+        CommandLog::default(),
+        ScopedFlags::default(),
+    )
+}
+
+/// Startup system for observer mode: iterate every registered NPC faction
+/// and spawn a full `Empire` entity for each, then run its `on_game_start`
+/// Lua callback. The `PlayerEmpire` marker is NEVER added. Hostile /
+/// passive factions (already spawned by `spawn_hostile_factions`) are
+/// skipped here.
+pub fn run_all_factions_on_game_start(world: &mut World) {
+    // Snapshot the registry into a plain Vec so we can drop the borrow
+    // before mutating the world.
+    let registry_ids: Vec<(String, String, bool)> = {
+        let reg = world.resource::<FactionRegistry>();
+        reg.factions
+            .values()
+            .map(|def| (def.id.clone(), def.name.clone(), def.has_on_game_start))
+            .collect()
+    };
+
+    if registry_ids.is_empty() {
+        warn!("Observer mode: FactionRegistry is empty; no NPC empires spawned");
+        return;
+    }
+
+    // Collect pre-existing Faction entities (e.g. spawned by faction plugin)
+    // so we don't double-spawn.
+    let existing_by_id: std::collections::HashMap<String, Entity> = {
+        let mut q = world.query_filtered::<(Entity, &Faction), Without<Empire>>();
+        q.iter(world)
+            .map(|(e, f)| (f.id.clone(), e))
+            .collect()
+    };
+
+    for (faction_id, faction_name, has_callback) in &registry_ids {
+        // If a bare Faction entity already exists (without Empire), upgrade
+        // it to an Empire by inserting the bundle. Otherwise spawn fresh.
+        if let Some(entity) = existing_by_id.get(faction_id) {
+            // Leave passive factions (space_creature, ancient_defense) alone
+            // — they're added by FactionRelationsPlugin and shouldn't be
+            // promoted to full empires.
+            let is_passive = faction_id == "space_creature_faction"
+                || faction_id == "ancient_defense_faction";
+            if is_passive {
+                continue;
+            }
+            // Upgrade: this branch is primarily defensive — in observer mode
+            // no prior Faction entity should already exist for these ids.
+            world.entity_mut(*entity).insert(empire_bundle(
+                faction_name.clone(),
+                faction_id.clone(),
+                faction_name.clone(),
+            ));
+            info!(
+                "Observer mode: upgraded existing Faction '{}' to full Empire",
+                faction_id
+            );
+        } else {
+            world.spawn(empire_bundle(
+                faction_name.clone(),
+                faction_id.clone(),
+                faction_name.clone(),
+            ));
+            info!("Observer mode: spawned NPC Empire for faction '{}'", faction_id);
+        }
+
+        if *has_callback {
+            run_on_game_start_for_faction(world, faction_id);
+        }
+    }
+}
+
+/// Shared helper: look up `on_game_start` for the given faction id and,
+/// if present, call it and apply the resulting actions. Used by both
+/// `run_faction_on_game_start` (player path) and `run_all_factions_on_game_start`
+/// (observer path).
+fn run_on_game_start_for_faction(world: &mut World, faction_id: &str) {
+    let ctx = GameStartCtx::new(faction_id.to_string());
+    let actions = {
+        let engine = world.resource::<ScriptEngine>();
+        let lua = engine.lua();
+        let func = match lookup_on_game_start(lua, faction_id) {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                warn!(
+                    "Faction '{}' on_game_start function not found despite registry flag",
+                    faction_id
+                );
+                return;
+            }
+            Err(e) => {
+                warn!("Failed to look up on_game_start for '{}': {e}", faction_id);
+                return;
+            }
+        };
+        if let Err(e) = func.call::<()>(ctx.clone()) {
+            warn!("on_game_start for '{}' raised an error: {e}", faction_id);
+        }
+        ctx.take_actions()
+    };
+    apply_game_start_actions(world, faction_id, actions);
 }
 
 /// Startup system that runs the player faction's `on_game_start` Lua callback,
@@ -426,18 +600,30 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
         }
     }
 
-    // Spawn ships at the capital. Use the player empire as owner.
+    // Spawn ships at the capital. Prefer the Empire tagged with a matching
+    // Faction (works in observer mode where no PlayerEmpire exists), fall
+    // back to PlayerEmpire, and finally Neutral.
     if !actions.ships.is_empty() {
         let owner = {
-            let mut q = world.query_filtered::<Entity, With<PlayerEmpire>>();
-            match q.iter(world).next() {
-                Some(e) => Owner::Empire(e),
-                None => {
-                    warn!(
-                        "No PlayerEmpire found; ships from on_game_start of '{}' will be neutral",
-                        faction_id
-                    );
-                    Owner::Neutral
+            let empire_by_faction: Option<Entity> = {
+                let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+                q.iter(world)
+                    .find(|(_, f)| f.id == faction_id)
+                    .map(|(e, _)| e)
+            };
+            if let Some(e) = empire_by_faction {
+                Owner::Empire(e)
+            } else {
+                let mut q = world.query_filtered::<Entity, With<PlayerEmpire>>();
+                match q.iter(world).next() {
+                    Some(e) => Owner::Empire(e),
+                    None => {
+                        warn!(
+                            "No Empire found for faction '{}'; ships will be Neutral",
+                            faction_id
+                        );
+                        Owner::Neutral
+                    }
                 }
             }
         };
