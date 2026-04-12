@@ -204,9 +204,11 @@ pub fn process_command_queue(
         return;
     };
     for (entity, ship, mut state, mut queue, ship_pos) in ships.iter_mut() {
-        // Only process queue when ship is Docked (current command finished)
-        let ShipState::Docked { system: docked_system } = *state else {
-            continue;
+        // #185: Process queue when ship is Docked OR Loitering (current command finished).
+        let docked_system: Option<Entity> = match *state {
+            ShipState::Docked { system } => Some(system),
+            ShipState::Loitering { .. } => None,
+            _ => continue,
         };
 
         if queue.commands.is_empty() {
@@ -219,28 +221,52 @@ pub fn process_command_queue(
         match next {
             QueuedCommand::MoveTo { system: target } => {
                 let target = *target;
-                let Ok((_target_entity, _target_star, _target_pos)) = systems.get(target) else {
+                let Ok((_target_entity, _target_star, target_pos)) = systems.get(target) else {
                     warn!("Queued MoveTo target no longer exists");
                     queue.commands.remove(0);
-                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    queue.sync_prediction(ship_pos.as_array(), docked_system);
                     continue;
                 };
 
-                // Already at target?
-                if docked_system == target {
+                // Already at target (only possible when docked)?
+                if docked_system == Some(target) {
                     queue.commands.remove(0);
-                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    queue.sync_prediction(ship_pos.as_array(), docked_system);
                     continue;
                 }
 
-                let Ok((_, _, origin_pos)) = systems.get(docked_system) else {
+                // For loitering ships, fall back to a direct sublight move (no FTL chain
+                // planning from deep space).
+                if docked_system.is_none() {
+                    queue.commands.remove(0);
+                    start_sublight_travel_with_bonus(
+                        &mut state,
+                        ship_pos,
+                        ship,
+                        Position::from(target_pos.as_array()),
+                        Some(target),
+                        clock.elapsed,
+                        global_params.sublight_speed_bonus,
+                    );
+                    queue.sync_prediction(target_pos.as_array(), Some(target));
+                    info!("Queue: Loitering ship {} sublight to target", ship.name);
+                    continue;
+                }
+
+                // Docked: use the system's position as origin for FTL route planning.
+                let docked_sys_for_origin = docked_system.expect("docked branch");
+                let Ok((_, _, origin_pos)) = systems.get(docked_sys_for_origin) else {
                     warn!("Queue: Origin system no longer exists");
                     queue.commands.remove(0);
-                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    queue.sync_prediction(ship_pos.as_array(), docked_system);
                     continue;
                 };
+                let origin_pos_arr = origin_pos.as_array();
 
-                let port_params = system_buildings.get(docked_system)
+                // From here we know docked_system.is_some(); only docked ships use the
+                // FTL route planner.
+                let docked_sys = docked_system.expect("loitering branch handled above");
+                let port_params = system_buildings.get(docked_sys)
                     .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
                     .unwrap_or(PortParams::NONE);
                 let effective_ftl_range = if ship.ftl_range > 0.0 {
@@ -254,7 +280,7 @@ pub fn process_command_queue(
                 // Spawn async route computation task.
                 let snapshots = routing::collect_route_snapshots(&systems);
                 let task = routing::spawn_route_task(
-                    origin_pos.as_array(),
+                    origin_pos_arr,
                     target,
                     effective_ftl_range,
                     effective_sublight_speed,
@@ -269,6 +295,25 @@ pub fn process_command_queue(
                 info!("Queue: Ship {} spawned async route to target", ship.name);
                 // Do NOT consume the MoveTo — poll_pending_routes will handle it.
             }
+            QueuedCommand::MoveToCoordinates { target } => {
+                // #185: Move sublight to deep-space coordinates and loiter on arrival.
+                let target_arr = *target;
+                queue.commands.remove(0);
+                start_sublight_travel_with_bonus(
+                    &mut state,
+                    ship_pos,
+                    ship,
+                    Position::from(target_arr),
+                    None, // no target system → arrival transitions to Loitering
+                    clock.elapsed,
+                    global_params.sublight_speed_bonus,
+                );
+                queue.sync_prediction(target_arr, None);
+                info!(
+                    "Queue: Ship {} sublight to deep-space coordinates ({:.2},{:.2},{:.2})",
+                    ship.name, target_arr[0], target_arr[1], target_arr[2]
+                );
+            }
             QueuedCommand::Survey { .. } | QueuedCommand::Colonize { .. } => {
                 // Consume the command and process synchronously.
                 let next = queue.commands.remove(0);
@@ -276,11 +321,12 @@ pub fn process_command_queue(
                     QueuedCommand::Survey { system: target } => {
                         let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
                             warn!("Queued Survey target no longer exists");
-                            queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                            queue.sync_prediction(ship_pos.as_array(), docked_system);
                             continue;
                         };
-                        // #101: If not docked at the target system, auto-insert a move command
-                        if docked_system != target {
+                        // #101: If not docked at the target system, auto-insert a move command.
+                        // #185: Loitering ships also need to move first.
+                        if docked_system != Some(target) {
                             queue.commands.insert(0, QueuedCommand::Survey { system: target });
                             queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
                             info!("Queue: Ship {} not at target, auto-inserting move before survey of {}", ship.name, target_star.name);
@@ -307,15 +353,15 @@ pub fn process_command_queue(
                                 warn!("Queue: Survey failed for {}: {}", ship.name, e);
                             }
                         }
-                        queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                        queue.sync_prediction(ship_pos.as_array(), docked_system);
                     }
                     QueuedCommand::Colonize { system: target, planet } => {
                         let Ok((_target_entity, target_star, _target_pos)) = systems.get(target) else {
                             warn!("Queued Colonize target no longer exists");
-                            queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                            queue.sync_prediction(ship_pos.as_array(), docked_system);
                             continue;
                         };
-                        if docked_system != target {
+                        if docked_system != Some(target) {
                             queue.commands.insert(0, QueuedCommand::Colonize { system: target, planet });
                             queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
                             info!("Queue: Ship {} not at target, auto-inserting move before colonize of {}", ship.name, target_star.name);
@@ -323,11 +369,12 @@ pub fn process_command_queue(
                         }
                         if !design_registry.can_colonize(&ship.design_id) {
                             warn!("Queue: Ship {} cannot colonize (not a colony ship)", ship.name);
-                            queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                            queue.sync_prediction(ship_pos.as_array(), docked_system);
                             continue;
                         }
+                        let docked_sys = docked_system.expect("survey/colonize already required docked");
                         *state = ShipState::Settling {
-                            system: docked_system,
+                            system: docked_sys,
                             planet,
                             started_at: clock.elapsed,
                             completes_at: clock.elapsed + SETTLING_DURATION_HEXADIES,
@@ -336,9 +383,9 @@ pub fn process_command_queue(
                             "Queue: Ship {} colonizing {}",
                             ship.name, target_star.name
                         );
-                        queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                        queue.sync_prediction(ship_pos.as_array(), docked_system);
                     }
-                    _ => {} // MoveTo handled above
+                    QueuedCommand::MoveToCoordinates { .. } | QueuedCommand::MoveTo { .. } => {} // handled above
                 }
             }
         }

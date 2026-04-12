@@ -2070,3 +2070,264 @@ fn refit_in_flight_does_not_apply_when_design_edited_again() {
     assert_eq!(live_rev, 2);
     assert!(ship_comp.design_revision < live_rev);
 }
+
+// --- #185: Loitering state regression tests ---
+
+/// A SubLight move with `target_system: None` must transition to Loitering when it
+/// arrives at its destination — previously it stayed SubLight forever (bug).
+#[test]
+fn test_sublight_arrival_with_no_target_system_transitions_to_loitering() {
+    let mut app = test_app();
+
+    // System at origin (so player has a base for tests using KnowledgeStore later).
+    let _sys = spawn_test_system(
+        app.world_mut(),
+        "Origin",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    // Travel time for 1 LY at 0.75c = 80 hexadies.
+    let travel_time = sublight_travel_hexadies(1.0, 0.75);
+    assert_eq!(travel_time, 80);
+
+    let dest = [1.0_f64, 0.0, 0.0];
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Loiterer".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+        },
+        ShipState::SubLight {
+            origin: [0.0, 0.0, 0.0],
+            destination: dest,
+            target_system: None,
+            departed_at: 0,
+            arrival_at: travel_time,
+        },
+        Position::from([0.0, 0.0, 0.0]),
+    )).id();
+
+    advance_time(&mut app, travel_time);
+
+    let state = app.world().get::<ShipState>(ship_entity).unwrap();
+    match state {
+        ShipState::Loitering { position } => {
+            assert!((position[0] - dest[0]).abs() < 1e-9);
+            assert!((position[1] - dest[1]).abs() < 1e-9);
+            assert!((position[2] - dest[2]).abs() < 1e-9);
+        }
+        _ => panic!(
+            "Expected Loitering state after deep-space SubLight arrival, got {:?}",
+            std::mem::discriminant(state)
+        ),
+    }
+
+    // Position should be at the destination.
+    let pos = app.world().get::<Position>(ship_entity).unwrap();
+    assert!((pos.x - dest[0]).abs() < 1e-9);
+    assert!((pos.y - dest[1]).abs() < 1e-9);
+}
+
+/// Queueing a `MoveToCoordinates` command against a docked ship causes it to depart
+/// sublight and, on arrival, enter `Loitering` at the requested coordinates.
+#[test]
+fn test_move_to_coordinates_command_results_in_loitering_arrival() {
+    // test_app() already spawns the empire entity.
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Origin",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Voyager",
+        "explorer_mk1",
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+
+    let target = [1.0_f64, 0.0, 0.0];
+    {
+        let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
+        q.commands.push(QueuedCommand::MoveToCoordinates { target });
+    }
+
+    // First tick: command queue dispatches — ship enters SubLight to deep space.
+    advance_time(&mut app, 1);
+    {
+        let state = app.world().get::<ShipState>(ship).unwrap();
+        match state {
+            ShipState::SubLight { target_system, destination, .. } => {
+                assert_eq!(*target_system, None, "MoveToCoordinates must use target_system=None");
+                assert!((destination[0] - target[0]).abs() < 1e-9);
+            }
+            _ => panic!("Expected SubLight after queue dispatch"),
+        }
+    }
+
+    // Advance enough ticks for the ship to arrive (1 LY @ 0.75c = 80 hd; we already
+    // burned 1 hd on dispatch).
+    advance_time(&mut app, 100);
+
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    match state {
+        ShipState::Loitering { position } => {
+            assert!((position[0] - target[0]).abs() < 1e-9);
+        }
+        _ => panic!("Expected Loitering after MoveToCoordinates arrival, got {:?}",
+            std::mem::discriminant(state)),
+    }
+}
+
+/// `resolve_combat` must NOT engage Loitering ships. Combat only operates on Docked
+/// ships in star systems; deep-space combat is intentionally out of scope.
+#[test]
+fn test_loitering_ship_not_engaged_by_resolve_combat() {
+    use macrocosmo::galaxy::{HostilePresence, HostileType};
+
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Hostile-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
+
+    // Hostile in the system.
+    app.world_mut().spawn(HostilePresence {
+        system: sys,
+        strength: 100.0,
+        hp: 1000.0,
+        max_hp: 1000.0,
+        hostile_type: HostileType::AncientDefense,
+        evasion: 0.0,
+    });
+
+    // Spawn a Loitering ship at the SAME coordinates as the hostile system but with
+    // ShipState::Loitering — combat should ignore it because it's not Docked.
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Loiter-1".to_string(),
+            design_id: "courier_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.85,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+        },
+        ShipState::Loitering { position: [0.0, 0.0, 0.0] },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 0.01, hull_max: 20.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+    )).id();
+
+    // Run several ticks of combat — the Loitering ship would be obliterated if it
+    // were in combat (hull is 0.01 vs strength 100), but it must survive.
+    advance_time(&mut app, 5);
+
+    assert!(
+        app.world().get_entity(ship_entity).is_ok(),
+        "Loitering ship must NOT be destroyed by resolve_combat (Docked-only)"
+    );
+}
+
+/// A Loitering ship can leave loiter via a queued `MoveTo { system }` command —
+/// it should depart sublight directly to the target system.
+#[test]
+fn test_loitering_ship_can_leave_via_move_to_system() {
+    // test_app() already spawns the empire entity.
+    let mut app = test_app();
+
+    // Two systems: origin (capital, surveyed) and target.
+    let _sys_origin = spawn_test_system(
+        app.world_mut(),
+        "Origin",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let sys_target = spawn_test_system(
+        app.world_mut(),
+        "Target",
+        [2.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
+
+    // Spawn a non-FTL ship at deep-space coordinates (1.0, 0.0, 0.0), Loitering.
+    let ship = app.world_mut().spawn((
+        Ship {
+            name: "Loiterer".to_string(),
+            design_id: "courier_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.85,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+        },
+        ShipState::Loitering { position: [1.0, 0.0, 0.0] },
+        Position::from([1.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 35.0, hull_max: 35.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue {
+            commands: vec![QueuedCommand::MoveTo { system: sys_target }],
+            ..Default::default()
+        },
+        Cargo::default(),
+        RulesOfEngagement::default(),
+    )).id();
+
+    // After one tick, the Loitering ship should have entered SubLight toward sys_target.
+    advance_time(&mut app, 1);
+
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    match state {
+        ShipState::SubLight { target_system, .. } => {
+            assert_eq!(*target_system, Some(sys_target),
+                "Loitering->MoveTo must enter SubLight with the target system set");
+        }
+        _ => panic!(
+            "Expected SubLight after MoveTo from Loitering, got {:?}",
+            std::mem::discriminant(state)
+        ),
+    }
+}

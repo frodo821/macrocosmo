@@ -177,6 +177,15 @@ pub fn draw_ships(
                     .push(ship.design_id.clone());
                 *system_ship_counts.entry(*system).or_insert(0) += 1;
             }
+            // #185: Loitering ships are drawn as a small marker at their deep-space coordinate.
+            ShipState::Loitering { position } => {
+                let cx = position[0] as f32 * view.scale;
+                let cy = position[1] as f32 * view.scale;
+                let (r, g, b) = ship_color_rgb(&ship.design_id);
+                gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgb(r, g, b));
+                // Faint outer halo to distinguish "loitering" from in-transit.
+                gizmos.circle_2d(Vec2::new(cx, cy), 5.5, Color::srgba(r, g, b, 0.25));
+            }
         }
     }
 
@@ -310,24 +319,37 @@ pub fn draw_ships(
                             Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
                         })
                     }
+                    // #185: Loitering ship's current screen pos for queue overlay.
+                    ShipState::Loitering { position } => {
+                        Some(Vec2::new(
+                            position[0] as f32 * view.scale,
+                            position[1] as f32 * view.scale,
+                        ))
+                    }
                 };
 
                 if let Some(mut prev_pos) = current_pos {
                     let (r, g, b) = ship_color_rgb(&ship.design_id);
 
                     for cmd in &queue.commands {
-                        let target_system = match cmd {
+                        let target_screen = match cmd {
                             QueuedCommand::MoveTo { system, .. }
                             | QueuedCommand::Survey { system, .. }
-                            | QueuedCommand::Colonize { system, .. } => *system,
+                            | QueuedCommand::Colonize { system, .. } => {
+                                let Ok(target_pos) = stars.get(*system) else {
+                                    continue;
+                                };
+                                Vec2::new(
+                                    target_pos.x as f32 * view.scale,
+                                    target_pos.y as f32 * view.scale,
+                                )
+                            }
+                            // #185: Loitering target — render directly from coordinates.
+                            QueuedCommand::MoveToCoordinates { target } => Vec2::new(
+                                target[0] as f32 * view.scale,
+                                target[1] as f32 * view.scale,
+                            ),
                         };
-
-                        let Ok(target_pos) = stars.get(target_system) else {
-                            continue;
-                        };
-                        let tx = target_pos.x as f32 * view.scale;
-                        let ty = target_pos.y as f32 * view.scale;
-                        let target_screen = Vec2::new(tx, ty);
 
                         // Dashed path line from previous position to target
                         draw_dashed_line(
@@ -339,7 +361,7 @@ pub fn draw_ships(
 
                         // Command-specific markers
                         match cmd {
-                            QueuedCommand::MoveTo { .. } => {
+                            QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
                                 gizmos.circle_2d(
                                     target_screen,
                                     4.0,

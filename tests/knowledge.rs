@@ -6,7 +6,7 @@ use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::*;
-use macrocosmo::physics::light_delay_hexadies;
+use macrocosmo::physics::{light_delay_hexadies, sublight_travel_hexadies};
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::technology::TechKnowledge;
@@ -1303,5 +1303,225 @@ fn test_sensor_buoy_no_player_no_panic() {
 
     // Just confirm we don't panic.
     advance_time(&mut app, 100);
+}
+
+// --- #188: SubLight ship knowledge propagation light-speed delay ---
+
+/// Regression for #188: a SubLight ship's interpolated position is used to compute
+/// the light-speed delay to the player's KnowledgeStore. A ship far from the player
+/// must not be reported with `observed_at == clock.elapsed`.
+#[test]
+fn test_sublight_ship_knowledge_uses_light_speed_delay() {
+    // test_app() spawns the empire entity.
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Spawn a ship in SubLight transit between (10, 0, 0) and (12, 0, 0); long enough
+    // travel that during our test window (0..120 hd) the ship has not yet arrived.
+    // At t=120 hd the ship will be at roughly (10 + 0.5*2, 0, 0) = (11, 0, 0) which
+    // is ~11 LY from the player at the capital.
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Far-Scout".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+        },
+        ShipState::SubLight {
+            origin: [10.0, 0.0, 0.0],
+            destination: [12.0, 0.0, 0.0],
+            target_system: None,
+            departed_at: 0,
+            arrival_at: sublight_travel_hexadies(2.0, 0.75), // 160 hd
+        },
+        Position::from([10.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 50.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::default(),
+    )).id();
+
+    // Advance enough that, at light delay >= 600 hd (10 LY), we have NOT yet
+    // received any snapshot for the ship.
+    advance_time(&mut app, 120);
+    {
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        assert!(
+            store.get_ship(ship_entity).is_none(),
+            "Far SubLight ship must not be in KnowledgeStore before light delay elapses"
+        );
+    }
+
+    // Now advance well past the ship's projected light delay (~660+ hd) and
+    // confirm we receive a snapshot whose observed_at lags the current clock by at
+    // least the light delay (650+ hd).
+    advance_time(&mut app, 700);
+    let empire = empire_entity(app.world_mut());
+    let clock = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store.get_ship(ship_entity).expect("Should have ship knowledge by now");
+    let lag = clock - snap.observed_at;
+    assert!(
+        lag >= 600,
+        "SubLight ship snapshot must lag clock by at least the light delay (~600 hd for ~10 LY); got lag={} (clock={}, observed_at={})",
+        lag, clock, snap.observed_at
+    );
+}
+
+/// Regression for #188: a SubLight ship near the player must arrive in the
+/// KnowledgeStore with near-zero delay (lag less than a few hexadies).
+#[test]
+fn test_sublight_ship_nearby_knowledge_negligible_delay() {
+    // test_app() spawns the empire entity.
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // SubLight ship interpolating very close to the player (well under 0.05 LY).
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Near-Scout".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+        },
+        ShipState::SubLight {
+            origin: [0.0, 0.0, 0.0],
+            destination: [0.01, 0.0, 0.0],
+            target_system: None,
+            departed_at: 0,
+            arrival_at: 1000,
+        },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 50.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::default(),
+    )).id();
+
+    advance_time(&mut app, 5);
+
+    let empire = empire_entity(app.world_mut());
+    let clock = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store.get_ship(ship_entity).expect("Nearby ship must be in KnowledgeStore");
+    let lag = clock - snap.observed_at;
+    // Light delay for ~0.01 LY = ceil(0.01 * 60) = 1 hd; allow some slack.
+    assert!(lag <= 5,
+        "Nearby SubLight ship snapshot should have negligible lag, got {}", lag);
+}
+
+/// #185 + #188: Loitering ships are also reported through KnowledgeStore with the
+/// correct light-speed delay computed from their loitering position.
+#[test]
+fn test_loitering_ship_knowledge_uses_light_speed_delay() {
+    use macrocosmo::knowledge::ShipSnapshotState;
+
+    // test_app() spawns the empire entity.
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    let loiter_pos = [10.0, 0.0, 0.0];
+    let ship_entity = app.world_mut().spawn((
+        Ship {
+            name: "Deep-Loiter".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+        },
+        ShipState::Loitering { position: loiter_pos },
+        Position::from(loiter_pos),
+        ShipHitpoints {
+            hull: 50.0, hull_max: 50.0,
+            armor: 0.0, armor_max: 0.0,
+            shield: 0.0, shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::default(),
+    )).id();
+
+    // Before light delay (10 LY = 600 hd): no knowledge.
+    advance_time(&mut app, 100);
+    {
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        assert!(
+            store.get_ship(ship_entity).is_none(),
+            "Loitering ship must not be in KnowledgeStore before light delay"
+        );
+    }
+
+    // After light delay: knowledge with Loitering snapshot variant.
+    advance_time(&mut app, 700);
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store.get_ship(ship_entity).expect("Should have Loitering snapshot");
+    match &snap.last_known_state {
+        ShipSnapshotState::Loitering { position } => {
+            assert!((position[0] - loiter_pos[0]).abs() < 1e-9);
+        }
+        other => panic!("Expected Loitering snapshot state, got {:?}", other),
+    }
+    assert_eq!(snap.last_known_system, None);
 }
 

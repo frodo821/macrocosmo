@@ -81,6 +81,18 @@ pub fn sublight_movement_system(
                     description: format!("{} arrived at {}", ship.name, sys_name),
                     related_system: Some(system),
                 });
+            } else {
+                // #185: Deep-space arrival — enter Loitering instead of staying SubLight.
+                *state = ShipState::Loitering { position: destination };
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ShipArrived,
+                    description: format!(
+                        "{} arrived at deep-space coordinates ({:.2}, {:.2}, {:.2})",
+                        ship.name, destination[0], destination[1], destination[2]
+                    ),
+                    related_system: None,
+                });
             }
             continue;
         }
@@ -99,6 +111,18 @@ pub fn sublight_movement_system(
                     kind: GameEventKind::ShipArrived,
                     description: format!("{} arrived at {}", ship.name, sys_name),
                     related_system: Some(system),
+                });
+            } else {
+                // #185: Deep-space arrival — enter Loitering instead of staying SubLight.
+                *state = ShipState::Loitering { position: destination };
+                events.write(GameEvent {
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ShipArrived,
+                    description: format!(
+                        "{} arrived at deep-space coordinates ({:.2}, {:.2}, {:.2})",
+                        ship.name, destination[0], destination[1], destination[2]
+                    ),
+                    related_system: None,
                 });
             }
         } else {

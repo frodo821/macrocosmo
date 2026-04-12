@@ -227,6 +227,14 @@ fn build_status_info(
                 progress: Some((elapsed, total, pct)),
             }
         }
+        // #185: Loitering at deep-space coordinates.
+        ShipState::Loitering { position } => ShipStatusInfo {
+            label: format!(
+                "Loitering at ({:.2}, {:.2}, {:.2})",
+                position[0], position[1], position[2]
+            ),
+            progress: None,
+        },
     }
 }
 
@@ -243,6 +251,9 @@ fn format_queued_command(
             format!("Survey {}", system_name(*system, stars))
         }
         QueuedCommand::Colonize { .. } => "Colonize".to_string(),
+        QueuedCommand::MoveToCoordinates { target } => {
+            format!("Move -> ({:.1}, {:.1}, {:.1})", target[0], target[1], target[2])
+        }
     }
 }
 
