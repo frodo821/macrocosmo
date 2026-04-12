@@ -238,6 +238,11 @@ pub struct Ship {
     pub player_aboard: bool,
     /// #64: System entity where maintenance is charged
     pub home_port: Entity,
+    /// #123: Last `ShipDesignDefinition.revision` this ship was synchronized
+    /// with. When the underlying design's revision moves ahead, the ship is
+    /// flagged as "needs refit" in the UI and can have the new design
+    /// applied via the Apply Refit action.
+    pub design_revision: u64,
 }
 
 #[derive(Component)]
@@ -268,12 +273,16 @@ pub enum ShipState {
         started_at: i64,
         completes_at: i64,
     },
-    /// #98: Ship is being refitted (module swap)
+    /// #98 / #123: Ship is being refitted to match its current design.
+    /// `target_revision` is the `ShipDesignDefinition.revision` recorded
+    /// when refit started; on completion the ship's `design_revision` is
+    /// set to this value and `new_modules` replaces the equipped modules.
     Refitting {
         system: Entity,
         started_at: i64,
         completes_at: i64,
         new_modules: Vec<EquippedModule>,
+        target_revision: u64,
     },
 }
 
@@ -313,18 +322,24 @@ pub fn spawn_ship(
     let hull_id = design.map(|d| d.hull_id.as_str()).unwrap_or("corvette").to_string();
     let sublight_speed = design.map(|d| d.sublight_speed).unwrap_or(0.75);
     let ftl_range = design.map(|d| d.ftl_range).unwrap_or(10.0);
+    // #123: Newly built ships are spawned in sync with the current design revision.
+    let design_revision = design.map(|d| d.revision).unwrap_or(0);
+    // Equip ships from the design's slot assignments so they start out matching
+    // the design exactly (no spurious "needs refit" right after construction).
+    let modules = design.map(crate::ship_design::design_equipped_modules).unwrap_or_default();
     commands
         .spawn((
             Ship {
                 name,
                 design_id: design_id.to_string(),
                 hull_id,
-                modules: Vec::new(),
+                modules,
                 owner,
                 sublight_speed,
                 ftl_range,
                 player_aboard: false,
                 home_port: system,
+                design_revision,
             },
             ShipState::Docked { system },
             initial_position,
@@ -369,6 +384,7 @@ mod tests {
             hp: 50.0,
             sublight_speed: 0.75,
             ftl_range: 10.0,
+            revision: 0,
         });
         registry.insert(ShipDesignDefinition {
             id: "colony_ship_mk1".to_string(),
@@ -385,6 +401,7 @@ mod tests {
             hp: 100.0,
             sublight_speed: 0.5,
             ftl_range: 15.0,
+            revision: 0,
         });
         registry.insert(ShipDesignDefinition {
             id: "courier_mk1".to_string(),
@@ -401,6 +418,7 @@ mod tests {
             hp: 35.0,
             sublight_speed: 0.80,
             ftl_range: 0.0,
+            revision: 0,
         });
         registry.insert(ShipDesignDefinition {
             id: "scout_mk1".to_string(),
@@ -417,6 +435,7 @@ mod tests {
             hp: 40.0,
             sublight_speed: 0.85,
             ftl_range: 10.0,
+            revision: 0,
         });
         registry
     }
@@ -434,6 +453,7 @@ mod tests {
             ftl_range: design.ftl_range,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         }
     }
 

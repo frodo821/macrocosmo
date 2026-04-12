@@ -33,6 +33,7 @@ fn spawn_ftl_explorer(
                 ftl_range: 15.0,
                 player_aboard: false,
                 home_port: system,
+                design_revision: 0,
             },
             ShipState::Docked { system },
             Position::from(pos),
@@ -92,6 +93,7 @@ fn test_sublight_travel_and_arrival() {
             ftl_range: 0.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         },
         ShipState::SubLight {
             origin: [0.0, 0.0, 0.0],
@@ -155,6 +157,7 @@ fn test_survey_completes_and_marks_system() {
             ftl_range: 0.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         },
         ShipState::Surveying {
             target_system: sys_b,
@@ -223,6 +226,7 @@ fn test_ftl_travel_and_arrival() {
             ftl_range: 30.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         },
         ShipState::InFTL {
             origin_system: sys_a,
@@ -363,6 +367,7 @@ fn test_empire_owned_ships() {
             ftl_range: 10.0,
             player_aboard: false,
             home_port: sys,
+            design_revision: 0,
         },
         ShipState::Docked { system: sys },
         Position::from([0.0, 0.0, 0.0]),
@@ -455,6 +460,7 @@ fn test_ftl_range_bonus_extends_range() {
             ftl_range: 10.0,
             player_aboard: false,
             home_port: sys_a,
+            design_revision: 0,
         },
         ShipState::Docked { system: sys_a },
         Position::from([0.0, 0.0, 0.0]),
@@ -1445,6 +1451,7 @@ fn test_hull_modifiers_applied_to_ship() {
                     ftl_range: 10.0,
                     player_aboard: false,
                     home_port: sys,
+                    design_revision: 0,
                 },
                 ShipState::Docked { system: sys },
                 Position::from([0.0, 0.0, 0.0]),
@@ -1794,4 +1801,272 @@ fn courier_route_knowledge_relay_pickup_refreshes_received_at() {
     assert!(!bag.entries.is_empty(), "bag should have copied store entries on pickup");
     let sys_a_entry = bag.entries.iter().find(|k| k.system == sys_a).expect("sys_a entry");
     assert_eq!(sys_a_entry.received_at, 100, "received_at should refresh to current time on pickup");
+}
+
+// ---------------------------------------------------------------------------
+// #123: Design-based refit tests
+// ---------------------------------------------------------------------------
+
+/// Build a minimal hull/module/design fixture used by the refit tests below.
+/// The design "rev_test" is a corvette with a single weapon slot and is
+/// installed in the registry at revision 0.
+fn install_refit_fixture(app: &mut App) {
+    use macrocosmo::ship_design::*;
+    let mut hulls = HullRegistry::default();
+    hulls.insert(HullDefinition {
+        id: "corvette".into(),
+        name: "Corvette".into(),
+        description: String::new(),
+        base_hp: 50.0,
+        base_speed: 0.75,
+        base_evasion: 30.0,
+        slots: vec![HullSlot { slot_type: "weapon".into(), count: 1 }],
+        build_cost_minerals: Amt::units(200),
+        build_cost_energy: Amt::units(100),
+        build_time: 60,
+        maintenance: Amt::new(0, 500),
+        modifiers: vec![],
+    });
+
+    let mut modules = ModuleRegistry::default();
+    let mk = |id: &str, mineral: u64, energy: u64| ModuleDefinition {
+        id: id.into(),
+        name: id.into(),
+        description: String::new(),
+        slot_type: "weapon".into(),
+        modifiers: vec![],
+        weapon: None,
+        cost_minerals: Amt::units(mineral),
+        cost_energy: Amt::units(energy),
+        prerequisite_tech: None,
+        upgrade_to: Vec::new(),
+    };
+    modules.insert(mk("laser_mk1", 50, 20));
+    modules.insert(mk("laser_mk2", 80, 30));
+
+    let mut designs = ShipDesignRegistry::default();
+    designs.insert(ShipDesignDefinition {
+        id: "rev_test".into(),
+        name: "Rev Test".into(),
+        description: String::new(),
+        hull_id: "corvette".into(),
+        modules: vec![DesignSlotAssignment {
+            slot_type: "weapon".into(),
+            module_id: "laser_mk1".into(),
+        }],
+        can_survey: false,
+        can_colonize: false,
+        maintenance: Amt::new(0, 500),
+        build_cost_minerals: Amt::units(200),
+        build_cost_energy: Amt::units(100),
+        build_time: 60,
+        hp: 50.0,
+        sublight_speed: 0.75,
+        ftl_range: 0.0,
+        revision: 0,
+    });
+
+    app.insert_resource(hulls);
+    app.insert_resource(modules);
+    app.insert_resource(designs);
+}
+
+fn spawn_rev_test_ship(world: &mut World, system: Entity, design_revision: u64) -> Entity {
+    world
+        .spawn((
+            Ship {
+                name: "Test".to_string(),
+                design_id: "rev_test".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: vec![EquippedModule {
+                    slot_type: "weapon".into(),
+                    module_id: "laser_mk1".into(),
+                }],
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: system,
+                design_revision,
+            },
+            ShipState::Docked { system },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 50.0, hull_max: 50.0,
+                armor: 0.0, armor_max: 0.0,
+                shield: 0.0, shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            CommandQueue::default(),
+            Cargo::default(),
+            ShipModifiers::default(),
+            ShipStats::default(),
+            RulesOfEngagement::default(),
+        ))
+        .id()
+}
+
+#[test]
+fn editing_design_bumps_revision_flagging_existing_ships() {
+    use macrocosmo::ship_design::{
+        DesignSlotAssignment, ShipDesignDefinition, ShipDesignRegistry,
+    };
+    let mut app = test_app();
+    install_refit_fixture(&mut app);
+
+    let sys = app.world_mut().spawn((
+        StarSystem { name: "S".into(), star_type: "g_main".into(), is_capital: false, surveyed: true },
+        Position::from([0.0, 0.0, 0.0]),
+    )).id();
+
+    let ship = spawn_rev_test_ship(app.world_mut(), sys, 0);
+
+    // Initially: ship.design_revision == design.revision == 0.
+    let registry = app.world().resource::<ShipDesignRegistry>();
+    let design = registry.get("rev_test").unwrap();
+    let ship_rev = app.world().get::<Ship>(ship).unwrap().design_revision;
+    assert_eq!(ship_rev, design.revision);
+
+    // Edit the design via the registry's upsert helper — this is what the
+    // Ship Designer's SaveDesign action ultimately invokes.
+    let mut edited = design.clone();
+    edited.modules = vec![DesignSlotAssignment {
+        slot_type: "weapon".into(),
+        module_id: "laser_mk2".into(),
+    }];
+    let mut registry = app.world_mut().resource_mut::<ShipDesignRegistry>();
+    let new_rev = registry.upsert_edited(edited);
+    assert_eq!(new_rev, 1);
+
+    // Ship's recorded revision should now be behind the registry's.
+    let design = app.world().resource::<ShipDesignRegistry>().get("rev_test").unwrap();
+    let ship_rev = app.world().get::<Ship>(ship).unwrap().design_revision;
+    assert!(
+        ship_rev < design.revision,
+        "ship should be flagged as needing refit (ship={} < design={})",
+        ship_rev, design.revision,
+    );
+}
+
+#[test]
+fn refit_completes_brings_ship_in_sync_with_design() {
+    use macrocosmo::ship_design::{
+        DesignSlotAssignment, ShipDesignRegistry,
+    };
+    let mut app = test_app();
+    install_refit_fixture(&mut app);
+
+    let sys = app.world_mut().spawn((
+        StarSystem { name: "S".into(), star_type: "g_main".into(), is_capital: false, surveyed: true },
+        Position::from([0.0, 0.0, 0.0]),
+    )).id();
+
+    let ship = spawn_rev_test_ship(app.world_mut(), sys, 0);
+
+    // Edit the design (revision 0 -> 1) and capture the new modules.
+    let mut design = app.world().resource::<ShipDesignRegistry>()
+        .get("rev_test").unwrap().clone();
+    design.modules = vec![DesignSlotAssignment {
+        slot_type: "weapon".into(),
+        module_id: "laser_mk2".into(),
+    }];
+    let target_revision = {
+        let mut r = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        r.upsert_edited(design.clone())
+    };
+
+    // Manually push the ship into a Refitting state mirroring what
+    // `apply_design_refit` would do.
+    let now = app.world().resource::<GameClock>().elapsed;
+    let target_modules: Vec<EquippedModule> = design
+        .modules
+        .iter()
+        .map(|a| EquippedModule {
+            slot_type: a.slot_type.clone(),
+            module_id: a.module_id.clone(),
+        })
+        .collect();
+    let refit_time = 10;
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Refitting {
+        system: sys,
+        started_at: now,
+        completes_at: now + refit_time,
+        new_modules: target_modules,
+        target_revision,
+    };
+
+    // Advance time past completion and tick.
+    advance_time(&mut app, refit_time + 1);
+
+    // Ship should be docked again, with the new module and updated revision.
+    let ship_comp = app.world().get::<Ship>(ship).unwrap();
+    assert_eq!(ship_comp.design_revision, target_revision);
+    assert_eq!(ship_comp.modules.len(), 1);
+    assert_eq!(ship_comp.modules[0].module_id, "laser_mk2");
+    assert!(matches!(
+        app.world().get::<ShipState>(ship),
+        Some(ShipState::Docked { .. })
+    ));
+}
+
+#[test]
+fn refit_in_flight_does_not_apply_when_design_edited_again() {
+    // If the design is bumped *during* a refit, the ship still completes
+    // refit to the revision recorded when refit started — it remains "behind"
+    // the latest design but isn't stuck at the older revision either.
+    use macrocosmo::ship_design::{
+        DesignSlotAssignment, ShipDesignRegistry,
+    };
+    let mut app = test_app();
+    install_refit_fixture(&mut app);
+
+    let sys = app.world_mut().spawn((
+        StarSystem { name: "S".into(), star_type: "g_main".into(), is_capital: false, surveyed: true },
+        Position::from([0.0, 0.0, 0.0]),
+    )).id();
+    let ship = spawn_rev_test_ship(app.world_mut(), sys, 0);
+
+    // Bump design once and start refit at target=1.
+    {
+        let mut r = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        let mut d = r.get("rev_test").unwrap().clone();
+        d.modules = vec![DesignSlotAssignment {
+            slot_type: "weapon".into(),
+            module_id: "laser_mk2".into(),
+        }];
+        let _ = r.upsert_edited(d);
+    }
+    let now = app.world().resource::<GameClock>().elapsed;
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Refitting {
+        system: sys,
+        started_at: now,
+        completes_at: now + 5,
+        new_modules: vec![EquippedModule {
+            slot_type: "weapon".into(), module_id: "laser_mk2".into(),
+        }],
+        target_revision: 1,
+    };
+
+    // Bump the design again mid-refit to revision 2.
+    {
+        let mut r = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        let mut d = r.get("rev_test").unwrap().clone();
+        d.modules = vec![DesignSlotAssignment {
+            slot_type: "weapon".into(),
+            module_id: "laser_mk1".into(),
+        }];
+        let new_rev = r.upsert_edited(d);
+        assert_eq!(new_rev, 2);
+    }
+
+    advance_time(&mut app, 6);
+
+    let ship_comp = app.world().get::<Ship>(ship).unwrap();
+    // Ship is at target_revision 1, still behind the live design (2) — that's
+    // the expected behavior: a fresh refit must be triggered.
+    assert_eq!(ship_comp.design_revision, 1);
+    let live_rev = app.world().resource::<ShipDesignRegistry>()
+        .get("rev_test").unwrap().revision;
+    assert_eq!(live_rev, 2);
+    assert!(ship_comp.design_revision < live_rev);
 }

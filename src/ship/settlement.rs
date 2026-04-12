@@ -170,16 +170,18 @@ pub fn process_refitting(
     mut events: MessageWriter<GameEvent>,
     systems: Query<&StarSystem>,
 ) {
-    for (entity, mut ship, mut state) in &mut ships {
-        let (system, completes_at, new_modules) = match &*state {
-            ShipState::Refitting { system, completes_at, new_modules, .. } => {
-                (*system, *completes_at, new_modules.clone())
+    for (_entity, mut ship, mut state) in &mut ships {
+        let (system, completes_at, new_modules, target_revision) = match &*state {
+            ShipState::Refitting { system, completes_at, new_modules, target_revision, .. } => {
+                (*system, *completes_at, new_modules.clone(), *target_revision)
             }
             _ => continue,
         };
 
         if clock.elapsed >= completes_at {
             ship.modules = new_modules;
+            // #123: Mark ship as in sync with the design revision we refit to.
+            ship.design_revision = target_revision;
             *state = ShipState::Docked { system };
 
             let system_name = systems

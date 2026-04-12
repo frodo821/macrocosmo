@@ -17,6 +17,11 @@ pub struct ShipDesignerState {
     /// Module selection per slot: index is the expanded slot index, value is the module_id.
     pub selected_modules: Vec<Option<String>>,
     pub design_name: String,
+    /// #123: When `Some`, the designer is editing the design with this ID.
+    /// Saving will update that design in place and bump its `revision`,
+    /// flagging existing ships of that design as "needs refit".
+    /// When `None`, saving creates a new design (id derived from the name).
+    pub editing_design_id: Option<String>,
 }
 
 impl Default for ShipDesignerState {
@@ -26,6 +31,7 @@ impl Default for ShipDesignerState {
             selected_hull: None,
             selected_modules: Vec::new(),
             design_name: String::new(),
+            editing_design_id: None,
         }
     }
 }
@@ -56,6 +62,78 @@ pub fn draw_ship_designer(
         .resizable(true)
         .default_size([420.0, 480.0])
         .show(ctx, |ui| {
+            // #123: Existing design picker (edit-in-place support).
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Edit existing:").strong());
+                let editing_label = state
+                    .editing_design_id
+                    .as_ref()
+                    .and_then(|id| design_registry.get(id))
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| "(new design)".to_string());
+                egui::ComboBox::from_id_salt("designer_edit_existing")
+                    .selected_text(&editing_label)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(
+                                state.editing_design_id.is_none(),
+                                "(new design)",
+                            )
+                            .clicked()
+                        {
+                            state.editing_design_id = None;
+                            state.selected_hull = None;
+                            state.selected_modules.clear();
+                            state.design_name.clear();
+                        }
+                        let mut design_ids = design_registry.all_design_ids();
+                        design_ids.sort();
+                        for did in &design_ids {
+                            let Some(def) = design_registry.get(did) else {
+                                continue;
+                            };
+                            let is_selected = state.editing_design_id.as_deref() == Some(did);
+                            if ui.selectable_label(is_selected, &def.name).clicked() && !is_selected {
+                                // Populate state from the chosen design.
+                                state.editing_design_id = Some(def.id.clone());
+                                state.selected_hull = Some(def.hull_id.clone());
+                                state.design_name = def.name.clone();
+                                if let Some(hull) = hull_registry.get(&def.hull_id) {
+                                    let total_slots: usize =
+                                        hull.slots.iter().map(|s| s.count as usize).sum();
+                                    let mut selections = vec![None; total_slots];
+                                    // Greedy fill: walk per-slot-type and assign in order.
+                                    let mut slot_idx = 0;
+                                    for hull_slot in &hull.slots {
+                                        let mut taken = 0u32;
+                                        for assignment in def.modules.iter() {
+                                            if assignment.slot_type == hull_slot.slot_type
+                                                && taken < hull_slot.count
+                                            {
+                                                selections[slot_idx + taken as usize] =
+                                                    Some(assignment.module_id.clone());
+                                                taken += 1;
+                                            }
+                                        }
+                                        slot_idx += hull_slot.count as usize;
+                                    }
+                                    state.selected_modules = selections;
+                                }
+                            }
+                        }
+                    });
+                if state.editing_design_id.is_some()
+                    && ui.button("New").clicked()
+                {
+                    state.editing_design_id = None;
+                    state.selected_hull = None;
+                    state.selected_modules.clear();
+                    state.design_name.clear();
+                }
+            });
+
+            ui.separator();
+
             // Hull selection
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Hull:").strong());
@@ -216,85 +294,86 @@ pub fn draw_ship_designer(
 
                     let can_save = name_valid && has_modules;
 
+                    let save_label = if state.editing_design_id.is_some() {
+                        "Save Design (bumps revision)"
+                    } else {
+                        "Save Design"
+                    };
                     if ui
-                        .add_enabled(can_save, egui::Button::new("Save Design"))
+                        .add_enabled(can_save, egui::Button::new(save_label))
                         .clicked()
                     {
-                        // Build the design definition
-                        let design_id = format!(
-                            "custom_{}",
-                            state
-                                .design_name
-                                .trim()
-                                .to_lowercase()
-                                .replace(' ', "_")
-                        );
-
-                        // Check for duplicate ID
-                        if design_registry.get(&design_id).is_some() {
-                            // Just append a number to make it unique
-                            let mut counter = 2;
-                            let mut unique_id = format!("{}_{}", design_id, counter);
-                            while design_registry.get(&unique_id).is_some() {
-                                counter += 1;
-                                unique_id = format!("{}_{}", design_id, counter);
-                            }
-                            let modules = build_design_modules(state, hull);
-                            let mod_defs: Vec<_> = modules.iter()
-                                .filter_map(|a| module_registry.get(&a.module_id))
-                                .collect();
-                            let (cost_m, cost_e, build_time, maintenance) = crate::ship_design::design_cost(hull, &mod_defs);
-                            let (hp, sublight_speed, _evasion) = crate::ship_design::design_stats(hull, &mod_defs);
-                            let ftl_range = mod_defs.iter()
-                                .flat_map(|m| m.modifiers.iter())
-                                .filter(|m| m.target == "ship.ftl_range")
-                                .map(|m| m.base_add)
-                                .sum::<f64>();
-                            action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
-                                id: unique_id,
-                                name: state.design_name.trim().to_string(),
-                                description: String::new(),
-                                hull_id: hull.id.clone(),
-                                modules,
-                                can_survey: false,
-                                can_colonize: false,
-                                maintenance,
-                                build_cost_minerals: cost_m,
-                                build_cost_energy: cost_e,
-                                build_time,
-                                hp,
-                                sublight_speed,
-                                ftl_range,
-                            });
+                        // #123: When editing an existing design, keep its ID
+                        // so the registry replaces in-place and bumps the
+                        // revision counter (flagging existing ships of that
+                        // design as needing refit). Otherwise allocate a
+                        // fresh `custom_<name>` ID, deduplicating against
+                        // the registry.
+                        let design_id = if let Some(id) = state.editing_design_id.as_ref() {
+                            id.clone()
                         } else {
-                            let modules = build_design_modules(state, hull);
-                            let mod_defs: Vec<_> = modules.iter()
-                                .filter_map(|a| module_registry.get(&a.module_id))
-                                .collect();
-                            let (cost_m, cost_e, build_time, maintenance) = crate::ship_design::design_cost(hull, &mod_defs);
-                            let (hp, sublight_speed, _evasion) = crate::ship_design::design_stats(hull, &mod_defs);
-                            let ftl_range = mod_defs.iter()
-                                .flat_map(|m| m.modifiers.iter())
-                                .filter(|m| m.target == "ship.ftl_range")
-                                .map(|m| m.base_add)
-                                .sum::<f64>();
-                            action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
-                                id: design_id,
-                                name: state.design_name.trim().to_string(),
-                                description: String::new(),
-                                hull_id: hull.id.clone(),
-                                modules,
-                                can_survey: false,
-                                can_colonize: false,
-                                maintenance,
-                                build_cost_minerals: cost_m,
-                                build_cost_energy: cost_e,
-                                build_time,
-                                hp,
-                                sublight_speed,
-                                ftl_range,
-                            });
-                        }
+                            let base = format!(
+                                "custom_{}",
+                                state
+                                    .design_name
+                                    .trim()
+                                    .to_lowercase()
+                                    .replace(' ', "_")
+                            );
+                            if design_registry.get(&base).is_some() {
+                                let mut counter = 2;
+                                let mut unique_id = format!("{}_{}", base, counter);
+                                while design_registry.get(&unique_id).is_some() {
+                                    counter += 1;
+                                    unique_id = format!("{}_{}", base, counter);
+                                }
+                                unique_id
+                            } else {
+                                base
+                            }
+                        };
+
+                        let modules = build_design_modules(state, hull);
+                        let mod_defs: Vec<_> = modules
+                            .iter()
+                            .filter_map(|a| module_registry.get(&a.module_id))
+                            .collect();
+                        let (cost_m, cost_e, build_time, maintenance) =
+                            crate::ship_design::design_cost(hull, &mod_defs);
+                        let (hp, sublight_speed, _evasion) =
+                            crate::ship_design::design_stats(hull, &mod_defs);
+                        let ftl_range = mod_defs
+                            .iter()
+                            .flat_map(|m| m.modifiers.iter())
+                            .filter(|m| m.target == "ship.ftl_range")
+                            .map(|m| m.base_add)
+                            .sum::<f64>();
+                        // Preserve survey/colonize capability when editing in
+                        // place; default to false for brand-new designs.
+                        let (can_survey, can_colonize) = state
+                            .editing_design_id
+                            .as_ref()
+                            .and_then(|id| design_registry.get(id))
+                            .map(|d| (d.can_survey, d.can_colonize))
+                            .unwrap_or((false, false));
+                        action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
+                            id: design_id,
+                            name: state.design_name.trim().to_string(),
+                            description: String::new(),
+                            hull_id: hull.id.clone(),
+                            modules,
+                            can_survey,
+                            can_colonize,
+                            maintenance,
+                            build_cost_minerals: cost_m,
+                            build_cost_energy: cost_e,
+                            build_time,
+                            hp,
+                            sublight_speed,
+                            ftl_range,
+                            // Revision is filled in by `upsert_edited`.
+                            revision: 0,
+                        });
                     }
 
                     if ui.button("Cancel").clicked() {

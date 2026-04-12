@@ -26,14 +26,46 @@ pub struct ShipScrapAction {
     pub energy_refund: Amt,
 }
 
-/// Action for starting a refit on a docked ship.
+/// #123: Action for applying the current registered design to a docked ship.
+/// All cost / module computation is re-resolved at apply time using the
+/// ship's `design_id`, so this carries only the identifying information.
 pub struct ShipRefitAction {
     pub ship_entity: Entity,
     pub system_entity: Entity,
-    pub new_modules: Vec<crate::ship::EquippedModule>,
-    pub refit_time: i64,
-    pub cost_minerals: Amt,
-    pub cost_energy: Amt,
+}
+
+/// #123: Apply Refit to every refit-eligible ship in a fleet, in one batch.
+/// Each ship is processed independently — if some can't afford it, others
+/// still proceed (in registry-order). Resolution happens at apply time.
+pub struct FleetRefitAction {
+    pub fleet_entity: Entity,
+}
+
+/// #123: Display data for the design-based refit panel.
+struct RefitInfo {
+    /// The design's current revision (the one we'd refit *to*).
+    target_revision: u64,
+    /// The ship's current revision (revisions behind = `target - current`).
+    current_revision: u64,
+    /// Display name of the design (e.g. "Explorer Mk.I").
+    design_name: String,
+    cost_minerals: Amt,
+    cost_energy: Amt,
+    refit_time: i64,
+}
+
+/// #123: Aggregate summary of fleet-wide refit availability for the panel.
+struct FleetRefitSummary {
+    fleet_entity: Entity,
+    fleet_name: String,
+    /// Number of fleet members that are docked AND have an outdated design.
+    eligible_count: usize,
+    /// Sum of refit costs across all eligible members.
+    total_cost_minerals: Amt,
+    total_cost_energy: Amt,
+    /// Worst (longest) refit time across eligible members — fleet refit
+    /// completes when the slowest member is done.
+    max_refit_time: i64,
 }
 
 /// All actions that can be triggered from the ship panel UI.
@@ -45,6 +77,8 @@ pub struct ShipPanelActions {
     pub clear_commands: bool,
     pub cancel_current: bool,
     pub refit: Option<ShipRefitAction>,
+    /// #123: Apply Refit to all refit-eligible ships in a fleet.
+    pub fleet_refit: Option<FleetRefitAction>,
     /// #57: ROE change action — (ship_entity, new_roe, command_delay)
     pub set_roe: Option<(Entity, RulesOfEngagement, i64)>,
     /// #59: Player wants to board the selected ship
@@ -267,6 +301,8 @@ pub fn draw_ship_panel(
     player_aboard_ship: Option<Entity>,
     courier_routes: &Query<&CourierRoute>,
     selected_system: Option<Entity>,
+    fleet_memberships: &Query<&crate::ship::FleetMembership>,
+    fleets: &Query<&crate::ship::Fleet>,
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -315,6 +351,78 @@ pub fn draw_ship_panel(
         let ship_modules: Vec<crate::ship::EquippedModule> = ship.modules.clone();
         // #98: Is the ship refitting?
         let is_refitting = matches!(&*state, ShipState::Refitting { .. });
+        // #123: Pre-compute design-based refit eligibility / cost / time so the
+        // panel can present a one-button "Apply Refit" once the design has
+        // moved ahead of the ship.
+        let refit_info: Option<RefitInfo> = (|| {
+            let design = design_registry.get(&ship.design_id)?;
+            if design.revision <= ship.design_revision {
+                return None;
+            }
+            let hull = hull_registry.get(&ship.hull_id)?;
+            let (cost_m, cost_e, time) = crate::ship_design::refit_cost_to_design(
+                &ship.modules,
+                design,
+                hull,
+                module_registry,
+            );
+            Some(RefitInfo {
+                target_revision: design.revision,
+                current_revision: ship.design_revision,
+                design_name: design.name.clone(),
+                cost_minerals: cost_m,
+                cost_energy: cost_e,
+                refit_time: time,
+            })
+        })();
+        // #123: Fleet membership + per-fleet refit summary (if applicable).
+        let fleet_refit_summary: Option<FleetRefitSummary> = fleet_memberships
+            .get(ship_entity)
+            .ok()
+            .and_then(|m| {
+                let fleet = fleets.get(m.fleet).ok()?;
+                let mut eligible = 0usize;
+                let mut total_m = Amt::ZERO;
+                let mut total_e = Amt::ZERO;
+                let mut max_time: i64 = 0;
+                for member in &fleet.members {
+                    let Ok((_, m_ship, m_state, _, _, _)) = ships_query.get(*member) else {
+                        continue;
+                    };
+                    let Some(m_design) = design_registry.get(&m_ship.design_id) else {
+                        continue;
+                    };
+                    if m_design.revision <= m_ship.design_revision {
+                        continue;
+                    }
+                    if !matches!(&*m_state, ShipState::Docked { .. }) {
+                        continue;
+                    }
+                    let Some(m_hull) = hull_registry.get(&m_ship.hull_id) else {
+                        continue;
+                    };
+                    let (cm, ce, t) = crate::ship_design::refit_cost_to_design(
+                        &m_ship.modules,
+                        m_design,
+                        m_hull,
+                        module_registry,
+                    );
+                    eligible += 1;
+                    total_m = total_m.add(cm);
+                    total_e = total_e.add(ce);
+                    if t > max_time {
+                        max_time = t;
+                    }
+                }
+                Some(FleetRefitSummary {
+                    fleet_entity: m.fleet,
+                    fleet_name: fleet.name.clone(),
+                    eligible_count: eligible,
+                    total_cost_minerals: total_m,
+                    total_cost_energy: total_e,
+                    max_refit_time: max_time,
+                })
+            });
         // #57: Current ROE
         let current_roe = roe_query.get(ship_entity).copied().unwrap_or_default();
         // #57: Command delay for ROE changes
@@ -375,6 +483,8 @@ pub fn draw_ship_panel(
             ship_hull_id,
             ship_modules,
             is_refitting,
+            refit_info,
+            fleet_refit_summary,
             current_roe,
             roe_command_delay,
             is_player_aboard,
@@ -407,9 +517,11 @@ pub fn draw_ship_panel(
         pending_arrives_at,
         has_survey_data,
         survey_data_system,
-        ship_hull_id,
+        _ship_hull_id,
         ship_modules,
         is_refitting,
+        refit_info,
+        fleet_refit_summary,
         current_roe,
         roe_command_delay,
         is_player_aboard,
@@ -671,150 +783,73 @@ pub fn draw_ship_panel(
                 }
             }
 
-            // #98: Refit UI (only when docked at a colony and not already refitting)
-            if let Some(dock_system) = docked_at_colony {
-                if !is_refitting {
-                    if let Some(hull_def) = hull_registry.get(&ship_hull_id) {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Refit").strong());
-
-                        // Use egui temp memory to track refit module selections
-                        let refit_id = egui::Id::new(("refit_modules", ship_entity));
-                        let mut refit_selections: Vec<Option<String>> = ui
-                            .memory(|m| m.data.get_temp(refit_id))
-                            .unwrap_or_else(|| {
-                                // Initialize from current modules
-                                let mut selections = Vec::new();
-                                let mut mod_idx = 0;
-                                for hull_slot in &hull_def.slots {
-                                    for _ in 0..hull_slot.count {
-                                        let current = ship_modules.get(mod_idx)
-                                            .filter(|em| em.slot_type == hull_slot.slot_type)
-                                            .map(|em| em.module_id.clone());
-                                        selections.push(current);
-                                        mod_idx += 1;
-                                    }
-                                }
-                                selections
-                            });
-
-                        let mut slot_idx = 0;
-                        for hull_slot in &hull_def.slots {
-                            for i in 0..hull_slot.count {
-                                let slot_label = if hull_slot.count > 1 {
-                                    format!("[{}] {}_{}", hull_slot.slot_type.chars().next().unwrap_or('?').to_uppercase(), hull_slot.slot_type, i + 1)
-                                } else {
-                                    format!("[{}] {}", hull_slot.slot_type.chars().next().unwrap_or('?').to_uppercase(), hull_slot.slot_type)
-                                };
-
-                                let current_name = refit_selections
-                                    .get(slot_idx)
-                                    .and_then(|opt| opt.as_ref())
-                                    .and_then(|id| module_registry.get(id))
-                                    .map(|m| m.name.clone())
-                                    .unwrap_or_else(|| "(empty)".to_string());
-
-                                ui.horizontal(|ui| {
-                                    ui.label(&slot_label);
-                                    let combo_id = format!("refit_slot_{}", slot_idx);
-                                    egui::ComboBox::from_id_salt(combo_id)
-                                        .selected_text(&current_name)
-                                        .show_ui(ui, |ui| {
-                                            if ui.selectable_label(
-                                                refit_selections.get(slot_idx).and_then(|o| o.as_ref()).is_none(),
-                                                "(empty)",
-                                            ).clicked() {
-                                                if slot_idx < refit_selections.len() {
-                                                    refit_selections[slot_idx] = None;
-                                                }
-                                            }
-                                            let mut mod_ids: Vec<_> = module_registry
-                                                .modules.iter()
-                                                .filter(|(_, m)| m.slot_type == hull_slot.slot_type)
-                                                .map(|(id, _)| id.clone())
-                                                .collect();
-                                            mod_ids.sort();
-                                            for mod_id in mod_ids {
-                                                let module = &module_registry.modules[&mod_id];
-                                                let is_selected = refit_selections
-                                                    .get(slot_idx)
-                                                    .and_then(|o| o.as_ref()) == Some(&mod_id);
-                                                if ui.selectable_label(is_selected, &module.name).clicked() {
-                                                    if slot_idx < refit_selections.len() {
-                                                        refit_selections[slot_idx] = Some(mod_id.clone());
-                                                    }
-                                                }
-                                            }
-                                        });
-                                });
-                                slot_idx += 1;
-                            }
-                        }
-
-                        // Calculate refit cost
-                        let old_mods: Vec<_> = ship_modules.iter()
-                            .filter_map(|em| module_registry.get(&em.module_id))
-                            .collect();
-                        let new_mods: Vec<_> = refit_selections.iter()
-                            .filter_map(|opt| opt.as_ref())
-                            .filter_map(|id| module_registry.get(id))
-                            .collect();
-                        let (refit_m, refit_e, refit_time) = crate::ship_design::refit_cost(&old_mods, &new_mods, hull_def);
-
-                        ui.label(format!("Refit cost: M:{} E:{} | {} hd", refit_m, refit_e, refit_time));
-
-                        // Check if any module actually changed
-                        let mut has_changes = false;
-                        {
-                            let mut idx = 0;
-                            for hull_slot in &hull_def.slots {
-                                for _ in 0..hull_slot.count {
-                                    let old_mod = ship_modules.get(idx)
-                                        .filter(|em| em.slot_type == hull_slot.slot_type)
-                                        .map(|em| &em.module_id);
-                                    let new_mod = refit_selections.get(idx).and_then(|o| o.as_ref());
-                                    if old_mod != new_mod {
-                                        has_changes = true;
-                                    }
-                                    idx += 1;
-                                }
-                            }
-                        }
-
-                        if ui.add_enabled(has_changes, egui::Button::new("Apply Refit")).clicked() {
-                            // Build new modules list
-                            let mut new_modules = Vec::new();
-                            let mut idx = 0;
-                            for hull_slot in &hull_def.slots {
-                                for _ in 0..hull_slot.count {
-                                    if let Some(Some(mod_id)) = refit_selections.get(idx) {
-                                        new_modules.push(crate::ship::EquippedModule {
-                                            slot_type: hull_slot.slot_type.clone(),
-                                            module_id: mod_id.clone(),
-                                        });
-                                    }
-                                    idx += 1;
-                                }
-                            }
+            // #123: Design-based Refit UI. The ship is refit-eligible when its
+            // recorded `design_revision` is behind the current registered
+            // ShipDesignDefinition (i.e. somebody edited the design via the
+            // Ship Designer). Module selection lives in the Ship Designer
+            // exclusively — this panel only shows the cost summary and
+            // dispatches the apply.
+            if !is_refitting {
+                if let Some(info) = refit_info.as_ref() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Refit Available").strong());
+                    let revisions_behind = info.target_revision.saturating_sub(info.current_revision);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Design '{}' updated ({} revision{} behind)",
+                            info.design_name,
+                            revisions_behind,
+                            if revisions_behind == 1 { "" } else { "s" },
+                        ))
+                        .small()
+                        .italics(),
+                    );
+                    ui.label(format!(
+                        "Refit cost: M:{} E:{} | {} hd",
+                        info.cost_minerals, info.cost_energy, info.refit_time
+                    ));
+                    if let Some(dock_system) = docked_at_colony {
+                        if ui.button("Apply Refit").clicked() {
                             actions.refit = Some(ShipRefitAction {
                                 ship_entity,
                                 system_entity: dock_system,
-                                new_modules,
-                                refit_time,
-                                cost_minerals: refit_m,
-                                cost_energy: refit_e,
                             });
                         }
-
-                        // Store selections in egui temp memory
-                        ui.memory_mut(|m| m.data.insert_temp(refit_id, refit_selections));
+                    } else {
+                        ui.add_enabled(false, egui::Button::new("Apply Refit"))
+                            .on_disabled_hover_text(
+                                "Ship must be docked at a colony to apply refit.",
+                            );
                     }
-                } else {
+                }
+            } else {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("Refitting in progress...")
+                        .color(egui::Color32::from_rgb(255, 220, 80)),
+                );
+            }
+
+            // #123: Fleet-wide refit button (only when the ship belongs to a
+            // fleet that has at least one refit-eligible docked member).
+            if let Some(ref summary) = fleet_refit_summary {
+                if summary.eligible_count > 0 {
                     ui.separator();
                     ui.label(
-                        egui::RichText::new("Refitting in progress...")
-                            .color(egui::Color32::from_rgb(255, 220, 80)),
+                        egui::RichText::new(format!("Fleet '{}'", summary.fleet_name)).strong(),
                     );
+                    ui.label(format!(
+                        "{} member(s) refit-eligible | M:{} E:{} | up to {} hd",
+                        summary.eligible_count,
+                        summary.total_cost_minerals,
+                        summary.total_cost_energy,
+                        summary.max_refit_time,
+                    ));
+                    if ui.button("Apply Refit to Fleet").clicked() {
+                        actions.fleet_refit = Some(FleetRefitAction {
+                            fleet_entity: summary.fleet_entity,
+                        });
+                    }
                 }
             }
 

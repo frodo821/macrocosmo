@@ -408,6 +408,7 @@ mod tests {
             hp: 50.0,
             sublight_speed: 0.75,
             ftl_range: 10.0,
+            revision: 0,
         });
         world.insert_resource(registry);
 

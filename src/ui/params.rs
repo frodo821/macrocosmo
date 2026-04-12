@@ -6,7 +6,7 @@ use crate::colony::{
 };
 use crate::components::Position;
 use crate::galaxy::{Anomalies, HostilePresence, Planet, StarSystem, SystemAttributes};
-use crate::ship::{CourierRoute, PendingShipCommand, RulesOfEngagement};
+use crate::ship::{CourierRoute, Fleet, FleetMembership, PendingShipCommand, RulesOfEngagement};
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
 
@@ -24,6 +24,10 @@ pub struct MainPanelWorldQueries<'w, 's> {
     pub anomalies: Query<'w, 's, &'static Anomalies>,
     /// #117: Courier route data for ship panel display.
     pub courier_routes: Query<'w, 's, &'static CourierRoute>,
+    /// #123: Fleets and their memberships, used by the design-based refit
+    /// panel to compute fleet-wide refit summaries.
+    pub fleets: Query<'w, 's, &'static Fleet>,
+    pub fleet_memberships: Query<'w, 's, &'static FleetMembership>,
 }
 
 #[derive(SystemParam)]
