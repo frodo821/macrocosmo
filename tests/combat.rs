@@ -1460,3 +1460,264 @@ fn test_hostile_cleared_allows_colonization() {
         .count();
     assert_eq!(colony_count, 1, "Colony should be established after hostile is cleared");
 }
+
+// ---------------------------------------------------------------------------
+// #168 — HostilePresence migrated to Faction-gated combat.
+// These tests validate that combat is now resolved through `FactionRelations`
+// rather than by the mere presence of a `HostilePresence` component.
+// ---------------------------------------------------------------------------
+
+/// Spawn a hostile presence with a weak attack and high HP so the test ship
+/// always survives the round; combat triggering is detected by HP delta on
+/// the hostile, not by ship destruction.
+fn spawn_test_hostile(world: &mut World, sys: Entity, hostile_type: HostileType) -> Entity {
+    world
+        .spawn(HostilePresence {
+            system: sys,
+            strength: 0.0,
+            hp: 1000.0,
+            max_hp: 1000.0,
+            hostile_type,
+            evasion: 0.0,
+        })
+        .id()
+}
+
+/// Register a high-precision laser module for combat trigger detection.
+fn install_test_weapon_module(app: &mut App) {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
+            id: "trigger_laser".to_string(),
+            name: "Trigger Laser".to_string(),
+            description: String::new(),
+            slot_type: "weapon".to_string(),
+            modifiers: Vec::new(),
+            weapon: Some(macrocosmo::ship_design::WeaponStats {
+                track: 100.0,
+                precision: 1.0,
+                cooldown: 1,
+                range: 100.0,
+                shield_damage: 1.0,
+                shield_damage_div: 0.0,
+                shield_piercing: 0.0,
+                armor_damage: 1.0,
+                armor_damage_div: 0.0,
+                armor_piercing: 0.0,
+                hull_damage: 1.0,
+                hull_damage_div: 0.0,
+            }),
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisite_tech: None,
+            upgrade_to: Vec::new(),
+        });
+}
+
+/// Spawn an armed ship docked at `sys` with `owner`. Returns the ship entity.
+fn spawn_test_armed_ship(world: &mut World, sys: Entity, owner: Owner) -> Entity {
+    world
+        .spawn((
+            Ship {
+                name: "Test-Warship".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: vec![EquippedModule {
+                    slot_type: "weapon".to_string(),
+                    module_id: "trigger_laser".to_string(),
+                }],
+                owner,
+                sublight_speed: 0.75,
+                ftl_range: 10.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+            },
+            ShipState::Docked { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 100.0,
+                hull_max: 100.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id()
+}
+
+/// #168 — Without faction migration, a `HostilePresence` and a ship co-located
+/// at the same system must not engage. (The legacy `advance_time` helper
+/// auto-migrates, so we drive `app.update()` ourselves to bypass migration.)
+#[test]
+fn test_combat_skipped_when_hostile_lacks_faction_owner() {
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Unmigrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
+
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+
+    // Drive the world directly — bypass the auto-migrating `advance_time`
+    // helper. Hostile has no FactionOwner; ship has no Faction-bearing owner.
+    app.world_mut().resource_mut::<macrocosmo::time_system::GameClock>().elapsed += 1;
+    app.update();
+
+    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    assert!(
+        (h.hp - 1000.0).abs() < f64::EPSILON,
+        "Hostile HP must be untouched when no FactionOwner is attached; got {}",
+        h.hp
+    );
+}
+
+/// #168 — With the standard migration (Neutral / -100 standing) and an
+/// armed empire-owned ship, combat triggers and HP drops as before.
+#[test]
+fn test_combat_triggers_with_default_hostile_relations() {
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Migrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
+
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+
+    // advance_time auto-migrates the hostile (FactionOwner) and ship (empire owner).
+    advance_time(&mut app, 1);
+
+    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    assert!(
+        h.hp < 1000.0,
+        "Hostile HP must drop when faction migration enables combat; got {}",
+        h.hp
+    );
+}
+
+/// #168 — If the player's view of the hostile faction is changed to `Peace`,
+/// `can_attack_aggressive` returns false and combat is skipped even when a
+/// HostilePresence with a FactionOwner is present.
+#[test]
+fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
+    use macrocosmo::faction::{FactionRelations, FactionView, RelationState};
+
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Peace-System", [0.0, 0.0, 0.0], 0.7, true, false);
+
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+
+    // Migrate first.
+    let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
+    let empire = common::empire_entity(app.world_mut());
+
+    // Override: peace with space_creature (both directions).
+    {
+        let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+        rel.set(empire, space_creature, FactionView::new(RelationState::Peace, 0.0));
+        rel.set(space_creature, empire, FactionView::new(RelationState::Peace, 0.0));
+    }
+
+    advance_time(&mut app, 1);
+
+    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    assert!(
+        (h.hp - 1000.0).abs() < f64::EPSILON,
+        "Hostile HP must not change while at Peace; got {}",
+        h.hp
+    );
+}
+
+/// #168 — Alliance forbids attack regardless of standing or ROE.
+#[test]
+fn test_combat_skipped_when_player_allied_with_hostile_faction() {
+    use macrocosmo::faction::{FactionRelations, FactionView, RelationState};
+
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Alliance-System", [0.0, 0.0, 0.0], 0.7, true, false);
+
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::AncientDefense);
+
+    // Spawn an Aggressive ROE ship to verify the gate trumps ROE.
+    let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(RulesOfEngagement::Aggressive);
+
+    let (_, ancient_defense) = common::setup_test_hostile_factions(app.world_mut());
+    let empire = common::empire_entity(app.world_mut());
+
+    {
+        let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+        rel.set(empire, ancient_defense, FactionView::new(RelationState::Alliance, 100.0));
+        rel.set(ancient_defense, empire, FactionView::new(RelationState::Alliance, 100.0));
+    }
+
+    advance_time(&mut app, 1);
+
+    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    assert!(
+        (h.hp - 1000.0).abs() < f64::EPSILON,
+        "Alliance must forbid attack regardless of ROE; HP changed to {}",
+        h.hp
+    );
+}
+
+/// #168 — Open war (state=War) always permits engagement, even with positive
+/// standing. Sanity check that the gate uses the full FactionView semantics.
+#[test]
+fn test_combat_triggers_when_at_war_even_with_positive_standing() {
+    use macrocosmo::faction::{FactionRelations, FactionView, RelationState};
+
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "War-System", [0.0, 0.0, 0.0], 0.7, true, false);
+
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+
+    let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
+    let empire = common::empire_entity(app.world_mut());
+    {
+        let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+        rel.set(empire, space_creature, FactionView::new(RelationState::War, 80.0));
+    }
+
+    advance_time(&mut app, 1);
+
+    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    assert!(h.hp < 1000.0, "War must permit attack regardless of standing; HP={}", h.hp);
+}
+
+/// #168 — `setup_test_hostile_factions` correctly tags hostiles by type:
+/// SpaceCreature → space_creature_faction, AncientDefense → ancient_defense_faction.
+#[test]
+fn test_faction_owner_attached_by_hostile_type() {
+    use macrocosmo::faction::FactionOwner;
+
+    let mut app = test_app();
+
+    let sys = spawn_test_system(app.world_mut(), "Tagging", [0.0, 0.0, 0.0], 0.7, true, false);
+
+    let creature = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let ancient = spawn_test_hostile(app.world_mut(), sys, HostileType::AncientDefense);
+
+    let (space_creature, ancient_defense) = common::setup_test_hostile_factions(app.world_mut());
+
+    let creature_owner = app.world().get::<FactionOwner>(creature).unwrap().0;
+    let ancient_owner = app.world().get::<FactionOwner>(ancient).unwrap().0;
+    assert_eq!(creature_owner, space_creature);
+    assert_eq!(ancient_owner, ancient_defense);
+    assert_ne!(creature_owner, ancient_owner);
+}
