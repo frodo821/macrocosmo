@@ -1,3 +1,4 @@
+mod ai;
 mod amount;
 mod choice;
 mod colony;
@@ -59,6 +60,7 @@ fn main() {
             notifications::NotificationsPlugin,
             faction::FactionRelationsPlugin,
             choice::ChoicesPlugin,
+            ai::AiPlugin,
         ))
         .add_plugins(ui::UiPlugin)
         .run();

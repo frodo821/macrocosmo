@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod amount;
 pub mod choice;
 pub mod colony;
