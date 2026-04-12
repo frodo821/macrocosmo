@@ -178,7 +178,7 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 
 **Lua sandbox.** `ScriptEngine` uses `Lua::new_with()` to load only safe libraries (table, string, math, package, bit). `io`, `os`, `debug`, `ffi` are not loaded. `loadfile` and `dofile` are explicitly set to nil. Only `scripts/` directory files are loadable via `require()`.
 
-**Script path resolution.** `resolve_scripts_dir()` searches: 1) next to executable, 2) CWD, 3) CARGO_MANIFEST_DIR. Absolute path used for `package.path`.
+**Script path resolution.** `resolve_scripts_dir()` searches: 1) `MACROCOSMO_SCRIPTS_DIR` env var (CI / test override), 2) next to executable, 3) executable ancestors (walks upward looking for `scripts/init.lua`), 4) CWD ancestors, 5) `CARGO_MANIFEST_DIR` (last-resort fallback — this path is baked in at compile time, so it only wins when every other lookup fails and a warning is logged). A directory is considered valid only if it contains `init.lua`. `try_resolve_scripts_dir()` surfaces a descriptive `ScriptsDirError` instead of falling back to a literal `"scripts"` path. Tests and CI can bypass resolution entirely via `ScriptEngine::new_with_scripts_dir(path)` / `ScriptEngine::new_with_rng_and_dir(rng, path)`. Absolute path used for `package.path`.
 
 - BuildingRegistry resource loaded at startup; BuildingType enum still used for runtime logic (known tech debt — should migrate to capability-based)
 - Fallback: `create_initial_tech_tree()` if scripts are missing (for tests)
