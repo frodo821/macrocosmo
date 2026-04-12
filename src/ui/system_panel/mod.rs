@@ -346,10 +346,10 @@ fn draw_left_panel(
     if let Some((minerals, energy, food, authority)) = stockpile_info {
         ui.separator();
         ui.label(egui::RichText::new("System Stockpile").strong().color(egui::Color32::from_rgb(180, 180, 220)));
-        ui.label(format!("Minerals: {}", minerals));
-        ui.label(format!("Energy:   {}", energy));
-        ui.label(format!("Food:     {}", food));
-        ui.label(format!("Authority:{}", authority));
+        ui.label(format!("Minerals: {}", minerals.display_compact()));
+        ui.label(format!("Energy:   {}", energy.display_compact()));
+        ui.label(format!("Food:     {}", food.display_compact()));
+        ui.label(format!("Authority:{}", authority.display_compact()));
     }
 
     // #176: Remote system knowledge summary
@@ -362,17 +362,18 @@ fn draw_left_panel(
             ui.label(egui::RichText::new("(light-speed delayed)").weak().small());
             if snap.colonized {
                 ui.label(format!("M {} | E {} | F {} | A {}",
-                    snap.minerals, snap.energy, snap.food, snap.authority));
+                    snap.minerals.display_compact(), snap.energy.display_compact(),
+                    snap.food.display_compact(), snap.authority.display_compact()));
                 if snap.production_minerals > Amt::ZERO || snap.production_energy > Amt::ZERO
                     || snap.production_food > Amt::ZERO || snap.production_research > Amt::ZERO
                 {
                     ui.label(egui::RichText::new("Production/hd:").strong());
                     ui.label(format!("M {} | E {} | F {} | R {}",
-                        snap.production_minerals, snap.production_energy,
-                        snap.production_food, snap.production_research));
+                        snap.production_minerals.display_compact(), snap.production_energy.display_compact(),
+                        snap.production_food.display_compact(), snap.production_research.display_compact()));
                 }
                 if snap.maintenance_energy > Amt::ZERO {
-                    ui.label(format!("Maintenance: E {}/hd", snap.maintenance_energy));
+                    ui.label(format!("Maintenance: E {}/hd", snap.maintenance_energy.display_compact()));
                 }
             }
             if snap.has_hostile {
@@ -541,7 +542,7 @@ fn draw_right_panel(
                         ui.label(format!("[{}] {}", i, name));
                         let tooltip = format!(
                             "Demolish: {} hd | Refund M:{} E:{}",
-                            demo_time, m_refund, e_refund
+                            demo_time, m_refund.display_compact(), e_refund.display_compact()
                         );
                         if ui
                             .small_button("X")
@@ -562,7 +563,7 @@ fn draw_right_panel(
                                 let eff_time = (base_time as f64 * sys_bldg_time_mod.to_f64()).ceil() as i64;
                                 let tooltip = format!(
                                     "Upgrade to {} (M:{} E:{} | {} hd)",
-                                    target_name, eff_m, eff_e, eff_time
+                                    target_name, eff_m.display_compact(), eff_e.display_compact(), eff_time
                                 );
                                 if ui
                                     .small_button(format!("-> {}", target_name))
@@ -632,7 +633,7 @@ fn draw_right_panel(
                     let eff_m = base_m.mul_amt(bldg_cost_mod);
                     let eff_e = base_e.mul_amt(bldg_cost_mod);
                     let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                    let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
+                    let tooltip = format!("M:{} E:{} | {} hexadies", eff_m.display_compact(), eff_e.display_compact(), eff_time);
                     if ui.button(&def.name).on_hover_text(tooltip).clicked() {
                         build_sys_building_request = Some(BuildingId::new(&def.id));
                     }
@@ -788,7 +789,7 @@ fn draw_right_panel(
                                 let eff_time =
                                     (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
                                 let tooltip =
-                                    format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
+                                    format!("M:{} E:{} | {} hd", eff_m.display_compact(), eff_e.display_compact(), eff_time);
                                 if ui.button(&design.name).on_hover_text(tooltip).clicked() {
                                     build_request = Some((
                                         design_id.clone(),

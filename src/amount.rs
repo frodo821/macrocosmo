@@ -133,6 +133,37 @@ impl Amt {
             format!("-{}", self.display())
         }
     }
+
+    /// Compact display with k/M/G/T/P suffixes for large numbers.
+    /// Values < 1000 use the existing `display()` formatting (integers and
+    /// sub-unit fractions like "0.123"). Values >= 1000 are shown with one
+    /// decimal place and the appropriate SI-style suffix:
+    /// 1234 -> "1.2k", 1_234_567 -> "1.2M", up to ~18P (u64 limit / 1000).
+    /// Trailing zeros are kept (e.g. "5.0k") for column-aligned readability.
+    pub fn display_compact(self) -> String {
+        let whole = self.whole();
+        if whole < 1_000 {
+            return self.display();
+        }
+        let (divisor, suffix): (u64, &str) = if whole < 1_000_000 {
+            (1_000, "k")
+        } else if whole < 1_000_000_000 {
+            (1_000_000, "M")
+        } else if whole < 1_000_000_000_000 {
+            (1_000_000_000, "G")
+        } else if whole < 1_000_000_000_000_000 {
+            (1_000_000_000_000, "T")
+        } else {
+            (1_000_000_000_000_000, "P")
+        };
+        // Truncate to one decimal: scaled = whole * 10 / divisor.
+        // Equivalent to whole / (divisor / 10), avoiding overflow for
+        // very large `whole` values (since divisor is a power of ten >= 1000).
+        let scaled = whole / (divisor / 10);
+        let int_part = scaled / 10;
+        let dec_part = scaled % 10;
+        format!("{}.{}{}", int_part, dec_part, suffix)
+    }
 }
 
 impl std::fmt::Display for Amt {
@@ -208,6 +239,39 @@ impl SignedAmt {
         } else {
             format!("{}{}.{:03}", sign, w, f)
         }
+    }
+
+    /// Compact display with sign and k/M/G/T/P suffixes for large numbers.
+    /// Mirrors `Amt::display_compact` but with explicit sign ("+1.2k" / "-3.4M").
+    /// Zero displays as "0", small values use the existing `display()` formatting.
+    pub fn display_compact(self) -> String {
+        if self.0 == 0 {
+            return "0".to_string();
+        }
+        let sign = if self.0 < 0 { "-" } else { "+" };
+        let abs_raw = self.0.unsigned_abs();
+        let abs = Amt(abs_raw);
+        let whole = abs.whole();
+        if whole < 1_000 {
+            // Reuse small-value formatting (integers / sub-unit fractions).
+            let body = abs.display();
+            return format!("{}{}", sign, body);
+        }
+        let (divisor, suffix): (u64, &str) = if whole < 1_000_000 {
+            (1_000, "k")
+        } else if whole < 1_000_000_000 {
+            (1_000_000, "M")
+        } else if whole < 1_000_000_000_000 {
+            (1_000_000_000, "G")
+        } else if whole < 1_000_000_000_000_000 {
+            (1_000_000_000_000, "T")
+        } else {
+            (1_000_000_000_000_000, "P")
+        };
+        let scaled = whole / (divisor / 10);
+        let int_part = scaled / 10;
+        let dec_part = scaled % 10;
+        format!("{}{}.{}{}", sign, int_part, dec_part, suffix)
     }
 
     /// Format as percentage. "+15%", "-20%"
@@ -339,6 +403,96 @@ mod tests {
         assert_eq!(SignedAmt::new(0, -200).display(), "-0.2");
         assert_eq!(SignedAmt::ZERO.display(), "0");
         assert_eq!(SignedAmt::units(-3).display(), "-3");
+    }
+
+    // --- display_compact tests (issue #183) ---
+
+    #[test]
+    fn display_compact_table() {
+        // From the issue's specification table.
+        assert_eq!(Amt::ZERO.display_compact(), "0");
+        assert_eq!(Amt::units(123).display_compact(), "123");
+        assert_eq!(Amt::units(999).display_compact(), "999");
+        assert_eq!(Amt::units(1234).display_compact(), "1.2k");
+        assert_eq!(Amt::units(12345).display_compact(), "12.3k");
+        assert_eq!(Amt::units(123456).display_compact(), "123.4k");
+        assert_eq!(Amt::units(1_234_567).display_compact(), "1.2M");
+        assert_eq!(Amt::units(12_345_678).display_compact(), "12.3M");
+        assert_eq!(Amt::units(1_234_567_890).display_compact(), "1.2G");
+        assert_eq!(Amt::units(1_234_567_890_123).display_compact(), "1.2T");
+        assert_eq!(Amt::units(1_234_567_890_123_456).display_compact(), "1.2P");
+    }
+
+    #[test]
+    fn display_compact_boundaries() {
+        // 999 stays as integer, 1000 switches to "1.0k"
+        assert_eq!(Amt::units(1000).display_compact(), "1.0k");
+        // Just before next suffix
+        assert_eq!(Amt::units(999_999).display_compact(), "999.9k");
+        assert_eq!(Amt::units(1_000_000).display_compact(), "1.0M");
+        assert_eq!(Amt::units(999_999_999).display_compact(), "999.9M");
+        assert_eq!(Amt::units(1_000_000_000).display_compact(), "1.0G");
+        assert_eq!(Amt::units(999_999_999_999).display_compact(), "999.9G");
+        assert_eq!(Amt::units(1_000_000_000_000).display_compact(), "1.0T");
+        assert_eq!(Amt::units(999_999_999_999_999).display_compact(), "999.9T");
+        assert_eq!(Amt::units(1_000_000_000_000_000).display_compact(), "1.0P");
+    }
+
+    #[test]
+    fn display_compact_truncation() {
+        // Truncation toward zero: 1.99k → "1.9k" (no rounding up)
+        assert_eq!(Amt::units(1999).display_compact(), "1.9k");
+        // 999.5 internal whole = 999, still in integer range → uses display()
+        assert_eq!(Amt::new(999, 500).display_compact(), "999.5");
+        // Just over 999: whole=999 with frac → "999.5"; exactly 1000 → "1.0k"
+        assert_eq!(Amt::new(999, 999).display_compact(), "999.999");
+        // 5500 -> 5.5k (one decimal preserved)
+        assert_eq!(Amt::units(5500).display_compact(), "5.5k");
+        // Trailing zero kept: 5000 -> "5.0k"
+        assert_eq!(Amt::units(5000).display_compact(), "5.0k");
+    }
+
+    #[test]
+    fn display_compact_subunit() {
+        // Sub-unit fractions display as-is (whole < 1000)
+        assert_eq!(Amt(123).display_compact(), "0.123");
+        assert_eq!(Amt(500).display_compact(), "0.5");
+        assert_eq!(Amt(50).display_compact(), "0.05");
+    }
+
+    #[test]
+    fn display_compact_max() {
+        // u64::MAX raw = ~1.8e19, /1000 ~ 1.8e16 → ~18.4P
+        let max = Amt(u64::MAX);
+        let s = max.display_compact();
+        assert!(s.ends_with('P'), "expected P suffix, got {}", s);
+        // 18,446,744,073,709,551 whole units → 18.4P after truncation
+        assert_eq!(s, "18.4P");
+    }
+
+    #[test]
+    fn display_compact_signed_table() {
+        assert_eq!(SignedAmt::ZERO.display_compact(), "0");
+        assert_eq!(SignedAmt::units(123).display_compact(), "+123");
+        assert_eq!(SignedAmt::units(-123).display_compact(), "-123");
+        assert_eq!(SignedAmt::units(999).display_compact(), "+999");
+        assert_eq!(SignedAmt::units(-999).display_compact(), "-999");
+        assert_eq!(SignedAmt::units(1234).display_compact(), "+1.2k");
+        assert_eq!(SignedAmt::units(-1234).display_compact(), "-1.2k");
+        assert_eq!(SignedAmt::units(-3_400_000).display_compact(), "-3.4M");
+        assert_eq!(SignedAmt::units(1_234_567_890).display_compact(), "+1.2G");
+        assert_eq!(SignedAmt::units(-1_234_567_890_123).display_compact(), "-1.2T");
+        assert_eq!(SignedAmt::units(1_234_567_890_123_456).display_compact(), "+1.2P");
+    }
+
+    #[test]
+    fn display_compact_signed_boundaries() {
+        assert_eq!(SignedAmt::units(1000).display_compact(), "+1.0k");
+        assert_eq!(SignedAmt::units(-1000).display_compact(), "-1.0k");
+        assert_eq!(SignedAmt::units(999_999).display_compact(), "+999.9k");
+        assert_eq!(SignedAmt::units(-999_999).display_compact(), "-999.9k");
+        assert_eq!(SignedAmt::new(0, -200).display_compact(), "-0.2");
+        assert_eq!(SignedAmt::new(0, 200).display_compact(), "+0.2");
     }
 
     #[test]

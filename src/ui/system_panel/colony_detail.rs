@@ -76,9 +76,9 @@ pub(super) fn draw_colony_detail(
             let food_color = if food_net.raw() > 0 { green } else if food_net.raw() < 0 { red } else { egui::Color32::GRAY };
             ui.horizontal(|ui| {
                 ui.label("  Food:    ");
-                ui.label(egui::RichText::new(food_net.display()).color(food_color));
+                ui.label(egui::RichText::new(food_net.display_compact()).color(food_color));
                 if food_cons > crate::amount::Amt::ZERO {
-                    ui.label(format!("(produce {}, consume {})", food_prod, food_cons));
+                    ui.label(format!("(produce {}, consume {})", food_prod.display_compact(), food_cons.display_compact()));
                 }
             });
 
@@ -89,9 +89,9 @@ pub(super) fn draw_colony_detail(
             let energy_color = if energy_net.raw() > 0 { green } else if energy_net.raw() < 0 { red } else { egui::Color32::GRAY };
             ui.horizontal(|ui| {
                 ui.label("  Energy:  ");
-                ui.label(egui::RichText::new(energy_net.display()).color(energy_color));
+                ui.label(egui::RichText::new(energy_net.display_compact()).color(energy_color));
                 if maint > crate::amount::Amt::ZERO {
-                    ui.label(format!("(produce {}, maintain {})", energy_prod, maint));
+                    ui.label(format!("(produce {}, maintain {})", energy_prod.display_compact(), maint.display_compact()));
                 }
             });
 
@@ -101,21 +101,24 @@ pub(super) fn draw_colony_detail(
             let minerals_color = if minerals_net.raw() > 0 { green } else { egui::Color32::GRAY };
             ui.horizontal(|ui| {
                 ui.label("  Minerals:");
-                ui.label(egui::RichText::new(minerals_net.display()).color(minerals_color));
+                ui.label(egui::RichText::new(minerals_net.display_compact()).color(minerals_color));
             });
 
             // Research: just production (flow, no consumption)
             let research_prod = prod.research_per_hexadies.final_value();
             ui.horizontal(|ui| {
                 ui.label("  Research:");
-                ui.label(format!("{}", research_prod));
+                ui.label(research_prod.display_compact());
             });
         }
 
         if let Ok((stockpile, _)) = system_stockpiles.get(system_entity) {
             ui.label(format!(
                 "Stockpile: F {} | E {} | M {} | A {}",
-                stockpile.food, stockpile.energy, stockpile.minerals, stockpile.authority,
+                stockpile.food.display_compact(),
+                stockpile.energy.display_compact(),
+                stockpile.minerals.display_compact(),
+                stockpile.authority.display_compact(),
             ));
         }
 
@@ -142,13 +145,13 @@ pub(super) fn draw_colony_detail(
             }
             let total_maintenance = building_maintenance.add(ship_maintenance);
             if total_maintenance > Amt::ZERO {
-                ui.label(format!("Maintenance: {} E/hd", total_maintenance));
-                ui.label(format!("  Buildings: {} E/hd", building_maintenance));
+                ui.label(format!("Maintenance: {} E/hd", total_maintenance.display_compact()));
+                ui.label(format!("  Buildings: {} E/hd", building_maintenance.display_compact()));
             }
             if ships_based_here > 0 {
                 ui.label(format!(
                     "Ships based here: {} (maintenance: {} E/hd)",
-                    ships_based_here, ship_maintenance
+                    ships_based_here, ship_maintenance.display_compact()
                 ));
             }
         }
@@ -246,7 +249,7 @@ pub(super) fn draw_colony_detail(
                             ui.label(format!("  [{}] {}", i, name));
                             let tooltip = format!(
                                 "Demolish: {} hd | Refund M:{} E:{}",
-                                demo_time, m_refund, e_refund
+                                demo_time, m_refund.display_compact(), e_refund.display_compact()
                             );
                             if ui
                                 .small_button("Demolish")
@@ -268,7 +271,7 @@ pub(super) fn draw_colony_detail(
                                     let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
                                     let tooltip = format!(
                                         "Upgrade to {} (M:{} E:{} | {} hd)",
-                                        target_name, eff_m, eff_e, eff_time
+                                        target_name, eff_m.display_compact(), eff_e.display_compact(), eff_time
                                     );
                                     let btn_label = format!("-> {}", target_name);
                                     if ui
@@ -341,7 +344,7 @@ pub(super) fn draw_colony_detail(
                     let eff_m = base_m.mul_amt(bldg_cost_mod);
                     let eff_e = base_e.mul_amt(bldg_cost_mod);
                     let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                    let tooltip = format!("M:{} E:{} | {} hexadies", eff_m, eff_e, eff_time);
+                    let tooltip = format!("M:{} E:{} | {} hexadies", eff_m.display_compact(), eff_e.display_compact(), eff_time);
                     if ui.button(&def.name).on_hover_text(tooltip).clicked() {
                         build_building_request = Some(BuildingId::new(&def.id));
                     }

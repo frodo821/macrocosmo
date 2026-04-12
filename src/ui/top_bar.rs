@@ -62,7 +62,7 @@ pub fn draw_top_bar(
                 ("M", total_minerals, net_minerals),
                 ("A", total_authority, net_authority),
             ] {
-                ui.label(format!("{}:{}", label, stockpile));
+                ui.label(format!("{}:{}", label, stockpile.display_compact()));
                 let net_color = if net.raw() > 0 {
                     egui::Color32::from_rgb(100, 200, 100)
                 } else if net.raw() < 0 {
@@ -70,7 +70,7 @@ pub fn draw_top_bar(
                 } else {
                     egui::Color32::GRAY
                 };
-                ui.label(egui::RichText::new(format!("({})", net.display())).color(net_color));
+                ui.label(egui::RichText::new(format!("({})", net.display_compact())).color(net_color));
             }
 
             ui.separator();
