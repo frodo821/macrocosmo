@@ -316,6 +316,58 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     })?;
     globals.set("show_notification", show_notification_fn)?;
 
+    // --- #152: Player choice dialog API ---
+
+    // Pending choice queue — drained by `drain_pending_choices`
+    let pending_choices = lua.create_table()?;
+    globals.set("_pending_choices", pending_choices)?;
+
+    // show_choice { title, description, icon?, target_system?, options = { ... } }
+    // Each option may carry { label, description, condition, cost, on_chosen }.
+    // The call pushes the whole table (including `on_chosen` functions) onto
+    // `_pending_choices`; the Rust side later drains it and stashes the table
+    // under `_active_choices[id]` so `on_chosen` can be invoked at apply time.
+    // Returns a reference table `{ _def_type = "choice", id = "..." }` to stay
+    // consistent with other `define_xxx` style calls, where `id` is derived
+    // from the title when not supplied (plus a monotonic counter for
+    // uniqueness).
+    let show_choice_fn = lua.create_function(|lua, params: mlua::Table| {
+        let pending: mlua::Table = lua.globals().get("_pending_choices")?;
+        let len = pending.len()?;
+
+        // Derive a stable-ish id: prefer explicit `id`, else title slug, else
+        // "choice". Always append a monotonically increasing counter to make
+        // it unique even if the same title is shown repeatedly.
+        let next_counter: u64 = lua
+            .globals()
+            .get("_show_choice_counter")
+            .unwrap_or(0_u64);
+        lua.globals()
+            .set("_show_choice_counter", next_counter + 1)?;
+
+        let id: String = if let Ok(explicit) = params.get::<String>("id") {
+            explicit
+        } else if let Ok(title) = params.get::<String>("title") {
+            let slug: String = title
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                .collect();
+            format!("{slug}_{next_counter}")
+        } else {
+            format!("choice_{next_counter}")
+        };
+
+        pending.set(len + 1, params)?;
+
+        // Return a reference-style table. This is *not* stashed in any
+        // accumulator — choices are one-shot, not persistent definitions.
+        let out = lua.create_table()?;
+        out.set("_def_type", "choice")?;
+        out.set("id", id)?;
+        Ok(out)
+    })?;
+    globals.set("show_choice", show_choice_fn)?;
+
     // --- Lifecycle hook registration ---
 
     // Handler tables for lifecycle hooks

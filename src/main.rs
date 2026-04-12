@@ -1,4 +1,5 @@
 mod amount;
+mod choice;
 mod colony;
 mod communication;
 mod components;
@@ -57,6 +58,7 @@ fn main() {
             setup::GameSetupPlugin,
             notifications::NotificationsPlugin,
             faction::FactionRelationsPlugin,
+            choice::ChoicesPlugin,
         ))
         .add_plugins(ui::UiPlugin)
         .run();

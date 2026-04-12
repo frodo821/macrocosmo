@@ -11,12 +11,14 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::amount::{Amt, SignedAmt};
+use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams,
     FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile,
     SystemBuildingQueue, SystemBuildings,
 };
 use crate::communication::CommandLog;
+use crate::condition::ScopedFlags;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
@@ -29,7 +31,7 @@ use crate::ship::{
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::scripting::building_api::BuildingRegistry;
-use crate::technology::{GlobalParams, ResearchPool, ResearchQueue, TechTree};
+use crate::technology::{GameFlags, GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{
     ContextMenu, EguiWantsPointer, OutlineExpandedSystems, SelectedPlanet, SelectedShip,
@@ -78,6 +80,7 @@ impl Plugin for UiPlugin {
                     draw_outline_and_tooltips_system,
                     draw_main_panels_system,
                     draw_overlays_system,
+                    draw_choice_dialog_system,
                     draw_bottom_bar_system,
                 )
                     .chain(),
@@ -1237,4 +1240,112 @@ fn apply_design_refit(
         new_modules,
         target_revision,
     };
+}
+
+// ---------------------------------------------------------------------------
+// #152: draw_choice_dialog_system — modal player-choice dialog
+// ---------------------------------------------------------------------------
+
+/// Draws the modal choice dialog (#152) when a `PendingChoice` is active.
+/// Options are rendered as vertical buttons; unavailable options are
+/// greyed-out with a reason tooltip. Clicking an option stages the selection
+/// in `PendingChoiceSelection`; the `apply_pending_choice_selection` system
+/// consumes it next tick.
+#[allow(clippy::too_many_arguments)]
+fn draw_choice_dialog_system(
+    mut contexts: EguiContexts,
+    ui_state: Res<UiState>,
+    mut pending: ResMut<PendingChoice>,
+    mut selection: ResMut<PendingChoiceSelection>,
+    empire_q: Query<(&TechTree, &GameFlags, &ScopedFlags), With<PlayerEmpire>>,
+) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    if !pending.is_active() {
+        return;
+    }
+    let Ok((tech_tree, game_flags, scoped_flags)) = empire_q.single() else {
+        return;
+    };
+
+    // Evaluate availability against current empire state + capital stockpile.
+    let capital_stockpile = ui_state.capital_stockpile;
+    if let Some(active) = pending.current.as_mut() {
+        crate::choice::evaluate_choice_availability(
+            active,
+            tech_tree,
+            game_flags,
+            scoped_flags,
+            capital_stockpile,
+        );
+    }
+
+    let Some(active) = pending.current.as_ref() else {
+        return;
+    };
+
+    let mut pick_index: Option<usize> = None;
+    egui::Window::new(egui::RichText::new(&active.title).size(18.0).strong())
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(460.0)
+        .show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.set_max_width(520.0);
+            if !active.description.is_empty() {
+                ui.label(egui::RichText::new(&active.description).color(egui::Color32::LIGHT_GRAY));
+                ui.add_space(6.0);
+            }
+            ui.separator();
+            ui.add_space(4.0);
+
+            for (i, opt) in active.options.iter().enumerate() {
+                let unavailable = opt.condition_unmet || opt.cost_unmet;
+                ui.add_enabled_ui(!unavailable, |ui| {
+                    let label_text = if opt.cost.is_zero() {
+                        opt.label.clone()
+                    } else {
+                        let mut parts: Vec<String> = Vec::new();
+                        if opt.cost.minerals > Amt::ZERO {
+                            parts.push(format!("{} M", opt.cost.minerals));
+                        }
+                        if opt.cost.energy > Amt::ZERO {
+                            parts.push(format!("{} E", opt.cost.energy));
+                        }
+                        if parts.is_empty() {
+                            opt.label.clone()
+                        } else {
+                            format!("{}  ({})", opt.label, parts.join(", "))
+                        }
+                    };
+
+                    let mut button = egui::Button::new(
+                        egui::RichText::new(label_text).strong(),
+                    )
+                    .min_size(egui::vec2(400.0, 28.0));
+                    if unavailable {
+                        button = button.fill(egui::Color32::from_rgba_premultiplied(40, 40, 40, 180));
+                    }
+
+                    let mut response = ui.add(button);
+                    if let Some(desc) = &opt.description {
+                        response = response.on_hover_text(desc);
+                    }
+                    if unavailable && !opt.unmet_reason.is_empty() {
+                        response = response.on_disabled_hover_text(&opt.unmet_reason);
+                    }
+                    if response.clicked() {
+                        // 1-based index to match `lua_option_index`.
+                        pick_index = Some(i + 1);
+                    }
+                });
+                ui.add_space(2.0);
+            }
+        });
+
+    if let Some(idx) = pick_index {
+        selection.pick = Some(idx);
+    }
 }
