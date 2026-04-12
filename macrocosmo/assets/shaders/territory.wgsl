@@ -61,10 +61,26 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
-    // Border effect: fade near contested boundaries
-    let ratio = second_max / max_auth;
+    // Border effect: fade near contested boundaries (avoids div-by-zero).
+    let ratio = second_max / max(max_auth, 1e-6);
     let border = 1.0 - smoothstep(0.6, 0.95, ratio);
 
-    let color = vec4<f32>(0.9, 0.98, 0.01, 1.0); // empire_colors.colors[owner];
-    return vec4<f32>(color.rgb * 0.15 * border, 0.12 * border);
+    // Edge fade: strength just above the void threshold should fade out so
+    // the outer boundary of the territory is soft rather than hard-cut.
+    let strength_ratio = void_constant / max(max_auth, 1e-6);
+    let edge = 1.0 - smoothstep(0.6, 1.0, strength_ratio);
+
+    // Pick owner color from the uniform palette. Fall back to a neutral grey
+    // if for some reason the owner index is out of range (shouldn't happen).
+    var color = vec4<f32>(0.5, 0.5, 0.5, 1.0);
+    if (owner == 0) { color = empire_colors.colors[0]; }
+    else if (owner == 1) { color = empire_colors.colors[1]; }
+    else if (owner == 2) { color = empire_colors.colors[2]; }
+    else if (owner == 3) { color = empire_colors.colors[3]; }
+
+    // Higher alpha + near-full color intensity so territory is actually
+    // readable on the star map. Border and edge modulation keep the look
+    // layered instead of flat.
+    let alpha = 0.45 * border * edge;
+    return vec4<f32>(color.rgb * 0.9 * border * edge, alpha);
 }
