@@ -274,11 +274,11 @@ pub fn draw_ship_designer(
                 ));
                 ui.label(format!(
                     "Cost: M:{} E:{}  Time: {} hd",
-                    cost_m.display(),
-                    cost_e.display(),
+                    cost_m.display_compact(),
+                    cost_e.display_compact(),
                     build_time
                 ));
-                ui.label(format!("Maintenance: {}/hd", maint.display()));
+                ui.label(format!("Maintenance: {}/hd", maint.display_compact()));
 
                 // Design name input
                 ui.separator();
@@ -484,7 +484,7 @@ pub fn draw_overlays(
                         egui::ProgressBar::new(progress).text(format!(
                             "{:.0}/{} RP",
                             research_queue.accumulated,
-                            tech.cost.research.display()
+                            tech.cost.research.display_compact()
                         )),
                     );
 
@@ -596,17 +596,17 @@ pub fn draw_overlays(
                                     |ui| {
                                         // Cost display
                                         let mut cost_parts =
-                                            vec![format!("{} RP", tech.cost.research.display())];
+                                            vec![format!("{} RP", tech.cost.research.display_compact())];
                                         if tech.cost.minerals > Amt::ZERO {
                                             cost_parts.push(format!(
                                                 "M:{}",
-                                                tech.cost.minerals.display()
+                                                tech.cost.minerals.display_compact()
                                             ));
                                         }
                                         if tech.cost.energy > Amt::ZERO {
                                             cost_parts.push(format!(
                                                 "E:{}",
-                                                tech.cost.energy.display()
+                                                tech.cost.energy.display_compact()
                                             ));
                                         }
                                         ui.label(cost_parts.join(" | "));

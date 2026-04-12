@@ -615,8 +615,8 @@ pub fn draw_ship_panel(
             ui.separator();
             ui.label(format!("Home Port: {}", home_port_name));
             ui.label(format!(
-                "Maintenance: {:.1} E/hd (charged to {})",
-                maintenance_cost, home_port_name
+                "Maintenance: {} E/hd (charged to {})",
+                maintenance_cost.display_compact(), home_port_name
             ));
 
             // #57: Rules of Engagement selector
@@ -684,8 +684,8 @@ pub fn draw_ship_panel(
                     if let Some((cargo_m, cargo_e)) = cargo_data {
                         ui.separator();
                         ui.label(egui::RichText::new("Cargo").strong());
-                        ui.label(format!("Minerals: {}", cargo_m));
-                        ui.label(format!("Energy: {}", cargo_e));
+                        ui.label(format!("Minerals: {}", cargo_m.display_compact()));
+                        ui.label(format!("Energy: {}", cargo_e.display_compact()));
 
                         if system_entity_at_dock.is_some() {
                             ui.horizontal(|ui| {
@@ -806,7 +806,7 @@ pub fn draw_ship_panel(
                     );
                     ui.label(format!(
                         "Refit cost: M:{} E:{} | {} hd",
-                        info.cost_minerals, info.cost_energy, info.refit_time
+                        info.cost_minerals.display_compact(), info.cost_energy.display_compact(), info.refit_time
                     ));
                     if let Some(dock_system) = docked_at_colony {
                         if ui.button("Apply Refit").clicked() {
@@ -841,8 +841,8 @@ pub fn draw_ship_panel(
                     ui.label(format!(
                         "{} member(s) refit-eligible | M:{} E:{} | up to {} hd",
                         summary.eligible_count,
-                        summary.total_cost_minerals,
-                        summary.total_cost_energy,
+                        summary.total_cost_minerals.display_compact(),
+                        summary.total_cost_energy.display_compact(),
                         summary.max_refit_time,
                     ));
                     if ui.button("Apply Refit to Fleet").clicked() {
