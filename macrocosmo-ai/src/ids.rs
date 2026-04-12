@@ -50,7 +50,7 @@ pub struct EntityRef(pub u64);
 macro_rules! arc_str_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         pub struct $name(Arc<str>);
 
         impl $name {

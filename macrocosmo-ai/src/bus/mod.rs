@@ -9,14 +9,17 @@
 pub(crate) mod command;
 pub(crate) mod evidence;
 pub(crate) mod metric;
+pub mod snapshot;
 
 use ahash::AHashMap;
 
 use crate::bus::command::CommandStore;
 use crate::bus::evidence::EvidenceStore;
 use crate::bus::metric::MetricStore;
+use crate::bus::snapshot::{BusSnapshot, EvidenceSnapshot, MetricSnapshot};
 use crate::bus_warn;
 use crate::command::Command;
+use crate::command::SerializedCommand;
 use crate::evidence::StandingEvidence;
 use crate::ids::{CommandKindId, EvidenceKindId, FactionId, MetricId};
 use crate::spec::{CommandSpec, EvidenceSpec, MetricSpec};
@@ -247,6 +250,64 @@ impl AiBus {
         match self.evidence.get(kind) {
             Some(store) => Box::new(store.window(now, duration).filter(move |e| e.observer == observer)),
             None => Box::new(std::iter::empty()),
+        }
+    }
+
+    // ---- Snapshot -------------------------------------------------------
+
+    /// Produce a read-only, deterministic-order snapshot of the entire bus
+    /// state. Useful for equivalence checking (record/replay tests) and
+    /// serialization. Unconditionally available — cost is one allocation per
+    /// call, which is irrelevant outside tests.
+    pub fn snapshot(&self) -> BusSnapshot {
+        let metrics = self
+            .metrics
+            .iter()
+            .map(|(id, store)| {
+                (
+                    id.clone(),
+                    MetricSnapshot {
+                        spec: store.spec.clone(),
+                        history: store.history.iter().cloned().collect(),
+                    },
+                )
+            })
+            .collect();
+
+        let commands = self
+            .commands
+            .specs
+            .iter()
+            .map(|(k, spec)| (k.clone(), spec.clone()))
+            .collect();
+
+        let pending_commands = self
+            .commands
+            .pending
+            .iter()
+            .cloned()
+            .map(SerializedCommand::from)
+            .collect();
+
+        let evidence = self
+            .evidence
+            .iter()
+            .map(|(k, store)| {
+                (
+                    k.clone(),
+                    EvidenceSnapshot {
+                        spec: store.spec.clone(),
+                        entries: store.entries.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        BusSnapshot {
+            metrics,
+            commands,
+            pending_commands,
+            evidence,
         }
     }
 }

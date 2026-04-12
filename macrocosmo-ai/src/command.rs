@@ -129,3 +129,53 @@ impl Command {
         self
     }
 }
+
+/// Deterministic-order serialization wrapper for `Command`.
+///
+/// `Command.params` is an `AHashMap` with non-deterministic iteration order,
+/// which breaks byte-identical record/replay. `SerializedCommand` mirrors
+/// `Command` but stores params in a `BTreeMap`, giving a canonical encoding.
+///
+/// `Command` itself is left unchanged: converting to/from `SerializedCommand`
+/// is cheap and keeps the hot path using `AHashMap`'s fast hashing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializedCommand {
+    pub kind: CommandKindId,
+    pub issuer: FactionId,
+    pub target: Option<FactionRef>,
+    pub params: std::collections::BTreeMap<Arc<str>, CommandValue>,
+    pub at: Tick,
+    pub priority: f64,
+}
+
+impl From<Command> for SerializedCommand {
+    fn from(cmd: Command) -> Self {
+        let params: std::collections::BTreeMap<Arc<str>, CommandValue> =
+            cmd.params.into_iter().collect();
+        Self {
+            kind: cmd.kind,
+            issuer: cmd.issuer,
+            target: cmd.target,
+            params,
+            at: cmd.at,
+            priority: cmd.priority,
+        }
+    }
+}
+
+impl From<SerializedCommand> for Command {
+    fn from(s: SerializedCommand) -> Self {
+        let mut params: CommandParams = AHashMap::with_capacity(s.params.len());
+        for (k, v) in s.params {
+            params.insert(k, v);
+        }
+        Self {
+            kind: s.kind,
+            issuer: s.issuer,
+            target: s.target,
+            params,
+            at: s.at,
+            priority: s.priority,
+        }
+    }
+}
