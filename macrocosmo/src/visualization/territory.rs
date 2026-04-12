@@ -6,6 +6,10 @@ use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
 use crate::colony::Colony;
 use crate::components::Position;
 use crate::galaxy::Planet;
+use crate::knowledge::KnowledgeStore;
+use crate::player::PlayerEmpire;
+use crate::ship::{Owner, Ship, ShipHitpoints, ShipState};
+use crate::time_system::GameClock;
 
 use super::GalaxyView;
 
@@ -13,8 +17,89 @@ pub const MAX_COLONIES: usize = 64;
 pub const MAX_EMPIRES: usize = 4;
 
 /// Void authority constant — baseline score that "void" has everywhere.
-/// Colonies must exceed this to claim territory.
+/// Colonies must exceed this to claim territory (in `ly²`).
 pub const VOID_CONSTANT: f32 = 0.1;
+
+// ---------------------------------------------------------------------------
+// Authority score tweakables (ly²-scale values; GPU scaling applied separately)
+// ---------------------------------------------------------------------------
+
+/// Base authority score for a minimally-populated colony with no garrison and
+/// fresh communications. Sized so that the `1/r²` border lands at
+/// `sqrt(BASE / VOID_CONSTANT)` ly (≈ 7.07 ly with default constants).
+pub const AUTHORITY_BASE: f32 = 5.0;
+
+/// Divisor applied to `ln(max(population, 1))` when computing the population
+/// factor. Smaller = populations scale authority faster. With divisor 10,
+/// population 100 → factor 1.46, 1000 → factor 1.69, 10_000 → factor 1.92.
+pub const AUTHORITY_POP_LN_DIVISOR: f32 = 10.0;
+
+/// Each `AUTHORITY_GARRISON_HP_UNIT` of docked hull HP contributes this much
+/// additive bonus to the garrison factor (which multiplies base authority as
+/// `1 + garrison_factor`).
+pub const AUTHORITY_GARRISON_PER_UNIT: f32 = 0.1;
+pub const AUTHORITY_GARRISON_HP_UNIT: f32 = 100.0;
+
+/// Freshness thresholds (in hexadies) and their corresponding multipliers.
+/// `info_age < FRESH_AGE` → full authority; older ages decay in steps.
+pub const AUTHORITY_FRESH_AGE: i64 = 60;
+pub const AUTHORITY_AGING_AGE: i64 = 300;
+pub const AUTHORITY_OLD_AGE: i64 = 600;
+
+pub const AUTHORITY_FRESHNESS_FRESH: f32 = 1.0;
+pub const AUTHORITY_FRESHNESS_AGING: f32 = 0.7;
+pub const AUTHORITY_FRESHNESS_OLD: f32 = 0.4;
+pub const AUTHORITY_FRESHNESS_VERY_OLD: f32 = 0.15;
+
+/// Fallback palette for empire territory colors (indexed by empire_id). Only
+/// used until faction-owned coloring is wired through from Lua definitions.
+pub const EMPIRE_COLOR_PALETTE: [[f32; 4]; MAX_EMPIRES] = [
+    [0.30, 0.55, 1.00, 1.0], // blue — player
+    [1.00, 0.45, 0.25, 1.0], // orange
+    [0.35, 0.90, 0.45, 1.0], // green
+    [0.95, 0.35, 0.80, 1.0], // magenta
+];
+
+/// Compute the authority freshness multiplier for a colony's home system
+/// based on how stale the empire's knowledge of it is.
+///
+/// - `None` → the empire has no snapshot at all. We treat this as the home
+///   system being locally observed (freshness = 1.0) rather than stale; the
+///   capital colony typically has no entry in `KnowledgeStore` because its
+///   data is always "live".
+pub fn authority_freshness(info_age: Option<i64>) -> f32 {
+    match info_age {
+        None => AUTHORITY_FRESHNESS_FRESH,
+        Some(age) if age < AUTHORITY_FRESH_AGE => AUTHORITY_FRESHNESS_FRESH,
+        Some(age) if age < AUTHORITY_AGING_AGE => AUTHORITY_FRESHNESS_AGING,
+        Some(age) if age < AUTHORITY_OLD_AGE => AUTHORITY_FRESHNESS_OLD,
+        Some(_) => AUTHORITY_FRESHNESS_VERY_OLD,
+    }
+}
+
+/// Pure helper that computes a colony's effective authority score.
+///
+/// Kept as a free function of simple numeric inputs so it can be unit-tested
+/// without constructing a Bevy world. Callers supply:
+/// - `population` — colony population (>= 0)
+/// - `garrison_hull_hp` — total `hull_max` of friendly ships docked at the
+///   colony's system (>= 0)
+/// - `freshness` — multiplier from [`authority_freshness`] (0..=1)
+///
+/// Returns authority in `ly²` units. The caller must multiply by
+/// `view.scale²` before pushing to the GPU so that the shader's
+/// `strength / dist_sq` comparison operates in the same (world-unit) space.
+pub fn colony_effective_authority(
+    population: f32,
+    garrison_hull_hp: f32,
+    freshness: f32,
+) -> f32 {
+    let pop = population.max(1.0);
+    let pop_factor = 1.0 + pop.ln().max(0.0) / AUTHORITY_POP_LN_DIVISOR;
+    let garrison_factor = (garrison_hull_hp.max(0.0) / AUTHORITY_GARRISON_HP_UNIT)
+        * AUTHORITY_GARRISON_PER_UNIT;
+    AUTHORITY_BASE * pop_factor * (1.0 + garrison_factor) * freshness.max(0.0)
+}
 
 /// Computes 1/r^2 authority contribution from a single colony at a given point.
 /// Returns `colony_authority / distance_squared`, clamped to avoid division by zero.
@@ -144,43 +229,86 @@ fn sync_territory_material(
     colony_q: Query<&Colony>,
     planets: Query<&Planet>,
     positions: Query<&Position>,
+    ships: Query<(&Ship, &ShipState, &ShipHitpoints)>,
+    empire_q: Query<(Entity, &KnowledgeStore), With<PlayerEmpire>>,
+    clock: Res<GameClock>,
     view: Res<GalaxyView>,
     mut materials: ResMut<Assets<TerritoryMaterial>>,
     material_handles: Query<&MeshMaterial2d<TerritoryMaterial>>,
 ) {
+    // For now only the player empire owns colonies. If this changes, expand
+    // into a (empire_entity -> empire_id) mapping below.
+    let Ok((player_entity, knowledge)) = empire_q.single() else {
+        return;
+    };
+
+    // Precompute garrison hull HP per star system: sum of hull_max for all
+    // friendly ships docked at that system.
+    let mut garrison_by_system: std::collections::HashMap<Entity, f32> =
+        std::collections::HashMap::new();
+    for (ship, state, hp) in ships.iter() {
+        let Owner::Empire(owner_entity) = ship.owner else { continue };
+        if owner_entity != player_entity {
+            continue;
+        }
+        if let ShipState::Docked { system } = state {
+            *garrison_by_system.entry(*system).or_insert(0.0) += hp.hull_max as f32;
+        }
+    }
+
+    let scale_sq = view.scale * view.scale;
+
     for handle in material_handles.iter() {
-        if let Some(mat) = materials.get_mut(&handle.0) {
-            let mut colony_count = 0usize;
-            // Reset colony data
-            mat.colony_data = ColonyDataGpu::default();
+        let Some(mat) = materials.get_mut(&handle.0) else { continue };
 
-            for colony in colony_q.iter() {
-                if colony_count >= MAX_COLONIES {
-                    break;
-                }
-                // Colony -> Planet -> StarSystem -> Position
-                if let Ok(planet) = planets.get(colony.planet) {
-                    if let Ok(pos) = positions.get(planet.system) {
-                        mat.colony_data.data[colony_count] = Vec4::new(
-                            pos.x as f32 * view.scale,
-                            pos.y as f32 * view.scale,
-                            1.0,  // authority strength (could be based on population)
-                            0.0,  // empire_id (player = 0 for now)
-                        );
-                        colony_count += 1;
-                    }
-                }
+        let mut colony_count = 0usize;
+        // Reset colony data
+        mat.colony_data = ColonyDataGpu::default();
+
+        for colony in colony_q.iter() {
+            if colony_count >= MAX_COLONIES {
+                break;
             }
+            let Ok(planet) = planets.get(colony.planet) else { continue };
+            let system = planet.system;
+            let Ok(pos) = positions.get(system) else { continue };
 
-            mat.params.values = Vec4::new(
-                VOID_CONSTANT,
-                colony_count as f32,
-                1.0, // empire_count (just player for now)
-                0.0,
+            let garrison_hp = garrison_by_system.get(&system).copied().unwrap_or(0.0);
+            let freshness = authority_freshness(knowledge.info_age(system, clock.elapsed));
+            let authority_ly2 =
+                colony_effective_authority(colony.population as f32, garrison_hp, freshness);
+            // Convert ly² authority to world-unit² authority so that the
+            // shader's `strength / dist_sq` comparison (which runs in
+            // world coordinates) has matching units.
+            let authority_world = authority_ly2 * scale_sq;
+
+            // empire_id = 0 (player) for now. Widen when non-player
+            // empires can own colonies.
+            let empire_id = 0.0f32;
+
+            mat.colony_data.data[colony_count] = Vec4::new(
+                pos.x as f32 * view.scale,
+                pos.y as f32 * view.scale,
+                authority_world,
+                empire_id,
             );
+            colony_count += 1;
+        }
 
-            // Player empire color: blue
-            mat.empire_colors.colors[0] = Vec4::new(0.2, 0.5, 1.0, 1.0);
+        // Multiply the void constant by scale² as well so the threshold
+        // comparison stays consistent across world/ly spaces.
+        let void_world = VOID_CONSTANT * scale_sq;
+        mat.params.values = Vec4::new(
+            void_world,
+            colony_count as f32,
+            1.0, // empire_count (just player for now)
+            0.0,
+        );
+
+        // Populate the fallback palette. Slots beyond the number of known
+        // empires simply stay unused.
+        for (i, color) in EMPIRE_COLOR_PALETTE.iter().enumerate() {
+            mat.empire_colors.colors[i] = Vec4::new(color[0], color[1], color[2], color[3]);
         }
     }
 }
@@ -251,6 +379,102 @@ mod tests {
             "Authority should be equal at midpoint, got {} vs {}",
             auth[0],
             auth[1]
+        );
+    }
+
+    #[test]
+    fn test_colony_effective_authority_baseline() {
+        // Minimal population, no garrison, fresh comms: factor ≈ base.
+        let a = colony_effective_authority(1.0, 0.0, AUTHORITY_FRESHNESS_FRESH);
+        assert!((a - AUTHORITY_BASE).abs() < 1e-4, "baseline should equal AUTHORITY_BASE, got {a}");
+    }
+
+    #[test]
+    fn test_colony_effective_authority_increases_with_population() {
+        let low = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_FRESH);
+        let high = colony_effective_authority(1000.0, 0.0, AUTHORITY_FRESHNESS_FRESH);
+        assert!(
+            high > low,
+            "Higher population should yield higher authority (got {low} vs {high})"
+        );
+        // ln(1000)/10 ≈ 0.691, ln(100)/10 ≈ 0.461 → ratio ≈ 1.69/1.46 ≈ 1.158
+        let ratio = high / low;
+        assert!(
+            (ratio - 1.158).abs() < 0.05,
+            "Population factor ratio off: expected ~1.158, got {ratio}"
+        );
+    }
+
+    #[test]
+    fn test_colony_effective_authority_decreases_with_comm_loss() {
+        let fresh = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_FRESH);
+        let aging = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_AGING);
+        let old = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_OLD);
+        let very_old = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_VERY_OLD);
+        assert!(fresh > aging, "FRESH should exceed AGING ({fresh} vs {aging})");
+        assert!(aging > old, "AGING should exceed OLD ({aging} vs {old})");
+        assert!(old > very_old, "OLD should exceed VERY_OLD ({old} vs {very_old})");
+        // VERY_OLD should be roughly 15% of FRESH (freshness multiplier).
+        let ratio = very_old / fresh;
+        assert!(
+            (ratio - AUTHORITY_FRESHNESS_VERY_OLD).abs() < 1e-3,
+            "VERY_OLD/FRESH ratio should match freshness mult, got {ratio}"
+        );
+    }
+
+    #[test]
+    fn test_colony_effective_authority_scales_with_garrison() {
+        let no_ships = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_FRESH);
+        let with_ships = colony_effective_authority(100.0, 500.0, AUTHORITY_FRESHNESS_FRESH);
+        assert!(
+            with_ships > no_ships,
+            "Garrisoned colony should have higher authority ({no_ships} vs {with_ships})"
+        );
+        // 500 hull HP → garrison factor = (500/100)*0.1 = 0.5 → *1.5 multiplier
+        let ratio = with_ships / no_ships;
+        assert!(
+            (ratio - 1.5).abs() < 1e-3,
+            "Garrison multiplier should be 1.5 for 500 hull HP, got {ratio}"
+        );
+    }
+
+    #[test]
+    fn test_authority_freshness_thresholds() {
+        assert_eq!(authority_freshness(None), AUTHORITY_FRESHNESS_FRESH);
+        assert_eq!(authority_freshness(Some(0)), AUTHORITY_FRESHNESS_FRESH);
+        assert_eq!(
+            authority_freshness(Some(AUTHORITY_FRESH_AGE - 1)),
+            AUTHORITY_FRESHNESS_FRESH
+        );
+        assert_eq!(
+            authority_freshness(Some(AUTHORITY_FRESH_AGE)),
+            AUTHORITY_FRESHNESS_AGING
+        );
+        assert_eq!(
+            authority_freshness(Some(AUTHORITY_AGING_AGE)),
+            AUTHORITY_FRESHNESS_OLD
+        );
+        assert_eq!(
+            authority_freshness(Some(AUTHORITY_OLD_AGE)),
+            AUTHORITY_FRESHNESS_VERY_OLD
+        );
+        assert_eq!(
+            authority_freshness(Some(100_000)),
+            AUTHORITY_FRESHNESS_VERY_OLD
+        );
+    }
+
+    #[test]
+    fn test_authority_border_distance_matches_target() {
+        // Sanity check: with default constants, a colony of population 100
+        // with no garrison and fresh comms should claim a border of roughly
+        // 7–12 ly. The border satisfies `authority_ly2 / dist_ly^2 =
+        // VOID_CONSTANT`, so dist_ly = sqrt(authority_ly2 / VOID_CONSTANT).
+        let authority = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_FRESH);
+        let border_ly = (authority / VOID_CONSTANT).sqrt();
+        assert!(
+            (7.0..=12.0).contains(&border_ly),
+            "border should land in 7–12 ly for pop=100, got {border_ly} ly"
         );
     }
 
