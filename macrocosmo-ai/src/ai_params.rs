@@ -42,4 +42,36 @@ pub trait AiParamsExt {
     fn intent_staleness_tolerance(&self) -> f64 {
         self.ai_param_f64("intent_staleness_tolerance", 20.0)
     }
+
+    // -- Perceived standing (#193) ---------------------------------------
+
+    /// 曖昧な軍備シグナルへの警戒度。
+    fn paranoia(&self) -> f64 {
+        self.ai_param_f64("paranoia", 0.4)
+    }
+
+    /// 国境問題への敏感度。
+    fn territorialism(&self) -> f64 {
+        self.ai_param_f64("territorialism", 0.5)
+    }
+
+    /// 敵対的証拠をどれだけ長く覚えているか (指数減衰レート — 大きいほど早く忘れる)。
+    fn grudge_persistence(&self) -> f64 {
+        self.ai_param_f64("grudge_persistence", 0.005)
+    }
+
+    /// 友好的証拠の色褪せ速度 (大きいほど早く忘れる)。
+    fn friendship_persistence(&self) -> f64 {
+        self.ai_param_f64("friendship_persistence", 0.02)
+    }
+
+    /// 曖昧な証拠を敵意寄りに解釈するバイアス。
+    fn hostile_interpretation_bias(&self) -> f64 {
+        self.ai_param_f64("hostile_interpretation_bias", 0.0)
+    }
+
+    /// 疑わしきは罰せず度。
+    fn benefit_of_doubt(&self) -> f64 {
+        self.ai_param_f64("benefit_of_doubt", 0.3)
+    }
 }

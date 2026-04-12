@@ -26,6 +26,7 @@ pub mod objective;
 pub mod projection;
 pub mod retention;
 pub mod spec;
+pub mod standing;
 pub mod time;
 pub mod value_expr;
 pub mod warning;
@@ -46,5 +47,9 @@ pub use ids::{
 };
 pub use retention::Retention;
 pub use spec::{CommandSpec, EvidenceSpec, MetricSpec, MetricType};
+pub use standing::{
+    EvidenceContribution, EvidenceKindConfig, PerceivedStanding, StandingConfig, StandingLevel,
+    StandingLevelThresholds, StandingSubject,
+};
 pub use time::{Tick, TimestampedValue};
 pub use warning::WarningMode;
