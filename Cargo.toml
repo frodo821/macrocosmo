@@ -1,13 +1,10 @@
-[package]
-name = "macrocosmo"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["macrocosmo", "macrocosmo-ai"]
+resolver = "2"
 
-[dependencies]
-bevy = "0.18.1"
-bevy_egui = "0.39.1"
-mlua = { version = "0.11", features = ["luajit", "vendored", "send"] }
-rand = "0.9"
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
 
 [profile.dev]
 opt-level = 1
