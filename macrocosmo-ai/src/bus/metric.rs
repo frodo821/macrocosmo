@@ -17,6 +17,10 @@ use crate::time::{Tick, TimestampedValue};
 pub(crate) struct MetricStore {
     pub spec: MetricSpec,
     pub history: VecDeque<TimestampedValue>,
+    /// Monotonic counter bumped on every accepted push. Used by
+    /// [`crate::precondition_cache::PreconditionCacheRegistry`] as a cheap
+    /// invalidation key.
+    pub version: u64,
 }
 
 impl MetricStore {
@@ -24,6 +28,7 @@ impl MetricStore {
         Self {
             spec,
             history: VecDeque::new(),
+            version: 0,
         }
     }
 
@@ -37,6 +42,7 @@ impl MetricStore {
         }
         self.history.push_back(TimestampedValue { at, value });
         self.evict(at);
+        self.version = self.version.wrapping_add(1);
         true
     }
 
@@ -53,6 +59,11 @@ impl MetricStore {
 
     pub(crate) fn current(&self) -> Option<f64> {
         self.history.back().map(|tv| tv.value)
+    }
+
+    /// Timestamp of the latest sample, if any.
+    pub(crate) fn latest_at(&self) -> Option<Tick> {
+        self.history.back().map(|tv| tv.at)
     }
 
     /// Iterator over samples within `[now - duration, now]`, oldest-first.

@@ -34,9 +34,9 @@ pub mod warning;
 pub mod mock;
 
 pub use bus::AiBus;
-pub use condition::{Condition, ConditionAtom};
+pub use condition::{CompareOp, Condition, ConditionAtom};
 pub use eval::EvalContext;
-pub use value_expr::{MetricRef, ScriptRef, ValueExpr};
+pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
 pub use command::{Command, CommandParams, CommandValue};
 pub use evidence::StandingEvidence;
