@@ -1,6 +1,7 @@
 # Macrocosmo
 
 [![Latest Release](https://img.shields.io/github/v/release/frodo821/macrocosmo?label=latest)](https://github.com/frodo821/macrocosmo/releases/latest)
+[![Release](https://github.com/frodo821/macrocosmo/actions/workflows/release.yml/badge.svg?branch=release)](https://github.com/frodo821/macrocosmo/actions/workflows/release.yml)
 
 A space 4X strategy game where **the speed of light is the core game mechanic** — built with Rust + Bevy.
 
