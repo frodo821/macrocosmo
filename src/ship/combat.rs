@@ -2,12 +2,13 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::events::{GameEvent, GameEventKind};
+use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::{HostilePresence, StarSystem};
 use crate::player::{Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
 use crate::time_system::GameClock;
 
-use super::{Ship, ShipHitpoints, ShipModifiers, ShipState, RulesOfEngagement};
+use super::{Owner, Ship, ShipHitpoints, ShipModifiers, ShipState, RulesOfEngagement};
 
 /// Hit chance: precision * track / (track + evasion)
 fn hit_chance(weapon: &crate::ship_design::WeaponStats, target_evasion: f64) -> f64 {
@@ -67,12 +68,20 @@ fn apply_flat_damage_to_ship(hp: &mut ShipHitpoints, damage: f64) {
 
 /// Resolves combat between player ships and hostile presences at star systems.
 /// Combat turns per hexadies: 12. Uses WeaponStats from equipped modules.
+///
+/// **#168 — Faction-gated combat.** A ship engages a hostile only when the
+/// `FactionRelations` view from the ship's faction (its `Owner::Empire(_)`
+/// entity) toward the hostile's `FactionOwner` allows it
+/// (`FactionView::can_attack_aggressive`). Hostile presences without a
+/// `FactionOwner`, and ships whose owner is `Owner::Neutral`, are skipped.
+/// `RulesOfEngagement::Retreat` ships still skip combat regardless.
 pub fn resolve_combat(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<crate::colony::LastProductionTick>,
     mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState, Option<&RulesOfEngagement>)>,
-    mut hostiles: Query<(Entity, &mut HostilePresence)>,
+    mut hostiles: Query<(Entity, &mut HostilePresence, Option<&FactionOwner>)>,
+    relations: Res<FactionRelations>,
     module_registry: Res<ModuleRegistry>,
     systems: Query<(Entity, &StarSystem)>,
     mut events: MessageWriter<GameEvent>,
@@ -86,31 +95,54 @@ pub fn resolve_combat(
     let mut rng = rand::rng();
 
     // Collect hostile systems first to avoid borrow issues
-    let hostile_data: Vec<(Entity, Entity, f64, f64, f64, crate::galaxy::HostileType, f64)> = hostiles
+    let hostile_data: Vec<(Entity, Entity, f64, f64, f64, crate::galaxy::HostileType, f64, Option<Entity>)> = hostiles
         .iter()
-        .map(|(e, h)| (e, h.system, h.strength, h.hp, h.max_hp, h.hostile_type, h.evasion))
+        .map(|(e, h, owner)| (e, h.system, h.strength, h.hp, h.max_hp, h.hostile_type, h.evasion, owner.map(|o| o.0)))
         .collect();
 
-    for (hostile_entity, system_entity, _hostile_strength, _hostile_hp, _hostile_max_hp, _hostile_type, hostile_evasion) in &hostile_data {
+    for (hostile_entity, system_entity, _hostile_strength, _hostile_hp, _hostile_max_hp, _hostile_type, hostile_evasion, hostile_faction) in &hostile_data {
         let system_name = systems
             .get(*system_entity)
             .map(|(_, s)| s.name.clone())
             .unwrap_or_default();
 
+        // #168: Skip hostiles without a FactionOwner — they have no diplomatic
+        // identity in the new system, so combat cannot be evaluated. Legacy
+        // (un-migrated) spawns therefore become passive instead of attacking.
+        let Some(hostile_faction) = *hostile_faction else { continue; };
+
         // Find all player ships docked at this system, excluding Retreat ROE
+        // and ships whose faction view forbids aggression.
         let docked_ships: Vec<Entity> = ships
             .iter()
-            .filter_map(|(entity, _ship, _hp, _mods, state, roe)| {
+            .filter_map(|(entity, ship, _hp, _mods, state, roe)| {
                 let roe = roe.copied().unwrap_or_default();
                 if roe == RulesOfEngagement::Retreat {
                     return None; // #57: Retreat ships skip combat
                 }
                 if let ShipState::Docked { system } = state {
-                    if *system == *system_entity {
-                        return Some(entity);
+                    if *system != *system_entity {
+                        return None;
                     }
+                } else {
+                    return None;
                 }
-                None
+
+                // #168: Resolve ship's faction from Owner::Empire(_). Neutral
+                // ships have no diplomatic identity and cannot engage.
+                let Owner::Empire(faction_entity) = ship.owner else { return None; };
+
+                // Consult FactionRelations: the ship can fight only if its
+                // empire's view of the hostile faction allows aggressive
+                // engagement (War, or Neutral with negative standing).
+                if !relations
+                    .get_or_default(faction_entity, hostile_faction)
+                    .can_attack_aggressive()
+                {
+                    return None;
+                }
+
+                Some(entity)
             })
             .collect();
 
@@ -140,7 +172,7 @@ pub fn resolve_combat(
         }
 
         // Apply weapon damage to hostile
-        let Ok((_he, mut hostile)) = hostiles.get_mut(*hostile_entity) else {
+        let Ok((_he, mut hostile, _owner)) = hostiles.get_mut(*hostile_entity) else {
             continue;
         };
 

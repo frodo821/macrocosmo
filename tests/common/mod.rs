@@ -12,7 +12,7 @@ use macrocosmo::galaxy::{Anomalies, Planet, Sovereignty, StarSystem, SystemAttri
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::condition::ScopedFlags;
-use macrocosmo::player::{Empire, PlayerEmpire};
+use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::*;
 use macrocosmo::technology::{self, TechKnowledge};
 use macrocosmo::time_system::{GameClock, GameSpeed};
@@ -102,6 +102,10 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
                 name: "Test Empire".into(),
             },
             PlayerEmpire,
+            Faction {
+                id: "humanity_empire".into(),
+                name: "Test Empire".into(),
+            },
             technology::TechTree::default(),
             technology::ResearchQueue::default(),
             technology::ResearchPool::default(),
@@ -116,6 +120,92 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
             ScopedFlags::default(),
         ))
         .id()
+}
+
+/// Test helper for #168: spawn passive hostile factions, seed Neutral/-100
+/// relations against the test empire, and attach `FactionOwner` to every
+/// existing `HostilePresence`. Tests that want combat to actually trigger
+/// must call this after spawning their hostiles and ships.
+///
+/// Returns `(space_creature_faction, ancient_defense_faction)` entities.
+pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
+    use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState};
+    use macrocosmo::galaxy::{HostilePresence, HostileType};
+
+    // Find or create the player empire.
+    let empire = {
+        let mut q = world.query_filtered::<Entity, With<PlayerEmpire>>();
+        q.iter(world).next()
+    }
+    .unwrap_or_else(|| spawn_test_empire(world));
+
+    // Spawn faction entities. Idempotent: re-use if already present.
+    let mut hf = world.resource::<HostileFactions>().clone();
+    if hf.space_creature.is_none() {
+        let e = world
+            .spawn(Faction {
+                id: "space_creature_faction".into(),
+                name: "Space Creatures".into(),
+            })
+            .id();
+        hf.space_creature = Some(e);
+    }
+    if hf.ancient_defense.is_none() {
+        let e = world
+            .spawn(Faction {
+                id: "ancient_defense_faction".into(),
+                name: "Ancient Defenses".into(),
+            })
+            .id();
+        hf.ancient_defense = Some(e);
+    }
+    let space_creature = hf.space_creature.unwrap();
+    let ancient_defense = hf.ancient_defense.unwrap();
+    *world.resource_mut::<HostileFactions>() = hf;
+
+    // Seed default hostile relations: Neutral + -100 standing both directions.
+    {
+        let mut rel = world.resource_mut::<FactionRelations>();
+        rel.set(empire, space_creature, FactionView::new(RelationState::Neutral, -100.0));
+        rel.set(space_creature, empire, FactionView::new(RelationState::Neutral, -100.0));
+        rel.set(empire, ancient_defense, FactionView::new(RelationState::Neutral, -100.0));
+        rel.set(ancient_defense, empire, FactionView::new(RelationState::Neutral, -100.0));
+    }
+
+    // Attach FactionOwner to every existing HostilePresence based on hostile_type.
+    let assignments: Vec<(Entity, Entity)> = {
+        let mut q = world.query::<(Entity, &HostilePresence)>();
+        q.iter(world)
+            .map(|(e, h)| {
+                let owner = match h.hostile_type {
+                    HostileType::SpaceCreature => space_creature,
+                    HostileType::AncientDefense => ancient_defense,
+                };
+                (e, owner)
+            })
+            .collect()
+    };
+    for (entity, owner) in assignments {
+        world.entity_mut(entity).insert(FactionOwner(owner));
+    }
+
+    // Re-home every Neutral ship onto the test empire so they participate in
+    // combat under the new Faction-gated logic. Tests that explicitly want
+    // unaffiliated ships should set `Owner::Neutral` *after* this call.
+    let neutral_ships: Vec<Entity> = {
+        let mut q = world.query::<(Entity, &macrocosmo::ship::Ship)>();
+        q.iter(world)
+            .filter(|(_, s)| matches!(s.owner, macrocosmo::ship::Owner::Neutral))
+            .map(|(e, _)| e)
+            .collect()
+    };
+    for e in neutral_ships {
+        if let Some(mut ship) = world.get_mut::<macrocosmo::ship::Ship>(e) {
+            ship.owner = macrocosmo::ship::Owner::Empire(empire);
+        }
+    }
+
+    (space_creature, ancient_defense)
 }
 
 /// Build a headless Bevy App with game logic systems but no rendering.
@@ -136,6 +226,8 @@ pub fn test_app() -> App {
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.init_resource::<macrocosmo::ship_design::HullRegistry>();
     app.insert_resource(create_test_design_registry());
+    app.init_resource::<macrocosmo::faction::FactionRelations>();
+    app.init_resource::<macrocosmo::faction::HostileFactions>();
     app.add_message::<GameEvent>();
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -271,6 +363,8 @@ pub fn full_test_app() -> App {
     app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
     app.init_resource::<macrocosmo::ship_design::HullRegistry>();
     app.insert_resource(create_test_design_registry());
+    app.init_resource::<macrocosmo::faction::FactionRelations>();
+    app.init_resource::<macrocosmo::faction::HostileFactions>();
     app.add_message::<GameEvent>();
 
     // --- Visualization resources ---
@@ -436,7 +530,28 @@ pub fn full_test_app() -> App {
 }
 
 /// Advance the game clock by `hexadies` and run one update cycle.
+///
+/// **#168 — Auto faction migration.** Before running the update, ensure that
+/// any `HostilePresence` in the world is paired with a `FactionOwner` and that
+/// the test empire/hostile factions have default Neutral/-100 relations. This
+/// preserves the pre-#168 behavior of legacy combat tests without forcing
+/// every test to explicitly call `setup_test_hostile_factions`. Tests that
+/// want to verify the un-migrated behavior should run their own `app.update()`
+/// directly instead of using `advance_time`.
 pub fn advance_time(app: &mut App, hexadies: i64) {
+    let needs_migration = {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<Entity, (
+                With<macrocosmo::galaxy::HostilePresence>,
+                Without<macrocosmo::faction::FactionOwner>,
+            )>();
+        q.iter(app.world()).next().is_some()
+    };
+    if needs_migration {
+        setup_test_hostile_factions(app.world_mut());
+    }
+
     app.world_mut().resource_mut::<GameClock>().elapsed += hexadies;
     app.update();
 }
