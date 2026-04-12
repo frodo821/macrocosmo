@@ -2,38 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-/// Diplomatic relation state between two factions.
-///
-/// Defined here independently for #170; once #167 (FactionRelations) lands,
-/// the two definitions should be unified (this enum is intentionally
-/// minimal so it can be re-exported or replaced wholesale).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RelationState {
-    /// No diplomatic ties. `standing < 0` + Aggressive ROE may still cause combat.
-    Neutral,
-    /// Non-aggression — must declare war before attacking.
-    Peace,
-    /// Active hostilities.
-    War,
-    /// Allied — shared visibility / mutual defense (future use).
-    Alliance,
-}
-
-impl RelationState {
-    /// Parse a state string (case-insensitive). Returns the matching
-    /// variant or an `mlua::Error` describing the unknown value.
-    pub fn from_str(s: &str) -> Result<Self, mlua::Error> {
-        match s.to_ascii_lowercase().as_str() {
-            "neutral" => Ok(RelationState::Neutral),
-            "peace" => Ok(RelationState::Peace),
-            "war" => Ok(RelationState::War),
-            "alliance" => Ok(RelationState::Alliance),
-            other => Err(mlua::Error::RuntimeError(format!(
-                "Unknown relation state '{other}': expected one of neutral/peace/war/alliance"
-            ))),
-        }
-    }
-}
+use crate::faction::RelationState;
 
 /// Category that a faction belongs to (e.g. `empire`, `space_creature`,
 /// `ancient_defense`). Defined from Lua via `define_faction_type`.

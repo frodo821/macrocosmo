@@ -45,7 +45,7 @@ impl Plugin for FactionRelationsPlugin {
 }
 
 /// Diplomatic state between two factions, viewed from a single direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RelationState {
     /// No formal diplomatic relationship. Hostile actions may still occur if
     /// `standing < 0` and the actor's ROE allows it.
@@ -61,6 +61,23 @@ pub enum RelationState {
 impl Default for RelationState {
     fn default() -> Self {
         RelationState::Neutral
+    }
+}
+
+impl RelationState {
+    /// Parse a state string (case-insensitive). Returns the matching
+    /// variant or an `mlua::Error` describing the unknown value.
+    /// Used by the Lua API (`define_faction_type`) to accept string inputs.
+    pub fn from_str(s: &str) -> Result<Self, mlua::Error> {
+        match s.to_ascii_lowercase().as_str() {
+            "neutral" => Ok(RelationState::Neutral),
+            "peace" => Ok(RelationState::Peace),
+            "war" => Ok(RelationState::War),
+            "alliance" => Ok(RelationState::Alliance),
+            other => Err(mlua::Error::RuntimeError(format!(
+                "Unknown relation state '{other}': expected one of neutral/peace/war/alliance"
+            ))),
+        }
     }
 }
 
