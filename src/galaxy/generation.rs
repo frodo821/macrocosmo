@@ -7,8 +7,11 @@ use crate::technology::TechKnowledge;
 
 use super::{
     Anomalies, GalaxyConfig, HostilePresence, HostileType, ObscuredByGas, Planet,
-    Sovereignty, StarSystem, SystemAttributes, SystemModifiers,
+    Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes, SystemModifiers,
 };
+use crate::amount::SignedAmt;
+use crate::modifier::Modifier;
+use crate::scripting::galaxy_api::StarTypeModifier;
 use super::types::{default_planet_types, default_star_types};
 
 /// Galaxy generation parameters.
@@ -39,6 +42,40 @@ pub(crate) struct CapitalAssignments {
 pub(crate) struct PlanetData {
     pub type_idx: usize,
     pub attrs: SystemAttributes,
+}
+
+/// Build a Modifier from a StarTypeModifier, using the star type id as a stable id prefix.
+fn make_modifier_for_star(star_id: &str, m: &StarTypeModifier) -> Modifier {
+    Modifier {
+        id: format!("star_type:{}:{}", star_id, m.target),
+        label: format!("Star type: {}", star_id),
+        base_add: SignedAmt::from_f64(m.base_add),
+        multiplier: SignedAmt::from_f64(m.multiplier),
+        add: SignedAmt::from_f64(m.add),
+        expires_at: None,
+        on_expire_event: None,
+    }
+}
+
+/// Apply any known `ship.*` star-type modifier targets to a SystemModifiers.
+/// Unknown targets (e.g. `system.research_bonus`, `ship.shield_regen`) are
+/// preserved in StarTypeModifierSet for future wiring — they are intentionally
+/// no-ops here rather than warnings, since definitions may declare targets
+/// ahead of the engine gaining support for them.
+fn apply_star_type_modifiers_to_system(
+    modifiers: &[StarTypeModifier],
+    star_id: &str,
+    mods: &mut SystemModifiers,
+) {
+    for m in modifiers {
+        let modifier = make_modifier_for_star(star_id, m);
+        match m.target.as_str() {
+            "ship.speed" => mods.ship_speed.push_modifier(modifier),
+            "ship.attack" => mods.ship_attack.push_modifier(modifier),
+            "ship.defense" => mods.ship_defense.push_modifier(modifier),
+            _ => {}
+        }
+    }
 }
 
 /// Sample from Poisson distribution using Knuth's algorithm.
@@ -431,12 +468,20 @@ pub(crate) fn initialize_systems(
         // the empire entity is spawned; start with default for all.
         let sovereignty = Sovereignty::default();
 
+        // Build SystemModifiers with any known ship.* targets from the star type
+        // applied. Unknown targets are retained in StarTypeModifierSet below.
+        let mut system_modifiers = SystemModifiers::default();
+        apply_star_type_modifiers_to_system(&star_type.modifiers, &star_type.id, &mut system_modifiers);
+
         let entity = commands.spawn((
             star,
             Position::from(sys.position),
             sovereignty,
             TechKnowledge::default(),
-            SystemModifiers::default(),
+            system_modifiers,
+            StarTypeModifierSet {
+                entries: star_type.modifiers.clone(),
+            },
             Anomalies::default(),
         ));
         let star_entity = entity.id();

@@ -13,6 +13,7 @@ pub(crate) fn default_star_types() -> Vec<StarTypeDefinition> {
         max_planets: 3,
         habitability_bonus: 0.0,
         weight: 1.0,
+        modifiers: Vec::new(),
     }]
 }
 

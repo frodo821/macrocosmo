@@ -1240,6 +1240,7 @@ fn test_galaxy_has_hostiles() {
         max_planets: 3,
         habitability_bonus: 0.0,
         weight: 1.0,
+        modifiers: Vec::new(),
     });
     app.insert_resource(star_reg);
 

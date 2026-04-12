@@ -70,6 +70,12 @@ impl Plugin for FactionRelationsPlugin {
             .add_systems(
                 Update,
                 tick_diplomatic_actions.after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
+                tick_custom_diplomatic_actions
+                    .after(crate::time_system::advance_game_time)
+                    .after(tick_diplomatic_actions),
             );
     }
 }
@@ -414,7 +420,7 @@ impl FactionRelations {
 /// - **Acceptance** ([`AcceptPeace`](DiplomaticAction::AcceptPeace),
 ///   [`AcceptAlliance`](DiplomaticAction::AcceptAlliance)): emitted internally
 ///   by [`tick_diplomatic_actions`] for the return leg of a mutual proposal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiplomaticAction {
     DeclareWar,
     ProposePeace,
@@ -422,6 +428,12 @@ pub enum DiplomaticAction {
     BreakAlliance,
     AcceptPeace,
     AcceptAlliance,
+    /// Lua-defined custom action (#172). The `String` is the action id
+    /// registered in
+    /// [`crate::scripting::faction_api::DiplomaticActionRegistry`]. When the
+    /// message arrives, [`tick_custom_diplomatic_actions`] looks up the
+    /// definition and invokes its optional `on_accepted` callback.
+    CustomAction(String),
 }
 
 /// In-flight diplomatic message awaiting delivery.
@@ -432,7 +444,7 @@ pub enum DiplomaticAction {
 /// to apply, the absolute hexadies timestamp at which it should land, and the
 /// one-way delay used to schedule it (so a mutual-agreement proposal can
 /// queue an acceptance for the return leg with the same delay).
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct PendingDiplomaticAction {
     /// Faction that originated the action.
     pub from: Entity,
@@ -567,14 +579,17 @@ pub fn tick_diplomatic_actions(
 ) {
     let now = clock.elapsed;
     // Snapshot the arrived messages so we can despawn / spawn freely.
+    // `DiplomaticAction::CustomAction` carries a String so we clone rather
+    // than copy; the match below skips `CustomAction` and defers it to
+    // [`tick_custom_diplomatic_actions`] which has access to the Lua engine.
     let arrived: Vec<(Entity, PendingDiplomaticAction)> = pending
         .iter()
         .filter(|(_, p)| p.arrives_at <= now)
-        .map(|(e, p)| (e, *p))
+        .map(|(e, p)| (e, p.clone()))
         .collect();
 
     for (entity, msg) in arrived {
-        match msg.action {
+        match &msg.action {
             DiplomaticAction::DeclareWar => {
                 // Receiver's view (to → from) flips to War.
                 relations.declare_war(msg.to, msg.from);
@@ -614,9 +629,275 @@ pub fn tick_diplomatic_actions(
             DiplomaticAction::AcceptAlliance => {
                 relations.make_alliance(msg.to, msg.from);
             }
+            DiplomaticAction::CustomAction(_) => {
+                // Custom actions need the Lua engine to run `on_accepted`.
+                // Handled by `tick_custom_diplomatic_actions` which sees the
+                // same entity but has the extra resources it needs. Skip
+                // here so the message isn't despawned.
+                continue;
+            }
         }
 
         commands.entity(entity).despawn();
+    }
+}
+
+/// Spawn a [`PendingDiplomaticAction`] carrying a Lua-defined custom action
+/// (#172). No sender-side state change is performed — the effect (if any)
+/// is entirely described by the action's `on_accepted` Lua callback, applied
+/// when the message arrives at the receiver.
+///
+/// Callers are expected to have validated availability via
+/// [`crate::scripting::faction_api::DiplomaticActionDefinition::is_available`]
+/// first; this helper deliberately does not re-check, matching the pattern
+/// of [`declare_war_with_delay`] et al.
+pub fn send_custom_diplomatic_action(
+    commands: &mut Commands,
+    clock: &crate::time_system::GameClock,
+    from: Entity,
+    to: Entity,
+    action_id: impl Into<String>,
+    delay_hexadies: i64,
+) {
+    let delay = delay_hexadies.max(0);
+    commands.spawn(PendingDiplomaticAction {
+        from,
+        to,
+        action: DiplomaticAction::CustomAction(action_id.into()),
+        arrives_at: clock.elapsed + delay,
+        one_way_delay_hexadies: delay,
+    });
+}
+
+/// System: drain every arrived [`PendingDiplomaticAction`] whose
+/// `action` is a [`DiplomaticAction::CustomAction`] and invoke the action's
+/// Lua `on_accepted` callback (#172).
+///
+/// Applies returned [`crate::effect::DescriptiveEffect`] records to the
+/// sender-side `PlayerEmpire`'s flag/param state in the same way tech
+/// research effects do. Receiver-side application is left to a future pass
+/// (factions other than the player have no flag store to write into today).
+///
+/// **Ordering.** Must run after [`tick_diplomatic_actions`] so the two
+/// systems see the same set of arrived messages in a consistent order.
+pub fn tick_custom_diplomatic_actions(
+    mut commands: Commands,
+    clock: Res<crate::time_system::GameClock>,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
+    registry: Option<Res<crate::scripting::faction_api::DiplomaticActionRegistry>>,
+    pending: Query<(Entity, &PendingDiplomaticAction)>,
+    mut empire_q: Query<
+        (
+            Entity,
+            &mut crate::technology::GameFlags,
+            &mut crate::condition::ScopedFlags,
+            &mut crate::technology::GlobalParams,
+        ),
+        With<crate::player::PlayerEmpire>,
+    >,
+) {
+    let now = clock.elapsed;
+    let arrived: Vec<(Entity, PendingDiplomaticAction)> = pending
+        .iter()
+        .filter(|(_, p)| {
+            p.arrives_at <= now && matches!(p.action, DiplomaticAction::CustomAction(_))
+        })
+        .map(|(e, p)| (e, p.clone()))
+        .collect();
+
+    if arrived.is_empty() {
+        return;
+    }
+
+    let Some(engine) = engine else {
+        // No Lua available (headless tests) — despawn messages to avoid
+        // piling up but don't attempt callbacks.
+        for (entity, _) in arrived {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let lua = engine.lua();
+
+    for (entity, msg) in arrived {
+        let action_id = match &msg.action {
+            DiplomaticAction::CustomAction(id) => id.clone(),
+            _ => continue,
+        };
+
+        // Look up the definition; unknown ids are logged and dropped.
+        let def_present = registry
+            .as_ref()
+            .map(|r| r.get(&action_id).is_some())
+            .unwrap_or(false);
+        if !def_present {
+            warn!(
+                "Custom diplomatic action '{}' not found in registry; dropping",
+                action_id
+            );
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        // Resolve the on_accepted function (may legitimately be absent).
+        let func_opt =
+            match crate::scripting::faction_api::lookup_on_accepted(lua, &action_id) {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(
+                        "Failed to look up on_accepted for '{}': {e}",
+                        action_id
+                    );
+                    commands.entity(entity).despawn();
+                    continue;
+                }
+            };
+
+        if let Some(func) = func_opt {
+            let scope = crate::scripting::effect_scope::EffectScope::new();
+            let call_result = func.call::<mlua::Value>(scope.clone());
+            let effects = match call_result {
+                Ok(v) => {
+                    match crate::scripting::effect_scope::collect_effects(&scope, v) {
+                        Ok(effects) => effects,
+                        Err(e) => {
+                            warn!(
+                                "collect_effects failed for custom diplomatic action '{}': {e}",
+                                action_id
+                            );
+                            Vec::new()
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "on_accepted callback failed for '{}': {e}",
+                        action_id
+                    );
+                    Vec::new()
+                }
+            };
+
+            if !effects.is_empty()
+                && let Ok((_, mut game_flags, mut scoped_flags, mut global_params)) =
+                    empire_q.single_mut()
+            {
+                for effect in &effects {
+                    apply_custom_action_effect(
+                        effect,
+                        &mut game_flags,
+                        &mut scoped_flags,
+                        &mut global_params,
+                    );
+                }
+                info!(
+                    "Applied {} effect(s) for custom diplomatic action '{}'",
+                    effects.len(),
+                    action_id
+                );
+            }
+
+            // Drain any pending flags/global_mods that the callback set via
+            // the global helpers, for consistency with tech effect handling.
+            let pending_flags =
+                crate::scripting::lifecycle::drain_pending_flags(lua);
+            if !pending_flags.is_empty()
+                && let Ok((_, mut game_flags, mut scoped_flags, _)) =
+                    empire_q.single_mut()
+            {
+                for flag in &pending_flags {
+                    game_flags.set(flag);
+                    scoped_flags.set(flag);
+                }
+            }
+            let _ = crate::technology::effects::drain_pending_global_mods(lua);
+        }
+
+        commands.entity(entity).despawn();
+    }
+}
+
+/// Apply a single `DescriptiveEffect` produced by a custom diplomatic
+/// action's `on_accepted` callback. Mirrors the `apply_effect` helper used
+/// by tech research — kept local to avoid a cross-module dependency on a
+/// `pub fn` that's today private to `technology::effects`.
+fn apply_custom_action_effect(
+    effect: &crate::effect::DescriptiveEffect,
+    game_flags: &mut crate::technology::GameFlags,
+    scoped_flags: &mut crate::condition::ScopedFlags,
+    global_params: &mut crate::technology::GlobalParams,
+) {
+    use crate::effect::DescriptiveEffect;
+    match effect {
+        DescriptiveEffect::PushModifier {
+            target,
+            base_add,
+            multiplier,
+            add,
+            ..
+        } => {
+            apply_custom_action_modifier(
+                global_params,
+                target,
+                *base_add,
+                *multiplier,
+                *add,
+            );
+        }
+        DescriptiveEffect::PopModifier { .. } => {
+            // Pop is meaningless for one-shot acceptance.
+        }
+        DescriptiveEffect::SetFlag { name, value, .. } => {
+            if *value {
+                game_flags.set(name);
+                scoped_flags.set(name);
+            }
+        }
+        DescriptiveEffect::FireEvent { event_id, .. } => {
+            info!(
+                "Custom diplomatic action requests event fire: {} (not yet wired)",
+                event_id
+            );
+        }
+        DescriptiveEffect::Hidden { inner, .. } => {
+            apply_custom_action_effect(inner, game_flags, scoped_flags, global_params);
+        }
+    }
+}
+
+/// Map a subset of well-known modifier targets onto `GlobalParams`. This
+/// duplicates the shape of `apply_modifier_to_params` in
+/// `technology::effects` and is intentionally small — diplomacy-specific
+/// targets (`empire.trade_income`, etc.) don't yet have a dedicated home in
+/// Rust state and are silently accepted for later wiring.
+fn apply_custom_action_modifier(
+    params: &mut crate::technology::GlobalParams,
+    target: &str,
+    base_add: f64,
+    multiplier: f64,
+    add: f64,
+) {
+    match target {
+        "ship.sublight_speed" => {
+            params.sublight_speed_bonus += base_add + add;
+        }
+        "ship.ftl_speed" => {
+            if multiplier != 0.0 {
+                params.ftl_speed_multiplier += multiplier;
+            }
+            params.sublight_speed_bonus += base_add + add;
+        }
+        "ship.ftl_range" => {
+            params.ftl_range_bonus += base_add + add;
+        }
+        "sensor.range" => {
+            params.survey_range_bonus += base_add + add;
+        }
+        _ => {
+            debug!(
+                "Custom diplomatic action modifier target '{target}' not mapped to GlobalParams"
+            );
+        }
     }
 }
 

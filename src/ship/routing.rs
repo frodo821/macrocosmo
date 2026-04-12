@@ -3,6 +3,14 @@
 //! Provides an A* route planner that finds optimal mixed FTL/sublight routes,
 //! runs as an async task off the main thread, and integrates with the ECS via
 //! `PendingRoute` component and `poll_pending_routes` system.
+//!
+//! #187: Adds ROE-aware weighting so that `RulesOfEngagement::Retreat`
+//! ships route around star systems known to contain hostile factions. The
+//! avoidance uses the player's [`KnowledgeStore`](crate::knowledge::KnowledgeStore)
+//! — unknown hostiles cannot be avoided (light-speed delayed info). If the
+//! only available path passes through a hostile system, the planner still
+//! returns it (penalty applies but doesn't make the edge infinite) to avoid
+//! stuck ships.
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
@@ -15,7 +23,7 @@ use crate::physics::distance_ly_arr;
 use crate::time_system::HEXADIES_PER_YEAR;
 
 use super::{
-    CommandQueue, Ship, ShipState, QueuedCommand,
+    CommandQueue, Ship, ShipState, QueuedCommand, RulesOfEngagement,
     start_ftl_travel_with_bonus, start_sublight_travel_with_bonus,
     PortParams,
 };
@@ -23,13 +31,24 @@ use super::{
 /// Maximum sublight edge distance in light-years (caps edge count in A*).
 pub const MAX_SUBLIGHT_EDGE_LY: f64 = 30.0;
 
-/// Snapshot of a star system for async route planning (no ECS references).
+/// #187: Cost multiplier applied when entering a system the ship's empire
+/// *knows* is hostile (via KnowledgeStore snapshot, gated by
+/// `FactionRelations::can_attack_aggressive`). Only active for
+/// [`RulesOfEngagement::Retreat`]; base cost is already in time units (hexadies).
+pub const HOSTILE_PENALTY_MULTIPLIER: f64 = 10.0;
+
+/// #187: Snapshot of a star system for async route planning (no ECS references).
 #[derive(Clone, Debug)]
 pub struct RouteSystemSnapshot {
     pub index: usize,
     pub entity: Entity,
     pub pos: [f64; 3],
     pub surveyed: bool,
+    /// `true` if this system is *known* to the ship's empire to host a hostile
+    /// faction (KnowledgeStore snapshot + `FactionRelations::can_attack_aggressive`).
+    /// Unknown hostiles are `false` — light-speed delay means the ship cannot
+    /// avoid what it does not yet know about.
+    pub hostile_known: bool,
 }
 
 /// A single segment of a planned route.
@@ -108,6 +127,10 @@ enum EdgeKind {
 /// - FTL edges: to any *surveyed* system within `ftl_range`.
 /// - SubLight edges: to any system within `MAX_SUBLIGHT_EDGE_LY`.
 /// - Heuristic: Euclidean distance / ftl_speed (admissible).
+/// - #187: if `roe == Retreat`, entering a system with `hostile_known = true`
+///   multiplies that edge's cost by [`HOSTILE_PENALTY_MULTIPLIER`]. The
+///   destination system itself is exempt from the penalty (the player
+///   explicitly asked to go there), so that `MoveTo` never becomes impossible.
 ///
 /// Returns `None` if no route exists.
 pub fn plan_route(
@@ -117,6 +140,32 @@ pub fn plan_route(
     sublight_speed: f64,
     ftl_speed: f64,
     systems: &[RouteSystemSnapshot],
+) -> Option<PlannedRoute> {
+    plan_route_with_roe(
+        origin_pos,
+        destination_index,
+        ftl_range,
+        sublight_speed,
+        ftl_speed,
+        systems,
+        // Default ROE = Defensive = no avoidance, behavioural parity with
+        // pre-#187 callers that haven't been updated to pass an ROE.
+        RulesOfEngagement::Defensive,
+    )
+}
+
+/// #187: ROE-aware variant of [`plan_route`]. For `RulesOfEngagement::Retreat`,
+/// entering a *known* hostile system multiplies that edge's cost by
+/// [`HOSTILE_PENALTY_MULTIPLIER`]. For all other ROEs this behaves identically
+/// to [`plan_route`] (no penalty applied).
+pub fn plan_route_with_roe(
+    origin_pos: [f64; 3],
+    destination_index: usize,
+    ftl_range: f64,
+    sublight_speed: f64,
+    ftl_speed: f64,
+    systems: &[RouteSystemSnapshot],
+    roe: RulesOfEngagement,
 ) -> Option<PlannedRoute> {
     if destination_index >= systems.len() {
         return None;
@@ -211,7 +260,20 @@ pub fn plan_route(
                 edges.push((EdgeKind::SubLight, cost));
             }
 
-            for (kind, cost) in edges {
+            // #187: Retreat ships apply a hostile penalty when entering a
+            // known-hostile system. The destination is exempted — the player
+            // explicitly requested it — so MoveTo into a hostile system still
+            // succeeds.
+            let apply_hostile_penalty = roe == RulesOfEngagement::Retreat
+                && target.hostile_known
+                && j != destination_index;
+
+            for (kind, base_cost) in edges {
+                let cost = if apply_hostile_penalty {
+                    base_cost * HOSTILE_PENALTY_MULTIPLIER
+                } else {
+                    base_cost
+                };
                 let new_g = g_costs[ci] + cost;
                 if new_g < g_costs[j] {
                     g_costs[j] = new_g;
@@ -260,17 +322,53 @@ pub fn plan_route(
 }
 
 /// Collect system snapshots from the ECS for async route planning.
+///
+/// #187: Populates `hostile_known` using the player empire's
+/// [`KnowledgeStore`](crate::knowledge::KnowledgeStore) and
+/// [`FactionRelations`](crate::faction::FactionRelations). A system is flagged
+/// hostile iff:
+/// 1. The empire has a knowledge snapshot showing `has_hostile == true`, AND
+/// 2. The empire's view of that hostile faction satisfies
+///    `can_attack_aggressive()` (so Peace/Alliance factions are *not* avoided).
+///
+/// `hostile_faction_map` supplies the faction entity of the hostile garrisoning
+/// each system (derived from `HostilePresence` + `FactionOwner`).
 pub fn collect_route_snapshots(
     systems: &Query<(Entity, &StarSystem, &Position), Without<Ship>>,
+    knowledge: Option<&crate::knowledge::KnowledgeStore>,
+    relations: &crate::faction::FactionRelations,
+    ship_faction: Option<Entity>,
+    hostile_faction_map: &std::collections::HashMap<Entity, Entity>,
 ) -> Vec<RouteSystemSnapshot> {
     systems
         .iter()
         .enumerate()
-        .map(|(i, (entity, star, pos))| RouteSystemSnapshot {
-            index: i,
-            entity,
-            pos: pos.as_array(),
-            surveyed: star.surveyed,
+        .map(|(i, (entity, star, pos))| {
+            // Resolve whether the player's empire *knows* this system is hostile,
+            // and whether the ship's faction actually treats that hostile as
+            // an enemy. Unknown / un-owned hostiles are ignored (light-speed delay).
+            let hostile_known = match (ship_faction, knowledge) {
+                (Some(from), Some(store)) => store
+                    .get(entity)
+                    .map(|k| k.data.has_hostile)
+                    .unwrap_or(false)
+                    && hostile_faction_map
+                        .get(&entity)
+                        .map(|&hostile| {
+                            relations
+                                .get_or_default(from, hostile)
+                                .can_attack_aggressive()
+                        })
+                        .unwrap_or(false),
+                _ => false,
+            };
+            RouteSystemSnapshot {
+                index: i,
+                entity,
+                pos: pos.as_array(),
+                surveyed: star.surveyed,
+                hostile_known,
+            }
         })
         .collect()
 }
@@ -284,11 +382,43 @@ pub fn spawn_route_task(
     ftl_speed: f64,
     systems: Vec<RouteSystemSnapshot>,
 ) -> Task<Option<PlannedRoute>> {
+    // #187: ROE-less spawner retained for backward compatibility and tests.
+    // Defaults to `Defensive` (no avoidance).
+    spawn_route_task_with_roe(
+        origin_pos,
+        destination,
+        ftl_range,
+        sublight_speed,
+        ftl_speed,
+        systems,
+        RulesOfEngagement::Defensive,
+    )
+}
+
+/// #187: ROE-aware spawner. `RulesOfEngagement::Retreat` ships avoid
+/// `hostile_known` systems; other ROEs behave identically to [`spawn_route_task`].
+pub fn spawn_route_task_with_roe(
+    origin_pos: [f64; 3],
+    destination: Entity,
+    ftl_range: f64,
+    sublight_speed: f64,
+    ftl_speed: f64,
+    systems: Vec<RouteSystemSnapshot>,
+    roe: RulesOfEngagement,
+) -> Task<Option<PlannedRoute>> {
     let pool = AsyncComputeTaskPool::get();
     let dest_index = systems.iter().position(|s| s.entity == destination);
     pool.spawn(async move {
         let dest_idx = dest_index?;
-        plan_route(origin_pos, dest_idx, ftl_range, sublight_speed, ftl_speed, &systems)
+        plan_route_with_roe(
+            origin_pos,
+            dest_idx,
+            ftl_range,
+            sublight_speed,
+            ftl_speed,
+            &systems,
+            roe,
+        )
     })
 }
 
@@ -492,7 +622,17 @@ mod tests {
     }
 
     fn make_snapshot(index: usize, entity: Entity, pos: [f64; 3], surveyed: bool) -> RouteSystemSnapshot {
-        RouteSystemSnapshot { index, entity, pos, surveyed }
+        RouteSystemSnapshot { index, entity, pos, surveyed, hostile_known: false }
+    }
+
+    fn make_snapshot_hostile(
+        index: usize,
+        entity: Entity,
+        pos: [f64; 3],
+        surveyed: bool,
+        hostile_known: bool,
+    ) -> RouteSystemSnapshot {
+        RouteSystemSnapshot { index, entity, pos, surveyed, hostile_known }
     }
 
     #[test]

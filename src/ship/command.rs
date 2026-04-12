@@ -192,10 +192,15 @@ pub fn process_command_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
-    mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position), Without<routing::PendingRoute>>,
+    // #187: Player empire's KnowledgeStore used for Retreat-route avoidance.
+    empire_knowledge_q: Query<&crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position, Option<&RulesOfEngagement>), Without<routing::PendingRoute>>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
+    // #187: Hostile garrisons + faction ownership keyed by star system.
+    hostiles_q: Query<(&crate::galaxy::HostilePresence, &crate::faction::FactionOwner)>,
+    relations: Res<crate::faction::FactionRelations>,
     mut pending_count: ResMut<routing::RouteCalculationsPending>,
     design_registry: Res<ShipDesignRegistry>,
     building_registry: Res<crate::colony::BuildingRegistry>,
@@ -203,7 +208,15 @@ pub fn process_command_queue(
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
-    for (entity, ship, mut state, mut queue, ship_pos) in ships.iter_mut() {
+    let empire_knowledge = empire_knowledge_q.single().ok();
+    // #187: Build the hostile system → hostile faction map once per tick.
+    let hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
+        .iter()
+        .map(|(h, owner)| (h.system, owner.0))
+        .collect();
+    for (entity, ship, mut state, mut queue, ship_pos, roe) in ships.iter_mut() {
+        // #187: ROE defaults to Defensive when absent (matches Ship::default spawn).
+        let roe = roe.copied().unwrap_or_default();
         // #185: Process queue when ship is Docked OR Loitering (current command finished).
         let docked_system: Option<Entity> = match *state {
             ShipState::Docked { system } => Some(system),
@@ -278,14 +291,26 @@ pub fn process_command_queue(
                 let effective_sublight_speed = ship.sublight_speed + global_params.sublight_speed_bonus;
 
                 // Spawn async route computation task.
-                let snapshots = routing::collect_route_snapshots(&systems);
-                let task = routing::spawn_route_task(
+                // #187: Feed per-ship ROE + KnowledgeStore-derived hostile info.
+                let ship_faction = match ship.owner {
+                    super::Owner::Empire(f) => Some(f),
+                    super::Owner::Neutral => None,
+                };
+                let snapshots = routing::collect_route_snapshots(
+                    &systems,
+                    empire_knowledge,
+                    &relations,
+                    ship_faction,
+                    &hostile_faction_map,
+                );
+                let task = routing::spawn_route_task_with_roe(
                     origin_pos_arr,
                     target,
                     effective_ftl_range,
                     effective_sublight_speed,
                     effective_ftl_speed,
                     snapshots,
+                    roe,
                 );
                 commands.entity(entity).insert(routing::PendingRoute {
                     task,

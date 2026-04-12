@@ -4,6 +4,10 @@
 -- reference them by value (e.g. `faction_type = types.empire`).
 local types = require("factions.faction_types")
 
+-- Diplomatic actions (#172). Independent of faction definitions — the
+-- registry resolves prerequisites against relations + types at call time.
+require("factions.actions")
+
 define_faction {
     id = "humanity_empire",
     name = "Terran Federation",

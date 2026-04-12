@@ -1,7 +1,7 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::galaxy::{Planet, StarSystem, SystemModifiers};
+use macrocosmo::galaxy::{Planet, StarSystem, StarTypeModifierSet, SystemModifiers};
 
 #[test]
 fn test_galaxy_generation_uses_types() {
@@ -24,6 +24,7 @@ fn test_galaxy_generation_uses_types() {
         max_planets: 5,
         habitability_bonus: 0.0,
         weight: 1.0,
+        modifiers: Vec::new(),
     });
     app.insert_resource(star_reg);
 
@@ -98,6 +99,7 @@ fn test_system_modifiers_on_star_systems() {
         max_planets: 3,
         habitability_bonus: 0.0,
         weight: 1.0,
+        modifiers: Vec::new(),
     });
     app.insert_resource(star_reg);
 

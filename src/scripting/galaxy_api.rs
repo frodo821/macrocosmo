@@ -1,5 +1,17 @@
 use bevy::prelude::*;
 
+/// A modifier attached to a star type, applied to each system of that type at generation.
+/// Target strings follow the shared convention (e.g. "system.research_bonus",
+/// "ship.shield_regen"). Unknown targets are retained but not applied — they can be
+/// wired up later without script changes.
+#[derive(Clone, Debug, Default)]
+pub struct StarTypeModifier {
+    pub target: String,
+    pub base_add: f64,
+    pub multiplier: f64,
+    pub add: f64,
+}
+
 /// A star type definition parsed from Lua `define_star_type { ... }` calls.
 #[derive(Clone, Debug)]
 pub struct StarTypeDefinition {
@@ -11,6 +23,8 @@ pub struct StarTypeDefinition {
     pub max_planets: usize,
     pub habitability_bonus: f64,
     pub weight: f64,
+    /// Modifiers applied to systems of this star type at galaxy generation.
+    pub modifiers: Vec<StarTypeModifier>,
 }
 
 /// A planet type definition parsed from Lua `define_planet_type { ... }` calls.
@@ -67,6 +81,8 @@ pub fn parse_star_types(lua: &mlua::Lua) -> Result<Vec<StarTypeDefinition>, mlua
         let habitability_bonus: f64 = table.get("habitability_bonus")?;
         let weight: f64 = table.get("weight")?;
 
+        let modifiers = parse_star_type_modifiers(&table)?;
+
         result.push(StarTypeDefinition {
             id,
             name,
@@ -76,10 +92,40 @@ pub fn parse_star_types(lua: &mlua::Lua) -> Result<Vec<StarTypeDefinition>, mlua
             max_planets,
             habitability_bonus,
             weight,
+            modifiers,
         });
     }
 
     Ok(result)
+}
+
+/// Parse the optional `modifiers = { { target = "...", base_add = N, ... }, ... }`
+/// array on a star type definition. Returns an empty vec if the field is absent.
+fn parse_star_type_modifiers(table: &mlua::Table) -> Result<Vec<StarTypeModifier>, mlua::Error> {
+    let mods_value: mlua::Value = table.get("modifiers")?;
+    match mods_value {
+        mlua::Value::Table(mods_table) => {
+            let mut modifiers = Vec::new();
+            for pair in mods_table.pairs::<i64, mlua::Table>() {
+                let (_, mod_table) = pair?;
+                let target: String = mod_table.get("target")?;
+                let base_add: f64 = mod_table.get::<Option<f64>>("base_add")?.unwrap_or(0.0);
+                let multiplier: f64 = mod_table.get::<Option<f64>>("multiplier")?.unwrap_or(0.0);
+                let add: f64 = mod_table.get::<Option<f64>>("add")?.unwrap_or(0.0);
+                modifiers.push(StarTypeModifier {
+                    target,
+                    base_add,
+                    multiplier,
+                    add,
+                });
+            }
+            Ok(modifiers)
+        }
+        mlua::Value::Nil => Ok(Vec::new()),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected table or nil for 'modifiers' field on star type".to_string(),
+        )),
+    }
 }
 
 /// Parse planet type definitions from the Lua `_planet_type_definitions` global table.
@@ -134,7 +180,7 @@ mod tests {
         engine.load_file(&star_script).unwrap();
 
         let types = parse_star_types(engine.lua()).unwrap();
-        assert_eq!(types.len(), 5);
+        assert_eq!(types.len(), 10);
 
         // Verify yellow dwarf
         let yellow = types.iter().find(|t| t.id == "yellow_dwarf").unwrap();
@@ -158,6 +204,118 @@ mod tests {
         assert_eq!(blue.name, "Blue Giant");
         assert!((blue.planet_lambda - 4.0).abs() < 1e-10);
         assert_eq!(blue.max_planets, 12);
+    }
+
+    #[test]
+    fn test_parse_exotic_star_types() {
+        let engine = ScriptEngine::new().unwrap();
+        let star_script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/stars/types.lua");
+        engine.load_file(&star_script).unwrap();
+
+        let types = parse_star_types(engine.lua()).unwrap();
+
+        // All 5 exotic types must be present and existing types preserved.
+        for id in &[
+            "yellow_dwarf", "red_dwarf", "blue_giant", "white_dwarf", "orange_giant",
+            "neutron_star", "pulsar", "magnetar", "black_hole", "binary_star",
+        ] {
+            assert!(
+                types.iter().any(|t| t.id == *id),
+                "Expected star type '{}' to be defined",
+                id
+            );
+        }
+
+        // Neutron star: uninhabitable, energy + research bonuses.
+        let neutron = types.iter().find(|t| t.id == "neutron_star").unwrap();
+        assert_eq!(neutron.name, "Neutron Star");
+        assert!(neutron.habitability_bonus <= -1.0 + 1e-10);
+        assert!(!neutron.modifiers.is_empty());
+        assert!(neutron
+            .modifiers
+            .iter()
+            .any(|m| m.target == "system.energy_potential" && m.multiplier > 0.0));
+
+        // Pulsar: FTL/comm disruption + anomaly bonus.
+        let pulsar = types.iter().find(|t| t.id == "pulsar").unwrap();
+        assert!(pulsar
+            .modifiers
+            .iter()
+            .any(|m| m.target == "system.ftl_range" && m.multiplier < 0.0));
+        assert!(pulsar
+            .modifiers
+            .iter()
+            .any(|m| m.target == "system.anomaly_chance" && m.multiplier > 0.0));
+
+        // Magnetar: shield-disabling modifiers.
+        let magnetar = types.iter().find(|t| t.id == "magnetar").unwrap();
+        assert!(magnetar
+            .modifiers
+            .iter()
+            .any(|m| m.target == "ship.shield_max" && m.multiplier < 0.0));
+        assert!(magnetar
+            .modifiers
+            .iter()
+            .any(|m| m.target == "ship.shield_regen"));
+
+        // Black hole: no planets, FTL research bonus.
+        let bh = types.iter().find(|t| t.id == "black_hole").unwrap();
+        assert_eq!(bh.max_planets, 0);
+        assert!(bh.planet_lambda <= 1e-10);
+        assert!(bh
+            .modifiers
+            .iter()
+            .any(|m| m.target.contains("research") && m.multiplier > 0.0));
+
+        // Binary star: mineral + energy bonuses, habitability penalty.
+        let binary = types.iter().find(|t| t.id == "binary_star").unwrap();
+        assert!(binary.habitability_bonus < 0.0);
+        assert!(binary
+            .modifiers
+            .iter()
+            .any(|m| m.target == "system.mineral_richness" && m.multiplier > 0.0));
+
+        // Vanilla types must still have no modifiers (unchanged).
+        let yellow = types.iter().find(|t| t.id == "yellow_dwarf").unwrap();
+        assert!(yellow.modifiers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_star_type_modifiers_empty_when_absent() {
+        let lua = mlua::Lua::new();
+        let table = lua.create_table().unwrap();
+        let result = parse_star_type_modifiers(&table).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_star_type_modifiers_fields() {
+        let lua = mlua::Lua::new();
+        let table = lua.create_table().unwrap();
+        let mods = lua.create_table().unwrap();
+
+        let m1 = lua.create_table().unwrap();
+        m1.set("target", "system.research_bonus").unwrap();
+        m1.set("multiplier", 0.5f64).unwrap();
+        mods.set(1, m1).unwrap();
+
+        let m2 = lua.create_table().unwrap();
+        m2.set("target", "ship.shield_max").unwrap();
+        m2.set("base_add", -10.0f64).unwrap();
+        m2.set("add", 2.0f64).unwrap();
+        mods.set(2, m2).unwrap();
+
+        table.set("modifiers", mods).unwrap();
+
+        let parsed = parse_star_type_modifiers(&table).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].target, "system.research_bonus");
+        assert!((parsed[0].multiplier - 0.5).abs() < 1e-10);
+        assert!((parsed[0].base_add - 0.0).abs() < 1e-10);
+        assert_eq!(parsed[1].target, "ship.shield_max");
+        assert!((parsed[1].base_add - (-10.0)).abs() < 1e-10);
+        assert!((parsed[1].add - 2.0).abs() < 1e-10);
     }
 
     #[test]
