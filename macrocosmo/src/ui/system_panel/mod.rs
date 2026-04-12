@@ -180,9 +180,12 @@ pub fn draw_system_panel(
             let right_width = (available_width * 0.25).clamp(200.0, 380.0);
             let center_width = (available_width - left_width - right_width - 16.0).max(200.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 // === LEFT PANEL: System info ===
-                ui.allocate_ui(egui::vec2(left_width, available_height), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_width, available_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
                     egui::Frame::NONE
                         .fill(egui::Color32::from_rgb(15, 15, 28))
                         .inner_margin(6.0)
@@ -214,7 +217,10 @@ pub fn draw_system_panel(
                 });
 
                 // === CENTER: System map ===
-                ui.allocate_ui(egui::vec2(center_width, available_height), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(center_width, available_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
                     egui::Frame::NONE
                         .fill(egui::Color32::from_rgb(6, 6, 14))
                         .inner_margin(4.0)
@@ -232,7 +238,10 @@ pub fn draw_system_panel(
                 });
 
                 // === RIGHT PANEL: Actions ===
-                ui.allocate_ui(egui::vec2(right_width, available_height), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_width, available_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
                     egui::Frame::NONE
                         .fill(egui::Color32::from_rgb(15, 15, 28))
                         .inner_margin(6.0)
