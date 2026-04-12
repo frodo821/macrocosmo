@@ -155,7 +155,11 @@ fn count_hostile_detected(app: &App) -> usize {
 fn test_app_with_notifications() -> App {
     let mut app = test_app_with_event_log();
     app.insert_resource(NotificationQueue::new());
-    app.add_systems(Update, macrocosmo::notifications::auto_notify_from_events);
+    app.add_systems(
+        Update,
+        macrocosmo::notifications::auto_notify_from_events
+            .after(macrocosmo::ship::pursuit::detect_hostiles_system),
+    );
     app
 }
 
@@ -178,6 +182,7 @@ fn aggressive_sublight_detects_hostile_sublight_in_range() {
         240,
     );
     // Target: enemy SubLight, 1 ly away at game start.
+    // Defensive to ensure only the Scout detects (one-way), not mutual detection.
     spawn_sublight_ship(
         &mut app,
         "Raider",
@@ -185,7 +190,7 @@ fn aggressive_sublight_detects_hostile_sublight_in_range() {
         None,
         [1.0, 0.0, 0.0],
         [5.0, 0.0, 0.0],
-        RulesOfEngagement::Aggressive,
+        RulesOfEngagement::Defensive,
         400,
     );
 

@@ -344,7 +344,8 @@ pub fn test_app_with_event_log() -> App {
     app.add_systems(
         Update,
         macrocosmo::events::collect_events
-            .after(macrocosmo::time_system::advance_game_time),
+            .after(macrocosmo::time_system::advance_game_time)
+            .after(macrocosmo::ship::pursuit::detect_hostiles_system),
     );
     app
 }
