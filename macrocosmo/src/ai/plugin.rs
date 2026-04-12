@@ -81,6 +81,10 @@ impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AiBusResource>()
             .add_systems(Startup, schema::declare_all)
+            .add_systems(
+                Update,
+                declare_foreign_slots_on_awareness.in_set(AiTickSet::MetricProduce),
+            )
             .configure_sets(
                 Update,
                 (
@@ -91,6 +95,25 @@ impl Plugin for AiPlugin {
                     .chain()
                     .after(crate::time_system::advance_game_time),
             );
+    }
+}
+
+/// Declare a per-faction set of Tier 2 "foreign" metric slots on the bus
+/// as soon as a new `Faction` component is observed.
+///
+/// Runs under [`AiTickSet::MetricProduce`] in `Update`. Idempotent — if the
+/// slot is already declared, `AiBus::declare_metric` merely updates the
+/// spec (and warns in non-Silent mode).
+pub fn declare_foreign_slots_on_awareness(
+    mut bus: ResMut<AiBusResource>,
+    new_factions: Query<Entity, (With<crate::player::Faction>, Added<crate::player::Faction>)>,
+) {
+    for entity in &new_factions {
+        let fid = super::convert::to_ai_faction(entity);
+        for template in super::schema::foreign::foreign_metric_templates() {
+            let id = super::schema::foreign::foreign_metric_id(&template.prefix, fid);
+            bus.declare_metric(id, (template.spec_factory)());
+        }
     }
 }
 

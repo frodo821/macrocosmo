@@ -54,6 +54,7 @@ use macrocosmo_ai::{
 
 use crate::ai::plugin::AiBusResource;
 
+pub mod foreign;
 pub mod ids;
 
 /// Declare every metric / command / evidence topic used by the engine.
