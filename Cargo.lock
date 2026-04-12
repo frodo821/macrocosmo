@@ -90,6 +90,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -3512,8 +3513,11 @@ dependencies = [
 name = "macrocosmo-ai"
 version = "0.2.0"
 dependencies = [
- "bevy",
- "macrocosmo",
+ "ahash",
+ "log",
+ "macrocosmo-ai",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
