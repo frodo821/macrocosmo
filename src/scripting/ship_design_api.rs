@@ -156,6 +156,7 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
             hp,
             sublight_speed,
             ftl_range,
+            revision: 0,
         });
     }
 

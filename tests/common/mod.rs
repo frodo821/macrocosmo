@@ -152,6 +152,7 @@ pub fn test_app() -> App {
             deliver_survey_results,
             process_surveys,
             process_settling,
+            process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
             process_command_queue,
@@ -292,6 +293,7 @@ pub fn full_test_app() -> App {
             deliver_survey_results,
             process_surveys,
             process_settling,
+            process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
             process_command_queue,
@@ -618,6 +620,7 @@ pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegis
         hp: 50.0,
         sublight_speed: 0.75,
         ftl_range: 10.0,
+        revision: 0,
     });
     registry.insert(ShipDesignDefinition {
         id: "colony_ship_mk1".to_string(),
@@ -634,6 +637,7 @@ pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegis
         hp: 100.0,
         sublight_speed: 0.5,
         ftl_range: 15.0,
+        revision: 0,
     });
     registry.insert(ShipDesignDefinition {
         id: "courier_mk1".to_string(),
@@ -650,6 +654,7 @@ pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegis
         hp: 35.0,
         sublight_speed: 0.80,
         ftl_range: 0.0,
+        revision: 0,
     });
     registry.insert(ShipDesignDefinition {
         id: "scout_mk1".to_string(),
@@ -666,6 +671,7 @@ pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegis
         hp: 40.0,
         sublight_speed: 0.85,
         ftl_range: 10.0,
+        revision: 0,
     });
     registry
 }
@@ -693,6 +699,7 @@ pub fn spawn_test_ship(
                 ftl_range: design.ftl_range,
                 player_aboard: false,
                 home_port: system,
+                design_revision: 0,
             },
             ShipState::Docked { system },
             Position::from(pos),

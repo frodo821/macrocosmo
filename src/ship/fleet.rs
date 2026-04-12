@@ -92,6 +92,7 @@ mod tests {
             hp: 50.0,
             sublight_speed: 0.75,
             ftl_range: 10.0,
+            revision: 0,
         });
         registry.insert(ShipDesignDefinition {
             id: "colony_ship_mk1".to_string(),
@@ -108,6 +109,7 @@ mod tests {
             hp: 100.0,
             sublight_speed: 0.5,
             ftl_range: 15.0,
+            revision: 0,
         });
         registry
     }
@@ -125,6 +127,7 @@ mod tests {
             ftl_range: design.ftl_range,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         }
     }
 
@@ -141,6 +144,7 @@ mod tests {
             ftl_range: 0.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         }).id();
         let ship_b = world.spawn(Ship {
             name: "Slow".to_string(),
@@ -152,6 +156,7 @@ mod tests {
             ftl_range: 30.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         }).id();
 
         let fleet = Fleet {
@@ -179,6 +184,7 @@ mod tests {
             ftl_range: 10.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         }).id();
         let ship_b = world.spawn(Ship {
             name: "Long Range".to_string(),
@@ -190,6 +196,7 @@ mod tests {
             ftl_range: 30.0,
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
         }).id();
 
         let fleet = Fleet {

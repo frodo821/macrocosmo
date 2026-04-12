@@ -448,6 +448,8 @@ fn draw_main_panels_system(
         player_aboard_ship,
         &world.courier_routes,
         selected_system_for_panel,
+        &world.fleet_memberships,
+        &world.fleets,
     );
 
     // Handle cancel current action
@@ -507,19 +509,60 @@ fn draw_main_panels_system(
         });
     }
 
-    // Handle ship refit
+    // #123: Handle ship refit (design-based). Resolve modules, cost and time
+    // from the registered design at apply time so the ship is always brought
+    // in line with the *current* design revision.
     if let Some(refit) = ship_panel_actions.refit {
-        if let Ok((mut stockpile, _)) = world.stockpiles.get_mut(refit.system_entity) {
-            stockpile.minerals = stockpile.minerals.sub(refit.cost_minerals);
-            stockpile.energy = stockpile.energy.sub(refit.cost_energy);
-        }
-        if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(refit.ship_entity) {
-            *state = ShipState::Refitting {
-                system: refit.system_entity,
-                started_at: clock.elapsed,
-                completes_at: clock.elapsed + refit.refit_time,
-                new_modules: refit.new_modules,
-            };
+        apply_design_refit(
+            refit.ship_entity,
+            refit.system_entity,
+            &mut ships_query,
+            &mut world.stockpiles,
+            &registries.design_registry,
+            &registries.hull_registry,
+            &registries.module_registry,
+            clock.elapsed,
+        );
+    }
+
+    // #123: Handle fleet-wide refit — apply to every refit-eligible ship in
+    // the fleet that is currently docked at a colony.
+    if let Some(fleet_refit) = ship_panel_actions.fleet_refit {
+        let member_entities: Vec<Entity> = world
+            .fleets
+            .get(fleet_refit.fleet_entity)
+            .map(|fleet| fleet.members.clone())
+            .unwrap_or_default();
+        for member in member_entities {
+            // Determine if the member is docked at a system that has a colony
+            // (matches the per-ship eligibility rule).
+            let dock_system: Option<Entity> = ships_query
+                .get(member)
+                .ok()
+                .and_then(|(_, ship, state, _, _, _)| {
+                    let docked = match &*state {
+                        ShipState::Docked { system } => Some(*system),
+                        _ => None,
+                    }?;
+                    // Refit-eligible only if design revision is ahead.
+                    let design = registries.design_registry.get(&ship.design_id)?;
+                    if design.revision <= ship.design_revision {
+                        return None;
+                    }
+                    Some(docked)
+                });
+            if let Some(sys) = dock_system {
+                apply_design_refit(
+                    member,
+                    sys,
+                    &mut ships_query,
+                    &mut world.stockpiles,
+                    &registries.design_registry,
+                    &registries.hull_registry,
+                    &registries.module_registry,
+                    clock.elapsed,
+                );
+            }
         }
     }
 
@@ -732,12 +775,21 @@ fn draw_overlays_system(
 
     match designer_action {
         overlays::ShipDesignerAction::SaveDesign(design) => {
-            info!("Ship design saved: {} ({})", design.name, design.id);
-            design_registry.insert(design);
+            // #123: `upsert_edited` bumps the revision counter when an
+            // existing design with the same ID is replaced. Ships pointing
+            // at this design will pick up the bump and become refit-eligible.
+            let id = design.id.clone();
+            let name = design.name.clone();
+            let new_rev = design_registry.upsert_edited(design);
+            info!(
+                "Ship design saved: {} ({}) — revision {}",
+                name, id, new_rev
+            );
             designer_state.open = false;
             designer_state.selected_hull = None;
             designer_state.selected_modules.clear();
             designer_state.design_name.clear();
+            designer_state.editing_design_id = None;
         }
         overlays::ShipDesignerAction::None => {}
     }
@@ -997,4 +1049,73 @@ fn draw_map_tooltips(
             });
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// #123: Design-based refit application
+// ---------------------------------------------------------------------------
+
+/// Apply the current registered design to a single ship: deduct the refit
+/// cost from the system's stockpile and put the ship into the `Refitting`
+/// state. No-op if the ship is not eligible (already in sync, design or
+/// hull missing, not docked at the given system, etc.).
+#[allow(clippy::too_many_arguments)]
+fn apply_design_refit(
+    ship_entity: Entity,
+    system_entity: Entity,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
+    stockpiles: &mut Query<
+        (&mut ResourceStockpile, Option<&ResourceCapacity>),
+        With<StarSystem>,
+    >,
+    design_registry: &ShipDesignRegistry,
+    hull_registry: &HullRegistry,
+    module_registry: &ModuleRegistry,
+    now: i64,
+) {
+    let Ok((_, ship, mut state, _, _, _)) = ships_query.get_mut(ship_entity) else {
+        return;
+    };
+    // Must be docked at the given system (not in transit, not refitting).
+    let docked_here = matches!(&*state, ShipState::Docked { system } if *system == system_entity);
+    if !docked_here {
+        return;
+    }
+    let Some(design) = design_registry.get(&ship.design_id) else {
+        return;
+    };
+    if design.revision <= ship.design_revision {
+        // Already up to date.
+        return;
+    }
+    let Some(hull) = hull_registry.get(&ship.hull_id) else {
+        return;
+    };
+    let (cost_m, cost_e, time) = crate::ship_design::refit_cost_to_design(
+        &ship.modules,
+        design,
+        hull,
+        module_registry,
+    );
+    let new_modules = crate::ship_design::design_equipped_modules(design);
+    let target_revision = design.revision;
+    if let Ok((mut stockpile, _)) = stockpiles.get_mut(system_entity) {
+        // Deduct what we can; refit cost can be zero (e.g. design only renamed).
+        stockpile.minerals = stockpile.minerals.sub(cost_m.min(stockpile.minerals));
+        stockpile.energy = stockpile.energy.sub(cost_e.min(stockpile.energy));
+    }
+    *state = ShipState::Refitting {
+        system: system_entity,
+        started_at: now,
+        completes_at: now + time,
+        new_modules,
+        target_revision,
+    };
 }

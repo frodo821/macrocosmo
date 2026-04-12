@@ -166,6 +166,10 @@ pub struct ShipDesignDefinition {
     pub sublight_speed: f64,
     /// FTL range in light-years (0 = no FTL).
     pub ftl_range: f64,
+    /// #123: Revision counter for design-based refit. Incremented every time
+    /// the design is edited via the Ship Designer. Ships with a `design_revision`
+    /// less than this value are considered "refit-eligible".
+    pub revision: u64,
 }
 
 /// An error raised when validating a ShipDesignDefinition against its hull/module registries.
@@ -343,6 +347,24 @@ impl ShipDesignRegistry {
 
     pub fn insert(&mut self, def: ShipDesignDefinition) {
         self.designs.insert(def.id.clone(), def);
+    }
+
+    /// #123: Replace an existing design with an edited version, incrementing
+    /// the revision counter. Returns the new revision (or `None` if the
+    /// design ID does not exist in the registry).
+    ///
+    /// Ships pointing at this design will see `design.revision >
+    /// ship.design_revision` and be flagged as "needs refit" until they
+    /// individually invoke the Apply Refit action.
+    pub fn upsert_edited(&mut self, mut def: ShipDesignDefinition) -> u64 {
+        let new_rev = self
+            .designs
+            .get(&def.id)
+            .map(|existing| existing.revision + 1)
+            .unwrap_or(0);
+        def.revision = new_rev;
+        self.designs.insert(def.id.clone(), def);
+        new_rev
     }
 
     /// Check if a design can perform surveys.
@@ -531,6 +553,43 @@ pub fn design_stats(
     (hp, speed, evasion)
 }
 
+/// #123: Convert a design's slot assignments into the EquippedModule list
+/// that should appear on a ship after applying that design.
+pub fn design_equipped_modules(
+    design: &ShipDesignDefinition,
+) -> Vec<crate::ship::EquippedModule> {
+    design
+        .modules
+        .iter()
+        .map(|a| crate::ship::EquippedModule {
+            slot_type: a.slot_type.clone(),
+            module_id: a.module_id.clone(),
+        })
+        .collect()
+}
+
+/// #123: Compute refit cost when bringing a ship in line with a target design.
+/// Resolves modules through the ModuleRegistry and falls back to an empty list
+/// for unknown IDs (so callers don't need to filter beforehand).
+/// Returns (minerals, energy, time_hexadies).
+pub fn refit_cost_to_design(
+    current_modules: &[crate::ship::EquippedModule],
+    design: &ShipDesignDefinition,
+    hull: &HullDefinition,
+    module_registry: &ModuleRegistry,
+) -> (Amt, Amt, i64) {
+    let old_mods: Vec<&ModuleDefinition> = current_modules
+        .iter()
+        .filter_map(|em| module_registry.get(&em.module_id))
+        .collect();
+    let new_mods: Vec<&ModuleDefinition> = design
+        .modules
+        .iter()
+        .filter_map(|a| module_registry.get(&a.module_id))
+        .collect();
+    refit_cost(&old_mods, &new_mods, hull)
+}
+
 /// Compute refit cost: new module cost - 50% of old module value.
 /// Returns (minerals, energy, time).
 pub fn refit_cost(
@@ -654,6 +713,7 @@ mod tests {
             hp: 50.0,
             sublight_speed: 0.75,
             ftl_range: 10.0,
+            revision: 0,
         });
 
         let explorer = registry.get("explorer_mk1").unwrap();
@@ -726,6 +786,7 @@ mod tests {
             hp: 50.0,
             sublight_speed: 0.75,
             ftl_range: 0.0,
+            revision: 0,
         }
     }
 
@@ -837,5 +898,76 @@ mod tests {
             }
             other => panic!("expected SlotOverfilled, got {:?}", other),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // #123: Design-based refit revision plumbing
+    // ---------------------------------------------------------------------
+
+    fn fresh_design(id: &str, modules: Vec<DesignSlotAssignment>) -> ShipDesignDefinition {
+        let mut d = make_design(id, modules);
+        d.revision = 0;
+        d
+    }
+
+    #[test]
+    fn upsert_edited_first_insert_keeps_revision_zero() {
+        let mut registry = ShipDesignRegistry::default();
+        let design = fresh_design("ex", vec![]);
+        let new_rev = registry.upsert_edited(design);
+        assert_eq!(new_rev, 0);
+        assert_eq!(registry.get("ex").unwrap().revision, 0);
+    }
+
+    #[test]
+    fn upsert_edited_bumps_revision_on_replace() {
+        let mut registry = ShipDesignRegistry::default();
+        let mut design = fresh_design("ex", vec![]);
+        registry.insert(design.clone());
+        // First "edit" — revision should become 1.
+        design.name = "Renamed".into();
+        let r1 = registry.upsert_edited(design.clone());
+        assert_eq!(r1, 1);
+        assert_eq!(registry.get("ex").unwrap().revision, 1);
+        // Second "edit" — revision should become 2.
+        design.name = "Renamed Again".into();
+        let r2 = registry.upsert_edited(design);
+        assert_eq!(r2, 2);
+        assert_eq!(registry.get("ex").unwrap().revision, 2);
+    }
+
+    #[test]
+    fn refit_cost_to_design_routes_through_registry() {
+        let (hulls, modules) = validation_fixture();
+        // A design whose modules are entirely free (test fixture sets cost to ZERO)
+        let design = make_design(
+            "ok",
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
+        );
+        let hull = hulls.get("corvette").unwrap();
+        let (m, e, _t) = refit_cost_to_design(&[], &design, hull, &modules);
+        // Both module costs are zero in the fixture, so refit cost is zero.
+        assert_eq!(m, Amt::ZERO);
+        assert_eq!(e, Amt::ZERO);
+    }
+
+    #[test]
+    fn design_equipped_modules_mirrors_design_assignments() {
+        let design = make_design(
+            "ok",
+            vec![
+                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
+                DesignSlotAssignment { slot_type: "weapon".into(), module_id: "weapon_laser".into() },
+            ],
+        );
+        let equipped = design_equipped_modules(&design);
+        assert_eq!(equipped.len(), 2);
+        assert_eq!(equipped[0].slot_type, "ftl");
+        assert_eq!(equipped[0].module_id, "ftl_drive");
+        assert_eq!(equipped[1].slot_type, "weapon");
+        assert_eq!(equipped[1].module_id, "weapon_laser");
     }
 }
