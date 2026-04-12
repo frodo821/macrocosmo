@@ -429,6 +429,27 @@ pub enum ResearchAction {
     CancelResearch,
 }
 
+/// True when a tech should be surfaced with a warning badge in the research
+/// panel. Extracted as a helper so tests can verify detection logic without
+/// spinning up egui.
+pub fn tech_is_dangerous(tech: &crate::technology::Technology) -> bool {
+    tech.dangerous
+}
+
+/// Collect the Tech-kind follow-ons reachable via `TechUnlockIndex` — the
+/// "leads to" list shown under a tech's details. Skips Module/Building/
+/// Structure entries which have their own Unlocks section.
+pub fn tech_follow_ons<'a>(
+    unlock_index: &'a TechUnlockIndex,
+    tech_id: &TechId,
+) -> Vec<&'a crate::technology::UnlockEntry> {
+    unlock_index
+        .for_tech(&tech_id.0)
+        .iter()
+        .filter(|e| e.kind == UnlockKind::Tech)
+        .collect()
+}
+
 /// Draws the research overlay panel.
 ///
 /// Returns a `ResearchAction` so the caller can apply mutations that require
@@ -585,10 +606,31 @@ pub fn draw_overlays(
                                     );
                                 }
 
+                                // #137: Dangerous-tech warning badge. Shown
+                                // regardless of researched state so the player
+                                // can see, after the fact, what has been
+                                // unleashed.
+                                if tech.dangerous {
+                                    ui.label(
+                                        egui::RichText::new("[!] Dangerous")
+                                            .color(egui::Color32::from_rgb(255, 120, 60))
+                                            .strong(),
+                                    )
+                                    .on_hover_text(
+                                        "This technology has significant or risky consequences. \
+                                         Starting research requires confirmation.",
+                                    );
+                                }
+
                                 // Tech name
                                 let name_text = if is_researched {
                                     egui::RichText::new(&tech.name)
                                         .color(egui::Color32::from_rgb(100, 220, 100))
+                                } else if tech.dangerous {
+                                    // Dangerous techs are tinted even when
+                                    // available so they visually stand apart.
+                                    egui::RichText::new(&tech.name)
+                                        .color(egui::Color32::from_rgb(255, 160, 90))
                                 } else if !is_available && !is_current {
                                     egui::RichText::new(&tech.name)
                                         .color(egui::Color32::from_rgb(140, 140, 140))
@@ -633,8 +675,14 @@ pub fn draw_overlays(
                             // Only render the section when there's something
                             // to show, to keep already-cluttered tech rows
                             // readable.
+                            // #137: Split the Tech-kind entries from the rest
+                            // so we can show a dedicated "Leads to" list of
+                            // follow-on technologies above concrete unlocks
+                            // (modules / buildings / structures).
                             let preview = effects_preview.for_tech(&tech.id);
                             let unlocks = unlock_index.for_tech(&tech.id.0);
+                            let (tech_follow_ons, concrete_unlocks): (Vec<_>, Vec<_>) =
+                                unlocks.iter().partition(|e| e.kind == UnlockKind::Tech);
                             if !preview.is_empty() || !unlocks.is_empty() {
                                 let header_id =
                                     egui::Id::new(("research_details", &tech.id.0));
@@ -650,16 +698,46 @@ pub fn draw_overlays(
                                                 ui.label(format!("  - {}", effect.display_text()));
                                             }
                                         }
-                                        if !unlocks.is_empty() {
+                                        if !tech_follow_ons.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new("Leads to:")
+                                                    .strong()
+                                                    .color(egui::Color32::from_rgb(180, 200, 255)),
+                                            );
+                                            for entry in &tech_follow_ons {
+                                                // Flag a dangerous follow-on so
+                                                // the player can see what lies
+                                                // ahead before committing.
+                                                let is_dangerous = tech_tree
+                                                    .get(&TechId(entry.id.clone()))
+                                                    .map(|t| t.dangerous)
+                                                    .unwrap_or(false);
+                                                let text = if is_dangerous {
+                                                    egui::RichText::new(format!(
+                                                        "  - {} [!]",
+                                                        entry.name
+                                                    ))
+                                                    .color(egui::Color32::from_rgb(255, 160, 90))
+                                                } else {
+                                                    egui::RichText::new(format!(
+                                                        "  - {}",
+                                                        entry.name
+                                                    ))
+                                                };
+                                                ui.label(text);
+                                            }
+                                        }
+                                        if !concrete_unlocks.is_empty() {
                                             ui.label(
                                                 egui::RichText::new("Unlocks:").strong(),
                                             );
-                                            for entry in unlocks {
+                                            for entry in &concrete_unlocks {
                                                 let kind_label = match entry.kind {
                                                     UnlockKind::Module => "Module",
                                                     UnlockKind::Building => "Building",
                                                     UnlockKind::Structure => "Structure",
-                                                    UnlockKind::Tech => "Tech",
+                                                    // `Tech` entries handled in the "Leads to" list above.
+                                                    UnlockKind::Tech => continue,
                                                 };
                                                 ui.label(format!(
                                                     "  - {}: {}",
@@ -697,8 +775,34 @@ pub fn draw_overlays(
                                 };
 
                                 if can_afford {
-                                    if ui.button("Start Research").clicked() {
-                                        action = ResearchAction::StartResearch(tech.id.clone());
+                                    let btn_label = if tech.dangerous {
+                                        "Start Research [!]"
+                                    } else {
+                                        "Start Research"
+                                    };
+                                    let btn = if tech.dangerous {
+                                        egui::Button::new(
+                                            egui::RichText::new(btn_label)
+                                                .color(egui::Color32::from_rgb(255, 160, 90))
+                                                .strong(),
+                                        )
+                                    } else {
+                                        egui::Button::new(btn_label)
+                                    };
+                                    if ui.add(btn).clicked() {
+                                        if tech.dangerous {
+                                            // Defer action until the
+                                            // confirmation modal is acknowledged.
+                                            ui.memory_mut(|m| {
+                                                m.data.insert_temp(
+                                                    egui::Id::new("research_dangerous_confirm"),
+                                                    tech.id.0.clone(),
+                                                );
+                                            });
+                                        } else {
+                                            action =
+                                                ResearchAction::StartResearch(tech.id.clone());
+                                        }
                                     }
                                 } else {
                                     ui.add_enabled(false, egui::Button::new("Start Research"))
@@ -735,6 +839,69 @@ pub fn draw_overlays(
                         ui.add_space(2.0);
                     }
                 });
+
+            // #137: Dangerous-tech confirmation modal. Rendered last so it
+            // sits above the tech list. The pending TechId is stashed in
+            // egui temp memory by the Start Research button, so we only need
+            // to read/clear it here and translate Confirm -> StartResearch.
+            let confirm_id = egui::Id::new("research_dangerous_confirm");
+            let pending: Option<String> = ui.memory(|m| m.data.get_temp(confirm_id));
+            if let Some(pending_id) = pending {
+                let tech_opt = tech_tree.get(&TechId(pending_id.clone()));
+                let tech_name = tech_opt
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| pending_id.clone());
+                let mut open = true;
+                let mut decided: Option<bool> = None;
+                egui::Window::new(
+                    egui::RichText::new("Confirm Dangerous Research")
+                        .color(egui::Color32::from_rgb(255, 160, 90))
+                        .strong(),
+                )
+                .id(egui::Id::new("research_dangerous_confirm_window"))
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "\"{}\" is flagged as dangerous.",
+                            tech_name
+                        ))
+                        .strong(),
+                    );
+                    ui.label(
+                        "Researching it may have significant or irreversible consequences.",
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Proceed")
+                                    .color(egui::Color32::from_rgb(255, 160, 90))
+                                    .strong(),
+                            ))
+                            .clicked()
+                        {
+                            decided = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            decided = Some(false);
+                        }
+                    });
+                });
+                // Window close (X) counts as cancel.
+                if !open && decided.is_none() {
+                    decided = Some(false);
+                }
+                if let Some(confirmed) = decided {
+                    ui.memory_mut(|m| m.data.remove_temp::<String>(confirm_id));
+                    if confirmed {
+                        action = ResearchAction::StartResearch(TechId(pending_id));
+                    }
+                }
+            }
         });
 
     action

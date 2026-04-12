@@ -82,6 +82,11 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
             .get::<Option<String>>("description")?
             .unwrap_or_default();
 
+        // `dangerous` is optional; Lua omission defaults to `false`.
+        let dangerous: bool = table
+            .get::<Option<bool>>("dangerous")?
+            .unwrap_or(false);
+
         techs.push(Technology {
             id,
             name,
@@ -89,6 +94,7 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
             cost,
             prerequisites,
             description,
+            dangerous,
         });
     }
     Ok(techs)
@@ -105,6 +111,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: "Foundational study of alien communication patterns".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("social_colonial_admin".into()),
@@ -113,6 +120,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(150)),
             prerequisites: vec![],
             description: "Improved governance structures for distant colonies".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("social_interstellar_commerce".into()),
@@ -121,6 +129,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(250)),
             prerequisites: vec![TechId("social_colonial_admin".into())],
             description: "Trade frameworks spanning star systems".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("social_cultural_exchange".into()),
@@ -129,6 +138,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(300)),
             prerequisites: vec![TechId("social_xenolinguistics".into())],
             description: "Formalised frameworks for cross-species cultural interaction".into(),
+            dangerous: false,
         },
         // === Physics Branch ===
         Technology {
@@ -138,6 +148,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: "Next-generation sensors for deep space observation".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("physics_sublight_drives".into()),
@@ -146,6 +157,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(200)),
             prerequisites: vec![],
             description: "Enhances sublight drive efficiency".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("physics_ftl_theory".into()),
@@ -154,6 +166,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(400)),
             prerequisites: vec![TechId("physics_sublight_drives".into())],
             description: "Theoretical foundations for faster-than-light travel".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("physics_warp_stabilisation".into()),
@@ -162,6 +175,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(600)),
             prerequisites: vec![TechId("physics_ftl_theory".into())],
             description: "Stabilise warp fields for safer FTL travel".into(),
+            dangerous: false,
         },
         // === Industrial Branch ===
         Technology {
@@ -171,6 +185,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: "Robotic systems for autonomous resource extraction".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("industrial_orbital_fabrication".into()),
@@ -179,6 +194,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(200)),
             prerequisites: vec![TechId("industrial_automated_mining".into())],
             description: "Manufacturing facilities in orbit for zero-gravity construction".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("industrial_fusion_power".into()),
@@ -187,6 +203,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(300)),
             prerequisites: vec![TechId("industrial_automated_mining".into())],
             description: "Harness fusion reactions for abundant clean energy".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("industrial_nano_assembly".into()),
@@ -195,6 +212,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(500)),
             prerequisites: vec![TechId("industrial_orbital_fabrication".into())],
             description: "Molecular-scale construction for unprecedented precision".into(),
+            dangerous: false,
         },
         // === Military Branch ===
         Technology {
@@ -204,6 +222,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: "Mass-driver based weapon systems".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("military_deflector_shields".into()),
@@ -212,6 +231,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(200)),
             prerequisites: vec![],
             description: "Energy barriers to deflect incoming projectiles".into(),
+            dangerous: false,
         },
         Technology {
             id: TechId("military_composite_armor".into()),
@@ -220,6 +240,7 @@ pub fn create_initial_tech_tree_vec() -> Vec<Technology> {
             cost: TechCost::research_only(Amt::units(250)),
             prerequisites: vec![TechId("military_kinetic_weapons".into())],
             description: "Multi-layered hull plating for enhanced protection".into(),
+            dangerous: false,
         },
     ]
 }

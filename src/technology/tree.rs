@@ -115,6 +115,10 @@ pub struct Technology {
     pub branch: String,
     pub cost: TechCost,
     pub prerequisites: Vec<TechId>,
+    /// When true, the tech has significant or risky consequences; the research
+    /// panel surfaces a warning badge and asks for confirmation before starting.
+    /// Defaults to `false` when Lua omits the field.
+    pub dangerous: bool,
 }
 
 /// The complete technology tree, indexed by TechId.
@@ -225,6 +229,7 @@ mod tests {
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
+            dangerous: false,
         }]);
         assert!(tree.can_research(&TechId("test_1".into())));
     }
@@ -239,6 +244,7 @@ mod tests {
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),
+                dangerous: false,
             },
             Technology {
                 id: TechId("test_2".into()),
@@ -247,6 +253,7 @@ mod tests {
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
+                dangerous: false,
             },
         ]);
         assert!(!tree.can_research(&TechId("test_2".into())));
@@ -262,6 +269,7 @@ mod tests {
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),
+                dangerous: false,
             },
             Technology {
                 id: TechId("test_2".into()),
@@ -270,6 +278,7 @@ mod tests {
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
+                dangerous: false,
             },
         ]);
         tree.complete_research(TechId("test_1".into()));
@@ -285,6 +294,7 @@ mod tests {
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
+            dangerous: false,
         }]);
         tree.complete_research(TechId("test_1".into()));
         assert!(!tree.can_research(&TechId("test_1".into())));
@@ -299,6 +309,7 @@ mod tests {
             cost: TechCost::research_only(Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
+            dangerous: false,
         }]);
         assert!(!tree.is_researched(&TechId("test_1".into())));
         tree.complete_research(TechId("test_1".into()));
@@ -315,6 +326,7 @@ mod tests {
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),
+                dangerous: false,
             },
             Technology {
                 id: TechId("test_2".into()),
@@ -323,6 +335,7 @@ mod tests {
                 cost: TechCost::research_only(Amt::units(200)),
                 prerequisites: vec![TechId("test_1".into())],
                 description: String::new(),
+                dangerous: false,
             },
             Technology {
                 id: TechId("test_3".into()),
@@ -331,6 +344,7 @@ mod tests {
                 cost: TechCost::research_only(Amt::units(100)),
                 prerequisites: vec![],
                 description: String::new(),
+                dangerous: false,
             },
         ]);
 
