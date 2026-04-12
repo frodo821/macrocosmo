@@ -198,9 +198,9 @@ fn detect_pair(
         return None;
     }
     let g0 = gaps[0].1;
-    let gN = gaps[gaps.len() - 1].1;
+    let g_n = gaps[gaps.len() - 1].1;
 
-    if g0 > 0.0 && gN <= g0 {
+    if g0 > 0.0 && g_n <= g0 {
         // Offensive candidate: strictly-closing gap. Walk until gap hits 0.
         let mut closes_at = gaps[gaps.len() - 1].0;
         let mut strictly_closing = true;
@@ -234,12 +234,12 @@ fn detect_pair(
             confidence,
             rationale: WindowRationale::GapClosing {
                 gap_now: g0,
-                gap_at_close: gN,
+                gap_at_close: g_n,
             },
         });
     }
 
-    if g0 < 0.0 && gN < g0 {
+    if g0 < 0.0 && g_n < g0 {
         // Defensive: already behind and falling further behind. Crossover
         // is the point where gap would hit a "critical" threshold. With no
         // such threshold baked in, report `closes_at` = last sample.
@@ -263,7 +263,7 @@ fn detect_pair(
             confidence,
             rationale: WindowRationale::GapClosing {
                 gap_now: g0,
-                gap_at_close: gN,
+                gap_at_close: g_n,
             },
         });
     }
