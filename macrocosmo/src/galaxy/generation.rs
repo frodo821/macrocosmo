@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 
 use crate::components::Position;
@@ -688,8 +688,15 @@ pub fn generate_galaxy(
     engine: Option<Res<ScriptEngine>>,
     predefined_registry: Option<Res<PredefinedSystemRegistry>>,
     map_type_registry: Option<Res<MapTypeRegistry>>,
+    rng_seed: Option<Res<crate::observer::RngSeed>>,
 ) {
-    let mut rng = rand::rng();
+    let mut rng: rand::rngs::StdRng = match rng_seed.as_deref().and_then(|s| s.0) {
+        Some(seed) => {
+            info!("Galaxy generation: using deterministic seed {}", seed);
+            rand::rngs::StdRng::seed_from_u64(seed)
+        }
+        None => rand::rngs::StdRng::from_os_rng(),
+    };
     let params = GalaxyParams {
         num_systems: 150,
         num_arms: 3,
@@ -1198,6 +1205,7 @@ pub fn place_forbidden_regions(
     stars: Query<(&StarSystem, &Position)>,
     region_types: Res<super::region::RegionTypeRegistry>,
     mut region_specs: ResMut<super::region::RegionSpecQueue>,
+    rng_seed: Option<Res<crate::observer::RngSeed>>,
 ) {
     use super::region::{place_regions, PlacementInputs};
 
@@ -1233,7 +1241,13 @@ pub fn place_forbidden_regions(
 
     let inputs = PlacementInputs::new(&system_positions, capital_idx, galaxy_radius);
     let specs = std::mem::take(&mut region_specs.specs);
-    let mut rng = rand::rng();
+    // Derive a stable-but-distinct RNG for region placement. Using the seed
+    // +1 means changing galaxy seeds also shifts region placement, while
+    // seeded runs remain deterministic.
+    let mut rng: rand::rngs::StdRng = match rng_seed.as_deref().and_then(|s| s.0) {
+        Some(seed) => rand::rngs::StdRng::seed_from_u64(seed.wrapping_add(1)),
+        None => rand::rngs::StdRng::from_os_rng(),
+    };
 
     let output = place_regions(&mut rng, &inputs, &region_types.types, &specs);
     let count = output.regions.len();
