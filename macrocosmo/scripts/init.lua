@@ -20,6 +20,11 @@ require("jobs")
 -- #182: Map types (includes `default`, registered without a generator).
 require("galaxy.map_types")
 
+-- #145: Forbidden region types + default placement specs.
+-- Loads after map types so scenario-specific map types can opt out of the
+-- default region specs if needed (by clearing `_pending_region_specs`).
+require("regions")
+
 -- Species (references jobs by string key — no require dependency)
 require("species")
 

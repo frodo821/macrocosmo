@@ -210,11 +210,16 @@ pub fn process_command_queue(
     mut pending_count: ResMut<routing::RouteCalculationsPending>,
     design_registry: Res<ShipDesignRegistry>,
     building_registry: Res<crate::colony::BuildingRegistry>,
+    // #145: Forbidden regions that block FTL travel.
+    regions: Query<&crate::galaxy::ForbiddenRegion>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
     let base_ftl_speed = balance.initial_ftl_speed_c();
+    // #145: snapshot FTL-blocking regions once per tick; cheap since the
+    // region set is small (single-digit count) at MVP scope.
+    let ftl_blockers = routing::collect_ftl_blockers(&regions);
     let settling_duration = balance.settling_duration();
     let survey_range_base = balance.survey_range_ly();
     let survey_duration_base = balance.survey_duration();
@@ -313,7 +318,7 @@ pub fn process_command_queue(
                     ship_faction,
                     &hostile_faction_map,
                 );
-                let task = routing::spawn_route_task_with_roe(
+                let task = routing::spawn_route_task_full(
                     origin_pos_arr,
                     target,
                     effective_ftl_range,
@@ -321,6 +326,7 @@ pub fn process_command_queue(
                     effective_ftl_speed,
                     snapshots,
                     roe,
+                    ftl_blockers.clone(),
                 );
                 commands.entity(entity).insert(routing::PendingRoute {
                     task,

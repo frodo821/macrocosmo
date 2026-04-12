@@ -1,4 +1,5 @@
 mod generation;
+pub mod region;
 mod types;
 
 use bevy::prelude::*;
@@ -9,7 +10,10 @@ use crate::scripting::map_api::{MapTypeRegistry, PredefinedSystemRegistry};
 use crate::ship::Owner;
 
 // Re-exports for backward compatibility
-pub use generation::{generate_galaxy, poisson_sample};
+pub use generation::{generate_galaxy, place_forbidden_regions, poisson_sample};
+pub use region::{
+    effective_radius, ForbiddenRegion, RegionBlockSnapshot, RegionSpecQueue, RegionTypeRegistry,
+};
 pub use types::load_galaxy_types;
 
 pub struct GalaxyPlugin;
@@ -20,6 +24,8 @@ impl Plugin for GalaxyPlugin {
             .init_resource::<PlanetTypeRegistry>()
             .init_resource::<PredefinedSystemRegistry>()
             .init_resource::<MapTypeRegistry>()
+            .init_resource::<RegionTypeRegistry>()
+            .init_resource::<RegionSpecQueue>()
             .add_systems(
                 Startup,
                 load_galaxy_types.after(crate::scripting::load_all_scripts),
@@ -30,6 +36,13 @@ impl Plugin for GalaxyPlugin {
                     .after(load_galaxy_types)
                     .after(crate::scripting::load_predefined_system_registry)
                     .after(crate::scripting::load_map_type_registry),
+            )
+            .add_systems(
+                Startup,
+                place_forbidden_regions
+                    .after(generate_galaxy)
+                    .after(crate::scripting::load_region_type_registry)
+                    .after(crate::scripting::load_region_spec_queue),
             );
     }
 }
