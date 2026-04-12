@@ -52,6 +52,13 @@ pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
 pub use command::{Command, CommandParams, CommandValue, SerializedCommand};
 pub use evidence::StandingEvidence;
+pub use projection::{
+    confidence_at, detect_windows, effective_strategic_window, emit_projections_to_bus,
+    fit_linear, project, project_metric, volatility, CompoundDelta, CompoundEffect,
+    ConfidenceDecay, LinearFit, MetricPair, ProjectionFidelity, ProjectionModel, ProjectionNaming,
+    StrategicWindow, ThresholdGate, Trajectory, TrajectoryConfig, WindowDetectionConfig,
+    WindowKind, WindowRationale,
+};
 pub use ids::{
     CommandKindId, EntityRef, EvidenceKindId, FactionId, FactionRef, MetricId, ObjectiveId,
     SystemRef,
