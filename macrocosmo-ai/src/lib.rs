@@ -35,6 +35,10 @@ pub mod warning;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
+#[cfg(feature = "playthrough")]
+pub mod playthrough;
+
+pub use bus::snapshot::{BusSnapshot, EvidenceSnapshot, MetricSnapshot};
 pub use bus::AiBus;
 pub use condition::{CompareOp, Condition, ConditionAtom};
 pub use eval::EvalContext;
@@ -45,7 +49,7 @@ pub use precondition::{
 pub use precondition_cache::{CacheStats, PreconditionCacheRegistry};
 pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
-pub use command::{Command, CommandParams, CommandValue};
+pub use command::{Command, CommandParams, CommandValue, SerializedCommand};
 pub use evidence::StandingEvidence;
 pub use ids::{
     CommandKindId, EntityRef, EvidenceKindId, FactionId, FactionRef, MetricId, ObjectiveId,
