@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceStockpile, UpgradeOrder};
+use crate::colony::{BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceStockpile, UpgradeOrder};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::galaxy::SystemAttributes;
 use crate::amount::Amt;
@@ -28,8 +28,8 @@ pub(super) fn draw_colony_detail(
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     construction_params: &ConstructionParams,
     planets: &Query<&crate::galaxy::Planet>,
-    hull_registry: &crate::ship_design::HullRegistry,
-    module_registry: &crate::ship_design::ModuleRegistry,
+    _hull_registry: &crate::ship_design::HullRegistry,
+    _module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
     building_registry: &BuildingRegistry,
 ) {
@@ -39,7 +39,7 @@ pub(super) fn draw_colony_detail(
             .color(egui::Color32::from_rgb(100, 200, 100)),
     );
 
-    for (_colony_entity, colony, production, build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
+    for (_colony_entity, colony, production, _build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
         colonies.iter_mut()
     {
         if colony.planet != planet_entity {
@@ -153,104 +153,8 @@ pub(super) fn draw_colony_detail(
             }
         }
 
-        // Build queue
-        if let Some(ref bq) = build_queue {
-            ui.separator();
-            ui.label(egui::RichText::new("Build Queue").strong());
-
-            if bq.queue.is_empty() {
-                ui.label("[empty]");
-            } else {
-                for order in &bq.queue {
-                    let m_pct = if order.minerals_cost.raw() > 0 {
-                        (order.minerals_invested.raw() as f32 / order.minerals_cost.raw() as f32).min(1.0)
-                    } else {
-                        1.0
-                    };
-                    let e_pct = if order.energy_cost.raw() > 0 {
-                        (order.energy_invested.raw() as f32 / order.energy_cost.raw() as f32).min(1.0)
-                    } else {
-                        1.0
-                    };
-                    let time_pct = if order.build_time_total > 0 {
-                        ((order.build_time_total - order.build_time_remaining) as f32
-                            / order.build_time_total as f32)
-                            .min(1.0)
-                    } else {
-                        1.0
-                    };
-                    let pct = m_pct.min(e_pct).min(time_pct);
-                    ui.horizontal(|ui| {
-                        ui.label(&order.display_name);
-                        let bar = egui::ProgressBar::new(pct)
-                            .desired_width(100.0);
-                        ui.add(bar);
-                        // Show what's blocking progress
-                        if m_pct < 1.0 || e_pct < 1.0 {
-                            ui.label(egui::RichText::new("(awaiting resources)").weak().small());
-                        } else if time_pct < 1.0 {
-                            ui.label(egui::RichText::new(format!("{} hd", order.build_time_remaining)).weak().small());
-                        }
-                    });
-                }
-            }
-
-            ui.separator();
-            ui.label(egui::RichText::new("Build Ship").strong());
-        }
-
-        // Build buttons - add orders to the queue from ShipDesignRegistry
-        if let Some(mut bq) = build_queue {
-            use crate::amount::Amt;
-            let ship_mod = construction_params.ship_cost_modifier.final_value();
-            let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
-            let mut build_request: Option<(String, String, Amt, Amt, i64)> = None;
-
-            let design_ids = design_registry.all_design_ids();
-
-            if !design_ids.is_empty() {
-                egui::ScrollArea::horizontal().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for design_id in &design_ids {
-                            let design = &design_registry.designs[design_id];
-                            // Calculate cost from hull + modules, fallback to design-level values
-                            let hull = hull_registry.get(&design.hull_id);
-                            let (base_m, base_e, base_time) = if let Some(hull) = hull {
-                                let mods: Vec<_> = design.modules.iter()
-                                    .filter_map(|a| module_registry.get(&a.module_id))
-                                    .collect();
-                                let (m, e, t, _maint) = crate::ship_design::design_cost(hull, &mods);
-                                (m, e, t)
-                            } else {
-                                // Fallback to design-level costs
-                                (design.build_cost_minerals, design.build_cost_energy, design.build_time)
-                            };
-                            let eff_m = base_m.mul_amt(ship_mod);
-                            let eff_e = base_e.mul_amt(ship_mod);
-                            let eff_time = (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
-                            let tooltip = format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
-                            if ui.button(&design.name).on_hover_text(tooltip).clicked() {
-                                build_request = Some((design_id.clone(), design.name.clone(), eff_m, eff_e, eff_time));
-                            }
-                        }
-                    });
-                });
-            }
-
-            if let Some((design_id, display_name, minerals_cost, energy_cost, build_time)) = build_request {
-                bq.queue.push(BuildOrder {
-                    design_id,
-                    display_name: display_name.clone(),
-                    minerals_cost,
-                    minerals_invested: Amt::ZERO,
-                    energy_cost,
-                    energy_invested: Amt::ZERO,
-                    build_time_total: build_time,
-                    build_time_remaining: build_time,
-                });
-                info!("Build order added: {}", display_name);
-            }
-        }
+        // Note: Ship Build Queue and Build Ship UI moved to the system panel right pane (#134).
+        // Ship construction is a system-level concern (shipyard is a system building).
 
         // #46: Planet buildings display and construction UI
         if let Some(buildings) = buildings {

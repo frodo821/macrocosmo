@@ -1570,3 +1570,176 @@ fn test_authority_deficit_reduces_non_capital_production() {
         stockpile.energy
     );
 }
+
+// ---------------------------------------------------------------------------
+// #134: Ship build menu lives on the system panel, not the planet detail.
+// ---------------------------------------------------------------------------
+
+use macrocosmo::ui::system_panel::ship_build_host_colony;
+use common::create_test_building_registry;
+
+/// Helper: build a (colony_entity, system_entity) slice in the form expected by
+/// `ship_build_host_colony`.
+fn collect_colony_systems(app: &mut App) -> Vec<(Entity, Entity)> {
+    let world = app.world_mut();
+    let mut planet_q = world.query::<(Entity, &Planet)>();
+    let planet_systems: std::collections::HashMap<Entity, Entity> =
+        planet_q.iter(world).map(|(e, p)| (e, p.system)).collect();
+    let mut colony_q = world.query::<(Entity, &Colony)>();
+    colony_q
+        .iter(world)
+        .filter_map(|(e, colony)| planet_systems.get(&colony.planet).copied().map(|sys| (e, sys)))
+        .collect()
+}
+
+#[test]
+fn test_134_ship_build_requires_shipyard_at_system() {
+    // System has a colony but the system has no shipyard -> no build host.
+    let mut app = test_app();
+    let registry = create_test_building_registry();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "NoYard",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let _planet = find_planet(app.world_mut(), sys);
+    spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(500),
+        Amt::units(500),
+        vec![None; 4],
+    );
+
+    // SystemBuildings without a shipyard
+    let sb = SystemBuildings { slots: vec![None, None, None] };
+    let pairs = collect_colony_systems(&mut app);
+
+    let host = ship_build_host_colony(sys, &sb, &registry, &pairs);
+    assert!(host.is_none(), "Without a shipyard, the system must not host ship builds");
+}
+
+#[test]
+fn test_134_ship_build_uses_first_colony_when_shipyard_present() {
+    // System has a shipyard and a colony -> ship build is allowed and the host
+    // colony is the (only) colony in the system.
+    let mut app = test_app();
+    let registry = create_test_building_registry();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "WithYard",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(500),
+        Amt::units(500),
+        vec![None; 4],
+    );
+
+    let sb = SystemBuildings { slots: vec![Some(BuildingId::new("shipyard")), None, None] };
+    let pairs = collect_colony_systems(&mut app);
+
+    let host = ship_build_host_colony(sys, &sb, &registry, &pairs);
+    assert_eq!(
+        host,
+        Some(colony),
+        "With a shipyard and a colony, the system should host ship builds at that colony"
+    );
+}
+
+#[test]
+fn test_134_ship_build_requires_a_colony_in_system() {
+    // System has a shipyard but no colony anywhere -> no host (cannot build).
+    let mut app = test_app();
+    let registry = create_test_building_registry();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "EmptySystem",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    // No colony spawned.
+
+    let sb = SystemBuildings { slots: vec![Some(BuildingId::new("shipyard"))] };
+    let pairs = collect_colony_systems(&mut app);
+
+    let host = ship_build_host_colony(sys, &sb, &registry, &pairs);
+    assert!(host.is_none(), "Without a colony the system has nowhere to host a build queue");
+}
+
+#[test]
+fn test_134_existing_shipyard_gating_still_works() {
+    // Sanity regression: even after moving the UI, the engine still refuses to
+    // build a queued ship in a system that lacks a shipyard. This guards the
+    // gameplay invariant against UI refactors.
+    use macrocosmo::ship::Ship;
+
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "GateSystem",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+        minerals: Amt::units(500),
+        energy: Amt::units(500),
+        research: Amt::ZERO,
+        food: Amt::units(100),
+        authority: Amt::ZERO,
+    });
+    app.world_mut().spawn((
+        Colony {
+            planet: planet_sys,
+            population: 10.0,
+            growth_rate: 0.0,
+        },
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue {
+            queue: vec![BuildOrder {
+                design_id: "explorer_mk1".to_string(),
+                display_name: "Explorer".to_string(),
+                minerals_cost: Amt::units(100),
+                minerals_invested: Amt::ZERO,
+                energy_cost: Amt::units(50),
+                energy_invested: Amt::ZERO,
+                build_time_total: 60,
+                build_time_remaining: 60,
+            }],
+        },
+        Buildings { slots: vec![None; 4] },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+        Position::from([0.0, 0.0, 0.0]),
+    ));
+
+    advance_time(&mut app, 100);
+
+    let mut ship_q = app.world_mut().query::<&Ship>();
+    let count = ship_q.iter(app.world()).count();
+    assert_eq!(count, 0, "No shipyard in the system: ship must not spawn");
+}
