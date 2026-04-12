@@ -23,8 +23,8 @@ use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::ship::{
-    Cargo, CommandQueue, PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipState,
-    SurveyData,
+    Cargo, CommandQueue, CourierRoute, PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints,
+    ShipState, SurveyData,
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::scripting::building_api::BuildingRegistry;
@@ -426,6 +426,7 @@ fn draw_main_panels_system(
     }
 
     // --- Ship panel ---
+    let selected_system_for_panel = selection.selected_system.0;
     let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
@@ -445,6 +446,8 @@ fn draw_main_panels_system(
         &world.positions,
         player_system,
         player_aboard_ship,
+        &world.courier_routes,
+        selected_system_for_panel,
     );
 
     // Handle cancel current action
@@ -554,6 +557,42 @@ fn draw_main_panels_system(
                 }
             }
             commands.entity(player_entity).remove::<AboardShip>();
+        }
+    }
+
+    // #117: Courier route actions
+    if let Some((ship_entity, target, mode)) = ship_panel_actions.courier_add_waypoint {
+        // Read current route (if any), append waypoint, write back via insert.
+        let existing = world.courier_routes.get(ship_entity).ok().cloned();
+        let new_route = if let Some(mut route) = existing {
+            route.waypoints.push(target);
+            // Switching mode is a separate action; preserve current mode.
+            route
+        } else {
+            crate::ship::CourierRoute::new(vec![target], mode)
+        };
+        commands.entity(ship_entity).insert(new_route);
+    }
+    if let Some(ship_entity) = ship_panel_actions.courier_toggle_pause {
+        if let Ok(route) = world.courier_routes.get(ship_entity) {
+            let mut new_route = route.clone();
+            new_route.paused = !new_route.paused;
+            commands.entity(ship_entity).insert(new_route);
+        }
+    }
+    if let Some(ship_entity) = ship_panel_actions.courier_clear_route {
+        commands.entity(ship_entity).remove::<crate::ship::CourierRoute>();
+    }
+    if let Some((ship_entity, mode)) = ship_panel_actions.courier_set_mode {
+        if let Ok(route) = world.courier_routes.get(ship_entity) {
+            let mut new_route = route.clone();
+            new_route.mode = mode;
+            commands.entity(ship_entity).insert(new_route);
+        } else {
+            // No existing route — create empty one with the chosen mode.
+            commands
+                .entity(ship_entity)
+                .insert(crate::ship::CourierRoute::new(Vec::new(), mode));
         }
     }
 

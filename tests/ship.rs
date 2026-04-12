@@ -11,6 +11,7 @@ use macrocosmo::physics::sublight_travel_hexadies;
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::technology;
+use macrocosmo::time_system::GameClock;
 
 use common::{advance_time, empire_entity, find_planet, full_test_app, spawn_test_colony, spawn_test_system, test_app};
 
@@ -1472,4 +1473,325 @@ fn test_hull_modifiers_applied_to_ship() {
     // speed should have 1 modifier with multiplier 1.15
     assert_eq!(mods.speed.modifiers().len(), 1);
     assert_eq!(mods.speed.modifiers()[0].id, "hull_scout_hull_ship.speed");
+}
+
+// --- #117: Courier route automation ---
+
+/// Helper: install a stockpile on a system entity for tests.
+fn install_stockpile(world: &mut World, system: Entity, minerals: Amt, energy: Amt) {
+    world.entity_mut(system).insert((
+        ResourceStockpile {
+            minerals,
+            energy,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+    ));
+}
+
+#[test]
+fn courier_route_resource_transport_picks_up_at_start() {
+    let mut app = test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        1.0, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [1.0, 0.0, 0.0],
+        0.7, true, false,
+    );
+    install_stockpile(app.world_mut(), sys_a, Amt::units(1000), Amt::units(800));
+    install_stockpile(app.world_mut(), sys_b, Amt::ZERO, Amt::ZERO);
+
+    let courier = common::spawn_test_ship(
+        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+    );
+    app.world_mut().entity_mut(courier).insert(CourierRoute::new(
+        vec![sys_a, sys_b],
+        CourierMode::ResourceTransport,
+    ));
+
+    // First tick: the courier is at sys_a (its current waypoint), so it
+    // should load up to capacity and queue MoveTo sys_b.
+    common::advance_time(&mut app, 1);
+
+    let cargo = app.world().get::<Cargo>(courier).unwrap();
+    let cap = COURIER_DEFAULT_CARGO_CAPACITY;
+    assert_eq!(cargo.minerals, cap, "courier should be loaded with minerals");
+    assert_eq!(cargo.energy, cap, "courier should be loaded with energy");
+
+    let route = app.world().get::<CourierRoute>(courier).unwrap();
+    assert_eq!(route.current_index, 1, "next waypoint should be index 1 (sys_b)");
+
+    let stockpile_a = app.world().get::<ResourceStockpile>(sys_a).unwrap();
+    assert_eq!(stockpile_a.minerals, Amt::units(1000).sub(cap));
+    assert_eq!(stockpile_a.energy, Amt::units(800).sub(cap));
+}
+
+#[test]
+fn courier_route_resource_transport_delivers_at_destination() {
+    let mut app = test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        1.0, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [0.5, 0.0, 0.0],
+        0.7, true, false,
+    );
+    install_stockpile(app.world_mut(), sys_a, Amt::ZERO, Amt::ZERO);
+    install_stockpile(app.world_mut(), sys_b, Amt::ZERO, Amt::ZERO);
+
+    // Spawn the courier already at sys_b, with cargo pre-loaded — and a
+    // route whose current waypoint is sys_b. Tick should deliver, then
+    // attempt to pick up (nothing available), and queue the move back
+    // toward sys_a (the next waypoint after wrapping).
+    let courier = common::spawn_test_ship(
+        app.world_mut(), "Hermes", "courier_mk1", sys_b, [0.5, 0.0, 0.0],
+    );
+    app.world_mut().entity_mut(courier).insert(Cargo {
+        minerals: Amt::units(300),
+        energy: Amt::units(100),
+    });
+    let mut route = CourierRoute::new(vec![sys_a, sys_b], CourierMode::ResourceTransport);
+    route.current_index = 1; // pretend we just arrived at sys_b
+    app.world_mut().entity_mut(courier).insert(route);
+
+    common::advance_time(&mut app, 1);
+
+    // Net effect: deliver 300/100 then immediately pick up to capacity.
+    // sys_b stockpile is left with whatever wasn't picked up.
+    let cap = COURIER_DEFAULT_CARGO_CAPACITY;
+    let stockpile_b = app.world().get::<ResourceStockpile>(sys_b).unwrap();
+    let expected_remaining_m = Amt::units(300).sub(cap.min(Amt::units(300)));
+    let expected_remaining_e = Amt::units(100).sub(cap.min(Amt::units(100)));
+    assert_eq!(stockpile_b.minerals, expected_remaining_m, "minerals after deliver+pickup");
+    assert_eq!(stockpile_b.energy, expected_remaining_e, "energy after deliver+pickup");
+
+    let cargo = app.world().get::<Cargo>(courier).unwrap();
+    assert_eq!(cargo.minerals, cap.min(Amt::units(300)));
+    assert_eq!(cargo.energy, cap.min(Amt::units(100)));
+
+    let route = app.world().get::<CourierRoute>(courier).unwrap();
+    assert_eq!(route.current_index, 0, "after sys_b, index should wrap to sys_a");
+
+    // The queue may already be empty in the same frame if process_command_queue
+    // consumed the MoveTo and started travel — verify by checking either
+    // a queued command OR a non-Docked state with sys_a as destination.
+    let queue = app.world().get::<CommandQueue>(courier).unwrap();
+    let state = app.world().get::<ShipState>(courier).unwrap();
+    let dispatched = !queue.commands.is_empty()
+        || matches!(state, ShipState::SubLight { target_system: Some(t), .. } if *t == sys_a)
+        || matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_a);
+    assert!(dispatched, "courier should be dispatched toward sys_a (queued or in transit)");
+}
+
+#[test]
+fn courier_route_resource_transport_full_round_trip() {
+    use macrocosmo::physics::sublight_travel_hexadies;
+
+    let mut app = test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        1.0, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [0.5, 0.0, 0.0],
+        0.7, true, false,
+    );
+    install_stockpile(app.world_mut(), sys_a, Amt::units(1000), Amt::units(1000));
+    install_stockpile(app.world_mut(), sys_b, Amt::ZERO, Amt::ZERO);
+
+    let courier = common::spawn_test_ship(
+        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+    );
+    app.world_mut().entity_mut(courier).insert(CourierRoute::new(
+        vec![sys_a, sys_b],
+        CourierMode::ResourceTransport,
+    ));
+
+    // Tick 1: pickup at sys_a, queue MoveTo sys_b.
+    common::advance_time(&mut app, 1);
+
+    // Verify sys_a was tapped.
+    let stockpile_a_after_pickup = app.world().get::<ResourceStockpile>(sys_a).unwrap();
+    let cap = COURIER_DEFAULT_CARGO_CAPACITY;
+    assert_eq!(
+        stockpile_a_after_pickup.minerals,
+        Amt::units(1000).sub(cap),
+        "sys_a stockpile should have decreased by capacity after first pickup"
+    );
+
+    // Travel time at courier_mk1's 0.80c over 0.5 ly.
+    let travel = sublight_travel_hexadies(0.5, 0.80);
+    // Plus a couple of buffer ticks for state transitions.
+    common::advance_time(&mut app, travel + 2);
+
+    // After arriving at sys_b, the courier delivered then picked up again
+    // (sys_b had a momentary balance equal to delivery), so the stockpile
+    // ends near zero. Cargo should still have a load to carry back.
+    let cargo_after = app.world().get::<Cargo>(courier).unwrap();
+    assert!(
+        cargo_after.minerals > Amt::ZERO || cargo_after.energy > Amt::ZERO,
+        "Courier should be carrying a fresh load after sys_b dock; got M:{} E:{}",
+        cargo_after.minerals, cargo_after.energy
+    );
+
+    // Route index should have advanced past sys_b (wrapped to 0 = sys_a).
+    let route_after = app.world().get::<CourierRoute>(courier).unwrap();
+    assert_eq!(route_after.current_index, 0, "route should wrap back to sys_a");
+}
+
+#[test]
+fn courier_route_paused_does_not_dispatch() {
+    let mut app = test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        1.0, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [1.0, 0.0, 0.0],
+        0.7, true, false,
+    );
+    install_stockpile(app.world_mut(), sys_a, Amt::units(500), Amt::units(500));
+
+    let courier = common::spawn_test_ship(
+        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+    );
+    let mut route = CourierRoute::new(
+        vec![sys_a, sys_b],
+        CourierMode::ResourceTransport,
+    );
+    route.paused = true;
+    app.world_mut().entity_mut(courier).insert(route);
+
+    common::advance_time(&mut app, 1);
+
+    let cargo = app.world().get::<Cargo>(courier).unwrap();
+    assert_eq!(cargo.minerals, Amt::ZERO, "paused route should not pick up");
+    assert_eq!(cargo.energy, Amt::ZERO, "paused route should not pick up");
+    let queue = app.world().get::<CommandQueue>(courier).unwrap();
+    assert!(queue.commands.is_empty(), "paused route should not queue moves");
+}
+
+#[test]
+fn courier_route_knowledge_relay_delivers_pre_loaded_cargo() {
+    let mut app = test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        1.0, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [0.3, 0.0, 0.0],
+        0.7, true, false,
+    );
+    let sys_x = common::spawn_test_system(
+        app.world_mut(), "System-X", [10.0, 0.0, 0.0],
+        0.5, false, false,
+    );
+
+    // Empire's KnowledgeStore: install a stale snapshot of sys_x (observed_at=5).
+    {
+        let empire = common::empire_entity(app.world_mut());
+        let mut store = app.world_mut().get_mut::<KnowledgeStore>(empire).unwrap();
+        store.update(SystemKnowledge {
+            system: sys_x,
+            observed_at: 5,
+            received_at: 5,
+            data: SystemSnapshot {
+                name: "System-X".to_string(),
+                position: [10.0, 0.0, 0.0],
+                surveyed: false,
+                ..Default::default()
+            },
+        });
+    }
+
+    // Spawn the courier docked at sys_b, with a pre-loaded knowledge cargo
+    // containing a *newer* snapshot of sys_x (observed_at=50). The route
+    // current_index points at sys_b so the tick will execute deliver+pickup
+    // immediately.
+    let courier = common::spawn_test_ship(
+        app.world_mut(), "Hermes", "courier_mk1", sys_b, [0.3, 0.0, 0.0],
+    );
+    let mut route = CourierRoute::new(vec![sys_a, sys_b], CourierMode::KnowledgeRelay);
+    route.current_index = 1;
+    app.world_mut().entity_mut(courier).insert(route);
+    app.world_mut().entity_mut(courier).insert(CourierKnowledgeCargo {
+        entries: vec![SystemKnowledge {
+            system: sys_x,
+            observed_at: 50,
+            received_at: 50,
+            data: SystemSnapshot {
+                name: "System-X".to_string(),
+                position: [10.0, 0.0, 0.0],
+                surveyed: true,
+                ..Default::default()
+            },
+        }],
+    });
+
+    common::advance_time(&mut app, 1);
+
+    let empire = common::empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let entry = store.get(sys_x).expect("sys_x knowledge entry");
+    assert_eq!(entry.observed_at, 50, "newer cargo snapshot should win on delivery");
+    assert!(entry.data.surveyed, "newer snapshot's surveyed flag should propagate");
+}
+
+#[test]
+fn courier_route_knowledge_relay_pickup_refreshes_received_at() {
+    let mut app = test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
+        1.0, true, false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(), "System-B", [0.3, 0.0, 0.0],
+        0.7, true, false,
+    );
+
+    // Empire knowledge has a stale entry for sys_a observed long ago.
+    {
+        let empire = common::empire_entity(app.world_mut());
+        let mut store = app.world_mut().get_mut::<KnowledgeStore>(empire).unwrap();
+        store.update(SystemKnowledge {
+            system: sys_a,
+            observed_at: 10,
+            received_at: 10,
+            data: SystemSnapshot {
+                name: "System-A".to_string(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                ..Default::default()
+            },
+        });
+    }
+
+    let courier = common::spawn_test_ship(
+        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+    );
+    app.world_mut().entity_mut(courier).insert(CourierRoute::new(
+        vec![sys_a, sys_b],
+        CourierMode::KnowledgeRelay,
+    ));
+    // Set the clock high so the pickup's received_at update is observable.
+    app.world_mut().resource_mut::<GameClock>().elapsed = 100;
+
+    app.update();
+
+    let bag = app.world().get::<CourierKnowledgeCargo>(courier)
+        .expect("courier should have CourierKnowledgeCargo after first tick");
+    assert!(!bag.entries.is_empty(), "bag should have copied store entries on pickup");
+    let sys_a_entry = bag.entries.iter().find(|k| k.system == sys_a).expect("sys_a entry");
+    assert_eq!(sys_a_entry.received_at, 100, "received_at should refresh to current time on pickup");
 }
