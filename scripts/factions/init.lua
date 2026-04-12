@@ -1,8 +1,13 @@
 -- Faction definitions
 
+-- Faction types must be defined first — `define_faction` calls below may
+-- reference them by value (e.g. `faction_type = types.empire`).
+local types = require("factions.faction_types")
+
 define_faction {
     id = "humanity_empire",
     name = "Terran Federation",
+    faction_type = types.empire,
     on_game_start = function(ctx)
         -- Take full control of the capital system. Rather than relying on the
         -- random galaxy generator (which can produce capitals with bad rolls),
