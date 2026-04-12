@@ -71,10 +71,27 @@ fn apply_flat_damage_to_ship(hp: &mut ShipHitpoints, damage: f64) {
 ///
 /// **#168 — Faction-gated combat.** A ship engages a hostile only when the
 /// `FactionRelations` view from the ship's faction (its `Owner::Empire(_)`
-/// entity) toward the hostile's `FactionOwner` allows it
-/// (`FactionView::can_attack_aggressive`). Hostile presences without a
-/// `FactionOwner`, and ships whose owner is `Owner::Neutral`, are skipped.
-/// `RulesOfEngagement::Retreat` ships still skip combat regardless.
+/// entity) toward the hostile's `FactionOwner` allows it. Hostile presences
+/// without a `FactionOwner`, and ships whose owner is `Owner::Neutral`, are
+/// skipped.
+///
+/// **#169 — ROE-aware engagement.** ROE now produces meaningfully distinct
+/// behaviour rather than only gating `Retreat`:
+/// - `Retreat`: never engages, regardless of relations or hostile presence.
+/// - `Aggressive`: engages whenever
+///   [`FactionView::can_attack_aggressive`] is true (`War`, or `Neutral` with
+///   negative standing).
+/// - `Defensive`: engages only when [`FactionView::should_engage_defensive`]
+///   is true — open `War`, or when a hostile is present in the same system
+///   (treated as "being attacked", since hostile presences are assumed to
+///   initiate combat). Defensive therefore retaliates against `Peace` /
+///   `Alliance` factions whose stale relation might still report
+///   non-hostility.
+///
+/// The "being attacked" signal is currently inferred from the presence of any
+/// `HostilePresence` co-located with the ship. A more granular
+/// damage-event-driven counter-attack model is intentionally out of scope
+/// here.
 pub fn resolve_combat(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -112,7 +129,16 @@ pub fn resolve_combat(
         let Some(hostile_faction) = *hostile_faction else { continue; };
 
         // Find all player ships docked at this system, excluding Retreat ROE
-        // and ships whose faction view forbids aggression.
+        // and ships whose faction view + ROE combination forbids engagement.
+        //
+        // #169: Within this loop iteration we are processing a specific
+        // hostile co-located with the ship, so for Defensive ROE the
+        // `being_attacked` signal is `true` by construction (a hostile
+        // presence is assumed to act on the ship). The ROE branches below
+        // therefore differ only in the *trigger* used to engage:
+        //   - Aggressive consults `can_attack_aggressive` (state-based).
+        //   - Defensive consults `should_engage_defensive(true)` (war OR
+        //     present-hostile retaliation).
         let docked_ships: Vec<Entity> = ships
             .iter()
             .filter_map(|(entity, ship, _hp, _mods, state, roe)| {
@@ -132,13 +158,18 @@ pub fn resolve_combat(
                 // ships have no diplomatic identity and cannot engage.
                 let Owner::Empire(faction_entity) = ship.owner else { return None; };
 
-                // Consult FactionRelations: the ship can fight only if its
-                // empire's view of the hostile faction allows aggressive
-                // engagement (War, or Neutral with negative standing).
-                if !relations
-                    .get_or_default(faction_entity, hostile_faction)
-                    .can_attack_aggressive()
-                {
+                // Consult FactionRelations + ROE.
+                let view = relations.get_or_default(faction_entity, hostile_faction);
+                let engaged = match roe {
+                    RulesOfEngagement::Aggressive => view.can_attack_aggressive(),
+                    // A hostile co-located with the ship is treated as
+                    // actively attacking — see #169 spec.
+                    RulesOfEngagement::Defensive => view.should_engage_defensive(true),
+                    // Already short-circuited above; `unreachable!` would
+                    // also work but we prefer the safe fallthrough.
+                    RulesOfEngagement::Retreat => false,
+                };
+                if !engaged {
                     return None;
                 }
 

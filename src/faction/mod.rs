@@ -256,6 +256,24 @@ impl FactionView {
     pub fn is_at_war(&self) -> bool {
         matches!(self.state, RelationState::War)
     }
+
+    /// Whether the holder of this view should engage the target under
+    /// `Defensive` rules of engagement.
+    ///
+    /// Defensive ROE never starts a fight on its own from low standing alone:
+    /// it only engages when the relation is open `War`, or when a hostile
+    /// action is in progress (`being_attacked`). The latter allows a unit to
+    /// retaliate even against a faction whose view is still `Peace` /
+    /// `Alliance` from the holder's side — useful when the standing/state
+    /// information is stale due to light-speed propagation.
+    ///
+    /// Used by [`crate::ship::combat::resolve_combat`] (#169). The
+    /// `being_attacked` flag is currently inferred from the presence of a
+    /// hostile entity in the same star system; a more granular,
+    /// damage-event-driven variant is tracked separately.
+    pub fn should_engage_defensive(&self, being_attacked: bool) -> bool {
+        self.is_at_war() || being_attacked
+    }
 }
 
 /// Asymmetric registry of faction-to-faction relations.
@@ -443,6 +461,44 @@ mod tests {
                 !v.can_attack_aggressive(),
                 "Alliance must forbid attack regardless of standing ({standing})"
             );
+        }
+    }
+
+    // ---- should_engage_defensive (#169) ----
+
+    /// War always engages, regardless of `being_attacked`.
+    #[test]
+    fn should_engage_defensive_war_always_true() {
+        let v = FactionView::new(RelationState::War, 0.0);
+        assert!(v.should_engage_defensive(false));
+        assert!(v.should_engage_defensive(true));
+    }
+
+    /// Non-war + not being attacked: never engage. Defensive does not start
+    /// fights from negative standing alone.
+    #[test]
+    fn should_engage_defensive_idle_negative_standing_does_not_engage() {
+        for state in [RelationState::Neutral, RelationState::Peace, RelationState::Alliance] {
+            let v = FactionView::new(state, -100.0);
+            assert!(
+                !v.should_engage_defensive(false),
+                "Defensive must not preemptively engage in {state:?} at standing=-100"
+            );
+        }
+    }
+
+    /// Non-war + being attacked: always retaliate, even against Peace/Alliance
+    /// (stale-relation tolerance).
+    #[test]
+    fn should_engage_defensive_retaliates_when_attacked() {
+        for state in [RelationState::Neutral, RelationState::Peace, RelationState::Alliance] {
+            for &standing in &[-100.0, 0.0, 100.0] {
+                let v = FactionView::new(state, standing);
+                assert!(
+                    v.should_engage_defensive(true),
+                    "Defensive must retaliate in {state:?} (standing={standing}) when attacked"
+                );
+            }
         }
     }
 

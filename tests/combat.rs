@@ -1600,9 +1600,11 @@ fn test_combat_triggers_with_default_hostile_relations() {
     );
 }
 
-/// #168 — If the player's view of the hostile faction is changed to `Peace`,
-/// `can_attack_aggressive` returns false and combat is skipped even when a
-/// HostilePresence with a FactionOwner is present.
+/// #168 / #169 — When the player's view of the hostile faction is `Peace`,
+/// an `Aggressive` ROE ship still must not preemptively attack
+/// (`can_attack_aggressive` is false). #169 introduced retaliation under
+/// `Defensive`, so this test pins the ROE to `Aggressive` to keep the
+/// "Peace forbids first strikes" invariant under regression coverage.
 #[test]
 fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
     use macrocosmo::faction::{FactionRelations, FactionView, RelationState};
@@ -1613,7 +1615,13 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
     let sys = spawn_test_system(app.world_mut(), "Peace-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
     let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
-    let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    // #169: pin to Aggressive — Defensive would now retaliate against the
+    // co-located HostilePresence, which is a separate behaviour covered by
+    // its own test.
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(RulesOfEngagement::Aggressive);
 
     // Migrate first.
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
@@ -1631,7 +1639,7 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
     let h = app.world().get::<HostilePresence>(hostile).unwrap();
     assert!(
         (h.hp - 1000.0).abs() < f64::EPSILON,
-        "Hostile HP must not change while at Peace; got {}",
+        "Aggressive ROE must not first-strike at Peace; got {}",
         h.hp
     );
 }
@@ -1698,6 +1706,159 @@ fn test_combat_triggers_when_at_war_even_with_positive_standing() {
 
     let h = app.world().get::<HostilePresence>(hostile).unwrap();
     assert!(h.hp < 1000.0, "War must permit attack regardless of standing; HP={}", h.hp);
+}
+
+// ---------------------------------------------------------------------------
+// #169 — ROE × FactionRelations matrix.
+// ---------------------------------------------------------------------------
+
+/// Helper: assert hostile took damage (HP < starting 1000.0).
+fn assert_hostile_engaged(app: &App, hostile: Entity) {
+    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    assert!(
+        h.hp < 1000.0,
+        "Expected hostile to have taken damage (engagement), got hp={}",
+        h.hp
+    );
+}
+
+/// Helper: assert hostile was untouched (HP == starting 1000.0).
+fn assert_hostile_untouched(app: &App, hostile: Entity) {
+    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    assert!(
+        (h.hp - 1000.0).abs() < f64::EPSILON,
+        "Expected hostile HP to be untouched, got hp={}",
+        h.hp
+    );
+}
+
+/// Override the player↔hostile relation to a single `(state, standing)` view.
+fn set_player_view(app: &mut App, hostile_faction: Entity, state: macrocosmo::faction::RelationState, standing: f64) {
+    use macrocosmo::faction::{FactionRelations, FactionView};
+    let empire = common::empire_entity(app.world_mut());
+    let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+    rel.set(empire, hostile_faction, FactionView::new(state, standing));
+}
+
+/// #169 — Aggressive + Neutral with negative standing → engage even without
+/// formal war. This is the existing #168 behaviour, re-asserted under the
+/// new ROE-aware code path.
+#[test]
+fn test_aggressive_engages_neutral_negative_standing() {
+    use macrocosmo::faction::RelationState;
+
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Aggro-Neg", [0.0, 0.0, 0.0], 0.7, true, false);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Aggressive);
+
+    let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
+    set_player_view(&mut app, space_creature, RelationState::Neutral, -25.0);
+
+    advance_time(&mut app, 1);
+    assert_hostile_engaged(&app, hostile);
+}
+
+/// #169 — Defensive + Neutral with negative standing → must NOT preemptively
+/// attack when no hostile is present. Uses the helper directly because the
+/// resolve_combat loop only iterates over actual HostilePresences.
+#[test]
+fn test_defensive_does_not_first_strike_when_no_hostile_present() {
+    use macrocosmo::faction::{FactionView, RelationState};
+    let v = FactionView::new(RelationState::Neutral, -100.0);
+    assert!(
+        !v.should_engage_defensive(false),
+        "Defensive must wait when standing<0 but no hostile is present"
+    );
+}
+
+/// #169 — Defensive + War → engage. Mirrors aggressive engagement at war but
+/// via the Defensive code path.
+#[test]
+fn test_defensive_engages_at_war() {
+    use macrocosmo::faction::RelationState;
+
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Def-War", [0.0, 0.0, 0.0], 0.7, true, false);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
+
+    let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
+    // Positive standing on purpose: only the War state should drive engagement.
+    set_player_view(&mut app, space_creature, RelationState::War, 50.0);
+
+    advance_time(&mut app, 1);
+    assert_hostile_engaged(&app, hostile);
+}
+
+/// #169 — Defensive + Peace + co-located HostilePresence → retaliate.
+/// `should_engage_defensive(true)` is true even at Peace because the local
+/// "being attacked" signal trumps the (potentially stale) Peace state.
+#[test]
+fn test_defensive_retaliates_against_hostile_at_peace() {
+    use macrocosmo::faction::RelationState;
+
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Def-Peace-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
+
+    let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
+    set_player_view(&mut app, space_creature, RelationState::Peace, 0.0);
+
+    advance_time(&mut app, 1);
+    assert_hostile_engaged(&app, hostile);
+}
+
+/// #169 — Retreat + War → still skip. ROE always trumps relations for
+/// non-engagement.
+#[test]
+fn test_retreat_skips_combat_at_war() {
+    use macrocosmo::faction::RelationState;
+
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Retreat-War", [0.0, 0.0, 0.0], 0.7, true, false);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
+
+    let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
+    set_player_view(&mut app, space_creature, RelationState::War, -100.0);
+
+    advance_time(&mut app, 1);
+    assert_hostile_untouched(&app, hostile);
+}
+
+/// #169 — Retreat + co-located HostilePresence → still skip, even with
+/// default Neutral/-100 hostile relations that would normally trigger
+/// Aggressive engagement.
+#[test]
+fn test_retreat_skips_combat_with_hostile_present() {
+    let mut app = test_app();
+    install_test_weapon_module(&mut app);
+
+    let sys = spawn_test_system(app.world_mut(), "Retreat-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
+    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
+
+    // Default migration keeps Neutral / -100 standing — would normally engage
+    // under Aggressive or Defensive.
+    let _ = common::setup_test_hostile_factions(app.world_mut());
+
+    advance_time(&mut app, 1);
+    assert_hostile_untouched(&app, hostile);
 }
 
 /// #168 — `setup_test_hostile_factions` correctly tags hostiles by type:
