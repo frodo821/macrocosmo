@@ -8,6 +8,7 @@ pub mod survey;
 pub mod combat;
 pub mod movement;
 pub mod command;
+pub mod courier_route;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -18,6 +19,7 @@ pub use survey::*;
 pub use combat::*;
 pub use movement::*;
 pub use command::*;
+pub use courier_route::*;
 
 use bevy::prelude::*;
 
@@ -92,6 +94,13 @@ impl Plugin for ShipPlugin {
                 .after(process_surveys),
             resolve_combat,
             tick_ship_repair,
+            // #117: Courier automation — runs before process_command_queue
+            // so that any MoveTo it queues this frame is dispatched in the
+            // same frame.
+            tick_courier_routes
+                .before(process_command_queue)
+                .after(sublight_movement_system)
+                .after(process_ftl_travel),
         ).after(crate::time_system::advance_game_time)
          .before(crate::colony::advance_production_tick));
         // #128: Poll route tasks after Commands from process_command_queue are flushed.

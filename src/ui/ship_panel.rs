@@ -7,7 +7,10 @@ use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
-use crate::ship::{Cargo, CommandQueue, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship::{
+    Cargo, CommandQueue, CourierMode, CourierRoute, PendingShipCommand, QueuedCommand,
+    RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData,
+};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 use crate::visualization::{SelectedShip};
@@ -48,6 +51,15 @@ pub struct ShipPanelActions {
     pub board_ship: Option<Entity>,
     /// #59: Player wants to disembark from the selected ship
     pub disembark: bool,
+    /// #117: Add the currently-selected system as a waypoint to the ship's
+    /// CourierRoute (creating one if absent).
+    pub courier_add_waypoint: Option<(Entity, Entity, CourierMode)>,
+    /// #117: Toggle the paused flag on the courier's route.
+    pub courier_toggle_pause: Option<Entity>,
+    /// #117: Remove the entire CourierRoute from the ship.
+    pub courier_clear_route: Option<Entity>,
+    /// #117: Change the route's mode.
+    pub courier_set_mode: Option<(Entity, CourierMode)>,
 }
 
 /// Resolve an Entity to a star system name, falling back to "Unknown".
@@ -253,6 +265,8 @@ pub fn draw_ship_panel(
     positions: &Query<&Position>,
     player_stationed: Option<Entity>,
     player_aboard_ship: Option<Entity>,
+    courier_routes: &Query<&CourierRoute>,
+    selected_system: Option<Entity>,
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -580,6 +594,68 @@ pub fn draw_ship_panel(
                             });
                         }
                     }
+                }
+            }
+
+            // #117: Courier route automation panel (couriers only)
+            if design_id == "courier_mk1" {
+                ui.separator();
+                ui.label(egui::RichText::new("Courier Route").strong());
+                let route_opt = courier_routes.get(ship_entity).ok();
+                let current_mode = route_opt.map(|r| r.mode).unwrap_or(CourierMode::ResourceTransport);
+
+                // Mode selector
+                ui.horizontal(|ui| {
+                    ui.label("Mode:");
+                    for mode in [
+                        CourierMode::ResourceTransport,
+                        CourierMode::KnowledgeRelay,
+                        CourierMode::MessageDelivery,
+                    ] {
+                        let selected = current_mode == mode;
+                        if ui.selectable_label(selected, mode.label()).clicked() && !selected {
+                            actions.courier_set_mode = Some((ship_entity, mode));
+                        }
+                    }
+                });
+
+                // Waypoints list
+                if let Some(route) = route_opt {
+                    if route.waypoints.is_empty() {
+                        ui.label("(no waypoints)");
+                    } else {
+                        for (i, wp) in route.waypoints.iter().enumerate() {
+                            let name = system_name(*wp, stars);
+                            let marker = if i == route.current_index { "->" } else { "  " };
+                            ui.label(format!("{} {}. {}", marker, i + 1, name));
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        let label = if route.paused { "Resume Route" } else { "Pause Route" };
+                        if ui.button(label).clicked() {
+                            actions.courier_toggle_pause = Some(ship_entity);
+                        }
+                        if ui.button("Stop Route").clicked() {
+                            actions.courier_clear_route = Some(ship_entity);
+                        }
+                    });
+                } else {
+                    ui.label("(no active route)");
+                }
+
+                // Add waypoint button (uses current selection)
+                if let Some(sel_sys) = selected_system {
+                    let sel_name = system_name(sel_sys, stars);
+                    let label = format!("Add waypoint: {}", sel_name);
+                    if ui.button(label).clicked() {
+                        actions.courier_add_waypoint = Some((ship_entity, sel_sys, current_mode));
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new("Select a star to add it as a waypoint")
+                            .small()
+                            .weak(),
+                    );
                 }
             }
 
