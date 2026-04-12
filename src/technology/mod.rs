@@ -11,7 +11,7 @@ use crate::modifier::ModifiedValue;
 use crate::amount::Amt;
 
 // Re-export everything for backward compatibility
-pub use effects::{apply_tech_effects, TechEffectsLog};
+pub use effects::{apply_tech_effects, build_tech_effects_preview, TechEffectsLog, TechEffectsPreview};
 pub use parsing::{
     create_initial_tech_tree, create_initial_tech_tree_vec, parse_tech_branch_definitions,
     parse_tech_definitions,
@@ -53,7 +53,14 @@ impl Plugin for TechnologyPlugin {
             )
         .insert_resource(LastResearchTick(0))
         .init_resource::<TechEffectsLog>()
+        .init_resource::<TechEffectsPreview>()
         .init_resource::<TechUnlockIndex>()
+        .add_systems(
+            Startup,
+            build_tech_effects_preview
+                .after(load_technologies)
+                .after(crate::scripting::load_all_scripts),
+        )
         .add_systems(
             Update,
             (emit_research, receive_research, tick_research, flush_research)
