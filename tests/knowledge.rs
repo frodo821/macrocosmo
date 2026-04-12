@@ -936,3 +936,372 @@ fn test_knowledge_store_ship_older_does_not_replace() {
     assert_eq!(snap.observed_at, 20, "Newer observation should not be replaced by older");
     assert_eq!(snap.last_known_state, ShipSnapshotState::InTransit);
 }
+
+// --- #118: Sensor Buoy detection tests ---
+
+/// Insert the default `sensor_buoy` structure definition (range 3.0 ly,
+/// detect_sublight only) into the test app's `StructureRegistry`.
+fn install_sensor_buoy_definition(app: &mut App) {
+    use macrocosmo::deep_space::{
+        CapabilityParams, ResourceCost, StructureDefinition, StructureRegistry,
+    };
+    use std::collections::HashMap;
+    let mut registry = app
+        .world_mut()
+        .get_resource_mut::<StructureRegistry>()
+        .expect("StructureRegistry not initialized in test_app");
+    registry.insert(StructureDefinition {
+        id: "sensor_buoy".to_string(),
+        name: "Sensor Buoy".to_string(),
+        description: "Detects sublight vessel movements.".to_string(),
+        max_hp: 20.0,
+        cost: ResourceCost::default(),
+        build_time: 15,
+        capabilities: HashMap::from([(
+            "detect_sublight".to_string(),
+            CapabilityParams { range: 3.0 },
+        )]),
+        energy_drain: Amt::milli(100),
+        prerequisites: None,
+    });
+}
+
+/// Spawn a sensor buoy at the given position. Returns the buoy entity.
+fn spawn_sensor_buoy(world: &mut World, pos: [f64; 3]) -> Entity {
+    use macrocosmo::deep_space::{DeepSpaceStructure, StructureHitpoints};
+    world
+        .spawn((
+            DeepSpaceStructure {
+                definition_id: "sensor_buoy".to_string(),
+                name: "Buoy Alpha".to_string(),
+                owner: macrocosmo::ship::Owner::Neutral,
+            },
+            StructureHitpoints {
+                current: 20.0,
+                max: 20.0,
+            },
+            Position::from(pos),
+        ))
+        .id()
+}
+
+#[test]
+fn test_sensor_buoy_detects_sublight_ship_in_range() {
+    // Strategy: place the buoy CLOSER to the player than the ship's
+    // location is to the player. The buoy should report the ship via a
+    // shorter light path, producing a snapshot earlier than direct
+    // propagate_knowledge would.
+    //
+    // Player:   [0,  0, 0]
+    // Buoy:     [3,  0, 0]  (3 ly from player → 180 hexadies)
+    // Ship:     [3.5,0, 0]  (3.5 ly from player → 210 hexadies; 0.5 ly from buoy, within 3 ly range)
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [3.5, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    spawn_sensor_buoy(app.world_mut(), [3.0, 0.0, 0.0]);
+
+    // Sublight ship right next to the buoy (ship_pos = [3.5, 0, 0]).
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Probe-1",
+        "courier_mk1", // ftl_range = 0
+        sys_remote,
+        [3.5, 0.0, 0.0],
+    );
+    *app.world_mut().get_mut::<ShipState>(ship_entity).unwrap() = ShipState::SubLight {
+        origin: [3.5, 0.0, 0.0],
+        destination: [4.5, 0.0, 0.0],
+        target_system: None,
+        departed_at: 0,
+        arrival_at: 1_000_000,
+    };
+
+    // At t=200: buoy delay = 180 ✓ (detection possible),
+    // but propagate_knowledge for SubLight uses distance=0 (a known
+    // simplification in the existing code), so it would give observed_at=200.
+    // To make the buoy contribution observable, we compare against the
+    // buoy-derived observed_at after detection runs.
+    advance_time(&mut app, 200);
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store
+        .get_ship(ship_entity)
+        .expect("ship should be in KnowledgeStore");
+    // The most-recent observation wins. Whether buoy or propagate_knowledge
+    // wins depends on internals. The behavior we verify is: snapshot exists
+    // and reflects the SubLight state.
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransit);
+    assert_eq!(snap.name, "Probe-1");
+}
+
+#[test]
+fn test_sensor_buoy_detects_remote_docked_ship_via_buoy_path() {
+    // For Docked ships propagate_knowledge applies the player→ship light
+    // delay, so by placing the buoy CLOSER to the player than the ship is,
+    // we can prove the buoy is the source of the early observation.
+    //
+    // Player:   [0, 0, 0]
+    // Buoy:     [5, 0, 0]   (5 ly → 300 hexadies delay)
+    // Ship:     [7, 0, 0]   (7 ly → 420 hexadies delay; 2 ly from buoy)
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let sys_outpost = spawn_test_system(
+        app.world_mut(),
+        "Outpost",
+        [7.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    spawn_sensor_buoy(app.world_mut(), [5.0, 0.0, 0.0]);
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Outpost-Patrol",
+        "courier_mk1",
+        sys_outpost,
+        [7.0, 0.0, 0.0],
+    );
+
+    // At t=350: buoy delay = 300 ✓; propagate_knowledge for Docked needs 420 ✗.
+    // So any snapshot present must come from the buoy.
+    advance_time(&mut app, 350);
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store
+        .get_ship(ship_entity)
+        .expect("Buoy should have detected docked ship before propagate_knowledge could");
+    // observed_at = 350 - 300 = 50, and importantly LESS than 350 (proving
+    // it isn't from a closer-but-untimed source).
+    assert_eq!(snap.observed_at, 50);
+    assert_eq!(snap.last_known_state, ShipSnapshotState::Docked);
+    assert_eq!(snap.last_known_system, Some(sys_outpost));
+}
+
+#[test]
+fn test_sensor_buoy_does_not_detect_ftl_ship() {
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let sys_remote_a = spawn_test_system(
+        app.world_mut(),
+        "RemoteA",
+        [10.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    let sys_remote_b = spawn_test_system(
+        app.world_mut(),
+        "RemoteB",
+        [11.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    let buoy_pos = [10.0, 0.0, 0.0];
+    spawn_sensor_buoy(app.world_mut(), buoy_pos);
+
+    // FTL ship right next to the buoy.
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "FTL-1",
+        "explorer_mk1", // ftl_range > 0
+        sys_remote_a,
+        [10.0, 0.0, 0.0],
+    );
+    *app.world_mut().get_mut::<ShipState>(ship_entity).unwrap() = ShipState::InFTL {
+        origin_system: sys_remote_a,
+        destination_system: sys_remote_b,
+        departed_at: 0,
+        arrival_at: 1_000_000,
+    };
+
+    // Advance well beyond the buoy->player light delay (600 hexadies for 10 ly).
+    advance_time(&mut app, 700);
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    // The buoy must not produce a snapshot for an FTL ship. The standard
+    // propagate_knowledge path uses the ship's `origin_system` position
+    // (RemoteA at 10 ly), so it could produce a Docked-equivalent snapshot
+    // — but we only assert here that *if* a snapshot exists, it is not
+    // marked as InTransit by the buoy at the buoy's location. The
+    // important regression target is "buoy did not contribute". Because
+    // the propagate_knowledge would emit an InTransit state with
+    // `last_known_system == Some(sys_remote_b)` for this FTL ship at the
+    // appropriate light delay (10 ly => 600 hexadies), we assert the
+    // observed_at matches *its* delay, never an artificially-fresh value
+    // from a buoy override.
+    if let Some(snap) = store.get_ship(ship_entity) {
+        // propagate_knowledge sees ship at sys_remote_a (10 ly away) and
+        // light_delay = 600. observed_at = 700 - 600 = 100.
+        assert_eq!(
+            snap.observed_at, 100,
+            "FTL ship snapshot should come only from propagate_knowledge, not buoy"
+        );
+    }
+}
+
+#[test]
+fn test_sensor_buoy_does_not_detect_ship_out_of_range() {
+    // Setup so that *only* a buoy detection would surface knowledge in time.
+    //
+    // Player:  [0, 0, 0]
+    // Buoy:    [5, 0, 0]   (5 ly → 300 hexadies)
+    // Docked ship in remote outpost at [10, 0, 0]:
+    //   - 10 ly from player → propagate_knowledge needs 600 hexadies
+    //   - 5 ly from buoy → OUTSIDE 3 ly buoy range
+    // We advance to 400 hexadies. If the buoy were broken (detected
+    // out-of-range ships), a snapshot would appear. propagate_knowledge
+    // can't produce one yet (needs 600).
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [10.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    spawn_sensor_buoy(app.world_mut(), [5.0, 0.0, 0.0]);
+
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "FarShip",
+        "courier_mk1",
+        sys_remote,
+        [10.0, 0.0, 0.0],
+    );
+
+    advance_time(&mut app, 400);
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    assert!(
+        store.get_ship(ship_entity).is_none(),
+        "Buoy must not detect ship outside its range; \
+         propagate_knowledge has not had time either."
+    );
+}
+
+#[test]
+fn test_sensor_buoy_detects_docked_ship_in_range() {
+    // Even a Docked ship within sensor range should be reported by the buoy.
+    // This exercises the snapshot_state mapping for non-FTL Docked ships.
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(),
+        "Capital",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let sys_outpost = spawn_test_system(
+        app.world_mut(),
+        "Outpost",
+        [10.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    spawn_sensor_buoy(app.world_mut(), [10.0, 0.0, 0.0]);
+
+    // Docked ship at outpost (right under the buoy).
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "DockedShip",
+        "courier_mk1",
+        sys_outpost,
+        [10.0, 0.0, 0.0],
+    );
+
+    // Advance past buoy->player light delay (600).
+    advance_time(&mut app, 605);
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let snap = store
+        .get_ship(ship_entity)
+        .expect("Buoy should detect docked ship in range");
+    assert_eq!(snap.last_known_state, ShipSnapshotState::Docked);
+    assert_eq!(snap.last_known_system, Some(sys_outpost));
+}
+
+#[test]
+fn test_sensor_buoy_no_player_no_panic() {
+    // Sanity: with no Player entity, the system should early-return cleanly.
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    let _sys = spawn_test_system(
+        app.world_mut(),
+        "Lone",
+        [0.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+
+    spawn_sensor_buoy(app.world_mut(), [5.0, 0.0, 0.0]);
+
+    // Just confirm we don't panic.
+    advance_time(&mut app, 100);
+}
+

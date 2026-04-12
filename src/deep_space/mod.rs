@@ -138,7 +138,131 @@ impl Plugin for DeepSpacePlugin {
             .add_systems(
                 Startup,
                 load_structure_definitions.after(crate::scripting::load_all_scripts),
+            )
+            .add_systems(
+                Update,
+                sensor_buoy_detect_system
+                    .after(crate::time_system::advance_game_time)
+                    .after(crate::ship::sublight_movement_system)
+                    .after(crate::ship::process_ftl_travel),
             );
+    }
+}
+
+/// #118: Sensor Buoy detection.
+///
+/// Each `DeepSpaceStructure` whose definition exposes the `detect_sublight`
+/// capability scans for sublight-traveling and idle (docked/surveying/etc.)
+/// ships within `range` light-years of its own `Position`. FTL ships are
+/// invisible to base sensor buoys (FTL wake detection is gated behind a
+/// future tech, #120).
+///
+/// Detection events are pushed into the player empire's `KnowledgeStore`
+/// as `ShipSnapshot`s with an `observed_at` timestamp delayed by
+/// `distance(buoy → player) / c`. Existing snapshots with newer
+/// `observed_at` are preserved by `KnowledgeStore::update_ship`. When a
+/// courier with a `KnowledgeRelay` route visits the buoy's owner system
+/// (#117), the relay delivers the same data faster than light — both
+/// pathways coexist and the freshest observation wins.
+pub fn sensor_buoy_detect_system(
+    clock: Res<crate::time_system::GameClock>,
+    registry: Res<StructureRegistry>,
+    structures: Query<(&DeepSpaceStructure, &crate::components::Position)>,
+    ships: Query<(
+        Entity,
+        &crate::ship::Ship,
+        &crate::ship::ShipState,
+        &crate::components::Position,
+        &crate::ship::ShipHitpoints,
+    )>,
+    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    positions: Query<&crate::components::Position>,
+    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+) {
+    use crate::knowledge::{ShipSnapshot, ShipSnapshotState};
+
+    let Ok(mut store) = empire_q.single_mut() else {
+        return;
+    };
+    let Some(stationed) = player_q.iter().next() else {
+        return;
+    };
+    let Ok(player_pos) = positions.get(stationed.system) else {
+        return;
+    };
+
+    for (structure, buoy_pos) in &structures {
+        let Some(def) = registry.get(&structure.definition_id) else {
+            continue;
+        };
+        let Some(cap) = def.capabilities.get("detect_sublight") else {
+            continue;
+        };
+        let detect_range = cap.range;
+        if detect_range <= 0.0 {
+            continue;
+        }
+
+        // Light-speed delay from buoy to player observer.
+        let buoy_to_player = crate::physics::distance_ly(buoy_pos, player_pos);
+        let delay = crate::physics::light_delay_hexadies(buoy_to_player);
+        let observed_at = clock.elapsed - delay;
+        if observed_at < 0 {
+            continue;
+        }
+
+        for (ship_entity, ship, state, ship_pos, hp) in &ships {
+            // FTL ships are invisible to baseline sensor buoys (#120 future).
+            if matches!(state, crate::ship::ShipState::InFTL { .. }) {
+                continue;
+            }
+
+            // Range check: distance from buoy to ship.
+            let dist = crate::physics::distance_ly(buoy_pos, ship_pos);
+            if dist > detect_range {
+                continue;
+            }
+
+            // Skip if existing knowledge is at least as fresh.
+            if store
+                .get_ship(ship_entity)
+                .is_some_and(|existing| existing.observed_at >= observed_at)
+            {
+                continue;
+            }
+
+            let (snapshot_state, last_system) = match state {
+                crate::ship::ShipState::Docked { system } => {
+                    (ShipSnapshotState::Docked, Some(*system))
+                }
+                crate::ship::ShipState::SubLight { target_system, .. } => {
+                    (ShipSnapshotState::InTransit, *target_system)
+                }
+                crate::ship::ShipState::InFTL {
+                    destination_system, ..
+                } => (ShipSnapshotState::InTransit, Some(*destination_system)),
+                crate::ship::ShipState::Surveying { target_system, .. } => {
+                    (ShipSnapshotState::Surveying, Some(*target_system))
+                }
+                crate::ship::ShipState::Settling { system, .. } => {
+                    (ShipSnapshotState::Settling, Some(*system))
+                }
+                crate::ship::ShipState::Refitting { system, .. } => {
+                    (ShipSnapshotState::Refitting, Some(*system))
+                }
+            };
+
+            store.update_ship(ShipSnapshot {
+                entity: ship_entity,
+                name: ship.name.clone(),
+                design_id: ship.design_id.clone(),
+                last_known_state: snapshot_state,
+                last_known_system: last_system,
+                observed_at,
+                hp: hp.hull,
+                hp_max: hp.hull_max,
+            });
+        }
     }
 }
 
