@@ -9,6 +9,7 @@ pub mod combat;
 pub mod movement;
 pub mod command;
 pub mod courier_route;
+pub mod pursuit;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -20,6 +21,7 @@ pub use combat::*;
 pub use movement::*;
 pub use command::*;
 pub use courier_route::*;
+pub use pursuit::*;
 
 use bevy::prelude::*;
 
@@ -108,6 +110,12 @@ impl Plugin for ShipPlugin {
                 .before(process_command_queue)
                 .after(sublight_movement_system)
                 .after(process_ftl_travel),
+            // #186 Phase 1: Aggressive ROE detection of hostile deep-space
+            // contacts. Runs after movement so ship positions are current.
+            pursuit::detect_hostiles_system
+                .after(sublight_movement_system)
+                .after(process_ftl_travel)
+                .after(process_command_queue),
         ).after(crate::time_system::advance_game_time)
          .before(crate::colony::advance_production_tick));
         // #128: Poll route tasks after Commands from process_command_queue are flushed.
