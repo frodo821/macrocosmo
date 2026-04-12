@@ -2,6 +2,7 @@ pub mod effects;
 mod parsing;
 mod research;
 mod tree;
+pub mod unlocks;
 
 use bevy::prelude::*;
 use std::collections::HashSet;
@@ -24,6 +25,7 @@ pub use tree::{
     default_tech_branches, TechBranchDefinition, TechBranchRegistry, TechCost, TechId, TechTree,
     Technology,
 };
+pub use unlocks::{build_tech_unlock_index, TechUnlockIndex, UnlockEntry, UnlockKind};
 
 pub struct TechnologyPlugin;
 
@@ -41,8 +43,17 @@ impl Plugin for TechnologyPlugin {
                     .after(load_tech_branches)
                     .after(crate::player::spawn_player_empire),
             )
+            .add_systems(
+                Startup,
+                build_tech_unlock_index
+                    .after(load_technologies)
+                    .after(crate::ship_design::load_ship_designs)
+                    .after(crate::colony::load_building_registry)
+                    .after(crate::deep_space::load_structure_definitions),
+            )
         .insert_resource(LastResearchTick(0))
         .init_resource::<TechEffectsLog>()
+        .init_resource::<TechUnlockIndex>()
         .add_systems(
             Update,
             (emit_research, receive_research, tick_research, flush_research)
