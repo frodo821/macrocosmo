@@ -23,6 +23,8 @@ pub mod feasibility;
 pub mod ids;
 pub mod nash;
 pub mod objective;
+pub mod precondition;
+pub mod precondition_cache;
 pub mod projection;
 pub mod retention;
 pub mod spec;
@@ -36,6 +38,11 @@ pub mod mock;
 pub use bus::AiBus;
 pub use condition::{CompareOp, Condition, ConditionAtom};
 pub use eval::EvalContext;
+pub use precondition::{
+    precond, severity, PreconditionEvalResult, PreconditionHistory, PreconditionItem,
+    PreconditionSet, PreconditionSummary, PreconditionTracker,
+};
+pub use precondition_cache::{CacheStats, PreconditionCacheRegistry};
 pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
 pub use command::{Command, CommandParams, CommandValue};
