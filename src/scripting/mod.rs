@@ -36,7 +36,13 @@ impl Plugin for ScriptingPlugin {
             )
             .add_systems(
                 Startup,
-                load_faction_registry.after(load_all_scripts),
+                load_faction_type_registry.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                load_faction_registry
+                    .after(load_all_scripts)
+                    .after(load_faction_type_registry),
             )
             .add_systems(
                 Startup,
@@ -104,6 +110,28 @@ pub fn load_all_scripts(engine: Res<ScriptEngine>) {
             if let Err(e) = engine.load_directory(&path) {
                 warn!("Failed to load scripts from {}: {e}", path.display());
             }
+        }
+    }
+}
+
+/// Startup system that parses Lua faction-type definitions into
+/// `FactionTypeRegistry`. Scheduled before `load_faction_registry` so the
+/// resource exists by the time anything that needs to resolve a faction's
+/// `faction_type` runs.
+pub fn load_faction_type_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+    match faction_api::parse_faction_type_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            let mut registry = faction_api::FactionTypeRegistry::default();
+            for def in defs {
+                registry.types.insert(def.id.clone(), def);
+            }
+            commands.insert_resource(registry);
+            info!("Loaded {} faction type definitions from Lua", count);
+        }
+        Err(e) => {
+            warn!("Failed to parse faction type definitions: {e}");
+            commands.insert_resource(faction_api::FactionTypeRegistry::default());
         }
     }
 }

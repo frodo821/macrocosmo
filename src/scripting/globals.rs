@@ -68,6 +68,7 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     // --- Faction definition ---
 
     register_define_fn(lua, "faction", "_faction_definitions")?;
+    register_define_fn(lua, "faction_type", "_faction_type_definitions")?;
 
     // --- #45: Global param / flag Lua bindings ---
 
