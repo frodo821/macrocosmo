@@ -7,6 +7,7 @@ pub mod engine;
 pub mod event_api;
 pub mod faction_api;
 pub mod galaxy_api;
+pub mod game_start_ctx;
 pub mod globals;
 pub mod helpers;
 pub mod lifecycle;
@@ -104,7 +105,7 @@ pub fn load_all_scripts(engine: Res<ScriptEngine>) {
 }
 
 /// Startup system that parses Lua faction definitions into FactionRegistry.
-fn load_faction_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+pub fn load_faction_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
     match faction_api::parse_faction_definitions(engine.lua()) {
         Ok(defs) => {
             let count = defs.len();
