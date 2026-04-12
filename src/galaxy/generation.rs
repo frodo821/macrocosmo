@@ -1,11 +1,15 @@
 use bevy::prelude::*;
 use rand::Rng;
+use std::sync::Arc;
 
 use crate::components::Position;
 use crate::scripting::galaxy_api::{PlanetTypeDefinition, PlanetTypeRegistry, StarTypeDefinition, StarTypeRegistry};
 use crate::scripting::galaxy_gen_ctx::{
     self, ChooseCapitalsCtx, GalaxyGenerateCtx, GenerationSettings, InitializeSystemActions,
     InitializeSystemCtx, PlanetAttrsOverride, SystemSnapshot,
+};
+use crate::scripting::map_api::{
+    lookup_map_type_generator, MapTypeRegistry, PredefinedPlanetSpec, PredefinedSystemRegistry,
 };
 use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
@@ -31,10 +35,17 @@ pub(crate) struct GalaxyParams {
 }
 
 /// An empty star system produced by Phase A (position + star type, no planets yet).
+///
+/// `predefined_planets` and `capital_for_faction` are filled only when Phase A
+/// spawned this system via `ctx:spawn_predefined_system` (#182). They flow
+/// through Phase B (capital hint) and Phase C (planet list replaces the
+/// default Poisson roll).
 pub(crate) struct EmptySystem {
     pub name: String,
     pub position: [f64; 3],
     pub star_type_idx: usize,
+    pub predefined_planets: Vec<PredefinedPlanetSpec>,
+    pub capital_for_faction: Option<String>,
 }
 
 /// Capital assignments produced by Phase B.
@@ -323,6 +334,8 @@ pub(crate) fn default_generate_empty_systems(
                 name,
                 position,
                 star_type_idx,
+                predefined_planets: Vec::new(),
+                capital_for_faction: None,
             }
         })
         .collect()
@@ -336,6 +349,16 @@ pub(crate) fn default_generate_empty_systems(
 pub(crate) fn default_choose_faction_capitals(
     systems: &mut Vec<EmptySystem>,
 ) -> CapitalAssignments {
+    // #182: if Phase A tagged any system with `capital_for_faction` (via a
+    // predefined system definition), pick the first such system as capital.
+    if let Some(idx) = systems
+        .iter()
+        .position(|s| s.capital_for_faction.is_some())
+    {
+        systems.swap(0, idx);
+        return CapitalAssignments { capital_idx: 0 };
+    }
+
     let target_capital_radius = 20.0_f64;
     let capital_idx = systems
         .iter()
@@ -408,14 +431,26 @@ pub(crate) fn initialize_systems(
     }
 
     // Generate planet data: Vec of (planet_type_idx, attributes) per system.
-    // If a Lua `on_initialize_system` hook provided override planets for a
-    // system, those replace the default-generated set.
+    // Priority (highest first):
+    //   1. `on_initialize_system` hook override (if override_planets = true)
+    //   2. predefined-system planets (when Phase A used spawn_predefined_system)
+    //   3. default Poisson-roll generation
     let mut all_planets: Vec<Vec<PlanetData>> = Vec::with_capacity(actual_count);
     for (i, sys) in systems.iter().enumerate() {
-        // Respect hook override (if provided).
+        // 1. Hook override wins.
         if overrides.get(i).map(|o| o.override_planets).unwrap_or(false) {
             let resolved = resolve_pending_planets(
                 &overrides[i].pending_planets,
+                planet_types,
+                &star_types[sys.star_type_idx],
+            );
+            all_planets.push(resolved);
+            continue;
+        }
+        // 2. Predefined planets (from spawn_predefined_system).
+        if !sys.predefined_planets.is_empty() {
+            let resolved = resolve_predefined_planets(
+                &sys.predefined_planets,
                 planet_types,
                 &star_types[sys.star_type_idx],
             );
@@ -646,6 +681,8 @@ pub fn generate_galaxy(
     star_registry: Res<StarTypeRegistry>,
     planet_registry: Res<PlanetTypeRegistry>,
     engine: Option<Res<ScriptEngine>>,
+    predefined_registry: Option<Res<PredefinedSystemRegistry>>,
+    map_type_registry: Option<Res<MapTypeRegistry>>,
 ) {
     let mut rng = rand::rng();
     let params = GalaxyParams {
@@ -675,9 +712,26 @@ pub fn generate_galaxy(
 
     let lua = engine.as_deref().map(|e| e.lua());
 
+    // #182: snapshot registries for Lua ctx use.
+    let predefined_arc: Option<Arc<PredefinedSystemRegistry>> = predefined_registry
+        .as_deref()
+        .map(|r| Arc::new(clone_predefined_registry(r)));
+    let active_map_type: Option<String> = map_type_registry
+        .as_deref()
+        .and_then(|r| r.current.clone());
+
     // Phase A: Generate empty star systems (positions + star types only).
-    // Honors `on_galaxy_generate_empty` if registered.
-    let mut systems = run_phase_a(lua, &mut rng, &params, &star_types, &star_weights);
+    // Precedence: active map_type.generator → on_galaxy_generate_empty hook
+    // → default spiral.
+    let mut systems = run_phase_a(
+        lua,
+        &mut rng,
+        &params,
+        &star_types,
+        &star_weights,
+        predefined_arc.clone(),
+        active_map_type.as_deref(),
+    );
 
     // Phase B: Choose faction capitals. Honors `on_choose_capitals` if registered.
     let capitals = run_phase_b(lua, &mut systems, &star_types);
@@ -714,15 +768,41 @@ fn run_phase_a(
     params: &GalaxyParams,
     star_types: &[StarTypeDefinition],
     star_weights: &[f64],
+    predefined: Option<Arc<PredefinedSystemRegistry>>,
+    active_map_type: Option<&str>,
 ) -> Vec<EmptySystem> {
     let Some(lua) = lua else {
         return default_generate_empty_systems(rng, params, star_weights);
     };
-    let Some(func) =
+
+    // #182: active map_type.generator wins over `on_galaxy_generate_empty`.
+    let func = if let Some(map_id) = active_map_type {
+        match lookup_map_type_generator(lua, map_id) {
+            Ok(Some(f)) => Some(f),
+            Ok(None) => {
+                warn!(
+                    "active map_type '{}' has no generator; falling back to on_galaxy_generate_empty / default",
+                    map_id
+                );
+                galaxy_gen_ctx::last_registered_hook(
+                    lua,
+                    galaxy_gen_ctx::GENERATE_EMPTY_HANDLERS,
+                )
+                .ok()
+                .flatten()
+            }
+            Err(e) => {
+                warn!("map_type lookup error: {e}; falling back to default");
+                None
+            }
+        }
+    } else {
         galaxy_gen_ctx::last_registered_hook(lua, galaxy_gen_ctx::GENERATE_EMPTY_HANDLERS)
             .ok()
             .flatten()
-    else {
+    };
+
+    let Some(func) = func else {
         return default_generate_empty_systems(rng, params, star_weights);
     };
 
@@ -735,14 +815,17 @@ fn run_phase_a(
         min_distance: params.min_distance,
         max_neighbor_distance: params.max_neighbor_distance,
     };
-    let ctx = GalaxyGenerateCtx::new(settings);
+    let mut ctx = GalaxyGenerateCtx::new(settings);
+    if let Some(reg) = predefined {
+        ctx = ctx.with_predefined(reg);
+    }
     if let Err(e) = func.call::<()>(ctx.clone()) {
-        warn!("on_galaxy_generate_empty hook error: {e}; falling back to default");
+        warn!("Phase A hook error: {e}; falling back to default");
         return default_generate_empty_systems(rng, params, star_weights);
     }
     let actions = ctx.take_actions();
     if actions.spawned_systems.is_empty() {
-        warn!("on_galaxy_generate_empty produced no systems; falling back to default");
+        warn!("Phase A hook produced no systems; falling back to default");
         return default_generate_empty_systems(rng, params, star_weights);
     }
 
@@ -759,6 +842,8 @@ fn run_phase_a(
             name: spec.name,
             position: spec.position,
             star_type_idx: idx,
+            predefined_planets: spec.planets.planets,
+            capital_for_faction: spec.capital_for_faction,
         });
     }
     out
@@ -798,6 +883,7 @@ fn run_phase_b(
                 .get(s.star_type_idx)
                 .map(|st| st.id.clone())
                 .unwrap_or_default(),
+            capital_for_faction: s.capital_for_faction.clone(),
         })
         .collect();
     // TODO(#182): expose defined faction ids via FactionRegistry once that
@@ -905,6 +991,52 @@ pub(crate) struct PendingPlanet {
     pub name: String,
     pub type_id: String,
     pub attrs: PlanetAttrsOverride,
+}
+
+/// #182: deep-copy the PredefinedSystemRegistry so it can be wrapped in an
+/// `Arc` for Lua ctx sharing without holding a Bevy resource borrow.
+fn clone_predefined_registry(src: &PredefinedSystemRegistry) -> PredefinedSystemRegistry {
+    PredefinedSystemRegistry {
+        systems: src.systems.clone(),
+    }
+}
+
+/// #182: resolve a predefined system's planet list into `PlanetData`. Same
+/// shape as `resolve_pending_planets` but consumes the richer
+/// `PredefinedPlanetSpec` (which carries the same optional attr fields under
+/// a different struct).
+fn resolve_predefined_planets(
+    predefined: &[PredefinedPlanetSpec],
+    planet_types: &[PlanetTypeDefinition],
+    star: &StarTypeDefinition,
+) -> Vec<PlanetData> {
+    let mut out = Vec::with_capacity(predefined.len());
+    for p in predefined {
+        let Some(type_idx) = planet_types.iter().position(|pt| pt.id == p.planet_type_id) else {
+            warn!(
+                "predefined_system: unknown planet_type '{}' for planet '{}' — skipping",
+                p.planet_type_id, p.name
+            );
+            continue;
+        };
+        let pt = &planet_types[type_idx];
+        let attrs = SystemAttributes {
+            habitability: p
+                .attrs
+                .habitability
+                .unwrap_or((pt.base_habitability + star.habitability_bonus).clamp(0.0, 1.0)),
+            mineral_richness: p.attrs.mineral_richness.unwrap_or(0.0),
+            energy_potential: p.attrs.energy_potential.unwrap_or(0.0),
+            research_potential: p.attrs.research_potential.unwrap_or(0.0),
+            max_building_slots: p.attrs.max_building_slots.unwrap_or(pt.base_slots as u8),
+        };
+        out.push(PlanetData {
+            type_idx,
+            attrs,
+            name_override: Some(p.name.clone()),
+        });
+    }
+    out
 }
 
 /// Resolve a list of `PendingPlanet` (from a Lua hook) into `PlanetData`

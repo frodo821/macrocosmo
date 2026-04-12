@@ -41,6 +41,21 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "star_type", "_star_type_definitions")?;
     register_define_fn(lua, "planet_type", "_planet_type_definitions")?;
 
+    // --- #182: Predefined systems + map types ---
+    register_define_fn(lua, "predefined_system", "_predefined_system_definitions")?;
+    register_define_fn(lua, "map_type", "_map_type_definitions")?;
+
+    // set_active_map_type(id_or_ref) — selects which map_type the engine uses
+    // when generate_galaxy runs. Accepts a string id or a `define_map_type`
+    // reference table. Writes to the global `_active_map_type`, consumed by
+    // `MapTypeRegistry` at the Rust side.
+    let set_active_map_type = lua.create_function(|lua, value: mlua::Value| {
+        let id = extract_id_from_lua_value(&value)?;
+        lua.globals().set("_active_map_type", id)?;
+        Ok(())
+    })?;
+    globals.set("set_active_map_type", set_active_map_type)?;
+
     // --- Species and job definition Lua bindings ---
 
     register_define_fn(lua, "species", "_species_definitions")?;

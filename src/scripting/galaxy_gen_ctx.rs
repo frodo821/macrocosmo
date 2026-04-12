@@ -16,17 +16,35 @@
 use std::sync::{Arc, Mutex};
 
 use super::helpers::extract_id_from_lua_value;
+use super::map_api::{PredefinedPlanetSpec, PredefinedSystemRegistry};
 
 /// A `[f64; 3]` position recorded by `ctx:spawn_empty_system`.
 pub type PositionF64 = [f64; 3];
 
+/// Planets that should be spawned for a system produced by this callback.
+/// Populated only by `ctx:spawn_predefined_system` — plain
+/// `ctx:spawn_empty_system` leaves it empty (default planet generation runs
+/// in Phase C).
+#[derive(Clone, Debug, Default)]
+pub struct PredefinedPlanetsForSpawn {
+    pub planets: Vec<PredefinedPlanetSpec>,
+}
+
 /// A record produced by Lua `ctx:spawn_empty_system(name, position, star_type)`
-/// (Phase A).
+/// (Phase A), or by `ctx:spawn_predefined_system(id)` (which expands to the
+/// same record plus a carried planet list + capital hint).
 #[derive(Clone, Debug)]
 pub struct SpawnedEmptySystemSpec {
     pub name: String,
     pub position: PositionF64,
     pub star_type: String,
+    /// Set when this spawn came from `spawn_predefined_system`; the generation
+    /// pipeline uses this in Phase C to skip the default planet roll.
+    pub planets: PredefinedPlanetsForSpawn,
+    /// Set when this spawn came from `spawn_predefined_system` and the
+    /// predefined definition had `capital_for_faction = "..."`. Used as a
+    /// hint by the Phase B fallback / Lua `ctx:assign_predefined_capitals`.
+    pub capital_for_faction: Option<String>,
 }
 
 /// Immutable snapshot of a galaxy-generation parameter set, exposed to Lua as
@@ -59,6 +77,10 @@ pub struct GalaxyGenerateActions {
 pub struct GalaxyGenerateCtx {
     pub settings: GenerationSettings,
     pub actions: Arc<Mutex<GalaxyGenerateActions>>,
+    /// Optional snapshot of the predefined-system registry, used by
+    /// `spawn_predefined_system`. Captured at ctx creation so Phase A can
+    /// run without having to thread the Bevy World into Lua.
+    pub predefined: Option<Arc<PredefinedSystemRegistry>>,
 }
 
 impl GalaxyGenerateCtx {
@@ -66,7 +88,13 @@ impl GalaxyGenerateCtx {
         Self {
             settings,
             actions: Arc::new(Mutex::new(GalaxyGenerateActions::default())),
+            predefined: None,
         }
+    }
+
+    pub fn with_predefined(mut self, registry: Arc<PredefinedSystemRegistry>) -> Self {
+        self.predefined = Some(registry);
+        self
     }
 
     pub fn take_actions(&self) -> GalaxyGenerateActions {
@@ -115,6 +143,67 @@ impl mlua::UserData for GalaxyGenerateCtx {
                     name,
                     position: pos,
                     star_type: star_type_id,
+                    planets: PredefinedPlanetsForSpawn::default(),
+                    capital_for_faction: None,
+                });
+                Ok(())
+            },
+        );
+
+        // ctx:spawn_predefined_system(id_or_ref [, { position = {x,y,z} }])
+        //
+        // Expands a `define_predefined_system` block to a full spawn:
+        //   - name, star_type, capital_for_faction come from the definition
+        //   - position defaults to the definition's, can be overridden by the
+        //     optional 2nd-arg table (useful when a generator wants to place
+        //     the predefined system at a scripted location)
+        //   - planets are carried verbatim into Phase C
+        //
+        // Errors if no PredefinedSystemRegistry was attached or the id is
+        // unknown — generators are expected to opt into predefined systems
+        // intentionally, not silently.
+        methods.add_method(
+            "spawn_predefined_system",
+            |_,
+             this,
+             (id_value, overrides): (mlua::Value, Option<mlua::Table>)| {
+                let id = extract_id_from_lua_value(&id_value)?;
+                let registry = this.predefined.as_ref().ok_or_else(|| {
+                    mlua::Error::RuntimeError(
+                        "spawn_predefined_system called but no PredefinedSystemRegistry is available"
+                            .into(),
+                    )
+                })?;
+                let def = registry.systems.get(&id).ok_or_else(|| {
+                    mlua::Error::RuntimeError(format!(
+                        "spawn_predefined_system: unknown predefined system '{}'",
+                        id
+                    ))
+                })?;
+
+                // Position: override if supplied, else the definition's.
+                let position = if let Some(ref t) = overrides {
+                    match t.get::<mlua::Value>("position")? {
+                        mlua::Value::Table(pt) => parse_position(&pt)?,
+                        _ => def.position,
+                    }
+                } else {
+                    def.position
+                };
+                let name = overrides
+                    .as_ref()
+                    .and_then(|t| t.get::<Option<String>>("name").ok().flatten())
+                    .unwrap_or_else(|| def.name.clone());
+
+                let mut actions = this.actions.lock().unwrap();
+                actions.spawned_systems.push(SpawnedEmptySystemSpec {
+                    name,
+                    position,
+                    star_type: def.star_type_id.clone(),
+                    planets: PredefinedPlanetsForSpawn {
+                        planets: def.planets.clone(),
+                    },
+                    capital_for_faction: def.capital_for_faction.clone(),
                 });
                 Ok(())
             },
@@ -144,6 +233,11 @@ pub struct SystemSnapshot {
     pub name: String,
     pub position: PositionF64,
     pub star_type: String,
+    /// If this system was spawned via `spawn_predefined_system` AND the
+    /// predefined definition carried `capital_for_faction = "..."`, this
+    /// field forwards that hint into Phase B. Consumed by
+    /// `ctx:assign_predefined_capitals()` and by the default Phase B fallback.
+    pub capital_for_faction: Option<String>,
 }
 
 /// UserData handed to `on_choose_capitals(ctx)`.
@@ -198,6 +292,9 @@ impl mlua::UserData for ChooseCapitalsCtx {
                 pos.set("z", sys.position[2])?;
                 entry.set("position", pos)?;
                 entry.set("index", (i + 1) as i64)?;
+                if let Some(faction) = &sys.capital_for_faction {
+                    entry.set("capital_for_faction", faction.as_str())?;
+                }
                 arr.set(i + 1, entry)?;
             }
             Ok(arr)
@@ -205,6 +302,29 @@ impl mlua::UserData for ChooseCapitalsCtx {
     }
 
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        // ctx:assign_predefined_capitals() — walks every system in the Phase B
+        // snapshot list; whenever one has a `capital_for_faction` hint (set by
+        // `spawn_predefined_system`), records a matching assignment. Returns
+        // the number of capitals assigned.
+        //
+        // Common usage in `on_choose_capitals`:
+        //     ctx:assign_predefined_capitals()
+        //     -- then do fallback logic for factions that had no predefined capital
+        methods.add_method("assign_predefined_capitals", |_, this, ()| {
+            let mut actions = this.actions.lock().unwrap();
+            let mut count = 0_i64;
+            for (i, sys) in this.systems.iter().enumerate() {
+                if let Some(faction) = &sys.capital_for_faction {
+                    actions.assignments.push(CapitalAssignmentSpec {
+                        system_index: i + 1,
+                        faction_id: faction.clone(),
+                    });
+                    count += 1;
+                }
+            }
+            Ok(count)
+        });
+
         // assign_capital(system_index_or_table, faction)
         // Accepts either:
         //   ctx:assign_capital(3, "humanity_empire")
@@ -514,11 +634,13 @@ mod tests {
                 name: "Sol".into(),
                 position: [0.0, 0.0, 0.0],
                 star_type: "yellow_dwarf".into(),
+                capital_for_faction: None,
             },
             SystemSnapshot {
                 name: "Beta".into(),
                 position: [10.0, 0.0, 0.0],
                 star_type: "red_dwarf".into(),
+                capital_for_faction: None,
             },
         ];
         let ctx = ChooseCapitalsCtx::new(systems, vec!["humanity_empire".into()]);
@@ -547,6 +669,7 @@ mod tests {
             name: "Sol".into(),
             position: [0.0, 0.0, 0.0],
             star_type: "yellow_dwarf".into(),
+            capital_for_faction: None,
         }];
         let ctx = ChooseCapitalsCtx::new(systems, vec!["humanity_empire".into()]);
         lua.globals().set("ctx", ctx.clone()).unwrap();
@@ -572,6 +695,7 @@ mod tests {
             name: "Sol".into(),
             position: [1.0, 2.0, 3.0],
             star_type: "yellow_dwarf".into(),
+            capital_for_faction: None,
         }];
         let ctx = ChooseCapitalsCtx::new(systems, vec!["humanity".into(), "xeno".into()]);
         lua.globals().set("ctx", ctx.clone()).unwrap();
