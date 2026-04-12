@@ -3505,6 +3505,7 @@ version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "macrocosmo-ai",
  "mlua",
  "rand",
 ]

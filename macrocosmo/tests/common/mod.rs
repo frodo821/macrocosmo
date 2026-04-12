@@ -214,6 +214,10 @@ pub fn test_app() -> App {
     app.add_plugins(MinimalPlugins);
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
+    // GameClock is inserted above so AiPlugin's Startup schema::declare_all
+    // (which does not yet use GameClock, but AiBusWriter SystemParams rely
+    // on it at runtime) always observes the test clock.
+    app.add_plugins(macrocosmo::ai::AiPlugin);
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
@@ -370,6 +374,11 @@ pub fn full_test_app() -> App {
     // --- Core resources ---
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
+    // AI integration plugin (#203) — AiBusResource + ordered AiTickSet sets.
+    // Added here after GameClock is inserted so AiBusWriter SystemParams can
+    // read it, and so `full_test_app` can detect Query conflicts (B0001)
+    // introduced by AI systems at CI time.
+    app.add_plugins(macrocosmo::ai::AiPlugin);
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
