@@ -245,6 +245,8 @@ pub fn draw_system_panel(
                                         sel_entity,
                                         selected_ship,
                                         &docked_ships,
+                                        hull_registry,
+                                        module_registry,
                                         design_registry,
                                         system_buildings_q,
                                         construction_params,
@@ -439,6 +441,8 @@ fn draw_right_panel(
     sel_entity: Entity,
     selected_ship: &mut SelectedShip,
     docked_ships: &[(Entity, String, String)],
+    hull_registry: &crate::ship_design::HullRegistry,
+    module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
     system_buildings_q: &mut Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>,
     construction_params: &ConstructionParams,
@@ -649,6 +653,181 @@ fn draw_right_panel(
                             build_time_remaining: eff_time,
                         });
                         info!("System building order added: {} in slot {}", bid, slot_idx);
+                    }
+                }
+            }
+        }
+    }
+
+    // === #134: Ship Build Queue + Build Ship (system-level) ===
+    {
+        // Determine shipyard availability via capability check on system buildings.
+        let has_shipyard = system_buildings_q
+            .get(sel_entity)
+            .ok()
+            .and_then(|(sb, _)| sb.map(|sb| sb.has_shipyard(building_registry)))
+            .unwrap_or(false);
+
+        // Collect colonies in this system along with a snapshot of their build queues.
+        // Also remember the first colony entity, which we will use as the host for
+        // newly enqueued ship orders (BuildQueue is per-colony but ship construction
+        // is gated by system-level shipyard).
+        let mut host_colony: Option<Entity> = None;
+        let mut queue_snapshots: Vec<(String, Amt, Amt, Amt, Amt, i64, i64)> = Vec::new();
+        for (colony_entity, colony, _prod, build_queue, _b, _bq, _m, _f) in colonies.iter() {
+            if colony.system(planets) != Some(sel_entity) {
+                continue;
+            }
+            if host_colony.is_none() {
+                host_colony = Some(colony_entity);
+            }
+            if let Some(bq) = build_queue {
+                for order in &bq.queue {
+                    queue_snapshots.push((
+                        order.display_name.clone(),
+                        order.minerals_invested,
+                        order.minerals_cost,
+                        order.energy_invested,
+                        order.energy_cost,
+                        order.build_time_remaining,
+                        order.build_time_total,
+                    ));
+                }
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new("Ship Construction")
+                .strong()
+                .color(egui::Color32::from_rgb(180, 180, 220)),
+        );
+        ui.separator();
+
+        if host_colony.is_none() {
+            ui.label(
+                egui::RichText::new("(No colony in this system)")
+                    .weak()
+                    .italics(),
+            );
+        } else if !has_shipyard {
+            ui.label(
+                egui::RichText::new("Shipyard required to build ships")
+                    .color(egui::Color32::from_rgb(220, 160, 100)),
+            );
+        }
+
+        // --- Build Queue (combined across colonies in this system) ---
+        ui.label(egui::RichText::new("Build Queue").strong());
+        if queue_snapshots.is_empty() {
+            ui.label("[empty]");
+        } else {
+            for (name, m_inv, m_cost, e_inv, e_cost, time_rem, time_total) in &queue_snapshots {
+                let m_pct = if m_cost.raw() > 0 {
+                    (m_inv.raw() as f32 / m_cost.raw() as f32).min(1.0)
+                } else {
+                    1.0
+                };
+                let e_pct = if e_cost.raw() > 0 {
+                    (e_inv.raw() as f32 / e_cost.raw() as f32).min(1.0)
+                } else {
+                    1.0
+                };
+                let time_pct = if *time_total > 0 {
+                    ((*time_total - *time_rem) as f32 / *time_total as f32).min(1.0)
+                } else {
+                    1.0
+                };
+                let pct = m_pct.min(e_pct).min(time_pct);
+                ui.horizontal(|ui| {
+                    ui.label(name);
+                    let bar = egui::ProgressBar::new(pct).desired_width(100.0);
+                    ui.add(bar);
+                    if m_pct < 1.0 || e_pct < 1.0 {
+                        ui.label(egui::RichText::new("(awaiting resources)").weak().small());
+                    } else if time_pct < 1.0 {
+                        ui.label(egui::RichText::new(format!("{} hd", time_rem)).weak().small());
+                    }
+                });
+            }
+        }
+
+        // --- Build buttons (only if a shipyard is present and a host colony exists) ---
+        if has_shipyard {
+            if let Some(host) = host_colony {
+                let ship_mod = construction_params.ship_cost_modifier.final_value();
+                let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
+                let mut build_request: Option<(String, String, Amt, Amt, i64)> = None;
+
+                let design_ids = design_registry.all_design_ids();
+                if !design_ids.is_empty() {
+                    ui.label(egui::RichText::new("Build Ship").strong());
+                    egui::ScrollArea::horizontal().show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for design_id in &design_ids {
+                                let design = &design_registry.designs[design_id];
+                                let hull = hull_registry.get(&design.hull_id);
+                                let (base_m, base_e, base_time) = if let Some(hull) = hull {
+                                    let mods: Vec<_> = design
+                                        .modules
+                                        .iter()
+                                        .filter_map(|a| module_registry.get(&a.module_id))
+                                        .collect();
+                                    let (m, e, t, _maint) =
+                                        crate::ship_design::design_cost(hull, &mods);
+                                    (m, e, t)
+                                } else {
+                                    (
+                                        design.build_cost_minerals,
+                                        design.build_cost_energy,
+                                        design.build_time,
+                                    )
+                                };
+                                let eff_m = base_m.mul_amt(ship_mod);
+                                let eff_e = base_e.mul_amt(ship_mod);
+                                let eff_time =
+                                    (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
+                                let tooltip =
+                                    format!("M:{} E:{} | {} hd", eff_m, eff_e, eff_time);
+                                if ui.button(&design.name).on_hover_text(tooltip).clicked() {
+                                    build_request = Some((
+                                        design_id.clone(),
+                                        design.name.clone(),
+                                        eff_m,
+                                        eff_e,
+                                        eff_time,
+                                    ));
+                                }
+                            }
+                        });
+                    });
+                }
+
+                if let Some((design_id, display_name, minerals_cost, energy_cost, build_time)) =
+                    build_request
+                {
+                    // Re-query mutably to push the order onto the host colony's BuildQueue.
+                    let display_name_log = display_name.clone();
+                    for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
+                        colonies.iter_mut()
+                    {
+                        if colony_entity != host {
+                            continue;
+                        }
+                        if let Some(bq) = build_queue.as_mut() {
+                            bq.queue.push(BuildOrder {
+                                design_id: design_id.clone(),
+                                display_name: display_name.clone(),
+                                minerals_cost,
+                                minerals_invested: Amt::ZERO,
+                                energy_cost,
+                                energy_invested: Amt::ZERO,
+                                build_time_total: build_time,
+                                build_time_remaining: build_time,
+                            });
+                            info!("Build order added: {}", display_name_log);
+                        }
+                        break;
                     }
                 }
             }
@@ -960,4 +1139,25 @@ fn format_star_type(type_id: &str) -> String {
 /// Format a planet_type id into a display name.
 fn format_planet_type(planet_type: &str) -> String {
     format_star_type(planet_type)
+}
+
+/// #134: Determine whether the given system can build ships from the system panel.
+/// Returns the colony entity that should host any new ship build orders, or None
+/// when the system cannot build ships (no shipyard or no colony in the system).
+///
+/// This mirrors the logic used by the right-pane Build Ship UI and is exposed so
+/// regression tests can verify it without needing an egui context.
+pub fn ship_build_host_colony(
+    system_entity: Entity,
+    system_buildings: &SystemBuildings,
+    building_registry: &BuildingRegistry,
+    colonies: &[(Entity, Entity)], // (colony_entity, system_entity) pairs
+) -> Option<Entity> {
+    if !system_buildings.has_shipyard(building_registry) {
+        return None;
+    }
+    colonies
+        .iter()
+        .find(|(_, sys)| *sys == system_entity)
+        .map(|(colony, _)| *colony)
 }
