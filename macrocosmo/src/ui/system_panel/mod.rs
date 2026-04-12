@@ -189,6 +189,7 @@ pub fn draw_system_panel(
                         .rounding(4.0)
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
+                                .id_salt("system_panel_left")
                                 .max_height(available_height - 8.0)
                                 .show(ui, |ui| {
                                     draw_left_panel(
@@ -238,6 +239,7 @@ pub fn draw_system_panel(
                         .rounding(4.0)
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
+                                .id_salt("system_panel_right")
                                 .max_height(available_height - 8.0)
                                 .show(ui, |ui| {
                                     draw_right_panel(
@@ -763,7 +765,9 @@ fn draw_right_panel(
                 let design_ids = design_registry.all_design_ids();
                 if !design_ids.is_empty() {
                     ui.label(egui::RichText::new("Build Ship").strong());
-                    egui::ScrollArea::horizontal().show(ui, |ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("system_panel_build_ship")
+                        .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             for design_id in &design_ids {
                                 let design = &design_registry.designs[design_id];

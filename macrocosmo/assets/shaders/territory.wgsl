@@ -65,7 +65,6 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let ratio = second_max / max_auth;
     let border = 1.0 - smoothstep(0.6, 0.95, ratio);
 
-    // 232, 252, 3
-    let color = vec4<f32>(0.9, 0.98, 0.01, 0.6); // empire_colors.colors[owner];
+    let color = vec4<f32>(0.9, 0.98, 0.01, 1.0); // empire_colors.colors[owner];
     return vec4<f32>(color.rgb * 0.15 * border, 0.12 * border);
 }
