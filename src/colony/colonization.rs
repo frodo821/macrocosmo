@@ -13,7 +13,11 @@ use super::{
     SystemBuildings, SystemBuildingQueue, DEFAULT_SYSTEM_BUILDING_SLOTS,
 };
 
-/// #114: Cost to colonize a new planet from an existing colony in the same system.
+/// #114: Default cost/time to colonize a new planet from an existing colony in the same system.
+///
+/// #160: Canonical values live in `GameBalance` (Lua-defined). These
+/// constants are retained as fallbacks when the `GameBalance` resource
+/// isn't available (e.g. UI display paths, tests).
 pub const COLONIZATION_MINERAL_COST: Amt = Amt::units(300);
 pub const COLONIZATION_ENERGY_COST: Amt = Amt::units(200);
 pub const COLONIZATION_BUILD_TIME: i64 = 90;
@@ -213,20 +217,26 @@ pub fn tick_colonization_queue(
 }
 
 /// #114: Consume PendingColonizationOrder entities and add them to the system's ColonizationQueue.
+///
+/// #160: Uses `GameBalance` for colonization costs and build time.
 pub fn apply_pending_colonization_orders(
     mut commands: Commands,
     pending: Query<(Entity, &PendingColonizationOrder)>,
     mut queues: Query<&mut ColonizationQueue>,
+    balance: Res<crate::technology::GameBalance>,
 ) {
+    let mineral_cost = balance.colonization_mineral_cost();
+    let energy_cost = balance.colonization_energy_cost();
+    let build_time = balance.colonization_build_time();
     for (entity, order) in &pending {
         // Get or create the ColonizationQueue on the system
         if let Ok(mut cq) = queues.get_mut(order.system_entity) {
             cq.orders.push(ColonizationOrder {
                 target_planet: order.target_planet,
                 source_colony: order.source_colony,
-                minerals_remaining: COLONIZATION_MINERAL_COST,
-                energy_remaining: COLONIZATION_ENERGY_COST,
-                build_time_remaining: COLONIZATION_BUILD_TIME,
+                minerals_remaining: mineral_cost,
+                energy_remaining: energy_cost,
+                build_time_remaining: build_time,
                 initial_population: COLONIZATION_POPULATION_TRANSFER,
             });
         } else {
@@ -234,9 +244,9 @@ pub fn apply_pending_colonization_orders(
                 orders: vec![ColonizationOrder {
                     target_planet: order.target_planet,
                     source_colony: order.source_colony,
-                    minerals_remaining: COLONIZATION_MINERAL_COST,
-                    energy_remaining: COLONIZATION_ENERGY_COST,
-                    build_time_remaining: COLONIZATION_BUILD_TIME,
+                    minerals_remaining: mineral_cost,
+                    energy_remaining: energy_cost,
+                    build_time_remaining: build_time,
                     initial_population: COLONIZATION_POPULATION_TRANSFER,
                 }],
             });

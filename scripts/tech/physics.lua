@@ -9,6 +9,10 @@ local sensor_arrays = define_tech {
     description = "Next-generation sensors for deep space observation",
     on_researched = function(scope)
         scope:push_modifier("sensor.range", { add = 2.0, description = "Advanced Sensors: +2 survey range" })
+        -- #160: Demonstrates the scriptable balance pipeline — cuts survey
+        -- duration by 20% via a multiplier on the GameBalance.survey_duration
+        -- ModifiedValue (target "balance.survey_duration").
+        scope:push_modifier("balance.survey_duration", { multiplier = -0.2, description = "Advanced Sensors: Survey time -20%" })
         scope:set_flag("advanced_sensors_unlocked", true, { description = "Enables advanced sensor arrays" })
     end,
 }

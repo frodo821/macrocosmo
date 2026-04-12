@@ -12,7 +12,10 @@ use crate::time_system::GameClock;
 
 use super::{Ship, ShipState};
 
-/// Duration of a colonization/settling operation in hexadies (60 hexadies = 1 year) (#32)
+/// Default duration of a colonization/settling operation in hexadies (60 hexadies = 1 year) (#32).
+///
+/// #160: Canonical value is `GameBalance.settling_duration` (Lua-defined).
+/// Retained as fallback for helpers/tests without ECS access.
 pub const SETTLING_DURATION_HEXADIES: i64 = 60;
 
 /// System that processes ongoing settling operations. When the timer completes,

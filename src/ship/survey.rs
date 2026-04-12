@@ -10,14 +10,17 @@ use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
 use super::{
     Ship, ShipHitpoints, ShipState, CommandQueue, QueuedCommand, SurveyData,
-    INITIAL_FTL_SPEED_C,
 };
 use super::exploration::roll_and_apply_anomaly;
 
-/// Duration of a survey operation in hexadies (30 hexadies = half a year) (#32)
+/// Default duration of a survey operation in hexadies (30 hexadies = half a year) (#32).
+///
+/// #160: Canonical value lives in `GameBalance.survey_duration` (Lua-defined).
+/// This constant is retained as the fallback used by helper-function callers
+/// that don't have access to the `GameBalance` resource (notably tests).
 pub const SURVEY_DURATION_HEXADIES: i64 = 30;
 
-/// Maximum distance in light-years from which a survey can be initiated
+/// Default maximum survey range (LY). Canonical value: `GameBalance.survey_range_ly`.
 pub const SURVEY_RANGE_LY: f64 = 5.0;
 
 /// Attempt to start a survey operation on a target star system.
@@ -31,9 +34,15 @@ pub fn start_survey(
     current_time: i64,
     design_registry: &ShipDesignRegistry,
 ) -> Result<(), &'static str> {
-    start_survey_with_bonus(ship_state, ship, target_system, ship_pos, system_pos, current_time, 0.0, design_registry)
+    start_survey_with_bonus(
+        ship_state, ship, target_system, ship_pos, system_pos, current_time, 0.0,
+        design_registry, SURVEY_RANGE_LY, SURVEY_DURATION_HEXADIES,
+    )
 }
 
+/// #160: `base_range` / `base_duration` are read from `GameBalance` by callers;
+/// fallback constants are `SURVEY_RANGE_LY` / `SURVEY_DURATION_HEXADIES`.
+#[allow(clippy::too_many_arguments)]
 pub fn start_survey_with_bonus(
     ship_state: &mut ShipState,
     ship: &Ship,
@@ -43,6 +52,8 @@ pub fn start_survey_with_bonus(
     current_time: i64,
     survey_range_bonus: f64,
     design_registry: &ShipDesignRegistry,
+    base_range: f64,
+    base_duration: i64,
 ) -> Result<(), &'static str> {
     if !design_registry.can_survey(&ship.design_id) {
         return Err("Only Explorer ships can perform surveys");
@@ -58,7 +69,7 @@ pub fn start_survey_with_bonus(
         return Err("Ship must be docked at the target system to survey it");
     }
 
-    let effective_range = SURVEY_RANGE_LY + survey_range_bonus;
+    let effective_range = base_range + survey_range_bonus;
     let distance = ship_pos.distance_to(system_pos);
     if distance > effective_range {
         return Err("Target system is beyond survey range");
@@ -67,7 +78,7 @@ pub fn start_survey_with_bonus(
     *ship_state = ShipState::Surveying {
         target_system,
         started_at: current_time,
-        completes_at: current_time + SURVEY_DURATION_HEXADIES,
+        completes_at: current_time + base_duration,
     };
 
     Ok(())
@@ -88,9 +99,11 @@ pub fn process_surveys(
     hostiles: Query<&HostilePresence>,
     player_q: Query<&StationedAt, With<Player>>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
+    balance: Res<crate::technology::GameBalance>,
     anomaly_registry: Option<Res<crate::scripting::anomaly_api::AnomalyRegistry>>,
     mut events: MessageWriter<GameEvent>,
 ) {
+    let initial_ftl_speed_c = balance.initial_ftl_speed_c();
     let mut rng = rand::rng();
 
     // Collect player's stationed-at system for auto-return
@@ -124,7 +137,7 @@ pub fn process_surveys(
                 let use_light_speed = player_system_pos.map(|player_pos| {
                     let distance = distance_ly_arr(ship_pos.as_array(), player_pos);
                     let light_delay = light_delay_hexadies(distance);
-                    let effective_ftl_speed = INITIAL_FTL_SPEED_C * ftl_speed_multiplier;
+                    let effective_ftl_speed = initial_ftl_speed_c * ftl_speed_multiplier;
                     let ftl_return_time = (distance * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
                     light_delay <= ftl_return_time
                 }).unwrap_or(false);

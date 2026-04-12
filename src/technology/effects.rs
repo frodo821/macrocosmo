@@ -5,11 +5,13 @@ use mlua::Lua;
 
 use crate::condition::ScopedFlags;
 use crate::effect::DescriptiveEffect;
+use crate::modifier::Modifier;
+use crate::amount::SignedAmt;
 use crate::player::PlayerEmpire;
 use crate::scripting::effect_scope::{collect_effects, EffectScope};
 use crate::scripting::ScriptEngine;
 use crate::technology::tree::TechId;
-use crate::technology::{GameFlags, GlobalParams};
+use crate::technology::{GameBalance, GameFlags, GlobalParams};
 
 use super::research::RecentlyResearched;
 
@@ -189,6 +191,7 @@ pub fn apply_tech_effects(
         ),
         With<PlayerEmpire>,
     >,
+    mut balance: ResMut<GameBalance>,
     mut effects_log: ResMut<TechEffectsLog>,
 ) {
     let Some(engine) = engine else {
@@ -250,6 +253,8 @@ pub fn apply_tech_effects(
                 &mut game_flags,
                 &mut scoped_flags,
                 &mut global_params,
+                &mut balance,
+                &tech_id.0,
             );
         }
 
@@ -283,6 +288,8 @@ fn apply_effect(
     game_flags: &mut GameFlags,
     scoped_flags: &mut ScopedFlags,
     global_params: &mut GlobalParams,
+    balance: &mut GameBalance,
+    source_tech_id: &str,
 ) {
     match effect {
         DescriptiveEffect::PushModifier {
@@ -292,8 +299,28 @@ fn apply_effect(
             add,
             ..
         } => {
-            // Map well-known modifier targets to GlobalParams fields
-            apply_modifier_to_params(global_params, target, *base_add, *multiplier, *add);
+            // #160: Route "balance.*" targets to GameBalance's modifier stack.
+            if let Some(field_name) = target.strip_prefix("balance.") {
+                if let Some(mv) = balance.field_mut(field_name) {
+                    let modifier_id = format!("tech:{}:{}", source_tech_id, target);
+                    mv.push_modifier(Modifier {
+                        id: modifier_id,
+                        label: format!("From tech '{}'", source_tech_id),
+                        base_add: SignedAmt::from_f64(*base_add),
+                        multiplier: SignedAmt::from_f64(*multiplier),
+                        add: SignedAmt::from_f64(*add),
+                        expires_at: None,
+                        on_expire_event: None,
+                    });
+                } else {
+                    warn!(
+                        "Unknown balance target '{target}' from tech '{source_tech_id}'"
+                    );
+                }
+            } else {
+                // Map other well-known modifier targets to GlobalParams fields
+                apply_modifier_to_params(global_params, target, *base_add, *multiplier, *add);
+            }
         }
         DescriptiveEffect::PopModifier { .. } => {
             // PopModifier is for removing temporary modifiers; not applicable at tech level
@@ -315,7 +342,7 @@ fn apply_effect(
             info!("Tech effect requests event fire: {event_id} (not yet wired to EventSystem)");
         }
         DescriptiveEffect::Hidden { inner, .. } => {
-            apply_effect(inner, game_flags, scoped_flags, global_params);
+            apply_effect(inner, game_flags, scoped_flags, global_params, balance, source_tech_id);
         }
     }
 }
@@ -554,6 +581,7 @@ mod tests {
         let mut game_flags = GameFlags::default();
         let mut scoped_flags = ScopedFlags::default();
         let mut global_params = GlobalParams::default();
+        let mut balance = GameBalance::default();
 
         let effect = DescriptiveEffect::SetFlag {
             name: "test_flag".into(),
@@ -561,10 +589,53 @@ mod tests {
             description: None,
         };
 
-        apply_effect(&effect, &mut game_flags, &mut scoped_flags, &mut global_params);
+        apply_effect(&effect, &mut game_flags, &mut scoped_flags, &mut global_params, &mut balance, "test_tech");
 
         assert!(game_flags.check("test_flag"));
         assert!(scoped_flags.check("test_flag"));
+    }
+
+    #[test]
+    fn test_apply_effect_push_modifier_balance_target() {
+        // #160: balance.* targets should route to GameBalance instead of GlobalParams.
+        let mut game_flags = GameFlags::default();
+        let mut scoped_flags = ScopedFlags::default();
+        let mut global_params = GlobalParams::default();
+        let mut balance = GameBalance::default();
+
+        let effect = DescriptiveEffect::PushModifier {
+            target: "balance.survey_duration".into(),
+            base_add: 0.0,
+            multiplier: -0.5, // -50%
+            add: 0.0,
+            description: None,
+        };
+
+        apply_effect(&effect, &mut game_flags, &mut scoped_flags, &mut global_params, &mut balance, "shrink_survey");
+
+        // survey_duration base = 30, mult = 1.0 + (-0.5) = 0.5 → 15
+        assert_eq!(balance.survey_duration(), 15);
+    }
+
+    #[test]
+    fn test_apply_effect_push_modifier_unknown_balance_target_warns() {
+        let mut game_flags = GameFlags::default();
+        let mut scoped_flags = ScopedFlags::default();
+        let mut global_params = GlobalParams::default();
+        let mut balance = GameBalance::default();
+
+        let effect = DescriptiveEffect::PushModifier {
+            target: "balance.nonexistent_field".into(),
+            base_add: 0.0,
+            multiplier: 0.5,
+            add: 0.0,
+            description: None,
+        };
+
+        // Should not panic; logs a warning and leaves balance untouched.
+        apply_effect(&effect, &mut game_flags, &mut scoped_flags, &mut global_params, &mut balance, "buggy_tech");
+
+        assert_eq!(balance.survey_duration(), 30);
     }
 
     #[test]

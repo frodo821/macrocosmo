@@ -6,13 +6,12 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
 use super::movement::{
-    start_ftl_travel_with_bonus, start_sublight_travel_with_bonus, PortParams,
+    start_ftl_travel_full, start_sublight_travel_with_bonus, PortParams,
 };
 use super::survey::start_survey_with_bonus;
-use super::settlement::SETTLING_DURATION_HEXADIES;
 use super::{
     CommandQueue, QueuedCommand, PendingShipCommand, ShipCommand, RulesOfEngagement,
-    Ship, ShipState, INITIAL_FTL_SPEED_C,
+    Ship, ShipState,
 };
 use super::routing;
 
@@ -25,6 +24,7 @@ pub fn process_pending_ship_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    balance: Res<crate::technology::GameBalance>,
     pending: Query<(Entity, &PendingShipCommand)>,
     mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
     mut command_queues: Query<&mut CommandQueue>,
@@ -37,6 +37,10 @@ pub fn process_pending_ship_commands(
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
+    let base_ftl_speed = balance.initial_ftl_speed_c();
+    let settling_duration = balance.settling_duration();
+    let survey_range = balance.survey_range_ly();
+    let survey_duration = balance.survey_duration();
     for (cmd_entity, pending_cmd) in &pending {
         if clock.elapsed < pending_cmd.arrives_at {
             continue;
@@ -90,7 +94,7 @@ pub fn process_pending_ship_commands(
                 let port_params = system_buildings.get(docked_system)
                     .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
                     .unwrap_or(PortParams::NONE);
-                match start_ftl_travel_with_bonus(
+                match start_ftl_travel_full(
                     &mut state,
                     &ship,
                     docked_system,
@@ -101,6 +105,7 @@ pub fn process_pending_ship_commands(
                     global_params.ftl_range_bonus,
                     global_params.ftl_speed_multiplier,
                     port_params,
+                    base_ftl_speed,
                 ) {
                     Ok(()) => {
                         info!(
@@ -132,7 +137,7 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
-                match start_survey_with_bonus(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed, global_params.survey_range_bonus, &design_registry) {
+                match start_survey_with_bonus(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed, global_params.survey_range_bonus, &design_registry, survey_range, survey_duration) {
                     Ok(()) => {
                         info!(
                             "Remote survey command executed: {} surveying {}",
@@ -158,7 +163,7 @@ pub fn process_pending_ship_commands(
                         system: docked_system,
                         planet: None,
                         started_at: clock.elapsed,
-                        completes_at: clock.elapsed + SETTLING_DURATION_HEXADIES,
+                        completes_at: clock.elapsed + settling_duration,
                     };
                     info!(
                         "Remote colonize command executed: {} settling at docked system",
@@ -192,6 +197,7 @@ pub fn process_command_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    balance: Res<crate::technology::GameBalance>,
     // #187: Player empire's KnowledgeStore used for Retreat-route avoidance.
     empire_knowledge_q: Query<&crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position, Option<&RulesOfEngagement>), Without<routing::PendingRoute>>,
@@ -208,6 +214,10 @@ pub fn process_command_queue(
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
+    let base_ftl_speed = balance.initial_ftl_speed_c();
+    let settling_duration = balance.settling_duration();
+    let survey_range_base = balance.survey_range_ly();
+    let survey_duration_base = balance.survey_duration();
     let empire_knowledge = empire_knowledge_q.single().ok();
     // #187: Build the hostile system → hostile faction map once per tick.
     let hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
@@ -287,7 +297,7 @@ pub fn process_command_queue(
                 } else {
                     0.0
                 };
-                let effective_ftl_speed = INITIAL_FTL_SPEED_C * global_params.ftl_speed_multiplier;
+                let effective_ftl_speed = base_ftl_speed * global_params.ftl_speed_multiplier;
                 let effective_sublight_speed = ship.sublight_speed + global_params.sublight_speed_bonus;
 
                 // Spawn async route computation task.
@@ -367,6 +377,8 @@ pub fn process_command_queue(
                             clock.elapsed,
                             global_params.survey_range_bonus,
                             &design_registry,
+                            survey_range_base,
+                            survey_duration_base,
                         ) {
                             Ok(()) => {
                                 info!(
@@ -402,7 +414,7 @@ pub fn process_command_queue(
                             system: docked_sys,
                             planet,
                             started_at: clock.elapsed,
-                            completes_at: clock.elapsed + SETTLING_DURATION_HEXADIES,
+                            completes_at: clock.elapsed + settling_duration,
                         };
                         info!(
                             "Queue: Ship {} colonizing {}",

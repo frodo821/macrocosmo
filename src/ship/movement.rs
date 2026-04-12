@@ -10,10 +10,12 @@ use super::{Ship, ShipState, INITIAL_FTL_SPEED_C};
 
 /// Default port FTL range bonus in light-years (#46).
 /// Used as fallback when BuildingRegistry is unavailable; canonical values live in Lua.
+/// #160: canonical value is `GameBalance.port_ftl_range_bonus`.
 pub const DEFAULT_PORT_FTL_RANGE_BONUS_LY: f64 = 10.0;
 
 /// Default port FTL travel time reduction factor (#46): 20% reduction.
 /// Used as fallback when BuildingRegistry is unavailable; canonical values live in Lua.
+/// #160: canonical value is `GameBalance.port_travel_time_factor`.
 pub const DEFAULT_PORT_TRAVEL_TIME_FACTOR: f64 = 0.8;
 
 // --- Sub-light travel ---
@@ -160,6 +162,29 @@ pub fn start_ftl_travel_with_bonus(
     ftl_speed_multiplier: f64,
     port_params: PortParams,
 ) -> Result<(), &'static str> {
+    start_ftl_travel_full(
+        ship_state, ship, origin_system, destination_system, origin_pos, dest_pos,
+        current_time, ftl_range_bonus, ftl_speed_multiplier, port_params,
+        INITIAL_FTL_SPEED_C,
+    )
+}
+
+/// #160: Full FTL start-travel with an explicit base FTL speed (in units of c).
+/// `base_ftl_speed_c` comes from `GameBalance.initial_ftl_speed_c()`.
+#[allow(clippy::too_many_arguments)]
+pub fn start_ftl_travel_full(
+    ship_state: &mut ShipState,
+    ship: &Ship,
+    origin_system: Entity,
+    destination_system: Entity,
+    origin_pos: &Position,
+    dest_pos: &Position,
+    current_time: i64,
+    ftl_range_bonus: f64,
+    ftl_speed_multiplier: f64,
+    port_params: PortParams,
+    base_ftl_speed_c: f64,
+) -> Result<(), &'static str> {
     if ship.ftl_range <= 0.0 {
         return Err("Ship has no FTL capability");
     }
@@ -170,7 +195,7 @@ pub fn start_ftl_travel_with_bonus(
         return Err("Destination is beyond FTL range");
     }
 
-    let effective_ftl_speed = INITIAL_FTL_SPEED_C * ftl_speed_multiplier;
+    let effective_ftl_speed = base_ftl_speed_c * ftl_speed_multiplier;
     let mut travel_hexadies = (dist * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
     if port_params.has_port {
         travel_hexadies = (travel_hexadies as f64 * port_params.travel_time_factor).ceil() as i64;
