@@ -7,6 +7,7 @@ pub mod deep_space;
 pub mod effect;
 pub mod event_system;
 pub mod events;
+pub mod faction;
 pub mod galaxy;
 pub mod knowledge;
 pub mod modifier;

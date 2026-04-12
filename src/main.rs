@@ -7,6 +7,7 @@ mod deep_space;
 mod effect;
 mod event_system;
 mod events;
+mod faction;
 mod galaxy;
 mod knowledge;
 mod modifier;
@@ -55,6 +56,7 @@ fn main() {
             deep_space::DeepSpacePlugin,
             setup::GameSetupPlugin,
             notifications::NotificationsPlugin,
+            faction::FactionRelationsPlugin,
         ))
         .add_plugins(ui::UiPlugin)
         .run();
