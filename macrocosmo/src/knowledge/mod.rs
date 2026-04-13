@@ -158,10 +158,32 @@ impl KnowledgeStore {
     }
 
     pub fn update(&mut self, knowledge: SystemKnowledge) {
-        let dominated = self
-            .entries
-            .get(&knowledge.system)
-            .is_some_and(|existing| existing.observed_at >= knowledge.observed_at);
+        let dominated = self.entries.get(&knowledge.system).is_some_and(|existing| {
+            // Scout vs Relay source priority.
+            //
+            // Scout observations carry high-fidelity sensor-range data
+            // (ships + structures snapshot) gathered by a ship physically
+            // deployed to the target. Relay entries are continuous
+            // low-fidelity Sensor-Buoy forwards that #216 writes every tick
+            // with `observed_at = clock.elapsed` for every star system
+            // within a source relay's range. In same-tick races the Relay
+            // write would otherwise overwrite a fresh Scout report.
+            //
+            // Rule: Scout always dominates Relay, regardless of observed_at.
+            // A newer Scout, any Direct observation, or the Stale overlay in
+            // `perceived_system` still take over as expected.
+            if existing.source == ObservationSource::Scout
+                && knowledge.source == ObservationSource::Relay
+            {
+                return true;
+            }
+            if existing.source == ObservationSource::Relay
+                && knowledge.source == ObservationSource::Scout
+            {
+                return false;
+            }
+            existing.observed_at >= knowledge.observed_at
+        });
 
         if !dominated {
             self.entries.insert(knowledge.system, knowledge);
