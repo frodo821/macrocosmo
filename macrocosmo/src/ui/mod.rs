@@ -1188,9 +1188,28 @@ fn draw_map_tooltips(
                 }
                 if !is_local {
                     if let Some(k) = k_data {
+                        // #215: Tag tooltip freshness with observation source
+                        // so the player can see at a glance whether intel came
+                        // via direct light-speed, relay, or scout, and whether
+                        // it has aged past the stale threshold.
                         let age = clock.elapsed - k.observed_at;
                         let years = age as f64 / crate::time_system::HEXADIES_PER_YEAR as f64;
-                        ui.label(egui::RichText::new(format!("Info age: {:.1} yr", years)).weak().small());
+                        let overlay_source = if age >= crate::knowledge::STALE_THRESHOLD_HEXADIES {
+                            crate::knowledge::ObservationSource::Stale
+                        } else {
+                            k.source
+                        };
+                        let tag = match overlay_source {
+                            crate::knowledge::ObservationSource::Direct => "[DIR]",
+                            crate::knowledge::ObservationSource::Relay => "[REL]",
+                            crate::knowledge::ObservationSource::Scout => "[SCT]",
+                            crate::knowledge::ObservationSource::Stale => "[STALE]",
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("Info age: {:.1} yr {}", years, tag))
+                                .weak()
+                                .small(),
+                        );
                     } else if !star.is_capital {
                         ui.label(egui::RichText::new("No intelligence").weak().italics());
                     }

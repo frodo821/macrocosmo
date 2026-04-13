@@ -1,3 +1,27 @@
+//! Knowledge store + light-speed propagation.
+//!
+//! # Observation freshness model (#215)
+//!
+//! Every [`SystemKnowledge`] / [`ShipSnapshot`] entry carries an
+//! [`ObservationSource`] tag identifying how the entry was obtained:
+//!
+//! * [`ObservationSource::Direct`] — optical / sensor baseline (light-speed).
+//!   Written by `propagate_knowledge`, `sensor_buoy_detect_system`, and ship
+//!   survey/courier delivery paths.
+//! * [`ObservationSource::Relay`] — FTL Comm Relay (#216). Written by
+//!   `relay_knowledge_propagate_system`.
+//! * [`ObservationSource::Scout`] — scout ship reports (#217). Reserved for
+//!   future use.
+//! * [`ObservationSource::Stale`] — **never written by producers**; it is a
+//!   read-side overlay. The [`perceived::perceived_system`] accessor rewrites
+//!   an entry's source to `Stale` when
+//!   `current_time - observed_at >= STALE_THRESHOLD_HEXADIES`.
+//!
+//! Producers should pick exactly one of `Direct / Relay / Scout`. The
+//! convention `observed_at: i64` (integer hexadies) is preserved — the
+//! [`perceived::PerceivedInfo`] facade only renames it to `last_updated`.
+pub mod perceived;
+
 use bevy::prelude::*;
 use std::collections::HashMap;
 
@@ -9,6 +33,30 @@ use crate::physics;
 use crate::player::{Player, StationedAt};
 use crate::ship::{Ship, ShipState};
 use crate::time_system::GameClock;
+
+#[allow(unused_imports)]
+pub use perceived::{FactionId, PerceivedInfo, perceived_fleet, perceived_system};
+
+/// Observation source tag for knowledge entries.
+///
+/// Writers must use `Direct`, `Relay`, or `Scout`. `Stale` is a read-side
+/// overlay applied by [`perceived::perceived_system`] — see module docs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObservationSource {
+    /// Optical / baseline sensor (light-speed propagation, surveys, sensor buoys).
+    Direct,
+    /// FTL Comm Relay forwarded observation (#216).
+    Relay,
+    /// Scout ship report (#217).
+    Scout,
+    /// Read-side overlay: entry is older than [`STALE_THRESHOLD_HEXADIES`].
+    /// **Do not write this directly** — accessors apply it on read.
+    Stale,
+}
+
+/// Staleness threshold in hexadies (≈10 in-game years). Matches the existing
+/// "VERY OLD" cutoff used by the system panel.
+pub const STALE_THRESHOLD_HEXADIES: i64 = 600;
 
 pub struct KnowledgePlugin;
 
@@ -36,6 +84,8 @@ pub struct SystemKnowledge {
     pub observed_at: i64,
     pub received_at: i64,
     pub data: SystemSnapshot,
+    /// #215: Which channel produced this observation.
+    pub source: ObservationSource,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -78,6 +128,8 @@ pub struct ShipSnapshot {
     pub observed_at: i64,
     pub hp: f64,
     pub hp_max: f64,
+    /// #215: Which channel produced this observation.
+    pub source: ObservationSource,
 }
 
 /// Simplified ship state for knowledge snapshots.
@@ -188,6 +240,7 @@ fn initialize_capital_knowledge(
         observed_at: 0,
         received_at: 0,
         data: snapshot,
+        source: ObservationSource::Direct,
     });
 
     info!("Player knowledge initialized: capital '{}'", capital.name);
@@ -310,6 +363,7 @@ pub fn propagate_knowledge(
             observed_at,
             received_at: clock.elapsed,
             data: snapshot,
+            source: ObservationSource::Direct,
         });
     }
 
@@ -404,6 +458,7 @@ pub fn propagate_knowledge(
             observed_at,
             hp: hp.hull,
             hp_max: hp.hull_max,
+            source: ObservationSource::Direct,
         });
     }
 }
@@ -487,6 +542,7 @@ mod tests {
             observed_at,
             received_at: observed_at,
             data: SystemSnapshot::default(),
+            source: ObservationSource::Direct,
         }
     }
 

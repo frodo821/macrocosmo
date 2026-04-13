@@ -1721,6 +1721,7 @@ fn courier_route_knowledge_relay_delivers_pre_loaded_cargo() {
                 surveyed: false,
                 ..Default::default()
             },
+            source: macrocosmo::knowledge::ObservationSource::Direct,
         });
     }
 
@@ -1745,6 +1746,7 @@ fn courier_route_knowledge_relay_delivers_pre_loaded_cargo() {
                 surveyed: true,
                 ..Default::default()
             },
+            source: macrocosmo::knowledge::ObservationSource::Direct,
         }],
     });
 
@@ -1784,6 +1786,7 @@ fn courier_route_knowledge_relay_pickup_refreshes_received_at() {
                 surveyed: true,
                 ..Default::default()
             },
+            source: macrocosmo::knowledge::ObservationSource::Direct,
         });
     }
 

@@ -339,18 +339,27 @@ fn draw_left_panel(
         ui.label("Approximate position only. Survey required.");
     }
 
-    if let Some(age) = knowledge.info_age(sel_entity, clock.elapsed) {
+    if let Some(perceived) = crate::knowledge::perceived_system(knowledge, sel_entity, clock.elapsed) {
+        let age = perceived.age(clock.elapsed);
         let years = age as f64 / HEXADIES_PER_YEAR as f64;
         let freshness = if age < 60 {
             "FRESH"
         } else if age < 300 {
             "AGING"
-        } else if age < 600 {
+        } else if age < crate::knowledge::STALE_THRESHOLD_HEXADIES {
             "OLD"
         } else {
             "VERY OLD"
         };
-        ui.label(format!("Info age: {} hd ({:.1} yr) [{}]", age, years, freshness));
+        let source_tag = observation_source_tag(perceived.source);
+        let color = observation_freshness_color(age);
+        ui.label(
+            egui::RichText::new(format!(
+                "Info age: {} hd ({:.1} yr) [{}] {}",
+                age, years, freshness, source_tag
+            ))
+            .color(color),
+        );
     }
 
     // --- Resource stockpile ---
@@ -388,8 +397,33 @@ fn draw_left_panel(
                 }
             }
             if snap.has_hostile {
-                ui.label(egui::RichText::new(format!("Hostile presence (str: {:.1})", snap.hostile_strength))
-                    .color(egui::Color32::from_rgb(255, 100, 100)));
+                // #215: tag hostile observation with source + freshness colouring
+                // so the player can judge how trustworthy the reading is.
+                let age = clock.elapsed - k.observed_at;
+                let overlay_source = if age >= crate::knowledge::STALE_THRESHOLD_HEXADIES {
+                    crate::knowledge::ObservationSource::Stale
+                } else {
+                    k.source
+                };
+                let source_tag = observation_source_tag(overlay_source);
+                // Tint the hostile red toward grey as the observation ages so
+                // fresh threats pop while stale sightings are visibly dimmed.
+                let color = if age < 60 {
+                    egui::Color32::from_rgb(255, 100, 100)
+                } else if age < 300 {
+                    egui::Color32::from_rgb(220, 120, 120)
+                } else if age < crate::knowledge::STALE_THRESHOLD_HEXADIES {
+                    egui::Color32::from_rgb(180, 110, 110)
+                } else {
+                    egui::Color32::from_rgb(140, 80, 70)
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Hostile presence (str: {:.1}) {}",
+                        snap.hostile_strength, source_tag
+                    ))
+                    .color(color),
+                );
             }
             if snap.has_port {
                 ui.label("Port facility present");
@@ -1175,4 +1209,34 @@ pub fn ship_build_host_colony(
         .iter()
         .find(|(_, sys)| *sys == system_entity)
         .map(|(colony, _)| *colony)
+}
+
+// ---------------------------------------------------------------------------
+// #215: Observation-source / freshness visuals
+// ---------------------------------------------------------------------------
+
+/// Short tag displayed next to an observation, identifying its channel.
+fn observation_source_tag(source: crate::knowledge::ObservationSource) -> &'static str {
+    use crate::knowledge::ObservationSource;
+    match source {
+        ObservationSource::Direct => "[DIR]",
+        ObservationSource::Relay => "[REL]",
+        ObservationSource::Scout => "[SCT]",
+        ObservationSource::Stale => "[STALE]",
+    }
+}
+
+/// Freshness colour for the "info age" line. Fresher observations render in
+/// the default text colour; older ones shade toward grey / red-brown as they
+/// approach the [`crate::knowledge::STALE_THRESHOLD_HEXADIES`] cutoff.
+fn observation_freshness_color(age: i64) -> egui::Color32 {
+    if age < 60 {
+        egui::Color32::from_rgb(220, 220, 220)
+    } else if age < 300 {
+        egui::Color32::from_rgb(180, 180, 180)
+    } else if age < crate::knowledge::STALE_THRESHOLD_HEXADIES {
+        egui::Color32::from_rgb(130, 130, 130)
+    } else {
+        egui::Color32::from_rgb(160, 90, 70)
+    }
 }

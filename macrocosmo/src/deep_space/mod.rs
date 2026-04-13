@@ -647,7 +647,7 @@ pub fn sensor_buoy_detect_system(
     positions: Query<&crate::components::Position>,
     mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
 ) {
-    use crate::knowledge::{ShipSnapshot, ShipSnapshotState};
+    use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
     let Ok(mut store) = empire_q.single_mut() else {
         return;
@@ -734,6 +734,7 @@ pub fn sensor_buoy_detect_system(
                 observed_at,
                 hp: hp.hull,
                 hp_max: hp.hull_max,
+                source: ObservationSource::Direct,
             });
         }
     }
@@ -813,7 +814,7 @@ pub fn relay_knowledge_propagate_system(
         .filter(|r| r.has_capability("blocks_ftl_comm"))
         .map(crate::galaxy::RegionBlockSnapshot::from_region)
         .collect();
-    use crate::knowledge::{ShipSnapshot, ShipSnapshotState};
+    use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
     let Ok(mut store) = empire_q.single_mut() else {
         return;
@@ -926,6 +927,7 @@ pub fn relay_knowledge_propagate_system(
                 observed_at,
                 hp: hp.hull,
                 hp_max: hp.hull_max,
+                source: ObservationSource::Relay,
             });
         }
     }
