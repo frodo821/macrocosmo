@@ -103,10 +103,16 @@ pub fn apply_initial_speed(mode: Res<ObserverMode>, mut speed: ResMut<GameSpeed>
 /// One-way mirror from `ObserverView.viewing` (Faction entity) to
 /// `AiDebugUi::GovernorState::faction` (`u32` from `to_ai_faction`). This
 /// makes the F10 Governor tab follow the top-bar selector.
+///
+/// The `AiDebugUi` resource is optional so this system can run in
+/// headless test apps that don't register `UiPlugin`.
 pub fn sync_observer_view_to_governor(
     view: Res<ObserverView>,
-    mut ui: ResMut<crate::ui::ai_debug::AiDebugUi>,
+    ui: Option<ResMut<crate::ui::ai_debug::AiDebugUi>>,
 ) {
+    let Some(mut ui) = ui else {
+        return;
+    };
     if let Some(faction_entity) = view.viewing {
         let id = crate::ai::convert::to_ai_faction(faction_entity);
         ui.governor.faction = id.0;
