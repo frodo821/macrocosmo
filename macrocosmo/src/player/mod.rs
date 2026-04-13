@@ -17,11 +17,25 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player_empire)
-            .add_systems(Startup, spawn_player.after(crate::galaxy::generate_galaxy))
-            .add_systems(Update, update_player_location
-                .after(crate::time_system::advance_game_time))
-            .add_systems(Update, log_player_info);
+        use crate::observer::not_in_observer_mode;
+
+        app.add_systems(
+            Startup,
+            spawn_player_empire.run_if(not_in_observer_mode),
+        )
+        .add_systems(
+            Startup,
+            spawn_player
+                .after(crate::galaxy::generate_galaxy)
+                .run_if(not_in_observer_mode),
+        )
+        .add_systems(
+            Update,
+            update_player_location
+                .after(crate::time_system::advance_game_time)
+                .run_if(not_in_observer_mode),
+        )
+        .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
     }
 }
 

@@ -14,6 +14,7 @@ mod galaxy;
 mod knowledge;
 mod modifier;
 mod notifications;
+mod observer;
 mod physics;
 mod player;
 mod scripting;
@@ -28,8 +29,29 @@ mod visualization;
 
 use bevy::prelude::*;
 
+use observer::{CliArgs, ObserverMode, ObserverPlugin, RngSeed};
+
 fn main() {
+    let cli = CliArgs::parse();
+
+    let observer_mode = ObserverMode {
+        enabled: cli.no_player,
+        seed: cli.seed,
+        time_horizon: cli.time_horizon,
+        initial_speed: cli.speed,
+    };
+    let rng_seed = RngSeed(cli.seed);
+
+    if observer_mode.enabled {
+        info!(
+            "Starting in observer mode (--no-player): seed={:?}, time_horizon={:?}, speed={:?}",
+            observer_mode.seed, observer_mode.time_horizon, observer_mode.initial_speed
+        );
+    }
+
     App::new()
+        .insert_resource(observer_mode)
+        .insert_resource(rng_seed)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Macrocosmo".into(),
@@ -61,6 +83,7 @@ fn main() {
             faction::FactionRelationsPlugin,
             choice::ChoicesPlugin,
             ai::AiPlugin,
+            ObserverPlugin,
         ))
         .add_plugins(ui::UiPlugin)
         .run();
