@@ -19,16 +19,31 @@ use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
 
 /// Create a BuildingRegistry populated with the standard 6 building definitions for tests.
+///
+/// #241: Uses the new `modifiers` field (target strings) to represent production
+/// contributions. Buildings in tests are modelled as "automation" buildings —
+/// they push directly into `colony.<resource>_per_hexadies` aggregators without
+/// requiring pops to be assigned, so existing production-balance tests continue
+/// to work. Real (Lua) buildings primarily grant job slots; see
+/// `scripts/buildings/basic.lua`.
 pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
     use macrocosmo::scripting::building_api::{BuildingDefinition, CapabilityParams};
+    use macrocosmo::modifier::ParsedModifier;
     use std::collections::HashMap;
+    let pm = |target: &str, base_add: f64| ParsedModifier {
+        target: target.to_string(),
+        base_add,
+        multiplier: 0.0,
+        add: 0.0,
+    };
     let mut registry = macrocosmo::colony::BuildingRegistry::default();
     registry.insert(BuildingDefinition {
         id: "mine".into(), name: "Mine".into(), description: String::new(),
         minerals_cost: Amt::units(150), energy_cost: Amt::units(50), build_time: 10,
         maintenance: Amt::new(0, 200),
-        production_bonus_minerals: Amt::units(3), production_bonus_energy: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.minerals_per_hexadies", 3.0)],
         is_system_building: false, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
         prerequisites: None,
@@ -37,8 +52,9 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         id: "power_plant".into(), name: "PowerPlant".into(), description: String::new(),
         minerals_cost: Amt::units(50), energy_cost: Amt::units(150), build_time: 10,
         maintenance: Amt::ZERO,
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::units(3),
+        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.energy_per_hexadies", 3.0)],
         is_system_building: false, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
         prerequisites: None,
@@ -48,7 +64,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         minerals_cost: Amt::units(100), energy_cost: Amt::units(100), build_time: 15,
         maintenance: Amt::new(0, 500),
         production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::units(2), production_bonus_food: Amt::ZERO,
+        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.research_per_hexadies", 2.0)],
         is_system_building: true, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
         prerequisites: None,
@@ -63,6 +80,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         maintenance: Amt::units(1),
         production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        modifiers: Vec::new(),
         is_system_building: true, capabilities: shipyard_caps,
         upgrade_to: Vec::new(), is_direct_buildable: true,
         prerequisites: None,
@@ -82,6 +100,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         maintenance: Amt::new(0, 500),
         production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        modifiers: Vec::new(),
         is_system_building: true, capabilities: port_caps,
         upgrade_to: Vec::new(), is_direct_buildable: true,
         prerequisites: None,
@@ -91,7 +110,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         minerals_cost: Amt::units(100), energy_cost: Amt::units(50), build_time: 20,
         maintenance: Amt::new(0, 300),
         production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::units(5),
+        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.food_per_hexadies", 5.0)],
         is_system_building: false, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
         prerequisites: None,
@@ -295,6 +315,8 @@ pub fn test_app() -> App {
             tick_timed_effects,
             tick_authority,
             sync_building_modifiers,
+            species::sync_job_assignment,
+            sync_species_modifiers,
             sync_maintenance_modifiers,
             sync_food_consumption,
             tick_production,
@@ -311,10 +333,7 @@ pub fn test_app() -> App {
     );
     app.add_systems(
         Update,
-        (
-            species::sync_job_assignment,
-            apply_pending_colonization_orders,
-        ).after(macrocosmo::time_system::advance_game_time),
+        apply_pending_colonization_orders.after(macrocosmo::time_system::advance_game_time),
     );
     app.add_systems(
         Update,
@@ -471,6 +490,8 @@ pub fn full_test_app() -> App {
             tick_timed_effects,
             tick_authority,
             sync_building_modifiers,
+            species::sync_job_assignment,
+            sync_species_modifiers,
             sync_maintenance_modifiers,
             sync_food_consumption,
             tick_production,
@@ -485,9 +506,6 @@ pub fn full_test_app() -> App {
             .chain(),
     );
     app.add_systems(Update, (update_sovereignty, apply_pending_colonization_orders));
-
-    // --- Species systems (from SpeciesPlugin) ---
-    app.add_systems(Update, species::sync_job_assignment);
 
     // --- Knowledge system (from KnowledgePlugin) ---
     app.add_systems(Update, propagate_knowledge);

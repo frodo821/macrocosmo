@@ -4,7 +4,9 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::condition::Condition;
+use crate::modifier::ParsedModifier;
 use crate::scripting::condition_parser::parse_prerequisites_field;
+use crate::scripting::modifier_api::parse_parsed_modifiers;
 
 /// An upgrade path from one building to another.
 #[derive(Clone, Debug)]
@@ -34,6 +36,11 @@ pub struct BuildingDefinition {
     pub production_bonus_energy: Amt,
     pub production_bonus_research: Amt,
     pub production_bonus_food: Amt,
+    /// #241: Declarative modifiers (target string + base_add/multiplier/add).
+    /// Replaces hardcoded `production_bonus_*`. Targets include
+    /// `colony.<job>_slot` (job slot capacity), `colony.<resource>_per_hexadies`
+    /// (colony aggregator), and `job:<id>::<target>` (per-job bucket).
+    pub modifiers: Vec<ParsedModifier>,
     /// Whether this building is placed on a StarSystem (true) or Colony/Planet (false).
     pub is_system_building: bool,
     /// Named capabilities for special behavior (e.g. "shipyard", "port").
@@ -182,14 +189,26 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let maintenance_f64: f64 = table.get::<Option<f64>>("maintenance")?.unwrap_or(0.0);
         let maintenance = Amt::from_f64(maintenance_f64);
 
-        // Parse production_bonus table (optional)
-        let (pb_minerals, pb_energy, pb_research, pb_food) =
-            parse_production_bonus_table(&table)?;
+        // #241: legacy production_bonus is now warn-then-ignored. Emit a
+        // warning if Lua still declares it (Rust zero-fills the fields, leaving
+        // existing tests that compare these fields against ZERO unaffected).
+        if matches!(
+            table.get::<mlua::Value>("production_bonus")?,
+            mlua::Value::Table(_)
+        ) {
+            warn!(
+                "Building '{}' uses legacy `production_bonus` field; ignored. \
+                 Migrate to modifiers with target = \"colony.<job>_slot\" or \
+                 \"colony.<resource>_per_hexadies\" (#241).",
+                id
+            );
+        }
 
         let is_system_building: bool = table.get::<Option<bool>>("is_system_building")?.unwrap_or(false);
         let capabilities = parse_capabilities_table(&table)?;
         let upgrade_to = parse_upgrade_to_table(&table)?;
         let prerequisites = parse_prerequisites_field(&table)?;
+        let modifiers = parse_parsed_modifiers(&table, "modifiers", None)?;
 
         result.push(BuildingDefinition {
             id,
@@ -199,10 +218,11 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             energy_cost,
             build_time,
             maintenance,
-            production_bonus_minerals: pb_minerals,
-            production_bonus_energy: pb_energy,
-            production_bonus_research: pb_research,
-            production_bonus_food: pb_food,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            modifiers,
             is_system_building,
             capabilities,
             upgrade_to,
@@ -230,39 +250,6 @@ fn parse_cost_table(table: &mlua::Table) -> Result<(Amt, Amt), mlua::Error> {
         mlua::Value::Nil => Ok((Amt::ZERO, Amt::ZERO)),
         _ => Err(mlua::Error::RuntimeError(
             "Expected table or nil for 'cost' field".to_string(),
-        )),
-    }
-}
-
-/// Parse the `production_bonus = { minerals = N, energy = N, research = N, food = N }` sub-table.
-fn parse_production_bonus_table(
-    table: &mlua::Table,
-) -> Result<(Amt, Amt, Amt, Amt), mlua::Error> {
-    let pb_value: mlua::Value = table.get("production_bonus")?;
-    match pb_value {
-        mlua::Value::Table(pb_table) => {
-            let minerals: f64 = pb_table
-                .get::<Option<f64>>("minerals")?
-                .unwrap_or(0.0);
-            let energy: f64 = pb_table
-                .get::<Option<f64>>("energy")?
-                .unwrap_or(0.0);
-            let research: f64 = pb_table
-                .get::<Option<f64>>("research")?
-                .unwrap_or(0.0);
-            let food: f64 = pb_table
-                .get::<Option<f64>>("food")?
-                .unwrap_or(0.0);
-            Ok((
-                Amt::from_f64(minerals),
-                Amt::from_f64(energy),
-                Amt::from_f64(research),
-                Amt::from_f64(food),
-            ))
-        }
-        mlua::Value::Nil => Ok((Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO)),
-        _ => Err(mlua::Error::RuntimeError(
-            "Expected table or nil for 'production_bonus' field".to_string(),
         )),
     }
 }
@@ -365,7 +352,9 @@ mod tests {
                 cost = { minerals = 150, energy = 50 },
                 build_time = 10,
                 maintenance = 0.2,
-                production_bonus = { minerals = 3.0 },
+                modifiers = {
+                    { target = "colony.miner_slot", base_add = 5 },
+                },
             }
             define_building {
                 id = "farm",
@@ -373,7 +362,9 @@ mod tests {
                 cost = { minerals = 100, energy = 50 },
                 build_time = 20,
                 maintenance = 0.3,
-                production_bonus = { food = 5.0 },
+                modifiers = {
+                    { target = "colony.farmer_slot", base_add = 5 },
+                },
             }
             "#,
         )
@@ -390,22 +381,17 @@ mod tests {
         assert_eq!(defs[0].energy_cost, Amt::units(50));
         assert_eq!(defs[0].build_time, 10);
         assert_eq!(defs[0].maintenance, Amt::new(0, 200));
-        assert_eq!(defs[0].production_bonus_minerals, Amt::units(3));
-        assert_eq!(defs[0].production_bonus_energy, Amt::ZERO);
-        assert_eq!(defs[0].production_bonus_research, Amt::ZERO);
-        assert_eq!(defs[0].production_bonus_food, Amt::ZERO);
+        // #241: production_bonus_* are zero under new modifier-based scheme.
+        assert_eq!(defs[0].production_bonus_minerals, Amt::ZERO);
+        assert_eq!(defs[0].modifiers.len(), 1);
+        assert_eq!(defs[0].modifiers[0].target, "colony.miner_slot");
+        assert!((defs[0].modifiers[0].base_add - 5.0).abs() < 1e-10);
 
         // Farm
         assert_eq!(defs[1].id, "farm");
         assert_eq!(defs[1].name, "Farm");
-        assert_eq!(defs[1].minerals_cost, Amt::units(100));
-        assert_eq!(defs[1].energy_cost, Amt::units(50));
-        assert_eq!(defs[1].build_time, 20);
-        assert_eq!(defs[1].maintenance, Amt::new(0, 300));
-        assert_eq!(defs[1].production_bonus_minerals, Amt::ZERO);
-        assert_eq!(defs[1].production_bonus_energy, Amt::ZERO);
-        assert_eq!(defs[1].production_bonus_research, Amt::ZERO);
-        assert_eq!(defs[1].production_bonus_food, Amt::units(5));
+        assert_eq!(defs[1].modifiers.len(), 1);
+        assert_eq!(defs[1].modifiers[0].target, "colony.farmer_slot");
     }
 
     #[test]
@@ -455,6 +441,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
@@ -480,6 +467,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::units(5),
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
@@ -523,27 +511,34 @@ mod tests {
             registry.insert(def.clone());
         }
 
-        // Verify Mine has minerals production bonus = 3.0
+        // Verify Mine grants miner_slot = 5 via the new modifiers field.
         let mine = registry.get("mine").expect("Mine should be in registry");
         assert_eq!(mine.name, "Mine");
-        assert_eq!(mine.production_bonus_minerals, Amt::units(3));
         assert_eq!(mine.minerals_cost, Amt::units(150));
         assert_eq!(mine.energy_cost, Amt::units(50));
         assert_eq!(mine.build_time, 10);
         assert_eq!(mine.maintenance, Amt::new(0, 200));
+        assert!(
+            mine.modifiers
+                .iter()
+                .any(|m| m.target == "colony.miner_slot" && (m.base_add - 5.0).abs() < 1e-10),
+            "Mine should declare colony.miner_slot +5"
+        );
 
-        // Verify Farm has food production bonus = 5.0
+        // Verify Farm grants farmer_slot.
         let farm = registry.get("farm").expect("Farm should be in registry");
         assert_eq!(farm.name, "Farm");
-        assert_eq!(farm.production_bonus_food, Amt::units(5));
+        assert!(
+            farm.modifiers
+                .iter()
+                .any(|m| m.target == "colony.farmer_slot"),
+            "Farm should declare colony.farmer_slot"
+        );
 
-        // Verify Shipyard has no production bonus and is a system building
+        // Verify Shipyard has no production modifiers and is a system building.
         let shipyard = registry.get("shipyard").expect("Shipyard should be in registry");
         assert_eq!(shipyard.name, "Shipyard");
-        assert_eq!(shipyard.production_bonus_minerals, Amt::ZERO);
-        assert_eq!(shipyard.production_bonus_energy, Amt::ZERO);
-        assert_eq!(shipyard.production_bonus_research, Amt::ZERO);
-        assert_eq!(shipyard.production_bonus_food, Amt::ZERO);
+        assert!(shipyard.modifiers.is_empty());
         assert_eq!(shipyard.maintenance, Amt::units(1));
         assert!(shipyard.is_system_building);
         assert!(shipyard.capabilities.contains_key("shipyard"));
@@ -573,6 +568,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
@@ -593,6 +589,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
@@ -619,7 +616,7 @@ mod tests {
                 cost = { minerals = 150, energy = 50 },
                 build_time = 10,
                 maintenance = 0.2,
-                production_bonus = { minerals = 3.0 },
+                modifiers = { { target = "colony.miner_slot", base_add = 5 } },
                 upgrade_to = {
                     { target = forward_ref("advanced_mine"), cost = { minerals = 200, energy = 100 }, build_time = 8 },
                 },
@@ -630,7 +627,7 @@ mod tests {
                 cost = nil,
                 build_time = 10,
                 maintenance = 0.4,
-                production_bonus = { minerals = 6.0 },
+                modifiers = { { target = "colony.miner_slot", base_add = 10 } },
             }
             "#,
         )
@@ -656,7 +653,8 @@ mod tests {
         assert!(!adv_mine.is_direct_buildable);
         assert_eq!(adv_mine.minerals_cost, Amt::ZERO);
         assert_eq!(adv_mine.energy_cost, Amt::ZERO);
-        assert_eq!(adv_mine.production_bonus_minerals, Amt::units(6));
+        assert_eq!(adv_mine.modifiers.len(), 1);
+        assert!((adv_mine.modifiers[0].base_add - 10.0).abs() < 1e-10);
         assert_eq!(adv_mine.maintenance, Amt::new(0, 400));
     }
 
@@ -677,6 +675,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
@@ -697,6 +696,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),

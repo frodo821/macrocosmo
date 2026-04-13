@@ -61,12 +61,12 @@ fn test_job_auto_assignment() {
                 JobSlot {
                     job_id: "miner".to_string(),
                     capacity: 5,
-                    assigned: 0,
+                    assigned: 0, capacity_from_buildings: 0,
                 },
                 JobSlot {
                     job_id: "farmer".to_string(),
                     capacity: 5,
-                    assigned: 0,
+                    assigned: 0, capacity_from_buildings: 0,
                 },
             ],
         },
@@ -156,12 +156,12 @@ fn test_job_auto_assignment_excess_population() {
                 JobSlot {
                     job_id: "miner".to_string(),
                     capacity: 5,
-                    assigned: 0,
+                    assigned: 0, capacity_from_buildings: 0,
                 },
                 JobSlot {
                     job_id: "farmer".to_string(),
                     capacity: 5,
-                    assigned: 0,
+                    assigned: 0, capacity_from_buildings: 0,
                 },
             ],
         },
