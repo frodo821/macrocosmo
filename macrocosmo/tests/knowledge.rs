@@ -1992,6 +1992,112 @@ fn test_perceived_info_relay_source() {
     assert!(fleet.is_empty());
 }
 
+/// Regression test for the #216 / #217 semantic clash: Scout reports and
+/// Relay propagation ticks race to write the same system. Relay is a
+/// continuous low-fidelity forward; Scout is a high-fidelity targeted
+/// observation. The store must preserve the Scout entry regardless of
+/// write order — both "incoming Relay vs existing Scout" and "incoming
+/// Scout vs existing Relay" cases resolve in Scout's favour. A newer
+/// Scout or any Direct observation still dominates.
+#[test]
+fn test_relay_does_not_overwrite_scout() {
+    use bevy::ecs::world::World;
+
+    let mut world = World::new();
+    let sys_entity = world.spawn_empty().id();
+    let mut store = KnowledgeStore::default();
+
+    // Scout arrives first with an older observed_at (as FtlComm report would).
+    store.update(SystemKnowledge {
+        system: sys_entity,
+        observed_at: 100,
+        received_at: 100,
+        data: SystemSnapshot {
+            name: "Scouted".to_string(),
+            ..Default::default()
+        },
+        source: ObservationSource::Scout,
+    });
+    assert_eq!(store.get(sys_entity).unwrap().source, ObservationSource::Scout);
+
+    // Relay propagation ticks keep running and try to write a newer entry.
+    store.update(SystemKnowledge {
+        system: sys_entity,
+        observed_at: 105,
+        received_at: 105,
+        data: SystemSnapshot {
+            name: "Relayed".to_string(),
+            ..Default::default()
+        },
+        source: ObservationSource::Relay,
+    });
+
+    // Scout is preserved — Relay cannot dominate it.
+    let k = store.get(sys_entity).unwrap();
+    assert_eq!(k.source, ObservationSource::Scout);
+    assert_eq!(k.observed_at, 100);
+    assert_eq!(k.data.name, "Scouted");
+
+    // Reverse ordering — Relay writes first, then Scout arrives with an
+    // older observed_at (as can happen in same-tick races where the relay
+    // system ran before process_scout_report). Scout must still win.
+    let mut store2 = KnowledgeStore::default();
+    let sys2 = world.spawn_empty().id();
+    store2.update(SystemKnowledge {
+        system: sys2,
+        observed_at: 105,
+        received_at: 105,
+        data: SystemSnapshot {
+            name: "Relayed".to_string(),
+            ..Default::default()
+        },
+        source: ObservationSource::Relay,
+    });
+    store2.update(SystemKnowledge {
+        system: sys2,
+        observed_at: 100,
+        received_at: 100,
+        data: SystemSnapshot {
+            name: "Scouted".to_string(),
+            ..Default::default()
+        },
+        source: ObservationSource::Scout,
+    });
+    let k2 = store2.get(sys2).unwrap();
+    assert_eq!(k2.source, ObservationSource::Scout);
+    assert_eq!(k2.observed_at, 100);
+    assert_eq!(k2.data.name, "Scouted");
+
+    // A newer Scout observation, on the other hand, MUST dominate.
+    store.update(SystemKnowledge {
+        system: sys_entity,
+        observed_at: 200,
+        received_at: 200,
+        data: SystemSnapshot {
+            name: "Scouted2".to_string(),
+            ..Default::default()
+        },
+        source: ObservationSource::Scout,
+    });
+    let k = store.get(sys_entity).unwrap();
+    assert_eq!(k.source, ObservationSource::Scout);
+    assert_eq!(k.observed_at, 200);
+
+    // And a Direct (player-present) observation also dominates Scout when newer.
+    store.update(SystemKnowledge {
+        system: sys_entity,
+        observed_at: 300,
+        received_at: 300,
+        data: SystemSnapshot {
+            name: "DirectObserved".to_string(),
+            ..Default::default()
+        },
+        source: ObservationSource::Direct,
+    });
+    let k = store.get(sys_entity).unwrap();
+    assert_eq!(k.source, ObservationSource::Direct);
+}
+
 // ---------------------------------------------------------------------------
 // #216: Sensor Buoy + FTL Comm Relay information aggregation (B-1)
 // ---------------------------------------------------------------------------
