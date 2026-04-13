@@ -120,39 +120,175 @@ pub struct CapabilityParams {
     // Extensible: add more fields as needed.
 }
 
-/// Data-driven definition of a structure type, loaded from Lua or hardcoded fallback.
+/// #223: An edge in the deliverable upgrade graph — a platform kit can be
+/// upgraded to `target_id` by spending `cost` over `build_time` hexadies.
 #[derive(Clone, Debug)]
-pub struct StructureDefinition {
+pub struct UpgradeEdge {
+    pub target_id: String,
+    pub cost: ResourceCost,
+    pub build_time: i64,
+}
+
+/// #223: Shipyard-specific metadata. Present only when the deliverable was
+/// declared via `define_deliverable` (i.e. can be built directly at a shipyard
+/// and transported in a ship's Cargo). World-only structures declared via
+/// `define_structure` leave this as `None`.
+#[derive(Clone, Debug)]
+pub struct DeliverableMetadata {
+    pub cost: ResourceCost,
+    pub build_time: i64,
+    pub cargo_size: u32,
+    /// 0.0..=1.0 — fraction of lifetime_cost returned as Scrapyard resources on dismantle.
+    pub scrap_refund: f32,
+}
+
+/// #223: Unified definition covering both world-side structures and
+/// shipyard-buildable deliverables. The `deliverable` field distinguishes them:
+///   - `Some(_)` — shipyard-buildable (via `define_deliverable`)
+///   - `None`    — world-spawn only / upgrade output (via `define_structure`)
+#[derive(Clone, Debug)]
+pub struct DeliverableDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
     pub max_hp: f64,
-    pub cost: ResourceCost,
-    pub build_time: i64, // hexadies
-    pub energy_drain: Amt, // per hexady maintenance
-    pub prerequisites: Option<Condition>,
+    pub energy_drain: Amt,
     pub capabilities: HashMap<String, CapabilityParams>,
+    pub prerequisites: Option<Condition>,
+
+    /// `Some(_)` when the deliverable is shipyard-buildable.
+    pub deliverable: Option<DeliverableMetadata>,
+
+    /// Outgoing upgrade edges: starting from this deliverable, it can become
+    /// one of these targets by paying the edge cost.
+    pub upgrade_to: Vec<UpgradeEdge>,
+
+    /// Optional self-declared inbound edge: "this deliverable can be reached
+    /// from `source` by paying `cost`." Preserves referential churn isolation
+    /// (a new target may self-declare without touching the platform def).
+    ///
+    /// When set, `target_id` holds the upstream source id and the edge cost/
+    /// build_time describe the upstream→this transition. Cf. `upgrade_to`
+    /// which describes this→downstream transitions.
+    pub upgrade_from: Option<UpgradeEdge>,
 }
 
-/// Registry of all structure definitions.
+impl DeliverableDefinition {
+    /// Convenience: the direct shipyard build cost if this deliverable can be
+    /// built at a shipyard; otherwise `None` (upgrade-only output).
+    pub fn shipyard_cost(&self) -> Option<&ResourceCost> {
+        self.deliverable.as_ref().map(|m| &m.cost)
+    }
+
+    /// Convenience: shipyard build time in hexadies (`None` if not buildable).
+    pub fn shipyard_build_time(&self) -> Option<i64> {
+        self.deliverable.as_ref().map(|m| m.build_time)
+    }
+
+    /// Returns `true` if this deliverable carries the `construction_platform`
+    /// capability marker, meaning on-deploy it enters a waiting state until
+    /// an upgrade target is selected and resources are delivered.
+    pub fn is_construction_platform(&self) -> bool {
+        self.capabilities.contains_key("construction_platform")
+    }
+}
+
+/// Back-compat alias: existing code continues to use `StructureDefinition`.
+pub type StructureDefinition = DeliverableDefinition;
+
+/// Registry of all deliverable/structure definitions.
+///
+/// `effective_edges[source_id]` holds the merged outbound upgrade edges for
+/// `source_id`, built once during `load_structure_definitions` by combining
+/// each definition's `upgrade_to[*]` with any other definition's self-declared
+/// `upgrade_from` that names `source_id`. `upgrade_to` wins on conflict.
 #[derive(Resource, Default)]
-pub struct StructureRegistry {
-    pub definitions: HashMap<String, StructureDefinition>,
+pub struct DeliverableRegistry {
+    pub definitions: HashMap<String, DeliverableDefinition>,
+    pub effective_edges: HashMap<String, Vec<UpgradeEdge>>,
 }
 
-impl StructureRegistry {
-    /// Look up a structure definition by id.
-    pub fn get(&self, id: &str) -> Option<&StructureDefinition> {
+/// Back-compat alias.
+pub type StructureRegistry = DeliverableRegistry;
+
+impl DeliverableRegistry {
+    /// Look up a structure/deliverable definition by id.
+    pub fn get(&self, id: &str) -> Option<&DeliverableDefinition> {
         self.definitions.get(id)
     }
 
-    /// Insert a structure definition, replacing any existing one with the same id.
-    pub fn insert(&mut self, def: StructureDefinition) {
+    /// Insert a definition, replacing any existing one with the same id.
+    /// NOTE: This does NOT automatically rebuild `effective_edges`; call
+    /// `rebuild_effective_edges` after batch-inserts.
+    pub fn insert(&mut self, def: DeliverableDefinition) {
         self.definitions.insert(def.id.clone(), def);
+    }
+
+    /// Outbound upgrade edges effective at runtime for `source_id`. Uses the
+    /// cached `effective_edges` table if populated, otherwise falls back to
+    /// the definition's own `upgrade_to` list (which excludes inverse
+    /// `upgrade_from` self-declarations).
+    pub fn outgoing_edges(&self, source_id: &str) -> &[UpgradeEdge] {
+        if let Some(v) = self.effective_edges.get(source_id) {
+            return v.as_slice();
+        }
+        self.definitions
+            .get(source_id)
+            .map(|d| d.upgrade_to.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Rebuild `effective_edges` by merging `upgrade_to[*]` with inverse
+    /// `upgrade_from` self-declarations from every other definition. On
+    /// conflict (same source→target declared twice), the `upgrade_to`
+    /// declaration wins; a warning is logged at the caller level.
+    ///
+    /// Returns a list of non-fatal validation warnings as `(source, target)`
+    /// tuples describing conflicts, so the caller can `log::warn!` them.
+    pub fn rebuild_effective_edges(&mut self) -> Vec<(String, String)> {
+        let mut merged: HashMap<String, Vec<UpgradeEdge>> = HashMap::new();
+        let mut conflicts: Vec<(String, String)> = Vec::new();
+
+        // First pass: collect all `upgrade_to` edges.
+        for (source_id, def) in &self.definitions {
+            for edge in &def.upgrade_to {
+                merged
+                    .entry(source_id.clone())
+                    .or_default()
+                    .push(edge.clone());
+            }
+        }
+
+        // Second pass: inverse `upgrade_from` (self-declared inbound edge on target).
+        for (target_id, def) in &self.definitions {
+            if let Some(uf) = &def.upgrade_from {
+                let source_id = uf.target_id.clone(); // for upgrade_from, target_id holds the SOURCE.
+                let inverse_edge = UpgradeEdge {
+                    target_id: target_id.clone(),
+                    cost: uf.cost.clone(),
+                    build_time: uf.build_time,
+                };
+                let entry = merged.entry(source_id.clone()).or_default();
+                // Does an `upgrade_to` edge for the same target already exist?
+                if entry.iter().any(|e| e.target_id == *target_id) {
+                    // Conflict — `upgrade_to` wins, we skip the inverse edge.
+                    conflicts.push((source_id, target_id.clone()));
+                } else {
+                    entry.push(inverse_edge);
+                }
+            }
+        }
+
+        self.effective_edges = merged;
+        conflicts
     }
 }
 
 /// Default structure definitions used when Lua scripts are not available (e.g. in tests).
+///
+/// All three defaults are shipyard-buildable deliverables (they carry
+/// `DeliverableMetadata`) so existing tests and fallback startup continue to
+/// see the same practical behaviour as before #223.
 pub fn default_structure_definitions() -> Vec<StructureDefinition> {
     use crate::condition::ConditionAtom;
 
@@ -162,28 +298,29 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             name: "Sensor Buoy".to_string(),
             description: "Detects sublight vessel movements.".to_string(),
             max_hp: 20.0,
-            cost: ResourceCost {
-                minerals: Amt::units(50),
-                energy: Amt::units(30),
-            },
-            build_time: 15,
             capabilities: HashMap::from([(
                 "detect_sublight".to_string(),
                 CapabilityParams { range: 3.0 },
             )]),
             energy_drain: Amt::milli(100),
             prerequisites: None,
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(50),
+                    energy: Amt::units(30),
+                },
+                build_time: 15,
+                cargo_size: 1,
+                scrap_refund: 0.5,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
         },
         StructureDefinition {
             id: "ftl_comm_relay".to_string(),
             name: "FTL Comm Relay".to_string(),
             description: "Enables faster-than-light communication across systems.".to_string(),
             max_hp: 50.0,
-            cost: ResourceCost {
-                minerals: Amt::units(200),
-                energy: Amt::units(150),
-            },
-            build_time: 30,
             capabilities: HashMap::from([(
                 "ftl_comm_relay".to_string(),
                 CapabilityParams { range: 5.0 },
@@ -192,17 +329,23 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
                 "ftl_communications",
             ))),
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(200),
+                    energy: Amt::units(150),
+                },
+                build_time: 30,
+                cargo_size: 2,
+                scrap_refund: 0.4,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
         },
         StructureDefinition {
             id: "interdictor".to_string(),
             name: "Interdictor".to_string(),
             description: "Disrupts FTL travel within its interdiction range.".to_string(),
             max_hp: 80.0,
-            cost: ResourceCost {
-                minerals: Amt::units(300),
-                energy: Amt::units(200),
-            },
-            build_time: 45,
             capabilities: HashMap::from([(
                 "ftl_interdiction".to_string(),
                 CapabilityParams { range: 5.0 },
@@ -211,6 +354,17 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
                 "ftl_interdiction_tech",
             ))),
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(300),
+                    energy: Amt::units(200),
+                },
+                build_time: 45,
+                cargo_size: 3,
+                scrap_refund: 0.3,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
         },
     ]
 }
@@ -629,11 +783,6 @@ mod tests {
             name: "Advanced Sensor Buoy".to_string(),
             description: "Enhanced sensor buoy.".to_string(),
             max_hp: 40.0,
-            cost: ResourceCost {
-                minerals: Amt::units(100),
-                energy: Amt::units(60),
-            },
-            build_time: 20,
             capabilities: HashMap::from([
                 ("detect_sublight".to_string(), CapabilityParams { range: 5.0 }),
                 ("detect_ftl".to_string(), CapabilityParams { range: 3.0 }),
@@ -642,6 +791,17 @@ mod tests {
             prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
                 "advanced_sensors",
             ))),
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(100),
+                    energy: Amt::units(60),
+                },
+                build_time: 20,
+                cargo_size: 1,
+                scrap_refund: 0.5,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
         });
 
         assert_eq!(registry.definitions.len(), 3);
