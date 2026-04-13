@@ -24,7 +24,9 @@
 
 #![allow(dead_code)]
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use std::collections::HashSet;
 
 use crate::components::Position;
 use crate::deep_space::{
@@ -32,9 +34,69 @@ use crate::deep_space::{
     Scrapyard,
 };
 use crate::empire::comms::CommsParams;
+use crate::notifications::NotificationQueue;
 use crate::physics;
 
 use super::ObservationSource;
+
+/// #249: Global event identifier used to dedupe notification banners when the
+/// same world happening is surfaced through both the legacy `GameEvent` flow
+/// and the `KnowledgeFact` pipeline (dual-write transition), and also to
+/// dedupe multiple facts that originate from a single logical event (e.g.
+/// per-ship `CombatDefeat` + all-ships-wiped `CombatDefeat`).
+///
+/// Allocated by [`NextEventId`] via [`NextEventId::allocate`]. Copy semantics
+/// so it's cheap to pass into both a `GameEvent` and a `KnowledgeFact`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct EventId(pub u64);
+
+/// Monotonic counter resource that hands out fresh [`EventId`]s. Ids start at
+/// 1 so that `EventId::default()` (which returns 0) can represent "no id yet"
+/// when useful.
+#[derive(Resource, Debug, Default)]
+pub struct NextEventId {
+    counter: u64,
+}
+
+impl NextEventId {
+    pub fn allocate(&mut self) -> EventId {
+        self.counter = self.counter.wrapping_add(1);
+        EventId(self.counter)
+    }
+
+    pub fn peek(&self) -> u64 {
+        self.counter
+    }
+}
+
+/// Set of [`EventId`]s that have already surfaced a notification banner.
+///
+/// Consumed by both [`crate::notifications::auto_notify_from_events`] and
+/// [`crate::notifications::notify_from_knowledge_facts`] so that a dual-write
+/// (legacy `GameEvent` + `KnowledgeFact`) only produces **one** banner per
+/// underlying world happening. Populated on the first successful push and
+/// checked before every subsequent push for the same `EventId`.
+///
+/// Lifetime: entries are never evicted automatically. The set grows at the
+/// rate of one entry per world happening, which is orders of magnitude below
+/// any realistic memory pressure point. A future optimization could clear
+/// ids older than the oldest pending fact in [`PendingFactQueue`].
+#[derive(Resource, Debug, Default)]
+pub struct NotifiedEventIds {
+    pub ids: HashSet<EventId>,
+}
+
+impl NotifiedEventIds {
+    /// Returns `true` if the id was newly inserted (i.e. this is the first
+    /// time we surface a banner for this event).
+    pub fn mark(&mut self, id: EventId) -> bool {
+        self.ids.insert(id)
+    }
+
+    pub fn contains(&self, id: EventId) -> bool {
+        self.ids.contains(&id)
+    }
+}
 
 /// Base FTL multiplier for relay-routed propagation. `relay_delay` at base
 /// evaluates to `light_delay / 10`. `empire_relay_inv_latency` modifiers stack
@@ -55,10 +117,18 @@ pub enum CombatVictor {
 /// Facts are *events*, not snapshots. Each fact carries enough context to
 /// render a single banner (title + description + priority) without needing
 /// to cross-reference the snapshot store.
+///
+/// #249: Every variant carries an optional `event_id`. When set, the banner
+/// push path looks up [`NotifiedEventIds`] and drops the push if the id has
+/// already fired — this dedupes dual-written events between the legacy
+/// `GameEvent` flow and the fact pipeline, and multi-fact events (per-ship +
+/// wipe CombatDefeat). Scout-only facts with no `GameEvent` counterpart keep
+/// `event_id = None`.
 #[derive(Clone, Debug)]
 pub enum KnowledgeFact {
     /// A hostile contact was detected in deep space (#186 pursuit).
     HostileDetected {
+        event_id: Option<EventId>,
         target: Entity,
         detector: Entity,
         target_pos: [f64; 3],
@@ -66,29 +136,34 @@ pub enum KnowledgeFact {
     },
     /// Combat completed at a star system.
     CombatOutcome {
+        event_id: Option<EventId>,
         system: Entity,
         victor: CombatVictor,
         detail: String,
     },
     /// A star system was fully surveyed.
     SurveyComplete {
+        event_id: Option<EventId>,
         system: Entity,
         system_name: String,
         detail: String,
     },
     /// An anomaly was discovered during a survey.
     AnomalyDiscovered {
+        event_id: Option<EventId>,
         system: Entity,
         anomaly_id: String,
         detail: String,
     },
     /// Non-anomaly survey discovery (legacy exploration event).
     SurveyDiscovery {
+        event_id: Option<EventId>,
         system: Entity,
         detail: String,
     },
     /// A ship / structure was built or destroyed.
     StructureBuilt {
+        event_id: Option<EventId>,
         system: Option<Entity>,
         kind: String,
         name: String,
@@ -97,6 +172,7 @@ pub enum KnowledgeFact {
     },
     /// A colony was founded at a planet.
     ColonyEstablished {
+        event_id: Option<EventId>,
         system: Entity,
         planet: Entity,
         name: String,
@@ -104,12 +180,14 @@ pub enum KnowledgeFact {
     },
     /// A colony attempt failed.
     ColonyFailed {
+        event_id: Option<EventId>,
         system: Entity,
         name: String,
         reason: String,
     },
     /// A ship arrived at a system (routine — usually Low priority).
     ShipArrived {
+        event_id: Option<EventId>,
         system: Option<Entity>,
         name: String,
         detail: String,
@@ -182,6 +260,22 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { system, .. } => Some(*system),
             KnowledgeFact::ColonyFailed { system, .. } => Some(*system),
             KnowledgeFact::ShipArrived { system, .. } => *system,
+        }
+    }
+
+    /// #249: The [`EventId`] attached to this fact, if any. Used by the
+    /// banner push path to dedupe dual-writes and multi-fact events.
+    pub fn event_id(&self) -> Option<EventId> {
+        match self {
+            KnowledgeFact::HostileDetected { event_id, .. }
+            | KnowledgeFact::CombatOutcome { event_id, .. }
+            | KnowledgeFact::SurveyComplete { event_id, .. }
+            | KnowledgeFact::AnomalyDiscovered { event_id, .. }
+            | KnowledgeFact::SurveyDiscovery { event_id, .. }
+            | KnowledgeFact::StructureBuilt { event_id, .. }
+            | KnowledgeFact::ColonyEstablished { event_id, .. }
+            | KnowledgeFact::ColonyFailed { event_id, .. }
+            | KnowledgeFact::ShipArrived { event_id, .. } => *event_id,
         }
     }
 }
@@ -435,6 +529,10 @@ pub fn compute_fact_arrival(
 ///   the returned `arrives_at == observed_at`, `source = Direct`.
 /// - Otherwise the fact is routed through `PendingFactQueue` with an arrival
 ///   time from [`compute_fact_arrival`].
+///
+/// #249: If the fact carries an `EventId`, [`NotifiedEventIds`] is checked on
+/// the local path and updated on first push so a later banner for the same id
+/// (e.g. from `auto_notify_from_events` or a sibling fact) is suppressed.
 #[allow(clippy::too_many_arguments)]
 pub fn record_fact_or_local(
     fact: KnowledgeFact,
@@ -444,6 +542,7 @@ pub fn record_fact_or_local(
     player_pos: [f64; 3],
     queue: &mut PendingFactQueue,
     notifications: &mut crate::notifications::NotificationQueue,
+    notified_ids: &mut NotifiedEventIds,
     relays: &[RelaySnapshot],
     comms: &CommsParams,
 ) -> (i64, ObservationSource) {
@@ -452,13 +551,21 @@ pub fn record_fact_or_local(
     let is_local = player_aboard || origin_pos == player_pos;
 
     if is_local {
-        notifications.push(
-            fact.title().to_string(),
-            fact.description(),
-            None,
-            fact.priority(),
-            fact.related_system(),
-        );
+        let eid = fact.event_id();
+        // Dedupe: only push if this id hasn't surfaced a banner yet.
+        let should_push = match eid {
+            Some(id) => notified_ids.mark(id),
+            None => true,
+        };
+        if should_push {
+            notifications.push(
+                fact.title().to_string(),
+                fact.description(),
+                None,
+                fact.priority(),
+                fact.related_system(),
+            );
+        }
         return (observed_at, ObservationSource::Direct);
     }
 
@@ -473,6 +580,76 @@ pub fn record_fact_or_local(
         related_system,
     });
     (plan.arrives_at, plan.source)
+}
+
+/// #249: Minimal snapshot of the player's observation vantage point. Built
+/// once per callsite from the system's existing queries; passed by reference
+/// to [`record_world_event_fact`] so the helper can make the
+/// local-vs-remote decision without pulling Positions itself.
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerVantage {
+    pub player_pos: [f64; 3],
+    pub player_aboard: bool,
+}
+
+/// #249: SystemParam bundle that groups the six resources / queries that every
+/// fact-writing callsite needs. Keeps the parameter count of the host system
+/// under Bevy's 16-param limit while avoiding a re-query of `Position` (the
+/// callsite supplies the vantage via [`PlayerVantage`]).
+#[derive(SystemParam)]
+pub struct FactSysParam<'w, 's> {
+    pub fact_queue: ResMut<'w, PendingFactQueue>,
+    pub notifications: ResMut<'w, NotificationQueue>,
+    pub notified_ids: ResMut<'w, NotifiedEventIds>,
+    pub next_event_id: ResMut<'w, NextEventId>,
+    pub relay_network: Res<'w, RelayNetwork>,
+    pub empire_comms: Query<
+        'w,
+        's,
+        &'static CommsParams,
+        With<crate::player::PlayerEmpire>,
+    >,
+}
+
+impl<'w, 's> FactSysParam<'w, 's> {
+    /// Shortcut: allocate a fresh [`EventId`] to tag both a [`GameEvent`] and
+    /// its paired [`KnowledgeFact`] so they dedupe against each other.
+    pub fn allocate_event_id(&mut self) -> EventId {
+        self.next_event_id.allocate()
+    }
+}
+
+/// #249: Canonical entry point for world-event callsites. Combines
+/// [`record_fact_or_local`] with a [`PlayerVantage`] and a [`FactSysParam`],
+/// so callsites reduce to a single call (plus whatever `GameEvent` write they
+/// dual-produce).
+///
+/// Returns `(arrives_at, source)` from the underlying scheduler for callers
+/// that want to log the propagation path.
+#[allow(clippy::too_many_arguments)]
+pub fn record_world_event_fact(
+    fact: KnowledgeFact,
+    origin_pos: [f64; 3],
+    observed_at: i64,
+    vantage: &PlayerVantage,
+    queue: &mut PendingFactQueue,
+    notifications: &mut NotificationQueue,
+    notified_ids: &mut NotifiedEventIds,
+    relays: &[RelaySnapshot],
+    comms: &CommsParams,
+) -> (i64, ObservationSource) {
+    record_fact_or_local(
+        fact,
+        origin_pos,
+        observed_at,
+        vantage.player_aboard,
+        vantage.player_pos,
+        queue,
+        notifications,
+        notified_ids,
+        relays,
+        comms,
+    )
 }
 
 #[cfg(test)]
@@ -562,6 +739,7 @@ mod tests {
         let mut q = PendingFactQueue::default();
         q.record(PerceivedFact {
             fact: KnowledgeFact::SurveyComplete {
+                event_id: None,
                 system: Entity::PLACEHOLDER,
                 system_name: "A".into(),
                 detail: "A".into(),
@@ -574,6 +752,7 @@ mod tests {
         });
         q.record(PerceivedFact {
             fact: KnowledgeFact::SurveyComplete {
+                event_id: None,
                 system: Entity::PLACEHOLDER,
                 system_name: "B".into(),
                 detail: "B".into(),
@@ -598,8 +777,10 @@ mod tests {
     fn record_fact_or_local_bypasses_queue_when_player_aboard() {
         let mut queue = PendingFactQueue::default();
         let mut notifs = crate::notifications::NotificationQueue::new();
+        let mut notified = NotifiedEventIds::default();
         let comms = empty_comms();
         let fact = KnowledgeFact::CombatOutcome {
+            event_id: None,
             system: Entity::PLACEHOLDER,
             victor: CombatVictor::Player,
             detail: "On-site victory".into(),
@@ -612,6 +793,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             &mut queue,
             &mut notifs,
+            &mut notified,
             &[],
             &comms,
         );
@@ -625,8 +807,10 @@ mod tests {
     fn record_fact_or_local_queues_remote_event() {
         let mut queue = PendingFactQueue::default();
         let mut notifs = crate::notifications::NotificationQueue::new();
+        let mut notified = NotifiedEventIds::default();
         let comms = empty_comms();
         let fact = KnowledgeFact::HostileDetected {
+            event_id: None,
             target: Entity::PLACEHOLDER,
             detector: Entity::PLACEHOLDER,
             target_pos: [50.0, 0.0, 0.0],
@@ -640,6 +824,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             &mut queue,
             &mut notifs,
+            &mut notified,
             &[],
             &comms,
         );
@@ -647,5 +832,55 @@ mod tests {
         assert_eq!(arrives_at, 50 * 60); // 50 ly × 60 hd
         assert_eq!(queue.pending_len(), 1);
         assert_eq!(notifs.items.len(), 0);
+    }
+
+    #[test]
+    fn record_fact_or_local_dedupes_by_event_id_on_local_path() {
+        let mut queue = PendingFactQueue::default();
+        let mut notifs = crate::notifications::NotificationQueue::new();
+        let mut notified = NotifiedEventIds::default();
+        let comms = empty_comms();
+        let eid = EventId(42);
+
+        let fact1 = KnowledgeFact::CombatOutcome {
+            event_id: Some(eid),
+            system: Entity::PLACEHOLDER,
+            victor: CombatVictor::Player,
+            detail: "first".into(),
+        };
+        record_fact_or_local(
+            fact1,
+            [0.0, 0.0, 0.0],
+            0,
+            false,
+            [0.0, 0.0, 0.0],
+            &mut queue,
+            &mut notifs,
+            &mut notified,
+            &[],
+            &comms,
+        );
+        assert_eq!(notifs.items.len(), 1);
+
+        // Same id again — must NOT produce a second banner.
+        let fact2 = KnowledgeFact::CombatOutcome {
+            event_id: Some(eid),
+            system: Entity::PLACEHOLDER,
+            victor: CombatVictor::Player,
+            detail: "second".into(),
+        };
+        record_fact_or_local(
+            fact2,
+            [0.0, 0.0, 0.0],
+            0,
+            false,
+            [0.0, 0.0, 0.0],
+            &mut queue,
+            &mut notifs,
+            &mut notified,
+            &[],
+            &comms,
+        );
+        assert_eq!(notifs.items.len(), 1, "dedupe must suppress second banner");
     }
 }

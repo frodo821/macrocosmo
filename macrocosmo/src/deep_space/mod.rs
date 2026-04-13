@@ -518,6 +518,7 @@ pub fn spawn_deliverable_entity(
 /// #223: Apply player-scheduled upgrades: for each `ConstructionPlatform` that
 /// has `accumulated >= target.cost`, swap the definition_id to the target,
 /// bump the `LifetimeCost`, and remove the `ConstructionPlatform`.
+#[allow(clippy::too_many_arguments)]
 pub fn tick_platform_upgrade(
     mut commands: Commands,
     registry: Res<StructureRegistry>,
@@ -529,7 +530,21 @@ pub fn tick_platform_upgrade(
         &mut LifetimeCost,
         &mut ConstructionPlatform,
     )>,
+    positions: Query<&crate::components::Position>,
+    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    player_aboard_q: Query<&crate::player::AboardShip, With<crate::player::Player>>,
+    mut fact_sys: crate::knowledge::FactSysParam,
 ) {
+    use crate::knowledge::{record_world_event_fact, KnowledgeFact, PlayerVantage};
+    let player_system = player_q.iter().next().map(|s| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| positions.get(s).ok())
+        .map(|p| p.as_array());
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
     for (entity, mut structure, mut lifetime, mut platform) in platforms.iter_mut() {
         let Some(target_id) = platform.target_id.clone() else {
             continue;
@@ -556,16 +571,50 @@ pub fn tick_platform_upgrade(
             structure.name = new_def.name.clone();
             // Bump lifetime cost by the edge cost.
             lifetime.0.add_assign_saturating(&edge.cost);
+            // #249: Dual-write platform upgrade event.
+            let event_id = fact_sys.allocate_event_id();
+            let desc = format!(
+                "Platform upgraded: {} → {}",
+                old_name,
+                new_def.name,
+            );
             events.write(crate::events::GameEvent {
+                id: event_id,
                 timestamp: clock.elapsed,
                 kind: crate::events::GameEventKind::ShipBuilt,
-                description: format!(
-                    "Platform upgraded: {} → {}",
-                    old_name,
-                    new_def.name,
-                ),
+                description: desc.clone(),
                 related_system: None,
             });
+            let origin_pos: Option<[f64; 3]> =
+                positions.get(entity).ok().map(|p| p.as_array());
+            if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                let comms = fact_sys
+                    .empire_comms
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_default();
+                let relays = fact_sys.relay_network.relays.clone();
+                let fact = KnowledgeFact::StructureBuilt {
+                    event_id: Some(event_id),
+                    system: None,
+                    kind: "platform_upgrade".into(),
+                    name: new_def.name.clone(),
+                    destroyed: false,
+                    detail: desc,
+                };
+                record_world_event_fact(
+                    fact,
+                    op,
+                    clock.elapsed,
+                    &v,
+                    &mut fact_sys.fact_queue,
+                    &mut fact_sys.notifications,
+                    &mut fact_sys.notified_ids,
+                    &relays,
+                    &comms,
+                );
+            }
             info!(
                 "Deep-space structure {:?} upgraded → {}",
                 entity, new_def.name,

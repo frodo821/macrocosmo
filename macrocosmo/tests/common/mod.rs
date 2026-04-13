@@ -273,6 +273,10 @@ pub fn test_app() -> App {
     // the plugin registers egui-coupled systems that tests don't want.
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
     app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
+    // #249: EventId allocator + dedupe set must exist whenever a system that
+    // uses `FactSysParam` / `NextEventId` runs.
+    app.init_resource::<macrocosmo::knowledge::NextEventId>();
+    app.init_resource::<macrocosmo::knowledge::NotifiedEventIds>();
     app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
@@ -470,6 +474,10 @@ pub fn full_test_app() -> App {
     // --- #233 Notification pipeline resources ---
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
     app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
+    // #249: EventId allocator + dedupe set must exist whenever a system that
+    // uses `FactSysParam` / `NextEventId` runs.
+    app.init_resource::<macrocosmo::knowledge::NextEventId>();
+    app.init_resource::<macrocosmo::knowledge::NotifiedEventIds>();
     app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
 
     // --- Ship systems (from ShipPlugin) ---

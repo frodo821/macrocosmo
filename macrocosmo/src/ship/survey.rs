@@ -2,9 +2,12 @@ use bevy::prelude::*;
 
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Anomalies, HostilePresence, StarSystem, SystemAttributes};
-use crate::knowledge::{KnowledgeStore, ObservationSource, SystemKnowledge, SystemSnapshot};
+use crate::knowledge::{
+    record_world_event_fact, FactSysParam, KnowledgeFact, KnowledgeStore, ObservationSource,
+    PlayerVantage, SystemKnowledge, SystemSnapshot,
+};
 use crate::physics::{distance_ly_arr, light_delay_hexadies};
-use crate::player::{Player, PlayerEmpire, StationedAt};
+use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
@@ -91,6 +94,7 @@ pub fn start_survey_with_bonus(
 /// immediately. They auto-queue an FTL return to the player's StationedAt system
 /// if no commands are pending. Non-FTL ships publish results immediately via
 /// light-speed propagation (existing behavior).
+#[allow(clippy::too_many_arguments)]
 pub fn process_surveys(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -98,10 +102,12 @@ pub fn process_surveys(
     mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>, &crate::components::Position, Option<&mut Anomalies>), Without<Ship>>,
     hostiles: Query<&HostilePresence>,
     player_q: Query<&StationedAt, With<Player>>,
+    player_aboard_q: Query<&AboardShip, With<Player>>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
     balance: Res<crate::technology::GameBalance>,
     anomaly_registry: Option<Res<crate::scripting::anomaly_api::AnomalyRegistry>>,
     mut events: MessageWriter<GameEvent>,
+    mut fact_sys: FactSysParam,
 ) {
     let initial_ftl_speed_c = balance.initial_ftl_speed_c();
     let mut rng = rand::rng();
@@ -118,6 +124,13 @@ pub fn process_surveys(
         .next()
         .map(|p| p.ftl_speed_multiplier)
         .unwrap_or(1.0);
+
+    // #249: Snapshot the player's vantage point once — used by fact dual-write.
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_system_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
 
     for (ship_entity, ship, mut state, mut ship_hp, ship_pos, mut cmd_queue) in ships.iter_mut() {
         let (target_system, completes_at) = match *state {
@@ -144,6 +157,8 @@ pub fn process_surveys(
 
                 if use_light_speed {
                     // #110: Light-speed is faster — mark surveyed immediately
+                    let sys_pos_arr: Option<[f64; 3]> =
+                        systems.get(target_system).ok().map(|(_, _, p, _)| p.as_array());
                     if let Ok((mut star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
                         star_system.surveyed = true;
                         let system_name = star_system.name.clone();
@@ -152,21 +167,81 @@ pub fn process_surveys(
                             ship.name, system_name
                         );
 
+                        // #249: Dual-write GameEvent + KnowledgeFact with shared EventId
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!("{} completed survey of {}", ship.name, system_name);
                         events.write(GameEvent {
+                            id: event_id,
                             timestamp: clock.elapsed,
                             kind: GameEventKind::SurveyComplete,
-                            description: format!("{} completed survey of {}", ship.name, system_name),
+                            description: desc.clone(),
                             related_system: Some(target_system),
                         });
+                        if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                            let comms = fact_sys
+                                .empire_comms
+                                .iter()
+                                .next()
+                                .cloned()
+                                .unwrap_or_default();
+                            let relays = fact_sys.relay_network.relays.clone();
+                            let fact = KnowledgeFact::SurveyComplete {
+                                event_id: Some(event_id),
+                                system: target_system,
+                                system_name: system_name.clone(),
+                                detail: desc,
+                            };
+                            record_world_event_fact(
+                                fact,
+                                origin_pos,
+                                clock.elapsed,
+                                &v,
+                                &mut fact_sys.fact_queue,
+                                &mut fact_sys.notifications,
+                                &mut fact_sys.notified_ids,
+                                &relays,
+                                &comms,
+                            );
+                        }
 
                         let has_hostile = hostiles.iter().any(|h| h.system == target_system);
                         if has_hostile {
+                            let event_id = fact_sys.allocate_event_id();
+                            let desc = format!("Warning: Hostile presence detected at {}!", system_name);
                             events.write(GameEvent {
+                                id: event_id,
                                 timestamp: clock.elapsed,
                                 kind: GameEventKind::HostileDetected,
-                                description: format!("Warning: Hostile presence detected at {}!", system_name),
+                                description: desc.clone(),
                                 related_system: Some(target_system),
                             });
+                            if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                                let comms = fact_sys
+                                    .empire_comms
+                                    .iter()
+                                    .next()
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let relays = fact_sys.relay_network.relays.clone();
+                                let fact = KnowledgeFact::HostileDetected {
+                                    event_id: Some(event_id),
+                                    target: Entity::PLACEHOLDER,
+                                    detector: ship_entity,
+                                    target_pos: origin_pos,
+                                    description: desc,
+                                };
+                                record_world_event_fact(
+                                    fact,
+                                    origin_pos,
+                                    clock.elapsed,
+                                    &v,
+                                    &mut fact_sys.fact_queue,
+                                    &mut fact_sys.notifications,
+                                    &mut fact_sys.notified_ids,
+                                    &relays,
+                                    &comms,
+                                );
+                            }
                         }
 
                         // #127: Roll anomaly discovery (with fallback to legacy exploration events)
@@ -176,7 +251,10 @@ pub fn process_surveys(
                         );
                         let _ = anomaly_id; // light-speed: anomaly applied immediately, no need to carry
                     }
-                } else if let Ok((star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
+                } else {
+                    let sys_pos_arr: Option<[f64; 3]> =
+                        systems.get(target_system).ok().map(|(_, _, p, _)| p.as_array());
+                    if let Ok((star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
                     // #103: FTL return is faster — carry back
                     let system_name = star_system.name.clone();
                     info!(
@@ -186,12 +264,44 @@ pub fn process_surveys(
 
                     let has_hostile = hostiles.iter().any(|h| h.system == target_system);
                     if has_hostile {
+                        // #249: Dual-write — hostile visible via light-speed/relay even
+                        // though the ship is FTL-returning the survey data itself.
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!("Warning: Hostile presence detected at {}!", system_name);
                         events.write(GameEvent {
+                            id: event_id,
                             timestamp: clock.elapsed,
                             kind: GameEventKind::HostileDetected,
-                            description: format!("Warning: Hostile presence detected at {}!", system_name),
+                            description: desc.clone(),
                             related_system: Some(target_system),
                         });
+                        if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                            let comms = fact_sys
+                                .empire_comms
+                                .iter()
+                                .next()
+                                .cloned()
+                                .unwrap_or_default();
+                            let relays = fact_sys.relay_network.relays.clone();
+                            let fact = KnowledgeFact::HostileDetected {
+                                event_id: Some(event_id),
+                                target: Entity::PLACEHOLDER,
+                                detector: ship_entity,
+                                target_pos: origin_pos,
+                                description: desc,
+                            };
+                            record_world_event_fact(
+                                fact,
+                                origin_pos,
+                                clock.elapsed,
+                                &v,
+                                &mut fact_sys.fact_queue,
+                                &mut fact_sys.notifications,
+                                &mut fact_sys.notified_ids,
+                                &relays,
+                                &comms,
+                            );
+                        }
                     }
 
                     // #127: Roll anomaly discovery; effects applied immediately, event deferred
@@ -224,9 +334,12 @@ pub fn process_surveys(
                             }
                         }
                     }
+                    }
                 }
             } else {
                 // Non-FTL ship — existing behavior: mark surveyed immediately
+                let sys_pos_arr: Option<[f64; 3]> =
+                    systems.get(target_system).ok().map(|(_, _, p, _)| p.as_array());
                 if let Ok((mut star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
                     star_system.surveyed = true;
                     let system_name = star_system.name.clone();
@@ -235,25 +348,82 @@ pub fn process_surveys(
                         system_name
                     );
 
+                    // #249: Dual-write SurveyComplete
+                    let event_id = fact_sys.allocate_event_id();
+                    let desc = format!("{} completed survey of {}", ship.name, system_name);
                     events.write(GameEvent {
+                        id: event_id,
                         timestamp: clock.elapsed,
                         kind: GameEventKind::SurveyComplete,
-                        description: format!("{} completed survey of {}", ship.name, system_name),
+                        description: desc.clone(),
                         related_system: Some(target_system),
                     });
+                    if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                        let comms = fact_sys
+                            .empire_comms
+                            .iter()
+                            .next()
+                            .cloned()
+                            .unwrap_or_default();
+                        let relays = fact_sys.relay_network.relays.clone();
+                        let fact = KnowledgeFact::SurveyComplete {
+                            event_id: Some(event_id),
+                            system: target_system,
+                            system_name: system_name.clone(),
+                            detail: desc,
+                        };
+                        record_world_event_fact(
+                            fact,
+                            origin_pos,
+                            clock.elapsed,
+                            &v,
+                            &mut fact_sys.fact_queue,
+                            &mut fact_sys.notifications,
+                            &mut fact_sys.notified_ids,
+                            &relays,
+                            &comms,
+                        );
+                    }
 
                     // Check for hostile presence at this system
                     let has_hostile = hostiles.iter().any(|h| h.system == target_system);
                     if has_hostile {
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!("Warning: Hostile presence detected at {}!", system_name);
                         events.write(GameEvent {
+                            id: event_id,
                             timestamp: clock.elapsed,
                             kind: GameEventKind::HostileDetected,
-                            description: format!(
-                                "Warning: Hostile presence detected at {}!",
-                                system_name,
-                            ),
+                            description: desc.clone(),
                             related_system: Some(target_system),
                         });
+                        if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                            let comms = fact_sys
+                                .empire_comms
+                                .iter()
+                                .next()
+                                .cloned()
+                                .unwrap_or_default();
+                            let relays = fact_sys.relay_network.relays.clone();
+                            let fact = KnowledgeFact::HostileDetected {
+                                event_id: Some(event_id),
+                                target: Entity::PLACEHOLDER,
+                                detector: ship_entity,
+                                target_pos: origin_pos,
+                                description: desc,
+                            };
+                            record_world_event_fact(
+                                fact,
+                                origin_pos,
+                                clock.elapsed,
+                                &v,
+                                &mut fact_sys.fact_queue,
+                                &mut fact_sys.notifications,
+                                &mut fact_sys.notified_ids,
+                                &relays,
+                                &comms,
+                            );
+                        }
                     }
 
                     // #127: Roll anomaly discovery (with fallback to legacy exploration events)
@@ -273,19 +443,32 @@ pub fn process_surveys(
 
 /// #103: Deliver survey results when an FTL ship carrying survey data docks
 /// at the player's StationedAt system.
+#[allow(clippy::too_many_arguments)]
 pub fn deliver_survey_results(
     mut commands: Commands,
     clock: Res<GameClock>,
     ships: Query<(Entity, &Ship, &ShipState, &SurveyData)>,
     mut systems: Query<(&mut StarSystem, &crate::components::Position), Without<Ship>>,
     player_q: Query<&StationedAt, With<Player>>,
+    player_aboard_q: Query<&AboardShip, With<Player>>,
     mut empire_q: Query<&mut KnowledgeStore, With<PlayerEmpire>>,
     mut events: MessageWriter<GameEvent>,
+    mut fact_sys: FactSysParam,
 ) {
     let player_system = match player_q.iter().next() {
         Some(s) => s.system,
         None => return,
     };
+
+    // #249: Player vantage — delivered at player's docked system, so origin
+    // matches player_pos → local path in `record_fact_or_local`.
+    let player_pos: Option<[f64; 3]> =
+        systems.get(player_system).ok().map(|(_, p)| p.as_array());
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
 
     for (ship_entity, ship, state, survey_data) in &ships {
         let ShipState::Docked { system: docked_at } = state else {
@@ -324,28 +507,86 @@ pub fn deliver_survey_results(
             }
         }
 
-        // Publish GameEvent
+        // #249: Dual-write SurveyComplete for delivered data.
+        let event_id = fact_sys.allocate_event_id();
+        let desc = format!(
+            "{} delivered survey data for {} (surveyed at t={})",
+            ship.name, survey_data.system_name, survey_data.surveyed_at
+        );
         events.write(GameEvent {
+            id: event_id,
             timestamp: clock.elapsed,
             kind: GameEventKind::SurveyComplete,
-            description: format!(
-                "{} delivered survey data for {} (surveyed at t={})",
-                ship.name, survey_data.system_name, survey_data.surveyed_at
-            ),
+            description: desc.clone(),
             related_system: Some(target),
         });
+        if let (Some(v), Some(pp)) = (vantage, player_pos) {
+            let comms = fact_sys
+                .empire_comms
+                .iter()
+                .next()
+                .cloned()
+                .unwrap_or_default();
+            let relays = fact_sys.relay_network.relays.clone();
+            let fact = KnowledgeFact::SurveyComplete {
+                event_id: Some(event_id),
+                system: target,
+                system_name: survey_data.system_name.clone(),
+                detail: desc,
+            };
+            record_world_event_fact(
+                fact,
+                pp,
+                clock.elapsed,
+                &v,
+                &mut fact_sys.fact_queue,
+                &mut fact_sys.notifications,
+                &mut fact_sys.notified_ids,
+                &relays,
+                &comms,
+            );
+        }
 
         // #127: If anomaly was discovered, fire AnomalyDiscovered event on delivery
         if let Some(ref anomaly_id) = survey_data.anomaly_id {
+            let event_id = fact_sys.allocate_event_id();
+            let desc = format!(
+                "{} reports anomaly '{}' discovered at {} (surveyed at t={})",
+                ship.name, anomaly_id, survey_data.system_name, survey_data.surveyed_at
+            );
             events.write(GameEvent {
+                id: event_id,
                 timestamp: clock.elapsed,
                 kind: GameEventKind::AnomalyDiscovered,
-                description: format!(
-                    "{} reports anomaly '{}' discovered at {} (surveyed at t={})",
-                    ship.name, anomaly_id, survey_data.system_name, survey_data.surveyed_at
-                ),
+                description: desc.clone(),
                 related_system: Some(target),
             });
+            if let (Some(v), Some(pp)) = (vantage, player_pos) {
+                let comms = fact_sys
+                    .empire_comms
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_default();
+                let relays = fact_sys.relay_network.relays.clone();
+                let fact = KnowledgeFact::AnomalyDiscovered {
+                    event_id: Some(event_id),
+                    system: target,
+                    anomaly_id: anomaly_id.clone(),
+                    detail: desc,
+                };
+                record_world_event_fact(
+                    fact,
+                    pp,
+                    clock.elapsed,
+                    &v,
+                    &mut fact_sys.fact_queue,
+                    &mut fact_sys.notifications,
+                    &mut fact_sys.notified_ids,
+                    &relays,
+                    &comms,
+                );
+            }
         }
 
         // Clear survey data from the ship

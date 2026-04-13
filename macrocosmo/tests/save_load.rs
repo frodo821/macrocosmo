@@ -668,6 +668,7 @@ fn test_save_load_preserves_pending_facts() {
     let mut queue = PendingFactQueue::default();
     queue.record(PerceivedFact {
         fact: KnowledgeFact::CombatOutcome {
+            event_id: None,
             system: sol,
             victor: CombatVictor::Player,
             detail: "Won".into(),
@@ -762,12 +763,14 @@ fn test_save_load_preserves_event_log() {
 
     let mut log = EventLog::default();
     log.push(GameEvent {
+        id: macrocosmo::knowledge::EventId::default(),
         timestamp: 100,
         kind: GameEventKind::SurveyComplete,
         description: "Surveyed Alpha Centauri".into(),
         related_system: Some(sol),
     });
     log.push(GameEvent {
+        id: macrocosmo::knowledge::EventId::default(),
         timestamp: 120,
         kind: GameEventKind::ColonyEstablished,
         description: "Colony at Mars".into(),

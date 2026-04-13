@@ -1,10 +1,14 @@
 use bevy::prelude::*;
 use rand::Rng;
 
+use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::{HostilePresence, StarSystem};
-use crate::player::{Player, StationedAt};
+use crate::knowledge::{
+    record_world_event_fact, CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage,
+};
+use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
 use crate::time_system::GameClock;
 
@@ -92,6 +96,7 @@ fn apply_flat_damage_to_ship(hp: &mut ShipHitpoints, damage: f64) {
 /// `HostilePresence` co-located with the ship. A more granular
 /// damage-event-driven counter-attack model is intentionally out of scope
 /// here.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_combat(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -100,9 +105,10 @@ pub fn resolve_combat(
     mut hostiles: Query<(Entity, &mut HostilePresence, Option<&FactionOwner>)>,
     relations: Res<FactionRelations>,
     module_registry: Res<ModuleRegistry>,
-    systems: Query<(Entity, &StarSystem)>,
+    systems: Query<(Entity, &StarSystem, &Position)>,
     mut events: MessageWriter<GameEvent>,
-    mut player_q: Query<(Entity, &mut StationedAt, Option<&crate::player::AboardShip>), With<Player>>,
+    mut player_q: Query<(Entity, &mut StationedAt, Option<&AboardShip>), With<Player>>,
+    mut fact_sys: FactSysParam,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -117,10 +123,28 @@ pub fn resolve_combat(
         .map(|(e, h, owner)| (e, h.system, h.strength, h.hp, h.max_hp, h.hostile_type, h.evasion, owner.map(|o| o.0)))
         .collect();
 
+    // #249: Snapshot player vantage once — used by CombatVictory / CombatDefeat fact dual-writes.
+    let player_stationed_system = player_q
+        .iter()
+        .next()
+        .map(|(_, s, _)| s.system);
+    let player_pos: Option<[f64; 3]> = player_stationed_system
+        .and_then(|s| systems.get(s).ok())
+        .map(|(_, _, p)| p.as_array());
+    let player_aboard = player_q
+        .iter()
+        .next()
+        .and_then(|(_, _, a)| a.map(|_| ()))
+        .is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
+
     for (hostile_entity, system_entity, _hostile_strength, _hostile_hp, _hostile_max_hp, _hostile_type, hostile_evasion, hostile_faction) in &hostile_data {
-        let system_name = systems
+        let (system_name, system_pos_arr): (String, Option<[f64; 3]>) = systems
             .get(*system_entity)
-            .map(|(_, s)| s.name.clone())
+            .map(|(_, s, p)| (s.name.clone(), Some(p.as_array())))
             .unwrap_or_default();
 
         // #168: Skip hostiles without a FactionOwner — they have no diplomatic
@@ -222,15 +246,45 @@ pub fn resolve_combat(
         // Check if hostile is destroyed
         if hostile.hp <= 0.0 {
             commands.entity(*hostile_entity).despawn();
+            // #249: Dual-write CombatVictory.
+            let event_id = fact_sys.allocate_event_id();
+            let desc = format!(
+                "Victory! Hostile {:?} at {} has been defeated",
+                hostile.hostile_type, system_name
+            );
             events.write(GameEvent {
+                id: event_id,
                 timestamp: clock.elapsed,
                 kind: GameEventKind::CombatVictory,
-                description: format!(
-                    "Victory! Hostile {:?} at {} has been defeated",
-                    hostile.hostile_type, system_name
-                ),
+                description: desc.clone(),
                 related_system: Some(*system_entity),
             });
+            if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                let comms = fact_sys
+                    .empire_comms
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_default();
+                let relays = fact_sys.relay_network.relays.clone();
+                let fact = KnowledgeFact::CombatOutcome {
+                    event_id: Some(event_id),
+                    system: *system_entity,
+                    victor: CombatVictor::Player,
+                    detail: desc,
+                };
+                record_world_event_fact(
+                    fact,
+                    op,
+                    clock.elapsed,
+                    &v,
+                    &mut fact_sys.fact_queue,
+                    &mut fact_sys.notifications,
+                    &mut fact_sys.notified_ids,
+                    &relays,
+                    &comms,
+                );
+            }
             continue;
         }
 
@@ -262,13 +316,14 @@ pub fn resolve_combat(
                         if aboard_ship.ship == *entity {
                             // Find capital system entity
                             let capital_entity = systems.iter()
-                                .find(|(_, s)| s.is_capital)
-                                .map(|(e, _)| e);
+                                .find(|(_, s, _)| s.is_capital)
+                                .map(|(e, _, _)| e);
                             if let Some(cap_entity) = capital_entity {
                                 stationed.system = cap_entity;
                             }
                             commands.entity(player_entity).remove::<crate::player::AboardShip>();
                             events.write(GameEvent {
+                                id: fact_sys.allocate_event_id(),
                                 timestamp: clock.elapsed,
                                 kind: GameEventKind::PlayerRespawn,
                                 description: "Flagship destroyed! Respawned at capital.".to_string(),
@@ -278,27 +333,88 @@ pub fn resolve_combat(
                     }
                 }
                 commands.entity(*entity).despawn();
+                // #249: Per-ship CombatDefeat, dual-written.
+                let event_id = fact_sys.allocate_event_id();
+                let desc = format!("{} destroyed in combat at {}", name, system_name);
                 events.write(GameEvent {
+                    id: event_id,
                     timestamp: clock.elapsed,
                     kind: GameEventKind::CombatDefeat,
-                    description: format!("{} destroyed in combat at {}", name, system_name),
+                    description: desc.clone(),
                     related_system: Some(*system_entity),
                 });
+                if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                    let comms = fact_sys
+                        .empire_comms
+                        .iter()
+                        .next()
+                        .cloned()
+                        .unwrap_or_default();
+                    let relays = fact_sys.relay_network.relays.clone();
+                    let fact = KnowledgeFact::CombatOutcome {
+                        event_id: Some(event_id),
+                        system: *system_entity,
+                        victor: CombatVictor::Hostile,
+                        detail: desc,
+                    };
+                    record_world_event_fact(
+                        fact,
+                        op,
+                        clock.elapsed,
+                        &v,
+                        &mut fact_sys.fact_queue,
+                        &mut fact_sys.notifications,
+                        &mut fact_sys.notified_ids,
+                        &relays,
+                        &comms,
+                    );
+                }
             }
 
             // Check if all player ships at this system are destroyed
             let surviving = docked_ships.len() - destroyed_ships.len();
             if surviving == 0 {
+                // #249: Wipe CombatDefeat — same EventId dedupe suppresses the
+                // extra banner when per-ship defeats already surfaced one.
+                let event_id = fact_sys.allocate_event_id();
+                let desc = format!(
+                    "All ships destroyed by hostile {:?} at {}",
+                    hostile_tp,
+                    system_name
+                );
                 events.write(GameEvent {
+                    id: event_id,
                     timestamp: clock.elapsed,
                     kind: GameEventKind::CombatDefeat,
-                    description: format!(
-                        "All ships destroyed by hostile {:?} at {}",
-                        hostile_tp,
-                        system_name
-                    ),
+                    description: desc.clone(),
                     related_system: Some(*system_entity),
                 });
+                if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                    let comms = fact_sys
+                        .empire_comms
+                        .iter()
+                        .next()
+                        .cloned()
+                        .unwrap_or_default();
+                    let relays = fact_sys.relay_network.relays.clone();
+                    let fact = KnowledgeFact::CombatOutcome {
+                        event_id: Some(event_id),
+                        system: *system_entity,
+                        victor: CombatVictor::Hostile,
+                        detail: desc,
+                    };
+                    record_world_event_fact(
+                        fact,
+                        op,
+                        clock.elapsed,
+                        &v,
+                        &mut fact_sys.fact_queue,
+                        &mut fact_sys.notifications,
+                        &mut fact_sys.notified_ids,
+                        &relays,
+                        &comms,
+                    );
+                }
             }
         }
     }

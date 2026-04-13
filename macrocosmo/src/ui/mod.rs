@@ -849,6 +849,7 @@ fn draw_main_panels_system(
             scrap.ship_name, scrap.system_name, scrap.minerals_refund, scrap.energy_refund
         );
         game_events.write(GameEvent {
+            id: crate::knowledge::EventId::default(),
             timestamp: clock.elapsed,
             kind: GameEventKind::ShipScrapped,
             description,

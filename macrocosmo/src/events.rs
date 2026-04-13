@@ -1,13 +1,43 @@
 use bevy::prelude::*;
 
+use crate::knowledge::{EventId, NextEventId};
 use crate::time_system::GameSpeed;
 
 #[derive(Message, Clone, Debug)]
 pub struct GameEvent {
+    /// #249: Unique id used to dedupe notification banners that arrive through
+    /// both the legacy event log and the `KnowledgeFact` pipeline for the same
+    /// underlying world happening. Allocated from [`NextEventId`] by the
+    /// emitting system; `EventId::default()` (== `EventId(0)`) marks an event
+    /// that predates the id-dedupe migration.
+    pub id: EventId,
     pub timestamp: i64,
     pub kind: GameEventKind,
     pub description: String,
     pub related_system: Option<Entity>,
+}
+
+impl GameEvent {
+    /// Construct a `GameEvent` tagged with a freshly allocated [`EventId`].
+    /// Callers that *also* write a paired `KnowledgeFact` should instead
+    /// allocate the id explicitly (via [`NextEventId::allocate`] or
+    /// [`crate::knowledge::FactSysParam::allocate_event_id`]) and reuse the
+    /// same id in both the event and the fact.
+    pub fn new(
+        next_id: &mut NextEventId,
+        timestamp: i64,
+        kind: GameEventKind,
+        description: String,
+        related_system: Option<Entity>,
+    ) -> Self {
+        Self {
+            id: next_id.allocate(),
+            timestamp,
+            kind,
+            description,
+            related_system,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +111,8 @@ impl Plugin for EventsPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<GameEvent>()
             .insert_resource(EventLog::default())
+            .init_resource::<NextEventId>()
+            .init_resource::<crate::knowledge::NotifiedEventIds>()
             .add_systems(Update, (collect_events, auto_pause_on_event));
     }
 }
@@ -113,6 +145,7 @@ mod tests {
 
     fn make_event(timestamp: i64, kind: GameEventKind, desc: &str) -> GameEvent {
         GameEvent {
+            id: EventId::default(),
             timestamp,
             kind,
             description: desc.to_string(),

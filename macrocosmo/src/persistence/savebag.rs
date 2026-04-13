@@ -2476,117 +2476,182 @@ pub enum SavedKnowledgeFact {
         detector_bits: u64,
         target_pos: [f64; 3],
         description: String,
+        #[serde(default)]
+        event_id: Option<u64>,
     },
-    CombatOutcome { system_bits: u64, victor: SavedCombatVictor, detail: String },
-    SurveyComplete { system_bits: u64, system_name: String, detail: String },
-    AnomalyDiscovered { system_bits: u64, anomaly_id: String, detail: String },
-    SurveyDiscovery { system_bits: u64, detail: String },
+    CombatOutcome {
+        system_bits: u64,
+        victor: SavedCombatVictor,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
+    SurveyComplete {
+        system_bits: u64,
+        system_name: String,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
+    AnomalyDiscovered {
+        system_bits: u64,
+        anomaly_id: String,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
+    SurveyDiscovery {
+        system_bits: u64,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
     StructureBuilt {
         system_bits: Option<u64>,
         kind: String,
         name: String,
         destroyed: bool,
         detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
     },
-    ColonyEstablished { system_bits: u64, planet_bits: u64, name: String, detail: String },
-    ColonyFailed { system_bits: u64, name: String, reason: String },
-    ShipArrived { system_bits: Option<u64>, name: String, detail: String },
+    ColonyEstablished {
+        system_bits: u64,
+        planet_bits: u64,
+        name: String,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
+    ColonyFailed {
+        system_bits: u64,
+        name: String,
+        reason: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
+    ShipArrived {
+        system_bits: Option<u64>,
+        name: String,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
 }
 
 impl SavedKnowledgeFact {
     pub fn from_live(v: &KnowledgeFact) -> Self {
         match v {
-            KnowledgeFact::HostileDetected { target, detector, target_pos, description } => Self::HostileDetected {
+            KnowledgeFact::HostileDetected { event_id, target, detector, target_pos, description } => Self::HostileDetected {
                 target_bits: target.to_bits(),
                 detector_bits: detector.to_bits(),
                 target_pos: *target_pos,
                 description: description.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::CombatOutcome { system, victor, detail } => Self::CombatOutcome {
+            KnowledgeFact::CombatOutcome { event_id, system, victor, detail } => Self::CombatOutcome {
                 system_bits: system.to_bits(),
                 victor: victor.into(),
                 detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::SurveyComplete { system, system_name, detail } => Self::SurveyComplete {
+            KnowledgeFact::SurveyComplete { event_id, system, system_name, detail } => Self::SurveyComplete {
                 system_bits: system.to_bits(),
                 system_name: system_name.clone(),
                 detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::AnomalyDiscovered { system, anomaly_id, detail } => Self::AnomalyDiscovered {
+            KnowledgeFact::AnomalyDiscovered { event_id, system, anomaly_id, detail } => Self::AnomalyDiscovered {
                 system_bits: system.to_bits(),
                 anomaly_id: anomaly_id.clone(),
                 detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::SurveyDiscovery { system, detail } => Self::SurveyDiscovery {
+            KnowledgeFact::SurveyDiscovery { event_id, system, detail } => Self::SurveyDiscovery {
                 system_bits: system.to_bits(),
                 detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::StructureBuilt { system, kind, name, destroyed, detail } => Self::StructureBuilt {
+            KnowledgeFact::StructureBuilt { event_id, system, kind, name, destroyed, detail } => Self::StructureBuilt {
                 system_bits: system.map(|e| e.to_bits()),
                 kind: kind.clone(),
                 name: name.clone(),
                 destroyed: *destroyed,
                 detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::ColonyEstablished { system, planet, name, detail } => Self::ColonyEstablished {
+            KnowledgeFact::ColonyEstablished { event_id, system, planet, name, detail } => Self::ColonyEstablished {
                 system_bits: system.to_bits(),
                 planet_bits: planet.to_bits(),
                 name: name.clone(),
                 detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::ColonyFailed { system, name, reason } => Self::ColonyFailed {
+            KnowledgeFact::ColonyFailed { event_id, system, name, reason } => Self::ColonyFailed {
                 system_bits: system.to_bits(),
                 name: name.clone(),
                 reason: reason.clone(),
+                event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::ShipArrived { system, name, detail } => Self::ShipArrived {
+            KnowledgeFact::ShipArrived { event_id, system, name, detail } => Self::ShipArrived {
                 system_bits: system.map(|e| e.to_bits()),
                 name: name.clone(),
                 detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
             },
         }
     }
     pub fn into_live(self, map: &EntityMap) -> KnowledgeFact {
+        use crate::knowledge::EventId;
         match self {
-            Self::HostileDetected { target_bits, detector_bits, target_pos, description } => KnowledgeFact::HostileDetected {
+            Self::HostileDetected { target_bits, detector_bits, target_pos, description, event_id } => KnowledgeFact::HostileDetected {
+                event_id: event_id.map(EventId),
                 target: remap_entity(target_bits, map),
                 detector: remap_entity(detector_bits, map),
                 target_pos,
                 description,
             },
-            Self::CombatOutcome { system_bits, victor, detail } => KnowledgeFact::CombatOutcome {
+            Self::CombatOutcome { system_bits, victor, detail, event_id } => KnowledgeFact::CombatOutcome {
+                event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 victor: victor.into(),
                 detail,
             },
-            Self::SurveyComplete { system_bits, system_name, detail } => KnowledgeFact::SurveyComplete {
+            Self::SurveyComplete { system_bits, system_name, detail, event_id } => KnowledgeFact::SurveyComplete {
+                event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 system_name,
                 detail,
             },
-            Self::AnomalyDiscovered { system_bits, anomaly_id, detail } => KnowledgeFact::AnomalyDiscovered {
+            Self::AnomalyDiscovered { system_bits, anomaly_id, detail, event_id } => KnowledgeFact::AnomalyDiscovered {
+                event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 anomaly_id,
                 detail,
             },
-            Self::SurveyDiscovery { system_bits, detail } => KnowledgeFact::SurveyDiscovery {
+            Self::SurveyDiscovery { system_bits, detail, event_id } => KnowledgeFact::SurveyDiscovery {
+                event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 detail,
             },
-            Self::StructureBuilt { system_bits, kind, name, destroyed, detail } => KnowledgeFact::StructureBuilt {
+            Self::StructureBuilt { system_bits, kind, name, destroyed, detail, event_id } => KnowledgeFact::StructureBuilt {
+                event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
                 kind, name, destroyed, detail,
             },
-            Self::ColonyEstablished { system_bits, planet_bits, name, detail } => KnowledgeFact::ColonyEstablished {
+            Self::ColonyEstablished { system_bits, planet_bits, name, detail, event_id } => KnowledgeFact::ColonyEstablished {
+                event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 planet: remap_entity(planet_bits, map),
                 name, detail,
             },
-            Self::ColonyFailed { system_bits, name, reason } => KnowledgeFact::ColonyFailed {
+            Self::ColonyFailed { system_bits, name, reason, event_id } => KnowledgeFact::ColonyFailed {
+                event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 name, reason,
             },
-            Self::ShipArrived { system_bits, name, detail } => KnowledgeFact::ShipArrived {
+            Self::ShipArrived { system_bits, name, detail, event_id } => KnowledgeFact::ShipArrived {
+                event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
                 name, detail,
             },
@@ -3146,6 +3211,10 @@ pub struct SavedGameEvent {
     pub kind: SavedGameEventKind,
     pub description: String,
     pub related_system_bits: Option<u64>,
+    /// #249: Optional for backward compatibility with pre-migration saves.
+    /// Deserialized `None` maps to `EventId::default()` on load.
+    #[serde(default)]
+    pub event_id: Option<u64>,
 }
 impl SavedGameEvent {
     pub fn from_live(v: &GameEvent) -> Self {
@@ -3154,10 +3223,12 @@ impl SavedGameEvent {
             kind: (&v.kind).into(),
             description: v.description.clone(),
             related_system_bits: v.related_system.map(|e| e.to_bits()),
+            event_id: Some(v.id.0),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> GameEvent {
         GameEvent {
+            id: crate::knowledge::EventId(self.event_id.unwrap_or(0)),
             timestamp: self.timestamp,
             kind: self.kind.into(),
             description: self.description,

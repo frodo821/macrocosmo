@@ -41,7 +41,7 @@ use crate::empire::CommsParams;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::knowledge::{
-    compute_fact_arrival, KnowledgeFact, PendingFactQueue, PerceivedFact, RelayNetwork,
+    compute_fact_arrival, KnowledgeFact, NextEventId, PendingFactQueue, PerceivedFact, RelayNetwork,
 };
 use crate::physics;
 use crate::player::{Player, PlayerEmpire, StationedAt};
@@ -180,6 +180,7 @@ pub fn detect_hostiles_system(
     mut detected: Query<&mut DetectedHostiles>,
     mut events: MessageWriter<GameEvent>,
     mut fact_queue: ResMut<PendingFactQueue>,
+    mut next_event_id: ResMut<NextEventId>,
     relay_network: Option<Res<RelayNetwork>>,
     player_q: Query<&StationedAt, With<Player>>,
     empire_q: Query<&CommsParams, With<PlayerEmpire>>,
@@ -304,9 +305,13 @@ pub fn detect_hostiles_system(
                 det.target_pos[1],
                 det.target_pos[2],
             );
+            // #249: Shared EventId between the legacy GameEvent and the paired
+            // KnowledgeFact so NotifiedEventIds dedupe keeps only one banner.
+            let event_id = next_event_id.allocate();
             // EventLog + auto_pause still receive the raw event (the notification
             // path is the one gaining light-speed delay).
             events.write(GameEvent {
+                id: event_id,
                 timestamp: now,
                 kind: GameEventKind::HostileDetected,
                 description: description.clone(),
@@ -340,6 +345,7 @@ pub fn detect_hostiles_system(
                 );
                 fact_queue.record(PerceivedFact {
                     fact: KnowledgeFact::HostileDetected {
+                        event_id: Some(event_id),
                         target: det.target,
                         detector: det.detector,
                         target_pos: det.target_pos,
