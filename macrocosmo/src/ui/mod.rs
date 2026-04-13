@@ -47,6 +47,16 @@ use params::{
 #[derive(Resource, Default)]
 pub struct ResearchPanelOpen(pub bool);
 
+/// #252: Selected tab in the colony detail panel. `Overview` retains the
+/// pre-existing income/buildings view; `PopManagement` shows population
+/// breakdown, job slot assignments, and per-job production contributions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ColonyPanelTab {
+    #[default]
+    Overview,
+    PopManagement,
+}
+
 /// Intermediate resource holding pre-computed UI data shared across systems.
 /// Written by `compute_ui_state`, read by drawing systems.
 #[derive(Resource, Default)]
@@ -63,6 +73,8 @@ pub struct UiState {
     pub net_food: SignedAmt,
     pub net_authority: SignedAmt,
     pub capital_stockpile: Option<(Amt, Amt)>,
+    /// #252: Which tab is active in the colony detail window.
+    pub colony_panel_tab: ColonyPanelTab,
 }
 
 pub struct UiPlugin;
@@ -484,7 +496,7 @@ fn draw_main_panels_system(
     mut commands: Commands,
     mut contexts: EguiContexts,
     clock: Res<GameClock>,
-    ui_state: Res<UiState>,
+    mut ui_state: ResMut<UiState>,
     mut selection: MainPanelSelection,
     registries: MainPanelRegistries,
     building_registry: Res<BuildingRegistry>,
@@ -581,6 +593,7 @@ fn draw_main_panels_system(
         &stars,
         &player_q,
         &mut colonies,
+        &world.colony_pop_view,
         &mut world.stockpiles,
         &mut ships_query,
         &world.positions,
@@ -596,6 +609,8 @@ fn draw_main_panels_system(
         &world.colonization_queues,
         &mut colonization_actions,
         &building_registry,
+        &registries.job_registry,
+        &mut ui_state.colony_panel_tab,
         &world.anomalies,
         &world.deliverable_stockpiles,
         &world.deep_space_structures,

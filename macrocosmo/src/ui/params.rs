@@ -2,9 +2,10 @@ use bevy::prelude::*;
 use bevy::ecs::system::SystemParam;
 
 use crate::colony::{
-    ColonizationQueue, DeliverableStockpile, ResourceCapacity, ResourceStockpile,
+    ColonizationQueue, ColonyJobRates, DeliverableStockpile, ResourceCapacity, ResourceStockpile,
     SystemBuildingQueue, SystemBuildings,
 };
+use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
 use crate::galaxy::{Anomalies, HostilePresence, Planet, StarSystem, SystemAttributes};
@@ -47,6 +48,20 @@ pub struct MainPanelWorldQueries<'w, 's> {
             Option<&'static Scrapyard>,
         ),
     >,
+    /// #252: Read-only colony pop/job view for the Pop management tab on
+    /// the colony detail panel. Separated from the main mutable `colonies`
+    /// query in `draw_main_panels_system` to avoid B0001 conflicts and to
+    /// keep that query's tuple arity stable.
+    pub colony_pop_view: Query<
+        'w,
+        's,
+        (
+            Entity,
+            Option<&'static ColonyPopulation>,
+            Option<&'static ColonyJobs>,
+            Option<&'static ColonyJobRates>,
+        ),
+    >,
 }
 
 #[derive(SystemParam)]
@@ -80,4 +95,6 @@ pub struct MainPanelRegistries<'w> {
     pub hull_registry: Res<'w, HullRegistry>,
     pub module_registry: Res<'w, ModuleRegistry>,
     pub design_registry: Res<'w, ShipDesignRegistry>,
+    /// #252: Job registry — consumed by the colony panel Pop management tab.
+    pub job_registry: Res<'w, JobRegistry>,
 }
