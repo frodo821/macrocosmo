@@ -524,6 +524,38 @@ pub fn load_ship_designs(
     }
 }
 
+/// #226: derive a ship design's effective prerequisites from its hull and
+/// modules. A design has no first-class `prerequisites` field — instead the
+/// conditions gating the underlying hull + modules are composed here.
+///
+/// * 0 sub-conditions → `None`
+/// * 1 sub-condition   → the sub-condition unwrapped (avoids a noisy `All([X])`)
+/// * N sub-conditions  → `Condition::All(...)`
+pub fn ship_design_effective_prerequisites(
+    design: &ShipDesignDefinition,
+    hulls: &HullRegistry,
+    modules: &ModuleRegistry,
+) -> Option<Condition> {
+    let mut parts: Vec<Condition> = Vec::new();
+    if let Some(hull) = hulls.get(&design.hull_id) {
+        if let Some(c) = &hull.prerequisites {
+            parts.push(c.clone());
+        }
+    }
+    for assign in &design.modules {
+        if let Some(m) = modules.get(&assign.module_id) {
+            if let Some(c) = &m.prerequisites {
+                parts.push(c.clone());
+            }
+        }
+    }
+    match parts.len() {
+        0 => None,
+        1 => Some(parts.into_iter().next().unwrap()),
+        _ => Some(Condition::All(parts)),
+    }
+}
+
 /// Compute total cost for a ship design: hull cost + sum of module costs.
 /// Returns (minerals, energy, build_time, maintenance).
 pub fn design_cost(
@@ -964,6 +996,65 @@ mod tests {
         // Both module costs are zero in the fixture, so refit cost is zero.
         assert_eq!(m, Amt::ZERO);
         assert_eq!(e, Amt::ZERO);
+    }
+
+    #[test]
+    fn ship_design_effective_prereqs_empty_when_none() {
+        let (hulls, modules) = validation_fixture();
+        let design = make_design(
+            "noop",
+            vec![DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() }],
+        );
+        assert!(ship_design_effective_prerequisites(&design, &hulls, &modules).is_none());
+    }
+
+    #[test]
+    fn ship_design_effective_prereqs_single_unwrapped_not_wrapped_in_all() {
+        use crate::condition::ConditionAtom;
+        let (mut hulls, modules) = validation_fixture();
+        // Attach a prerequisite to the corvette hull.
+        let mut corvette = hulls.get("corvette").unwrap().clone();
+        corvette.prerequisites = Some(Condition::Atom(ConditionAtom::has_tech("hull_corvette")));
+        hulls.insert(corvette);
+
+        let design = make_design(
+            "ok",
+            vec![DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() }],
+        );
+        let eff = ship_design_effective_prerequisites(&design, &hulls, &modules);
+        // Exactly one contributing condition (hull's). Must not be wrapped in All.
+        assert_eq!(
+            eff,
+            Some(Condition::Atom(ConditionAtom::has_tech("hull_corvette")))
+        );
+    }
+
+    #[test]
+    fn ship_design_effective_prereqs_derived_from_hull_and_modules() {
+        use crate::condition::ConditionAtom;
+        let (mut hulls, mut modules) = validation_fixture();
+        // Hull requires tech T1.
+        let mut corvette = hulls.get("corvette").unwrap().clone();
+        corvette.prerequisites = Some(Condition::Atom(ConditionAtom::has_tech("T1")));
+        hulls.insert(corvette);
+        // FTL drive module requires tech T2.
+        let mut ftl = modules.get("ftl_drive").unwrap().clone();
+        ftl.prerequisites = Some(Condition::Atom(ConditionAtom::has_tech("T2")));
+        modules.insert(ftl);
+
+        let design = make_design(
+            "ok",
+            vec![DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() }],
+        );
+        let eff = ship_design_effective_prerequisites(&design, &hulls, &modules);
+        match eff {
+            Some(Condition::All(parts)) => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0], Condition::Atom(ConditionAtom::has_tech("T1")));
+                assert_eq!(parts[1], Condition::Atom(ConditionAtom::has_tech("T2")));
+            }
+            other => panic!("expected Condition::All, got {:?}", other),
+        }
     }
 
     #[test]
