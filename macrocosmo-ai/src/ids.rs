@@ -112,6 +112,14 @@ arc_str_id! {
     ObjectiveId
 }
 
+arc_str_id! {
+    /// Identifier for an intent (e.g. `"attack_target"`, `"expand_to_system"`).
+    ///
+    /// Intents are concrete action dispatches derived from an Objective; in
+    /// Assessment they are keyed for per-intent precondition summaries.
+    IntentId
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

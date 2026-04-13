@@ -13,6 +13,7 @@
 //! Phase 1 + 2 の範囲については issue #195 を参照。
 
 pub mod ai_params;
+pub mod assessment;
 pub mod bus;
 pub mod campaign;
 pub mod command;
@@ -60,8 +61,16 @@ pub use projection::{
     WindowKind, WindowRationale,
 };
 pub use ids::{
-    CommandKindId, EntityRef, EvidenceKindId, FactionId, FactionRef, MetricId, ObjectiveId,
-    SystemRef,
+    CommandKindId, EntityRef, EvidenceKindId, FactionId, FactionRef, IntentId, MetricId,
+    ObjectiveId, SystemRef,
+};
+pub use assessment::{
+    build_assessment, build_economic_snapshot, build_tech_position_snapshot,
+    compute_economic_capacity, compute_feasibility, compute_fleet_readiness,
+    compute_overall_confidence, compute_tech_lead, compute_threat_level, critical_violation_penalty,
+    gather_trajectory_metric_ids, objective_kind, Assessment, AssessmentConfig, EconomicBaseline,
+    EconomicCapacityWeights, EconomicSnapshot, FleetSnapshot, ObjectiveKind, ResourceVector,
+    TechLeadWeights, TechPositionSnapshot,
 };
 pub use retention::Retention;
 pub use spec::{CommandSpec, EvidenceSpec, MetricSpec, MetricType};
