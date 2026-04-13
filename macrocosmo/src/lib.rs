@@ -7,6 +7,7 @@ pub mod components;
 pub mod condition;
 pub mod deep_space;
 pub mod effect;
+pub mod empire;
 pub mod event_system;
 pub mod events;
 pub mod faction;

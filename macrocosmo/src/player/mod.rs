@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::colony::{AuthorityParams, ConstructionParams};
 use crate::communication::CommandLog;
+use crate::empire::CommsParams;
 use crate::components::Position;
 use crate::galaxy::StarSystem;
 use crate::ship::{Ship, ShipState};
@@ -67,6 +68,7 @@ pub fn spawn_player_empire(mut commands: Commands) {
             CommandLog::default(),
             ScopedFlags::default(),
             PendingColonyTechModifiers::default(),
+            CommsParams::default(),
         ),
     ));
     info!("Player empire entity spawned");

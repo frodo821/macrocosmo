@@ -13,8 +13,9 @@
 use bevy::prelude::*;
 
 use crate::events::{GameEvent, GameEventKind};
+use crate::knowledge::{PendingFactQueue, PerceivedFact};
 use crate::scripting::ScriptEngine;
-use crate::time_system::GameSpeed;
+use crate::time_system::{GameClock, GameSpeed};
 
 /// Severity / behavior class for a banner notification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,14 +230,36 @@ fn title_for_event_kind(kind: &GameEventKind) -> &'static str {
     }
 }
 
-/// System that mirrors important `GameEvent`s into the notification queue.
+/// #233: Whitelist of `GameEventKind` variants still routed through the
+/// legacy `GameEvent → NotificationQueue` path. All other world-facing kinds
+/// now flow through `PendingFactQueue` (light-speed / relay-delayed).
+///
+/// The whitelist is intentionally narrow: only events whose information
+/// *cannot* be delayed without breaking the gameplay contract. The player
+/// respawn is an engine-level fact (not a remote observation) and the
+/// resource alert is a capital-aggregated warning with no light-speed origin.
+pub fn is_legacy_whitelisted(kind: &GameEventKind) -> bool {
+    matches!(
+        kind,
+        GameEventKind::PlayerRespawn | GameEventKind::ResourceAlert,
+    )
+}
+
+/// System that mirrors **whitelisted** `GameEvent`s into the notification
+/// queue (#233). Non-whitelisted world events are routed through the
+/// `PendingFactQueue` pipeline instead — this system intentionally ignores
+/// them to avoid double-notifications in the dual-write transition window.
+///
 /// Runs alongside (not instead of) `collect_events` so the event log is
-/// preserved.
+/// preserved for every `GameEvent`.
 pub fn auto_notify_from_events(
     mut reader: MessageReader<GameEvent>,
     mut queue: ResMut<NotificationQueue>,
 ) {
     for event in reader.read() {
+        if !is_legacy_whitelisted(&event.kind) {
+            continue;
+        }
         if let Some(priority) = priority_for_event_kind(&event.kind) {
             queue.push(
                 title_for_event_kind(&event.kind).to_string(),
@@ -245,6 +268,32 @@ pub fn auto_notify_from_events(
                 priority,
                 event.related_system,
             );
+        }
+    }
+}
+
+/// #233: Drain facts whose arrival time has been reached and push them into
+/// the notification queue. Runs after `advance_game_time` so fresh facts
+/// written the same tick can arrive at `observed_at == clock.elapsed`.
+///
+/// This is the systems-1 counterpart of `auto_notify_from_events`. Together
+/// the two cover the full notification surface area while keeping the
+/// light-speed contract intact for remote observations.
+pub fn notify_from_knowledge_facts(
+    clock: Res<GameClock>,
+    mut queue: ResMut<PendingFactQueue>,
+    mut notifications: ResMut<NotificationQueue>,
+    mut speed: ResMut<GameSpeed>,
+) {
+    let ready = queue.drain_ready(clock.elapsed);
+    for PerceivedFact { fact, .. } in ready {
+        let priority = fact.priority();
+        let title = fact.title().to_string();
+        let description = fact.description();
+        let related = fact.related_system();
+        let id = notifications.push(title, description, None, priority, related);
+        if id.is_some() && priority.pauses_game() {
+            speed.pause();
         }
     }
 }
@@ -307,10 +356,11 @@ pub struct NotificationsPlugin;
 impl Plugin for NotificationsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(NotificationQueue::new())
+            .init_resource::<PendingFactQueue>()
             .add_systems(Update, (tick_notifications, auto_notify_from_events))
             .add_systems(
                 Update,
-                drain_pending_notifications
+                (notify_from_knowledge_facts, drain_pending_notifications)
                     .after(crate::time_system::advance_game_time),
             );
     }
@@ -499,14 +549,27 @@ mod tests {
     /// Integration: GameEvents flow into the NotificationQueue through the
     /// auto_notify_from_events system without affecting the event log
     /// pipeline.
+    ///
+    /// #233: Only the whitelisted kinds (PlayerRespawn, ResourceAlert) still
+    /// surface through the legacy `GameEvent → notification` mapping; other
+    /// world events are routed through `PendingFactQueue`.
     #[test]
-    fn auto_notify_pushes_for_high_priority_events() {
+    fn auto_notify_pushes_for_whitelisted_events() {
         let mut app = App::new();
         app.add_message::<GameEvent>();
         app.insert_resource(NotificationQueue::new());
         app.add_systems(Update, auto_notify_from_events);
 
-        // Emit a high-priority event
+        // PlayerRespawn → whitelisted; still banners.
+        app.world_mut().write_message(GameEvent {
+            timestamp: 0,
+            kind: GameEventKind::PlayerRespawn,
+            description: "Flagship destroyed".into(),
+            related_system: None,
+        });
+        // #233: SurveyDiscovery is no longer whitelisted — it must be routed
+        // through the fact queue, so the notification queue should stay empty
+        // for this path.
         app.world_mut().write_message(GameEvent {
             timestamp: 0,
             kind: GameEventKind::SurveyDiscovery,
@@ -525,8 +588,25 @@ mod tests {
 
         let queue = app.world().resource::<NotificationQueue>();
         assert_eq!(queue.items.len(), 1);
-        assert_eq!(queue.items[0].title, "Discovery");
-        assert_eq!(queue.items[0].description, "Found ruins");
+        assert_eq!(queue.items[0].title, "Player Respawn");
         assert_eq!(queue.items[0].priority, NotificationPriority::High);
+    }
+
+    #[test]
+    fn legacy_whitelist_covers_player_respawn_and_resource_alert() {
+        assert!(is_legacy_whitelisted(&GameEventKind::PlayerRespawn));
+        assert!(is_legacy_whitelisted(&GameEventKind::ResourceAlert));
+    }
+
+    #[test]
+    fn legacy_whitelist_excludes_world_events() {
+        assert!(!is_legacy_whitelisted(&GameEventKind::SurveyComplete));
+        assert!(!is_legacy_whitelisted(&GameEventKind::SurveyDiscovery));
+        assert!(!is_legacy_whitelisted(&GameEventKind::ColonyEstablished));
+        assert!(!is_legacy_whitelisted(&GameEventKind::CombatVictory));
+        assert!(!is_legacy_whitelisted(&GameEventKind::CombatDefeat));
+        assert!(!is_legacy_whitelisted(&GameEventKind::HostileDetected));
+        assert!(!is_legacy_whitelisted(&GameEventKind::AnomalyDiscovered));
+        assert!(!is_legacy_whitelisted(&GameEventKind::ColonyFailed));
     }
 }

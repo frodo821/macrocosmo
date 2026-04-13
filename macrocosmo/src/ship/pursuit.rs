@@ -36,9 +36,15 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::components::Position;
+use crate::empire::CommsParams;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
+use crate::knowledge::{
+    compute_fact_arrival, KnowledgeFact, PendingFactQueue, PerceivedFact, RelayNetwork,
+};
 use crate::physics;
+use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::time_system::GameClock;
 
 use super::{Owner, RulesOfEngagement, Ship, ShipState};
@@ -163,7 +169,7 @@ pub fn detect_hostiles_system(
     mut commands: Commands,
     clock: Res<GameClock>,
     relations: Res<FactionRelations>,
-    positions: Query<&crate::components::Position>,
+    positions: Query<&Position>,
     ships: Query<(
         Entity,
         &Ship,
@@ -173,6 +179,10 @@ pub fn detect_hostiles_system(
     )>,
     mut detected: Query<&mut DetectedHostiles>,
     mut events: MessageWriter<GameEvent>,
+    mut fact_queue: ResMut<PendingFactQueue>,
+    relay_network: Option<Res<RelayNetwork>>,
+    player_q: Query<&StationedAt, With<Player>>,
+    empire_q: Query<&CommsParams, With<PlayerEmpire>>,
 ) {
     let now = clock.elapsed;
 
@@ -286,19 +296,62 @@ pub fn detect_hostiles_system(
         };
 
         if should_notify {
+            let description = format!(
+                "{} detected hostile {} at ({:.2}, {:.2}, {:.2})",
+                det.detector_name,
+                det.target_name,
+                det.target_pos[0],
+                det.target_pos[1],
+                det.target_pos[2],
+            );
+            // EventLog + auto_pause still receive the raw event (the notification
+            // path is the one gaining light-speed delay).
             events.write(GameEvent {
                 timestamp: now,
                 kind: GameEventKind::HostileDetected,
-                description: format!(
-                    "{} detected hostile {} at ({:.2}, {:.2}, {:.2})",
-                    det.detector_name,
-                    det.target_name,
-                    det.target_pos[0],
-                    det.target_pos[1],
-                    det.target_pos[2],
-                ),
+                description: description.clone(),
                 related_system: None,
             });
+
+            // #233: Notification via PendingFactQueue — 50 ly remote detections
+            // used to alert the player instantly, violating the light-speed
+            // contract. Routing through `compute_fact_arrival` respects that
+            // contract and also enables relay-accelerated propagation when
+            // coverage exists.
+            let player_pos_arr = player_q
+                .iter()
+                .next()
+                .and_then(|s| positions.get(s.system).ok())
+                .map(|p| p.as_array());
+            if let Some(player_pos) = player_pos_arr {
+                let comms_fallback = CommsParams::default();
+                let comms = empire_q.iter().next().unwrap_or(&comms_fallback);
+                let empty_relays: Vec<crate::knowledge::RelaySnapshot> = Vec::new();
+                let relays_slice = relay_network
+                    .as_deref()
+                    .map(|n| n.relays.as_slice())
+                    .unwrap_or(&empty_relays);
+                let plan = compute_fact_arrival(
+                    now,
+                    det.target_pos,
+                    player_pos,
+                    relays_slice,
+                    comms,
+                );
+                fact_queue.record(PerceivedFact {
+                    fact: KnowledgeFact::HostileDetected {
+                        target: det.target,
+                        detector: det.detector,
+                        target_pos: det.target_pos,
+                        description,
+                    },
+                    observed_at: now,
+                    arrives_at: plan.arrives_at,
+                    source: plan.source,
+                    origin_pos: det.target_pos,
+                    related_system: None,
+                });
+            }
         }
     }
 }
