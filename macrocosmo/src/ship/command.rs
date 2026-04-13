@@ -355,6 +355,85 @@ pub fn process_command_queue(
                     ship.name, target_arr[0], target_arr[1], target_arr[2]
                 );
             }
+            QueuedCommand::Scout { .. } => {
+                // #217: Consume and dispatch synchronously. If not at the
+                // target yet, auto-insert a MoveTo and retry; else transition
+                // into ShipState::Scouting.
+                let next = queue.commands.remove(0);
+                let QueuedCommand::Scout {
+                    target_system,
+                    observation_duration,
+                    report_mode,
+                } = next
+                else {
+                    unreachable!("outer match guarantees Scout variant");
+                };
+                let Ok((_target_entity, _target_star, _target_pos)) =
+                    systems.get(target_system)
+                else {
+                    warn!("Queued Scout target no longer exists");
+                    queue.sync_prediction(ship_pos.as_array(), docked_system);
+                    continue;
+                };
+                // Non-FTL ships are disallowed from Scout — scouts must
+                // leap to the target. Reject early with a warning.
+                if ship.ftl_range <= 0.0 {
+                    warn!(
+                        "Scout rejected: ship {} has no FTL capability",
+                        ship.name
+                    );
+                    queue.sync_prediction(ship_pos.as_array(), docked_system);
+                    continue;
+                }
+                // Must carry the scout module.
+                if !super::scout::ship_has_scout_module(ship) {
+                    warn!(
+                        "Scout rejected: ship {} lacks a scout module",
+                        ship.name
+                    );
+                    queue.sync_prediction(ship_pos.as_array(), docked_system);
+                    continue;
+                }
+                // If not at target, prepend a MoveTo and re-queue Scout.
+                if docked_system != Some(target_system) {
+                    queue.commands.insert(
+                        0,
+                        QueuedCommand::Scout {
+                            target_system,
+                            observation_duration,
+                            report_mode,
+                        },
+                    );
+                    queue.commands.insert(
+                        0,
+                        QueuedCommand::MoveTo {
+                            system: target_system,
+                        },
+                    );
+                    info!(
+                        "Queue: Ship {} not at Scout target — auto-inserting MoveTo",
+                        ship.name
+                    );
+                    continue;
+                }
+                // #217: origin_system for reporting is the ship's home port
+                // — not the current dock. Otherwise a ship that auto-moved
+                // to target and started scouting would be "home" already
+                // when the report is delivered (bug).
+                let origin_system = ship.home_port;
+                *state = ShipState::Scouting {
+                    target_system,
+                    origin_system,
+                    started_at: clock.elapsed,
+                    completes_at: clock.elapsed + observation_duration,
+                    report_mode,
+                };
+                info!(
+                    "Queue: Ship {} began scouting target (duration {} hexadies, mode {:?})",
+                    ship.name, observation_duration, report_mode
+                );
+                queue.sync_prediction(ship_pos.as_array(), Some(target_system));
+            }
             QueuedCommand::Survey { .. } | QueuedCommand::Colonize { .. } => {
                 // Consume the command and process synchronously.
                 let next = queue.commands.remove(0);
@@ -429,6 +508,8 @@ pub fn process_command_queue(
                         queue.sync_prediction(ship_pos.as_array(), docked_system);
                     }
                     QueuedCommand::MoveToCoordinates { .. } | QueuedCommand::MoveTo { .. } => {} // handled above
+                    // #217: Scout is handled by its own outer arm.
+                    QueuedCommand::Scout { .. } => {}
                     // #223: Deliverable-side commands are handled by
                     // `super::deliverable_ops::process_deliverable_commands`.
                     // This arm is unreachable via the outer match, but the

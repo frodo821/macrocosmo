@@ -2338,3 +2338,360 @@ fn test_loitering_ship_can_leave_via_move_to_system() {
         ),
     }
 }
+
+// --- #217: Scout command + report mechanics ---
+
+/// Spawn an FTL-capable scout ship with a Scout module equipped.
+fn spawn_scout_ship(world: &mut World, system: Entity, pos: [f64; 3]) -> Entity {
+    world
+        .spawn((
+            Ship {
+                name: "Scout-1".into(),
+                design_id: "scout_mk1".into(),
+                hull_id: "scout_hull".into(),
+                modules: vec![EquippedModule {
+                    slot_type: "utility".into(),
+                    module_id: macrocosmo::ship::scout::SCOUT_MODULE_ID.into(),
+                }],
+                owner: Owner::Neutral,
+                sublight_speed: 0.85,
+                ftl_range: 10.0,
+                player_aboard: false,
+                home_port: system,
+                design_revision: 0,
+            },
+            ShipState::Docked { system },
+            Position::from(pos),
+            ShipHitpoints {
+                hull: 40.0,
+                hull_max: 40.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            CommandQueue::default(),
+            Cargo::default(),
+            ShipModifiers::default(),
+            ShipStats::default(),
+            RulesOfEngagement::default(),
+        ))
+        .id()
+}
+
+#[test]
+fn test_scout_command_dispatches_ship() {
+    // Scout command → ship FTLs to target, enters Scouting, completes after
+    // observation_duration.
+    let mut app = test_app();
+    let sys_home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    // Target at 5 ly — within FTL range 10.
+    let sys_target = spawn_test_system(
+        app.world_mut(),
+        "Target",
+        [5.0, 0.0, 0.0],
+        0.5,
+        true, // surveyed so FTL route works
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_home }));
+
+    let ship = spawn_scout_ship(app.world_mut(), sys_home, [0.0, 0.0, 0.0]);
+
+    // Queue a Scout command.
+    {
+        let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
+        queue.commands.push(QueuedCommand::Scout {
+            target_system: sys_target,
+            observation_duration: 5,
+            report_mode: macrocosmo::ship::ReportMode::Return,
+        });
+    }
+
+    // Tick once — Scout should auto-insert MoveTo and the router should
+    // spawn an FTL task.
+    advance_time(&mut app, 1);
+    // Let the async router resolve.
+    advance_time(&mut app, 1);
+
+    // Advance enough ticks for 5 ly FTL at 10c (30 hd) plus observation.
+    // ceil(5 * 60 / 10) = 30 hd.
+    for _ in 0..80 {
+        advance_time(&mut app, 1);
+        let state = app.world().get::<ShipState>(ship).unwrap();
+        if matches!(state, ShipState::Scouting { .. }) {
+            break;
+        }
+    }
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    match state {
+        ShipState::Scouting {
+            target_system,
+            report_mode,
+            ..
+        } => {
+            assert_eq!(*target_system, sys_target);
+            assert_eq!(*report_mode, macrocosmo::ship::ReportMode::Return);
+        }
+        other => panic!(
+            "Expected ShipState::Scouting after dispatch, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    // Advance observation_duration (5 hd) — scout should complete and
+    // attach a ScoutReport.
+    let mut saw_report = false;
+    for _ in 0..10 {
+        advance_time(&mut app, 1);
+        if app
+            .world()
+            .get::<macrocosmo::ship::scout::ScoutReport>(ship)
+            .is_some()
+        {
+            saw_report = true;
+            break;
+        }
+    }
+    assert!(
+        saw_report,
+        "ScoutReport component should be attached after observation_duration expires"
+    );
+    // Ship must no longer be in Scouting state after the report lands.
+    let state = app.world().get::<ShipState>(ship).unwrap();
+    assert!(
+        !matches!(state, ShipState::Scouting { .. }),
+        "Ship must have exited Scouting state once ScoutReport is attached"
+    );
+}
+
+#[test]
+fn test_scout_report_via_ftl_comm() {
+    // Setup: FTL Comm Relay pair covers both the scout (near relay-B) and
+    // the player (near relay-A). Report must be delivered instantly to
+    // empire KnowledgeStore with source=Scout and observed_at = observation
+    // completion time.
+    use macrocosmo::deep_space::{
+        pair_relay_command, CapabilityParams, CommDirection, DeepSpaceStructure,
+        DeliverableMetadata, ResourceCost, StructureDefinition, StructureHitpoints,
+        StructureRegistry,
+    };
+    use std::collections::HashMap;
+
+    let mut app = test_app();
+
+    // Install ftl_comm_relay definition with 3 ly range.
+    {
+        let mut registry = app.world_mut().resource_mut::<StructureRegistry>();
+        registry.insert(StructureDefinition {
+            id: "ftl_comm_relay".into(),
+            name: "FTL Comm Relay".into(),
+            description: String::new(),
+            max_hp: 50.0,
+            capabilities: HashMap::from([(
+                "ftl_comm_relay".into(),
+                CapabilityParams { range: 3.0 },
+            )]),
+            energy_drain: Amt::milli(500),
+            prerequisites: None,
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost::default(),
+                build_time: 20,
+                cargo_size: 2,
+                scrap_refund: 0.4,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+        });
+    }
+
+    let sys_home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys_target = spawn_test_system(
+        app.world_mut(),
+        "Target",
+        [20.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_home }));
+
+    // Relay A near home (within 3 ly of player at home origin).
+    let relay_a = app
+        .world_mut()
+        .spawn((
+            DeepSpaceStructure {
+                definition_id: "ftl_comm_relay".into(),
+                name: "Relay-A".into(),
+                owner: Owner::Neutral,
+            },
+            StructureHitpoints {
+                current: 50.0,
+                max: 50.0,
+            },
+            Position::from([2.0, 0.0, 0.0]),
+        ))
+        .id();
+    // Relay B near target (within 3 ly of target at [20,0,0]).
+    let relay_b = app
+        .world_mut()
+        .spawn((
+            DeepSpaceStructure {
+                definition_id: "ftl_comm_relay".into(),
+                name: "Relay-B".into(),
+                owner: Owner::Neutral,
+            },
+            StructureHitpoints {
+                current: 50.0,
+                max: 50.0,
+            },
+            Position::from([19.0, 0.0, 0.0]),
+        ))
+        .id();
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::Bidirectional)
+        .expect("pairing");
+
+    // Scout ship with FTL range 10 — can't reach target in one hop, but
+    // we'll teleport it manually to simplify the test (skip movement logic).
+    let ship = spawn_scout_ship(app.world_mut(), sys_target, [20.0, 0.0, 0.0]);
+
+    // Inject the Scouting state directly (ship already at target, observing).
+    let start_at = app.world().resource::<GameClock>().elapsed;
+    {
+        let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
+        *state = ShipState::Scouting {
+            target_system: sys_target,
+            origin_system: sys_home,
+            started_at: start_at,
+            completes_at: start_at + 3,
+            report_mode: macrocosmo::ship::ReportMode::FtlComm,
+        };
+    }
+
+    // Advance through observation + one report tick.
+    for _ in 0..6 {
+        advance_time(&mut app, 1);
+    }
+
+    // The player empire's KnowledgeStore should now have a Scout-sourced
+    // SystemKnowledge for sys_target with observed_at == completes_at.
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).expect("store");
+    let k = store
+        .get(sys_target)
+        .expect("target system knowledge should be written via FTL comm");
+    assert_eq!(
+        k.source,
+        ObservationSource::Scout,
+        "FTL-comm delivered scout report must be source=Scout"
+    );
+    assert_eq!(
+        k.observed_at,
+        start_at + 3,
+        "observed_at must match the observation-completion time"
+    );
+
+    // ScoutReport should be consumed on delivery.
+    assert!(
+        app.world()
+            .get::<macrocosmo::ship::scout::ScoutReport>(ship)
+            .is_none(),
+        "ScoutReport must be removed after FtlComm delivery"
+    );
+}
+
+#[test]
+fn test_scout_report_via_return() {
+    // No FTL comm relay coverage — ship must physically return to origin
+    // before the empire learns of the observation. Before return, the
+    // KnowledgeStore must NOT contain a Scout-sourced entry for target.
+    let mut app = test_app();
+    let sys_home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    // Target at 5 ly (FTL-reachable direct jump).
+    let sys_target = spawn_test_system(
+        app.world_mut(),
+        "Target",
+        [5.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_home }));
+
+    let ship = spawn_scout_ship(app.world_mut(), sys_target, [5.0, 0.0, 0.0]);
+
+    // Directly park the ship in Scouting at target.
+    let start_at = app.world().resource::<GameClock>().elapsed;
+    {
+        let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
+        *state = ShipState::Scouting {
+            target_system: sys_target,
+            origin_system: sys_home,
+            started_at: start_at,
+            completes_at: start_at + 3,
+            report_mode: macrocosmo::ship::ReportMode::Return,
+        };
+    }
+
+    // Advance through observation completion.
+    // completes_at = start_at + 3; clock = start_at + N after N advances,
+    // so after 4 advances we're safely past completion.
+    for _ in 0..4 {
+        advance_time(&mut app, 1);
+    }
+    let expected_observed_at = start_at + 3;
+    // Before the ship has docked back at sys_home, empire must not have
+    // a Scout-sourced knowledge entry for sys_target.
+    {
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).expect("store");
+        let maybe = store.get(sys_target);
+        // propagate_knowledge may have inserted a Direct entry; ensure
+        // nothing with source=Scout exists yet.
+        if let Some(k) = maybe {
+            assert_ne!(
+                k.source,
+                ObservationSource::Scout,
+                "Return-mode report must not be delivered before the ship docks home"
+            );
+        }
+        assert!(
+            app.world()
+                .get::<macrocosmo::ship::scout::ScoutReport>(ship)
+                .is_some(),
+            "ScoutReport must still be attached while ship is returning"
+        );
+    }
+
+    // Ship should have been auto-queued a MoveTo home. Advance long enough
+    // for FTL: 5 ly at 10c = 30 hd.
+    for _ in 0..100 {
+        advance_time(&mut app, 1);
+        let state = app.world().get::<ShipState>(ship).unwrap();
+        if matches!(state, ShipState::Docked { system } if *system == sys_home) {
+            break;
+        }
+    }
+    // Report should be delivered now.
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).expect("store");
+    let k = store
+        .get(sys_target)
+        .expect("target knowledge should be written once ship docked home");
+    assert_eq!(
+        k.source,
+        ObservationSource::Scout,
+        "Return-mode report must carry source=Scout when delivered"
+    );
+    assert_eq!(
+        k.observed_at, expected_observed_at,
+        "observed_at should preserve the original observation time (not the delivery time)"
+    );
+    assert!(
+        app.world()
+            .get::<macrocosmo::ship::scout::ScoutReport>(ship)
+            .is_none(),
+        "ScoutReport must be removed after Return-mode delivery"
+    );
+}

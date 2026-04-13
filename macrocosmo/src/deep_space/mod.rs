@@ -723,6 +723,11 @@ pub fn sensor_buoy_detect_system(
                     ShipSnapshotState::Loitering { position: *position },
                     None,
                 ),
+                // #217: Scouting ship — display like Surveying for sensor observers.
+                crate::ship::ShipState::Scouting { target_system, .. } => (
+                    ShipSnapshotState::Surveying,
+                    Some(*target_system),
+                ),
             };
 
             store.update_ship(ShipSnapshot {
@@ -930,6 +935,11 @@ pub fn relay_knowledge_propagate_system(
                 crate::ship::ShipState::Loitering { position } => (
                     ShipSnapshotState::Loitering { position: *position },
                     None,
+                ),
+                // #217: Scouting ships appear like Surveying at target system.
+                crate::ship::ShipState::Scouting { target_system, .. } => (
+                    ShipSnapshotState::Surveying,
+                    Some(*target_system),
                 ),
             };
 

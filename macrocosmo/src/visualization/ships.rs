@@ -186,6 +186,14 @@ pub fn draw_ships(
                 // Faint outer halo to distinguish "loitering" from in-transit.
                 gizmos.circle_2d(Vec2::new(cx, cy), 5.5, Color::srgba(r, g, b, 0.25));
             }
+            // #217: Scouting — display at the target system like docked.
+            ShipState::Scouting { target_system, .. } => {
+                docked_counts
+                    .entry(*target_system)
+                    .or_default()
+                    .push(ship.design_id.clone());
+                *system_ship_counts.entry(*target_system).or_insert(0) += 1;
+            }
         }
     }
 
@@ -326,6 +334,12 @@ pub fn draw_ships(
                             position[1] as f32 * view.scale,
                         ))
                     }
+                    // #217: Scouting ships render at the target system.
+                    ShipState::Scouting { target_system, .. } => {
+                        stars.get(*target_system).ok().map(|pos| {
+                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
+                        })
+                    }
                 };
 
                 if let Some(mut prev_pos) = current_pos {
@@ -338,6 +352,16 @@ pub fn draw_ships(
                             | QueuedCommand::Colonize { system, .. }
                             | QueuedCommand::LoadDeliverable { system, .. } => {
                                 let Ok(target_pos) = stars.get(*system) else {
+                                    continue;
+                                };
+                                Vec2::new(
+                                    target_pos.x as f32 * view.scale,
+                                    target_pos.y as f32 * view.scale,
+                                )
+                            }
+                            // #217: Scout targets a star system like MoveTo.
+                            QueuedCommand::Scout { target_system, .. } => {
+                                let Ok(target_pos) = stars.get(*target_system) else {
                                     continue;
                                 };
                                 Vec2::new(
@@ -373,6 +397,19 @@ pub fn draw_ships(
                                     target_screen,
                                     4.0,
                                     Color::srgba(r, g, b, 0.5),
+                                );
+                            }
+                            // #217: Scout marker — magenta accent to distinguish from Survey.
+                            QueuedCommand::Scout { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    6.0,
+                                    Color::srgba(1.0, 0.3, 1.0, 0.4),
+                                );
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    3.0,
+                                    Color::srgba(1.0, 0.3, 1.0, 0.6),
                                 );
                             }
                             QueuedCommand::Survey { .. } => {

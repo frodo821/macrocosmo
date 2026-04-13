@@ -124,6 +124,10 @@ fn ship_position(
             ])
         }
         ShipState::Loitering { position } => Some(*position),
+        // #217: Scouting ships orbit the target system.
+        ShipState::Scouting { target_system, .. } => {
+            positions.get(*target_system).ok().map(|p| p.as_array())
+        }
     }
 }
 

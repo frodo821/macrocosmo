@@ -11,6 +11,7 @@ pub mod command;
 pub mod courier_route;
 pub mod pursuit;
 pub mod deliverable_ops;
+pub mod scout;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -55,6 +56,16 @@ impl CommandQueue {
                     self.predicted_system = Some(*system);
                 }
             }
+            // #217: Scout visits the target and — under ReportMode::Return —
+            // comes back. We track the final predicted position as the
+            // target_system's position (FtlComm path stays at target too;
+            // the fallback-to-Return auto-queues a MoveTo home separately).
+            QueuedCommand::Scout { target_system, .. } => {
+                if let Some(pos) = system_positions(*target_system) {
+                    self.predicted_position = pos;
+                    self.predicted_system = Some(*target_system);
+                }
+            }
             QueuedCommand::MoveToCoordinates { target } => {
                 // #185: After a deep-space loiter move, the ship is no longer in any system.
                 self.predicted_position = *target;
@@ -81,6 +92,25 @@ impl CommandQueue {
     }
 }
 
+/// #217: How a scout ship reports its observation back to the empire.
+///
+/// `#[allow(dead_code)]`: the variants are only *constructed* by tests and
+/// (future) UI / AI code that issues Scout commands — no in-engine system
+/// constructs them yet. The enum is exhaustively matched by the scout
+/// pipeline regardless, so the constructors themselves are load-bearing.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportMode {
+    /// If an FTL Comm Relay covers both the scout position and the player
+    /// empire at observation-completion time, the report is delivered
+    /// instantaneously. Otherwise falls back to `Return` (ship carries the
+    /// report home physically).
+    FtlComm,
+    /// The ship always carries the report back to its `home_port` / origin
+    /// system. The empire only learns of the observation when the ship docks.
+    Return,
+}
+
 #[derive(Clone, Debug)]
 pub enum QueuedCommand {
     MoveTo { system: Entity },
@@ -88,6 +118,19 @@ pub enum QueuedCommand {
     Colonize { system: Entity, planet: Option<Entity> },
     /// #185: Travel sublight to an arbitrary point in deep space and loiter there.
     MoveToCoordinates { target: [f64; 3] },
+    /// #217: Dispatch the ship to `target_system`, observe the area within
+    /// the scout's sensor range for `observation_duration` hexadies, then
+    /// report back via `report_mode`. The ship MUST have a scout module
+    /// equipped and FTL capability; otherwise the command is rejected at
+    /// dispatch time with a warning.
+    ///
+    /// `#[allow(dead_code)]`: constructed by tests and (future) UI / AI.
+    #[allow(dead_code)]
+    Scout {
+        target_system: Entity,
+        observation_duration: i64,
+        report_mode: ReportMode,
+    },
     /// #223: Load a deliverable from the docked system's `DeliverableStockpile`
     /// into this ship's `Cargo`. `stockpile_index` is the zero-based index in
     /// the stockpile at the time the command is executed; the command is a
@@ -164,6 +207,22 @@ impl Plugin for ShipPlugin {
             pursuit::detect_hostiles_system
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
+                .after(process_command_queue),
+            // #217: Scout observation ticker — transitions a Scouting ship
+            // into Docked + attaches a ScoutReport when the timer expires.
+            // Runs after FTL/sublight movement so a ship that finished
+            // travel and transitioned into Scouting this tick doesn't
+            // double-process.
+            scout::tick_scout_observation
+                .after(process_ftl_travel)
+                .after(sublight_movement_system)
+                .after(process_command_queue),
+            // #217: Scout report delivery — writes to KnowledgeStore on
+            // FTL comm success, or auto-queues return home. Runs after the
+            // observation ticker so a ship that completed observation this
+            // frame can still have its report routed this frame.
+            scout::process_scout_report
+                .after(scout::tick_scout_observation)
                 .after(process_command_queue),
         ).after(crate::time_system::advance_game_time)
          .before(crate::colony::advance_production_tick));
@@ -355,6 +414,19 @@ pub enum ShipState {
     /// which currently only operates on Docked ships in star systems.
     Loitering {
         position: [f64; 3],
+    },
+    /// #217: Scout ship is observing `target_system` for the duration of the
+    /// observation window. On completion, `tick_scout_observation` produces
+    /// a `ScoutReport` component on the ship and transitions it back to
+    /// `Docked { system: target_system }`. From there the ship either
+    /// delivers the report via FTL comm (if in coverage and mode allows) or
+    /// is auto-routed home to `origin_system` to deliver on dock.
+    Scouting {
+        target_system: Entity,
+        origin_system: Entity,
+        started_at: i64,
+        completes_at: i64,
+        report_mode: ReportMode,
     },
 }
 

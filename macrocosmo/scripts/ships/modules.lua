@@ -131,6 +131,20 @@ local colony_module = define_module {
     cost = { minerals = 300, energy = 200 },
 }
 
+-- #217: Scout module — enables the Scout command and extends passive sensor
+-- range used by the observation snapshot. `sensor.range` feeds GlobalParams
+-- so it also benefits survey range (intentional: scouts are spec'd as
+-- sensor-heavy recon hulls).
+local scout_module = define_module {
+    id = "scout_module",
+    name = "Scout Sensor Array",
+    slot_type = slot_types.utility,
+    modifiers = {
+        { target = "sensor.range", base_add = 1.0 },
+    },
+    cost = { minerals = 80, energy = 50 },
+}
+
 -- Power modules (power slot)
 local fusion_reactor = define_module {
     id = "fusion_reactor",
@@ -166,6 +180,7 @@ return {
     survey_equipment = survey_equipment,
     cargo_bay = cargo_bay,
     colony_module = colony_module,
+    scout_module = scout_module,
     fusion_reactor = fusion_reactor,
     command_array = command_array,
 }
