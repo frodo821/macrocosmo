@@ -1,3 +1,32 @@
+//! # Deep-space structures + deliverable placement (#223)
+//!
+//! This module hosts the data model and systems for entities that live at
+//! arbitrary galactic coordinates outside star systems:
+//!
+//! * `DeepSpaceStructure` — the minimal marker component for any such entity.
+//! * `DeliverableDefinition` (aliased as `StructureDefinition`) — Lua-loaded
+//!   schema describing capabilities, HP, prerequisites, optional upgrade
+//!   graph (`upgrade_to` / `upgrade_from`), and the optional
+//!   `DeliverableMetadata` that marks a definition as shipyard-buildable.
+//! * `DeliverableRegistry` — one-per-App resource holding every definition,
+//!   plus a cached `effective_edges` map combining explicit `upgrade_to`
+//!   edges with self-declared `upgrade_from` edges for forward-ref isolation.
+//! * `ConstructionPlatform` / `Scrapyard` / `LifetimeCost` — runtime
+//!   components that track transitional states:
+//!     - `ConstructionPlatform` gates capabilities while the structure is
+//!       still assembling; `TransferToStructure` from a ship fills
+//!       `accumulated`, and `tick_platform_upgrade` swaps
+//!       `definition_id → target_id` once a target's cost is covered.
+//!     - `Scrapyard` is installed by `dismantle_structure` and holds a
+//!       `remaining = lifetime_cost × scrap_refund` pool. A ship's
+//!       `LoadFromScrapyard` command drains it; when empty,
+//!       `tick_scrapyard_despawn` removes the entity.
+//!     - `LifetimeCost` accumulates every cost invested so far (initial
+//!       deploy cost + every upgrade cost), used for scrap refund scaling.
+//!
+//! The shipyard → cargo → deploy path lives in `src/colony/building_queue.rs`
+//! (`tick_build_queue` dispatching on `BuildKind::Deliverable`) and
+//! `src/ship/deliverable_ops.rs` (command processors).
 use std::collections::HashMap;
 
 use bevy::prelude::*;
