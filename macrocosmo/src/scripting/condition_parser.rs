@@ -1,5 +1,33 @@
 use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
 
+/// Parse an optional `prerequisites` field from a definition table.
+///
+/// Accepts three shapes (all shared across `define_structure`, `define_building`,
+/// `define_hull`, `define_module`):
+///
+/// * `nil` — no prerequisites.
+/// * a condition table produced by the condition helper functions
+///   (`has_tech`, `all`, `any`, `one_of`, `not_cond`, `has_flag`, ...).
+/// * a function `function(ctx) return <condition table> end` — the function is
+///   called with a `ConditionCtx` to allow scoped atoms like `ctx.empire:has_tech(...)`.
+pub fn parse_prerequisites_field(
+    table: &mlua::Table,
+) -> Result<Option<Condition>, mlua::Error> {
+    let prereq_value: mlua::Value = table.get("prerequisites")?;
+    match prereq_value {
+        mlua::Value::Table(prereq_table) => Ok(Some(parse_condition(&prereq_table)?)),
+        mlua::Value::Function(func) => {
+            let ctx = crate::scripting::condition_ctx::ConditionCtx;
+            let result: mlua::Table = func.call(ctx)?;
+            Ok(Some(parse_condition(&result)?))
+        }
+        mlua::Value::Nil => Ok(None),
+        _ => Err(mlua::Error::RuntimeError(
+            "Expected table, function, or nil for 'prerequisites' field".to_string(),
+        )),
+    }
+}
+
 /// Parse an optional `scope` field from a Lua table and convert to ConditionScope.
 fn parse_scope(table: &mlua::Table) -> Result<ConditionScope, mlua::Error> {
     let scope_str: Option<String> = table.get("scope")?;

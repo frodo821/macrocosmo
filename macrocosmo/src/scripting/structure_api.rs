@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::amount::Amt;
 use crate::deep_space::{CapabilityParams, ResourceCost, StructureDefinition};
-use crate::scripting::condition_parser::parse_condition;
+use crate::scripting::condition_parser::parse_prerequisites_field;
 
 /// Parse structure definitions from the Lua `_structure_definitions` global table.
 /// Each entry should have at minimum `id` and `name` fields.
@@ -27,8 +27,8 @@ pub fn parse_structure_definitions(lua: &mlua::Lua) -> Result<Vec<StructureDefin
         // energy_drain is specified in millis in Lua (e.g. 100 = 0.1 units)
         let energy_drain = Amt::milli(energy_drain_raw as u64);
 
-        // Parse prerequisites as an optional Condition table
-        let prerequisites = parse_prerequisites(&table)?;
+        // Parse prerequisites as an optional Condition table (shared helper).
+        let prerequisites = parse_prerequisites_field(&table)?;
 
         // Parse capabilities as a table of tables: { cap_name = { range = N }, ... }
         let capabilities = parse_capabilities_map(&table)?;
@@ -64,29 +64,6 @@ fn parse_cost_table(table: &mlua::Table) -> Result<ResourceCost, mlua::Error> {
         mlua::Value::Nil => Ok(ResourceCost::default()),
         _ => Err(mlua::Error::RuntimeError(
             "Expected table or nil for 'cost' field".to_string(),
-        )),
-    }
-}
-
-/// Parse optional `prerequisites` field as a Condition tree.
-/// Accepts either a condition table (from has_tech/all/any/etc.) or a function
-/// that receives a ConditionCtx and returns a condition table.
-fn parse_prerequisites(table: &mlua::Table) -> Result<Option<crate::condition::Condition>, mlua::Error> {
-    let prereq_value: mlua::Value = table.get("prerequisites")?;
-    match prereq_value {
-        mlua::Value::Table(prereq_table) => {
-            let cond = parse_condition(&prereq_table)?;
-            Ok(Some(cond))
-        }
-        mlua::Value::Function(func) => {
-            let ctx = crate::scripting::condition_ctx::ConditionCtx;
-            let result: mlua::Table = func.call(ctx)?;
-            let cond = parse_condition(&result)?;
-            Ok(Some(cond))
-        }
-        mlua::Value::Nil => Ok(None),
-        _ => Err(mlua::Error::RuntimeError(
-            "Expected table, function, or nil for 'prerequisites' field".to_string(),
         )),
     }
 }
