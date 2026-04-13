@@ -11,7 +11,7 @@ use bevy_egui::EguiContexts;
 use crate::components::Position;
 use crate::galaxy::{ObscuredByGas, StarSystem};
 use crate::player::Player;
-use crate::ship::{Ship, ShipState};
+use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
 use crate::time_system::GameClock;
 
 /// Context menu shown when left-clicking a star while a ship is selected.
@@ -23,6 +23,20 @@ pub struct ContextMenu {
     /// When true, execute the default action immediately instead of showing the menu.
     pub execute_default: bool,
 }
+
+/// #229: Pending deploy request set by the ship panel "Deploy" button.
+/// When `Some`, the next star click is interpreted as "deploy at this star's
+/// coordinates" and pushes a `QueuedCommand::DeployDeliverable` onto the ship's
+/// CommandQueue. Escape cancels. Only used for V1 (star-coordinate deploys;
+/// arbitrary deep-space coordinates are a future issue).
+#[derive(Clone, Copy, Debug)]
+pub struct DeployPending {
+    pub ship: Entity,
+    pub item_index: usize,
+}
+
+#[derive(Resource, Default)]
+pub struct DeployMode(pub Option<DeployPending>);
 
 pub struct VisualizationPlugin;
 
@@ -36,6 +50,7 @@ impl Plugin for VisualizationPlugin {
         .insert_resource(SelectedShip::default())
         .insert_resource(SelectedPlanet::default())
         .insert_resource(ContextMenu::default())
+        .insert_resource(DeployMode::default())
         .insert_resource(OutlineExpandedSystems::default())
         .add_systems(Startup, camera::setup_camera)
         .add_systems(PostStartup, (stars::spawn_star_visuals, camera::center_camera_on_capital))
@@ -80,6 +95,7 @@ pub struct GalaxyView {
 #[derive(Resource, Default)]
 pub struct EguiWantsPointer(pub bool);
 
+#[allow(clippy::too_many_arguments)]
 pub fn click_select_system(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -93,10 +109,17 @@ pub fn click_select_system(
     mut selected: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
     mut context_menu: ResMut<ContextMenu>,
+    mut deploy_mode: ResMut<DeployMode>,
+    mut command_queues: Query<&mut CommandQueue>,
     mut egui_contexts: EguiContexts,
 ) {
-    // Escape handling
+    // Escape handling — cancel deploy mode first if active, otherwise fall
+    // through to the existing ship / system deselection logic.
     if keys.just_pressed(KeyCode::Escape) {
+        if deploy_mode.0.is_some() {
+            deploy_mode.0 = None;
+            return;
+        }
         if selected_ship.0.is_some() {
             selected_ship.0 = None;
             context_menu.open = false;
@@ -226,6 +249,36 @@ pub fn click_select_system(
                 best_star = Some((entity, dist));
             }
         }
+    }
+
+    // #229: Deploy mode — if the user has just clicked "Deploy" on a cargo
+    // item and then clicks on a star, interpret that as "deploy at this
+    // star's coordinates". V1 restriction: deploys are always to star
+    // coordinates; arbitrary deep-space points are a future issue.
+    if let Some(pending) = deploy_mode.0 {
+        if let Some((star_entity, _)) = best_star {
+            if let Ok(star_pos) = star_positions.get(star_entity) {
+                if let Ok(mut queue) = command_queues.get_mut(pending.ship) {
+                    let target_pos = star_pos.as_array();
+                    // Use direct push (no predicted-position tracker) because
+                    // we already know the exact coordinate from the star.
+                    queue.commands.push(QueuedCommand::DeployDeliverable {
+                        position: target_pos,
+                        item_index: pending.item_index,
+                    });
+                    queue.predicted_position = target_pos;
+                    queue.predicted_system = None;
+                    info!(
+                        "Deploy queued: ship {:?} -> cargo idx {} at star {:?}",
+                        pending.ship, pending.item_index, star_entity,
+                    );
+                }
+            }
+        }
+        // Whether or not the click landed on a star, leave deploy mode.
+        // Clicking empty space simply cancels the pending deploy.
+        deploy_mode.0 = None;
+        return;
     }
 
     // When a ship IS selected AND Cmd is held: context menu / default action

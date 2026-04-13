@@ -2,9 +2,11 @@ use bevy::prelude::*;
 use bevy::ecs::system::SystemParam;
 
 use crate::colony::{
-    ColonizationQueue, ResourceCapacity, ResourceStockpile, SystemBuildingQueue, SystemBuildings,
+    ColonizationQueue, DeliverableStockpile, ResourceCapacity, ResourceStockpile,
+    SystemBuildingQueue, SystemBuildings,
 };
 use crate::components::Position;
+use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
 use crate::galaxy::{Anomalies, HostilePresence, Planet, StarSystem, SystemAttributes};
 use crate::ship::{CourierRoute, Fleet, FleetMembership, PendingShipCommand, RulesOfEngagement};
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
@@ -28,6 +30,23 @@ pub struct MainPanelWorldQueries<'w, 's> {
     /// panel to compute fleet-wide refit summaries.
     pub fleets: Query<'w, 's, &'static Fleet>,
     pub fleet_memberships: Query<'w, 's, &'static FleetMembership>,
+    /// #229: Deliverable stockpiles live on StarSystem entities. Populated once
+    /// the system builds at least one deliverable via a shipyard.
+    pub deliverable_stockpiles: Query<'w, 's, &'static DeliverableStockpile, With<StarSystem>>,
+    /// #229: All deep-space structures plus their construction/scrapyard
+    /// state. Used by the system panel structure list and the
+    /// visualization overlay markers.
+    pub deep_space_structures: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static DeepSpaceStructure,
+            &'static Position,
+            Option<&'static ConstructionPlatform>,
+            Option<&'static Scrapyard>,
+        ),
+    >,
 }
 
 #[derive(SystemParam)]
@@ -36,6 +55,24 @@ pub struct MainPanelSelection<'w> {
     pub selected_ship: ResMut<'w, SelectedShip>,
     pub selected_planet: ResMut<'w, SelectedPlanet>,
     pub context_menu: ResMut<'w, ContextMenu>,
+}
+
+/// #229: Deliverable-pipeline resources used by the main panels: the Lua-
+/// loaded structure/deliverable registry and the cross-panel `DeployMode`
+/// signal written by the ship panel's Deploy button and consumed by
+/// `click_select_system` on the next star click. Flag queries use `Query`
+/// (not `Single`) so the system still runs before the player empire
+/// entity exists (e.g. very early startup frames).
+#[derive(SystemParam)]
+pub struct MainPanelDeliverableRes<'w, 's> {
+    pub structure_registry: Res<'w, crate::deep_space::StructureRegistry>,
+    pub deploy_mode: ResMut<'w, crate::visualization::DeployMode>,
+    pub empire_flags: Query<
+        'w,
+        's,
+        (&'static crate::technology::GameFlags, &'static crate::condition::ScopedFlags),
+        With<crate::player::PlayerEmpire>,
+    >,
 }
 
 #[derive(SystemParam)]

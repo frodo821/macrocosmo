@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use super::GalaxyView;
 use crate::colony::{BuildingRegistry, Buildings, Colony, SystemBuildings};
 use crate::components::Position;
-use crate::deep_space::{DeepSpaceStructure, StructureHitpoints};
+use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
 use crate::galaxy::{GalaxyConfig, HostilePresence, ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
@@ -478,15 +478,30 @@ pub fn draw_galaxy_overlay(
 
 pub fn draw_deep_space_structures(
     mut gizmos: Gizmos,
-    structures: Query<(&DeepSpaceStructure, &Position, &StructureHitpoints)>,
+    structures: Query<(
+        &DeepSpaceStructure,
+        &Position,
+        &StructureHitpoints,
+        Option<&ConstructionPlatform>,
+        Option<&Scrapyard>,
+    )>,
     view: Res<GalaxyView>,
 ) {
-    for (_structure, pos, _hp) in &structures {
+    for (_structure, pos, _hp, platform, scrap) in &structures {
         let x = pos.x as f32 * view.scale;
         let y = pos.y as f32 * view.scale;
-        // Draw a small diamond marker
+        // Draw a small diamond marker. #229: colour encodes lifecycle state —
+        // yellow while a ConstructionPlatform is accumulating resources, red
+        // while the structure is a drained/being-drained Scrapyard, blue for
+        // fully active structures.
         let size = 4.0;
-        let color = Color::srgba(0.7, 0.7, 1.0, 0.6);
+        let color = if platform.is_some() {
+            Color::srgba(1.0, 0.9, 0.2, 0.85) // yellow — under construction
+        } else if scrap.is_some() {
+            Color::srgba(1.0, 0.3, 0.3, 0.85) // red — dismantled / scrapyard
+        } else {
+            Color::srgba(0.7, 0.7, 1.0, 0.6) // blue — active
+        };
         gizmos.line_2d(Vec2::new(x, y - size), Vec2::new(x + size, y), color);
         gizmos.line_2d(Vec2::new(x + size, y), Vec2::new(x, y + size), color);
         gizmos.line_2d(Vec2::new(x, y + size), Vec2::new(x - size, y), color);

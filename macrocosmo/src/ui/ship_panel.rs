@@ -94,6 +94,31 @@ pub struct ShipPanelActions {
     pub courier_clear_route: Option<Entity>,
     /// #117: Change the route's mode.
     pub courier_set_mode: Option<(Entity, CourierMode)>,
+    /// #229: Player clicked Deploy next to a cargo deliverable. The outer
+    /// system stashes this in `DeployMode`, then the next star click becomes
+    /// a `QueuedCommand::DeployDeliverable`. Payload: (ship, cargo item_index).
+    pub deploy_mode_request: Option<(Entity, usize)>,
+    /// #229: Player requested resources transferred from the ship's Cargo
+    /// into a ConstructionPlatform's accumulator pool. Payload:
+    /// (ship, structure, minerals, energy).
+    pub transfer_request: Option<(Entity, Entity, Amt, Amt)>,
+    /// #229: Player requested draining a Scrapyard into the ship's Cargo.
+    /// Payload: (ship, structure).
+    pub load_from_scrapyard_request: Option<(Entity, Entity)>,
+}
+
+/// #229: Display info about a deep-space structure close enough to the ship
+/// that Transfer / LoadFromScrapyard commands will resolve without a long
+/// sublight cruise. The outer system pre-computes the list.
+#[derive(Clone, Debug)]
+pub struct NearbyStructure {
+    pub entity: Entity,
+    pub name: String,
+    pub is_platform: bool,
+    pub is_scrapyard: bool,
+    /// Distance from the ship, in light-years. Used to label entries so the
+    /// player knows the ship needs to move first.
+    pub distance_ly: f64,
 }
 
 /// Resolve an Entity to a star system name, falling back to "Unknown".
@@ -238,11 +263,38 @@ fn build_status_info(
     }
 }
 
+/// #229: Pure-string formatter for the deliverable-family `QueuedCommand`
+/// variants. Separated from `format_queued_command` so the tests below can
+/// exercise the new variants without mocking Bevy's `Query<StarSystem>`.
+/// Returns `None` for non-deliverable variants (which still need a query to
+/// resolve system names).
+fn format_deliverable_command(cmd: &QueuedCommand) -> Option<String> {
+    match cmd {
+        QueuedCommand::LoadDeliverable { stockpile_index, .. } => {
+            Some(format!("Load deliverable #{}", stockpile_index))
+        }
+        QueuedCommand::DeployDeliverable { position, item_index } => Some(format!(
+            "Deploy #{} -> ({:.1}, {:.1}, {:.1})",
+            item_index, position[0], position[1], position[2]
+        )),
+        QueuedCommand::TransferToStructure { minerals, energy, .. } => Some(format!(
+            "Transfer {}m / {}e to structure",
+            minerals.to_f64(),
+            energy.to_f64()
+        )),
+        QueuedCommand::LoadFromScrapyard { .. } => Some("Salvage scrapyard".to_string()),
+        _ => None,
+    }
+}
+
 /// Format a QueuedCommand as a human-readable string.
 fn format_queued_command(
     cmd: &QueuedCommand,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
 ) -> String {
+    if let Some(s) = format_deliverable_command(cmd) {
+        return s;
+    }
     match cmd {
         QueuedCommand::MoveTo { system, .. } => {
             format!("Move -> {}", system_name(*system, stars))
@@ -254,23 +306,12 @@ fn format_queued_command(
         QueuedCommand::MoveToCoordinates { target } => {
             format!("Move -> ({:.1}, {:.1}, {:.1})", target[0], target[1], target[2])
         }
-        QueuedCommand::LoadDeliverable { stockpile_index, .. } => {
-            format!("Load deliverable #{}", stockpile_index)
-        }
-        QueuedCommand::DeployDeliverable { position, item_index } => {
-            format!(
-                "Deploy #{} -> ({:.1}, {:.1}, {:.1})",
-                item_index, position[0], position[1], position[2]
-            )
-        }
-        QueuedCommand::TransferToStructure { minerals, energy, .. } => {
-            format!(
-                "Transfer {}m / {}e to structure",
-                minerals.to_f64(),
-                energy.to_f64()
-            )
-        }
-        QueuedCommand::LoadFromScrapyard { .. } => "Salvage scrapyard".to_string(),
+        // Deliverable variants are handled above; the catch-all is
+        // unreachable in practice.
+        QueuedCommand::LoadDeliverable { .. }
+        | QueuedCommand::DeployDeliverable { .. }
+        | QueuedCommand::TransferToStructure { .. }
+        | QueuedCommand::LoadFromScrapyard { .. } => unreachable!(),
     }
 }
 
@@ -292,6 +333,48 @@ pub(super) fn ships_docked_at(
         .collect();
     result.sort_by(|a, b| a.1.cmp(&b.1));
     result
+}
+
+/// #229: Named aggregate of ship panel display data. Previously this was an
+/// anonymous tuple; after adding cargo_items / structure-related fields the
+/// positional form became unreadable.
+struct ShipPanelData {
+    ship_entity: Entity,
+    name: String,
+    design_id: String,
+    hull_hp: f64,
+    hull_max: f64,
+    armor: f64,
+    armor_max: f64,
+    shield: f64,
+    shield_max: f64,
+    ftl_range: f64,
+    sublight_speed: f64,
+    status_info: ShipStatusInfo,
+    docked_system: Option<Entity>,
+    cargo_data: Option<(Amt, Amt)>,
+    /// #229: Cloned list of non-resource items in the ship's Cargo. Each
+    /// entry can be deployed via the Deploy button.
+    cargo_items: Vec<crate::ship::CargoItem>,
+    queued_cmds: Vec<String>,
+    _home_port: Entity,
+    home_port_name: String,
+    maintenance_cost: Amt,
+    docked_at_colony: Option<Entity>,
+    is_cancellable: bool,
+    pending_arrives_at: Option<i64>,
+    has_survey_data: bool,
+    survey_data_system: Option<String>,
+    _ship_hull_id: String,
+    ship_modules: Vec<crate::ship::EquippedModule>,
+    is_refitting: bool,
+    refit_info: Option<RefitInfo>,
+    fleet_refit_summary: Option<FleetRefitSummary>,
+    current_roe: RulesOfEngagement,
+    roe_command_delay: i64,
+    is_player_aboard: bool,
+    can_board: bool,
+    can_disembark: bool,
 }
 
 /// Draws the floating ship details panel when a ship is selected.
@@ -331,6 +414,7 @@ pub fn draw_ship_panel(
     selected_system: Option<Entity>,
     fleet_memberships: &Query<&crate::ship::FleetMembership>,
     fleets: &Query<&crate::ship::Fleet>,
+    nearby_structures: &[NearbyStructure],
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -340,7 +424,11 @@ pub fn draw_ship_panel(
         } else {
             None
         };
-        let cargo_data = cargo.map(|c| (c.minerals, c.energy));
+        let cargo_data = cargo.as_ref().map(|c| (c.minerals, c.energy));
+        // #229: Clone the item list out so we can render Deploy buttons per
+        // item without re-borrowing cargo mutably.
+        let cargo_items: Vec<crate::ship::CargoItem> =
+            cargo.map(|c| c.items.clone()).unwrap_or_default();
         let status_info = build_status_info(&state, clock, stars);
         let queued_cmds: Vec<String> = command_queues
             .get(ship_entity)
@@ -484,31 +572,32 @@ pub fn draw_ship_panel(
             && docked_system == player_stationed;
         // #59: Can player disembark? (player aboard this ship and ship is docked)
         let can_disembark = is_player_aboard && docked_system.is_some();
-        Some((
+        Some(ShipPanelData {
             ship_entity,
-            ship.name.clone(),
-            ship.design_id.clone(),
-            ship_hp.hull,
-            ship_hp.hull_max,
-            ship_hp.armor,
-            ship_hp.armor_max,
-            ship_hp.shield,
-            ship_hp.shield_max,
-            ship.ftl_range,
-            ship.sublight_speed,
+            name: ship.name.clone(),
+            design_id: ship.design_id.clone(),
+            hull_hp: ship_hp.hull,
+            hull_max: ship_hp.hull_max,
+            armor: ship_hp.armor,
+            armor_max: ship_hp.armor_max,
+            shield: ship_hp.shield,
+            shield_max: ship_hp.shield_max,
+            ftl_range: ship.ftl_range,
+            sublight_speed: ship.sublight_speed,
             status_info,
             docked_system,
             cargo_data,
+            cargo_items,
             queued_cmds,
-            home_port,
+            _home_port: home_port,
             home_port_name,
             maintenance_cost,
             docked_at_colony,
             is_cancellable,
-            pending_info,
+            pending_arrives_at: pending_info,
             has_survey_data,
             survey_data_system,
-            ship_hull_id,
+            _ship_hull_id: ship_hull_id,
             ship_modules,
             is_refitting,
             refit_info,
@@ -518,10 +607,10 @@ pub fn draw_ship_panel(
             is_player_aboard,
             can_board,
             can_disembark,
-        ))
+        })
     });
 
-    let Some((
+    let Some(ShipPanelData {
         ship_entity,
         name,
         design_id,
@@ -536,8 +625,9 @@ pub fn draw_ship_panel(
         status_info,
         docked_system,
         cargo_data,
+        cargo_items,
         queued_cmds,
-        _home_port_entity,
+        _home_port: _,
         home_port_name,
         maintenance_cost,
         docked_at_colony,
@@ -545,7 +635,7 @@ pub fn draw_ship_panel(
         pending_arrives_at,
         has_survey_data,
         survey_data_system,
-        _ship_hull_id,
+        _ship_hull_id: _,
         ship_modules,
         is_refitting,
         refit_info,
@@ -555,7 +645,7 @@ pub fn draw_ship_panel(
         is_player_aboard,
         can_board,
         can_disembark,
-    )) = ship_data
+    }) = ship_data
     else {
         return ShipPanelActions::default();
     };
@@ -733,6 +823,106 @@ pub fn draw_ship_panel(
                                 }
                             });
                         }
+                    }
+                }
+            }
+
+            // #229: Deliverable pipeline actions — shown whenever the ship
+            // either carries a deployable item or has a nearby structure
+            // to interact with. Positioned directly after the Cargo section
+            // per the #229 UX design.
+            let has_items = !cargo_items.is_empty();
+            let platforms: Vec<&NearbyStructure> = nearby_structures
+                .iter()
+                .filter(|s| s.is_platform)
+                .collect();
+            let scrapyards: Vec<&NearbyStructure> = nearby_structures
+                .iter()
+                .filter(|s| s.is_scrapyard)
+                .collect();
+
+            if has_items || !platforms.is_empty() || !scrapyards.is_empty() {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("Deliverable Actions")
+                        .strong()
+                        .color(egui::Color32::from_rgb(180, 220, 180)),
+                );
+
+                // --- Cargo items with Deploy buttons ---
+                if has_items {
+                    ui.label(egui::RichText::new("Carried items").small());
+                    for (i, item) in cargo_items.iter().enumerate() {
+                        let def_id = item.definition_id();
+                        ui.horizontal(|ui| {
+                            ui.label(format!("  #{}: {}", i, def_id));
+                            if ui.small_button("Deploy").clicked() {
+                                actions.deploy_mode_request = Some((ship_entity, i));
+                            }
+                        });
+                    }
+                    ui.label(
+                        egui::RichText::new(
+                            "Click Deploy then click a star to place the structure.",
+                        )
+                        .small()
+                        .italics()
+                        .weak(),
+                    );
+                }
+
+                // --- Transfer Resources to ConstructionPlatform ---
+                if !platforms.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Transfer to platform").small());
+                    // Amounts applied by ALL transfer buttons this frame. Simple
+                    // fixed steps — fine for V1. A slider UI is future work.
+                    let step_m = Amt::units(100);
+                    let step_e = Amt::units(100);
+                    let (have_m, have_e) = cargo_data.unwrap_or((Amt::ZERO, Amt::ZERO));
+                    for p in &platforms {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "  {} ({:.2} ly)",
+                                p.name, p.distance_ly,
+                            ));
+                            let can_m = have_m > Amt::ZERO;
+                            if ui
+                                .add_enabled(can_m, egui::Button::new("+100 M"))
+                                .clicked()
+                            {
+                                let m = step_m.min(have_m);
+                                actions.transfer_request =
+                                    Some((ship_entity, p.entity, m, Amt::ZERO));
+                            }
+                            let can_e = have_e > Amt::ZERO;
+                            if ui
+                                .add_enabled(can_e, egui::Button::new("+100 E"))
+                                .clicked()
+                            {
+                                let e = step_e.min(have_e);
+                                actions.transfer_request =
+                                    Some((ship_entity, p.entity, Amt::ZERO, e));
+                            }
+                        });
+                    }
+                }
+
+                // --- Load from Scrapyard ---
+                if !scrapyards.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Salvage from scrapyard").small());
+                    for s in &scrapyards {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "  {} ({:.2} ly)",
+                                s.name, s.distance_ly,
+                            ));
+                            if ui.button("Load").clicked() {
+                                actions.load_from_scrapyard_request =
+                                    Some((ship_entity, s.entity));
+                            }
+                        });
                     }
                 }
             }
@@ -970,4 +1160,75 @@ pub fn draw_ship_panel(
     }
 
     actions
+}
+
+#[cfg(test)]
+mod tests_229 {
+    use super::*;
+    use crate::amount::Amt;
+    use crate::ship::QueuedCommand;
+
+    fn placeholder_entity() -> Entity {
+        // Entity::PLACEHOLDER is stable across frames and fine for string
+        // formatting — the formatter never reads the entity.
+        Entity::PLACEHOLDER
+    }
+
+    #[test]
+    fn format_load_deliverable_shows_index() {
+        let cmd = QueuedCommand::LoadDeliverable {
+            system: placeholder_entity(),
+            stockpile_index: 3,
+        };
+        assert_eq!(
+            format_deliverable_command(&cmd).unwrap(),
+            "Load deliverable #3"
+        );
+    }
+
+    #[test]
+    fn format_deploy_deliverable_shows_coords_and_item_index() {
+        let cmd = QueuedCommand::DeployDeliverable {
+            position: [12.3, -4.5, 0.0],
+            item_index: 1,
+        };
+        // Matches the one-decimal formatting used by other coordinate displays.
+        assert_eq!(
+            format_deliverable_command(&cmd).unwrap(),
+            "Deploy #1 -> (12.3, -4.5, 0.0)"
+        );
+    }
+
+    #[test]
+    fn format_transfer_shows_amounts() {
+        let cmd = QueuedCommand::TransferToStructure {
+            structure: placeholder_entity(),
+            minerals: Amt::units(100),
+            energy: Amt::units(25),
+        };
+        let s = format_deliverable_command(&cmd).unwrap();
+        assert!(s.contains("100"));
+        assert!(s.contains("25"));
+        assert!(s.contains("structure"));
+    }
+
+    #[test]
+    fn format_load_from_scrapyard_simple() {
+        let cmd = QueuedCommand::LoadFromScrapyard {
+            structure: placeholder_entity(),
+        };
+        assert_eq!(
+            format_deliverable_command(&cmd).unwrap(),
+            "Salvage scrapyard"
+        );
+    }
+
+    #[test]
+    fn format_deliverable_none_for_non_deliverable_cmds() {
+        // Non-deliverable variants fall through to the stars-based branch.
+        let cmd = QueuedCommand::MoveTo {
+            system: placeholder_entity(),
+        };
+        assert!(format_deliverable_command(&cmd).is_none());
+    }
 }
