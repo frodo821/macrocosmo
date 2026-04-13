@@ -12,6 +12,9 @@ local mine = define_building {
     },
 }
 
+-- #236: maintenance refactor に伴う一時バランス対応。ship maintenance が
+-- 10-40x に増えるため、初手赤字を回避する仮 10x 調整。job ベースへの移行で
+-- 再調整予定 (別 issue)。
 local power_plant = define_building {
     id = "power_plant",
     name = "PowerPlant",
@@ -19,7 +22,7 @@ local power_plant = define_building {
     cost = { minerals = 50, energy = 150 },
     build_time = 10,
     maintenance = 0.0,
-    production_bonus = { energy = 3.0 },
+    production_bonus = { energy = 30.0 },
     is_system_building = false,
     upgrade_to = {
         { target = forward_ref("advanced_power_plant"), cost = { minerals = 150, energy = 200 }, build_time = 10 },
@@ -83,6 +86,7 @@ local advanced_mine = define_building {
     prerequisites = has_tech(forward_ref("industrial_automated_mining")),
 }
 
+-- #236: See power_plant comment — 10x temporary balance until job system.
 local advanced_power_plant = define_building {
     id = "advanced_power_plant",
     name = "Advanced PowerPlant",
@@ -90,7 +94,7 @@ local advanced_power_plant = define_building {
     cost = nil,
     build_time = 10,
     maintenance = 0.2,
-    production_bonus = { energy = 6.0 },
+    production_bonus = { energy = 60.0 },
     is_system_building = false,
     prerequisites = has_tech(forward_ref("industrial_fusion_power")),
 }

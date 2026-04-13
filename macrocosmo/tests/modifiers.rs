@@ -449,12 +449,13 @@ fn test_ship_maintenance_synced_via_modifiers() {
         "Colony MaintenanceCost should have a ship maintenance modifier"
     );
 
-    // Explorer maintenance is 0.5 E/hd = Amt(500)
+    // #236: Explorer maintenance is derived from corvette hull (0.5) +
+    // ftl_drive (100 min → 10) + survey_equipment (60 min → 6) = 16.5 E/hd.
     let modifier = ship_maint_modifier.unwrap();
     assert_eq!(
         modifier.base_add,
-        macrocosmo::amount::SignedAmt::from_amt(Amt::new(0, 500)),
-        "Ship maintenance modifier should match Explorer maintenance cost (0.5 E/hd)"
+        macrocosmo::amount::SignedAmt::from_amt(Amt::new(16, 500)),
+        "Ship maintenance modifier should match Explorer derived maintenance (16.5 E/hd)"
     );
 }
 

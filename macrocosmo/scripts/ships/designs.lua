@@ -1,6 +1,10 @@
 local hulls = require("ships.hulls")
 local modules = require("ships.modules")
 
+-- #236: Ship design stats (hp/ftl_range/cost/maintenance/build_time/can_*)
+-- are derived from hull + modules at registry load time. Presets no longer
+-- author those fields — only id/name/hull/modules (and description) are read.
+
 -- Default designs matching current ShipType functionality
 local explorer_mk1 = define_ship_design {
     id = "explorer_mk1",
@@ -10,14 +14,6 @@ local explorer_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.survey_equipment },
     },
-    can_survey = true,
-    can_colonize = false,
-    maintenance = 0.5,
-    build_cost = { minerals = 200, energy = 100 },
-    build_time = 60,
-    hp = 50,
-    sublight_speed = 0.75,
-    ftl_range = 10.0,
 }
 
 local colony_ship_mk1 = define_ship_design {
@@ -28,14 +24,6 @@ local colony_ship_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.colony_module },
     },
-    can_survey = false,
-    can_colonize = true,
-    maintenance = 1.0,
-    build_cost = { minerals = 500, energy = 300 },
-    build_time = 120,
-    hp = 100,
-    sublight_speed = 0.5,
-    ftl_range = 15.0,
 }
 
 local courier_mk1 = define_ship_design {
@@ -47,14 +35,6 @@ local courier_mk1 = define_ship_design {
         { slot_type = "sublight", module = modules.afterburner },
         { slot_type = "utility", module = modules.cargo_bay },
     },
-    can_survey = false,
-    can_colonize = false,
-    maintenance = 0.3,
-    build_cost = { minerals = 100, energy = 50 },
-    build_time = 30,
-    hp = 35,
-    sublight_speed = 0.80,
-    ftl_range = 0.0,
 }
 
 local scout_mk1 = define_ship_design {
@@ -65,14 +45,6 @@ local scout_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.survey_equipment },
     },
-    can_survey = true,
-    can_colonize = false,
-    maintenance = 0.4,
-    build_cost = { minerals = 150, energy = 80 },
-    build_time = 45,
-    hp = 40,
-    sublight_speed = 0.85,
-    ftl_range = 10.0,
 }
 
 local patrol_corvette = define_ship_design {
@@ -85,14 +57,6 @@ local patrol_corvette = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "defense", module = modules.armor_plating },
     },
-    can_survey = false,
-    can_colonize = false,
-    maintenance = 0.6,
-    build_cost = { minerals = 380, energy = 200 },
-    build_time = 60,
-    hp = 50,
-    sublight_speed = 0.75,
-    ftl_range = 15.0,
 }
 
 return {

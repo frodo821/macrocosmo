@@ -497,30 +497,34 @@ fn test_ftl_range_bonus_extends_range() {
 
 #[test]
 fn test_scrap_ship_refund_amounts() {
-    // Verify scrap_refund returns 50% of build_cost for all ship types (no modules)
+    // #236: build_cost now derived = hull + Σ module costs. Scrap refund is
+    // 50% of that.
     let design_registry = common::create_test_design_registry();
     let empty_module_registry = macrocosmo::ship_design::ModuleRegistry::default();
 
+    // explorer_mk1: 200+100+60 = 360 / 100+50+40 = 190
     let (m, e) = design_registry.build_cost("explorer_mk1");
-    assert_eq!(m, Amt::units(200));
-    assert_eq!(e, Amt::units(100));
+    assert_eq!(m, Amt::units(360));
+    assert_eq!(e, Amt::units(190));
     let (rm, re) = design_registry.scrap_refund("explorer_mk1", &[], &empty_module_registry);
-    assert_eq!(rm, Amt::units(100));
-    assert_eq!(re, Amt::units(50));
+    assert_eq!(rm, Amt::units(180));
+    assert_eq!(re, Amt::units(95));
 
+    // colony_ship_mk1: 400+100+300 = 800 / 200+50+200 = 450
     let (m, e) = design_registry.build_cost("colony_ship_mk1");
-    assert_eq!(m, Amt::units(500));
-    assert_eq!(e, Amt::units(300));
+    assert_eq!(m, Amt::units(800));
+    assert_eq!(e, Amt::units(450));
     let (rm, re) = design_registry.scrap_refund("colony_ship_mk1", &[], &empty_module_registry);
-    assert_eq!(rm, Amt::units(250));
-    assert_eq!(re, Amt::units(150));
+    assert_eq!(rm, Amt::units(400));
+    assert_eq!(re, Amt::units(225));
 
+    // courier_mk1: 100+100+60+30 = 290 / 50+50+40+0 = 140
     let (m, e) = design_registry.build_cost("courier_mk1");
-    assert_eq!(m, Amt::units(100));
-    assert_eq!(e, Amt::units(50));
+    assert_eq!(m, Amt::units(290));
+    assert_eq!(e, Amt::units(140));
     let (rm, re) = design_registry.scrap_refund("courier_mk1", &[], &empty_module_registry);
-    assert_eq!(rm, Amt::units(50));
-    assert_eq!(re, Amt::units(25));
+    assert_eq!(rm, Amt::units(145));
+    assert_eq!(re, Amt::units(70));
 }
 
 #[test]
@@ -580,12 +584,12 @@ fn test_scrap_ship_refunds_resources() {
         [0.0, 0.0, 0.0],
     );
 
-    // Get refund amounts (no modules equipped in test ship)
+    // #236: explorer_mk1 derived build cost = 360 min / 190 energy, refund 50%.
     let design_registry = common::create_test_design_registry();
     let empty_module_registry = macrocosmo::ship_design::ModuleRegistry::default();
     let (refund_m, refund_e) = design_registry.scrap_refund("explorer_mk1", &[], &empty_module_registry);
-    assert_eq!(refund_m, Amt::units(100));
-    assert_eq!(refund_e, Amt::units(50));
+    assert_eq!(refund_m, Amt::units(180));
+    assert_eq!(refund_e, Amt::units(95));
 
     // Apply refund to system stockpile (stockpile is now on star system entity)
     {
@@ -599,8 +603,8 @@ fn test_scrap_ship_refunds_resources() {
 
     // Verify resources were added
     let stockpile = app.world().get::<ResourceStockpile>(sys).unwrap();
-    assert_eq!(stockpile.minerals, Amt::units(200)); // 100 + 100 refund
-    assert_eq!(stockpile.energy, Amt::units(150));   // 100 + 50 refund
+    assert_eq!(stockpile.minerals, Amt::units(280)); // 100 + 180 refund
+    assert_eq!(stockpile.energy, Amt::units(195));   // 100 + 95 refund
 
     // Verify ship is gone
     assert!(app.world().get_entity(ship).is_err());
@@ -947,10 +951,12 @@ fn test_non_ftl_survey_marks_system_immediately() {
         0.7, false, false,
     );
 
-    // Courier has ftl_range 0.0 (non-FTL)
+    // #236: courier_mk1 now has FTL via derive — force ftl_range to 0 on
+    // this instance so the test covers the non-FTL survey codepath.
     let ship = common::spawn_test_ship(
         app.world_mut(), "Scout-1", "courier_mk1", sys_b, [3.0, 0.0, 0.0],
     );
+    app.world_mut().get_mut::<Ship>(ship).unwrap().ftl_range = 0.0;
     *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
         target_system: sys_b,
         started_at: 0,
@@ -1363,10 +1369,12 @@ fn test_non_ftl_ship_no_ftl_routing_loop() {
         0.7, true, false,
     );
 
-    // Courier has ftl_range: 0.0
+    // #236: courier_mk1 now has FTL via derive — force ftl_range to 0 on
+    // this instance to exercise the non-FTL routing path.
     let ship = common::spawn_test_ship(
         app.world_mut(), "Courier-1", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
     );
+    app.world_mut().get_mut::<Ship>(ship).unwrap().ftl_range = 0.0;
 
     app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
         QueuedCommand::MoveTo { system: sys_b },

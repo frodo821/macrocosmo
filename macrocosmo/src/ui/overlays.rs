@@ -341,39 +341,25 @@ pub fn draw_ship_designer(
                             .iter()
                             .filter_map(|a| module_registry.get(&a.module_id))
                             .collect();
-                        let (cost_m, cost_e, build_time, maintenance) =
-                            crate::ship_design::design_cost(hull, &mod_defs);
-                        let (hp, sublight_speed, _evasion) =
-                            crate::ship_design::design_stats(hull, &mod_defs);
-                        let ftl_range = mod_defs
-                            .iter()
-                            .flat_map(|m| m.modifiers.iter())
-                            .filter(|m| m.target == "ship.ftl_range")
-                            .map(|m| m.base_add)
-                            .sum::<f64>();
-                        // Preserve survey/colonize capability when editing in
-                        // place; default to false for brand-new designs.
-                        let (can_survey, can_colonize) = state
-                            .editing_design_id
-                            .as_ref()
-                            .and_then(|id| design_registry.get(id))
-                            .map(|d| (d.can_survey, d.can_colonize))
-                            .unwrap_or((false, false));
+                        // #236: all stats/cost/capabilities derived from hull
+                        // + modules via the shared helper. Hull modifiers are
+                        // applied (previously ignored by the inline compute).
+                        let d = crate::ship_design::design_derived(hull, &mod_defs);
                         action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
                             id: design_id,
                             name: state.design_name.trim().to_string(),
                             description: String::new(),
                             hull_id: hull.id.clone(),
                             modules,
-                            can_survey,
-                            can_colonize,
-                            maintenance,
-                            build_cost_minerals: cost_m,
-                            build_cost_energy: cost_e,
-                            build_time,
-                            hp,
-                            sublight_speed,
-                            ftl_range,
+                            can_survey: d.can_survey,
+                            can_colonize: d.can_colonize,
+                            maintenance: d.maintenance,
+                            build_cost_minerals: d.build_cost_minerals,
+                            build_cost_energy: d.build_cost_energy,
+                            build_time: d.build_time,
+                            hp: d.hp,
+                            sublight_speed: d.sublight_speed,
+                            ftl_range: d.ftl_range,
                             // Revision is filled in by `upsert_edited`.
                             revision: 0,
                         });
