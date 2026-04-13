@@ -246,6 +246,83 @@ fn initialize_capital_knowledge(
     info!("Player knowledge initialized: capital '{}'", capital.name);
 }
 
+/// #216: Build a `SystemSnapshot` describing the observed state of a star
+/// system. Shared by `propagate_knowledge` (light-speed direct) and
+/// `relay_knowledge_propagate_system` (FTL relay) so that relay-delivered
+/// snapshots carry the same payload fields as direct observations.
+///
+/// `hostile_map` is an `entity → HostilePresence` lookup the caller builds
+/// once per tick; passing it in lets both call sites share the allocation.
+pub fn build_system_snapshot(
+    entity: Entity,
+    star: &StarSystem,
+    sys_pos: &Position,
+    stockpile: Option<&ResourceStockpile>,
+    sys_buildings: Option<&crate::colony::SystemBuildings>,
+    colonies: &Query<&crate::colony::Colony>,
+    planets: &Query<&crate::galaxy::Planet>,
+    planet_attrs: &Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
+    hostile_map: &HashMap<Entity, &crate::galaxy::HostilePresence>,
+    building_registry: &crate::colony::BuildingRegistry,
+) -> SystemSnapshot {
+    // Derive colonized status from whether any colony has a planet in this system
+    let is_colonized = colonies
+        .iter()
+        .any(|c| c.system(planets) == Some(entity));
+
+    // Resource snapshot from StarSystem's stockpile (#106)
+    let (minerals, energy, food, authority) = stockpile
+        .map(|s| (s.minerals, s.energy, s.food, s.authority))
+        .unwrap_or((Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO));
+
+    // #176: Hostile presence
+    let hostile = hostile_map.get(&entity);
+    let has_hostile = hostile.is_some();
+    let hostile_strength = hostile.map(|h| h.strength).unwrap_or(0.0);
+
+    // #176: System buildings info (capability-based check via BuildingRegistry)
+    let has_port = sys_buildings.map(|sb| sb.has_port(building_registry)).unwrap_or(false);
+    let has_shipyard = sys_buildings.map(|sb| sb.has_shipyard(building_registry)).unwrap_or(false);
+
+    // #176: System attributes — derive from best planet in the system
+    let best_attrs = planet_attrs
+        .iter()
+        .filter(|(p, _)| p.system == entity)
+        .map(|(_, a)| a)
+        .max_by(|a, b| a.habitability.partial_cmp(&b.habitability).unwrap_or(std::cmp::Ordering::Equal));
+    let (habitability, mineral_richness, energy_potential, research_potential, max_building_slots) =
+        best_attrs
+            .map(|a| (
+                Some(a.habitability),
+                Some(a.mineral_richness),
+                Some(a.energy_potential),
+                Some(a.research_potential),
+                Some(a.max_building_slots),
+            ))
+            .unwrap_or((None, None, None, None, None));
+
+    SystemSnapshot {
+        name: star.name.clone(),
+        position: sys_pos.as_array(),
+        surveyed: star.surveyed,
+        colonized: is_colonized,
+        minerals,
+        energy,
+        food,
+        authority,
+        has_hostile,
+        hostile_strength,
+        has_port,
+        has_shipyard,
+        habitability,
+        mineral_richness,
+        energy_potential,
+        research_potential,
+        max_building_slots,
+        ..SystemSnapshot::default()
+    }
+}
+
 pub fn propagate_knowledge(
     clock: Res<GameClock>,
     player_q: Query<&StationedAt, With<Player>>,
@@ -301,62 +378,18 @@ pub fn propagate_knowledge(
             continue;
         }
 
-        // Derive colonized status from whether any colony has a planet in this system
-        let is_colonized = colonies
-            .iter()
-            .any(|c| c.system(&planets) == Some(entity));
-
-        // Resource snapshot from StarSystem's stockpile (#106)
-        let (minerals, energy, food, authority) = stockpile
-            .map(|s| (s.minerals, s.energy, s.food, s.authority))
-            .unwrap_or((Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO));
-
-        // #176: Hostile presence
-        let hostile = hostile_map.get(&entity);
-        let has_hostile = hostile.is_some();
-        let hostile_strength = hostile.map(|h| h.strength).unwrap_or(0.0);
-
-        // #176: System buildings info (capability-based check via BuildingRegistry)
-        let has_port = sys_buildings.map(|sb| sb.has_port(&building_registry)).unwrap_or(false);
-        let has_shipyard = sys_buildings.map(|sb| sb.has_shipyard(&building_registry)).unwrap_or(false);
-
-        // #176: System attributes — derive from best planet in the system
-        let best_attrs = planet_attrs
-            .iter()
-            .filter(|(p, _)| p.system == entity)
-            .map(|(_, a)| a)
-            .max_by(|a, b| a.habitability.partial_cmp(&b.habitability).unwrap_or(std::cmp::Ordering::Equal));
-        let (habitability, mineral_richness, energy_potential, research_potential, max_building_slots) =
-            best_attrs
-                .map(|a| (
-                    Some(a.habitability),
-                    Some(a.mineral_richness),
-                    Some(a.energy_potential),
-                    Some(a.research_potential),
-                    Some(a.max_building_slots),
-                ))
-                .unwrap_or((None, None, None, None, None));
-
-        let snapshot = SystemSnapshot {
-            name: star.name.clone(),
-            position: sys_pos.as_array(),
-            surveyed: star.surveyed,
-            colonized: is_colonized,
-            minerals,
-            energy,
-            food,
-            authority,
-            has_hostile,
-            hostile_strength,
-            has_port,
-            has_shipyard,
-            habitability,
-            mineral_richness,
-            energy_potential,
-            research_potential,
-            max_building_slots,
-            ..default()
-        };
+        let snapshot = build_system_snapshot(
+            entity,
+            star,
+            sys_pos,
+            stockpile,
+            sys_buildings,
+            &colonies,
+            &planets,
+            &planet_attrs,
+            &hostile_map,
+            &building_registry,
+        );
 
         store.update(SystemKnowledge {
             system: entity,

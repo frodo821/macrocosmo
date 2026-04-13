@@ -1992,3 +1992,217 @@ fn test_perceived_info_relay_source() {
     assert!(fleet.is_empty());
 }
 
+// ---------------------------------------------------------------------------
+// #216: Sensor Buoy + FTL Comm Relay information aggregation (B-1)
+// ---------------------------------------------------------------------------
+//
+// When an FTL Comm Relay network links a remote system to the player's
+// capital, the player's KnowledgeStore receives FTL-speed SystemKnowledge
+// updates (observed_at = now, source = Relay) for every star system inside
+// any paired source relay's `ftl_comm_relay` range. This is the aggregation
+// path described in the #216 spec: Sensor Buoy ship observations already take
+// the relay shortcut (covered by #119 tests), and the system-level snapshot
+// (resources, colonization, hostile presence, …) now follows the same route.
+
+#[test]
+fn test_sensor_buoy_info_propagates_via_relay() {
+    // Player at capital [0, 0, 0]. Remote system at [30, 0, 0] — 30 ly of
+    // light delay (~1800 hexadies). At t = 100 hd the remote system is
+    // still 1700 hd away by the light-speed path, so any SystemKnowledge
+    // entry for it must have been delivered via the FTL relay.
+    //
+    // Topology:
+    //   Relay-A @ [28, 0, 0]  (near remote system, range 5 ly)
+    //   Relay-B @ [1, 0, 0]   (near player, range 5 ly)
+    //   Bidirectional pair — each endpoint sends.
+    //   Sensor Buoy @ [30, 0, 0] co-located with the remote system.
+    use macrocosmo::deep_space::{CommDirection, pair_relay_command};
+
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+    install_ftl_comm_relay_definition(&mut app, 5.0);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "Remote", [30.0, 0.0, 0.0], 0.5, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Sensor buoy watches the remote system (not required for the system
+    // snapshot path itself, but models the "Sensor Buoy → Relay" spec).
+    spawn_sensor_buoy(app.world_mut(), [30.0, 0.0, 0.0]);
+
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [28.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [1.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::Bidirectional).unwrap();
+
+    advance_time(&mut app, 100);
+    let now = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+
+    let entry = store
+        .get(sys_remote)
+        .expect("Relay network should deliver a SystemKnowledge entry for the remote system");
+    assert_eq!(
+        entry.source,
+        ObservationSource::Relay,
+        "relay-delivered entry must be tagged Relay"
+    );
+    assert_eq!(
+        entry.observed_at, now,
+        "FTL relay delivers with no light-speed delay (observed_at == now)"
+    );
+    // Sanity: the snapshot payload identifies the correct remote system.
+    assert_eq!(entry.data.name, "Remote");
+    assert_eq!(entry.data.position, [30.0, 0.0, 0.0]);
+    // Direct propagate_knowledge cannot have fired yet (1800 hd light delay).
+    // If the entry's observed_at == now, it MUST be the relay path.
+    assert!(
+        now < 1800,
+        "precondition: test runs before light-speed path could deliver"
+    );
+}
+
+#[test]
+fn test_relay_destruction_degrades_info_freshness() {
+    // Same topology as above. While the relay chain is live, the remote
+    // system's SystemKnowledge stays maximally fresh (observed_at == now,
+    // source == Relay). After destroying Relay-B, subsequent ticks must not
+    // continue to publish Relay-sourced updates for the remote system; the
+    // player has to wait for the direct light-speed path — and when it
+    // eventually lands, source flips to Direct.
+    use macrocosmo::deep_space::{CommDirection, FTLCommRelay, pair_relay_command};
+
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+    install_ftl_comm_relay_definition(&mut app, 5.0);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "Remote", [30.0, 0.0, 0.0], 0.5, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+    spawn_sensor_buoy(app.world_mut(), [30.0, 0.0, 0.0]);
+
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [28.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [1.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::Bidirectional).unwrap();
+
+    // Phase 1: chain is live. Remote system is known via relay at t=100.
+    advance_time(&mut app, 100);
+    let fresh_observed_at;
+    {
+        let now = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        let entry = store.get(sys_remote).expect("relay delivers phase-1 snapshot");
+        assert_eq!(entry.source, ObservationSource::Relay);
+        assert_eq!(entry.observed_at, now);
+        fresh_observed_at = entry.observed_at;
+    }
+
+    // Phase 2: destroy one end of the chain. verify_relay_pairings_system
+    // strips the partner's FTLCommRelay component on the next tick.
+    app.world_mut().despawn(relay_b);
+    advance_time(&mut app, 1);
+    assert!(
+        app.world().get::<FTLCommRelay>(relay_a).is_none(),
+        "despawning relay_b must unpair relay_a"
+    );
+
+    // Phase 3: advance well past phase-1 but still FAR shorter than the
+    // light-speed travel time (30 ly ≈ 1800 hd). The relay path is gone, so
+    // the stored observed_at must NOT advance and the source must remain
+    // Relay (the prior entry; nothing wrote over it).
+    advance_time(&mut app, 500);
+    {
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        let entry = store.get(sys_remote).expect("prior relay snapshot still present");
+        assert_eq!(
+            entry.observed_at, fresh_observed_at,
+            "no new relay writes after chain destroyed — observed_at must stall"
+        );
+        assert_eq!(
+            entry.source,
+            ObservationSource::Relay,
+            "the stalled snapshot still carries its original Relay tag"
+        );
+    }
+
+    // Phase 4: advance past the 1800 hd light-speed delay from player to the
+    // remote system (30 ly). Now the direct path delivers with source=Direct.
+    // That confirms the "light-speed fallback" aspect of the spec.
+    advance_time(&mut app, 2000);
+    {
+        let now = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+        let empire = empire_entity(app.world_mut());
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        let entry = store.get(sys_remote).expect("direct light-speed path eventually lands");
+        assert_eq!(
+            entry.source,
+            ObservationSource::Direct,
+            "after chain destruction, freshness is restored only via the light-speed path"
+        );
+        assert!(
+            entry.observed_at > fresh_observed_at,
+            "direct path eventually supersedes the stalled relay snapshot"
+        );
+        assert!(
+            entry.observed_at < now,
+            "direct observation carries the light-speed delay (observed_at < now)"
+        );
+    }
+}
+
+#[test]
+fn test_relay_chain_aggregates_system_resources() {
+    // Bonus coverage: verify that the relay-delivered SystemKnowledge carries
+    // the remote system's `ResourceStockpile` contents — this is the
+    // "information aggregation" the #216 spec calls out. Without the relay
+    // path this data would only arrive at light-speed.
+    use macrocosmo::deep_space::{CommDirection, pair_relay_command};
+
+    let mut app = test_app();
+    install_ftl_comm_relay_definition(&mut app, 5.0);
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_remote = spawn_test_system(
+        app.world_mut(), "RemoteColony", [30.0, 0.0, 0.0], 0.6, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // Attach a stockpile to the remote system so the snapshot has non-trivial
+    // content to verify.
+    app.world_mut().entity_mut(sys_remote).insert(ResourceStockpile {
+        minerals: Amt::units(777),
+        energy: Amt::units(321),
+        research: Amt::ZERO,
+        food: Amt::units(50),
+        authority: Amt::units(10),
+    });
+
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [28.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [1.0, 0.0, 0.0]);
+    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::Bidirectional).unwrap();
+
+    advance_time(&mut app, 50);
+    let now = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let entry = store.get(sys_remote).expect("relay delivers remote system snapshot");
+    assert_eq!(entry.source, ObservationSource::Relay);
+    assert_eq!(entry.observed_at, now);
+    assert_eq!(entry.data.minerals, Amt::units(777));
+    assert_eq!(entry.data.energy, Amt::units(321));
+    assert_eq!(entry.data.food, Amt::units(50));
+    assert_eq!(entry.data.authority, Amt::units(10));
+}
+
