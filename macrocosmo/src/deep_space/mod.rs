@@ -806,6 +806,21 @@ pub fn relay_knowledge_propagate_system(
     mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
     // #145: Forbidden regions that block FTL comm propagation.
     ftl_comm_blocking_regions: Query<&crate::galaxy::ForbiddenRegion>,
+    // #216: Star system data for FTL-relayed SystemKnowledge updates. Mirrors
+    // the queries used by `propagate_knowledge` so the snapshot payload is
+    // identical to the direct-light path.
+    system_q: Query<(
+        Entity,
+        &crate::galaxy::StarSystem,
+        &crate::components::Position,
+        Option<&crate::colony::ResourceStockpile>,
+        Option<&crate::colony::SystemBuildings>,
+    )>,
+    colonies: Query<&crate::colony::Colony>,
+    planets: Query<&crate::galaxy::Planet>,
+    planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
+    hostiles: Query<&crate::galaxy::HostilePresence>,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     // Build region blockers (pairs segment check); only regions carrying the
     // `blocks_ftl_comm` capability matter here.
@@ -927,6 +942,55 @@ pub fn relay_knowledge_propagate_system(
                 observed_at,
                 hp: hp.hull,
                 hp_max: hp.hull_max,
+                source: ObservationSource::Relay,
+            });
+        }
+
+        // #216: FTL-relayed SystemKnowledge. For every star system within the
+        // SOURCE relay's range, write a fresh SystemKnowledge entry at
+        // FTL speed (observed_at = clock.elapsed, source = Relay) provided
+        // the player is within the PARTNER relay's range (checked above).
+        //
+        // This is the "Sensor Buoy + Relay" aggregation path (B-1): Sensor
+        // Buoy ship observations are already covered by the ship loop above;
+        // here we additionally deliver the system-level snapshot (resources,
+        // colonization, hostile presence, etc.) through the same pair.
+        let observed_at = clock.elapsed;
+        let hostile_map: std::collections::HashMap<Entity, &crate::galaxy::HostilePresence> =
+            hostiles.iter().map(|h| (h.system, h)).collect();
+
+        for (sys_entity, star, sys_pos, stockpile, sys_buildings) in &system_q {
+            let dist = crate::physics::distance_ly(source_pos, sys_pos);
+            if source_range > 0.0 && dist > source_range {
+                continue;
+            }
+
+            // Skip if existing knowledge is at least as fresh.
+            if store
+                .get(sys_entity)
+                .is_some_and(|existing| existing.observed_at >= observed_at)
+            {
+                continue;
+            }
+
+            let snapshot = crate::knowledge::build_system_snapshot(
+                sys_entity,
+                star,
+                sys_pos,
+                stockpile,
+                sys_buildings,
+                &colonies,
+                &planets,
+                &planet_attrs,
+                &hostile_map,
+                &building_registry,
+            );
+
+            store.update(crate::knowledge::SystemKnowledge {
+                system: sys_entity,
+                observed_at,
+                received_at: clock.elapsed,
+                data: snapshot,
                 source: ObservationSource::Relay,
             });
         }
