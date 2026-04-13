@@ -4,6 +4,7 @@ use crate::amount::Amt;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::modifier::ModifiedValue;
 use crate::events::{GameEvent, GameEventKind};
+use crate::colony::ColonyJobRates;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
@@ -101,6 +102,7 @@ pub fn spawn_capital_colony(
             }],
         },
         ColonyJobs::default(),
+        ColonyJobRates::default(),
     ));
     // Add ResourceStockpile, ResourceCapacity, and SystemBuildings to the StarSystem entity
     commands.entity(capital_entity).insert((
@@ -184,6 +186,7 @@ pub fn tick_colonization_queue(
                 };
 
             // Spawn the new colony
+            let pop_count = order.initial_population.round().max(0.0) as u32;
             commands.spawn((
                 Colony {
                     planet: order.target_planet,
@@ -202,6 +205,14 @@ pub fn tick_colonization_queue(
                 ProductionFocus::default(),
                 MaintenanceCost::default(),
                 FoodConsumption::default(),
+                ColonyPopulation {
+                    species: vec![ColonySpecies {
+                        species_id: "human".to_string(),
+                        population: pop_count,
+                    }],
+                },
+                ColonyJobs::default(),
+                ColonyJobRates::default(),
             ));
 
             events.write(crate::events::GameEvent {

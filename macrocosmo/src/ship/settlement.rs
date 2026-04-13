@@ -2,10 +2,11 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::colony::{
-    BuildQueue, Buildings, BuildingQueue, Colony, FoodConsumption, MaintenanceCost,
-    Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+    BuildQueue, Buildings, BuildingQueue, Colony, ColonyJobRates, FoodConsumption,
+    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
     SystemBuildings, SystemBuildingQueue,
 };
+use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{HostilePresence, StarSystem, SystemAttributes};
 use crate::time_system::GameClock;
@@ -125,6 +126,14 @@ pub fn process_settling(
                 ProductionFocus::default(),
                 MaintenanceCost::default(),
                 FoodConsumption::default(),
+                ColonyPopulation {
+                    species: vec![ColonySpecies {
+                        species_id: "human".to_string(),
+                        population: 10,
+                    }],
+                },
+                ColonyJobs::default(),
+                ColonyJobRates::default(),
             ));
 
             // Add ResourceStockpile and ResourceCapacity to the StarSystem if not already present

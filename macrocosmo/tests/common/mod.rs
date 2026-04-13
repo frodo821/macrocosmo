@@ -124,26 +124,31 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
 pub fn spawn_test_empire(world: &mut World) -> Entity {
     world
         .spawn((
-            Empire {
-                name: "Test Empire".into(),
-            },
-            PlayerEmpire,
-            Faction {
-                id: "humanity_empire".into(),
-                name: "Test Empire".into(),
-            },
-            technology::TechTree::default(),
-            technology::ResearchQueue::default(),
-            technology::ResearchPool::default(),
-            technology::RecentlyResearched::default(),
-            AuthorityParams::default(),
-            ConstructionParams::default(),
-            technology::EmpireModifiers::default(),
-            technology::GameFlags::default(),
-            technology::GlobalParams::default(),
-            KnowledgeStore::default(),
-            CommandLog::default(),
-            ScopedFlags::default(),
+            (
+                Empire {
+                    name: "Test Empire".into(),
+                },
+                PlayerEmpire,
+                Faction {
+                    id: "humanity_empire".into(),
+                    name: "Test Empire".into(),
+                },
+                technology::TechTree::default(),
+                technology::ResearchQueue::default(),
+                technology::ResearchPool::default(),
+                technology::RecentlyResearched::default(),
+                AuthorityParams::default(),
+                ConstructionParams::default(),
+            ),
+            (
+                technology::EmpireModifiers::default(),
+                technology::GameFlags::default(),
+                technology::GlobalParams::default(),
+                technology::PendingColonyTechModifiers::default(),
+                KnowledgeStore::default(),
+                CommandLog::default(),
+                ScopedFlags::default(),
+            ),
         ))
         .id()
 }

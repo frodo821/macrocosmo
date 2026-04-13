@@ -9,8 +9,8 @@ use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::condition::ScopedFlags;
 use crate::technology::{
-    EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
-    TechTree,
+    EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
+    ResearchPool, ResearchQueue, TechTree,
 };
 
 pub struct PlayerPlugin;
@@ -43,26 +43,31 @@ impl Plugin for PlayerPlugin {
 /// This must run before any system that queries for PlayerEmpire.
 pub fn spawn_player_empire(mut commands: Commands) {
     commands.spawn((
-        Empire {
-            name: "Human Federation".into(),
-        },
-        PlayerEmpire,
-        Faction {
-            id: "humanity_empire".into(),
-            name: "Terran Federation".into(),
-        },
-        TechTree::default(),
-        ResearchQueue::default(),
-        ResearchPool::default(),
-        RecentlyResearched::default(),
-        AuthorityParams::default(),
-        ConstructionParams::default(),
-        EmpireModifiers::default(),
-        GameFlags::default(),
-        GlobalParams::default(),
-        KnowledgeStore::default(),
-        CommandLog::default(),
-        ScopedFlags::default(),
+        (
+            Empire {
+                name: "Human Federation".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "humanity_empire".into(),
+                name: "Terran Federation".into(),
+            },
+            TechTree::default(),
+            ResearchQueue::default(),
+            ResearchPool::default(),
+            RecentlyResearched::default(),
+            AuthorityParams::default(),
+            ConstructionParams::default(),
+        ),
+        (
+            EmpireModifiers::default(),
+            GameFlags::default(),
+            GlobalParams::default(),
+            KnowledgeStore::default(),
+            CommandLog::default(),
+            ScopedFlags::default(),
+            PendingColonyTechModifiers::default(),
+        ),
     ));
     info!("Player empire entity spawned");
 }
