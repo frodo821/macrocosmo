@@ -31,6 +31,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
         is_system_building: false, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
+        prerequisites: None,
     });
     registry.insert(BuildingDefinition {
         id: "power_plant".into(), name: "PowerPlant".into(), description: String::new(),
@@ -40,6 +41,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
         is_system_building: false, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
+        prerequisites: None,
     });
     registry.insert(BuildingDefinition {
         id: "research_lab".into(), name: "ResearchLab".into(), description: String::new(),
@@ -49,6 +51,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_research: Amt::units(2), production_bonus_food: Amt::ZERO,
         is_system_building: true, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
+        prerequisites: None,
     });
     let mut shipyard_caps = HashMap::new();
     shipyard_caps.insert("shipyard".to_string(), CapabilityParams {
@@ -62,6 +65,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
         is_system_building: true, capabilities: shipyard_caps,
         upgrade_to: Vec::new(), is_direct_buildable: true,
+        prerequisites: None,
     });
     let mut port_caps = HashMap::new();
     port_caps.insert("port".to_string(), CapabilityParams {
@@ -80,6 +84,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
         is_system_building: true, capabilities: port_caps,
         upgrade_to: Vec::new(), is_direct_buildable: true,
+        prerequisites: None,
     });
     registry.insert(BuildingDefinition {
         id: "farm".into(), name: "Farm".into(), description: String::new(),
@@ -89,6 +94,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_research: Amt::ZERO, production_bonus_food: Amt::units(5),
         is_system_building: false, capabilities: HashMap::new(),
         upgrade_to: Vec::new(), is_direct_buildable: true,
+        prerequisites: None,
     });
     registry
 }

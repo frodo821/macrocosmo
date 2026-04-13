@@ -640,7 +640,7 @@ mod tests {
             cost_energy: Amt::units(50),
             modifiers: vec![],
             weapon: None,
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
         });
         let modules = vec![

@@ -38,7 +38,7 @@ local weapon_laser = define_module {
     id = "weapon_laser",
     name = "Laser Battery",
     slot_type = slot_types.weapon,
-    prerequisite_tech = tech.military.kinetic_weapons,
+    prerequisites = has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 5.0, precision = 0.85, cooldown = 1, range = 10.0,
         shield_damage = 4.0, shield_damage_div = 1.0, shield_piercing = 0.0,
@@ -52,7 +52,7 @@ local weapon_railgun = define_module {
     id = "weapon_railgun",
     name = "Railgun",
     slot_type = slot_types.weapon,
-    prerequisite_tech = tech.military.kinetic_weapons,
+    prerequisites = has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 2.0, precision = 0.90, cooldown = 3, range = 20.0,
         shield_damage = 1.0, shield_damage_div = 0.5, shield_piercing = 0.5,
@@ -66,7 +66,7 @@ local weapon_missile = define_module {
     id = "weapon_missile",
     name = "Missile Launcher",
     slot_type = slot_types.weapon,
-    prerequisite_tech = tech.military.kinetic_weapons,
+    prerequisites = has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 8.0, precision = 0.70, cooldown = 2, range = 15.0,
         shield_damage = 1.0, shield_damage_div = 0.5, shield_piercing = 0.8,
@@ -92,7 +92,7 @@ local shield_generator = define_module {
     id = "shield_generator",
     name = "Shield Generator",
     slot_type = slot_types.defense,
-    prerequisite_tech = tech.military.deflector_shields,
+    prerequisites = has_tech(tech.military.deflector_shields),
     modifiers = {
         { target = "ship.shield_max", base_add = 40.0 },
         { target = "ship.shield_regen", base_add = 2.0 },

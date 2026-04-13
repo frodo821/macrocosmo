@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::condition::Condition;
+use crate::scripting::condition_parser::parse_prerequisites_field;
 
 /// An upgrade path from one building to another.
 #[derive(Clone, Debug)]
@@ -41,6 +43,9 @@ pub struct BuildingDefinition {
     /// Whether this building can be built directly (true) or only obtained via upgrade (false).
     /// Buildings with cost = nil in Lua are upgrade-only.
     pub is_direct_buildable: bool,
+    /// Optional Condition tree gating construction / upgrade of this building.
+    /// Populated from the Lua `prerequisites = has_tech(...)` / `all(...)` / ... field.
+    pub prerequisites: Option<Condition>,
 }
 
 /// Parameters for a named building capability.
@@ -184,6 +189,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let is_system_building: bool = table.get::<Option<bool>>("is_system_building")?.unwrap_or(false);
         let capabilities = parse_capabilities_table(&table)?;
         let upgrade_to = parse_upgrade_to_table(&table)?;
+        let prerequisites = parse_prerequisites_field(&table)?;
 
         result.push(BuildingDefinition {
             id,
@@ -201,6 +207,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             capabilities,
             upgrade_to,
             is_direct_buildable,
+            prerequisites,
         });
     }
 
@@ -452,6 +459,7 @@ mod tests {
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
         });
 
         let mine = registry.get("mine").unwrap();
@@ -476,6 +484,7 @@ mod tests {
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -568,6 +577,7 @@ mod tests {
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
         });
 
         // Replace with updated values
@@ -587,6 +597,7 @@ mod tests {
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
         });
 
         assert_eq!(registry.buildings.len(), 1);
@@ -670,6 +681,7 @@ mod tests {
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
         });
 
         // Upgrade-only planet building
@@ -689,6 +701,7 @@ mod tests {
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: false,
+            prerequisites: None,
         });
 
         // planet_buildings() should only return direct-buildable ones
@@ -698,5 +711,84 @@ mod tests {
 
         // But the registry still has both
         assert!(registry.get("advanced_mine").is_some());
+    }
+
+    #[test]
+    fn test_building_api_parses_prerequisites_field() {
+        use crate::condition::{Condition, ConditionAtom};
+
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_building {
+                id = "plain",
+                name = "Plain",
+            }
+            define_building {
+                id = "tech_gated",
+                name = "Tech Gated",
+                prerequisites = has_tech("industrial_automated_mining"),
+            }
+            define_building {
+                id = "complex_gated",
+                name = "Complex Gated",
+                prerequisites = all(
+                    has_tech("tech_a"),
+                    any(has_tech("tech_b"), has_flag("enabled"))
+                ),
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_building_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 3);
+
+        assert!(defs[0].prerequisites.is_none());
+
+        assert_eq!(
+            defs[1].prerequisites,
+            Some(Condition::Atom(ConditionAtom::has_tech(
+                "industrial_automated_mining"
+            )))
+        );
+
+        assert!(matches!(&defs[2].prerequisites, Some(Condition::All(_))));
+    }
+
+    #[test]
+    fn test_building_api_prerequisites_from_lua_file_wires_advanced_mine() {
+        // Ensures scripts/buildings/basic.lua now populates prerequisites for
+        // advanced_mine / advanced_power_plant (previously silently dropped).
+        use crate::condition::{AtomKind, Condition};
+
+        let engine = ScriptEngine::new().unwrap();
+        let building_script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
+        if !building_script.exists() {
+            return;
+        }
+        engine.load_file(&building_script).unwrap();
+        let defs = parse_building_definitions(engine.lua()).unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            defs.iter().map(|d| (d.id.as_str(), d)).collect();
+
+        let adv_mine = by_id.get("advanced_mine").unwrap();
+        match &adv_mine.prerequisites {
+            Some(Condition::Atom(atom)) => match &atom.kind {
+                AtomKind::HasTech(id) => assert_eq!(id, "industrial_automated_mining"),
+                other => panic!("expected HasTech atom, got {:?}", other),
+            },
+            other => panic!(
+                "expected advanced_mine prerequisites to be a HasTech atom, got {:?}",
+                other
+            ),
+        }
+
+        let adv_pp = by_id.get("advanced_power_plant").unwrap();
+        assert!(adv_pp.prerequisites.is_some());
     }
 }

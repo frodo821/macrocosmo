@@ -1425,6 +1425,7 @@ fn test_hull_modifiers_applied_to_ship() {
                     add: 0.0,
                 },
             ],
+            prerequisites: None,
         });
     }
 
@@ -1826,6 +1827,7 @@ fn install_refit_fixture(app: &mut App) {
         build_time: 60,
         maintenance: Amt::new(0, 500),
         modifiers: vec![],
+        prerequisites: None,
     });
 
     let mut modules = ModuleRegistry::default();
@@ -1838,7 +1840,7 @@ fn install_refit_fixture(app: &mut App) {
         weapon: None,
         cost_minerals: Amt::units(mineral),
         cost_energy: Amt::units(energy),
-        prerequisite_tech: None,
+        prerequisites: None,
         upgrade_to: Vec::new(),
     };
     modules.insert(mk("laser_mk1", 50, 20));

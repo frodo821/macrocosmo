@@ -11,7 +11,9 @@ use bevy::prelude::*;
 use crate::condition::{AtomKind, Condition};
 use crate::deep_space::StructureRegistry;
 use crate::scripting::building_api::BuildingRegistry;
-use crate::ship_design::ModuleRegistry;
+use crate::ship_design::{
+    ship_design_effective_prerequisites, HullRegistry, ModuleRegistry, ShipDesignRegistry,
+};
 
 use super::tree::{TechId, TechTree};
 
@@ -22,6 +24,11 @@ pub enum UnlockKind {
     Building,
     Structure,
     Tech,
+    /// A hull unlocked by tech. Populated once HullDefinition gains a
+    /// `prerequisites: Option<Condition>` field (#226).
+    Hull,
+    /// A ship design unlocked by tech (derived from hull + modules, #226).
+    ShipDesign,
 }
 
 /// A single thing unlocked by a technology.
@@ -93,9 +100,9 @@ fn collect_tech_ids(cond: &Condition, out: &mut Vec<String>) {
 /// Runs once at startup, after every registry has finished its own Lua-load
 /// system. Iterates:
 ///
-/// * `ModuleRegistry` — `prerequisite_tech: Option<String>`
-/// * `BuildingRegistry` — currently no prerequisites (placeholder iteration
-///   so future Condition-based prerequisites are picked up automatically)
+/// * `ModuleRegistry` — `prerequisites: Option<Condition>`
+/// * `BuildingRegistry` — `prerequisites: Option<Condition>`
+/// * `HullRegistry` — `prerequisites: Option<Condition>`
 /// * `StructureRegistry` — `prerequisites: Option<Condition>`
 /// * `TechTree` — each tech's `prerequisites: Vec<TechId>` (reversed)
 pub fn build_tech_unlock_index(
@@ -103,31 +110,77 @@ pub fn build_tech_unlock_index(
     modules: Res<ModuleRegistry>,
     buildings: Res<BuildingRegistry>,
     structures: Res<StructureRegistry>,
+    hulls: Res<HullRegistry>,
+    designs: Res<ShipDesignRegistry>,
     tech_trees: Query<&TechTree>,
     tech_tree_res: Option<Res<TechTree>>,
 ) {
     // Reset in case the system somehow runs again.
     index.unlocks.clear();
 
-    // Modules: direct `prerequisite_tech` field.
+    // Modules: walk the optional Condition tree for HasTech atoms.
     for (id, def) in &modules.modules {
-        if let Some(tech_id) = &def.prerequisite_tech {
-            index.push(
-                tech_id.clone(),
-                UnlockEntry {
-                    kind: UnlockKind::Module,
-                    id: id.clone(),
-                    name: def.name.clone(),
-                },
-            );
+        if let Some(cond) = &def.prerequisites {
+            for tech_id in extract_tech_ids(cond) {
+                index.push(
+                    tech_id,
+                    UnlockEntry {
+                        kind: UnlockKind::Module,
+                        id: id.clone(),
+                        name: def.name.clone(),
+                    },
+                );
+            }
         }
     }
 
-    // Buildings: BuildingDefinition has no Condition prerequisites field today,
-    // but iterate so a future field gets picked up here. (No-op for now.)
-    for (_id, _def) in &buildings.buildings {
-        // Placeholder: when buildings gain a `prerequisites: Option<Condition>`
-        // field, walk it via `extract_tech_ids` and push entries.
+    // Buildings: walk the optional Condition tree for HasTech atoms.
+    for (id, def) in &buildings.buildings {
+        if let Some(cond) = &def.prerequisites {
+            for tech_id in extract_tech_ids(cond) {
+                index.push(
+                    tech_id,
+                    UnlockEntry {
+                        kind: UnlockKind::Building,
+                        id: id.clone(),
+                        name: def.name.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    // Hulls: walk the optional Condition tree for HasTech atoms.
+    for (id, def) in &hulls.hulls {
+        if let Some(cond) = &def.prerequisites {
+            for tech_id in extract_tech_ids(cond) {
+                index.push(
+                    tech_id,
+                    UnlockEntry {
+                        kind: UnlockKind::Hull,
+                        id: id.clone(),
+                        name: def.name.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    // Ship designs: derive effective prerequisites from hull + modules, then
+    // walk them for HasTech atoms.
+    for (id, design) in &designs.designs {
+        if let Some(cond) = ship_design_effective_prerequisites(design, &hulls, &modules) {
+            for tech_id in extract_tech_ids(&cond) {
+                index.push(
+                    tech_id,
+                    UnlockEntry {
+                        kind: UnlockKind::ShipDesign,
+                        id: id.clone(),
+                        name: design.name.clone(),
+                    },
+                );
+            }
+        }
     }
 
     // Structures: walk the optional Condition tree for HasTech atoms.
@@ -189,11 +242,14 @@ mod tests {
     use crate::condition::ConditionAtom;
     use crate::deep_space::{ResourceCost, StructureDefinition};
     use crate::scripting::building_api::{BuildingDefinition, CapabilityParams as BCapabilityParams};
-    use crate::ship_design::{ModuleDefinition, ModuleRegistry};
+    use crate::ship_design::{
+        DesignSlotAssignment, HullDefinition, HullRegistry, ModuleDefinition, ModuleRegistry,
+        ShipDesignDefinition, ShipDesignRegistry,
+    };
     use crate::technology::tree::{TechCost, Technology};
     use std::collections::HashMap;
 
-    fn make_module(id: &str, name: &str, prereq: Option<&str>) -> ModuleDefinition {
+    fn make_module(id: &str, name: &str, prereq: Option<Condition>) -> ModuleDefinition {
         ModuleDefinition {
             id: id.to_string(),
             name: name.to_string(),
@@ -203,7 +259,7 @@ mod tests {
             weapon: None,
             cost_minerals: Amt::ZERO,
             cost_energy: Amt::ZERO,
-            prerequisite_tech: prereq.map(|s| s.to_string()),
+            prerequisites: prereq,
             upgrade_to: Vec::new(),
         }
     }
@@ -234,7 +290,7 @@ mod tests {
         }
     }
 
-    fn make_building(id: &str, name: &str) -> BuildingDefinition {
+    fn make_building(id: &str, name: &str, prereq: Option<Condition>) -> BuildingDefinition {
         BuildingDefinition {
             id: id.to_string(),
             name: name.to_string(),
@@ -251,6 +307,7 @@ mod tests {
             capabilities: HashMap::<String, BCapabilityParams>::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: prereq,
         }
     }
 
@@ -262,11 +319,48 @@ mod tests {
         structures: StructureRegistry,
         tree: TechTree,
     ) -> TechUnlockIndex {
+        run_index_full(
+            modules,
+            buildings,
+            structures,
+            HullRegistry::default(),
+            ShipDesignRegistry::default(),
+            tree,
+        )
+    }
+
+    fn run_index_with_hulls(
+        modules: ModuleRegistry,
+        buildings: BuildingRegistry,
+        structures: StructureRegistry,
+        hulls: HullRegistry,
+        tree: TechTree,
+    ) -> TechUnlockIndex {
+        run_index_full(
+            modules,
+            buildings,
+            structures,
+            hulls,
+            ShipDesignRegistry::default(),
+            tree,
+        )
+    }
+
+    fn run_index_full(
+        modules: ModuleRegistry,
+        buildings: BuildingRegistry,
+        structures: StructureRegistry,
+        hulls: HullRegistry,
+        designs: ShipDesignRegistry,
+        tree: TechTree,
+    ) -> TechUnlockIndex {
         let mut app = App::new();
         app.init_resource::<TechUnlockIndex>();
         app.insert_resource(modules);
         app.insert_resource(buildings);
         app.insert_resource(structures);
+        app.insert_resource(hulls);
+        app.insert_resource(designs);
         // Use the resource fallback path -- simpler than spawning an empire.
         app.insert_resource(tree);
         app.add_systems(Update, build_tech_unlock_index);
@@ -276,10 +370,32 @@ mod tests {
             .expect("TechUnlockIndex should exist after update")
     }
 
+    fn make_hull(id: &str, name: &str, prereq: Option<Condition>) -> HullDefinition {
+        HullDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            base_hp: 50.0,
+            base_speed: 0.5,
+            base_evasion: 0.0,
+            slots: Vec::new(),
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 10,
+            maintenance: Amt::ZERO,
+            modifiers: Vec::new(),
+            prerequisites: prereq,
+        }
+    }
+
     #[test]
-    fn module_unlocked_by_prerequisite_tech() {
+    fn module_unlocked_by_has_tech() {
         let mut modules = ModuleRegistry::default();
-        modules.insert(make_module("laser_mk2", "Laser Mk.II", Some("laser_weapons")));
+        modules.insert(make_module(
+            "laser_mk2",
+            "Laser Mk.II",
+            Some(Condition::Atom(ConditionAtom::has_tech("laser_weapons"))),
+        ));
         modules.insert(make_module("plain", "Plain Module", None));
 
         let index = run_index(
@@ -296,6 +412,32 @@ mod tests {
         assert_eq!(entries[0].name, "Laser Mk.II");
         // The module without a prereq should not appear under any tech.
         assert!(!index.unlocks.values().flatten().any(|e| e.id == "plain"));
+    }
+
+    #[test]
+    fn module_unlocked_by_complex_condition() {
+        let mut modules = ModuleRegistry::default();
+        let cond = Condition::All(vec![
+            Condition::Atom(ConditionAtom::has_tech("advanced_weapons")),
+            Condition::Any(vec![
+                Condition::Atom(ConditionAtom::has_tech("fusion_power")),
+                Condition::Atom(ConditionAtom::has_flag("superpowered")),
+            ]),
+        ]);
+        modules.insert(make_module("super_weapon", "Super Weapon", Some(cond)));
+
+        let index = run_index(
+            modules,
+            BuildingRegistry::default(),
+            StructureRegistry::default(),
+            TechTree::default(),
+        );
+
+        // advanced_weapons and fusion_power each index the module once.
+        assert_eq!(index.for_tech("advanced_weapons").len(), 1);
+        assert_eq!(index.for_tech("fusion_power").len(), 1);
+        assert_eq!(index.for_tech("advanced_weapons")[0].id, "super_weapon");
+        assert_eq!(index.for_tech("advanced_weapons")[0].kind, UnlockKind::Module);
     }
 
     #[test]
@@ -384,11 +526,9 @@ mod tests {
     }
 
     #[test]
-    fn building_registry_iteration_is_safe_no_op() {
-        // BuildingDefinition has no prerequisites field today; iterating it
-        // must simply not contribute any entries.
+    fn building_without_prerequisites_produces_no_entries() {
         let mut buildings = BuildingRegistry::default();
-        buildings.insert(make_building("mine", "Mine"));
+        buildings.insert(make_building("mine", "Mine", None));
         let index = run_index(
             ModuleRegistry::default(),
             buildings,
@@ -396,6 +536,50 @@ mod tests {
             TechTree::default(),
         );
         assert_eq!(index.total_entries(), 0);
+    }
+
+    #[test]
+    fn building_unlocked_by_has_tech() {
+        let mut buildings = BuildingRegistry::default();
+        let cond = Condition::Atom(ConditionAtom::has_tech("industrial_automated_mining"));
+        buildings.insert(make_building("advanced_mine", "Advanced Mine", Some(cond)));
+
+        let index = run_index(
+            ModuleRegistry::default(),
+            buildings,
+            StructureRegistry::default(),
+            TechTree::default(),
+        );
+
+        let entries = index.for_tech("industrial_automated_mining");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, UnlockKind::Building);
+        assert_eq!(entries[0].id, "advanced_mine");
+        assert_eq!(entries[0].name, "Advanced Mine");
+    }
+
+    #[test]
+    fn building_unlocked_by_complex_condition() {
+        let mut buildings = BuildingRegistry::default();
+        let cond = Condition::All(vec![
+            Condition::Atom(ConditionAtom::has_tech("tech_a")),
+            Condition::Any(vec![
+                Condition::Atom(ConditionAtom::has_tech("tech_b")),
+                Condition::Atom(ConditionAtom::has_flag("some_flag")),
+            ]),
+        ]);
+        buildings.insert(make_building("mega_mine", "Mega Mine", Some(cond)));
+        let index = run_index(
+            ModuleRegistry::default(),
+            buildings,
+            StructureRegistry::default(),
+            TechTree::default(),
+        );
+        // Both tech_a and tech_b should index the building; the has_flag atom is ignored.
+        assert_eq!(index.for_tech("tech_a").len(), 1);
+        assert_eq!(index.for_tech("tech_b").len(), 1);
+        assert_eq!(index.for_tech("tech_a")[0].kind, UnlockKind::Building);
+        assert_eq!(index.for_tech("tech_a")[0].id, "mega_mine");
     }
 
     #[test]
@@ -408,5 +592,98 @@ mod tests {
         );
         assert_eq!(index.total_entries(), 0);
         assert!(index.for_tech("anything").is_empty());
+    }
+
+    #[test]
+    fn ship_design_unlocked_from_derived_prereqs() {
+        // A design whose hull requires T1 and whose module requires T2 should
+        // appear as a UnlockKind::ShipDesign entry under BOTH techs.
+        let mut hulls = HullRegistry::default();
+        let mut corvette = make_hull(
+            "corvette",
+            "Corvette",
+            Some(Condition::Atom(ConditionAtom::has_tech("T1"))),
+        );
+        // Give the hull at least one slot so the design can reference it.
+        corvette.slots = vec![crate::ship_design::HullSlot {
+            slot_type: "ftl".into(),
+            count: 1,
+        }];
+        hulls.insert(corvette);
+
+        let mut modules = ModuleRegistry::default();
+        modules.insert(ModuleDefinition {
+            id: "ftl_drive".into(),
+            name: "FTL Drive".into(),
+            description: String::new(),
+            slot_type: "ftl".into(),
+            modifiers: Vec::new(),
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech("T2"))),
+            upgrade_to: Vec::new(),
+        });
+
+        let mut designs = ShipDesignRegistry::default();
+        designs.insert(ShipDesignDefinition {
+            id: "explorer".into(),
+            name: "Explorer".into(),
+            description: String::new(),
+            hull_id: "corvette".into(),
+            modules: vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            hp: 50.0,
+            sublight_speed: 0.5,
+            ftl_range: 10.0,
+            revision: 0,
+        });
+
+        let index = run_index_full(
+            modules,
+            BuildingRegistry::default(),
+            StructureRegistry::default(),
+            hulls,
+            designs,
+            TechTree::default(),
+        );
+
+        // Both T1 and T2 should list the design + the hull / module themselves.
+        let t1 = index.for_tech("T1");
+        assert!(t1.iter().any(|e| e.kind == UnlockKind::ShipDesign && e.id == "explorer"));
+        assert!(t1.iter().any(|e| e.kind == UnlockKind::Hull && e.id == "corvette"));
+
+        let t2 = index.for_tech("T2");
+        assert!(t2.iter().any(|e| e.kind == UnlockKind::ShipDesign && e.id == "explorer"));
+        assert!(t2.iter().any(|e| e.kind == UnlockKind::Module && e.id == "ftl_drive"));
+    }
+
+    #[test]
+    fn hull_unlocked_by_has_tech() {
+        let mut hulls = HullRegistry::default();
+        let cond = Condition::Atom(ConditionAtom::has_tech("hull_cruiser"));
+        hulls.insert(make_hull("cruiser", "Cruiser", Some(cond)));
+
+        let index = run_index_with_hulls(
+            ModuleRegistry::default(),
+            BuildingRegistry::default(),
+            StructureRegistry::default(),
+            hulls,
+            TechTree::default(),
+        );
+
+        let entries = index.for_tech("hull_cruiser");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, UnlockKind::Hull);
+        assert_eq!(entries[0].id, "cruiser");
+        assert_eq!(entries[0].name, "Cruiser");
     }
 }
