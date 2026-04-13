@@ -260,6 +260,27 @@ fn build_status_info(
             ),
             progress: None,
         },
+        // #217: Scouting — display like Surveying but labelled "Scouting".
+        ShipState::Scouting {
+            target_system,
+            started_at,
+            completes_at,
+            ..
+        } => {
+            let total = (completes_at - started_at).max(1);
+            let elapsed = (clock.elapsed - started_at).clamp(0, total);
+            let pct = elapsed as f32 / total as f32;
+            ShipStatusInfo {
+                label: format!(
+                    "Scouting {} ({}/{} hd, {:.0}%)",
+                    system_name(*target_system, stars),
+                    elapsed,
+                    total,
+                    pct * 100.0
+                ),
+                progress: Some((elapsed, total, pct)),
+            }
+        }
     }
 }
 
@@ -305,6 +326,22 @@ fn format_queued_command(
         QueuedCommand::Colonize { .. } => "Colonize".to_string(),
         QueuedCommand::MoveToCoordinates { target } => {
             format!("Move -> ({:.1}, {:.1}, {:.1})", target[0], target[1], target[2])
+        }
+        // #217: Scout command display.
+        QueuedCommand::Scout {
+            target_system,
+            observation_duration,
+            report_mode,
+        } => {
+            format!(
+                "Scout {} ({}hx, {})",
+                system_name(*target_system, stars),
+                observation_duration,
+                match report_mode {
+                    crate::ship::ReportMode::FtlComm => "FTL comm",
+                    crate::ship::ReportMode::Return => "return",
+                }
+            )
         }
         // Deliverable variants are handled above; the catch-all is
         // unreachable in practice.

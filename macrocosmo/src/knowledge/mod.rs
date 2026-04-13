@@ -413,6 +413,11 @@ pub fn propagate_knowledge(
             }
             // #185: Loitering — coordinate is encoded in the state itself.
             ShipState::Loitering { position } => Some(*position),
+            // #217: Scouting ships are parked at the target system's
+            // position (they sit in orbit while the observation timer ticks).
+            ShipState::Scouting { target_system, .. } => {
+                positions.get(*target_system).ok().map(|p| p.as_array())
+            }
         };
 
         let Some(ship_pos_arr) = ship_pos_arr else {
@@ -446,6 +451,11 @@ pub fn propagate_knowledge(
             ShipState::Loitering { position } => (
                 ShipSnapshotState::Loitering { position: *position },
                 None,
+            ),
+            // #217: Scouting — surface like Surveying to external observers.
+            ShipState::Scouting { target_system, .. } => (
+                ShipSnapshotState::Surveying,
+                Some(*target_system),
             ),
         };
 

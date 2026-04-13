@@ -264,6 +264,11 @@ pub fn test_app() -> App {
             // injected MoveTo reaches the router in the same frame.
             macrocosmo::ship::deliverable_ops::process_deliverable_commands,
             process_command_queue,
+            // #217: Scout observation + report. Chained after
+            // process_command_queue so a Scout that began transitioning to
+            // Scouting this tick doesn't get double-processed.
+            macrocosmo::ship::scout::tick_scout_observation,
+            macrocosmo::ship::scout::process_scout_report,
             resolve_combat,
             tick_ship_repair,
             macrocosmo::ship::pursuit::detect_hostiles_system,
@@ -440,6 +445,9 @@ pub fn full_test_app() -> App {
             tick_courier_routes,
             macrocosmo::ship::deliverable_ops::process_deliverable_commands,
             process_command_queue,
+            // #217: Scout observation + delivery.
+            macrocosmo::ship::scout::tick_scout_observation,
+            macrocosmo::ship::scout::process_scout_report,
             resolve_combat,
             tick_ship_repair,
             macrocosmo::ship::pursuit::detect_hostiles_system,

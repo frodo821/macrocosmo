@@ -69,6 +69,8 @@ pub fn draw_context_menu(
             // #185: Loitering ships have no associated system; commands will be queued
             // and routed via MoveTo (which handles loitering->system sublight).
             ShipState::Loitering { .. } => None,
+            // #217: Scouting ships are parked at the observation target.
+            ShipState::Scouting { target_system, .. } => Some(*target_system),
         };
         (
             ship.name.clone(),
