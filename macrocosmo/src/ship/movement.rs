@@ -4,7 +4,7 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::StarSystem;
 use crate::knowledge::{
-    record_world_event_fact, FactSysParam, KnowledgeFact, PlayerVantage,
+ FactSysParam, KnowledgeFact, PlayerVantage,
 };
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
 use crate::player::{AboardShip, Player, StationedAt};
@@ -304,30 +304,13 @@ pub fn process_ftl_travel(
                     related_system: Some(destination_system),
                 });
                 if let Some(v) = vantage {
-                    let comms = fact_sys
-                        .empire_comms
-                        .iter()
-                        .next()
-                        .cloned()
-                        .unwrap_or_default();
-                    let relays = fact_sys.relay_network.relays.clone();
                     let fact = KnowledgeFact::ShipArrived {
                         event_id: Some(event_id),
                         system: Some(destination_system),
                         name: ship.name.clone(),
                         detail: desc,
                     };
-                    record_world_event_fact(
-                        fact,
-                        dest_pos.as_array(),
-                        clock.elapsed,
-                        &v,
-                        &mut fact_sys.fact_queue,
-                        &mut fact_sys.notifications,
-                        &mut fact_sys.notified_ids,
-                        &relays,
-                        &comms,
-                    );
+                    fact_sys.record(fact, dest_pos.as_array(), clock.elapsed, &v);
                 }
                 info!("Ship {} arrived at {} via FTL", ship.name, star.name);
             } else {
@@ -375,30 +358,13 @@ fn write_ship_arrived_dual(
     });
 
     if let Some(v) = vantage {
-        let comms = fact_sys
-            .empire_comms
-            .iter()
-            .next()
-            .cloned()
-            .unwrap_or_default();
-        let relays = fact_sys.relay_network.relays.clone();
         let fact = KnowledgeFact::ShipArrived {
             event_id: Some(event_id),
             system: related,
             name: ship.name.clone(),
             detail: desc,
         };
-        record_world_event_fact(
-            fact,
-            origin_pos,
-            now,
-            v,
-            &mut fact_sys.fact_queue,
-            &mut fact_sys.notifications,
-            &mut fact_sys.notified_ids,
-            &relays,
-            &comms,
-        );
+        fact_sys.record(fact, origin_pos, now, v);
     }
 }
 

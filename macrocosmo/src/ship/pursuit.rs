@@ -181,6 +181,7 @@ pub fn detect_hostiles_system(
     mut events: MessageWriter<GameEvent>,
     mut fact_queue: ResMut<PendingFactQueue>,
     mut next_event_id: ResMut<NextEventId>,
+    mut notified_ids: ResMut<crate::knowledge::NotifiedEventIds>,
     relay_network: Option<Res<RelayNetwork>>,
     player_q: Query<&StationedAt, With<Player>>,
     empire_q: Query<&CommsParams, With<PlayerEmpire>>,
@@ -307,7 +308,10 @@ pub fn detect_hostiles_system(
             );
             // #249: Shared EventId between the legacy GameEvent and the paired
             // KnowledgeFact so NotifiedEventIds dedupe keeps only one banner.
+            // Register before push (tri-state map: missing == "treated as
+            // notified", so the first try_notify on a registered entry wins).
             let event_id = next_event_id.allocate();
+            notified_ids.register(event_id);
             // EventLog + auto_pause still receive the raw event (the notification
             // path is the one gaining light-speed delay).
             events.write(GameEvent {

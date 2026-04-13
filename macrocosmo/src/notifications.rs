@@ -265,7 +265,7 @@ pub fn auto_notify_from_events(
         // for this id (or will later), skip this one. `EventId::default()`
         // (== 0) is the pre-migration "no id" sentinel; treat it as never
         // previously notified so legacy code paths keep working.
-        if event.id != EventId::default() && !notified.mark(event.id) {
+        if event.id != EventId::default() && !notified.try_notify(event.id) {
             continue;
         }
         if let Some(priority) = priority_for_event_kind(&event.kind) {
@@ -301,7 +301,7 @@ pub fn notify_from_knowledge_facts(
         // same id), drop this push silently. The fact is still drained — we
         // just don't surface a second banner.
         if let Some(eid) = fact.event_id() {
-            if !notified.mark(eid) {
+            if !notified.try_notify(eid) {
                 continue;
             }
         }
@@ -378,8 +378,17 @@ impl Plugin for NotificationsPlugin {
             .add_systems(Update, (tick_notifications, auto_notify_from_events))
             .add_systems(
                 Update,
-                (notify_from_knowledge_facts, drain_pending_notifications)
-                    .after(crate::time_system::advance_game_time),
+                (
+                    notify_from_knowledge_facts,
+                    drain_pending_notifications,
+                    // #249: Frees notified ids each frame so the dedupe map
+                    // doesn't grow unbounded. Must run after both notify
+                    // systems flipped entries to `true`.
+                    crate::knowledge::sweep_notified_event_ids,
+                )
+                    .chain()
+                    .after(crate::time_system::advance_game_time)
+                    .after(auto_notify_from_events),
             );
     }
 }

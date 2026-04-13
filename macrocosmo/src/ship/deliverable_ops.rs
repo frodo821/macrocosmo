@@ -23,7 +23,7 @@ use crate::deep_space::{
     Scrapyard, StructureRegistry,
 };
 use crate::knowledge::{
-    record_world_event_fact, FactSysParam, KnowledgeFact, PlayerVantage,
+ FactSysParam, KnowledgeFact, PlayerVantage,
 };
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
@@ -154,13 +154,6 @@ pub fn process_deliverable_commands(
                 let origin_pos: Option<[f64; 3]> =
                     system_positions.get(system).ok().map(|p| p.as_array());
                 if let (Some(v), Some(op)) = (vantage, origin_pos) {
-                    let comms = fact_sys
-                        .empire_comms
-                        .iter()
-                        .next()
-                        .cloned()
-                        .unwrap_or_default();
-                    let relays = fact_sys.relay_network.relays.clone();
                     let fact = KnowledgeFact::StructureBuilt {
                         event_id: Some(event_id),
                         system: Some(system),
@@ -169,17 +162,7 @@ pub fn process_deliverable_commands(
                         destroyed: false,
                         detail: desc,
                     };
-                    record_world_event_fact(
-                        fact,
-                        op,
-                        clock.elapsed,
-                        &v,
-                        &mut fact_sys.fact_queue,
-                        &mut fact_sys.notifications,
-                        &mut fact_sys.notified_ids,
-                        &relays,
-                        &comms,
-                    );
+                    fact_sys.record(fact, op, clock.elapsed, &v);
                 }
             }
             QueuedCommand::DeployDeliverable { position, item_index } => {
@@ -242,13 +225,6 @@ pub fn process_deliverable_commands(
                 });
                 let origin_pos = position;
                 if let Some(v) = vantage {
-                    let comms = fact_sys
-                        .empire_comms
-                        .iter()
-                        .next()
-                        .cloned()
-                        .unwrap_or_default();
-                    let relays = fact_sys.relay_network.relays.clone();
                     let fact = KnowledgeFact::StructureBuilt {
                         event_id: Some(event_id),
                         system: None,
@@ -257,17 +233,7 @@ pub fn process_deliverable_commands(
                         destroyed: false,
                         detail: desc,
                     };
-                    record_world_event_fact(
-                        fact,
-                        origin_pos,
-                        clock.elapsed,
-                        &v,
-                        &mut fact_sys.fact_queue,
-                        &mut fact_sys.notifications,
-                        &mut fact_sys.notified_ids,
-                        &relays,
-                        &comms,
-                    );
+                    fact_sys.record(fact, origin_pos, clock.elapsed, &v);
                 }
             }
             QueuedCommand::TransferToStructure {

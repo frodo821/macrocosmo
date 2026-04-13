@@ -465,6 +465,10 @@ fn test_survey_complete_fact_delayed_when_remote() {
     let origin = [10.0, 0.0, 0.0];
     let plan = compute_fact_arrival(0, origin, [0.0; 3], &[], &CommsParams::default());
     assert_eq!(plan.arrives_at, 600);
+    // #249: tri-state map requires register before first push.
+    app.world_mut()
+        .resource_mut::<NotifiedEventIds>()
+        .register(EventId(1));
     app.world_mut()
         .resource_mut::<PendingFactQueue>()
         .record(PerceivedFact {
@@ -499,6 +503,9 @@ fn test_survey_hostile_dual_write_no_double_banner() {
     app.add_systems(Update, auto_notify_from_events);
 
     let eid = EventId(42);
+    app.world_mut()
+        .resource_mut::<NotifiedEventIds>()
+        .register(eid);
     // GameEvent with a whitelisted kind (PlayerRespawn) + fact with same id.
     app.world_mut().write_message(GameEvent {
         id: eid,
@@ -547,6 +554,9 @@ fn test_combat_defeat_per_ship_and_wipe_dedupe() {
 
     // Same EventId → dedupe → one banner.
     let eid = EventId(77);
+    app.world_mut()
+        .resource_mut::<NotifiedEventIds>()
+        .register(eid);
     for label in ["per-ship", "wipe"] {
         app.world_mut()
             .resource_mut::<PendingFactQueue>()
@@ -579,6 +589,9 @@ fn test_combat_defeat_per_ship_and_wipe_dedupe() {
 fn test_ship_arrived_low_priority_silent() {
     let mut app = make_app_with_queues();
     let sys = app.world_mut().spawn_empty().id();
+    app.world_mut()
+        .resource_mut::<NotifiedEventIds>()
+        .register(EventId(5));
     app.world_mut()
         .resource_mut::<PendingFactQueue>()
         .record(PerceivedFact {
@@ -619,6 +632,10 @@ fn test_colony_established_remote_vs_local() {
     let mut local_app = make_app_with_queues();
     let sys_local = local_app.world_mut().spawn_empty().id();
     let planet = local_app.world_mut().spawn_empty().id();
+    local_app
+        .world_mut()
+        .resource_mut::<NotifiedEventIds>()
+        .register(EventId(10));
     {
         let mut queue = local_app.world_mut().resource_mut::<PendingFactQueue>();
         // Simulate record_fact_or_local by pushing a fact that would have
@@ -652,6 +669,10 @@ fn test_colony_established_remote_vs_local() {
     let sys_remote = remote_app.world_mut().spawn_empty().id();
     let origin = [5.0, 0.0, 0.0];
     let plan = compute_fact_arrival(0, origin, [0.0; 3], &[], &CommsParams::default());
+    remote_app
+        .world_mut()
+        .resource_mut::<NotifiedEventIds>()
+        .register(EventId(11));
     remote_app
         .world_mut()
         .resource_mut::<PendingFactQueue>()
@@ -688,6 +709,9 @@ fn test_colony_established_remote_vs_local() {
 #[test]
 fn test_structure_built_low_priority_logged_only() {
     let mut app = make_app_with_queues();
+    app.world_mut()
+        .resource_mut::<NotifiedEventIds>()
+        .register(EventId(9));
     app.world_mut()
         .resource_mut::<PendingFactQueue>()
         .record(PerceivedFact {

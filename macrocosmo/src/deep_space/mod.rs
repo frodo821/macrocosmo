@@ -535,7 +535,7 @@ pub fn tick_platform_upgrade(
     player_aboard_q: Query<&crate::player::AboardShip, With<crate::player::Player>>,
     mut fact_sys: crate::knowledge::FactSysParam,
 ) {
-    use crate::knowledge::{record_world_event_fact, KnowledgeFact, PlayerVantage};
+    use crate::knowledge::{ KnowledgeFact, PlayerVantage};
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| positions.get(s).ok())
@@ -588,13 +588,6 @@ pub fn tick_platform_upgrade(
             let origin_pos: Option<[f64; 3]> =
                 positions.get(entity).ok().map(|p| p.as_array());
             if let (Some(v), Some(op)) = (vantage, origin_pos) {
-                let comms = fact_sys
-                    .empire_comms
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_default();
-                let relays = fact_sys.relay_network.relays.clone();
                 let fact = KnowledgeFact::StructureBuilt {
                     event_id: Some(event_id),
                     system: None,
@@ -603,17 +596,7 @@ pub fn tick_platform_upgrade(
                     destroyed: false,
                     detail: desc,
                 };
-                record_world_event_fact(
-                    fact,
-                    op,
-                    clock.elapsed,
-                    &v,
-                    &mut fact_sys.fact_queue,
-                    &mut fact_sys.notifications,
-                    &mut fact_sys.notified_ids,
-                    &relays,
-                    &comms,
-                );
+                fact_sys.record(fact, op, clock.elapsed, &v);
             }
             info!(
                 "Deep-space structure {:?} upgraded → {}",

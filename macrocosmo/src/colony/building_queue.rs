@@ -5,7 +5,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem};
 use crate::components::Position;
 use crate::knowledge::{
-    record_world_event_fact, FactSysParam, KnowledgeFact, PlayerVantage,
+ FactSysParam, KnowledgeFact, PlayerVantage,
 };
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::scripting::building_api::BuildingId;
@@ -316,13 +316,6 @@ pub fn tick_build_queue(
                             .ok()
                             .map(|p| p.as_array());
                         if let (Some(v), Some(op)) = (vantage, origin_pos) {
-                            let comms = fact_sys
-                                .empire_comms
-                                .iter()
-                                .next()
-                                .cloned()
-                                .unwrap_or_default();
-                            let relays = fact_sys.relay_network.relays.clone();
                             let fact = KnowledgeFact::StructureBuilt {
                                 event_id: Some(event_id),
                                 system: Some(result.system),
@@ -331,17 +324,7 @@ pub fn tick_build_queue(
                                 destroyed: false,
                                 detail: desc,
                             };
-                            record_world_event_fact(
-                                fact,
-                                op,
-                                clock.elapsed,
-                                &v,
-                                &mut fact_sys.fact_queue,
-                                &mut fact_sys.notifications,
-                                &mut fact_sys.notified_ids,
-                                &relays,
-                                &comms,
-                            );
+                            fact_sys.record(fact, op, clock.elapsed, &v);
                         }
                         info!("Ship built and launched: {}", display_name);
                     }
@@ -369,13 +352,6 @@ pub fn tick_build_queue(
                     let origin_pos: Option<[f64; 3]> =
                         positions.get(result.system).ok().map(|p| p.as_array());
                     if let (Some(v), Some(op)) = (vantage, origin_pos) {
-                        let comms = fact_sys
-                            .empire_comms
-                            .iter()
-                            .next()
-                            .cloned()
-                            .unwrap_or_default();
-                        let relays = fact_sys.relay_network.relays.clone();
                         let fact = KnowledgeFact::StructureBuilt {
                             event_id: Some(event_id),
                             system: Some(result.system),
@@ -384,17 +360,7 @@ pub fn tick_build_queue(
                             destroyed: false,
                             detail: desc,
                         };
-                        record_world_event_fact(
-                            fact,
-                            op,
-                            clock.elapsed,
-                            &v,
-                            &mut fact_sys.fact_queue,
-                            &mut fact_sys.notifications,
-                            &mut fact_sys.notified_ids,
-                            &relays,
-                            &comms,
-                        );
+                        fact_sys.record(fact, op, clock.elapsed, &v);
                     }
                     info!("Deliverable produced: {} @ {}", display_name, sys_name);
                 }

@@ -7,7 +7,7 @@ use crate::events::GameEvent;
 use crate::colony::ColonyJobRates;
 use crate::components::Position;
 use crate::knowledge::{
-    record_world_event_fact, FactSysParam, KnowledgeFact, PlayerVantage,
+ FactSysParam, KnowledgeFact, PlayerVantage,
 };
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
@@ -249,13 +249,6 @@ pub fn tick_colonization_queue(
             let origin_pos: Option<[f64; 3]> =
                 positions.get(system_entity).ok().map(|p| p.as_array());
             if let (Some(v), Some(op)) = (vantage, origin_pos) {
-                let comms = fact_sys
-                    .empire_comms
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_default();
-                let relays = fact_sys.relay_network.relays.clone();
                 let fact = KnowledgeFact::ColonyEstablished {
                     event_id: Some(event_id),
                     system: system_entity,
@@ -263,17 +256,7 @@ pub fn tick_colonization_queue(
                     name: planet_name.clone(),
                     detail: desc,
                 };
-                record_world_event_fact(
-                    fact,
-                    op,
-                    clock.elapsed,
-                    &v,
-                    &mut fact_sys.fact_queue,
-                    &mut fact_sys.notifications,
-                    &mut fact_sys.notified_ids,
-                    &relays,
-                    &comms,
-                );
+                fact_sys.record(fact, op, clock.elapsed, &v);
             }
 
             info!("Colony established on {} via build queue colonization", planet_name);

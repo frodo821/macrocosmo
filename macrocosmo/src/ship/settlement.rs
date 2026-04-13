@@ -8,7 +8,7 @@ use crate::colony::{
 };
 use crate::components::Position;
 use crate::knowledge::{
-    record_world_event_fact, FactSysParam, KnowledgeFact, PlayerVantage,
+ FactSysParam, KnowledgeFact, PlayerVantage,
 };
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
@@ -90,13 +90,6 @@ pub fn process_settling(
                     related_system: Some(system_entity),
                 });
                 if let Some(v) = vantage {
-                    let comms = fact_sys
-                        .empire_comms
-                        .iter()
-                        .next()
-                        .cloned()
-                        .unwrap_or_default();
-                    let relays = fact_sys.relay_network.relays.clone();
                     let fact = KnowledgeFact::ColonyFailed {
                         event_id: Some(event_id),
                         system: system_entity,
@@ -104,17 +97,7 @@ pub fn process_settling(
                         reason: "hostile presence".into(),
                     };
                     let _ = desc;
-                    record_world_event_fact(
-                        fact,
-                        sys_pos_arr,
-                        clock.elapsed,
-                        &v,
-                        &mut fact_sys.fact_queue,
-                        &mut fact_sys.notifications,
-                        &mut fact_sys.notified_ids,
-                        &relays,
-                        &comms,
-                    );
+                    fact_sys.record(fact, sys_pos_arr, clock.elapsed, &v);
                 }
                 continue;
             }
@@ -221,13 +204,6 @@ pub fn process_settling(
                 related_system: Some(system_entity),
             });
             if let Some(v) = vantage {
-                let comms = fact_sys
-                    .empire_comms
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_default();
-                let relays = fact_sys.relay_network.relays.clone();
                 let fact = KnowledgeFact::ColonyEstablished {
                     event_id: Some(event_id),
                     system: system_entity,
@@ -235,17 +211,7 @@ pub fn process_settling(
                     name: system_name.clone(),
                     detail: desc,
                 };
-                record_world_event_fact(
-                    fact,
-                    sys_pos_arr,
-                    clock.elapsed,
-                    &v,
-                    &mut fact_sys.fact_queue,
-                    &mut fact_sys.notifications,
-                    &mut fact_sys.notified_ids,
-                    &relays,
-                    &comms,
-                );
+                fact_sys.record(fact, sys_pos_arr, clock.elapsed, &v);
             }
 
             info!("Colony established at {}", system_name);
@@ -306,13 +272,6 @@ pub fn process_refitting(
                 related_system: Some(system),
             });
             if let Some(v) = vantage {
-                let comms = fact_sys
-                    .empire_comms
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_default();
-                let relays = fact_sys.relay_network.relays.clone();
                 let fact = KnowledgeFact::StructureBuilt {
                     event_id: Some(event_id),
                     system: Some(system),
@@ -321,17 +280,7 @@ pub fn process_refitting(
                     destroyed: false,
                     detail: desc,
                 };
-                record_world_event_fact(
-                    fact,
-                    sys_pos_arr,
-                    clock.elapsed,
-                    &v,
-                    &mut fact_sys.fact_queue,
-                    &mut fact_sys.notifications,
-                    &mut fact_sys.notified_ids,
-                    &relays,
-                    &comms,
-                );
+                fact_sys.record(fact, sys_pos_arr, clock.elapsed, &v);
             }
         }
     }

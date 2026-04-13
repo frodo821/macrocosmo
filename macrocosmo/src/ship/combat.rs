@@ -6,7 +6,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::{HostilePresence, StarSystem};
 use crate::knowledge::{
-    record_world_event_fact, CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage,
+ CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage,
 };
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
@@ -260,30 +260,13 @@ pub fn resolve_combat(
                 related_system: Some(*system_entity),
             });
             if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
-                let comms = fact_sys
-                    .empire_comms
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_default();
-                let relays = fact_sys.relay_network.relays.clone();
                 let fact = KnowledgeFact::CombatOutcome {
                     event_id: Some(event_id),
                     system: *system_entity,
                     victor: CombatVictor::Player,
                     detail: desc,
                 };
-                record_world_event_fact(
-                    fact,
-                    op,
-                    clock.elapsed,
-                    &v,
-                    &mut fact_sys.fact_queue,
-                    &mut fact_sys.notifications,
-                    &mut fact_sys.notified_ids,
-                    &relays,
-                    &comms,
-                );
+                fact_sys.record(fact, op, clock.elapsed, &v);
             }
             continue;
         }
@@ -344,30 +327,13 @@ pub fn resolve_combat(
                     related_system: Some(*system_entity),
                 });
                 if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
-                    let comms = fact_sys
-                        .empire_comms
-                        .iter()
-                        .next()
-                        .cloned()
-                        .unwrap_or_default();
-                    let relays = fact_sys.relay_network.relays.clone();
                     let fact = KnowledgeFact::CombatOutcome {
                         event_id: Some(event_id),
                         system: *system_entity,
                         victor: CombatVictor::Hostile,
                         detail: desc,
                     };
-                    record_world_event_fact(
-                        fact,
-                        op,
-                        clock.elapsed,
-                        &v,
-                        &mut fact_sys.fact_queue,
-                        &mut fact_sys.notifications,
-                        &mut fact_sys.notified_ids,
-                        &relays,
-                        &comms,
-                    );
+                    fact_sys.record(fact, op, clock.elapsed, &v);
                 }
             }
 
@@ -390,30 +356,13 @@ pub fn resolve_combat(
                     related_system: Some(*system_entity),
                 });
                 if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
-                    let comms = fact_sys
-                        .empire_comms
-                        .iter()
-                        .next()
-                        .cloned()
-                        .unwrap_or_default();
-                    let relays = fact_sys.relay_network.relays.clone();
                     let fact = KnowledgeFact::CombatOutcome {
                         event_id: Some(event_id),
                         system: *system_entity,
                         victor: CombatVictor::Hostile,
                         detail: desc,
                     };
-                    record_world_event_fact(
-                        fact,
-                        op,
-                        clock.elapsed,
-                        &v,
-                        &mut fact_sys.fact_queue,
-                        &mut fact_sys.notifications,
-                        &mut fact_sys.notified_ids,
-                        &relays,
-                        &comms,
-                    );
+                    fact_sys.record(fact, op, clock.elapsed, &v);
                 }
             }
         }

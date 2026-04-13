@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Anomalies, HostilePresence, StarSystem, SystemAttributes};
 use crate::knowledge::{
-    record_world_event_fact, FactSysParam, KnowledgeFact, KnowledgeStore, ObservationSource,
+ FactSysParam, KnowledgeFact, KnowledgeStore, ObservationSource,
     PlayerVantage, SystemKnowledge, SystemSnapshot,
 };
 use crate::physics::{distance_ly_arr, light_delay_hexadies};
@@ -178,30 +178,13 @@ pub fn process_surveys(
                             related_system: Some(target_system),
                         });
                         if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
-                            let comms = fact_sys
-                                .empire_comms
-                                .iter()
-                                .next()
-                                .cloned()
-                                .unwrap_or_default();
-                            let relays = fact_sys.relay_network.relays.clone();
                             let fact = KnowledgeFact::SurveyComplete {
                                 event_id: Some(event_id),
                                 system: target_system,
                                 system_name: system_name.clone(),
                                 detail: desc,
                             };
-                            record_world_event_fact(
-                                fact,
-                                origin_pos,
-                                clock.elapsed,
-                                &v,
-                                &mut fact_sys.fact_queue,
-                                &mut fact_sys.notifications,
-                                &mut fact_sys.notified_ids,
-                                &relays,
-                                &comms,
-                            );
+                            fact_sys.record(fact, origin_pos, clock.elapsed, &v);
                         }
 
                         let has_hostile = hostiles.iter().any(|h| h.system == target_system);
@@ -216,13 +199,6 @@ pub fn process_surveys(
                                 related_system: Some(target_system),
                             });
                             if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
-                                let comms = fact_sys
-                                    .empire_comms
-                                    .iter()
-                                    .next()
-                                    .cloned()
-                                    .unwrap_or_default();
-                                let relays = fact_sys.relay_network.relays.clone();
                                 let fact = KnowledgeFact::HostileDetected {
                                     event_id: Some(event_id),
                                     target: Entity::PLACEHOLDER,
@@ -230,17 +206,7 @@ pub fn process_surveys(
                                     target_pos: origin_pos,
                                     description: desc,
                                 };
-                                record_world_event_fact(
-                                    fact,
-                                    origin_pos,
-                                    clock.elapsed,
-                                    &v,
-                                    &mut fact_sys.fact_queue,
-                                    &mut fact_sys.notifications,
-                                    &mut fact_sys.notified_ids,
-                                    &relays,
-                                    &comms,
-                                );
+                                fact_sys.record(fact, origin_pos, clock.elapsed, &v);
                             }
                         }
 
@@ -249,7 +215,33 @@ pub fn process_surveys(
                             &anomaly_registry, &mut rng, &system_name, &ship, &mut ship_hp,
                             attrs, anomalies, clock.elapsed, target_system, &mut events,
                         );
-                        let _ = anomaly_id; // light-speed: anomaly applied immediately, no need to carry
+                        // #249 / E: For light-speed propagation we also dual-write
+                        // the AnomalyDiscovered banner so the player gets a
+                        // single notification once the news arrives. The
+                        // per-effect events the helper wrote stay EventLog-only
+                        // (they're descriptive sub-detail, not banner-worthy on
+                        // their own).
+                        if let Some(aid) = anomaly_id {
+                            let event_id = fact_sys.allocate_event_id();
+                            let desc =
+                                format!("Anomaly '{}' discovered at {}", aid, system_name);
+                            events.write(GameEvent {
+                                id: event_id,
+                                timestamp: clock.elapsed,
+                                kind: GameEventKind::AnomalyDiscovered,
+                                description: desc.clone(),
+                                related_system: Some(target_system),
+                            });
+                            if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                                let fact = KnowledgeFact::AnomalyDiscovered {
+                                    event_id: Some(event_id),
+                                    system: target_system,
+                                    anomaly_id: aid,
+                                    detail: desc,
+                                };
+                                fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                            }
+                        }
                     }
                 } else {
                     let sys_pos_arr: Option<[f64; 3]> =
@@ -276,13 +268,6 @@ pub fn process_surveys(
                             related_system: Some(target_system),
                         });
                         if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
-                            let comms = fact_sys
-                                .empire_comms
-                                .iter()
-                                .next()
-                                .cloned()
-                                .unwrap_or_default();
-                            let relays = fact_sys.relay_network.relays.clone();
                             let fact = KnowledgeFact::HostileDetected {
                                 event_id: Some(event_id),
                                 target: Entity::PLACEHOLDER,
@@ -290,17 +275,7 @@ pub fn process_surveys(
                                 target_pos: origin_pos,
                                 description: desc,
                             };
-                            record_world_event_fact(
-                                fact,
-                                origin_pos,
-                                clock.elapsed,
-                                &v,
-                                &mut fact_sys.fact_queue,
-                                &mut fact_sys.notifications,
-                                &mut fact_sys.notified_ids,
-                                &relays,
-                                &comms,
-                            );
+                            fact_sys.record(fact, origin_pos, clock.elapsed, &v);
                         }
                     }
 
@@ -359,30 +334,13 @@ pub fn process_surveys(
                         related_system: Some(target_system),
                     });
                     if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
-                        let comms = fact_sys
-                            .empire_comms
-                            .iter()
-                            .next()
-                            .cloned()
-                            .unwrap_or_default();
-                        let relays = fact_sys.relay_network.relays.clone();
                         let fact = KnowledgeFact::SurveyComplete {
                             event_id: Some(event_id),
                             system: target_system,
                             system_name: system_name.clone(),
                             detail: desc,
                         };
-                        record_world_event_fact(
-                            fact,
-                            origin_pos,
-                            clock.elapsed,
-                            &v,
-                            &mut fact_sys.fact_queue,
-                            &mut fact_sys.notifications,
-                            &mut fact_sys.notified_ids,
-                            &relays,
-                            &comms,
-                        );
+                        fact_sys.record(fact, origin_pos, clock.elapsed, &v);
                     }
 
                     // Check for hostile presence at this system
@@ -398,13 +356,6 @@ pub fn process_surveys(
                             related_system: Some(target_system),
                         });
                         if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
-                            let comms = fact_sys
-                                .empire_comms
-                                .iter()
-                                .next()
-                                .cloned()
-                                .unwrap_or_default();
-                            let relays = fact_sys.relay_network.relays.clone();
                             let fact = KnowledgeFact::HostileDetected {
                                 event_id: Some(event_id),
                                 target: Entity::PLACEHOLDER,
@@ -412,17 +363,7 @@ pub fn process_surveys(
                                 target_pos: origin_pos,
                                 description: desc,
                             };
-                            record_world_event_fact(
-                                fact,
-                                origin_pos,
-                                clock.elapsed,
-                                &v,
-                                &mut fact_sys.fact_queue,
-                                &mut fact_sys.notifications,
-                                &mut fact_sys.notified_ids,
-                                &relays,
-                                &comms,
-                            );
+                            fact_sys.record(fact, origin_pos, clock.elapsed, &v);
                         }
                     }
 
@@ -521,30 +462,13 @@ pub fn deliver_survey_results(
             related_system: Some(target),
         });
         if let (Some(v), Some(pp)) = (vantage, player_pos) {
-            let comms = fact_sys
-                .empire_comms
-                .iter()
-                .next()
-                .cloned()
-                .unwrap_or_default();
-            let relays = fact_sys.relay_network.relays.clone();
             let fact = KnowledgeFact::SurveyComplete {
                 event_id: Some(event_id),
                 system: target,
                 system_name: survey_data.system_name.clone(),
                 detail: desc,
             };
-            record_world_event_fact(
-                fact,
-                pp,
-                clock.elapsed,
-                &v,
-                &mut fact_sys.fact_queue,
-                &mut fact_sys.notifications,
-                &mut fact_sys.notified_ids,
-                &relays,
-                &comms,
-            );
+            fact_sys.record(fact, pp, clock.elapsed, &v);
         }
 
         // #127: If anomaly was discovered, fire AnomalyDiscovered event on delivery
@@ -562,30 +486,13 @@ pub fn deliver_survey_results(
                 related_system: Some(target),
             });
             if let (Some(v), Some(pp)) = (vantage, player_pos) {
-                let comms = fact_sys
-                    .empire_comms
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_default();
-                let relays = fact_sys.relay_network.relays.clone();
                 let fact = KnowledgeFact::AnomalyDiscovered {
                     event_id: Some(event_id),
                     system: target,
                     anomaly_id: anomaly_id.clone(),
                     detail: desc,
                 };
-                record_world_event_fact(
-                    fact,
-                    pp,
-                    clock.elapsed,
-                    &v,
-                    &mut fact_sys.fact_queue,
-                    &mut fact_sys.notifications,
-                    &mut fact_sys.notified_ids,
-                    &relays,
-                    &comms,
-                );
+                fact_sys.record(fact, pp, clock.elapsed, &v);
             }
         }
 
