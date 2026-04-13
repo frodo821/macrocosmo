@@ -943,7 +943,7 @@ fn test_knowledge_store_ship_older_does_not_replace() {
 /// detect_sublight only) into the test app's `StructureRegistry`.
 fn install_sensor_buoy_definition(app: &mut App) {
     use macrocosmo::deep_space::{
-        CapabilityParams, ResourceCost, StructureDefinition, StructureRegistry,
+        CapabilityParams, DeliverableMetadata, ResourceCost, StructureDefinition, StructureRegistry,
     };
     use std::collections::HashMap;
     let mut registry = app
@@ -955,14 +955,20 @@ fn install_sensor_buoy_definition(app: &mut App) {
         name: "Sensor Buoy".to_string(),
         description: "Detects sublight vessel movements.".to_string(),
         max_hp: 20.0,
-        cost: ResourceCost::default(),
-        build_time: 15,
         capabilities: HashMap::from([(
             "detect_sublight".to_string(),
             CapabilityParams { range: 3.0 },
         )]),
         energy_drain: Amt::milli(100),
         prerequisites: None,
+        deliverable: Some(DeliverableMetadata {
+            cost: ResourceCost::default(),
+            build_time: 15,
+            cargo_size: 1,
+            scrap_refund: 0.5,
+        }),
+        upgrade_to: Vec::new(),
+        upgrade_from: None,
     });
 }
 
@@ -1530,7 +1536,7 @@ fn test_loitering_ship_knowledge_uses_light_speed_delay() {
 /// Install an ftl_comm_relay structure definition with a configurable range.
 fn install_ftl_comm_relay_definition(app: &mut App, range_ly: f64) {
     use macrocosmo::deep_space::{
-        CapabilityParams, ResourceCost, StructureDefinition, StructureRegistry,
+        CapabilityParams, DeliverableMetadata, ResourceCost, StructureDefinition, StructureRegistry,
     };
     use std::collections::HashMap;
     let mut registry = app
@@ -1542,14 +1548,20 @@ fn install_ftl_comm_relay_definition(app: &mut App, range_ly: f64) {
         name: "FTL Comm Relay".to_string(),
         description: "Pair-based FTL relay".to_string(),
         max_hp: 50.0,
-        cost: ResourceCost::default(),
-        build_time: 20,
         capabilities: HashMap::from([(
             "ftl_comm_relay".to_string(),
             CapabilityParams { range: range_ly },
         )]),
         energy_drain: Amt::milli(500),
         prerequisites: None,
+        deliverable: Some(DeliverableMetadata {
+            cost: ResourceCost::default(),
+            build_time: 20,
+            cargo_size: 2,
+            scrap_refund: 0.4,
+        }),
+        upgrade_to: Vec::new(),
+        upgrade_from: None,
     });
 }
 

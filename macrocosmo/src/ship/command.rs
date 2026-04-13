@@ -429,7 +429,27 @@ pub fn process_command_queue(
                         queue.sync_prediction(ship_pos.as_array(), docked_system);
                     }
                     QueuedCommand::MoveToCoordinates { .. } | QueuedCommand::MoveTo { .. } => {} // handled above
+                    // #223: Deliverable-side commands are handled by
+                    // `super::deliverable_ops::process_deliverable_commands`.
+                    // This arm is unreachable via the outer match, but the
+                    // exhaustive compiler still needs the variants enumerated.
+                    QueuedCommand::LoadDeliverable { .. }
+                    | QueuedCommand::DeployDeliverable { .. }
+                    | QueuedCommand::TransferToStructure { .. }
+                    | QueuedCommand::LoadFromScrapyard { .. } => {
+                        // handled by deliverable_ops
+                    }
                 }
+            }
+            // #223: Deliverable-side commands are processed by
+            // `super::deliverable_ops::process_deliverable_commands`, which
+            // runs as its own system. We skip them here and leave them at
+            // the head of the queue.
+            QueuedCommand::LoadDeliverable { .. }
+            | QueuedCommand::DeployDeliverable { .. }
+            | QueuedCommand::TransferToStructure { .. }
+            | QueuedCommand::LoadFromScrapyard { .. } => {
+                // no-op; the deliverable ops system consumes these.
             }
         }
     }

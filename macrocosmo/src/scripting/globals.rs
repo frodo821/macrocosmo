@@ -104,9 +104,15 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "module", "_module_definitions")?;
     register_define_fn(lua, "ship_design", "_ship_design_definitions")?;
 
-    // --- Structure definition ---
-
+    // --- Structure & Deliverable definition ---
+    //
+    // #223: `define_structure` is the world-side entry (not shipyard-buildable).
+    // `define_deliverable` is the shipyard-buildable superset — adds `cost`,
+    // `build_time`, `cargo_size`, `scrap_refund`, `upgrade_to`, `upgrade_from`.
+    // Both feed `parse_structure_definitions`, which dispatches on which
+    // accumulator they came from.
     register_define_fn(lua, "structure", "_structure_definitions")?;
+    register_define_fn(lua, "deliverable", "_deliverable_definitions")?;
 
     // --- Anomaly definition ---
 

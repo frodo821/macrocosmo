@@ -270,11 +270,12 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             max_hp: 10.0,
-            cost: ResourceCost::default(),
-            build_time: 10,
             energy_drain: Amt::ZERO,
             prerequisites: cond,
             capabilities: HashMap::new(),
+            deliverable: None,
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
         }
     }
 

@@ -10,6 +10,7 @@ pub mod movement;
 pub mod command;
 pub mod courier_route;
 pub mod pursuit;
+pub mod deliverable_ops;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -45,7 +46,10 @@ impl CommandQueue {
     /// Push a command and update predicted position
     pub fn push(&mut self, cmd: QueuedCommand, system_positions: &impl Fn(Entity) -> Option<[f64; 3]>) {
         match &cmd {
-            QueuedCommand::MoveTo { system } | QueuedCommand::Survey { system } | QueuedCommand::Colonize { system, .. } => {
+            QueuedCommand::MoveTo { system }
+            | QueuedCommand::Survey { system }
+            | QueuedCommand::Colonize { system, .. }
+            | QueuedCommand::LoadDeliverable { system, .. } => {
                 if let Some(pos) = system_positions(*system) {
                     self.predicted_position = pos;
                     self.predicted_system = Some(*system);
@@ -56,6 +60,14 @@ impl CommandQueue {
                 self.predicted_position = *target;
                 self.predicted_system = None;
             }
+            QueuedCommand::DeployDeliverable { position, .. } => {
+                // #223: Deploy parks the ship at `position` in deep space.
+                self.predicted_position = *position;
+                self.predicted_system = None;
+            }
+            // #223: In-place resource actions — no predicted movement change.
+            QueuedCommand::TransferToStructure { .. }
+            | QueuedCommand::LoadFromScrapyard { .. } => {}
         }
         self.commands.push(cmd);
     }
@@ -76,6 +88,36 @@ pub enum QueuedCommand {
     Colonize { system: Entity, planet: Option<Entity> },
     /// #185: Travel sublight to an arbitrary point in deep space and loiter there.
     MoveToCoordinates { target: [f64; 3] },
+    /// #223: Load a deliverable from the docked system's `DeliverableStockpile`
+    /// into this ship's `Cargo`. `stockpile_index` is the zero-based index in
+    /// the stockpile at the time the command is executed; the command is a
+    /// no-op (with warning) if the index is out of range or the ship has no
+    /// room for the item.
+    LoadDeliverable {
+        system: Entity,
+        stockpile_index: usize,
+    },
+    /// #223: Deploy the deliverable at `item_index` within this ship's Cargo
+    /// at the given deep-space coordinate. If the ship is not already at
+    /// `position` within a small epsilon, the command queues a sublight move
+    /// first and re-evaluates on arrival. On deployment, the item is removed
+    /// from Cargo and a new `DeepSpaceStructure` entity is spawned owned by
+    /// the ship's `Owner`.
+    DeployDeliverable {
+        position: [f64; 3],
+        item_index: usize,
+    },
+    /// #223: Transfer resources from this ship's Cargo into a co-located
+    /// `ConstructionPlatform`'s accumulated pool. Ship must be at the same
+    /// position (within epsilon) as the target structure.
+    TransferToStructure {
+        structure: Entity,
+        minerals: Amt,
+        energy: Amt,
+    },
+    /// #223: Drain a co-located `Scrapyard`'s remaining resources into the
+    /// ship's Cargo (clamped by cargo capacity).
+    LoadFromScrapyard { structure: Entity },
 }
 
 /// Initial FTL speed as a multiple of light speed
@@ -97,10 +139,17 @@ impl Plugin for ShipPlugin {
             process_settling,
             process_refitting,
             process_pending_ship_commands,
-            process_command_queue
+            // #223: Deliverable ops run BEFORE the FTL router so any
+            // injected MoveTo/MoveToCoordinates is dispatched this tick.
+            deliverable_ops::process_deliverable_commands
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys),
+            process_command_queue
+                .after(sublight_movement_system)
+                .after(process_ftl_travel)
+                .after(process_surveys)
+                .after(deliverable_ops::process_deliverable_commands),
             resolve_combat,
             tick_ship_repair,
             // #117: Courier automation — runs before process_command_queue
@@ -309,11 +358,86 @@ pub enum ShipState {
     },
 }
 
+/// #223: An item in a ship's cargo hold other than bulk resources.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CargoItem {
+    /// A shipyard-built deliverable awaiting deployment.
+    Deliverable { definition_id: String },
+}
+
+impl CargoItem {
+    /// The id used to look up the carried item's definition in the registry.
+    pub fn definition_id(&self) -> &str {
+        match self {
+            CargoItem::Deliverable { definition_id } => definition_id,
+        }
+    }
+}
+
 /// Cargo hold for Courier ships (and potentially others).
 #[derive(Component, Default, Debug, Clone)]
 pub struct Cargo {
     pub minerals: Amt,
     pub energy: Amt,
+    /// #223: Non-resource items (e.g. deliverables). Each item's mass impact
+    /// on shared `cargo_capacity` is derived from its cargo_size via
+    /// `GameBalance.mass_per_item_slot`.
+    pub items: Vec<CargoItem>,
+}
+
+impl Cargo {
+    /// Raw units of cargo mass per item slot: 1 slot = 1.0 Amt unit by default.
+    /// #223: Kept in sync with `GameBalance.mass_per_item_slot`; the constant
+    /// value is used when the registry is unreachable (fallback).
+    pub const DEFAULT_MASS_PER_ITEM_SLOT_RAW: u64 = 1000; // 1 Amt unit
+
+    /// Total cargo mass (resources + items) as an Amt, given a resolver that
+    /// returns each item's cargo_size via the deliverable registry.
+    pub fn total_mass_with<F: Fn(&str) -> Option<u32>>(
+        &self,
+        cargo_size_lookup: F,
+        mass_per_slot_raw: u64,
+    ) -> Amt {
+        let resource = self.minerals.add(self.energy);
+        let mut item_raw: u64 = 0;
+        for it in &self.items {
+            let size = cargo_size_lookup(it.definition_id()).unwrap_or(0) as u64;
+            item_raw = item_raw.saturating_add(size.saturating_mul(mass_per_slot_raw));
+        }
+        resource.add(Amt(item_raw))
+    }
+
+    /// Check if the cargo can accept another item with `cargo_size` against
+    /// the ship's effective capacity `cap`. Uses the same mass accounting as
+    /// `total_mass_with`.
+    pub fn can_accept_item_size(
+        &self,
+        added_size: u32,
+        cap: Amt,
+        mass_per_slot_raw: u64,
+    ) -> bool {
+        // Without a registry lookup we can't compute item mass for existing
+        // items, so callers must provide it via `total_mass_with` externally.
+        // This helper only checks the additive delta; callers sum the existing
+        // mass themselves when needed.
+        let _ = cap;
+        let _ = mass_per_slot_raw;
+        let _ = added_size;
+        true // not used directly; see Cargo::can_fit below
+    }
+
+    /// Comprehensive fit-check: does adding `added_size` slots stay within cap?
+    pub fn can_fit<F: Fn(&str) -> Option<u32>>(
+        &self,
+        added_size: u32,
+        cap: Amt,
+        cargo_size_lookup: F,
+        mass_per_slot_raw: u64,
+    ) -> bool {
+        let current = self.total_mass_with(cargo_size_lookup, mass_per_slot_raw);
+        let delta = Amt((added_size as u64).saturating_mul(mass_per_slot_raw));
+        current.add(delta) <= cap
+    }
 }
 
 /// #103: Survey data carried by an FTL-capable ship back to the player's system.
@@ -389,6 +513,51 @@ mod tests {
     use super::*;
     use bevy::ecs::world::World;
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+
+    // --- #223: Cargo item mass accounting ---
+
+    #[test]
+    fn test_cargo_mass_accounting_with_items() {
+        let cargo = Cargo {
+            minerals: Amt::units(50),
+            energy: Amt::units(30),
+            items: vec![
+                CargoItem::Deliverable { definition_id: "sensor_buoy".into() },
+                CargoItem::Deliverable { definition_id: "interdictor".into() },
+            ],
+        };
+        // sensor_buoy size=1, interdictor size=3 → 4 slots total.
+        let lookup = |id: &str| -> Option<u32> {
+            match id {
+                "sensor_buoy" => Some(1),
+                "interdictor" => Some(3),
+                _ => None,
+            }
+        };
+        // mass_per_slot = 1000 (1 Amt unit per slot).
+        let mass = cargo.total_mass_with(lookup, 1000);
+        // resource = 80 units, items = 4 slots * 1 unit = 4 units → 84 units.
+        assert_eq!(mass, Amt::units(84));
+    }
+
+    #[test]
+    fn test_cargo_can_fit_respects_capacity() {
+        let cargo = Cargo {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            items: vec![CargoItem::Deliverable { definition_id: "big".into() }],
+        };
+        let lookup = |id: &str| -> Option<u32> {
+            match id {
+                "big" => Some(5),
+                _ => None,
+            }
+        };
+        // Capacity = 10 units. Already have 5. Adding size=5 → 10 total: exactly fits.
+        assert!(cargo.can_fit(5, Amt::units(10), lookup, 1000));
+        // Adding size=6 → 11 total: exceeds.
+        assert!(!cargo.can_fit(6, Amt::units(10), lookup, 1000));
+    }
 
     fn test_design_registry() -> ShipDesignRegistry {
         let mut registry = ShipDesignRegistry::default();

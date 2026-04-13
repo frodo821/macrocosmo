@@ -830,6 +830,7 @@ fn draw_right_panel(
                         }
                         if let Some(bq) = build_queue.as_mut() {
                             bq.queue.push(BuildOrder {
+                                kind: crate::colony::BuildKind::default(),
                                 design_id: design_id.clone(),
                                 display_name: display_name.clone(),
                                 minerals_cost,
