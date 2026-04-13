@@ -896,6 +896,7 @@ pub fn spawn_test_ship(
             CommandQueue::default(),
             Cargo::default(),
             ShipModifiers::default(),
+            macrocosmo::ship::ShipStats::default(),
             RulesOfEngagement::default(),
         ))
         .id()

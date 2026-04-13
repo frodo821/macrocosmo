@@ -22,7 +22,9 @@ use crate::deep_space::{
     spawn_deliverable_entity, ConstructionPlatform, DeepSpaceStructure, LifetimeCost, ResourceCost,
     Scrapyard, StructureRegistry,
 };
-use crate::ship::{Cargo, CargoItem, CommandQueue, QueuedCommand, Ship, ShipState, ShipStats};
+use crate::ship::{
+    Cargo, CargoItem, CommandQueue, QueuedCommand, Ship, ShipModifiers, ShipState,
+};
 
 /// Maximum position delta (in light-years) for a ship to be considered
 /// "co-located" with a deep-space structure or deploy coordinate.
@@ -46,7 +48,7 @@ pub fn process_deliverable_commands(
         &Position,
         &mut CommandQueue,
         &mut Cargo,
-        &ShipStats,
+        &ShipModifiers,
     )>,
     mut stockpiles: Query<&mut DeliverableStockpile>,
     mut platforms: Query<(&Position, &mut ConstructionPlatform), Without<Ship>>,
@@ -55,7 +57,9 @@ pub fn process_deliverable_commands(
 ) {
     let mass_per_slot_raw = balance.mass_per_item_slot().0;
 
-    for (_ship_entity, ship, state, ship_pos, mut queue, mut cargo, stats) in ships.iter_mut() {
+    for (_ship_entity, ship, state, ship_pos, mut queue, mut cargo, ship_mods) in
+        ships.iter_mut()
+    {
         if queue.commands.is_empty() {
             continue;
         }
@@ -94,7 +98,7 @@ pub fn process_deliverable_commands(
                     .get(item.definition_id())
                     .and_then(|d| d.deliverable.as_ref().map(|m| m.cargo_size))
                     .unwrap_or(1);
-                let cap = stats.cargo_capacity.cached();
+                let cap = ship_mods.cargo_capacity.final_value();
                 let lookup = |id: &str| -> Option<u32> {
                     registry
                         .get(id)
@@ -244,7 +248,7 @@ pub fn process_deliverable_commands(
                 // Drain as much as the ship can hold. Resources are weightless
                 // relative to the item-mass model (cargo_capacity bounds the
                 // TOTAL mass including resources), so use the same accounting.
-                let cap = stats.cargo_capacity.cached();
+                let cap = ship_mods.cargo_capacity.final_value();
                 let lookup = |id: &str| -> Option<u32> {
                     registry
                         .get(id)
