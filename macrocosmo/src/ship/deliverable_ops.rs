@@ -22,6 +22,10 @@ use crate::deep_space::{
     spawn_deliverable_entity, ConstructionPlatform, DeepSpaceStructure, LifetimeCost, ResourceCost,
     Scrapyard, StructureRegistry,
 };
+use crate::knowledge::{
+ FactSysParam, KnowledgeFact, PlayerVantage,
+};
+use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
     Cargo, CargoItem, CommandQueue, QueuedCommand, Ship, ShipModifiers, ShipState,
 };
@@ -35,6 +39,7 @@ pub const DEPLOY_POSITION_EPSILON: f64 = 0.01;
 /// Runs in the `Update` schedule, ordered `.after(advance_game_time)` and
 /// `.before(process_command_queue)` so any auto-queued movement reaches the
 /// FTL planner on the same tick.
+#[allow(clippy::too_many_arguments)]
 pub fn process_deliverable_commands(
     mut commands: Commands,
     clock: Res<crate::time_system::GameClock>,
@@ -54,8 +59,22 @@ pub fn process_deliverable_commands(
     mut platforms: Query<(&Position, &mut ConstructionPlatform), Without<Ship>>,
     mut scrapyards: Query<(&Position, &mut Scrapyard), Without<Ship>>,
     structures: Query<(&DeepSpaceStructure, &Position), Without<Ship>>,
+    player_q: Query<&StationedAt, Without<Ship>>,
+    player_aboard_q: Query<&AboardShip, With<Player>>,
+    system_positions: Query<&Position, (Without<Ship>, With<crate::galaxy::StarSystem>)>,
+    mut fact_sys: FactSysParam,
 ) {
     let mass_per_slot_raw = balance.mass_per_item_slot().0;
+    // #249: Snapshot player vantage once per tick.
+    let player_system = player_q.iter().next().map(|s| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| system_positions.get(s).ok())
+        .map(|p| p.as_array());
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
 
     for (_ship_entity, ship, state, ship_pos, mut queue, mut cargo, ship_mods) in
         ships.iter_mut()
@@ -122,12 +141,29 @@ pub fn process_deliverable_commands(
                     ship.name,
                     item.definition_id()
                 );
+                // #249: Dual-write Load event as a StructureBuilt fact.
+                let event_id = fact_sys.allocate_event_id();
+                let desc = format!("{} loaded {}", ship.name, item.definition_id());
                 events.write(crate::events::GameEvent {
+                    id: event_id,
                     timestamp: clock.elapsed,
                     kind: crate::events::GameEventKind::ShipBuilt,
-                    description: format!("{} loaded {}", ship.name, item.definition_id()),
+                    description: desc.clone(),
                     related_system: Some(system),
                 });
+                let origin_pos: Option<[f64; 3]> =
+                    system_positions.get(system).ok().map(|p| p.as_array());
+                if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                    let fact = KnowledgeFact::StructureBuilt {
+                        event_id: Some(event_id),
+                        system: Some(system),
+                        kind: "cargo_load".into(),
+                        name: item.definition_id().to_string(),
+                        destroyed: false,
+                        detail: desc,
+                    };
+                    fact_sys.record(fact, op, clock.elapsed, &v);
+                }
             }
             QueuedCommand::DeployDeliverable { position, item_index } => {
                 // Ship must not be in FTL or surveying. Loitering/Docked OK.
@@ -177,12 +213,28 @@ pub fn process_deliverable_commands(
                 cargo.items.remove(item_index);
                 queue.commands.remove(0);
                 info!("Ship {} deployed {} at {:?}", ship.name, def_id, position);
+                // #249: Dual-write Deploy event.
+                let event_id = fact_sys.allocate_event_id();
+                let desc = format!("{} deployed {}", ship.name, def_id);
                 events.write(crate::events::GameEvent {
+                    id: event_id,
                     timestamp: clock.elapsed,
                     kind: crate::events::GameEventKind::ShipBuilt,
-                    description: format!("{} deployed {}", ship.name, def_id),
+                    description: desc.clone(),
                     related_system: None,
                 });
+                let origin_pos = position;
+                if let Some(v) = vantage {
+                    let fact = KnowledgeFact::StructureBuilt {
+                        event_id: Some(event_id),
+                        system: None,
+                        kind: "deployed_deliverable".into(),
+                        name: def_id.clone(),
+                        destroyed: false,
+                        detail: desc,
+                    };
+                    fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                }
             }
             QueuedCommand::TransferToStructure {
                 structure,

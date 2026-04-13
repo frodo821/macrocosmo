@@ -24,7 +24,9 @@
 
 #![allow(dead_code)]
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use std::collections::HashMap;
 
 use crate::components::Position;
 use crate::deep_space::{
@@ -32,9 +34,137 @@ use crate::deep_space::{
     Scrapyard,
 };
 use crate::empire::comms::CommsParams;
+use crate::notifications::NotificationQueue;
 use crate::physics;
 
 use super::ObservationSource;
+
+/// #249: Global event identifier used to dedupe notification banners when the
+/// same world happening is surfaced through both the legacy `GameEvent` flow
+/// and the `KnowledgeFact` pipeline (dual-write transition), and also to
+/// dedupe multiple facts that originate from a single logical event (e.g.
+/// per-ship `CombatDefeat` + all-ships-wiped `CombatDefeat`).
+///
+/// Allocated by [`NextEventId`] via [`NextEventId::allocate`]. Copy semantics
+/// so it's cheap to pass into both a `GameEvent` and a `KnowledgeFact`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct EventId(pub u64);
+
+/// Monotonic counter resource that hands out fresh [`EventId`]s. Ids start at
+/// 1 so that `EventId::default()` (which returns 0) can represent "no id yet"
+/// when useful.
+#[derive(Resource, Debug, Default)]
+pub struct NextEventId {
+    counter: u64,
+}
+
+impl NextEventId {
+    pub fn allocate(&mut self) -> EventId {
+        self.counter = self.counter.wrapping_add(1);
+        EventId(self.counter)
+    }
+
+    pub fn peek(&self) -> u64 {
+        self.counter
+    }
+}
+
+/// Set of [`EventId`]s that have already surfaced a notification banner.
+///
+/// Consumed by both [`crate::notifications::auto_notify_from_events`] and
+/// [`crate::notifications::notify_from_knowledge_facts`] so that a dual-write
+/// (legacy `GameEvent` + `KnowledgeFact`) only produces **one** banner per
+/// underlying world happening. Populated on the first successful push and
+/// checked before every subsequent push for the same `EventId`.
+///
+/// ## State machine (tri-state)
+///
+/// Each tracked id is in one of three states:
+///
+/// | map state          | meaning                                           | `try_notify` |
+/// |--------------------|---------------------------------------------------|--------------|
+/// | not present        | 未使用 or already closed (treated as notified)    | returns `false` (skip push) |
+/// | `Some(false)`      | registered, banner not yet pushed                 | returns `true`, sets to `true` |
+/// | `Some(true)`       | banner already pushed                             | returns `false` (skip push) |
+///
+/// The "missing == treated as notified" rule is the safety net: closing an id
+/// too early can never cause a duplicate banner, only a (silently) suppressed
+/// one. This lets us aggressively close ids to keep memory bounded.
+///
+/// ## Lifecycle
+///
+/// 1. [`Self::register`] when a new id is allocated for a dual-write
+///    (typically by [`FactSysParam::allocate_event_id`]).
+/// 2. [`Self::try_notify`] from each banner push path; the first one wins.
+/// 3. [`sweep_notified_event_ids`] runs once per frame after both notify
+///    systems have finished and removes every entry that reached `true` —
+///    those ids will not produce another banner, so the memory is freed.
+///
+/// Entries that stay `false` across many ticks (registered but neither path
+/// has surfaced a banner — typically because the fact is still in flight in
+/// [`PendingFactQueue`]) remain until they reach `true` or are explicitly
+/// closed via [`Self::close`].
+#[derive(Resource, Debug, Default)]
+pub struct NotifiedEventIds {
+    notified: HashMap<EventId, bool>,
+}
+
+impl NotifiedEventIds {
+    /// Mark an id as live (not yet notified). Idempotent — re-registering an
+    /// already-notified id leaves it `true`.
+    pub fn register(&mut self, id: EventId) {
+        self.notified.entry(id).or_insert(false);
+    }
+
+    /// Atomically claim the first banner push for this id.
+    ///
+    /// Returns `true` (and flips the entry to `true`) only if the id is
+    /// currently registered as `false`. Any other state — missing or already
+    /// `true` — returns `false` so the caller skips the push.
+    pub fn try_notify(&mut self, id: EventId) -> bool {
+        match self.notified.get_mut(&id) {
+            Some(slot) if !*slot => {
+                *slot = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Explicitly remove an id. After this any future [`Self::try_notify`]
+    /// returns `false` (missing == "treated as notified").
+    pub fn close(&mut self, id: EventId) {
+        self.notified.remove(&id);
+    }
+
+    /// Drop every entry that has reached `true`. Intended to run once per
+    /// frame after both notify systems via [`sweep_notified_event_ids`];
+    /// bounds the map size at "ids registered this tick that haven't been
+    /// notified yet".
+    pub fn sweep_notified(&mut self) {
+        self.notified.retain(|_, notified| !*notified);
+    }
+
+    /// True when the id is currently tracked (in either state). Mostly useful
+    /// for diagnostics / tests.
+    pub fn contains(&self, id: EventId) -> bool {
+        self.notified.contains_key(&id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.notified.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.notified.is_empty()
+    }
+}
+
+/// #249: System that runs once per frame after both notify paths and frees
+/// every notified id. Without it the map grows unbounded over a session.
+pub fn sweep_notified_event_ids(mut notified: ResMut<NotifiedEventIds>) {
+    notified.sweep_notified();
+}
 
 /// Base FTL multiplier for relay-routed propagation. `relay_delay` at base
 /// evaluates to `light_delay / 10`. `empire_relay_inv_latency` modifiers stack
@@ -55,10 +185,18 @@ pub enum CombatVictor {
 /// Facts are *events*, not snapshots. Each fact carries enough context to
 /// render a single banner (title + description + priority) without needing
 /// to cross-reference the snapshot store.
+///
+/// #249: Every variant carries an optional `event_id`. When set, the banner
+/// push path looks up [`NotifiedEventIds`] and drops the push if the id has
+/// already fired — this dedupes dual-written events between the legacy
+/// `GameEvent` flow and the fact pipeline, and multi-fact events (per-ship +
+/// wipe CombatDefeat). Scout-only facts with no `GameEvent` counterpart keep
+/// `event_id = None`.
 #[derive(Clone, Debug)]
 pub enum KnowledgeFact {
     /// A hostile contact was detected in deep space (#186 pursuit).
     HostileDetected {
+        event_id: Option<EventId>,
         target: Entity,
         detector: Entity,
         target_pos: [f64; 3],
@@ -66,29 +204,34 @@ pub enum KnowledgeFact {
     },
     /// Combat completed at a star system.
     CombatOutcome {
+        event_id: Option<EventId>,
         system: Entity,
         victor: CombatVictor,
         detail: String,
     },
     /// A star system was fully surveyed.
     SurveyComplete {
+        event_id: Option<EventId>,
         system: Entity,
         system_name: String,
         detail: String,
     },
     /// An anomaly was discovered during a survey.
     AnomalyDiscovered {
+        event_id: Option<EventId>,
         system: Entity,
         anomaly_id: String,
         detail: String,
     },
     /// Non-anomaly survey discovery (legacy exploration event).
     SurveyDiscovery {
+        event_id: Option<EventId>,
         system: Entity,
         detail: String,
     },
     /// A ship / structure was built or destroyed.
     StructureBuilt {
+        event_id: Option<EventId>,
         system: Option<Entity>,
         kind: String,
         name: String,
@@ -97,6 +240,7 @@ pub enum KnowledgeFact {
     },
     /// A colony was founded at a planet.
     ColonyEstablished {
+        event_id: Option<EventId>,
         system: Entity,
         planet: Entity,
         name: String,
@@ -104,12 +248,14 @@ pub enum KnowledgeFact {
     },
     /// A colony attempt failed.
     ColonyFailed {
+        event_id: Option<EventId>,
         system: Entity,
         name: String,
         reason: String,
     },
     /// A ship arrived at a system (routine — usually Low priority).
     ShipArrived {
+        event_id: Option<EventId>,
         system: Option<Entity>,
         name: String,
         detail: String,
@@ -182,6 +328,22 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { system, .. } => Some(*system),
             KnowledgeFact::ColonyFailed { system, .. } => Some(*system),
             KnowledgeFact::ShipArrived { system, .. } => *system,
+        }
+    }
+
+    /// #249: The [`EventId`] attached to this fact, if any. Used by the
+    /// banner push path to dedupe dual-writes and multi-fact events.
+    pub fn event_id(&self) -> Option<EventId> {
+        match self {
+            KnowledgeFact::HostileDetected { event_id, .. }
+            | KnowledgeFact::CombatOutcome { event_id, .. }
+            | KnowledgeFact::SurveyComplete { event_id, .. }
+            | KnowledgeFact::AnomalyDiscovered { event_id, .. }
+            | KnowledgeFact::SurveyDiscovery { event_id, .. }
+            | KnowledgeFact::StructureBuilt { event_id, .. }
+            | KnowledgeFact::ColonyEstablished { event_id, .. }
+            | KnowledgeFact::ColonyFailed { event_id, .. }
+            | KnowledgeFact::ShipArrived { event_id, .. } => *event_id,
         }
     }
 }
@@ -435,6 +597,10 @@ pub fn compute_fact_arrival(
 ///   the returned `arrives_at == observed_at`, `source = Direct`.
 /// - Otherwise the fact is routed through `PendingFactQueue` with an arrival
 ///   time from [`compute_fact_arrival`].
+///
+/// #249: If the fact carries an `EventId`, [`NotifiedEventIds`] is checked on
+/// the local path and updated on first push so a later banner for the same id
+/// (e.g. from `auto_notify_from_events` or a sibling fact) is suppressed.
 #[allow(clippy::too_many_arguments)]
 pub fn record_fact_or_local(
     fact: KnowledgeFact,
@@ -444,6 +610,7 @@ pub fn record_fact_or_local(
     player_pos: [f64; 3],
     queue: &mut PendingFactQueue,
     notifications: &mut crate::notifications::NotificationQueue,
+    notified_ids: &mut NotifiedEventIds,
     relays: &[RelaySnapshot],
     comms: &CommsParams,
 ) -> (i64, ObservationSource) {
@@ -452,13 +619,21 @@ pub fn record_fact_or_local(
     let is_local = player_aboard || origin_pos == player_pos;
 
     if is_local {
-        notifications.push(
-            fact.title().to_string(),
-            fact.description(),
-            None,
-            fact.priority(),
-            fact.related_system(),
-        );
+        // Dedupe: only push if this id is registered AND hasn't notified yet.
+        // Facts without an event_id (e.g. scout-only) always push.
+        let should_push = match fact.event_id() {
+            Some(id) => notified_ids.try_notify(id),
+            None => true,
+        };
+        if should_push {
+            notifications.push(
+                fact.title().to_string(),
+                fact.description(),
+                None,
+                fact.priority(),
+                fact.related_system(),
+            );
+        }
         return (observed_at, ObservationSource::Direct);
     }
 
@@ -473,6 +648,129 @@ pub fn record_fact_or_local(
         related_system,
     });
     (plan.arrives_at, plan.source)
+}
+
+/// #249: Minimal snapshot of the player's observation vantage point. Built
+/// once per callsite from the system's existing queries; passed by reference
+/// to [`record_world_event_fact`] so the helper can make the
+/// local-vs-remote decision without pulling Positions itself.
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerVantage {
+    pub player_pos: [f64; 3],
+    pub player_aboard: bool,
+}
+
+/// #249: SystemParam bundle that groups the six resources / queries that every
+/// fact-writing callsite needs. Keeps the parameter count of the host system
+/// under Bevy's 16-param limit while avoiding a re-query of `Position` (the
+/// callsite supplies the vantage via [`PlayerVantage`]).
+#[derive(SystemParam)]
+pub struct FactSysParam<'w, 's> {
+    pub fact_queue: ResMut<'w, PendingFactQueue>,
+    pub notifications: ResMut<'w, NotificationQueue>,
+    pub notified_ids: ResMut<'w, NotifiedEventIds>,
+    pub next_event_id: ResMut<'w, NextEventId>,
+    pub relay_network: Res<'w, RelayNetwork>,
+    pub empire_comms: Query<
+        'w,
+        's,
+        &'static CommsParams,
+        With<crate::player::PlayerEmpire>,
+    >,
+}
+
+impl<'w, 's> FactSysParam<'w, 's> {
+    /// Allocate a fresh [`EventId`] AND register it with [`NotifiedEventIds`]
+    /// so subsequent banner pushes (from either the legacy event flow or the
+    /// fact pipeline) dedupe against each other. The first push wins; the
+    /// rest are silently suppressed.
+    pub fn allocate_event_id(&mut self) -> EventId {
+        let id = self.next_event_id.allocate();
+        self.notified_ids.register(id);
+        id
+    }
+
+    /// Snapshot the player empire's [`CommsParams`], falling back to defaults
+    /// when no `PlayerEmpire` exists (e.g. observer mode pre-spawn).
+    pub fn comms(&self) -> CommsParams {
+        self.empire_comms.iter().next().cloned().unwrap_or_default()
+    }
+
+    /// Borrow the active relay snapshots.
+    pub fn relays(&self) -> &[RelaySnapshot] {
+        &self.relay_network.relays
+    }
+
+    /// Canonical dual-write entry point for world-event callsites.
+    /// Encapsulates the comms / relays lookup so a callsite reduces to:
+    ///
+    /// ```ignore
+    /// let id = fact_sys.allocate_event_id();
+    /// events.write(GameEvent { id, ... });
+    /// fact_sys.record(
+    ///     KnowledgeFact::SomeVariant { event_id: Some(id), .. },
+    ///     origin_pos,
+    ///     clock.elapsed,
+    ///     &vantage,
+    /// );
+    /// ```
+    pub fn record(
+        &mut self,
+        fact: KnowledgeFact,
+        origin_pos: [f64; 3],
+        observed_at: i64,
+        vantage: &PlayerVantage,
+    ) -> (i64, ObservationSource) {
+        // Pull the immutable bits before the `ResMut` projections so we don't
+        // overlap the borrow of `empire_comms` / `relay_network`.
+        let comms = self.empire_comms.iter().next().cloned().unwrap_or_default();
+        let relays = self.relay_network.relays.clone();
+        record_fact_or_local(
+            fact,
+            origin_pos,
+            observed_at,
+            vantage.player_aboard,
+            vantage.player_pos,
+            &mut self.fact_queue,
+            &mut self.notifications,
+            &mut self.notified_ids,
+            &relays,
+            &comms,
+        )
+    }
+}
+
+/// #249: Canonical entry point for world-event callsites. Combines
+/// [`record_fact_or_local`] with a [`PlayerVantage`] and a [`FactSysParam`],
+/// so callsites reduce to a single call (plus whatever `GameEvent` write they
+/// dual-produce).
+///
+/// Returns `(arrives_at, source)` from the underlying scheduler for callers
+/// that want to log the propagation path.
+#[allow(clippy::too_many_arguments)]
+pub fn record_world_event_fact(
+    fact: KnowledgeFact,
+    origin_pos: [f64; 3],
+    observed_at: i64,
+    vantage: &PlayerVantage,
+    queue: &mut PendingFactQueue,
+    notifications: &mut NotificationQueue,
+    notified_ids: &mut NotifiedEventIds,
+    relays: &[RelaySnapshot],
+    comms: &CommsParams,
+) -> (i64, ObservationSource) {
+    record_fact_or_local(
+        fact,
+        origin_pos,
+        observed_at,
+        vantage.player_aboard,
+        vantage.player_pos,
+        queue,
+        notifications,
+        notified_ids,
+        relays,
+        comms,
+    )
 }
 
 #[cfg(test)]
@@ -562,6 +860,7 @@ mod tests {
         let mut q = PendingFactQueue::default();
         q.record(PerceivedFact {
             fact: KnowledgeFact::SurveyComplete {
+                event_id: None,
                 system: Entity::PLACEHOLDER,
                 system_name: "A".into(),
                 detail: "A".into(),
@@ -574,6 +873,7 @@ mod tests {
         });
         q.record(PerceivedFact {
             fact: KnowledgeFact::SurveyComplete {
+                event_id: None,
                 system: Entity::PLACEHOLDER,
                 system_name: "B".into(),
                 detail: "B".into(),
@@ -598,8 +898,10 @@ mod tests {
     fn record_fact_or_local_bypasses_queue_when_player_aboard() {
         let mut queue = PendingFactQueue::default();
         let mut notifs = crate::notifications::NotificationQueue::new();
+        let mut notified = NotifiedEventIds::default();
         let comms = empty_comms();
         let fact = KnowledgeFact::CombatOutcome {
+            event_id: None,
             system: Entity::PLACEHOLDER,
             victor: CombatVictor::Player,
             detail: "On-site victory".into(),
@@ -612,6 +914,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             &mut queue,
             &mut notifs,
+            &mut notified,
             &[],
             &comms,
         );
@@ -625,8 +928,10 @@ mod tests {
     fn record_fact_or_local_queues_remote_event() {
         let mut queue = PendingFactQueue::default();
         let mut notifs = crate::notifications::NotificationQueue::new();
+        let mut notified = NotifiedEventIds::default();
         let comms = empty_comms();
         let fact = KnowledgeFact::HostileDetected {
+            event_id: None,
             target: Entity::PLACEHOLDER,
             detector: Entity::PLACEHOLDER,
             target_pos: [50.0, 0.0, 0.0],
@@ -640,6 +945,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             &mut queue,
             &mut notifs,
+            &mut notified,
             &[],
             &comms,
         );
@@ -647,5 +953,86 @@ mod tests {
         assert_eq!(arrives_at, 50 * 60); // 50 ly × 60 hd
         assert_eq!(queue.pending_len(), 1);
         assert_eq!(notifs.items.len(), 0);
+    }
+
+    #[test]
+    fn record_fact_or_local_dedupes_by_event_id_on_local_path() {
+        let mut queue = PendingFactQueue::default();
+        let mut notifs = crate::notifications::NotificationQueue::new();
+        let mut notified = NotifiedEventIds::default();
+        let comms = empty_comms();
+        let eid = EventId(42);
+        // Tri-state NotifiedEventIds: register before the first push.
+        // Production callsites get this for free via
+        // `FactSysParam::allocate_event_id`.
+        notified.register(eid);
+
+        let fact1 = KnowledgeFact::CombatOutcome {
+            event_id: Some(eid),
+            system: Entity::PLACEHOLDER,
+            victor: CombatVictor::Player,
+            detail: "first".into(),
+        };
+        record_fact_or_local(
+            fact1,
+            [0.0, 0.0, 0.0],
+            0,
+            false,
+            [0.0, 0.0, 0.0],
+            &mut queue,
+            &mut notifs,
+            &mut notified,
+            &[],
+            &comms,
+        );
+        assert_eq!(notifs.items.len(), 1);
+
+        // Same id again — must NOT produce a second banner.
+        let fact2 = KnowledgeFact::CombatOutcome {
+            event_id: Some(eid),
+            system: Entity::PLACEHOLDER,
+            victor: CombatVictor::Player,
+            detail: "second".into(),
+        };
+        record_fact_or_local(
+            fact2,
+            [0.0, 0.0, 0.0],
+            0,
+            false,
+            [0.0, 0.0, 0.0],
+            &mut queue,
+            &mut notifs,
+            &mut notified,
+            &[],
+            &comms,
+        );
+        assert_eq!(notifs.items.len(), 1, "dedupe must suppress second banner");
+    }
+
+    #[test]
+    fn notified_event_ids_state_machine() {
+        // Tri-state semantics: missing == treated as already-notified;
+        // Some(false) == registered, first push wins; Some(true) == notified.
+        let mut notified = NotifiedEventIds::default();
+        let id = EventId(7);
+
+        // Missing → try_notify returns false (no push), state still missing.
+        assert!(!notified.try_notify(id));
+        assert!(!notified.contains(id));
+
+        // After register: try_notify wins exactly once.
+        notified.register(id);
+        assert!(notified.try_notify(id), "first push must succeed");
+        assert!(!notified.try_notify(id), "second push must be suppressed");
+
+        // sweep_notified frees the entry; re-registering returns to false.
+        notified.sweep_notified();
+        assert!(!notified.contains(id));
+        notified.register(id);
+        assert!(notified.try_notify(id), "post-sweep re-register works");
+
+        // Explicit close removes the entry too.
+        notified.close(id);
+        assert!(!notified.contains(id));
     }
 }

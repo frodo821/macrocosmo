@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 
 use crate::events::{GameEvent, GameEventKind};
-use crate::knowledge::{PendingFactQueue, PerceivedFact};
+use crate::knowledge::{EventId, NotifiedEventIds, PendingFactQueue, PerceivedFact};
 use crate::scripting::ScriptEngine;
 use crate::time_system::{GameClock, GameSpeed};
 
@@ -255,9 +255,17 @@ pub fn is_legacy_whitelisted(kind: &GameEventKind) -> bool {
 pub fn auto_notify_from_events(
     mut reader: MessageReader<GameEvent>,
     mut queue: ResMut<NotificationQueue>,
+    mut notified: ResMut<NotifiedEventIds>,
 ) {
     for event in reader.read() {
         if !is_legacy_whitelisted(&event.kind) {
+            continue;
+        }
+        // #249: Dedupe — if a paired KnowledgeFact already surfaced a banner
+        // for this id (or will later), skip this one. `EventId::default()`
+        // (== 0) is the pre-migration "no id" sentinel; treat it as never
+        // previously notified so legacy code paths keep working.
+        if event.id != EventId::default() && !notified.try_notify(event.id) {
             continue;
         }
         if let Some(priority) = priority_for_event_kind(&event.kind) {
@@ -283,10 +291,20 @@ pub fn notify_from_knowledge_facts(
     clock: Res<GameClock>,
     mut queue: ResMut<PendingFactQueue>,
     mut notifications: ResMut<NotificationQueue>,
+    mut notified: ResMut<NotifiedEventIds>,
     mut speed: ResMut<GameSpeed>,
 ) {
     let ready = queue.drain_ready(clock.elapsed);
     for PerceivedFact { fact, .. } in ready {
+        // #249: Dedupe by EventId. If a banner already fired for this id
+        // (either from `auto_notify_from_events` or a sibling fact with the
+        // same id), drop this push silently. The fact is still drained — we
+        // just don't surface a second banner.
+        if let Some(eid) = fact.event_id() {
+            if !notified.try_notify(eid) {
+                continue;
+            }
+        }
         let priority = fact.priority();
         let title = fact.title().to_string();
         let description = fact.description();
@@ -360,8 +378,17 @@ impl Plugin for NotificationsPlugin {
             .add_systems(Update, (tick_notifications, auto_notify_from_events))
             .add_systems(
                 Update,
-                (notify_from_knowledge_facts, drain_pending_notifications)
-                    .after(crate::time_system::advance_game_time),
+                (
+                    notify_from_knowledge_facts,
+                    drain_pending_notifications,
+                    // #249: Frees notified ids each frame so the dedupe map
+                    // doesn't grow unbounded. Must run after both notify
+                    // systems flipped entries to `true`.
+                    crate::knowledge::sweep_notified_event_ids,
+                )
+                    .chain()
+                    .after(crate::time_system::advance_game_time)
+                    .after(auto_notify_from_events),
             );
     }
 }
@@ -558,10 +585,12 @@ mod tests {
         let mut app = App::new();
         app.add_message::<GameEvent>();
         app.insert_resource(NotificationQueue::new());
+        app.init_resource::<NotifiedEventIds>();
         app.add_systems(Update, auto_notify_from_events);
 
         // PlayerRespawn → whitelisted; still banners.
         app.world_mut().write_message(GameEvent {
+            id: EventId::default(),
             timestamp: 0,
             kind: GameEventKind::PlayerRespawn,
             description: "Flagship destroyed".into(),
@@ -571,6 +600,7 @@ mod tests {
         // through the fact queue, so the notification queue should stay empty
         // for this path.
         app.world_mut().write_message(GameEvent {
+            id: EventId::default(),
             timestamp: 0,
             kind: GameEventKind::SurveyDiscovery,
             description: "Found ruins".into(),
@@ -578,6 +608,7 @@ mod tests {
         });
         // Routine event — must NOT show banner
         app.world_mut().write_message(GameEvent {
+            id: EventId::default(),
             timestamp: 0,
             kind: GameEventKind::ShipBuilt,
             description: "Built corvette".into(),

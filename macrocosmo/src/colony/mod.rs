@@ -61,27 +61,31 @@ impl Plugin for ColonyPlugin {
             .add_systems(
                 Update,
                 (
-                    tick_timed_effects,
-                    tick_authority,
-                    sync_building_modifiers,
-                    crate::species::sync_job_assignment,
-                    sync_species_modifiers,
-                    sync_system_building_maintenance,
-                    sync_maintenance_modifiers,
-                    sync_food_consumption,
-                    // #250: Aggregate job contributions every Update tick,
-                    // independent of `delta`. This guarantees the UI sees a
-                    // correct production rate even while paused.
-                    aggregate_job_contributions,
-                    tick_production,
-                    tick_maintenance,
-                    tick_population_growth,
-                    tick_build_queue,
-                    tick_building_queue,
-                    tick_system_building_queue,
-                    tick_colonization_queue,
-                    check_resource_alerts,
-                    advance_production_tick,
+                    (
+                        tick_timed_effects,
+                        tick_authority,
+                        sync_building_modifiers,
+                        crate::species::sync_job_assignment,
+                        sync_species_modifiers,
+                        sync_system_building_maintenance,
+                        sync_maintenance_modifiers,
+                        sync_food_consumption,
+                        // #250: Aggregate job contributions every Update tick,
+                        // independent of `delta`. This guarantees the UI sees a
+                        // correct production rate even while paused.
+                        aggregate_job_contributions,
+                    ).chain(),
+                    (
+                        tick_production,
+                        tick_maintenance,
+                        tick_population_growth,
+                        tick_build_queue,
+                        tick_building_queue,
+                        tick_system_building_queue,
+                        tick_colonization_queue,
+                        check_resource_alerts,
+                        advance_production_tick,
+                    ).chain(),
                 )
                     .chain()
                     .after(crate::time_system::advance_game_time),
@@ -282,6 +286,7 @@ impl AlertCooldowns {
 
 /// Checks colonies for resource depletion and emits `ResourceAlert` events.
 /// Runs after maintenance/growth so stockpiles are up to date.
+#[allow(clippy::too_many_arguments)]
 pub fn check_resource_alerts(
     clock: Res<crate::time_system::GameClock>,
     last_tick: Res<LastProductionTick>,
@@ -295,6 +300,7 @@ pub fn check_resource_alerts(
     planets: Query<&crate::galaxy::Planet>,
     mut events: MessageWriter<crate::events::GameEvent>,
     mut alert_cooldowns: ResMut<AlertCooldowns>,
+    mut next_event_id: ResMut<crate::knowledge::NextEventId>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -316,6 +322,7 @@ pub fn check_resource_alerts(
         if stockpile.food == Amt::ZERO {
             if alert_cooldowns.can_alert("food_starving", alert_key, clock.elapsed) {
                 events.write(crate::events::GameEvent {
+                    id: next_event_id.allocate(),
                     timestamp: clock.elapsed,
                     kind: crate::events::GameEventKind::ResourceAlert,
                     description: format!("{}: Starvation! Food depleted", system_name),
@@ -331,6 +338,7 @@ pub fn check_resource_alerts(
             if stockpile.food < threshold && stockpile.food > Amt::ZERO {
                 if alert_cooldowns.can_alert("food_low", alert_key, clock.elapsed) {
                     events.write(crate::events::GameEvent {
+                        id: next_event_id.allocate(),
                         timestamp: clock.elapsed,
                         kind: crate::events::GameEventKind::ResourceAlert,
                         description: format!(
@@ -348,6 +356,7 @@ pub fn check_resource_alerts(
         if stockpile.energy == Amt::ZERO {
             if alert_cooldowns.can_alert("energy_depleted", alert_key, clock.elapsed) {
                 events.write(crate::events::GameEvent {
+                    id: next_event_id.allocate(),
                     timestamp: clock.elapsed,
                     kind: crate::events::GameEventKind::ResourceAlert,
                     description: format!(

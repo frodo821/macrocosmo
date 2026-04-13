@@ -3,8 +3,13 @@ use bevy::prelude::*;
 use crate::amount::Amt;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::modifier::ModifiedValue;
-use crate::events::{GameEvent, GameEventKind};
+use crate::events::GameEvent;
 use crate::colony::ColonyJobRates;
+use crate::components::Position;
+use crate::knowledge::{
+ FactSysParam, KnowledgeFact, PlayerVantage,
+};
+use crate::player::{AboardShip, Player, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
@@ -127,6 +132,7 @@ pub fn spawn_capital_colony(
 
 /// #114: Process colonization orders on star systems.
 /// Deducts resources, counts down build time, and spawns a new colony on completion.
+#[allow(clippy::too_many_arguments)]
 pub fn tick_colonization_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -134,8 +140,21 @@ pub fn tick_colonization_queue(
     mut systems_with_queue: Query<(Entity, &mut ColonizationQueue, &mut ResourceStockpile)>,
     mut colonies: Query<&mut Colony>,
     planet_query: Query<(Entity, &Planet, &SystemAttributes)>,
+    positions: Query<&Position>,
+    player_q: Query<&StationedAt, With<Player>>,
+    player_aboard_q: Query<&AboardShip, With<Player>>,
     mut events: MessageWriter<GameEvent>,
+    mut fact_sys: FactSysParam,
 ) {
+    let player_system = player_q.iter().next().map(|s| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| positions.get(s).ok())
+        .map(|p| p.as_array());
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
@@ -217,12 +236,28 @@ pub fn tick_colonization_queue(
                 ColonyJobRates::default(),
             ));
 
+            // #249: Dual-write ColonyEstablished.
+            let event_id = fact_sys.allocate_event_id();
+            let desc = format!("New colony established on {}", planet_name);
             events.write(crate::events::GameEvent {
+                id: event_id,
                 timestamp: clock.elapsed,
                 kind: crate::events::GameEventKind::ColonyEstablished,
-                description: format!("New colony established on {}", planet_name),
+                description: desc.clone(),
                 related_system: Some(system_entity),
             });
+            let origin_pos: Option<[f64; 3]> =
+                positions.get(system_entity).ok().map(|p| p.as_array());
+            if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                let fact = KnowledgeFact::ColonyEstablished {
+                    event_id: Some(event_id),
+                    system: system_entity,
+                    planet: order.target_planet,
+                    name: planet_name.clone(),
+                    detail: desc,
+                };
+                fact_sys.record(fact, op, clock.elapsed, &v);
+            }
 
             info!("Colony established on {} via build queue colonization", planet_name);
         }

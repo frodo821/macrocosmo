@@ -29,8 +29,10 @@ use std::collections::HashMap;
 #[allow(unused_imports)]
 pub use facts::{
     compute_fact_arrival, effective_relay_range, rebuild_relay_network, record_fact_or_local,
-    relay_delay_hexadies, ArrivalPlan, CombatVictor, KnowledgeFact, PendingFactQueue,
-    PerceivedFact, RelayNetwork, RelaySnapshot, FTL_RELAY_BASE_MULTIPLIER,
+    record_world_event_fact, relay_delay_hexadies, sweep_notified_event_ids, ArrivalPlan,
+    CombatVictor, EventId, FactSysParam, KnowledgeFact, NextEventId, NotifiedEventIds,
+    PendingFactQueue, PerceivedFact, PlayerVantage, RelayNetwork, RelaySnapshot,
+    FTL_RELAY_BASE_MULTIPLIER,
 };
 
 use crate::amount::Amt;

@@ -82,6 +82,7 @@ pub(crate) fn apply_exploration_event(
                         _ => attrs.research_potential = new_level,
                     }
                     events.write(GameEvent {
+                        id: crate::knowledge::EventId::default(),
                         timestamp,
                         kind: GameEventKind::SurveyDiscovery,
                         description: format!(
@@ -95,6 +96,7 @@ pub(crate) fn apply_exploration_event(
                     });
                 } else {
                     events.write(GameEvent {
+                        id: crate::knowledge::EventId::default(),
                         timestamp,
                         kind: GameEventKind::SurveyDiscovery,
                         description: format!(
@@ -109,6 +111,7 @@ pub(crate) fn apply_exploration_event(
         ExplorationEvent::AncientRuins { .. } => {
             let bonus = rng.random_range(50.0..200.0);
             events.write(GameEvent {
+                id: crate::knowledge::EventId::default(),
                 timestamp,
                 kind: GameEventKind::SurveyDiscovery,
                 description: format!(
@@ -123,6 +126,7 @@ pub(crate) fn apply_exploration_event(
             let damage = ship_hp.hull_max * damage_pct;
             ship_hp.hull = (ship_hp.hull - damage).max(1.0);
             events.write(GameEvent {
+                id: crate::knowledge::EventId::default(),
                 timestamp,
                 kind: GameEventKind::SurveyDiscovery,
                 description: format!(
@@ -137,6 +141,7 @@ pub(crate) fn apply_exploration_event(
                 let extra_slots = rng.random_range(1u8..=2);
                 attrs.max_building_slots += extra_slots;
                 events.write(GameEvent {
+                    id: crate::knowledge::EventId::default(),
                     timestamp,
                     kind: GameEventKind::SurveyDiscovery,
                     description: format!(
@@ -201,6 +206,7 @@ pub(crate) fn roll_and_apply_anomaly(
                                     _ => attrs.research_potential = new_level,
                                 }
                                 events.write(GameEvent {
+                                    id: crate::knowledge::EventId::default(),
                                     timestamp,
                                     kind: GameEventKind::AnomalyDiscovered,
                                     description: format!(
@@ -216,6 +222,7 @@ pub(crate) fn roll_and_apply_anomaly(
                     }
                     AnomalyEffectDef::ResearchBonus { amount } => {
                         events.write(GameEvent {
+                            id: crate::knowledge::EventId::default(),
                             timestamp,
                             kind: GameEventKind::AnomalyDiscovered,
                             description: format!(
@@ -229,6 +236,7 @@ pub(crate) fn roll_and_apply_anomaly(
                         if let Some(ref mut attrs) = attrs {
                             attrs.max_building_slots += extra;
                             events.write(GameEvent {
+                                id: crate::knowledge::EventId::default(),
                                 timestamp,
                                 kind: GameEventKind::AnomalyDiscovered,
                                 description: format!(
@@ -244,6 +252,7 @@ pub(crate) fn roll_and_apply_anomaly(
                         let damage = ship_hp.hull_max * damage_frac;
                         ship_hp.hull = (ship_hp.hull - damage).max(1.0);
                         events.write(GameEvent {
+                            id: crate::knowledge::EventId::default(),
                             timestamp,
                             kind: GameEventKind::AnomalyDiscovered,
                             description: format!(

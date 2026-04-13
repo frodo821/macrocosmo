@@ -4,6 +4,10 @@ use crate::amount::Amt;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem};
 use crate::components::Position;
+use crate::knowledge::{
+ FactSysParam, KnowledgeFact, PlayerVantage,
+};
+use crate::player::{AboardShip, Player, StationedAt};
 use crate::scripting::building_api::BuildingId;
 use crate::ship::{spawn_ship, CargoItem, Owner, Ship};
 use crate::time_system::GameClock;
@@ -156,6 +160,7 @@ impl BuildingQueue {
 /// #32: build_time_remaining countdown, #35: shipyard check
 /// #223: Deliverable orders land in the system's DeliverableStockpile rather
 /// than spawning Ship entities.
+#[allow(clippy::too_many_arguments)]
 pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -171,6 +176,8 @@ pub fn tick_build_queue(
     system_buildings: Query<&SystemBuildings>,
     mut events: MessageWriter<GameEvent>,
     empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    player_q: Query<(&StationedAt, Option<&AboardShip>), With<Player>>,
+    mut fact_sys: FactSysParam,
 ) {
     let ship_owner = empire_q
         .single()
@@ -180,6 +187,18 @@ pub fn tick_build_queue(
     if delta <= 0 {
         return;
     }
+
+    // #249: Player vantage snapshot (once per tick).
+    let player_info = player_q.iter().next();
+    let player_system = player_info.map(|(s, _)| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| positions.get(s).ok())
+        .map(|p| p.as_array());
+    let player_aboard = player_info.map(|(_, a)| a.is_some()).unwrap_or(false);
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
 
     // Per-order completion info (#223).
     enum Completion {
@@ -282,12 +301,31 @@ pub fn tick_build_queue(
                             ship_owner,
                             &design_registry,
                         );
+                        // #249: Dual-write ShipBuilt — routine, low-priority.
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!("{} built at {}", display_name, sys_name);
                         events.write(GameEvent {
+                            id: event_id,
                             timestamp: clock.elapsed,
                             kind: GameEventKind::ShipBuilt,
-                            description: format!("{} built at {}", display_name, sys_name),
+                            description: desc.clone(),
                             related_system: Some(result.system),
                         });
+                        let origin_pos: Option<[f64; 3]> = positions
+                            .get(result.system)
+                            .ok()
+                            .map(|p| p.as_array());
+                        if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                            let fact = KnowledgeFact::StructureBuilt {
+                                event_id: Some(event_id),
+                                system: Some(result.system),
+                                kind: "ship".into(),
+                                name: display_name.clone(),
+                                destroyed: false,
+                                detail: desc,
+                            };
+                            fact_sys.record(fact, op, clock.elapsed, &v);
+                        }
                         info!("Ship built and launched: {}", display_name);
                     }
                 }
@@ -302,14 +340,28 @@ pub fn tick_build_queue(
                             items: vec![item],
                         });
                     }
+                    let event_id = fact_sys.allocate_event_id();
+                    let desc = format!("Deliverable '{}' produced at {}", display_name, sys_name);
                     events.write(GameEvent {
+                        id: event_id,
                         timestamp: clock.elapsed,
                         kind: GameEventKind::ShipBuilt,
-                        description: format!(
-                            "Deliverable '{}' produced at {}", display_name, sys_name
-                        ),
+                        description: desc.clone(),
                         related_system: Some(result.system),
                     });
+                    let origin_pos: Option<[f64; 3]> =
+                        positions.get(result.system).ok().map(|p| p.as_array());
+                    if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                        let fact = KnowledgeFact::StructureBuilt {
+                            event_id: Some(event_id),
+                            system: Some(result.system),
+                            kind: "deliverable".into(),
+                            name: display_name.clone(),
+                            destroyed: false,
+                            detail: desc,
+                        };
+                        fact_sys.record(fact, op, clock.elapsed, &v);
+                    }
                     info!("Deliverable produced: {} @ {}", display_name, sys_name);
                 }
             }
