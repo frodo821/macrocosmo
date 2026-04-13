@@ -357,6 +357,9 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
             galaxy_config: None,
             game_rng: None,
             faction_relations: None,
+            pending_fact_queue: None,
+            event_log: None,
+            notification_queue: None,
         },
         entities: Vec::new(),
     };
@@ -370,3 +373,542 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
     // version differs.
     assert_eq!(world.resource::<GameClock>().elapsed, 7);
 }
+
+// ===========================================================================
+// Phase B regression tests (#247)
+// ===========================================================================
+
+use macrocosmo::colony::{
+    BuildKind, BuildOrder, BuildQueue, Buildings, BuildingQueue, ColonyJobRates,
+};
+use macrocosmo::deep_space::{
+    CommDirection, DeepSpaceStructure, FTLCommRelay, StructureHitpoints,
+};
+use macrocosmo::events::{EventLog, GameEvent, GameEventKind};
+use macrocosmo::knowledge::{
+    KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact, SystemKnowledge,
+    SystemSnapshot,
+};
+use macrocosmo::knowledge::facts::{CombatVictor, KnowledgeFact};
+use macrocosmo::notifications::{NotificationPriority, NotificationQueue};
+use macrocosmo::scripting::building_api::BuildingId;
+use macrocosmo::ship::{
+    CommandQueue, CourierMode, CourierRoute, Owner, QueuedCommand, Ship, ShipState,
+};
+use macrocosmo::species::{ColonyJobs, JobSlot};
+use macrocosmo::technology::{ResearchQueue, TechId, TechTree};
+
+fn seed_world_with_ship() -> (World, Entity, Entity) {
+    let mut world = build_seed_world();
+    let sol = world
+        .query::<(Entity, &StarSystem)>()
+        .iter(&world)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .expect("Sol must exist in seed");
+    let empire = world
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&world)
+        .next()
+        .expect("empire must exist");
+    let ship = world
+        .spawn((
+            Ship {
+                name: "TestShip".into(),
+                design_id: "explorer_mk1".into(),
+                hull_id: "corvette".into(),
+                modules: Vec::new(),
+                owner: Owner::Empire(empire),
+                sublight_speed: 0.5,
+                ftl_range: 10.0,
+                player_aboard: false,
+                home_port: sol,
+                design_revision: 0,
+            },
+            ShipState::Docked { system: sol },
+            macrocosmo::ship::ShipHitpoints {
+                hull: 50.0, hull_max: 50.0,
+                armor: 0.0, armor_max: 0.0,
+                shield: 0.0, shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+        ))
+        .id();
+    (world, ship, sol)
+}
+
+#[test]
+fn test_save_load_preserves_command_queue() {
+    let (mut src, ship, sol) = seed_world_with_ship();
+    let alpha = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+
+    let mut cq = CommandQueue::default();
+    cq.commands.push(QueuedCommand::MoveTo { system: alpha });
+    cq.commands.push(QueuedCommand::Survey { system: alpha });
+    cq.predicted_position = [4.3, 0.0, 0.0];
+    cq.predicted_system = Some(alpha);
+    src.entity_mut(ship).insert(cq);
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Find the reloaded ship + alpha in two passes.
+    let survey_target = dst
+        .query::<(Entity, &CommandQueue)>()
+        .iter(&dst)
+        .next()
+        .and_then(|(_, q)| {
+            q.commands.get(1).and_then(|c| match c {
+                QueuedCommand::Survey { system } => Some(*system),
+                _ => None,
+            })
+        })
+        .expect("CommandQueue must round-trip with Survey at index 1");
+
+    let alpha_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+    assert_eq!(survey_target, alpha_dst, "Entity remap must route to the same star system");
+}
+
+#[test]
+fn test_save_load_preserves_courier_route() {
+    let (mut src, ship, sol) = seed_world_with_ship();
+    let alpha = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+
+    src.entity_mut(ship).insert(CourierRoute {
+        waypoints: vec![sol, alpha, sol],
+        current_index: 1,
+        mode: CourierMode::ResourceTransport,
+        repeat: true,
+        paused: false,
+    });
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let (_, route) = dst
+        .query::<(Entity, &CourierRoute)>()
+        .iter(&dst)
+        .next()
+        .expect("CourierRoute must round-trip");
+    assert_eq!(route.waypoints.len(), 3);
+    assert_eq!(route.current_index, 1);
+    assert!(matches!(route.mode, CourierMode::ResourceTransport));
+    assert!(route.repeat);
+}
+
+#[test]
+fn test_save_load_preserves_colony_jobs_and_rates() {
+    let mut src = build_seed_world();
+    let colony_ent = src
+        .query_filtered::<Entity, With<Colony>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+    src.entity_mut(colony_ent).insert((
+        ColonyJobs {
+            slots: vec![
+                JobSlot { job_id: "miner".into(), capacity: 10, assigned: 5, capacity_from_buildings: 8 },
+                JobSlot { job_id: "farmer".into(), capacity: 6, assigned: 6, capacity_from_buildings: 4 },
+            ],
+        },
+        {
+            let mut r = ColonyJobRates::default();
+            let bucket = r.bucket_mut("miner", "colony.minerals_per_hexadies");
+            bucket.set_base(Amt::units(3));
+            r
+        },
+    ));
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let (_, jobs, rates) = dst
+        .query::<(Entity, &ColonyJobs, &ColonyJobRates)>()
+        .iter(&dst)
+        .next()
+        .expect("ColonyJobs + ColonyJobRates must round-trip");
+    assert_eq!(jobs.slots.len(), 2);
+    assert_eq!(jobs.slots[0].job_id, "miner");
+    assert_eq!(jobs.slots[0].assigned, 5);
+    let bucket = rates.get("miner", "colony.minerals_per_hexadies").expect("bucket must exist");
+    assert_eq!(bucket.base(), Amt::units(3));
+}
+
+#[test]
+fn test_save_load_preserves_build_queue() {
+    let mut src = build_seed_world();
+    let colony_ent = src
+        .query_filtered::<Entity, With<Colony>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+    src.entity_mut(colony_ent).insert((
+        BuildQueue {
+            queue: vec![BuildOrder {
+                kind: BuildKind::Ship,
+                design_id: "explorer_mk1".into(),
+                display_name: "Explorer".into(),
+                minerals_cost: Amt::units(100),
+                minerals_invested: Amt::units(30),
+                energy_cost: Amt::units(50),
+                energy_invested: Amt::units(10),
+                build_time_total: 60,
+                build_time_remaining: 45,
+            }],
+        },
+        Buildings {
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                None,
+                Some(BuildingId::new("power_plant")),
+            ],
+        },
+        BuildingQueue::default(),
+    ));
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let (_, bq, buildings) = dst
+        .query::<(Entity, &BuildQueue, &Buildings)>()
+        .iter(&dst)
+        .next()
+        .expect("BuildQueue + Buildings must round-trip");
+    assert_eq!(bq.queue.len(), 1);
+    assert_eq!(bq.queue[0].design_id, "explorer_mk1");
+    assert_eq!(bq.queue[0].minerals_invested, Amt::units(30));
+    assert_eq!(bq.queue[0].build_time_remaining, 45);
+    assert_eq!(buildings.slots.len(), 3);
+    assert_eq!(buildings.slots[0], Some(BuildingId::new("mine")));
+    assert_eq!(buildings.slots[2], Some(BuildingId::new("power_plant")));
+}
+
+#[test]
+fn test_save_load_preserves_knowledge_store() {
+    let mut src = build_seed_world();
+    let sol = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    let mut store = KnowledgeStore::default();
+    store.update(SystemKnowledge {
+        system: sol,
+        observed_at: 50,
+        received_at: 50,
+        data: SystemSnapshot {
+            name: "Sol".into(),
+            position: [0.0, 0.0, 0.0],
+            surveyed: true,
+            colonized: true,
+            population: 1_000.0,
+            ..Default::default()
+        },
+        source: ObservationSource::Direct,
+    });
+    src.entity_mut(empire).insert(store);
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Extract the single knowledge entry's contents first (short-lived borrow),
+    // then resolve Sol in a separate pass to avoid double-borrowing `dst`.
+    let (observed_at, entry_name) = {
+        let restored = dst
+            .query_filtered::<&KnowledgeStore, With<PlayerEmpire>>()
+            .iter(&dst)
+            .next()
+            .expect("KnowledgeStore must round-trip");
+        let count = restored.iter().count();
+        assert_eq!(count, 1, "one system knowledge entry expected");
+        let (_, only) = restored.iter().next().unwrap();
+        (only.observed_at, only.data.name.clone())
+    };
+    assert_eq!(observed_at, 50);
+    assert_eq!(entry_name, "Sol");
+}
+
+#[test]
+fn test_save_load_preserves_pending_facts() {
+    let mut src = build_seed_world();
+    let sol = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+
+    let mut queue = PendingFactQueue::default();
+    queue.record(PerceivedFact {
+        fact: KnowledgeFact::CombatOutcome {
+            system: sol,
+            victor: CombatVictor::Player,
+            detail: "Won".into(),
+        },
+        observed_at: 100,
+        arrives_at: 200,
+        source: ObservationSource::Direct,
+        origin_pos: [0.0, 0.0, 0.0],
+        related_system: Some(sol),
+    });
+    src.insert_resource(queue);
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let queue = dst.resource::<PendingFactQueue>();
+    assert_eq!(queue.facts.len(), 1);
+    let f = &queue.facts[0];
+    assert_eq!(f.arrives_at, 200);
+    match &f.fact {
+        KnowledgeFact::CombatOutcome { detail, victor, .. } => {
+            assert_eq!(detail, "Won");
+            assert_eq!(*victor, CombatVictor::Player);
+        }
+        _ => panic!("unexpected fact variant"),
+    }
+}
+
+#[test]
+fn test_save_load_preserves_tech_tree() {
+    let mut src = build_seed_world();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    let mut tree = TechTree::default();
+    tree.complete_research(TechId("industrial_automated_mining".into()));
+    tree.complete_research(TechId("physics_ftl_drive".into()));
+    let queue = ResearchQueue {
+        current: Some(TechId("social_central_planning".into())),
+        accumulated: 42.5,
+        blocked: false,
+    };
+    src.entity_mut(empire).insert((tree, queue));
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let (tt, rq) = dst
+        .query_filtered::<(&TechTree, &ResearchQueue), With<PlayerEmpire>>()
+        .iter(&dst)
+        .next()
+        .expect("TechTree + ResearchQueue must round-trip");
+    assert!(tt.researched.contains(&TechId("industrial_automated_mining".into())));
+    assert!(tt.researched.contains(&TechId("physics_ftl_drive".into())));
+    assert_eq!(rq.current, Some(TechId("social_central_planning".into())));
+    assert!((rq.accumulated - 42.5).abs() < 1e-9);
+}
+
+#[test]
+fn test_save_load_preserves_notifications() {
+    let mut src = build_seed_world();
+    let mut q = NotificationQueue::new();
+    q.push("High", "first", None, NotificationPriority::High, None);
+    q.push("Med", "second", None, NotificationPriority::Medium, None);
+    src.insert_resource(q);
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let queue = dst.resource::<NotificationQueue>();
+    assert_eq!(queue.items.len(), 2, "two notifications must survive");
+    // Newest at front; the test pushed "Med" last so "Med" is at index 0.
+    assert_eq!(queue.items[0].title, "Med");
+    assert_eq!(queue.items[1].title, "High");
+}
+
+#[test]
+fn test_save_load_preserves_event_log() {
+    let mut src = build_seed_world();
+    let sol = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+
+    let mut log = EventLog::default();
+    log.push(GameEvent {
+        timestamp: 100,
+        kind: GameEventKind::SurveyComplete,
+        description: "Surveyed Alpha Centauri".into(),
+        related_system: Some(sol),
+    });
+    log.push(GameEvent {
+        timestamp: 120,
+        kind: GameEventKind::ColonyEstablished,
+        description: "Colony at Mars".into(),
+        related_system: None,
+    });
+    src.insert_resource(log);
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let (first_related, second_related, first_desc, first_kind, entries_len) = {
+        let log = dst.resource::<EventLog>();
+        (
+            log.entries[0].related_system,
+            log.entries[1].related_system,
+            log.entries[0].description.clone(),
+            log.entries[0].kind.clone(),
+            log.entries.len(),
+        )
+    };
+    assert_eq!(entries_len, 2);
+    assert_eq!(first_desc, "Surveyed Alpha Centauri");
+    assert_eq!(first_kind, GameEventKind::SurveyComplete);
+    let sol_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    assert_eq!(first_related, Some(sol_dst));
+    assert_eq!(second_related, None);
+}
+
+#[test]
+fn test_save_load_preserves_ftl_comm_relay_pairing() {
+    let mut src = build_seed_world();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    // Two relay structures pointing at each other.
+    let relay_a = src
+        .spawn((
+            DeepSpaceStructure {
+                definition_id: "ftl_comm_relay".into(),
+                name: "Relay A".into(),
+                owner: Owner::Empire(empire),
+            },
+            Position { x: 1.0, y: 0.0, z: 0.0 },
+            StructureHitpoints { current: 50.0, max: 50.0 },
+        ))
+        .id();
+    let relay_b = src
+        .spawn((
+            DeepSpaceStructure {
+                definition_id: "ftl_comm_relay".into(),
+                name: "Relay B".into(),
+                owner: Owner::Empire(empire),
+            },
+            Position { x: 49.0, y: 0.0, z: 0.0 },
+            StructureHitpoints { current: 50.0, max: 50.0 },
+        ))
+        .id();
+    src.entity_mut(relay_a).insert(FTLCommRelay {
+        paired_with: relay_b,
+        direction: CommDirection::Bidirectional,
+    });
+    src.entity_mut(relay_b).insert(FTLCommRelay {
+        paired_with: relay_a,
+        direction: CommDirection::Bidirectional,
+    });
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Collect the two relays and verify their pairing survives the remap.
+    let relays: Vec<(Entity, Entity)> = dst
+        .query::<(Entity, &DeepSpaceStructure, &FTLCommRelay)>()
+        .iter(&dst)
+        .map(|(e, _, r)| (e, r.paired_with))
+        .collect();
+    assert_eq!(relays.len(), 2);
+    // Each should reference the other.
+    for (self_e, paired) in &relays {
+        let partner_pair = relays.iter().find(|(e, _)| *e == *paired).expect("partner must exist");
+        assert_eq!(partner_pair.1, *self_e, "pairing is symmetric post-load");
+    }
+}
+
+#[test]
+fn test_save_load_deterministic_continuation() {
+    // Build two identical worlds, save one, load into another, advance each
+    // by the same number of hexadies, and verify their GameClock + RNG state
+    // continue in lockstep. This is the Phase B "big" integration marker.
+    let mut src = build_seed_world();
+    let bytes = round_trip_bytes(&mut src);
+
+    let mut dst_a = World::new();
+    load_game_from_reader(&mut dst_a, &bytes[..]).expect("load a");
+    let mut dst_b = World::new();
+    load_game_from_reader(&mut dst_b, &bytes[..]).expect("load b");
+
+    // Simulate a tick advance (hand-advance the clock; the real pipeline
+    // pumps the whole schedule, but the determinism contract for save/load
+    // is that two independent loads advance identically).
+    {
+        let mut c = dst_a.resource_mut::<GameClock>();
+        c.elapsed += 100;
+    }
+    {
+        let mut c = dst_b.resource_mut::<GameClock>();
+        c.elapsed += 100;
+    }
+
+    // Draw the same number of RNG samples from each and confirm bit-for-bit.
+    let rng_a = dst_a.resource::<GameRng>().clone();
+    let rng_b = dst_b.resource::<GameRng>().clone();
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    {
+        let ha = rng_a.handle();
+        let hb = rng_b.handle();
+        let mut ga = ha.lock().unwrap();
+        let mut gb = hb.lock().unwrap();
+        for _ in 0..64 {
+            xs.push(ga.random::<u64>());
+            ys.push(gb.random::<u64>());
+        }
+    }
+    assert_eq!(
+        xs, ys,
+        "deterministic continuation: two loads must yield identical RNG streams post-tick"
+    );
+    assert_eq!(
+        dst_a.resource::<GameClock>().elapsed,
+        dst_b.resource::<GameClock>().elapsed,
+        "clock must advance identically"
+    );
+}
+

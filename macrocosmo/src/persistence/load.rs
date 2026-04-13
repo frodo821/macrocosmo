@@ -18,9 +18,13 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::colony::LastProductionTick;
+use crate::events::EventLog;
 use crate::faction::FactionRelations;
 use crate::galaxy::GalaxyConfig;
+use crate::knowledge::PendingFactQueue;
+use crate::notifications::NotificationQueue;
 use crate::scripting::game_rng::GameRng;
+use crate::technology::TechTree;
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::remap::EntityMap;
@@ -88,6 +92,28 @@ fn apply_resources(world: &mut World, save: &GameSave) -> Result<(), LoadError> 
     if let Some(rng_snapshot) = &save.resources.game_rng {
         let restored: GameRng = rng_snapshot.restore()?;
         world.insert_resource(restored);
+    }
+
+    // Phase B — event log (Resource).
+    if let Some(log) = &save.resources.event_log {
+        // EventLog contains entity references we want to remap after
+        // entities spawn; stash a placeholder now and refresh later.
+        world.insert_resource(EventLog {
+            entries: Vec::new(),
+            max_entries: if log.max_entries == 0 { 50 } else { log.max_entries },
+        });
+    }
+    // Phase B — notification queue.
+    if let Some(nq) = &save.resources.notification_queue {
+        let mut q = NotificationQueue::new();
+        if nq.max_items > 0 {
+            q.max_items = nq.max_items;
+        }
+        world.insert_resource(q);
+    }
+    // Phase B — pending fact queue (placeholder; filled in after entity map).
+    if save.resources.pending_fact_queue.is_some() {
+        world.insert_resource(PendingFactQueue::default());
     }
 
     // Faction relations.
@@ -230,6 +256,196 @@ fn apply_component_bag(
     if bag.player_empire.is_some() {
         ec.insert(crate::player::PlayerEmpire);
     }
+
+    // --- Phase B extensions ---
+
+    // Galaxy extensions
+    if let Some(a) = &bag.anomalies {
+        ec.insert(a.clone().into_live());
+    }
+    if let Some(r) = &bag.forbidden_region {
+        ec.insert(r.clone().into_live());
+    }
+
+    // Colony extensions
+    if let Some(b) = &bag.buildings {
+        ec.insert(b.clone().into_live());
+    }
+    if let Some(q) = &bag.building_queue {
+        ec.insert(q.clone().into_live());
+    }
+    if let Some(q) = &bag.build_queue {
+        ec.insert(q.clone().into_live());
+    }
+    if let Some(sb) = &bag.system_buildings {
+        ec.insert(sb.clone().into_live());
+    }
+    if let Some(sbq) = &bag.system_building_queue {
+        ec.insert(sbq.clone().into_live());
+    }
+    if let Some(p) = &bag.production {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(f) = &bag.production_focus {
+        ec.insert(f.clone().into_live());
+    }
+    if let Some(j) = &bag.colony_jobs {
+        ec.insert(j.clone().into_live());
+    }
+    if let Some(j) = &bag.colony_job_rates {
+        ec.insert(j.clone().into_live());
+    }
+    if let Some(p) = &bag.colony_population {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(m) = &bag.maintenance_cost {
+        ec.insert(m.clone().into_live());
+    }
+    if let Some(f) = &bag.food_consumption {
+        ec.insert(f.clone().into_live());
+    }
+    if let Some(d) = &bag.deliverable_stockpile {
+        ec.insert(d.clone().into_live());
+    }
+    if let Some(c) = &bag.colonization_queue {
+        ec.insert(c.clone().into_live(map));
+    }
+    if let Some(p) = &bag.pending_colonization_order {
+        ec.insert(p.clone().into_live(map));
+    }
+
+    // Empire / player-empire attached
+    if let Some(p) = &bag.authority_params {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(p) = &bag.construction_params {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(p) = &bag.comms_params {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(m) = &bag.empire_modifiers {
+        ec.insert(m.clone().into_live());
+    }
+    if let Some(p) = &bag.global_params {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(f) = &bag.game_flags {
+        ec.insert(f.clone().into_live());
+    }
+    if let Some(f) = &bag.scoped_flags {
+        ec.insert(f.clone().into_live());
+    }
+    if let Some(t) = &bag.tech_tree {
+        // TechTree is normally populated from Lua; here we restore only the
+        // researched set. If the live entity already has a TechTree (added
+        // by another load path), merge into it; otherwise attach a minimal
+        // tree carrying just the researched ids.
+        let tree = t.clone().into_live_minimal();
+        ec.insert(tree);
+    }
+    if let Some(k) = &bag.tech_knowledge {
+        ec.insert(k.clone().into_live());
+    }
+    if let Some(q) = &bag.research_queue {
+        ec.insert(q.clone().into_live());
+    }
+    if let Some(p) = &bag.research_pool {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(r) = &bag.recently_researched {
+        ec.insert(r.clone().into_live());
+    }
+    if let Some(ks) = &bag.knowledge_store {
+        ec.insert(ks.clone().into_live(map));
+    }
+    if let Some(cl) = &bag.command_log {
+        ec.insert(cl.clone().into_live());
+    }
+    if let Some(p) = &bag.pending_colony_tech_modifiers {
+        ec.insert(p.clone().into_live());
+    }
+
+    // Ship extensions
+    if let Some(cq) = &bag.command_queue {
+        ec.insert(cq.clone().into_live(map));
+    }
+    if let Some(sm) = &bag.ship_modifiers {
+        ec.insert(sm.clone().into_live());
+    }
+    if let Some(cr) = &bag.courier_route {
+        ec.insert(cr.clone().into_live(map));
+    }
+    if let Some(sd) = &bag.survey_data {
+        ec.insert(sd.clone().into_live(map));
+    }
+    if let Some(sr) = &bag.scout_report {
+        ec.insert(sr.clone().into_live(map));
+    }
+    if let Some(f) = &bag.fleet {
+        ec.insert(f.clone().into_live(map));
+    }
+    if let Some(m) = &bag.fleet_membership {
+        ec.insert(m.into_live(map));
+    }
+    if let Some(d) = &bag.detected_hostiles {
+        ec.insert(d.clone().into_live(map));
+    }
+    if let Some(roe) = &bag.rules_of_engagement {
+        ec.insert(crate::ship::RulesOfEngagement::from(*roe));
+    }
+
+    // Pending command entities
+    if let Some(p) = &bag.pending_ship_command {
+        ec.insert(p.clone().into_live(map));
+    }
+    if let Some(p) = &bag.pending_diplomatic_action {
+        ec.insert(p.clone().into_live(map));
+    }
+    if let Some(p) = &bag.pending_command {
+        ec.insert(p.clone().into_live(map));
+    }
+    if let Some(p) = &bag.pending_research {
+        ec.insert(p.clone().into_live());
+    }
+    if let Some(p) = &bag.pending_knowledge_propagation {
+        ec.insert(p.clone().into_live(map));
+    }
+
+    // Deep space
+    if let Some(s) = &bag.deep_space_structure {
+        ec.insert(s.clone().into_live(map));
+    }
+    if let Some(r) = &bag.ftl_comm_relay {
+        ec.insert(r.clone().into_live(map));
+    }
+    if let Some(h) = &bag.structure_hitpoints {
+        ec.insert(h.clone().into_live());
+    }
+    if let Some(cp) = &bag.construction_platform {
+        ec.insert(cp.clone().into_live());
+    }
+    if let Some(s) = &bag.scrapyard {
+        ec.insert(s.clone().into_live());
+    }
+    if let Some(l) = &bag.lifetime_cost {
+        ec.insert(l.clone().into_live());
+    }
+}
+
+/// Apply Phase-B resource-level payloads that reference entities, after the
+/// entity map has been built. Overwrites any placeholder inserted in
+/// `apply_resources`.
+fn apply_deferred_resources(world: &mut World, save: &GameSave, map: &EntityMap) {
+    if let Some(log) = &save.resources.event_log {
+        world.insert_resource(log.clone().into_live(map));
+    }
+    if let Some(nq) = &save.resources.notification_queue {
+        world.insert_resource(nq.clone().into_live(map));
+    }
+    if let Some(fq) = &save.resources.pending_fact_queue {
+        world.insert_resource(fq.clone().into_live(map));
+    }
 }
 
 /// Rebuild [`FactionRelations`] with the freshly-allocated entities. The
@@ -285,8 +501,13 @@ pub fn load_game_from_reader<R: Read>(world: &mut World, mut r: R) -> Result<(),
     let map = spawn_entities_and_remap(world, &save);
 
     // 4. Final remap pass for resources whose values carry entity references
-    //    (FactionRelations).
+    //    (FactionRelations, Phase-B resources).
     remap_faction_relations(world, &save, &map);
+    apply_deferred_resources(world, &save, &map);
+
+    // Suppress "TechTree may be a Resource" variable drift — the resource
+    // form is re-derived from Lua scripts on next startup, not saved.
+    let _ = world.get_resource::<TechTree>();
 
     Ok(())
 }

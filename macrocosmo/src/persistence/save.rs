@@ -21,16 +21,42 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-use crate::colony::{Colony, LastProductionTick, ResourceCapacity, ResourceStockpile};
-use crate::components::{MovementState, Position};
-use crate::faction::{FactionOwner, FactionRelations};
-use crate::galaxy::{
-    GalaxyConfig, HostilePresence, ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem,
-    SystemAttributes,
+use crate::colony::{
+    AuthorityParams, BuildQueue, Buildings, BuildingQueue, Colony, ColonizationQueue,
+    ColonyJobRates, ConstructionParams, DeliverableStockpile, FoodConsumption, LastProductionTick,
+    MaintenanceCost, PendingColonizationOrder, Production, ProductionFocus, ResourceCapacity,
+    ResourceStockpile, SystemBuildingQueue, SystemBuildings,
 };
+use crate::communication::{CommandLog, PendingCommand};
+use crate::components::{MovementState, Position};
+use crate::condition::ScopedFlags;
+use crate::deep_space::{
+    ConstructionPlatform, DeepSpaceStructure, FTLCommRelay, LifetimeCost, Scrapyard,
+    StructureHitpoints,
+};
+use crate::empire::CommsParams;
+use crate::events::EventLog;
+use crate::faction::{FactionOwner, FactionRelations, PendingDiplomaticAction};
+use crate::galaxy::{
+    Anomalies, ForbiddenRegion, GalaxyConfig, HostilePresence, ObscuredByGas, Planet, PortFacility,
+    Sovereignty, StarSystem, SystemAttributes,
+};
+use crate::knowledge::{KnowledgeStore, PendingFactQueue};
+use crate::notifications::NotificationQueue;
 use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, StationedAt};
 use crate::scripting::game_rng::GameRng;
-use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState};
+use crate::ship::scout::ScoutReport;
+use crate::ship::{
+    Cargo, CommandQueue, CourierRoute, DetectedHostiles, Fleet, FleetMembership,
+    PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState,
+    SurveyData,
+};
+use crate::species::{ColonyJobs, ColonyPopulation};
+use crate::technology::{
+    EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers,
+    PendingKnowledgePropagation, PendingResearch, RecentlyResearched, ResearchPool, ResearchQueue,
+    TechKnowledge, TechTree,
+};
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::remap::{entity_pair_map_serde, EntityMap};
@@ -84,6 +110,13 @@ pub struct SavedResources {
     pub galaxy_config: Option<SavedGalaxyConfig>,
     pub game_rng: Option<SavedGameRng>,
     pub faction_relations: Option<SavedFactionRelations>,
+    /// Phase B — knowledge fact queue (Resource form; usually attached to
+    /// empire entity as Component too; the Resource copy is the primary).
+    pub pending_fact_queue: Option<SavedPendingFactQueue>,
+    /// Phase B — persistable event log (Resource).
+    pub event_log: Option<SavedEventLog>,
+    /// Phase B — on-screen notification banners (Resource).
+    pub notification_queue: Option<SavedNotificationQueue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +178,7 @@ impl From<postcard::Error> for SaveError {
 fn assign_save_ids(world: &mut World) {
     let mut to_assign: Vec<Entity> = Vec::new();
     {
+        // First OR bundle (up to 15 filters per Or tuple).
         let mut q = world.query_filtered::<
             Entity,
             Or<(
@@ -156,6 +190,27 @@ fn assign_save_ids(world: &mut World) {
                 With<Empire>,
                 With<Faction>,
                 With<Player>,
+                With<DeepSpaceStructure>,
+                With<Fleet>,
+                With<PendingShipCommand>,
+                With<PendingDiplomaticAction>,
+                With<PendingCommand>,
+                With<PendingResearch>,
+                With<PendingKnowledgePropagation>,
+            )>,
+        >();
+        for e in q.iter(world) {
+            to_assign.push(e);
+        }
+    }
+    {
+        // Second bundle — additional types split for the 15-tuple limit.
+        let mut q = world.query_filtered::<
+            Entity,
+            Or<(
+                With<PendingColonizationOrder>,
+                With<ForbiddenRegion>,
+                With<PortFacility>,
             )>,
         >();
         for e in q.iter(world) {
@@ -197,6 +252,9 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
     let galaxy = world.get_resource::<GalaxyConfig>();
     let rng = world.get_resource::<GameRng>();
     let relations = world.get_resource::<FactionRelations>();
+    let fact_queue = world.get_resource::<PendingFactQueue>();
+    let event_log = world.get_resource::<EventLog>();
+    let notifications = world.get_resource::<NotificationQueue>();
 
     Ok(SavedResources {
         game_clock_elapsed: clock.map(|c| c.elapsed).unwrap_or(0),
@@ -211,6 +269,9 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
             Some(r) => Some(SavedGameRng::capture(r)?),
             None => None,
         },
+        pending_fact_queue: fact_queue.map(SavedPendingFactQueue::from_live),
+        event_log: event_log.map(SavedEventLog::from_live),
+        notification_queue: notifications.map(SavedNotificationQueue::from_live),
         faction_relations: relations.map(|rel| {
             let mut out = HashMap::new();
             for ((from, to), view) in rel.relations.iter() {
@@ -305,6 +366,176 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if e_ref.get::<PlayerEmpire>().is_some() {
         bag.player_empire = Some(SavedPlayerEmpire);
+    }
+
+    // --- Phase B extensions ---
+
+    // Galaxy extensions
+    if let Some(a) = e_ref.get::<Anomalies>() {
+        bag.anomalies = Some(SavedAnomalies::from_live(a));
+    }
+    if let Some(r) = e_ref.get::<ForbiddenRegion>() {
+        bag.forbidden_region = Some(SavedForbiddenRegion::from_live(r));
+    }
+
+    // Colony extensions
+    if let Some(b) = e_ref.get::<Buildings>() {
+        bag.buildings = Some(SavedBuildings::from_live(b));
+    }
+    if let Some(q) = e_ref.get::<BuildingQueue>() {
+        bag.building_queue = Some(SavedBuildingQueue::from_live(q));
+    }
+    if let Some(q) = e_ref.get::<BuildQueue>() {
+        bag.build_queue = Some(SavedBuildQueue::from_live(q));
+    }
+    if let Some(sb) = e_ref.get::<SystemBuildings>() {
+        bag.system_buildings = Some(SavedSystemBuildings::from_live(sb));
+    }
+    if let Some(sbq) = e_ref.get::<SystemBuildingQueue>() {
+        bag.system_building_queue = Some(SavedSystemBuildingQueue::from_live(sbq));
+    }
+    if let Some(p) = e_ref.get::<Production>() {
+        bag.production = Some(SavedProduction::from_live(p));
+    }
+    if let Some(f) = e_ref.get::<ProductionFocus>() {
+        bag.production_focus = Some(SavedProductionFocus::from_live(f));
+    }
+    if let Some(j) = e_ref.get::<ColonyJobs>() {
+        bag.colony_jobs = Some(SavedColonyJobs::from_live(j));
+    }
+    if let Some(j) = e_ref.get::<ColonyJobRates>() {
+        bag.colony_job_rates = Some(SavedColonyJobRates::from_live(j));
+    }
+    if let Some(p) = e_ref.get::<ColonyPopulation>() {
+        bag.colony_population = Some(SavedColonyPopulation::from_live(p));
+    }
+    if let Some(m) = e_ref.get::<MaintenanceCost>() {
+        bag.maintenance_cost = Some(SavedMaintenanceCost::from_live(m));
+    }
+    if let Some(f) = e_ref.get::<FoodConsumption>() {
+        bag.food_consumption = Some(SavedFoodConsumption::from_live(f));
+    }
+    if let Some(d) = e_ref.get::<DeliverableStockpile>() {
+        bag.deliverable_stockpile = Some(SavedDeliverableStockpile::from_live(d));
+    }
+    if let Some(c) = e_ref.get::<ColonizationQueue>() {
+        bag.colonization_queue = Some(SavedColonizationQueue::from_live(c));
+    }
+    if let Some(p) = e_ref.get::<PendingColonizationOrder>() {
+        bag.pending_colonization_order = Some(SavedPendingColonizationOrder::from_live(p));
+    }
+
+    // Empire / player-empire attached
+    if let Some(p) = e_ref.get::<AuthorityParams>() {
+        bag.authority_params = Some(SavedAuthorityParams::from_live(p));
+    }
+    if let Some(p) = e_ref.get::<ConstructionParams>() {
+        bag.construction_params = Some(SavedConstructionParams::from_live(p));
+    }
+    if let Some(p) = e_ref.get::<CommsParams>() {
+        bag.comms_params = Some(SavedCommsParams::from_live(p));
+    }
+    if let Some(m) = e_ref.get::<EmpireModifiers>() {
+        bag.empire_modifiers = Some(SavedEmpireModifiers::from_live(m));
+    }
+    if let Some(p) = e_ref.get::<GlobalParams>() {
+        bag.global_params = Some(SavedGlobalParams::from_live(p));
+    }
+    if let Some(f) = e_ref.get::<GameFlags>() {
+        bag.game_flags = Some(SavedGameFlags::from_live(f));
+    }
+    if let Some(f) = e_ref.get::<ScopedFlags>() {
+        bag.scoped_flags = Some(SavedScopedFlags::from_live(f));
+    }
+    if let Some(t) = e_ref.get::<TechTree>() {
+        bag.tech_tree = Some(SavedTechTree::from_live(t));
+    }
+    if let Some(k) = e_ref.get::<TechKnowledge>() {
+        bag.tech_knowledge = Some(SavedTechKnowledge::from_live(k));
+    }
+    if let Some(q) = e_ref.get::<ResearchQueue>() {
+        bag.research_queue = Some(SavedResearchQueue::from_live(q));
+    }
+    if let Some(p) = e_ref.get::<ResearchPool>() {
+        bag.research_pool = Some(SavedResearchPool::from_live(p));
+    }
+    if let Some(r) = e_ref.get::<RecentlyResearched>() {
+        bag.recently_researched = Some(SavedRecentlyResearched::from_live(r));
+    }
+    if let Some(ks) = e_ref.get::<KnowledgeStore>() {
+        bag.knowledge_store = Some(SavedKnowledgeStore::from_live(ks));
+    }
+    if let Some(cl) = e_ref.get::<CommandLog>() {
+        bag.command_log = Some(SavedCommandLog::from_live(cl));
+    }
+    if let Some(p) = e_ref.get::<PendingColonyTechModifiers>() {
+        bag.pending_colony_tech_modifiers = Some(SavedPendingColonyTechModifiers::from_live(p));
+    }
+
+    // Ship extensions
+    if let Some(cq) = e_ref.get::<CommandQueue>() {
+        bag.command_queue = Some(SavedCommandQueue::from_live(cq));
+    }
+    if let Some(sm) = e_ref.get::<ShipModifiers>() {
+        bag.ship_modifiers = Some(SavedShipModifiers::from_live(sm));
+    }
+    if let Some(cr) = e_ref.get::<CourierRoute>() {
+        bag.courier_route = Some(SavedCourierRoute::from_live(cr));
+    }
+    if let Some(sd) = e_ref.get::<SurveyData>() {
+        bag.survey_data = Some(SavedSurveyData::from_live(sd));
+    }
+    if let Some(sr) = e_ref.get::<ScoutReport>() {
+        bag.scout_report = Some(SavedScoutReport::from_live(sr));
+    }
+    if let Some(f) = e_ref.get::<Fleet>() {
+        bag.fleet = Some(SavedFleet::from_live(f));
+    }
+    if let Some(m) = e_ref.get::<FleetMembership>() {
+        bag.fleet_membership = Some(SavedFleetMembership::from_live(m));
+    }
+    if let Some(d) = e_ref.get::<DetectedHostiles>() {
+        bag.detected_hostiles = Some(SavedDetectedHostiles::from_live(d));
+    }
+    if let Some(roe) = e_ref.get::<RulesOfEngagement>() {
+        bag.rules_of_engagement = Some(roe.into());
+    }
+
+    // Pending command entities
+    if let Some(p) = e_ref.get::<PendingShipCommand>() {
+        bag.pending_ship_command = Some(SavedPendingShipCommand::from_live(p));
+    }
+    if let Some(p) = e_ref.get::<PendingDiplomaticAction>() {
+        bag.pending_diplomatic_action = Some(SavedPendingDiplomaticAction::from_live(p));
+    }
+    if let Some(p) = e_ref.get::<PendingCommand>() {
+        bag.pending_command = Some(SavedPendingCommand::from_live(p));
+    }
+    if let Some(p) = e_ref.get::<PendingResearch>() {
+        bag.pending_research = Some(SavedPendingResearch::from_live(p));
+    }
+    if let Some(p) = e_ref.get::<PendingKnowledgePropagation>() {
+        bag.pending_knowledge_propagation = Some(SavedPendingKnowledgePropagation::from_live(p));
+    }
+
+    // Deep space
+    if let Some(s) = e_ref.get::<DeepSpaceStructure>() {
+        bag.deep_space_structure = Some(SavedDeepSpaceStructure::from_live(s));
+    }
+    if let Some(r) = e_ref.get::<FTLCommRelay>() {
+        bag.ftl_comm_relay = Some(SavedFTLCommRelay::from_live(r));
+    }
+    if let Some(h) = e_ref.get::<StructureHitpoints>() {
+        bag.structure_hitpoints = Some(SavedStructureHitpoints::from_live(h));
+    }
+    if let Some(cp) = e_ref.get::<ConstructionPlatform>() {
+        bag.construction_platform = Some(SavedConstructionPlatform::from_live(cp));
+    }
+    if let Some(s) = e_ref.get::<Scrapyard>() {
+        bag.scrapyard = Some(SavedScrapyard::from_live(s));
+    }
+    if let Some(l) = e_ref.get::<LifetimeCost>() {
+        bag.lifetime_cost = Some(SavedLifetimeCost::from_live(l));
     }
 
     bag
