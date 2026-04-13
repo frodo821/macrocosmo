@@ -1,67 +1,59 @@
 //! Serde helpers for the [`GameRng`](crate::scripting::game_rng::GameRng) resource.
 //!
-//! ## Design note (Phase A compromise)
+//! ## Design
 //!
-//! `rand 0.9`'s `SmallRng` does **not** implement `Serialize`/`Deserialize`
-//! directly — its inner xoshiro generator does, but the `SmallRng` wrapper
-//! keeps it private. Rather than add a new RNG crate dependency or replace
-//! the runtime type, Phase A captures a fresh *reseed* from the current
-//! stream: we pull one `u64` from the live RNG and use it to seed a
-//! deterministic successor.
+//! Uses `rand_xoshiro::Xoshiro256PlusPlus` directly (via the `serde` feature)
+//! instead of `rand::rngs::SmallRng`, because `SmallRng` keeps its inner
+//! generator private and does not implement `Serialize`/`Deserialize`.
 //!
-//! **Consequence**: the restored RNG continues a *derived* stream rather than
-//! the exact stream that was running at save time. This is deterministic
-//! across save→load→replay but does NOT give bit-for-bit continuation — a
-//! limitation we accept for Phase A. Phase C may upgrade to a directly-
-//! serializable RNG (rand_xoshiro, bevy_prng) without changing the on-disk
-//! format (the seed-based wire layout survives the swap).
+//! Because the full generator state is captured bit-for-bit, save→load
+//! continues the **exact same stream** (not a derived one). A save produced
+//! after N draws and then loaded yields the same (N+1)th draw as the live
+//! RNG would have produced without ever saving.
 
 use crate::scripting::game_rng::GameRng;
-use rand::Rng;
+use rand_xoshiro::Xoshiro256PlusPlus;
 use serde::{Deserialize, Serialize};
 
 /// Wire-format snapshot of a [`GameRng`] for inclusion in `SavedResources`.
-/// Carries a single u64 successor seed; see the module-level design note.
+///
+/// Carries the complete generator state so that save→load yields
+/// bit-for-bit stream continuation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedGameRng {
-    /// Successor seed: pulled from the live RNG at capture time.
-    pub successor_seed: u64,
+    /// Full internal state of the Xoshiro256++ generator at capture time.
+    pub state: Xoshiro256PlusPlus,
 }
 
 impl SavedGameRng {
-    /// Capture the current RNG by pulling a fresh u64 seed from its stream.
-    /// The restored RNG will produce the same sequence as a fresh
-    /// `SmallRng::seed_from_u64(successor_seed)`.
+    /// Capture the current RNG's full state. The restored RNG will produce
+    /// the exact same subsequent sequence as the live RNG would have.
     pub fn capture(rng: &GameRng) -> Result<Self, postcard::Error> {
         let handle = rng.handle();
-        let seed: u64 = {
-            let mut g = handle.lock().expect("GameRng mutex poisoned");
-            g.random()
-        };
-        Ok(Self { successor_seed: seed })
+        let g = handle.lock().expect("GameRng mutex poisoned");
+        Ok(Self { state: g.clone() })
     }
 
-    /// Restore the snapshot into a fresh [`GameRng`] seeded from
-    /// `successor_seed`.
+    /// Restore the snapshot into a fresh [`GameRng`] carrying the exact
+    /// state captured at save time.
     pub fn restore(&self) -> Result<GameRng, postcard::Error> {
-        Ok(GameRng::from_seed(self.successor_seed))
+        Ok(GameRng::from_xoshiro(self.state.clone()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::Rng;
 
     #[test]
     fn capture_and_restore_is_deterministic() {
-        // Two saves from two fresh RNGs with the same seed must capture the
-        // same successor seed, and therefore produce the same restored stream.
+        // Same seed → same state captured → identical restored streams.
         let a = GameRng::from_seed(42);
         let b = GameRng::from_seed(42);
 
         let snap_a = SavedGameRng::capture(&a).expect("capture a");
         let snap_b = SavedGameRng::capture(&b).expect("capture b");
-        assert_eq!(snap_a.successor_seed, snap_b.successor_seed);
 
         let restored_a = snap_a.restore().expect("restore a");
         let restored_b = snap_b.restore().expect("restore b");
@@ -87,6 +79,52 @@ mod tests {
         let b = GameRng::from_seed(2);
         let snap_a = SavedGameRng::capture(&a).unwrap();
         let snap_b = SavedGameRng::capture(&b).unwrap();
-        assert_ne!(snap_a.successor_seed, snap_b.successor_seed);
+
+        let restored_a = snap_a.restore().unwrap();
+        let restored_b = snap_b.restore().unwrap();
+
+        let ha = restored_a.handle();
+        let hb = restored_b.handle();
+        let mut ga = ha.lock().unwrap();
+        let mut gb = hb.lock().unwrap();
+        let xa: u64 = ga.random();
+        let xb: u64 = gb.random();
+        assert_ne!(xa, xb, "different seeds must diverge after restore");
+    }
+
+    #[test]
+    fn save_load_continues_exact_stream() {
+        // Bit-for-bit stream continuation: after draining N values from the
+        // live RNG, a save captured at that point yields a restored RNG
+        // whose next draw matches what the live RNG produces next.
+        let live = GameRng::from_seed(12345);
+        let n_draws = 7;
+        let expected: Vec<u64>;
+        let snap: SavedGameRng;
+
+        {
+            let h = live.handle();
+            let mut g = h.lock().unwrap();
+            for _ in 0..n_draws {
+                let _: u64 = g.random();
+            }
+        }
+        snap = SavedGameRng::capture(&live).expect("capture after N draws");
+        {
+            let h = live.handle();
+            let mut g = h.lock().unwrap();
+            expected = (0..10).map(|_| g.random::<u64>()).collect();
+        }
+
+        let restored = snap.restore().expect("restore");
+        let actual: Vec<u64> = {
+            let h = restored.handle();
+            let mut g = h.lock().unwrap();
+            (0..10).map(|_| g.random::<u64>()).collect()
+        };
+        assert_eq!(
+            actual, expected,
+            "restored RNG must continue the exact stream from save point"
+        );
     }
 }

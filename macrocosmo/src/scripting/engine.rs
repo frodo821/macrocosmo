@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use mlua::prelude::*;
-use rand::rngs::SmallRng;
+use rand_xoshiro::Xoshiro256PlusPlus;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -190,7 +190,7 @@ impl ScriptEngine {
     ///
     /// The scripts directory is auto-resolved via [`resolve_scripts_dir`].
     /// Call [`Self::new_with_rng_and_dir`] to pin it explicitly (tests, CI).
-    pub fn new_with_rng(rng: Arc<Mutex<SmallRng>>) -> Result<Self, mlua::Error> {
+    pub fn new_with_rng(rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> Result<Self, mlua::Error> {
         Self::new_with_rng_and_dir(rng, resolve_scripts_dir())
     }
 
@@ -198,7 +198,7 @@ impl ScriptEngine {
     /// directory. Intended for tests and CI — production code should use
     /// [`Self::new_with_rng`] so the auto-resolution logic takes effect.
     pub fn new_with_rng_and_dir(
-        rng: Arc<Mutex<SmallRng>>,
+        rng: Arc<Mutex<Xoshiro256PlusPlus>>,
         scripts_dir: PathBuf,
     ) -> Result<Self, mlua::Error> {
         // Sandbox: only load safe libraries (no io, os, debug, ffi)
