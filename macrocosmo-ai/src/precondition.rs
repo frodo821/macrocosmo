@@ -117,7 +117,7 @@ pub struct PreconditionEvalResult {
 }
 
 /// Aggregate summary over a [`PreconditionSet`] evaluation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PreconditionSummary {
     pub total: usize,
     pub satisfied: usize,
