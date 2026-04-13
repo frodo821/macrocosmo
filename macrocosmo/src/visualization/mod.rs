@@ -42,15 +42,36 @@ pub const DEPLOY_STAR_SNAP_RADIUS_PX: f32 = 15.0;
 
 /// Pure helper used by `click_select_system` and tests to decide where a
 /// deploy click lands. If `snapped_star_world` is `Some`, the deploy snaps to
-/// that star's world coordinates (z unchanged). Otherwise the deploy uses the
-/// cursor's world position with `z = 0`.
+/// that star's galactic coordinates (z unchanged). Otherwise the cursor's
+/// render-world position is divided by `view_scale` to recover the galactic
+/// coordinate before being stored (see #254).
+///
+/// Why `view_scale`: every star / ship is drawn at `Position × view.scale`
+/// (`visualization::stars::spawn_star_visuals`). `camera.viewport_to_world_2d`
+/// returns render-world space, so treating the cursor position as a galactic
+/// coordinate directly over-counts the scale factor, and the deliverable ends
+/// up `view.scale`× farther than the player clicked.
 pub fn resolve_deploy_target(
     snapped_star_world: Option<[f64; 3]>,
     cursor_world: Vec2,
+    view_scale: f32,
 ) -> [f64; 3] {
     match snapped_star_world {
         Some(p) => p,
-        None => [cursor_world.x as f64, cursor_world.y as f64, 0.0],
+        None => {
+            // Guard against a pathological scale of zero; callers always have
+            // a positive scale in practice (see `GalaxyView::scale` default).
+            let scale = if view_scale.abs() < f32::EPSILON {
+                1.0
+            } else {
+                view_scale
+            };
+            [
+                (cursor_world.x / scale) as f64,
+                (cursor_world.y / scale) as f64,
+                0.0,
+            ]
+        }
     }
 }
 
@@ -63,7 +84,7 @@ impl Plugin for VisualizationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(territory::TerritoryPlugin)
         .insert_resource(GalaxyView {
-            scale: 7.0,
+            scale: 15.0,
         })
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedShip::default())
@@ -279,7 +300,7 @@ pub fn click_select_system(
         let snapped_star_world = best_star
             .and_then(|(star_entity, _)| star_positions.get(star_entity).ok())
             .map(|p| p.as_array());
-        let target_pos = resolve_deploy_target(snapped_star_world, world_pos);
+        let target_pos = resolve_deploy_target(snapped_star_world, world_pos, view.scale);
         if let Ok(mut queue) = command_queues.get_mut(pending.ship) {
             // Use direct push (bypassing `CommandQueue::push`) because we
             // already know the exact coordinate and don't need the system
@@ -405,20 +426,21 @@ mod tests {
 
     #[test]
     fn test_deploy_at_arbitrary_coordinate() {
-        // #240: Empty-space click returns world_pos with z = 0.
+        // #240/#254: Empty-space click returns the galactic coordinate
+        // (world_pos / view.scale) with z = 0.
         let world = Vec2::new(12.5, -4.25);
-        let target = resolve_deploy_target(None, world);
+        let target = resolve_deploy_target(None, world, 1.0);
         assert_eq!(target, [12.5, -4.25, 0.0]);
     }
 
     #[test]
     fn test_deploy_star_click_still_snaps() {
         // #240: Star click keeps the V1 behavior — snaps to the star's
-        // coordinates (including the star's z) regardless of the cursor's
-        // world position.
+        // galactic coordinates (including the star's z) regardless of the
+        // cursor's world position or the current view scale.
         let star = [7.0, 3.0, 0.5];
         let cursor = Vec2::new(99.0, -99.0);
-        let target = resolve_deploy_target(Some(star), cursor);
+        let target = resolve_deploy_target(Some(star), cursor, 7.0);
         assert_eq!(target, star);
     }
 
@@ -427,7 +449,26 @@ mod tests {
         // Explicitly document the 2D-projection invariant: deep-space deploys
         // always land on z = 0 even if the cursor would otherwise carry a
         // different depth.
-        let target = resolve_deploy_target(None, Vec2::new(0.0, 0.0));
+        let target = resolve_deploy_target(None, Vec2::new(0.0, 0.0), 1.0);
         assert_eq!(target[2], 0.0);
+    }
+
+    #[test]
+    fn test_deploy_target_divides_cursor_by_view_scale() {
+        // #254: Cursor is in render-world coordinates (galactic × view.scale);
+        // the deploy must store the galactic coordinate. With scale = 7 and
+        // cursor at (70, 35), the deploy target is (10, 5, 0).
+        let cursor = Vec2::new(70.0, 35.0);
+        let target = resolve_deploy_target(None, cursor, 7.0);
+        assert_eq!(target, [10.0, 5.0, 0.0]);
+    }
+
+    #[test]
+    fn test_deploy_target_scale_zero_falls_back_to_identity() {
+        // Defensive: a degenerate scale must not produce NaN / Inf. The helper
+        // treats near-zero as 1.0 so the deploy still lands somewhere sensible.
+        let cursor = Vec2::new(3.0, 4.0);
+        let target = resolve_deploy_target(None, cursor, 0.0);
+        assert_eq!(target, [3.0, 4.0, 0.0]);
     }
 }
