@@ -701,12 +701,168 @@ pub fn relay_knowledge_propagate_system(
     }
 }
 
+/// #223: Validation outcome for a loaded deliverable registry.
+#[derive(Debug, Default, Clone)]
+pub struct DeliverableValidationReport {
+    /// Warnings: conflicts or style issues; do NOT fail loading.
+    pub warnings: Vec<String>,
+    /// Errors: fatal — the offending definition should be rejected.
+    pub errors: Vec<String>,
+}
+
+impl DeliverableValidationReport {
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+/// #223: Run registry-wide validation on the deliverable graph per the 5 rules
+/// from issue #223:
+///
+/// 1. Both-sides conflict warning: target T declares `upgrade_from` AND some X
+///    references T in `upgrade_to[*]` — `upgrade_to` wins, emit a warning.
+/// 2. Cost mismatch warning: the two declarations of the same edge disagree on
+///    `cost` or `build_time` — warn; `upgrade_to` wins.
+/// 3. Dangling reference (target or source id not in registry) — ERROR.
+/// 4. Unreachable node (no shipyard cost AND no inbound edge) — ERROR.
+/// 5. `construction_platform` capability without any outgoing edge (from its
+///    own `upgrade_to` or any other definition's `upgrade_from`) — ERROR.
+///
+/// Also (re)builds `effective_edges` on the registry as a side effect so that
+/// runtime callers can read merged outbound edges from a single table.
+pub fn validate_and_build_edges(
+    registry: &mut DeliverableRegistry,
+) -> DeliverableValidationReport {
+    let mut report = DeliverableValidationReport::default();
+
+    let ids: std::collections::HashSet<String> = registry.definitions.keys().cloned().collect();
+
+    // Rule 3: dangling refs (collected first so rule 2 can skip edges with
+    // missing endpoints without misreporting them as "conflict").
+    for (src_id, def) in &registry.definitions {
+        for edge in &def.upgrade_to {
+            if !ids.contains(&edge.target_id) {
+                report.errors.push(format!(
+                    "deliverable '{src_id}' upgrade_to references unknown target '{}'",
+                    edge.target_id
+                ));
+            }
+        }
+        if let Some(uf) = &def.upgrade_from {
+            if !ids.contains(&uf.target_id) {
+                report.errors.push(format!(
+                    "deliverable '{src_id}' upgrade_from references unknown source '{}'",
+                    uf.target_id
+                ));
+            }
+        }
+    }
+
+    // Rule 1 + 2: conflict detection between upgrade_to and inverse upgrade_from.
+    // For every target T with `upgrade_from` set, look up the claimed source X.
+    // If X also has an `upgrade_to` pointing to T, it's a style conflict; if
+    // the cost or build_time disagree, append a cost-mismatch warning.
+    for (target_id, t_def) in &registry.definitions {
+        let Some(uf) = &t_def.upgrade_from else {
+            continue;
+        };
+        let source_id = &uf.target_id;
+        let Some(s_def) = registry.definitions.get(source_id) else {
+            continue; // rule 3 already reported the dangling source
+        };
+        if let Some(to_edge) = s_def
+            .upgrade_to
+            .iter()
+            .find(|e| e.target_id == *target_id)
+        {
+            report.warnings.push(format!(
+                "upgrade edge '{source_id}' -> '{target_id}' declared on BOTH sides \
+                 (upgrade_to and upgrade_from); using upgrade_to values"
+            ));
+            if to_edge.cost.minerals != uf.cost.minerals
+                || to_edge.cost.energy != uf.cost.energy
+                || to_edge.build_time != uf.build_time
+            {
+                report.warnings.push(format!(
+                    "upgrade edge '{source_id}' -> '{target_id}' has mismatched cost/build_time \
+                     between upgrade_to and upgrade_from; upgrade_to wins"
+                ));
+            }
+        }
+    }
+
+    // Rule 4: unreachable nodes.
+    // A deliverable is "reachable" if it has shipyard cost OR any inbound edge
+    // (via someone's upgrade_to, or via its own upgrade_from).
+    let mut inbound: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for def in registry.definitions.values() {
+        for e in &def.upgrade_to {
+            inbound.insert(e.target_id.clone());
+        }
+    }
+    for (id, def) in &registry.definitions {
+        let shipyard_buildable = def.deliverable.is_some();
+        let has_upgrade_from = def.upgrade_from.is_some();
+        let has_upstream = inbound.contains(id);
+        if !shipyard_buildable && !has_upgrade_from && !has_upstream {
+            report.errors.push(format!(
+                "deliverable '{id}' is unreachable: has no shipyard cost and no inbound upgrade edge"
+            ));
+        }
+    }
+
+    // Rule 5: construction_platform capability requires >=1 outgoing edge.
+    // Outgoing = own upgrade_to OR any other def's self-declared upgrade_from
+    // pointing at us.
+    let mut outbound_from: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for def in registry.definitions.values() {
+        if !def.upgrade_to.is_empty() {
+            outbound_from.insert(def.id.clone());
+        }
+    }
+    for def in registry.definitions.values() {
+        if let Some(uf) = &def.upgrade_from {
+            outbound_from.insert(uf.target_id.clone());
+        }
+    }
+    for (id, def) in &registry.definitions {
+        if def.is_construction_platform() && !outbound_from.contains(id) {
+            report.errors.push(format!(
+                "deliverable '{id}' has construction_platform capability but no outgoing \
+                 upgrade edge — it cannot be upgraded to anything"
+            ));
+        }
+    }
+
+    // Build `effective_edges` regardless; callers check `report.is_ok()`.
+    let conflicts = registry.rebuild_effective_edges();
+    for (s, t) in conflicts {
+        // rebuild_effective_edges may also detect conflicts via both-sides
+        // declaration; surface them here only if we haven't already above.
+        let msg = format!(
+            "upgrade edge '{s}' -> '{t}' declared on BOTH sides (upgrade_to and upgrade_from); using upgrade_to values"
+        );
+        if !report.warnings.iter().any(|w| w == &msg) {
+            report.warnings.push(msg);
+        }
+    }
+
+    report
+}
+
 /// Parse structure definitions from Lua accumulators, falling back to defaults.
 /// Scripts are loaded by `load_all_scripts`; this system only parses the results.
 pub fn load_structure_definitions(
     engine: Res<crate::scripting::ScriptEngine>,
     mut registry: ResMut<StructureRegistry>,
 ) {
+    let insert_defaults = |registry: &mut StructureRegistry| {
+        for def in default_structure_definitions() {
+            registry.insert(def);
+        }
+    };
+
     match crate::scripting::structure_api::parse_structure_definitions(engine.lua()) {
         Ok(defs) if !defs.is_empty() => {
             let count = defs.len();
@@ -717,16 +873,21 @@ pub fn load_structure_definitions(
         }
         Ok(_) => {
             info!("No structure definitions found in scripts; using defaults");
-            for def in default_structure_definitions() {
-                registry.insert(def);
-            }
+            insert_defaults(&mut registry);
         }
         Err(e) => {
             warn!("Failed to parse structure definitions: {e}; using defaults");
-            for def in default_structure_definitions() {
-                registry.insert(def);
-            }
+            insert_defaults(&mut registry);
         }
+    }
+
+    // #223: Validate the loaded graph and (re)build effective_edges.
+    let report = validate_and_build_edges(&mut registry);
+    for w in &report.warnings {
+        warn!("Deliverable registry: {w}");
+    }
+    for e in &report.errors {
+        error!("Deliverable registry: {e}");
     }
 }
 
@@ -930,6 +1091,207 @@ mod tests {
         // B is not a DeepSpaceStructure
         let b = world.spawn_empty().id();
         assert!(pair_relay_command(&mut world, a, b, CommDirection::Bidirectional).is_err());
+    }
+
+    // --- #223: Validation tests ---
+
+    fn mk_def(id: &str) -> StructureDefinition {
+        StructureDefinition {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            max_hp: 10.0,
+            capabilities: HashMap::new(),
+            energy_drain: Amt::ZERO,
+            prerequisites: None,
+            deliverable: None,
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+        }
+    }
+
+    fn mk_buildable(id: &str, minerals: u64) -> StructureDefinition {
+        let mut def = mk_def(id);
+        def.deliverable = Some(DeliverableMetadata {
+            cost: ResourceCost {
+                minerals: Amt::units(minerals),
+                energy: Amt::ZERO,
+            },
+            build_time: 10,
+            cargo_size: 1,
+            scrap_refund: 0.5,
+        });
+        def
+    }
+
+    fn mk_platform(id: &str) -> StructureDefinition {
+        let mut def = mk_buildable(id, 100);
+        def.capabilities.insert(
+            "construction_platform".to_string(),
+            CapabilityParams::default(),
+        );
+        def
+    }
+
+    #[test]
+    fn test_validate_dangling_target_errors() {
+        let mut reg = DeliverableRegistry::default();
+        let mut src = mk_buildable("kit", 100);
+        src.upgrade_to.push(UpgradeEdge {
+            target_id: "ghost".to_string(),
+            cost: ResourceCost::default(),
+            build_time: 10,
+        });
+        reg.insert(src);
+        let report = validate_and_build_edges(&mut reg);
+        assert!(!report.is_ok());
+        assert!(report.errors.iter().any(|e| e.contains("ghost")));
+    }
+
+    #[test]
+    fn test_validate_unreachable_errors() {
+        let mut reg = DeliverableRegistry::default();
+        // isolated: not buildable, no inbound edge.
+        reg.insert(mk_def("orphan"));
+        let report = validate_and_build_edges(&mut reg);
+        assert!(!report.is_ok());
+        assert!(report.errors.iter().any(|e| e.contains("orphan")));
+    }
+
+    #[test]
+    fn test_validate_construction_platform_without_edges_errors() {
+        let mut reg = DeliverableRegistry::default();
+        reg.insert(mk_platform("platform"));
+        let report = validate_and_build_edges(&mut reg);
+        assert!(!report.is_ok());
+        assert!(report.errors.iter().any(|e| e.contains("construction_platform")));
+    }
+
+    #[test]
+    fn test_validate_upgrade_conflict_warning() {
+        let mut reg = DeliverableRegistry::default();
+        let mut kit = mk_platform("kit");
+        kit.upgrade_to.push(UpgradeEdge {
+            target_id: "active".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(kit);
+
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(active);
+
+        let report = validate_and_build_edges(&mut reg);
+        assert!(report.is_ok());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("declared on BOTH sides"))
+        );
+    }
+
+    #[test]
+    fn test_validate_cost_mismatch_warning() {
+        let mut reg = DeliverableRegistry::default();
+        let mut kit = mk_platform("kit");
+        kit.upgrade_to.push(UpgradeEdge {
+            target_id: "active".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(kit);
+
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(200), // mismatch!
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(active);
+
+        let report = validate_and_build_edges(&mut reg);
+        assert!(report.is_ok());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("mismatched cost/build_time"))
+        );
+    }
+
+    #[test]
+    fn test_effective_edges_upgrade_to_wins_on_conflict() {
+        let mut reg = DeliverableRegistry::default();
+        let mut kit = mk_platform("kit");
+        kit.upgrade_to.push(UpgradeEdge {
+            target_id: "active".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(kit);
+
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(999), // loser
+                energy: Amt::ZERO,
+            },
+            build_time: 99,
+        });
+        reg.insert(active);
+
+        let _ = validate_and_build_edges(&mut reg);
+        let edges = reg.outgoing_edges("kit");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target_id, "active");
+        assert_eq!(edges[0].cost.minerals, Amt::units(100));
+        assert_eq!(edges[0].build_time, 30);
+    }
+
+    #[test]
+    fn test_effective_edges_inverse_upgrade_from_merged() {
+        // If no `upgrade_to` declares the edge, the inverse `upgrade_from`
+        // should be promoted into `effective_edges` for routing.
+        let mut reg = DeliverableRegistry::default();
+        reg.insert(mk_platform("kit"));
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(500),
+                energy: Amt::ZERO,
+            },
+            build_time: 42,
+        });
+        reg.insert(active);
+        let _ = validate_and_build_edges(&mut reg);
+        let edges = reg.outgoing_edges("kit");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target_id, "active");
+        assert_eq!(edges[0].cost.minerals, Amt::units(500));
+        assert_eq!(edges[0].build_time, 42);
     }
 
     #[test]
