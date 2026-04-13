@@ -117,7 +117,13 @@ pub struct ModuleDefinition {
     pub weapon: Option<WeaponStats>,
     pub cost_minerals: Amt,
     pub cost_energy: Amt,
-    pub prerequisite_tech: Option<String>,
+    /// Optional Condition tree gating access to this module.
+    /// Populated from the Lua `prerequisites = has_tech(...)` / ... field.
+    ///
+    /// Previously named `prerequisite_tech: Option<String>`; hard-migrated
+    /// in #226 to a full Condition tree so modules can be gated by arbitrary
+    /// combinations of tech / flags / buildings / modifiers.
+    pub prerequisites: Option<Condition>,
     /// Available upgrade paths from this module.
     pub upgrade_to: Vec<ModuleUpgradePath>,
 }
@@ -677,7 +683,7 @@ mod tests {
             weapon: None,
             cost_minerals: Amt::units(100),
             cost_energy: Amt::units(50),
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
         });
 
@@ -765,7 +771,7 @@ mod tests {
             weapon: None,
             cost_minerals: Amt::ZERO,
             cost_energy: Amt::ZERO,
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
         };
         modules.insert(make("ftl_drive", "ftl"));

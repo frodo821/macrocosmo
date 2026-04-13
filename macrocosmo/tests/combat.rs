@@ -55,7 +55,7 @@ fn test_hostile_destroyed_when_hp_zero() {
             }),
             cost_minerals: Amt::ZERO,
             cost_energy: Amt::ZERO,
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
         },
     );
@@ -234,7 +234,7 @@ fn test_combat_takes_multiple_ticks() {
             }),
             cost_minerals: Amt::ZERO,
             cost_energy: Amt::ZERO,
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
         },
     );
@@ -310,7 +310,7 @@ fn test_shield_regenerates() {
                 },
             ],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         });
     }
@@ -381,7 +381,7 @@ fn test_shield_regen_caps_at_max() {
                 },
             ],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         });
     }
@@ -454,7 +454,7 @@ fn test_combat_damages_3_layers() {
                 base_add: 50.0, multiplier: 0.0, add: 0.0,
             }],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         });
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
@@ -467,7 +467,7 @@ fn test_combat_damages_3_layers() {
                 base_add: 30.0, multiplier: 0.0, add: 0.0,
             }],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         });
     }
@@ -598,7 +598,7 @@ fn test_weapon_cooldown() {
             armor_damage: 0.0, armor_damage_div: 0.0, armor_piercing: 0.0,
             hull_damage: 1.0, hull_damage_div: 0.0,
         }),
-        cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+        cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
         upgrade_to: Vec::new(),
     });
     module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
@@ -613,7 +613,7 @@ fn test_weapon_cooldown() {
             armor_damage: 0.0, armor_damage_div: 0.0, armor_piercing: 0.0,
             hull_damage: 1.0, hull_damage_div: 0.0,
         }),
-        cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+        cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
         upgrade_to: Vec::new(),
     });
 
@@ -702,7 +702,7 @@ fn test_shield_piercing() {
                 armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 1.0,     // always pierce armor
                 hull_damage: 5.0, hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         },
     );
@@ -791,7 +791,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
                 armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
                 hull_damage: 5.0, hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         },
     );
@@ -932,7 +932,7 @@ fn test_aggressive_ships_engage_combat() {
                 armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
                 hull_damage: 5.0, hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         },
     );
@@ -1010,7 +1010,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
                 armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
                 hull_damage: 5.0, hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         },
     );
@@ -1088,7 +1088,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
                 armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
                 hull_damage: 5.0, hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisite_tech: None,
+            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
         },
     );
@@ -1510,7 +1510,7 @@ fn install_test_weapon_module(app: &mut App) {
             }),
             cost_minerals: Amt::ZERO,
             cost_energy: Amt::ZERO,
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
         });
 }

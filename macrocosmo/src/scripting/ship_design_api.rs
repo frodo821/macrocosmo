@@ -83,11 +83,6 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
         let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let slot_type_value: mlua::Value = table.get("slot_type")?;
         let slot_type = crate::scripting::extract_ref_id(&slot_type_value)?;
-        let prereq_value: mlua::Value = table.get("prerequisite_tech")?;
-        let prerequisite_tech = match prereq_value {
-            mlua::Value::Nil => None,
-            v => Some(crate::scripting::extract_ref_id(&v)?),
-        };
 
         // Parse modifiers array
         let modifiers = parse_module_modifiers(&table)?;
@@ -101,6 +96,11 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
         // Parse upgrade_to array (optional)
         let upgrade_to = parse_module_upgrade_to(&table)?;
 
+        // #226: prerequisites (Condition tree). Hard migration — the legacy
+        // `prerequisite_tech = "foo"` field is no longer read; any Lua that
+        // still sets it will have its value silently dropped.
+        let prerequisites = parse_prerequisites_field(&table)?;
+
         result.push(ModuleDefinition {
             id,
             name,
@@ -110,7 +110,7 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
             weapon,
             cost_minerals,
             cost_energy,
-            prerequisite_tech,
+            prerequisites,
             upgrade_to,
         });
     }
@@ -511,6 +511,78 @@ mod tests {
         assert_eq!(armor.modifiers[1].multiplier, -0.05);
         assert_eq!(armor.cost_minerals, Amt::units(80));
         assert_eq!(armor.cost_energy, Amt::ZERO);
+    }
+
+    #[test]
+    fn test_module_parses_prerequisites() {
+        use crate::condition::{Condition, ConditionAtom};
+
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_module {
+                id = "plain",
+                name = "Plain",
+                slot_type = "utility",
+                cost = { minerals = 10 },
+            }
+            define_module {
+                id = "advanced",
+                name = "Advanced",
+                slot_type = "utility",
+                prerequisites = all(has_tech("laser_weapons"), has_flag("militarized")),
+                cost = { minerals = 10 },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_modules(lua).unwrap();
+        assert_eq!(defs.len(), 2);
+
+        let plain = defs.iter().find(|m| m.id == "plain").unwrap();
+        assert!(plain.prerequisites.is_none());
+
+        let advanced = defs.iter().find(|m| m.id == "advanced").unwrap();
+        assert_eq!(
+            advanced.prerequisites,
+            Some(Condition::All(vec![
+                Condition::Atom(ConditionAtom::has_tech("laser_weapons")),
+                Condition::Atom(ConditionAtom::has_flag("militarized")),
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_module_ignores_legacy_prerequisite_tech_field() {
+        // #226 hard migration: `prerequisite_tech = "..."` is no longer read.
+        // A module that only sets the legacy field ends up with no prerequisites.
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_module {
+                id = "legacy",
+                name = "Legacy",
+                slot_type = "utility",
+                prerequisite_tech = "old_tech_string",
+                cost = { minerals = 10 },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_modules(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert!(
+            defs[0].prerequisites.is_none(),
+            "legacy prerequisite_tech must be dropped silently"
+        );
     }
 
     #[test]

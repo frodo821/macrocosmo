@@ -1840,7 +1840,7 @@ fn install_refit_fixture(app: &mut App) {
         weapon: None,
         cost_minerals: Amt::units(mineral),
         cost_energy: Amt::units(energy),
-        prerequisite_tech: None,
+        prerequisites: None,
         upgrade_to: Vec::new(),
     };
     modules.insert(mk("laser_mk1", 50, 20));

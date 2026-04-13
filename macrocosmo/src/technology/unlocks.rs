@@ -96,9 +96,9 @@ fn collect_tech_ids(cond: &Condition, out: &mut Vec<String>) {
 /// Runs once at startup, after every registry has finished its own Lua-load
 /// system. Iterates:
 ///
-/// * `ModuleRegistry` — `prerequisite_tech: Option<String>`
-/// * `BuildingRegistry` — currently no prerequisites (placeholder iteration
-///   so future Condition-based prerequisites are picked up automatically)
+/// * `ModuleRegistry` — `prerequisites: Option<Condition>`
+/// * `BuildingRegistry` — `prerequisites: Option<Condition>`
+/// * `HullRegistry` — `prerequisites: Option<Condition>`
 /// * `StructureRegistry` — `prerequisites: Option<Condition>`
 /// * `TechTree` — each tech's `prerequisites: Vec<TechId>` (reversed)
 pub fn build_tech_unlock_index(
@@ -113,17 +113,19 @@ pub fn build_tech_unlock_index(
     // Reset in case the system somehow runs again.
     index.unlocks.clear();
 
-    // Modules: direct `prerequisite_tech` field.
+    // Modules: walk the optional Condition tree for HasTech atoms.
     for (id, def) in &modules.modules {
-        if let Some(tech_id) = &def.prerequisite_tech {
-            index.push(
-                tech_id.clone(),
-                UnlockEntry {
-                    kind: UnlockKind::Module,
-                    id: id.clone(),
-                    name: def.name.clone(),
-                },
-            );
+        if let Some(cond) = &def.prerequisites {
+            for tech_id in extract_tech_ids(cond) {
+                index.push(
+                    tech_id,
+                    UnlockEntry {
+                        kind: UnlockKind::Module,
+                        id: id.clone(),
+                        name: def.name.clone(),
+                    },
+                );
+            }
         }
     }
 
@@ -222,7 +224,7 @@ mod tests {
     use crate::technology::tree::{TechCost, Technology};
     use std::collections::HashMap;
 
-    fn make_module(id: &str, name: &str, prereq: Option<&str>) -> ModuleDefinition {
+    fn make_module(id: &str, name: &str, prereq: Option<Condition>) -> ModuleDefinition {
         ModuleDefinition {
             id: id.to_string(),
             name: name.to_string(),
@@ -232,7 +234,7 @@ mod tests {
             weapon: None,
             cost_minerals: Amt::ZERO,
             cost_energy: Amt::ZERO,
-            prerequisite_tech: prereq.map(|s| s.to_string()),
+            prerequisites: prereq,
             upgrade_to: Vec::new(),
         }
     }
@@ -336,9 +338,13 @@ mod tests {
     }
 
     #[test]
-    fn module_unlocked_by_prerequisite_tech() {
+    fn module_unlocked_by_has_tech() {
         let mut modules = ModuleRegistry::default();
-        modules.insert(make_module("laser_mk2", "Laser Mk.II", Some("laser_weapons")));
+        modules.insert(make_module(
+            "laser_mk2",
+            "Laser Mk.II",
+            Some(Condition::Atom(ConditionAtom::has_tech("laser_weapons"))),
+        ));
         modules.insert(make_module("plain", "Plain Module", None));
 
         let index = run_index(
@@ -355,6 +361,32 @@ mod tests {
         assert_eq!(entries[0].name, "Laser Mk.II");
         // The module without a prereq should not appear under any tech.
         assert!(!index.unlocks.values().flatten().any(|e| e.id == "plain"));
+    }
+
+    #[test]
+    fn module_unlocked_by_complex_condition() {
+        let mut modules = ModuleRegistry::default();
+        let cond = Condition::All(vec![
+            Condition::Atom(ConditionAtom::has_tech("advanced_weapons")),
+            Condition::Any(vec![
+                Condition::Atom(ConditionAtom::has_tech("fusion_power")),
+                Condition::Atom(ConditionAtom::has_flag("superpowered")),
+            ]),
+        ]);
+        modules.insert(make_module("super_weapon", "Super Weapon", Some(cond)));
+
+        let index = run_index(
+            modules,
+            BuildingRegistry::default(),
+            StructureRegistry::default(),
+            TechTree::default(),
+        );
+
+        // advanced_weapons and fusion_power each index the module once.
+        assert_eq!(index.for_tech("advanced_weapons").len(), 1);
+        assert_eq!(index.for_tech("fusion_power").len(), 1);
+        assert_eq!(index.for_tech("advanced_weapons")[0].id, "super_weapon");
+        assert_eq!(index.for_tech("advanced_weapons")[0].kind, UnlockKind::Module);
     }
 
     #[test]
