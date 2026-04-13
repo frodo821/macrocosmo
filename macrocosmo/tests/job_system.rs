@@ -568,6 +568,267 @@ fn test_parsed_modifier_detects_job_scope() {
     assert_eq!(pm.job_scope(), None);
 }
 
+// ---------------------------------------------------------------------------
+// #250: After the fix, a freshly-spawned capital's `Production.final_value()`
+// reflects building + job contributions from the very first tick, including
+// while the game is paused (delta = 0). Legacy base values of 5/5/1/5 have
+// been removed — production comes entirely from building/job modifiers.
+// ---------------------------------------------------------------------------
+
+/// Mirror the bundle produced by `spawn_capital_colony` (post-fix) so the
+/// tests below exercise the real spawn path's invariants.
+fn spawn_capital_like_colony(
+    app: &mut App,
+    sys: Entity,
+    buildings: Vec<&str>,
+    population: u32,
+) -> Entity {
+    let planet = find_planet(app.world_mut(), sys);
+    app.world_mut()
+        .spawn((
+            Colony {
+                planet,
+                population: population as f64,
+                growth_rate: 0.01,
+            },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue { queue: Vec::new() },
+            Buildings {
+                slots: buildings
+                    .into_iter()
+                    .map(|s| Some(BuildingId::new(s)))
+                    .collect(),
+            },
+            BuildingQueue::default(),
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+            ColonyPopulation {
+                species: vec![ColonySpecies {
+                    species_id: "human".to_string(),
+                    population,
+                }],
+            },
+            ColonyJobs::default(),
+            ColonyJobRates::default(),
+        ))
+        .id()
+}
+
+#[test]
+fn test_issue_250_capital_production_reflects_buildings_and_jobs() {
+    let mut app = test_app();
+    install_basic_jobs(&mut app);
+    app.insert_resource(slot_based_building_registry());
+
+    let sys = spawn_test_system(app.world_mut(), "Issue250", [0.0, 0.0, 0.0], 1.0, true, true);
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::units(500),
+            research: Amt::ZERO,
+            food: Amt::units(200),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+    ));
+
+    let colony = spawn_capital_like_colony(&mut app, sys, vec!["mine", "farm"], 100);
+
+    advance_time(&mut app, 1);
+
+    let prod = app.world().get::<Production>(colony).unwrap();
+    // Expected contributions only (no legacy base):
+    //   Minerals: miner 5 × 0.6 = 3
+    //   Food:     farmer 5 × 1.0 = 5
+    //   Energy:   no plant        = 0
+    //   Research: no lab          = 0
+    assert_eq!(
+        prod.minerals_per_hexadies.final_value(),
+        Amt::units(3),
+        "miner contribution should drive minerals"
+    );
+    assert_eq!(
+        prod.food_per_hexadies.final_value(),
+        Amt::units(5),
+        "farmer contribution should drive food"
+    );
+    assert_eq!(
+        prod.energy_per_hexadies.final_value(),
+        Amt::ZERO,
+        "no power plant ⇒ zero energy"
+    );
+    assert_eq!(
+        prod.research_per_hexadies.final_value(),
+        Amt::ZERO,
+        "no researcher ⇒ zero research"
+    );
+}
+
+/// #250 regression: the aggregator must expose the correct rate even when the
+/// clock is paused (`delta = 0`). Before the fix, `tick_production` held the
+/// Stage 1 push, so the UI saw only the legacy base value during pauses.
+#[test]
+fn test_issue_250_aggregator_runs_while_paused() {
+    let mut app = test_app();
+    install_basic_jobs(&mut app);
+    app.insert_resource(slot_based_building_registry());
+
+    let sys = spawn_test_system(app.world_mut(), "PausedProd", [0.0, 0.0, 0.0], 1.0, true, true);
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+    ));
+
+    let colony = spawn_capital_like_colony(&mut app, sys, vec!["mine", "farm"], 100);
+
+    // Do NOT advance time. Only run one frame so the sync pipeline fires.
+    app.update();
+
+    let prod = app.world().get::<Production>(colony).unwrap();
+    assert_eq!(
+        prod.minerals_per_hexadies.final_value(),
+        Amt::units(3),
+        "aggregator must populate minerals even with delta=0; got {}",
+        prod.minerals_per_hexadies.final_value()
+    );
+    assert_eq!(
+        prod.food_per_hexadies.final_value(),
+        Amt::units(5),
+        "aggregator must populate food even with delta=0"
+    );
+
+    // Stockpile should NOT have been credited (Stage 2 is delta-gated).
+    let stockpile = app.world().get::<ResourceStockpile>(sys).unwrap();
+    assert_eq!(
+        stockpile.minerals,
+        Amt::ZERO,
+        "no time elapsed ⇒ stockpile should not accumulate"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #250: Verify that real Lua definitions (scripts/buildings/basic.lua and
+// scripts/jobs/basic.lua) parse into the expected BuildingDefinition.modifiers
+// and JobDefinition.modifiers. If the Lua side silently drops or misroutes a
+// modifier, the integration test above (which uses hand-built registries)
+// will never catch it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_issue_250_lua_building_modifiers_parse_correctly() {
+    use macrocosmo::scripting::building_api::parse_building_definitions;
+    use macrocosmo::scripting::ScriptEngine;
+
+    let engine = ScriptEngine::new().expect("ScriptEngine::new()");
+    let init = engine.scripts_dir().join("init.lua");
+    engine.load_file(&init).expect("load init.lua");
+
+    let defs = parse_building_definitions(engine.lua()).expect("parse buildings");
+    let ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
+    eprintln!("[issue #250] building ids: {ids:?}");
+
+    let mine = defs.iter().find(|d| d.id == "mine").expect("mine not defined");
+    eprintln!("[issue #250] mine.modifiers = {:?}", mine.modifiers);
+    assert!(
+        mine.modifiers.iter().any(|m| m.target == "colony.miner_slot"
+            && (m.base_add - 5.0).abs() < 1e-9),
+        "mine should declare modifier colony.miner_slot base_add=5; got {:?}",
+        mine.modifiers
+    );
+
+    let power = defs
+        .iter()
+        .find(|d| d.id == "power_plant")
+        .expect("power_plant not defined");
+    eprintln!("[issue #250] power_plant.modifiers = {:?}", power.modifiers);
+    assert!(
+        power
+            .modifiers
+            .iter()
+            .any(|m| m.target == "colony.power_worker_slot"
+                && (m.base_add - 5.0).abs() < 1e-9),
+        "power_plant should declare modifier colony.power_worker_slot base_add=5; got {:?}",
+        power.modifiers
+    );
+
+    let farm = defs.iter().find(|d| d.id == "farm").expect("farm not defined");
+    eprintln!("[issue #250] farm.modifiers = {:?}", farm.modifiers);
+    assert!(
+        farm.modifiers.iter().any(|m| m.target == "colony.farmer_slot"
+            && (m.base_add - 5.0).abs() < 1e-9),
+        "farm should declare modifier colony.farmer_slot base_add=5; got {:?}",
+        farm.modifiers
+    );
+}
+
+#[test]
+fn test_issue_250_lua_job_modifiers_parse_correctly() {
+    use macrocosmo::scripting::species_api::parse_job_definitions;
+    use macrocosmo::scripting::ScriptEngine;
+
+    let engine = ScriptEngine::new().expect("ScriptEngine::new()");
+    let init = engine.scripts_dir().join("init.lua");
+    engine.load_file(&init).expect("load init.lua");
+
+    let defs = parse_job_definitions(engine.lua()).expect("parse jobs");
+    let ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
+    eprintln!("[issue #250] job ids: {ids:?}");
+
+    let miner = defs.iter().find(|d| d.id == "miner").expect("miner");
+    eprintln!("[issue #250] miner.modifiers = {:?}", miner.modifiers);
+    assert!(
+        miner
+            .modifiers
+            .iter()
+            .any(|m| m.target == "job:miner::colony.minerals_per_hexadies"
+                && (m.base_add - 0.6).abs() < 1e-9),
+        "miner per-pop rate should auto-prefix to job:miner::...; got {:?}",
+        miner.modifiers
+    );
+
+    let power_worker = defs
+        .iter()
+        .find(|d| d.id == "power_worker")
+        .expect("power_worker");
+    eprintln!(
+        "[issue #250] power_worker.modifiers = {:?}",
+        power_worker.modifiers
+    );
+    assert!(
+        power_worker
+            .modifiers
+            .iter()
+            .any(|m| m.target == "job:power_worker::colony.energy_per_hexadies"
+                && (m.base_add - 6.0).abs() < 1e-9),
+        "power_worker per-pop rate should be 6.0; got {:?}",
+        power_worker.modifiers
+    );
+
+    let farmer = defs.iter().find(|d| d.id == "farmer").expect("farmer");
+    eprintln!("[issue #250] farmer.modifiers = {:?}", farmer.modifiers);
+    assert!(
+        farmer
+            .modifiers
+            .iter()
+            .any(|m| m.target == "job:farmer::colony.food_per_hexadies"
+                && (m.base_add - 1.0).abs() < 1e-9),
+        "farmer per-pop rate should be 1.0; got {:?}",
+        farmer.modifiers
+    );
+}
+
 // Required by macrocosmo::modifier::Modifier for the helper above.
 #[allow(dead_code)]
 fn _ensure_modifier_constructible() -> Modifier {

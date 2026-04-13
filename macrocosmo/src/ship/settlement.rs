@@ -99,9 +99,6 @@ pub fn process_settling(
             };
 
             let system_name = star_system.name.clone();
-            let minerals_rate = resource_production_rate(attrs.mineral_richness);
-            let energy_rate = resource_production_rate(attrs.energy_potential);
-            let research_rate = resource_production_rate(attrs.research_potential);
             let num_slots = attrs.max_building_slots as usize;
 
             commands.spawn((
@@ -110,10 +107,13 @@ pub fn process_settling(
                     population: 10.0,
                     growth_rate: 0.005,
                 },
+                // #250: zero-base production; all output comes from building/
+                // job modifiers. Planet attributes (mineral_richness etc.) are
+                // still available for future building/job modifiers to consume.
                 Production {
-                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(minerals_rate),
-                    energy_per_hexadies: crate::modifier::ModifiedValue::new(energy_rate),
-                    research_per_hexadies: crate::modifier::ModifiedValue::new(research_rate),
+                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                    energy_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                    research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                     food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                 },
                 BuildQueue {
@@ -167,7 +167,7 @@ pub fn process_settling(
                 related_system: Some(system_entity),
             });
 
-            info!("Colony established at {} (M:{}/E:{}/R:{} per sd)", system_name, minerals_rate, energy_rate, research_rate);
+            info!("Colony established at {}", system_name);
 
             // Consume the colony ship
             commands.entity(ship_entity).despawn();
@@ -214,6 +214,11 @@ pub fn process_refitting(
 
 /// Convert a continuous resource level (0.0..1.0) to a production rate in Amt.
 /// Scales linearly: 0.0 -> 0, 1.0 -> 8 units per hexadies.
+///
+/// #250: No longer wired into colony spawn — production now flows through
+/// building + job modifiers. Kept because planet attributes (mineral_richness
+/// etc.) are a likely input for a future attribute-scaled modifier system.
+#[allow(dead_code)]
 pub fn resource_production_rate(level: f64) -> crate::amount::Amt {
     if level <= 0.0 {
         Amt::ZERO

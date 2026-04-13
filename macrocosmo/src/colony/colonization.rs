@@ -81,11 +81,16 @@ pub fn spawn_capital_colony(
             population: 100.0,
             growth_rate: 0.01,
         },
+        // #250: Production starts at zero; all output comes from buildings
+        // (automation modifiers) + pop-driven job contributions, never from
+        // a hidden base rate. Legacy code seeded this with +5 everywhere,
+        // causing empty colonies to "self-produce" and masking the real
+        // job-system pipeline.
         Production {
-            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-            food_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
         BuildQueue {
             queue: Vec::new(),
@@ -171,16 +176,12 @@ pub fn tick_colonization_queue(
                 source.population -= transfer;
             }
 
-            // Get planet attributes for production rates
-            let (planet_name, minerals_rate, energy_rate, research_rate, num_slots) =
+            // Get planet attributes (only num_slots is used; #250 removed
+            // the legacy per-attribute base production — all output now
+            // flows through building + job modifiers).
+            let (planet_name, num_slots) =
                 if let Ok((_, planet, attrs)) = planet_query.get(order.target_planet) {
-                    (
-                        planet.name.clone(),
-                        crate::ship::resource_production_rate(attrs.mineral_richness),
-                        crate::ship::resource_production_rate(attrs.energy_potential),
-                        crate::ship::resource_production_rate(attrs.research_potential),
-                        attrs.max_building_slots as usize,
-                    )
+                    (planet.name.clone(), attrs.max_building_slots as usize)
                 } else {
                     continue;
                 };
@@ -193,10 +194,11 @@ pub fn tick_colonization_queue(
                     population: order.initial_population,
                     growth_rate: 0.005,
                 },
+                // #250: see comment in spawn_capital_colony above.
                 Production {
-                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(minerals_rate),
-                    energy_per_hexadies: crate::modifier::ModifiedValue::new(energy_rate),
-                    research_per_hexadies: crate::modifier::ModifiedValue::new(research_rate),
+                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                    energy_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                    research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                     food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                 },
                 BuildQueue { queue: Vec::new() },

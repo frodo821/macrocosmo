@@ -331,6 +331,8 @@ pub fn test_app() -> App {
             sync_species_modifiers,
             sync_maintenance_modifiers,
             sync_food_consumption,
+            // #250: rate aggregation is delta-independent; runs every tick.
+            macrocosmo::colony::aggregate_job_contributions,
             tick_production,
             tick_maintenance,
             tick_population_growth,
@@ -511,6 +513,8 @@ pub fn full_test_app() -> App {
             sync_species_modifiers,
             sync_maintenance_modifiers,
             sync_food_consumption,
+            // #250: rate aggregation is delta-independent; runs every tick.
+            macrocosmo::colony::aggregate_job_contributions,
             tick_production,
             tick_maintenance,
             tick_population_growth,

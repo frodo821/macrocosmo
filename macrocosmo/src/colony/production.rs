@@ -455,55 +455,29 @@ pub fn sync_species_modifiers(
     }
 }
 
-/// #29: tick_production uses ProductionFocus weights and building bonuses.
-/// #44: Research is no longer accumulated in the stockpile; emitted via emit_research.
-/// #73: Non-capital colonies have production reduced when capital authority is depleted.
-/// #241: Production is now a two-stage aggregation:
-/// 1. For each (job, target) bucket in `ColonyJobRates`, `final_value()` × assigned
-///    pops = that job's contribution. Pushed into the corresponding
-///    `colony.<X>_per_hexadies` aggregator as `job_<id>_contribution`.
-/// 2. `Production.<X>_per_hexadies.final_value()` then combines automation
-///    building output, job contributions, species/tech multipliers, and
-///    empire-wide modifiers — all of which landed there via the sync systems
-///    earlier in the pipeline.
-pub fn tick_production(
-    clock: Res<GameClock>,
-    last_tick: Res<LastProductionTick>,
+/// #250: Aggregate per-job production contributions into each colony's
+/// `Production` component. Runs every tick (including while the clock is
+/// paused) so the UI reads a correct rate even with `delta = 0`. Previously
+/// this was Stage 1 inside `tick_production`, but that system early-returns
+/// when `delta <= 0`, which meant the aggregator held only the legacy base
+/// value during pauses and the first Update after Startup — leaving the UI
+/// showing e.g. `Minerals: +5` instead of `base + miner contribution`.
+///
+/// Must run AFTER `sync_building_modifiers` (sets slot capacities),
+/// `sync_job_assignment` (sets `slot.assigned`), and `sync_species_modifiers`
+/// (populates per-job rate buckets) so the values it reads are current.
+/// Must run BEFORE `tick_production` so the accumulator sees the fresh rate.
+pub fn aggregate_job_contributions(
     mut colonies: Query<(
         &Colony,
         &mut Production,
         Option<&ColonyJobRates>,
         Option<&ColonyJobs>,
-        Option<&ProductionFocus>,
     )>,
-    mut stockpiles: Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
-    stars: Query<&StarSystem>,
-    planets: Query<&Planet>,
 ) {
-    let delta = clock.elapsed - last_tick.0;
-    if delta <= 0 {
-        return;
-    }
-    let d = delta as u64;
-    let d_amt = Amt::units(d);
-
-    // #73: Check if the capital has an authority deficit.
-    let capital_authority = {
-        let capital_sys = colonies.iter().find_map(|(colony, _, _, _, _)| {
-            colony.system(&planets).filter(|&sys| stars.get(sys).ok().is_some_and(|s| s.is_capital))
-        });
-        capital_sys.and_then(|sys| stockpiles.get(sys).ok().map(|(s, _)| s.authority))
-    };
-    let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
-
-    // Collect production deltas per system
-    let mut system_deltas: std::collections::HashMap<Entity, (Amt, Amt, Amt)> = std::collections::HashMap::new();
-    for (colony, mut prod, rates_opt, jobs_opt, focus) in &mut colonies {
-        let Some(sys) = colony.system(&planets) else { continue };
-
-        // --- Stage 1: push job contributions into colony aggregators ---
-        // Remove any contributions from the previous tick first so changes
-        // (pop shifts, slot changes, etc.) propagate cleanly.
+    for (_colony, mut prod, rates_opt, jobs_opt) in &mut colonies {
+        // Remove any contributions from the previous aggregation first so
+        // changes (pop shifts, slot changes, demolitions, etc.) propagate.
         let remove_job_mods = |mv: &mut ModifiedValue| {
             let ids: Vec<String> = mv
                 .modifiers()
@@ -520,44 +494,85 @@ pub fn tick_production(
         remove_job_mods(&mut prod.research_per_hexadies);
         remove_job_mods(&mut prod.food_per_hexadies);
 
-        if let (Some(rates), Some(jobs)) = (rates_opt, jobs_opt) {
-            // Sum each job's per-target contribution across assigned pops.
-            // Target key -> accumulated contribution. We emit one modifier per
-            // (job, target) pair so that UI can show per-job breakdown later.
-            let mut job_contribs: std::collections::HashMap<(String, String), f64> =
-                std::collections::HashMap::new();
-            for slot in &jobs.slots {
-                if slot.assigned == 0 {
+        let (Some(rates), Some(jobs)) = (rates_opt, jobs_opt) else {
+            continue;
+        };
+
+        // Sum each job's per-target contribution across assigned pops.
+        // Target key -> accumulated contribution. One modifier per (job, target)
+        // pair so the UI can show per-job breakdown later.
+        let mut job_contribs: std::collections::HashMap<(String, String), f64> =
+            std::collections::HashMap::new();
+        for slot in &jobs.slots {
+            if slot.assigned == 0 {
+                continue;
+            }
+            for (job_id, target, mv) in rates.iter() {
+                if job_id != &slot.job_id {
                     continue;
                 }
-                for (job_id, target, mv) in rates.iter() {
-                    if job_id != &slot.job_id {
-                        continue;
-                    }
-                    let rate = mv.final_value().to_f64();
-                    let contribution = rate * slot.assigned as f64;
-                    *job_contribs
-                        .entry((job_id.clone(), target.clone()))
-                        .or_insert(0.0) += contribution;
-                }
-            }
-
-            for ((job_id, target), value) in &job_contribs {
-                if let Some(bucket) = colony_resource_bucket(&mut prod, target) {
-                    bucket.push_modifier(Modifier {
-                        id: format!("job_{}_contribution", job_id),
-                        label: format!("Job '{}' contribution", job_id),
-                        base_add: SignedAmt::from_f64(*value),
-                        multiplier: SignedAmt::ZERO,
-                        add: SignedAmt::ZERO,
-                        expires_at: None,
-                        on_expire_event: None,
-                    });
-                }
+                let rate = mv.final_value().to_f64();
+                let contribution = rate * slot.assigned as f64;
+                *job_contribs
+                    .entry((job_id.clone(), target.clone()))
+                    .or_insert(0.0) += contribution;
             }
         }
 
-        // --- Stage 2: read final_value from colony aggregators ---
+        for ((job_id, target), value) in &job_contribs {
+            if let Some(bucket) = colony_resource_bucket(&mut prod, target) {
+                bucket.push_modifier(Modifier {
+                    id: format!("job_{}_contribution", job_id),
+                    label: format!("Job '{}' contribution", job_id),
+                    base_add: SignedAmt::from_f64(*value),
+                    multiplier: SignedAmt::ZERO,
+                    add: SignedAmt::ZERO,
+                    expires_at: None,
+                    on_expire_event: None,
+                });
+            }
+        }
+    }
+}
+
+/// #29: tick_production uses ProductionFocus weights and building bonuses.
+/// #44: Research is no longer accumulated in the stockpile; emitted via emit_research.
+/// #73: Non-capital colonies have production reduced when capital authority is depleted.
+/// #241/#250: Production is a two-stage aggregation split across systems:
+/// 1. `aggregate_job_contributions` pushes per-job contributions into each
+///    colony's aggregators. Runs every Update (delta-independent) so the UI
+///    sees a correct rate even while paused.
+/// 2. This system multiplies `Production.<X>_per_hexadies.final_value()` by
+///    the elapsed `delta` and applies the result to system stockpiles.
+pub fn tick_production(
+    clock: Res<GameClock>,
+    last_tick: Res<LastProductionTick>,
+    colonies: Query<(&Colony, &Production, Option<&ProductionFocus>)>,
+    mut stockpiles: Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
+    stars: Query<&StarSystem>,
+    planets: Query<&Planet>,
+) {
+    let delta = clock.elapsed - last_tick.0;
+    if delta <= 0 {
+        return;
+    }
+    let d = delta as u64;
+    let d_amt = Amt::units(d);
+
+    // #73: Check if the capital has an authority deficit.
+    let capital_authority = {
+        let capital_sys = colonies.iter().find_map(|(colony, _, _)| {
+            colony.system(&planets).filter(|&sys| stars.get(sys).ok().is_some_and(|s| s.is_capital))
+        });
+        capital_sys.and_then(|sys| stockpiles.get(sys).ok().map(|(s, _)| s.authority))
+    };
+    let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
+
+    // Collect production deltas per system
+    let mut system_deltas: std::collections::HashMap<Entity, (Amt, Amt, Amt)> = std::collections::HashMap::new();
+    for (colony, prod, focus) in &colonies {
+        let Some(sys) = colony.system(&planets) else { continue };
+
         let (mw, ew) = match focus {
             Some(f) => (f.minerals_weight, f.energy_weight),
             None => (Amt::units(1), Amt::units(1)),
