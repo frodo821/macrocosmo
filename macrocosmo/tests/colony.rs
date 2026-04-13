@@ -2131,3 +2131,77 @@ fn test_system_upgrade_does_not_progress_when_stockpile_empty() {
         "slot must still hold the pre-upgrade building"
     );
 }
+
+/// #260: A new system-building construction order must remain in the queue
+/// while it's still being built (slot stays `None`), so the UI has something
+/// to display in the empty slot. Prior to #260 the UI ignored the queue and
+/// rendered `(empty)` until completion, making construction feel unresponsive.
+#[test]
+fn test_system_building_queue_persists_order_during_construction() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Shipyard-Construct",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    app.world_mut().entity_mut(sys).insert((
+        SystemBuildings {
+            slots: vec![None, None, None],
+        },
+        SystemBuildingQueue {
+            queue: vec![BuildingOrder {
+                target_slot: 0,
+                building_id: BuildingId::new("shipyard"),
+                minerals_remaining: Amt::units(300),
+                energy_remaining: Amt::units(200),
+                build_time_remaining: 30,
+            }],
+            demolition_queue: Vec::new(),
+            upgrade_queue: Vec::new(),
+        },
+        ResourceStockpile {
+            // Stockpile the full cost so the timer actually ticks down.
+            minerals: Amt::units(300),
+            energy: Amt::units(200),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+    ));
+
+    advance_time(&mut app, 5);
+
+    let bq = app
+        .world()
+        .get::<SystemBuildingQueue>(sys)
+        .expect("system building queue");
+    assert_eq!(
+        bq.queue.len(),
+        1,
+        "order must still be pending mid-construction so the UI can show it"
+    );
+    assert_eq!(
+        bq.queue[0].target_slot, 0,
+        "target slot must survive so the UI can find the correct row"
+    );
+    assert!(
+        bq.queue[0].build_time_remaining < 30,
+        "timer should have advanced when resources were available; got {}",
+        bq.queue[0].build_time_remaining
+    );
+
+    let sb = app
+        .world()
+        .get::<SystemBuildings>(sys)
+        .expect("system buildings");
+    assert_eq!(
+        sb.slots[0], None,
+        "slot 0 must still be empty — construction not yet complete"
+    );
+}

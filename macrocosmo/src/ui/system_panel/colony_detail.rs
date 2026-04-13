@@ -56,13 +56,13 @@ pub(super) fn draw_colony_detail(
     // #252: Tab selector.
     ui.horizontal(|ui| {
         if ui
-            .selectable_label(*colony_panel_tab == ColonyPanelTab::Overview, "概要")
+            .selectable_label(*colony_panel_tab == ColonyPanelTab::Overview, "Overview")
             .clicked()
         {
             *colony_panel_tab = ColonyPanelTab::Overview;
         }
         if ui
-            .selectable_label(*colony_panel_tab == ColonyPanelTab::PopManagement, "Pop 管理")
+            .selectable_label(*colony_panel_tab == ColonyPanelTab::PopManagement, "Pop & Job Management")
             .clicked()
         {
             *colony_panel_tab = ColonyPanelTab::PopManagement;
