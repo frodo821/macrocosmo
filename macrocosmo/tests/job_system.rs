@@ -823,8 +823,8 @@ fn test_issue_250_lua_job_modifiers_parse_correctly() {
             .modifiers
             .iter()
             .any(|m| m.target == "job:farmer::colony.food_per_hexadies"
-                && (m.base_add - 1.0).abs() < 1e-9),
-        "farmer per-pop rate should be 1.0; got {:?}",
+                && (m.base_add - 2.0).abs() < 1e-9),
+        "farmer per-pop rate should be 2.0 (current balance); got {:?}",
         farmer.modifiers
     );
 }
