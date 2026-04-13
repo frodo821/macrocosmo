@@ -91,6 +91,10 @@ impl Plugin for UiPlugin {
             .add_systems(
                 EguiPrimaryContextPass,
                 (
+                    // #261: Install the bundled CJK font on the first pass.
+                    // Must run before any draw system so every widget picks up
+                    // the Japanese-capable fallback on frame 1.
+                    setup_cjk_font,
                     compute_ui_state,
                     draw_top_bar_system,
                     draw_notifications_system,
@@ -104,6 +108,69 @@ impl Plugin for UiPlugin {
                 )
                     .chain(),
             );
+    }
+}
+
+/// #261: Raw bytes of the bundled CJK font. Zen Kaku Gothic New Regular from
+/// `github.com/googlefonts/zen-kakugothic`, distributed under SIL OFL 1.1 (see
+/// `assets/fonts/OFL.txt`). Embedded at compile time so the binary carries its
+/// own glyph coverage and doesn't depend on a filesystem asset path at runtime.
+const CJK_FONT_BYTES: &[u8] =
+    include_bytes!("../../assets/fonts/ZenKakuGothicNew-Regular.ttf");
+
+/// #261: Register the bundled CJK font with egui on the first pass so
+/// Japanese glyphs (タブ名、イベントログ、Lua 由来テキスト等) render instead
+/// of falling through to tofu. The guard makes this a one-shot system — egui
+/// keeps the fonts across subsequent frames once `set_fonts` has been called.
+fn setup_cjk_font(mut contexts: EguiContexts, mut initialized: Local<bool>) {
+    if *initialized {
+        return;
+    }
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "zen_kaku_jp".into(),
+        egui::FontData::from_static(CJK_FONT_BYTES).into(),
+    );
+    // Make the CJK font the first-priority proportional font so ASCII keeps
+    // its existing shape where Zen Kaku Gothic covers it, and the fallback
+    // chain remains (egui-default Latin + symbol fonts stay behind it).
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "zen_kaku_jp".into());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push("zen_kaku_jp".into());
+    ctx.set_fonts(fonts);
+    *initialized = true;
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::CJK_FONT_BYTES;
+
+    /// #261: Verify the font binary is actually embedded and non-trivial.
+    /// TTF files start with the magic bytes 0x00 0x01 0x00 0x00 (or `OTTO`
+    /// for OpenType CFF); Zen Kaku Gothic New ships as TTF so we check the
+    /// former. This guards against a missing / truncated asset at build time.
+    #[test]
+    fn test_font_bytes_embedded_at_compile_time() {
+        assert!(
+            CJK_FONT_BYTES.len() > 100_000,
+            "embedded font is suspiciously small ({}B)",
+            CJK_FONT_BYTES.len()
+        );
+        assert_eq!(
+            &CJK_FONT_BYTES[..4],
+            &[0x00, 0x01, 0x00, 0x00],
+            "font header does not look like a TTF"
+        );
     }
 }
 
