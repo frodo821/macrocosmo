@@ -24,8 +24,8 @@ use crate::ship::{spawn_ship, Owner};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::technology::{
-    EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
-    TechTree,
+    EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
+    ResearchPool, ResearchQueue, TechTree,
 };
 
 pub struct GameSetupPlugin;
@@ -115,6 +115,7 @@ fn empire_bundle(
         KnowledgeStore::default(),
         CommandLog::default(),
         ScopedFlags::default(),
+        PendingColonyTechModifiers::default(),
     )
 }
 
@@ -368,6 +369,7 @@ fn spawn_colony_on_planet(world: &mut World, planet_entity: Entity, num_slots: u
                 }],
             },
             ColonyJobs::default(),
+            crate::colony::ColonyJobRates::default(),
         ))
         .id()
 }
@@ -679,8 +681,8 @@ mod tests {
     use crate::ship::{Ship, ShipState};
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
     use crate::technology::{
-        EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
-        TechKnowledge, TechTree,
+        EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
+        ResearchPool, ResearchQueue, TechKnowledge, TechTree,
     };
 
     fn setup_world() -> (World, Entity, Entity) {
@@ -755,30 +757,36 @@ mod tests {
             ProductionFocus::default(),
             MaintenanceCost::default(),
             FoodConsumption::default(),
+            crate::colony::ColonyJobRates::default(),
         ));
 
         // Player empire entity (needed for ship owner resolution)
         world.spawn((
-            Empire {
-                name: "Test Empire".into(),
-            },
-            PlayerEmpire,
-            Faction {
-                id: "test_faction".into(),
-                name: "Test".into(),
-            },
-            TechTree::default(),
-            ResearchQueue::default(),
-            ResearchPool::default(),
-            RecentlyResearched::default(),
-            crate::colony::AuthorityParams::default(),
-            crate::colony::ConstructionParams::default(),
-            EmpireModifiers::default(),
-            GameFlags::default(),
-            GlobalParams::default(),
-            KnowledgeStore::default(),
-            crate::communication::CommandLog::default(),
-            ScopedFlags::default(),
+            (
+                Empire {
+                    name: "Test Empire".into(),
+                },
+                PlayerEmpire,
+                Faction {
+                    id: "test_faction".into(),
+                    name: "Test".into(),
+                },
+                TechTree::default(),
+                ResearchQueue::default(),
+                ResearchPool::default(),
+                RecentlyResearched::default(),
+                crate::colony::AuthorityParams::default(),
+                crate::colony::ConstructionParams::default(),
+            ),
+            (
+                EmpireModifiers::default(),
+                GameFlags::default(),
+                GlobalParams::default(),
+                KnowledgeStore::default(),
+                crate::communication::CommandLog::default(),
+                ScopedFlags::default(),
+                PendingColonyTechModifiers::default(),
+            ),
         ));
 
         // Ship design registry with a single explorer design.

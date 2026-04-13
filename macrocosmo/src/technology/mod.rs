@@ -11,7 +11,10 @@ use crate::modifier::ModifiedValue;
 use crate::amount::Amt;
 
 // Re-export everything for backward compatibility
-pub use effects::{apply_tech_effects, build_tech_effects_preview, TechEffectsLog, TechEffectsPreview};
+pub use effects::{
+    apply_tech_effects, build_tech_effects_preview, sync_tech_colony_modifiers,
+    PendingColonyTechModifiers, TechEffectsLog, TechEffectsPreview,
+};
 pub use parsing::{
     create_initial_tech_tree, create_initial_tech_tree_vec, parse_tech_branch_definitions,
     parse_tech_definitions,
@@ -77,6 +80,23 @@ impl Plugin for TechnologyPlugin {
             apply_tech_effects
                 .after(tick_research)
                 .before(propagate_tech_knowledge)
+                .after(crate::time_system::advance_game_time),
+        )
+        // #245: Broadcast tech-sourced colony modifiers into every colony's
+        // Production / ColonyJobRates / ColonyJobs every tick. Runs AFTER
+        // `sync_species_modifiers` because that system (together with
+        // `sync_building_modifiers`) clears and rebuilds `ColonyJobRates`
+        // buckets from scratch each tick. If we ran before them, the tech
+        // modifiers we push would be wiped. Running after means the
+        // tech:* modifier id always lands on top of the freshly-rebuilt
+        // buckets, and `tick_production` (which runs next) reads the
+        // combined value.
+        .add_systems(
+            Update,
+            sync_tech_colony_modifiers
+                .after(apply_tech_effects)
+                .after(crate::colony::sync_species_modifiers)
+                .before(crate::colony::tick_production)
                 .after(crate::time_system::advance_game_time),
         )
         .add_systems(

@@ -8,7 +8,7 @@ local automated_mining = define_tech {
     prerequisites = {},
     description = "Robotic systems for autonomous resource extraction",
     on_researched = function(scope)
-        scope:push_modifier("production.minerals", { multiplier = 0.15, description = "Automated Mining: +15% mineral production" })
+        scope:push_modifier("colony.minerals_per_hexadies", { multiplier = 0.15, description = "Automated Mining: +15% mineral production" })
         scope:set_flag("automated_mining_unlocked", true, { description = "Enables automated mining facilities" })
     end,
 }
@@ -34,7 +34,7 @@ local fusion_power = define_tech {
     prerequisites = { automated_mining },
     description = "Harness fusion reactions for abundant clean energy",
     on_researched = function(scope)
-        scope:push_modifier("production.energy", { multiplier = 0.20, description = "Fusion Power: +20% energy production" })
+        scope:push_modifier("colony.energy_per_hexadies", { multiplier = 0.20, description = "Fusion Power: +20% energy production" })
         scope:set_flag("fusion_power_unlocked", true, { description = "Enables fusion power plants" })
     end,
 }
@@ -48,7 +48,7 @@ local nano_assembly = define_tech {
     description = "Molecular-scale construction for unprecedented precision",
     on_researched = function(scope)
         scope:push_modifier("construction.speed", { multiplier = 0.20, description = "Nano-Assembly: +20% construction speed" })
-        scope:push_modifier("production.minerals", { multiplier = 0.10, description = "Nano-Assembly: +10% mineral production" })
+        scope:push_modifier("colony.minerals_per_hexadies", { multiplier = 0.10, description = "Nano-Assembly: +10% mineral production" })
     end,
 }
 

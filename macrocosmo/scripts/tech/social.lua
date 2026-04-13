@@ -33,7 +33,7 @@ local interstellar_commerce = define_tech {
     prerequisites = { colonial_admin },
     description = "Trade frameworks spanning star systems",
     on_researched = function(scope)
-        scope:push_modifier("production.energy", { multiplier = 0.15, description = "Interstellar Commerce: +15% energy production" })
+        scope:push_modifier("colony.energy_per_hexadies", { multiplier = 0.15, description = "Interstellar Commerce: +15% energy production" })
         scope:set_flag("interstellar_commerce_unlocked", true, { description = "Enables interstellar trade routes" })
     end,
 }
