@@ -41,6 +41,23 @@ impl Plugin for ColonyPlugin {
                     spawn_capital_colony.after(crate::galaxy::generate_galaxy),
                 ),
             )
+            // #250: Prime the colony sync pipeline at the end of Startup so
+            // the UI's first frame shows correct production rates. Without
+            // this, sync only runs on Update and `aggregate_job_contributions`
+            // first fires after Startup completes — meaning the first render
+            // reads Production with only the legacy base value loaded.
+            .add_systems(
+                Startup,
+                (
+                    sync_building_modifiers,
+                    crate::species::sync_job_assignment,
+                    sync_species_modifiers,
+                    aggregate_job_contributions,
+                )
+                    .chain()
+                    .after(crate::setup::run_faction_on_game_start)
+                    .after(crate::setup::run_all_factions_on_game_start),
+            )
             .add_systems(
                 Update,
                 (
@@ -52,6 +69,10 @@ impl Plugin for ColonyPlugin {
                     sync_system_building_maintenance,
                     sync_maintenance_modifiers,
                     sync_food_consumption,
+                    // #250: Aggregate job contributions every Update tick,
+                    // independent of `delta`. This guarantees the UI sees a
+                    // correct production rate even while paused.
+                    aggregate_job_contributions,
                     tick_production,
                     tick_maintenance,
                     tick_population_growth,

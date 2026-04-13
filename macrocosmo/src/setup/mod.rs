@@ -348,11 +348,13 @@ fn spawn_colony_on_planet(world: &mut World, planet_entity: Entity, num_slots: u
                 population: 100.0,
                 growth_rate: 0.01,
             },
+            // #250: zero-base production; all output comes from building/job
+            // modifiers via the sync pipeline.
             Production {
-                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-                food_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
             BuildQueue { queue: Vec::new() },
             Buildings {
