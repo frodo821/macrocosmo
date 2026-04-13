@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Anomalies, HostilePresence, StarSystem, SystemAttributes};
-use crate::knowledge::{KnowledgeStore, SystemKnowledge, SystemSnapshot};
+use crate::knowledge::{KnowledgeStore, ObservationSource, SystemKnowledge, SystemSnapshot};
 use crate::physics::{distance_ly_arr, light_delay_hexadies};
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship_design::ShipDesignRegistry;
@@ -319,6 +319,7 @@ pub fn deliver_survey_results(
                         surveyed: true,
                         ..default()
                     },
+                    source: ObservationSource::Direct,
                 });
             }
         }

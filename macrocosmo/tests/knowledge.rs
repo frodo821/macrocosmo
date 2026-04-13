@@ -881,6 +881,7 @@ fn test_knowledge_store_ship_update_newer_replaces() {
         observed_at: 10,
         hp: 100.0,
         hp_max: 100.0,
+        source: ObservationSource::Direct,
     });
 
     store.update_ship(ShipSnapshot {
@@ -892,6 +893,7 @@ fn test_knowledge_store_ship_update_newer_replaces() {
         observed_at: 20,
         hp: 80.0,
         hp_max: 100.0,
+        source: ObservationSource::Direct,
     });
 
     let snap = store.get_ship(entity).unwrap();
@@ -919,6 +921,7 @@ fn test_knowledge_store_ship_older_does_not_replace() {
         observed_at: 20,
         hp: 80.0,
         hp_max: 100.0,
+        source: ObservationSource::Direct,
     });
 
     store.update_ship(ShipSnapshot {
@@ -930,6 +933,7 @@ fn test_knowledge_store_ship_older_does_not_replace() {
         observed_at: 10,
         hp: 100.0,
         hp_max: 100.0,
+        source: ObservationSource::Direct,
     });
 
     let snap = store.get_ship(entity).unwrap();
@@ -1858,5 +1862,133 @@ fn test_ftl_comm_relay_chain_a_b_c_hops() {
         .get_ship(ship_entity)
         .expect("Chain A↔B1, B2↔C should deliver remote ship to player at FTL speed");
     assert_eq!(snap.observed_at, 50);
+}
+
+// ---------------------------------------------------------------------------
+// #215: Observation freshness model (PerceivedInfo / ObservationSource)
+// ---------------------------------------------------------------------------
+
+/// After propagating knowledge across 10 ly and waiting long enough for
+/// the light to arrive, `perceived_system` should report `last_updated`
+/// equal to the observation moment and a correctly computed age.
+#[test]
+fn test_perceived_info_reports_last_updated() {
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_distant = spawn_test_system(
+        app.world_mut(), "Distant", [10.0, 0.0, 0.0], 0.7, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // 10 ly of light delay = 600 hexadies. Advance exactly that far — the
+    // observation snapped this tick was made at t=0 (current - delay).
+    advance_time(&mut app, 600);
+
+    let now = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let perceived = macrocosmo::knowledge::perceived_system(store, sys_distant, now)
+        .expect("perceived_system should return the Distant snapshot");
+
+    // `observed_at` is the light-departure time. For a 10 ly target the
+    // first observation should be snapped at t = now - 600.
+    assert_eq!(perceived.last_updated, now - 600,
+        "last_updated must match observed_at (light-departure hexadies)");
+    assert_eq!(perceived.age(now), 600);
+    // At exactly the threshold the overlay flips to Stale.
+    assert!(perceived.is_stale(now),
+        "age == STALE_THRESHOLD_HEXADIES should overlay source to Stale");
+}
+
+/// Propagated observations are tagged `Direct`. Once enough in-game time
+/// passes (age >= STALE_THRESHOLD_HEXADIES), `perceived_system` overlays
+/// the source to `Stale` without mutating the underlying entry.
+#[test]
+fn test_perceived_info_source_reflects_origin() {
+    let mut app = test_app();
+
+    let sys_capital = spawn_test_system(
+        app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true,
+    );
+    let sys_b = spawn_test_system(
+        app.world_mut(), "Near", [2.0, 0.0, 0.0], 0.7, true, false,
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys_capital }));
+
+    // 2 ly → 120 hd delay. Advance past that so the Direct observation lands.
+    advance_time(&mut app, 200);
+
+    let now = app.world().resource::<macrocosmo::time_system::GameClock>().elapsed;
+    let empire = empire_entity(app.world_mut());
+    {
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        // Underlying entry carries Direct source.
+        let entry = store.get(sys_b).expect("Near system should be observed by now");
+        assert_eq!(entry.source, macrocosmo::knowledge::ObservationSource::Direct);
+
+        let perceived = macrocosmo::knowledge::perceived_system(store, sys_b, now).unwrap();
+        assert_eq!(perceived.source, macrocosmo::knowledge::ObservationSource::Direct);
+        assert!(!perceived.is_stale(now));
+    }
+
+    // Jump to a far-future "now" that exceeds the stale threshold. The
+    // stored entry still says Direct, but the overlay should return Stale.
+    let distant_now = now + macrocosmo::knowledge::STALE_THRESHOLD_HEXADIES + 10;
+    {
+        let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+        let entry_after = store.get(sys_b).unwrap();
+        assert_eq!(entry_after.source, macrocosmo::knowledge::ObservationSource::Direct,
+            "underlying source must not be mutated by overlay");
+
+        let perceived = macrocosmo::knowledge::perceived_system(store, sys_b, distant_now).unwrap();
+        assert_eq!(perceived.source, macrocosmo::knowledge::ObservationSource::Stale,
+            "accessor overlays source=Stale when age >= STALE_THRESHOLD_HEXADIES");
+        assert!(perceived.is_stale(distant_now));
+    }
+}
+
+/// An entry written with `ObservationSource::Relay` (e.g. from an FTL comm
+/// relay at #216) should flow through `perceived_system` unchanged until
+/// it ages out, at which point the overlay replaces it with `Stale`.
+#[test]
+fn test_perceived_info_relay_source() {
+    use bevy::ecs::world::World;
+
+    let mut world = World::new();
+    let sys_entity = world.spawn_empty().id();
+    let mut store = KnowledgeStore::default();
+    store.update(SystemKnowledge {
+        system: sys_entity,
+        observed_at: 100,
+        received_at: 100,
+        data: SystemSnapshot {
+            name: "Relayed".to_string(),
+            position: [5.0, 0.0, 0.0],
+            surveyed: true,
+            ..Default::default()
+        },
+        source: ObservationSource::Relay,
+    });
+
+    // Fresh observation — the relay source should round-trip.
+    let fresh = macrocosmo::knowledge::perceived_system(&store, sys_entity, 150).unwrap();
+    assert_eq!(fresh.source, ObservationSource::Relay);
+    assert_eq!(fresh.last_updated, 100);
+    assert_eq!(fresh.age(150), 50);
+    assert!(!fresh.is_stale(150));
+
+    // Age the observation past the staleness cutoff — overlay kicks in.
+    let stale_now = 100 + macrocosmo::knowledge::STALE_THRESHOLD_HEXADIES + 1;
+    let stale = macrocosmo::knowledge::perceived_system(&store, sys_entity, stale_now).unwrap();
+    assert_eq!(stale.source, ObservationSource::Stale);
+    assert!(stale.is_stale(stale_now));
+
+    // perceived_fleet is empty (no ship snapshots) but should not panic and
+    // should not filter anything out yet (owner tracking TODO per #163).
+    let fleet = macrocosmo::knowledge::perceived_fleet(&store, sys_entity, stale_now);
+    assert!(fleet.is_empty());
 }
 
