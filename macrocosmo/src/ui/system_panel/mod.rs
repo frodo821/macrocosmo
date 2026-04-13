@@ -693,6 +693,46 @@ fn draw_right_panel(
         let sys_bldg_cost_mod = construction_params.building_cost_modifier.final_value();
         let sys_bldg_time_mod = construction_params.building_build_time_modifier.final_value();
 
+        // #260: Collect pending system-building construction orders so empty
+        // slots can show their in-progress target + progress bar. Mirrors the
+        // planet-side logic in `colony_detail::draw_colony_detail`. Kept inline
+        // (no shared helper yet) to minimise churn — see issue for the
+        // follow-up on extracting a common row renderer.
+        let sys_pending_orders: Vec<(usize, String, f32)> = sys_bldg_queue
+            .as_ref()
+            .map(|bq| {
+                bq.queue
+                    .iter()
+                    .map(|order| {
+                        let def = building_registry.get(order.building_id.as_str());
+                        let (total_m, total_e) =
+                            def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                        let m_pct = if total_m.raw() > 0 {
+                            1.0 - (order.minerals_remaining.raw() as f32 / total_m.raw() as f32)
+                        } else {
+                            1.0
+                        };
+                        let e_pct = if total_e.raw() > 0 {
+                            1.0 - (order.energy_remaining.raw() as f32 / total_e.raw() as f32)
+                        } else {
+                            1.0
+                        };
+                        let bt_time = def.map(|d| d.build_time).unwrap_or(10);
+                        let time_pct = if bt_time > 0 {
+                            1.0 - (order.build_time_remaining as f32 / bt_time as f32)
+                        } else {
+                            1.0
+                        };
+                        let pct = m_pct.min(e_pct).min(time_pct).max(0.0);
+                        let name = def
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| order.building_id.0.clone());
+                        (order.target_slot, name, pct)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         for (i, slot) in sys_bldgs.slots.iter().enumerate() {
             let is_demolishing = sys_bldg_queue
                 .as_ref()
@@ -741,8 +781,11 @@ fn draw_right_panel(
                             "Demolish: {} hd | Refund M:{} E:{}",
                             demo_time, m_refund.display_compact(), e_refund.display_compact()
                         );
+                        // #260: `"Demolish"` matches the planet-side label so
+                        // the button is discoverable. The previous `"X"` was
+                        // effectively hidden.
                         if ui
-                            .small_button("X")
+                            .small_button("Demolish")
                             .on_hover_text(tooltip)
                             .clicked()
                         {
@@ -774,7 +817,21 @@ fn draw_right_panel(
                     });
                 }
                 None => {
-                    ui.label(format!("[{}] (empty)", i));
+                    // #260: Show the in-progress order on an empty slot, same
+                    // way `colony_detail` does for planet buildings. Without
+                    // this the player has no feedback after queueing a
+                    // shipyard/port — the slot stays blank until completion.
+                    if let Some((_, name, pct)) =
+                        sys_pending_orders.iter().find(|(s, _, _)| *s == i)
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("[{}] (Building: {})", i, name));
+                            let bar = egui::ProgressBar::new(*pct).desired_width(80.0);
+                            ui.add(bar);
+                        });
+                    } else {
+                        ui.label(format!("[{}] (empty)", i));
+                    }
                 }
             }
         }

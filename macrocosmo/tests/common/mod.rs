@@ -338,6 +338,12 @@ pub fn test_app() -> App {
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            // #260: Pre-existing gap — `tick_system_building_queue` is part of
+            // ColonyPlugin in production but was missing from the test fixture,
+            // so any test exercising system-building construction saw the
+            // queue frozen. Added here so the system-building regression test
+            // runs end-to-end.
+            tick_system_building_queue,
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
@@ -520,6 +526,8 @@ pub fn full_test_app() -> App {
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            // #260: Mirror the production chain; see test_app comment above.
+            tick_system_building_queue,
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
