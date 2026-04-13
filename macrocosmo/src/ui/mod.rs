@@ -27,19 +27,21 @@ use crate::knowledge::KnowledgeStore;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::ship::{
-    Cargo, CommandQueue, CourierRoute, PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints,
-    ShipState, SurveyData,
+    Cargo, CommandQueue, CourierRoute, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship,
+    ShipHitpoints, ShipState, SurveyData,
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::scripting::building_api::BuildingRegistry;
 use crate::technology::{GameFlags, GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{
-    ContextMenu, EguiWantsPointer, OutlineExpandedSystems, SelectedPlanet, SelectedShip,
-    SelectedSystem,
+    ContextMenu, DeployMode, DeployPending, EguiWantsPointer, OutlineExpandedSystems,
+    SelectedPlanet, SelectedShip, SelectedSystem,
 };
 
-use params::{MainPanelRegistries, MainPanelSelection, MainPanelWorldQueries};
+use params::{
+    MainPanelDeliverableRes, MainPanelRegistries, MainPanelSelection, MainPanelWorldQueries,
+};
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
@@ -521,12 +523,13 @@ fn draw_main_panels_system(
         ),
         With<PlayerEmpire>,
     >,
+    mut deliverables_res: MainPanelDeliverableRes,
     mut game_events: MessageWriter<GameEvent>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok((knowledge, _command_log, global_params, construction_params, _tech_tree, _research_pool, _research_queue, _authority_params)) =
+    let Ok((knowledge, _command_log, global_params, construction_params, tech_tree, _research_pool, _research_queue, _authority_params)) =
         empire_q.single()
     else {
         return;
@@ -539,8 +542,37 @@ fn draw_main_panels_system(
         .next()
         .map(|(e, s, a)| (e, s.system, a.map(|ab| ab.ship)));
 
+    // #229: Pre-compute condition evaluation inputs so the system panel can
+    // filter the shipyard Deliverables list by `prerequisites`. `TechTree`
+    // stores techs as `TechId(String)`; the Condition DSL uses raw strings.
+    let researched_techs: std::collections::HashSet<String> = tech_tree
+        .technologies
+        .iter()
+        .filter(|(_, t)| tech_tree.is_researched(&t.id))
+        .map(|(id, _)| id.0.clone())
+        .collect();
+    let active_modifiers: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let (empire_flags_union, empire_buildings) = match deliverables_res.empire_flags.single() {
+        Ok((game_flags, scoped_flags)) => {
+            let mut union: std::collections::HashSet<String> = scoped_flags.flags.clone();
+            union.extend(game_flags.flags.iter().cloned());
+            (union, std::collections::HashSet::<String>::new())
+        }
+        Err(_) => (
+            std::collections::HashSet::<String>::new(),
+            std::collections::HashSet::<String>::new(),
+        ),
+    };
+    let deliverable_avail = system_panel::DeliverableAvailabilityCtx {
+        researched_techs: &researched_techs,
+        active_modifiers: &active_modifiers,
+        empire_flags: &empire_flags_union,
+        empire_buildings: &empire_buildings,
+    };
+
     // --- System panel ---
     let mut colonization_actions = Vec::new();
+    let mut system_actions = system_panel::SystemPanelActions::default();
     system_panel::draw_system_panel(
         ctx,
         &mut selection.selected_system,
@@ -565,6 +597,11 @@ fn draw_main_panels_system(
         &mut colonization_actions,
         &building_registry,
         &world.anomalies,
+        &world.deliverable_stockpiles,
+        &world.deep_space_structures,
+        &deliverables_res.structure_registry,
+        &deliverable_avail,
+        &mut system_actions,
     );
 
     for action in colonization_actions {
@@ -575,8 +612,85 @@ fn draw_main_panels_system(
         });
     }
 
+    // #229: Handle dismantle — `dismantle_structure` requires exclusive
+    // `&mut World`, so we wrap it in `commands.queue`.
+    if let Some(structure_entity) = system_actions.dismantle {
+        commands.queue(move |world: &mut World| {
+            if let Err(e) =
+                crate::ship::deliverable_ops::dismantle_structure(world, structure_entity)
+            {
+                warn!("Dismantle failed for {:?}: {}", structure_entity, e);
+            } else {
+                info!("Structure {:?} dismantled", structure_entity);
+            }
+        });
+    }
+
+    // #229: Handle "Load" from DeliverableStockpile row.
+    if let Some((ship_e, system_e, idx)) = system_actions.load_deliverable {
+        if let Ok(mut queue) = command_queues.get_mut(ship_e) {
+            queue
+                .commands
+                .push(QueuedCommand::LoadDeliverable {
+                    system: system_e,
+                    stockpile_index: idx,
+                });
+            queue.predicted_system = Some(system_e);
+        }
+    }
+
     // --- Ship panel ---
     let selected_system_for_panel = selection.selected_system.0;
+
+    // #229: Compute nearby structures for the selected ship. Threshold
+    // chosen a bit loose (2 ly) so the UI still offers Transfer / Load
+    // while the ship is sublight-cruising toward the structure. The
+    // command processors re-check co-location via
+    // `DEPLOY_POSITION_EPSILON` and auto-inject a `MoveToCoordinates`
+    // when the ship isn't quite there yet.
+    const NEARBY_STRUCTURE_RADIUS_LY: f64 = 2.0;
+    let nearby_structures: Vec<ship_panel::NearbyStructure> = match selection.selected_ship.0 {
+        Some(ship_e) => {
+            let ship_pos = ships_query
+                .get(ship_e)
+                .ok()
+                .and_then(|(_, _, state, _, _, _)| match &*state {
+                    ShipState::Docked { system } => world.positions.get(*system).ok().copied(),
+                    ShipState::Loitering { position } => Some(crate::components::Position::from(*position)),
+                    ShipState::Surveying { target_system, .. }
+                    | ShipState::Settling { system: target_system, .. } => world
+                        .positions
+                        .get(*target_system)
+                        .ok()
+                        .copied(),
+                    _ => None,
+                });
+            match ship_pos {
+                Some(sp) => {
+                    let mut v: Vec<ship_panel::NearbyStructure> = Vec::new();
+                    for (entity, ds, pos, platform, scrap) in
+                        world.deep_space_structures.iter()
+                    {
+                        let d = sp.distance_to(pos);
+                        if d > NEARBY_STRUCTURE_RADIUS_LY {
+                            continue;
+                        }
+                        v.push(ship_panel::NearbyStructure {
+                            entity,
+                            name: ds.name.clone(),
+                            is_platform: platform.is_some(),
+                            is_scrapyard: scrap.is_some(),
+                            distance_ly: d,
+                        });
+                    }
+                    v
+                }
+                None => Vec::new(),
+            }
+        }
+        None => Vec::new(),
+    };
+
     let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
@@ -600,6 +714,7 @@ fn draw_main_panels_system(
         selected_system_for_panel,
         &world.fleet_memberships,
         &world.fleets,
+        &nearby_structures,
     );
 
     // Handle cancel current action
@@ -786,6 +901,34 @@ fn draw_main_panels_system(
             commands
                 .entity(ship_entity)
                 .insert(crate::ship::CourierRoute::new(Vec::new(), mode));
+        }
+    }
+
+    // #229: Ship panel deliverable actions.
+    if let Some((ship_e, item_index)) = ship_panel_actions.deploy_mode_request {
+        deliverables_res.deploy_mode.0 = Some(DeployPending {
+            ship: ship_e,
+            item_index,
+        });
+        info!(
+            "Deploy mode armed: ship {:?} cargo #{} — click a star to place.",
+            ship_e, item_index
+        );
+    }
+    if let Some((ship_e, structure, minerals, energy)) = ship_panel_actions.transfer_request {
+        if let Ok(mut queue) = command_queues.get_mut(ship_e) {
+            queue.commands.push(QueuedCommand::TransferToStructure {
+                structure,
+                minerals,
+                energy,
+            });
+        }
+    }
+    if let Some((ship_e, structure)) = ship_panel_actions.load_from_scrapyard_request {
+        if let Ok(mut queue) = command_queues.get_mut(ship_e) {
+            queue
+                .commands
+                .push(QueuedCommand::LoadFromScrapyard { structure });
         }
     }
 

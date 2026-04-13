@@ -4,7 +4,9 @@ mod planet_window;
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue, UpgradeOrder};
+use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DeliverableStockpile, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue, UpgradeOrder};
+use crate::condition::{EvalContext, ScopeData};
+use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes, habitability_label, is_colonizable};
@@ -24,6 +26,72 @@ pub struct ColonizationAction {
     pub system_entity: Entity,
     pub target_planet: Entity,
     pub source_colony: Entity,
+}
+
+/// #229: Action produced by the system panel that must be applied by the
+/// outer `draw_main_panels_system` (where exclusive world access and
+/// `Commands` are available). Unlike `ShipPanelActions`, these target
+/// world-state entities (structures, stockpiles) rather than ship state.
+#[derive(Default)]
+pub struct SystemPanelActions {
+    /// A `deliverable_ops::dismantle_structure` should be queued on this
+    /// structure entity. Requires `&mut World`, so the caller wraps it in
+    /// `commands.queue(...)`.
+    pub dismantle: Option<Entity>,
+    /// #229: Player clicked "Load" on a DeliverableStockpile row while a
+    /// ship was docked at the system. Push a `LoadDeliverable` command onto
+    /// that ship's CommandQueue. Payload: (ship, system, stockpile_index).
+    pub load_deliverable: Option<(Entity, Entity, usize)>,
+}
+
+/// #229: Information that the shipyard "Deliverables" button list needs
+/// to decide whether a definition is buildable right now. Pre-computed in
+/// `draw_main_panels_system` and passed down through the system panel
+/// signature. Using `HashSet<String>` lets us re-use `EvalContext::flat`.
+pub struct DeliverableAvailabilityCtx<'a> {
+    pub researched_techs: &'a std::collections::HashSet<String>,
+    pub active_modifiers: &'a std::collections::HashSet<String>,
+    pub empire_flags: &'a std::collections::HashSet<String>,
+    pub empire_buildings: &'a std::collections::HashSet<String>,
+}
+
+impl<'a> DeliverableAvailabilityCtx<'a> {
+    fn as_eval(&self) -> EvalContext<'a> {
+        EvalContext {
+            researched_techs: self.researched_techs,
+            active_modifiers: self.active_modifiers,
+            empire: Some(ScopeData {
+                flags: self.empire_flags,
+                buildings: self.empire_buildings,
+            }),
+            system: None,
+            planet: None,
+            ship: None,
+        }
+    }
+}
+
+/// #229: Filter the structure/deliverable registry to shipyard-buildable
+/// items whose `prerequisites` evaluate to `true` in the given context.
+/// Returns `(definition_id, display_name)` pairs sorted alphabetically so
+/// the UI has a stable order across frames.
+pub fn available_shipyard_deliverables<'a>(
+    registry: &'a StructureRegistry,
+    avail: &DeliverableAvailabilityCtx<'_>,
+) -> Vec<(&'a str, &'a str)> {
+    let ctx = avail.as_eval();
+    let mut out: Vec<(&str, &str)> = registry
+        .definitions
+        .values()
+        .filter(|def| def.deliverable.is_some())
+        .filter(|def| match &def.prerequisites {
+            Some(cond) => cond.evaluate(&ctx).is_satisfied(),
+            None => true,
+        })
+        .map(|def| (def.id.as_str(), def.name.as_str()))
+        .collect();
+    out.sort_by(|a, b| a.1.cmp(b.1));
+    out
 }
 
 /// Draws the full-screen system detail view when a star system is selected.
@@ -62,6 +130,17 @@ pub fn draw_system_panel(
     colonization_actions_out: &mut Vec<ColonizationAction>,
     building_registry: &BuildingRegistry,
     anomalies_q: &Query<&crate::galaxy::Anomalies>,
+    deliverable_stockpiles: &Query<&DeliverableStockpile, With<StarSystem>>,
+    deep_space_structures: &Query<(
+        Entity,
+        &DeepSpaceStructure,
+        &Position,
+        Option<&ConstructionPlatform>,
+        Option<&Scrapyard>,
+    )>,
+    structure_registry: &StructureRegistry,
+    deliverable_avail: &DeliverableAvailabilityCtx<'_>,
+    system_actions_out: &mut SystemPanelActions,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -115,6 +194,10 @@ pub fn draw_system_panel(
 
     // Collect data for docked ships before drawing (to avoid borrow issues)
     let docked_ships = ships_docked_at(sel_entity, ships_query);
+    // #229: Is the currently-selected ship docked at this system? Enables
+    // the "Load" button on DeliverableStockpile rows.
+    let selected_ship_docked_here: Option<Entity> =
+        selected_ship.0.filter(|e| docked_ships.iter().any(|(se, _, _)| se == e));
 
     // Collect system stockpile info for display
     let stockpile_info: Option<(Amt, Amt, Amt, Amt)> = system_stockpiles.get(sel_entity).ok()
@@ -211,6 +294,9 @@ pub fn draw_system_panel(
                                         selected_planet,
                                         &stockpile_info,
                                         anomalies_q,
+                                        deliverable_stockpiles,
+                                        selected_ship_docked_here,
+                                        system_actions_out,
                                     );
                                 });
                         });
@@ -254,6 +340,7 @@ pub fn draw_system_panel(
                                     draw_right_panel(
                                         ui,
                                         sel_entity,
+                                        star_pos,
                                         selected_ship,
                                         &docked_ships,
                                         hull_registry,
@@ -268,6 +355,10 @@ pub fn draw_system_panel(
                                         colonies,
                                         colonization_queues,
                                         colonization_actions_out,
+                                        deep_space_structures,
+                                        structure_registry,
+                                        deliverable_avail,
+                                        system_actions_out,
                                     );
                                 });
                         });
@@ -320,6 +411,9 @@ fn draw_left_panel(
     selected_planet: &mut SelectedPlanet,
     stockpile_info: &Option<(Amt, Amt, Amt, Amt)>,
     anomalies_q: &Query<&crate::galaxy::Anomalies>,
+    deliverable_stockpiles: &Query<&DeliverableStockpile, With<StarSystem>>,
+    selected_ship_docked_here: Option<Entity>,
+    system_actions_out: &mut SystemPanelActions,
 ) {
     // --- Survey & Distance ---
     ui.label(egui::RichText::new("System Info").strong().color(egui::Color32::from_rgb(180, 180, 220)));
@@ -370,6 +464,42 @@ fn draw_left_panel(
         ui.label(format!("Energy:   {}", energy.display_compact()));
         ui.label(format!("Food:     {}", food.display_compact()));
         ui.label(format!("Authority:{}", authority.display_compact()));
+    }
+
+    // #229: Deliverable Stockpile — shipyard-built deliverables waiting to
+    // be loaded onto a ship. Only shown when non-empty. When a ship is
+    // selected and docked at THIS system, each row shows a [Load] button
+    // that queues a `LoadDeliverable` on the ship.
+    if let Ok(stockpile) = deliverable_stockpiles.get(sel_entity) {
+        if !stockpile.items.is_empty() {
+            ui.separator();
+            ui.label(
+                egui::RichText::new("Deliverable Stockpile")
+                    .strong()
+                    .color(egui::Color32::from_rgb(180, 220, 180)),
+            );
+            for (i, item) in stockpile.items.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("  #{}: {}", i, item.definition_id()));
+                    if let Some(ship_e) = selected_ship_docked_here {
+                        if ui.small_button("Load").clicked() {
+                            system_actions_out.load_deliverable =
+                                Some((ship_e, sel_entity, i));
+                        }
+                    }
+                });
+            }
+            if selected_ship_docked_here.is_none() {
+                ui.label(
+                    egui::RichText::new(
+                        "(Select a ship docked here to Load a deliverable.)",
+                    )
+                    .small()
+                    .italics()
+                    .weak(),
+                );
+            }
+        }
     }
 
     // #176: Remote system knowledge summary
@@ -485,6 +615,7 @@ fn draw_left_panel(
 fn draw_right_panel(
     ui: &mut egui::Ui,
     sel_entity: Entity,
+    star_pos: &Position,
     selected_ship: &mut SelectedShip,
     docked_ships: &[(Entity, String, String)],
     hull_registry: &crate::ship_design::HullRegistry,
@@ -508,6 +639,16 @@ fn draw_right_panel(
     )>,
     colonization_queues: &Query<&ColonizationQueue>,
     colonization_actions_out: &mut Vec<ColonizationAction>,
+    deep_space_structures: &Query<(
+        Entity,
+        &DeepSpaceStructure,
+        &Position,
+        Option<&ConstructionPlatform>,
+        Option<&Scrapyard>,
+    )>,
+    structure_registry: &StructureRegistry,
+    deliverable_avail: &DeliverableAvailabilityCtx<'_>,
+    system_actions_out: &mut SystemPanelActions,
 ) {
     // === Docked Ships ===
     ui.label(egui::RichText::new("Docked Ships").strong().color(egui::Color32::from_rgb(180, 180, 220)));
@@ -879,6 +1020,143 @@ fn draw_right_panel(
                         break;
                     }
                 }
+
+                // #229: Deliverables — shipyard-buildable deep-space structures.
+                // Filtered by prerequisites against the current empire state so
+                // e.g. the Sensor Buoy only appears once its gating tech
+                // (if any) is researched. Successful clicks push a BuildOrder
+                // with `kind = BuildKind::Deliverable { cargo_size }` so the
+                // building_queue tick routes the completed item to the
+                // DeliverableStockpile instead of spawning a Ship entity.
+                let available = available_shipyard_deliverables(
+                    structure_registry,
+                    deliverable_avail,
+                );
+                if !available.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Deliverables").strong());
+                    let mut deliverable_request: Option<(String, String, u32, Amt, Amt, i64)> =
+                        None;
+                    egui::ScrollArea::horizontal()
+                        .id_salt("system_panel_build_deliverable")
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for (def_id, def_name) in &available {
+                                    let Some(def) = structure_registry.get(def_id) else {
+                                        continue;
+                                    };
+                                    let Some(meta) = def.deliverable.as_ref() else {
+                                        continue;
+                                    };
+                                    let eff_m = meta.cost.minerals.mul_amt(ship_mod);
+                                    let eff_e = meta.cost.energy.mul_amt(ship_mod);
+                                    let eff_time = (meta.build_time as f64
+                                        * ship_time_mod.to_f64())
+                                    .ceil() as i64;
+                                    let tooltip = format!(
+                                        "M:{} E:{} | {} hd | cargo {}",
+                                        eff_m.display_compact(),
+                                        eff_e.display_compact(),
+                                        eff_time,
+                                        meta.cargo_size,
+                                    );
+                                    if ui.button(*def_name).on_hover_text(tooltip).clicked() {
+                                        deliverable_request = Some((
+                                            def_id.to_string(),
+                                            def_name.to_string(),
+                                            meta.cargo_size,
+                                            eff_m,
+                                            eff_e,
+                                            eff_time,
+                                        ));
+                                    }
+                                }
+                            });
+                        });
+
+                    if let Some((def_id, display_name, cargo_size, m_cost, e_cost, build_time)) =
+                        deliverable_request
+                    {
+                        let display_name_log = display_name.clone();
+                        for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
+                            colonies.iter_mut()
+                        {
+                            if colony_entity != host {
+                                continue;
+                            }
+                            if let Some(bq) = build_queue.as_mut() {
+                                bq.queue.push(BuildOrder {
+                                    kind: crate::colony::BuildKind::Deliverable { cargo_size },
+                                    design_id: def_id.clone(),
+                                    display_name: display_name.clone(),
+                                    minerals_cost: m_cost,
+                                    minerals_invested: Amt::ZERO,
+                                    energy_cost: e_cost,
+                                    energy_invested: Amt::ZERO,
+                                    build_time_total: build_time,
+                                    build_time_remaining: build_time,
+                                });
+                                info!("Deliverable order added: {}", display_name_log);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // #229: Deep-Space Structures subsection — lists every structure owned
+    // by the player within this system's rough coordinate neighbourhood
+    // and exposes a Dismantle button per row. The neighbourhood threshold
+    // matches the sublight "same-system" feeling used throughout the UI:
+    // structures deep in interstellar space show up in their nearest
+    // system view. A future issue may introduce proper system-membership
+    // tagging for structures.
+    {
+        const STRUCTURE_SYSTEM_RADIUS_LY: f64 = 2.0;
+        let mut in_system: Vec<(Entity, String, bool, bool)> = Vec::new();
+        for (entity, ds, pos, platform, scrap) in deep_space_structures.iter() {
+            if pos.distance_to(star_pos) > STRUCTURE_SYSTEM_RADIUS_LY {
+                continue;
+            }
+            in_system.push((
+                entity,
+                ds.name.clone(),
+                platform.is_some(),
+                scrap.is_some(),
+            ));
+        }
+        if !in_system.is_empty() {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("Deep-Space Structures")
+                    .strong()
+                    .color(egui::Color32::from_rgb(180, 180, 220)),
+            );
+            ui.separator();
+            for (entity, name, is_platform, is_scrap) in &in_system {
+                let state_label = if *is_platform {
+                    "[assembling]"
+                } else if *is_scrap {
+                    "[scrapyard]"
+                } else {
+                    "[active]"
+                };
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} {}", name, state_label));
+                    // Scrapyards are already dismantled — no sense
+                    // dismantling them again. ConstructionPlatforms can be
+                    // dismantled (player may want to cancel construction).
+                    let can_dismantle = !*is_scrap;
+                    if ui
+                        .add_enabled(can_dismantle, egui::Button::new("Dismantle"))
+                        .on_disabled_hover_text("already a Scrapyard")
+                        .clicked()
+                    {
+                        system_actions_out.dismantle = Some(*entity);
+                    }
+                });
             }
         }
     }
@@ -1238,5 +1516,119 @@ fn observation_freshness_color(age: i64) -> egui::Color32 {
         egui::Color32::from_rgb(130, 130, 130)
     } else {
         egui::Color32::from_rgb(160, 90, 70)
+    }
+}
+
+#[cfg(test)]
+mod tests_229 {
+    use super::*;
+    use crate::condition::{Condition, ConditionAtom};
+    use crate::deep_space::{
+        DeliverableDefinition, DeliverableMetadata, ResourceCost, StructureRegistry,
+    };
+    use std::collections::HashSet;
+
+    fn def(
+        id: &str,
+        name: &str,
+        shipyard_buildable: bool,
+        prereq_tech: Option<&str>,
+    ) -> DeliverableDefinition {
+        DeliverableDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            max_hp: 100.0,
+            energy_drain: Amt::ZERO,
+            capabilities: Default::default(),
+            prerequisites: prereq_tech
+                .map(|t| Condition::Atom(ConditionAtom::has_tech(t))),
+            deliverable: if shipyard_buildable {
+                Some(DeliverableMetadata {
+                    cost: ResourceCost::default(),
+                    build_time: 10,
+                    cargo_size: 1,
+                    scrap_refund: 0.5,
+                })
+            } else {
+                None
+            },
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+        }
+    }
+
+    fn ctx_with_techs<'a>(
+        techs: &'a HashSet<String>,
+        mods: &'a HashSet<String>,
+        flags: &'a HashSet<String>,
+        bldgs: &'a HashSet<String>,
+    ) -> DeliverableAvailabilityCtx<'a> {
+        DeliverableAvailabilityCtx {
+            researched_techs: techs,
+            active_modifiers: mods,
+            empire_flags: flags,
+            empire_buildings: bldgs,
+        }
+    }
+
+    #[test]
+    fn shipyard_deliverables_filters_non_shipyard_defs() {
+        // One shipyard-buildable, one world-only (upgrade target).
+        let mut reg = StructureRegistry::default();
+        reg.insert(def("sensor_buoy", "Sensor Buoy", true, None));
+        reg.insert(def("platform_mk2", "Platform Mk II", false, None));
+
+        let empty = HashSet::new();
+        let ctx = ctx_with_techs(&empty, &empty, &empty, &empty);
+        let available = available_shipyard_deliverables(&reg, &ctx);
+
+        // Only `sensor_buoy` should be buildable at a shipyard; the
+        // world-only `platform_mk2` (no `deliverable` metadata) is filtered
+        // out.
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].0, "sensor_buoy");
+    }
+
+    #[test]
+    fn shipyard_deliverables_enforces_prerequisites() {
+        // Deliverable gated by a tech that is NOT researched → filtered out.
+        let mut reg = StructureRegistry::default();
+        reg.insert(def(
+            "defense_platform",
+            "Defense Platform",
+            true,
+            Some("weapons_mk1"),
+        ));
+
+        let no_techs = HashSet::new();
+        let empty = HashSet::new();
+        let ctx = ctx_with_techs(&no_techs, &empty, &empty, &empty);
+        assert!(
+            available_shipyard_deliverables(&reg, &ctx).is_empty(),
+            "prereq not met — should be filtered"
+        );
+
+        // Once the tech is researched the deliverable appears.
+        let mut techs = HashSet::new();
+        techs.insert("weapons_mk1".to_string());
+        let ctx2 = ctx_with_techs(&techs, &empty, &empty, &empty);
+        let available = available_shipyard_deliverables(&reg, &ctx2);
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].0, "defense_platform");
+    }
+
+    #[test]
+    fn shipyard_deliverables_stable_sort_order() {
+        let mut reg = StructureRegistry::default();
+        reg.insert(def("zebra", "Zebra Buoy", true, None));
+        reg.insert(def("alpha", "Alpha Buoy", true, None));
+        reg.insert(def("middle", "Mid Buoy", true, None));
+
+        let empty = HashSet::new();
+        let ctx = ctx_with_techs(&empty, &empty, &empty, &empty);
+        let available = available_shipyard_deliverables(&reg, &ctx);
+        let names: Vec<&str> = available.iter().map(|(_, n)| *n).collect();
+        assert_eq!(names, vec!["Alpha Buoy", "Mid Buoy", "Zebra Buoy"]);
     }
 }
