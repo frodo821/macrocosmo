@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::condition::Condition;
 
 /// Defines a module slot type (weapon, utility, engine, special).
 #[derive(Clone, Debug)]
@@ -48,6 +49,9 @@ pub struct HullDefinition {
     pub build_time: i64,
     pub maintenance: Amt,
     pub modifiers: Vec<ModuleModifier>,
+    /// Optional Condition tree gating access to this hull.
+    /// Populated from the Lua `prerequisites = has_tech(...)` / ... field.
+    pub prerequisites: Option<Condition>,
 }
 
 #[derive(Resource, Default)]
@@ -644,6 +648,7 @@ mod tests {
             build_time: 60,
             maintenance: Amt::new(0, 500),
             modifiers: vec![],
+            prerequisites: None,
         });
 
         let corvette = registry.get("corvette").unwrap();
@@ -747,6 +752,7 @@ mod tests {
             build_time: 60,
             maintenance: Amt::new(0, 500),
             modifiers: vec![],
+            prerequisites: None,
         });
 
         let mut modules = ModuleRegistry::default();

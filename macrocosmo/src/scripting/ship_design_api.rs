@@ -1,4 +1,5 @@
 use crate::amount::Amt;
+use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::ship_design::{
     DesignSlotAssignment, HullDefinition, HullSlot, ModuleDefinition, ModuleModifier,
     ModuleUpgradePath, ShipDesignDefinition, SlotTypeDefinition, WeaponStats,
@@ -46,6 +47,9 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
         // Parse hull modifiers (optional, same format as module modifiers)
         let modifiers = parse_module_modifiers(&table)?;
 
+        // Parse optional prerequisites (shared helper).
+        let prerequisites = parse_prerequisites_field(&table)?;
+
         result.push(HullDefinition {
             id,
             name,
@@ -59,6 +63,7 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
             build_time,
             maintenance,
             modifiers,
+            prerequisites,
         });
     }
 
@@ -411,6 +416,44 @@ mod tests {
         assert_eq!(corvette.build_cost_energy, Amt::units(100));
         assert_eq!(corvette.build_time, 60);
         assert_eq!(corvette.maintenance, Amt::new(0, 500));
+    }
+
+    #[test]
+    fn test_hull_parses_prerequisites() {
+        use crate::condition::{Condition, ConditionAtom};
+
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_hull {
+                id = "plain_hull",
+                name = "Plain",
+                base_hp = 30,
+            }
+            define_hull {
+                id = "cruiser",
+                name = "Cruiser",
+                base_hp = 200,
+                prerequisites = has_tech("hull_cruiser"),
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_hulls(lua).unwrap();
+        assert_eq!(defs.len(), 2);
+
+        let plain = defs.iter().find(|h| h.id == "plain_hull").unwrap();
+        assert!(plain.prerequisites.is_none());
+
+        let cruiser = defs.iter().find(|h| h.id == "cruiser").unwrap();
+        assert_eq!(
+            cruiser.prerequisites,
+            Some(Condition::Atom(ConditionAtom::has_tech("hull_cruiser")))
+        );
     }
 
     #[test]

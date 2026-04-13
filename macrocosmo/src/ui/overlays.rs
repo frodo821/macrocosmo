@@ -736,6 +736,7 @@ pub fn draw_overlays(
                                                     UnlockKind::Module => "Module",
                                                     UnlockKind::Building => "Building",
                                                     UnlockKind::Structure => "Structure",
+                                                    UnlockKind::Hull => "Hull",
                                                     // `Tech` entries handled in the "Leads to" list above.
                                                     UnlockKind::Tech => continue,
                                                 };
