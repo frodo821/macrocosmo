@@ -29,6 +29,12 @@ pub(super) fn draw_planet_window(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
+    colony_pop_view: &Query<(
+        Entity,
+        Option<&crate::species::ColonyPopulation>,
+        Option<&crate::species::ColonyJobs>,
+        Option<&crate::colony::ColonyJobRates>,
+    )>,
     system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     construction_params: &ConstructionParams,
@@ -38,6 +44,8 @@ pub(super) fn draw_planet_window(
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
     building_registry: &BuildingRegistry,
+    job_registry: &crate::species::JobRegistry,
+    colony_panel_tab: &mut crate::ui::ColonyPanelTab,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
         return;
@@ -95,6 +103,7 @@ pub(super) fn draw_planet_window(
                             system_entity,
                             planet_attrs,
                             colonies,
+                            colony_pop_view,
                             system_stockpiles,
                             ships_query,
                             construction_params,
@@ -103,6 +112,8 @@ pub(super) fn draw_planet_window(
                             module_registry,
                             design_registry,
                             building_registry,
+                            job_registry,
+                            colony_panel_tab,
                         );
                     });
             } else {

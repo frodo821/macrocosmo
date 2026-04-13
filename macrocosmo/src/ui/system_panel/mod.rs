@@ -114,6 +114,12 @@ pub fn draw_system_panel(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
+    colony_pop_view: &Query<(
+        Entity,
+        Option<&crate::species::ColonyPopulation>,
+        Option<&crate::species::ColonyJobs>,
+        Option<&crate::colony::ColonyJobRates>,
+    )>,
     system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
     positions: &Query<&Position>,
@@ -129,6 +135,8 @@ pub fn draw_system_panel(
     colonization_queues: &Query<&ColonizationQueue>,
     colonization_actions_out: &mut Vec<ColonizationAction>,
     building_registry: &BuildingRegistry,
+    job_registry: &crate::species::JobRegistry,
+    colony_panel_tab: &mut crate::ui::ColonyPanelTab,
     anomalies_q: &Query<&crate::galaxy::Anomalies>,
     deliverable_stockpiles: &Query<&DeliverableStockpile, With<StarSystem>>,
     deep_space_structures: &Query<(
@@ -378,6 +386,7 @@ pub fn draw_system_panel(
         &colonized_planets,
         stars,
         colonies,
+        colony_pop_view,
         system_stockpiles,
         ships_query,
         construction_params,
@@ -387,6 +396,8 @@ pub fn draw_system_panel(
         module_registry,
         design_registry,
         building_registry,
+        job_registry,
+        colony_panel_tab,
     );
 }
 
