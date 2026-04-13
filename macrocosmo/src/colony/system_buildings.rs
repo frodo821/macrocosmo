@@ -269,7 +269,18 @@ pub fn tick_system_building_queue(
             available_energy = available_energy.sub(energy_transfer);
             energy_consumed = energy_consumed.add(energy_transfer);
 
-            order.build_time_remaining -= 1;
+            // #232: Gate timer advance on actual progress (see
+            // build_tick::maybe_tick_build_time docstring). Mirrors the
+            // planet-level building queue so starved system builds don't
+            // sink into negative-time limbo.
+            let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+            let no_more_needed = order.minerals_remaining == Amt::ZERO
+                && order.energy_remaining == Amt::ZERO;
+            super::build_tick::maybe_tick_build_time(
+                &mut order.build_time_remaining,
+                transferred,
+                no_more_needed,
+            );
 
             if bq.queue[0].minerals_remaining == Amt::ZERO
                 && bq.queue[0].energy_remaining == Amt::ZERO
@@ -332,7 +343,15 @@ pub fn tick_system_building_queue(
                 available_energy = available_energy.sub(energy_transfer);
                 energy_consumed = energy_consumed.add(energy_transfer);
 
-                upgrade.build_time_remaining -= 1;
+                // #232: Gate timer advance on actual progress.
+                let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
+                    && upgrade.energy_remaining == Amt::ZERO;
+                super::build_tick::maybe_tick_build_time(
+                    &mut upgrade.build_time_remaining,
+                    transferred,
+                    no_more_needed,
+                );
 
                 if upgrade.minerals_remaining == Amt::ZERO
                     && upgrade.energy_remaining == Amt::ZERO

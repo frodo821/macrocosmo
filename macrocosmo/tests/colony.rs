@@ -1745,3 +1745,389 @@ fn test_134_existing_shipyard_gating_still_works() {
     let count = ship_q.iter(app.world()).count();
     assert_eq!(count, 0, "No shipyard in the system: ship must not spawn");
 }
+
+// -----------------------------------------------------------------------------
+// #232: Gated build-time ticking — regression tests.
+//
+// Before the fix, `build_time_remaining -= 1` ran unconditionally every tick
+// regardless of whether the star system could spare any minerals / energy.
+// With an empty stockpile the timer kept draining below zero while the
+// completion check (which also demands 0 remaining resource cost) kept
+// blocking completion — so the UI displayed a finished countdown on a
+// stalled order forever.
+// -----------------------------------------------------------------------------
+
+/// Planet-level new construction must NOT advance build_time_remaining when
+/// the star system stockpile has nothing to contribute AND the order still
+/// needs resources.
+#[test]
+fn test_construction_does_not_progress_when_stockpile_empty() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Starved-Construction",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let planet_sys = find_planet(app.world_mut(), sys);
+    // Deliberately empty stockpile (food > 0 so the colony doesn't starve;
+    // building-queue tick only cares about minerals/energy).
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+        minerals: Amt::ZERO,
+        energy: Amt::ZERO,
+        research: Amt::ZERO,
+        food: Amt::units(100),
+        authority: Amt::ZERO,
+    });
+
+    let build_time = 10;
+    let colony_entity = app
+        .world_mut()
+        .spawn((
+            Colony { planet: planet_sys, population: 10.0, growth_rate: 0.0 },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue { queue: Vec::new() },
+            Buildings { slots: vec![None, None, None, None] },
+            BuildingQueue {
+                queue: vec![BuildingOrder {
+                    building_id: BuildingId::new("mine"),
+                    target_slot: 0,
+                    minerals_remaining: Amt::units(150),
+                    energy_remaining: Amt::units(50),
+                    build_time_remaining: build_time,
+                }],
+                demolition_queue: Vec::new(),
+                upgrade_queue: Vec::new(),
+            },
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id();
+
+    // Advance well past the nominal build time; with no resources ever
+    // arriving, the timer must stay pinned and the slot must stay empty.
+    advance_time(&mut app, build_time * 3);
+
+    let bq = app.world().get::<BuildingQueue>(colony_entity).expect("queue");
+    assert_eq!(bq.queue.len(), 1, "order must still be pending: {:?}", bq.queue.len());
+    let order = &bq.queue[0];
+    assert_eq!(
+        order.build_time_remaining, build_time,
+        "Starved order must not drain its timer (got {}, expected {})",
+        order.build_time_remaining, build_time
+    );
+    let buildings = app.world().get::<Buildings>(colony_entity).expect("buildings");
+    assert_eq!(buildings.slots[0], None, "Slot must stay empty while order is starved");
+}
+
+/// Planet-level upgrade order must stall while resources are unavailable.
+#[test]
+fn test_upgrade_does_not_progress_when_stockpile_empty() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Starved-Upgrade",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+        minerals: Amt::ZERO,
+        energy: Amt::ZERO,
+        research: Amt::ZERO,
+        food: Amt::units(100),
+        authority: Amt::ZERO,
+    });
+
+    let build_time = 8;
+    let colony_entity = app
+        .world_mut()
+        .spawn((
+            Colony { planet: planet_sys, population: 10.0, growth_rate: 0.0 },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue { queue: Vec::new() },
+            // Use an empty slot (no pre-existing building) to avoid any
+            // sync_building_modifiers side-effect that would feed the
+            // system stockpile via production bonuses — we want an
+            // unambiguous "no minerals / no energy" scenario for this
+            // starvation test. The upgrade code does not inspect the
+            // current slot; it just writes target_id into it on completion.
+            Buildings { slots: vec![None, None, None, None] },
+            BuildingQueue {
+                queue: Vec::new(),
+                demolition_queue: Vec::new(),
+                upgrade_queue: vec![UpgradeOrder {
+                    slot_index: 0,
+                    target_id: BuildingId::new("advanced_mine"),
+                    minerals_remaining: Amt::units(200),
+                    energy_remaining: Amt::units(80),
+                    build_time_remaining: build_time,
+                }],
+            },
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id();
+
+    advance_time(&mut app, build_time * 3);
+
+    let bq = app.world().get::<BuildingQueue>(colony_entity).expect("queue");
+    assert_eq!(bq.upgrade_queue.len(), 1, "upgrade order must still be pending");
+    assert_eq!(
+        bq.upgrade_queue[0].build_time_remaining, build_time,
+        "Starved upgrade must not drain its timer"
+    );
+    let buildings = app.world().get::<Buildings>(colony_entity).expect("buildings");
+    assert_eq!(
+        buildings.slots[0], None,
+        "Upgrade must not have replaced the (empty) slot while starved"
+    );
+}
+
+/// Planet-level upgrade must complete once resources eventually arrive,
+/// even after a long starvation period.
+#[test]
+fn test_upgrade_completes_when_resources_finally_arrive() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Delayed-Upgrade",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let planet_sys = find_planet(app.world_mut(), sys);
+    // Start with empty stockpile.
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+        minerals: Amt::ZERO,
+        energy: Amt::ZERO,
+        research: Amt::ZERO,
+        food: Amt::units(100),
+        authority: Amt::ZERO,
+    });
+
+    let build_time = 6;
+    let minerals_cost = Amt::units(100);
+    let energy_cost = Amt::units(40);
+    let colony_entity = app
+        .world_mut()
+        .spawn((
+            Colony { planet: planet_sys, population: 10.0, growth_rate: 0.0 },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue { queue: Vec::new() },
+            // Empty slot — see test_upgrade_does_not_progress_when_stockpile_empty
+            // for rationale (avoid sync_building_modifiers back-filling the
+            // stockpile via production bonuses).
+            Buildings { slots: vec![None, None, None, None] },
+            BuildingQueue {
+                queue: Vec::new(),
+                demolition_queue: Vec::new(),
+                upgrade_queue: vec![UpgradeOrder {
+                    slot_index: 0,
+                    target_id: BuildingId::new("advanced_mine"),
+                    minerals_remaining: minerals_cost,
+                    energy_remaining: energy_cost,
+                    build_time_remaining: build_time,
+                }],
+            },
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id();
+
+    // Starve for a long time — the clock must hold.
+    advance_time(&mut app, 30);
+    {
+        let bq = app.world().get::<BuildingQueue>(colony_entity).expect("queue");
+        assert_eq!(bq.upgrade_queue.len(), 1, "still pending after long starvation");
+        assert_eq!(bq.upgrade_queue[0].build_time_remaining, build_time);
+    }
+
+    // Resources finally arrive in bulk.
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+        minerals: minerals_cost.add(Amt::units(50)),
+        energy: energy_cost.add(Amt::units(50)),
+        research: Amt::ZERO,
+        food: Amt::units(100),
+        authority: Amt::ZERO,
+    });
+
+    advance_time(&mut app, build_time + 5);
+
+    let bq = app.world().get::<BuildingQueue>(colony_entity).expect("queue");
+    assert!(
+        bq.upgrade_queue.is_empty(),
+        "upgrade should have completed after resources arrived"
+    );
+    let buildings = app.world().get::<Buildings>(colony_entity).expect("buildings");
+    assert_eq!(
+        buildings.slots[0],
+        Some(BuildingId::new("advanced_mine")),
+        "slot must now hold the upgraded building"
+    );
+}
+
+/// Zero-cost upgrades (e.g. future tech-granted free rename) must still
+/// advance purely on time — `no_more_needed` is already true on tick 1.
+#[test]
+fn test_zero_cost_upgrade_progresses_on_time() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "FreeUpgrade",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let planet_sys = find_planet(app.world_mut(), sys);
+    // Stockpile is zero but so is cost — order should still complete.
+    set_system_stockpile(app.world_mut(), sys, ResourceStockpile {
+        minerals: Amt::ZERO,
+        energy: Amt::ZERO,
+        research: Amt::ZERO,
+        food: Amt::units(100),
+        authority: Amt::ZERO,
+    });
+
+    let build_time = 4;
+    let colony_entity = app
+        .world_mut()
+        .spawn((
+            Colony { planet: planet_sys, population: 10.0, growth_rate: 0.0 },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue { queue: Vec::new() },
+            Buildings {
+                slots: vec![Some(BuildingId::new("mine")), None, None, None],
+            },
+            BuildingQueue {
+                queue: Vec::new(),
+                demolition_queue: Vec::new(),
+                upgrade_queue: vec![UpgradeOrder {
+                    slot_index: 0,
+                    target_id: BuildingId::new("advanced_mine"),
+                    minerals_remaining: Amt::ZERO,
+                    energy_remaining: Amt::ZERO,
+                    build_time_remaining: build_time,
+                }],
+            },
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id();
+
+    advance_time(&mut app, build_time + 2);
+
+    let bq = app.world().get::<BuildingQueue>(colony_entity).expect("queue");
+    assert!(
+        bq.upgrade_queue.is_empty(),
+        "zero-cost upgrade should complete on time alone"
+    );
+    let buildings = app.world().get::<Buildings>(colony_entity).expect("buildings");
+    assert_eq!(
+        buildings.slots[0],
+        Some(BuildingId::new("advanced_mine")),
+        "zero-cost upgrade must have replaced the building"
+    );
+}
+
+/// System-level (StarSystem component) upgrade queue shares the same logic
+/// and must also stall when the stockpile is empty.
+#[test]
+fn test_system_upgrade_does_not_progress_when_stockpile_empty() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Starved-System-Upgrade",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    // Put SystemBuildings + SystemBuildingQueue directly on the star system.
+    app.world_mut().entity_mut(sys).insert((
+        SystemBuildings {
+            slots: vec![Some(BuildingId::new("shipyard")), None, None],
+        },
+        SystemBuildingQueue {
+            queue: Vec::new(),
+            demolition_queue: Vec::new(),
+            upgrade_queue: vec![UpgradeOrder {
+                slot_index: 0,
+                target_id: BuildingId::new("advanced_shipyard"),
+                minerals_remaining: Amt::units(300),
+                energy_remaining: Amt::units(120),
+                build_time_remaining: 10,
+            }],
+        },
+        ResourceStockpile {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+        ResourceCapacity::default(),
+    ));
+
+    advance_time(&mut app, 30);
+
+    let bq = app
+        .world()
+        .get::<SystemBuildingQueue>(sys)
+        .expect("system building queue");
+    assert_eq!(
+        bq.upgrade_queue.len(),
+        1,
+        "system upgrade must still be pending after starvation"
+    );
+    assert_eq!(
+        bq.upgrade_queue[0].build_time_remaining, 10,
+        "timer must not drain while starved"
+    );
+    let sb = app.world().get::<SystemBuildings>(sys).expect("system buildings");
+    assert_eq!(
+        sb.slots[0],
+        Some(BuildingId::new("shipyard")),
+        "slot must still hold the pre-upgrade building"
+    );
+}
