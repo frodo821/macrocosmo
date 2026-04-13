@@ -376,7 +376,19 @@ pub fn tick_building_queue(
             available_energy = available_energy.sub(energy_transfer);
             energy_consumed = energy_consumed.add(energy_transfer);
 
-            order.build_time_remaining -= 1;
+            // #232: Only advance the countdown when resources actually moved
+            // this tick, or when no resources are needed anymore. Otherwise
+            // a starved build would have its timer drain past zero while
+            // the completion check (which also requires 0 remaining cost)
+            // keeps blocking completion.
+            let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+            let no_more_needed = order.minerals_remaining == Amt::ZERO
+                && order.energy_remaining == Amt::ZERO;
+            super::build_tick::maybe_tick_build_time(
+                &mut order.build_time_remaining,
+                transferred,
+                no_more_needed,
+            );
 
             if bq.queue[0].minerals_remaining == Amt::ZERO
                 && bq.queue[0].energy_remaining == Amt::ZERO
@@ -456,7 +468,16 @@ pub fn tick_building_queue(
                 available_energy = available_energy.sub(energy_transfer);
                 energy_consumed = energy_consumed.add(energy_transfer);
 
-                upgrade.build_time_remaining -= 1;
+                // #232: See construction-queue branch above — only tick the
+                // timer when progress is happening or no progress is needed.
+                let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
+                    && upgrade.energy_remaining == Amt::ZERO;
+                super::build_tick::maybe_tick_build_time(
+                    &mut upgrade.build_time_remaining,
+                    transferred,
+                    no_more_needed,
+                );
 
                 if upgrade.minerals_remaining == Amt::ZERO
                     && upgrade.energy_remaining == Amt::ZERO

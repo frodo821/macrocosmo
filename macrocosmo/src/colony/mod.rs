@@ -8,6 +8,7 @@ pub use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::scripting::building_api::parse_building_definitions;
 
 pub mod authority;
+pub mod build_tick;
 pub mod building_queue;
 pub mod colonization;
 pub mod maintenance;
