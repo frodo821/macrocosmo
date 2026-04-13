@@ -254,6 +254,23 @@ fn format_queued_command(
         QueuedCommand::MoveToCoordinates { target } => {
             format!("Move -> ({:.1}, {:.1}, {:.1})", target[0], target[1], target[2])
         }
+        QueuedCommand::LoadDeliverable { stockpile_index, .. } => {
+            format!("Load deliverable #{}", stockpile_index)
+        }
+        QueuedCommand::DeployDeliverable { position, item_index } => {
+            format!(
+                "Deploy #{} -> ({:.1}, {:.1}, {:.1})",
+                item_index, position[0], position[1], position[2]
+            )
+        }
+        QueuedCommand::TransferToStructure { minerals, energy, .. } => {
+            format!(
+                "Transfer {}m / {}e to structure",
+                minerals.to_f64(),
+                energy.to_f64()
+            )
+        }
+        QueuedCommand::LoadFromScrapyard { .. } => "Salvage scrapyard".to_string(),
     }
 }
 

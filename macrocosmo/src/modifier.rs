@@ -272,6 +272,13 @@ impl CachedValue {
         current_gens != self.generations
     }
 
+    /// Read-only access to the last cached value (without recomputing).
+    /// Call `get` to refresh; call this for read-only contexts (e.g. queries
+    /// that can't take `&mut`).
+    pub fn cached(&self) -> Amt {
+        self.cached
+    }
+
     /// Compute the combined value from multiple scopes.
     /// First scope: base + base_add from its modifiers.
     /// All scopes: multipliers and adds are combined.

@@ -10,6 +10,7 @@ pub mod movement;
 pub mod command;
 pub mod courier_route;
 pub mod pursuit;
+pub mod deliverable_ops;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -45,7 +46,10 @@ impl CommandQueue {
     /// Push a command and update predicted position
     pub fn push(&mut self, cmd: QueuedCommand, system_positions: &impl Fn(Entity) -> Option<[f64; 3]>) {
         match &cmd {
-            QueuedCommand::MoveTo { system } | QueuedCommand::Survey { system } | QueuedCommand::Colonize { system, .. } => {
+            QueuedCommand::MoveTo { system }
+            | QueuedCommand::Survey { system }
+            | QueuedCommand::Colonize { system, .. }
+            | QueuedCommand::LoadDeliverable { system, .. } => {
                 if let Some(pos) = system_positions(*system) {
                     self.predicted_position = pos;
                     self.predicted_system = Some(*system);
@@ -56,6 +60,14 @@ impl CommandQueue {
                 self.predicted_position = *target;
                 self.predicted_system = None;
             }
+            QueuedCommand::DeployDeliverable { position, .. } => {
+                // #223: Deploy parks the ship at `position` in deep space.
+                self.predicted_position = *position;
+                self.predicted_system = None;
+            }
+            // #223: In-place resource actions — no predicted movement change.
+            QueuedCommand::TransferToStructure { .. }
+            | QueuedCommand::LoadFromScrapyard { .. } => {}
         }
         self.commands.push(cmd);
     }
@@ -76,6 +88,36 @@ pub enum QueuedCommand {
     Colonize { system: Entity, planet: Option<Entity> },
     /// #185: Travel sublight to an arbitrary point in deep space and loiter there.
     MoveToCoordinates { target: [f64; 3] },
+    /// #223: Load a deliverable from the docked system's `DeliverableStockpile`
+    /// into this ship's `Cargo`. `stockpile_index` is the zero-based index in
+    /// the stockpile at the time the command is executed; the command is a
+    /// no-op (with warning) if the index is out of range or the ship has no
+    /// room for the item.
+    LoadDeliverable {
+        system: Entity,
+        stockpile_index: usize,
+    },
+    /// #223: Deploy the deliverable at `item_index` within this ship's Cargo
+    /// at the given deep-space coordinate. If the ship is not already at
+    /// `position` within a small epsilon, the command queues a sublight move
+    /// first and re-evaluates on arrival. On deployment, the item is removed
+    /// from Cargo and a new `DeepSpaceStructure` entity is spawned owned by
+    /// the ship's `Owner`.
+    DeployDeliverable {
+        position: [f64; 3],
+        item_index: usize,
+    },
+    /// #223: Transfer resources from this ship's Cargo into a co-located
+    /// `ConstructionPlatform`'s accumulated pool. Ship must be at the same
+    /// position (within epsilon) as the target structure.
+    TransferToStructure {
+        structure: Entity,
+        minerals: Amt,
+        energy: Amt,
+    },
+    /// #223: Drain a co-located `Scrapyard`'s remaining resources into the
+    /// ship's Cargo (clamped by cargo capacity).
+    LoadFromScrapyard { structure: Entity },
 }
 
 /// Initial FTL speed as a multiple of light speed
@@ -97,10 +139,17 @@ impl Plugin for ShipPlugin {
             process_settling,
             process_refitting,
             process_pending_ship_commands,
-            process_command_queue
+            // #223: Deliverable ops run BEFORE the FTL router so any
+            // injected MoveTo/MoveToCoordinates is dispatched this tick.
+            deliverable_ops::process_deliverable_commands
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys),
+            process_command_queue
+                .after(sublight_movement_system)
+                .after(process_ftl_travel)
+                .after(process_surveys)
+                .after(deliverable_ops::process_deliverable_commands),
             resolve_combat,
             tick_ship_repair,
             // #117: Courier automation — runs before process_command_queue

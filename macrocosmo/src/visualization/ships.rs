@@ -335,7 +335,8 @@ pub fn draw_ships(
                         let target_screen = match cmd {
                             QueuedCommand::MoveTo { system, .. }
                             | QueuedCommand::Survey { system, .. }
-                            | QueuedCommand::Colonize { system, .. } => {
+                            | QueuedCommand::Colonize { system, .. }
+                            | QueuedCommand::LoadDeliverable { system, .. } => {
                                 let Ok(target_pos) = stars.get(*system) else {
                                     continue;
                                 };
@@ -345,10 +346,16 @@ pub fn draw_ships(
                                 )
                             }
                             // #185: Loitering target — render directly from coordinates.
-                            QueuedCommand::MoveToCoordinates { target } => Vec2::new(
+                            QueuedCommand::MoveToCoordinates { target }
+                            | QueuedCommand::DeployDeliverable { position: target, .. } => Vec2::new(
                                 target[0] as f32 * view.scale,
                                 target[1] as f32 * view.scale,
                             ),
+                            // #223: In-place actions draw no destination marker.
+                            QueuedCommand::TransferToStructure { .. }
+                            | QueuedCommand::LoadFromScrapyard { .. } => {
+                                continue;
+                            }
                         };
 
                         // Dashed path line from previous position to target
@@ -387,6 +394,24 @@ pub fn draw_ships(
                                     Color::srgba(1.0, 1.0, 0.2, 0.5),
                                 );
                             }
+                            // #223: Deliverable deploy marker — orange diamond-ish ring.
+                            QueuedCommand::DeployDeliverable { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    5.0,
+                                    Color::srgba(1.0, 0.6, 0.2, 0.6),
+                                );
+                            }
+                            QueuedCommand::LoadDeliverable { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    4.0,
+                                    Color::srgba(0.2, 0.8, 1.0, 0.5),
+                                );
+                            }
+                            // TransferToStructure / LoadFromScrapyard continue'd above.
+                            QueuedCommand::TransferToStructure { .. }
+                            | QueuedCommand::LoadFromScrapyard { .. } => {}
                         }
 
                         prev_pos = target_screen;

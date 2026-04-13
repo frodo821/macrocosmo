@@ -369,6 +369,197 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
     ]
 }
 
+/// #223: Tracks the total resource cost ever invested into a `DeepSpaceStructure`
+/// entity. Starts at the deliverable's `cost` when deployed; is incremented by
+/// `UpgradeEdge.cost` every time the structure is upgraded via a
+/// `ConstructionPlatform`. When the structure is dismantled, the resulting
+/// `Scrapyard.remaining = lifetime_cost * scrap_refund`.
+#[derive(Component, Clone, Debug, Default)]
+pub struct LifetimeCost(pub ResourceCost);
+
+/// #223: Marker component on a freshly-deployed construction platform that is
+/// awaiting upgrade resources. While this is present, the structure's
+/// capabilities are gated OFF (it's still "under construction"). Once enough
+/// resources accumulate, the structure upgrades to `target_id` and this
+/// component is removed.
+///
+/// `target_id.is_none()` means the player hasn't yet chosen which upgrade edge
+/// to pursue; transfers are refused until a target is selected. UI can default
+/// `target_id` to the sole edge when `upgrade_to` has exactly one element.
+#[derive(Component, Clone, Debug, Default)]
+pub struct ConstructionPlatform {
+    pub target_id: Option<String>,
+    pub accumulated: ResourceCost,
+}
+
+/// #223: Marker component on a dismantled structure. While present, the
+/// structure's capabilities are gated OFF. A co-located ship can drain the
+/// `remaining` pool into its own Cargo via `QueuedCommand::LoadFromScrapyard`.
+/// When `remaining.is_zero()`, the entity is despawned next tick by
+/// `tick_scrapyard_despawn`.
+#[derive(Component, Clone, Debug)]
+pub struct Scrapyard {
+    pub remaining: ResourceCost,
+    pub original_definition_id: String,
+}
+
+impl ResourceCost {
+    pub fn is_zero(&self) -> bool {
+        self.minerals == Amt::ZERO && self.energy == Amt::ZERO
+    }
+
+    /// Saturating add of `other` into self (consumes `other`).
+    pub fn add_assign_saturating(&mut self, other: &ResourceCost) {
+        self.minerals = self.minerals.add(other.minerals);
+        self.energy = self.energy.add(other.energy);
+    }
+
+    /// Returns true iff `self` covers (≥) every component of `other`.
+    pub fn covers(&self, other: &ResourceCost) -> bool {
+        self.minerals >= other.minerals && self.energy >= other.energy
+    }
+
+    /// Multiply by a scalar in 0..=1 (used for scrap refund).
+    pub fn scale(&self, factor: f32) -> ResourceCost {
+        let f = factor.clamp(0.0, 1.0) as f64;
+        ResourceCost {
+            minerals: Amt::from_f64(self.minerals.to_f64() * f),
+            energy: Amt::from_f64(self.energy.to_f64() * f),
+        }
+    }
+}
+
+/// #223: Spawn a new `DeepSpaceStructure` entity at the given position with the
+/// given owner, according to the definition identified by `definition_id`.
+///
+/// Behaviour:
+///   - The entity always gets: `DeepSpaceStructure`, `Position`,
+///     `StructureHitpoints` (at max_hp), `LifetimeCost` (initial = def's
+///     shipyard cost if present, else zero).
+///   - If the definition has the `construction_platform` capability marker,
+///     a `ConstructionPlatform` component is added. The `target_id` defaults
+///     to the single `upgrade_to` edge's target when there is exactly one;
+///     otherwise it is `None` (awaiting player selection).
+///   - Otherwise the entity is fully active: its capabilities fire on the
+///     next tick.
+pub fn spawn_deliverable_entity(
+    commands: &mut Commands,
+    definition_id: &str,
+    position: [f64; 3],
+    owner: Owner,
+    registry: &StructureRegistry,
+) -> Option<Entity> {
+    let def = registry.get(definition_id)?;
+
+    let initial_cost = def
+        .deliverable
+        .as_ref()
+        .map(|m| m.cost.clone())
+        .unwrap_or_default();
+
+    let mut ent = commands.spawn((
+        DeepSpaceStructure {
+            definition_id: definition_id.to_string(),
+            name: def.name.clone(),
+            owner,
+        },
+        crate::components::Position::from(position),
+        StructureHitpoints {
+            current: def.max_hp,
+            max: def.max_hp,
+        },
+        LifetimeCost(initial_cost),
+    ));
+
+    if def.is_construction_platform() {
+        let target_id = if def.upgrade_to.len() == 1 {
+            Some(def.upgrade_to[0].target_id.clone())
+        } else {
+            None
+        };
+        ent.insert(ConstructionPlatform {
+            target_id,
+            accumulated: ResourceCost::default(),
+        });
+    }
+
+    Some(ent.id())
+}
+
+/// #223: Apply player-scheduled upgrades: for each `ConstructionPlatform` that
+/// has `accumulated >= target.cost`, swap the definition_id to the target,
+/// bump the `LifetimeCost`, and remove the `ConstructionPlatform`.
+pub fn tick_platform_upgrade(
+    mut commands: Commands,
+    registry: Res<StructureRegistry>,
+    clock: Res<crate::time_system::GameClock>,
+    mut events: MessageWriter<crate::events::GameEvent>,
+    mut platforms: Query<(
+        Entity,
+        &mut DeepSpaceStructure,
+        &mut LifetimeCost,
+        &mut ConstructionPlatform,
+    )>,
+) {
+    for (entity, mut structure, mut lifetime, mut platform) in platforms.iter_mut() {
+        let Some(target_id) = platform.target_id.clone() else {
+            continue;
+        };
+        // Find the edge: from structure.definition_id → target_id.
+        let edges = registry.outgoing_edges(&structure.definition_id);
+        let Some(edge) = edges.iter().find(|e| e.target_id == target_id) else {
+            continue;
+        };
+
+        if !platform.accumulated.covers(&edge.cost) {
+            continue;
+        }
+
+        // Upgrade! Consume edge.cost from accumulated; the remainder stays so
+        // a subsequent upgrade (rare today, but possible) is not penalised.
+        platform.accumulated.minerals = platform.accumulated.minerals.sub(edge.cost.minerals);
+        platform.accumulated.energy = platform.accumulated.energy.sub(edge.cost.energy);
+
+        // Update the structure identity.
+        if let Some(new_def) = registry.get(&target_id) {
+            let old_name = structure.name.clone();
+            structure.definition_id = target_id.clone();
+            structure.name = new_def.name.clone();
+            // Bump lifetime cost by the edge cost.
+            lifetime.0.add_assign_saturating(&edge.cost);
+            events.write(crate::events::GameEvent {
+                timestamp: clock.elapsed,
+                kind: crate::events::GameEventKind::ShipBuilt,
+                description: format!(
+                    "Platform upgraded: {} → {}",
+                    old_name,
+                    new_def.name,
+                ),
+                related_system: None,
+            });
+            info!(
+                "Deep-space structure {:?} upgraded → {}",
+                entity, new_def.name,
+            );
+        }
+
+        // Remove the construction marker so capabilities fire next tick.
+        commands.entity(entity).remove::<ConstructionPlatform>();
+    }
+}
+
+/// #223: Despawn any `Scrapyard` whose resources have been drained by a ship.
+pub fn tick_scrapyard_despawn(
+    mut commands: Commands,
+    scrapyards: Query<(Entity, &Scrapyard)>,
+) {
+    for (entity, scrap) in &scrapyards {
+        if scrap.remaining.is_zero() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 pub struct DeepSpacePlugin;
 
 impl Plugin for DeepSpacePlugin {
@@ -384,6 +575,8 @@ impl Plugin for DeepSpacePlugin {
                     sensor_buoy_detect_system,
                     verify_relay_pairings_system,
                     relay_knowledge_propagate_system,
+                    tick_platform_upgrade,
+                    tick_scrapyard_despawn,
                 )
                     .after(crate::time_system::advance_game_time)
                     .after(crate::ship::sublight_movement_system)
@@ -410,7 +603,10 @@ impl Plugin for DeepSpacePlugin {
 pub fn sensor_buoy_detect_system(
     clock: Res<crate::time_system::GameClock>,
     registry: Res<StructureRegistry>,
-    structures: Query<(&DeepSpaceStructure, &crate::components::Position)>,
+    structures: Query<
+        (&DeepSpaceStructure, &crate::components::Position),
+        (Without<ConstructionPlatform>, Without<Scrapyard>),
+    >,
     ships: Query<(
         Entity,
         &crate::ship::Ship,
@@ -558,7 +754,12 @@ pub fn relay_knowledge_propagate_system(
     clock: Res<crate::time_system::GameClock>,
     registry: Res<StructureRegistry>,
     // All relays, paired with their position + structure data.
-    relays: Query<(Entity, &DeepSpaceStructure, &crate::components::Position, &FTLCommRelay)>,
+    // #223: Relays gated behind a ConstructionPlatform or a Scrapyard do not
+    // propagate knowledge — they're in a non-operational transitional state.
+    relays: Query<
+        (Entity, &DeepSpaceStructure, &crate::components::Position, &FTLCommRelay),
+        (Without<ConstructionPlatform>, Without<Scrapyard>),
+    >,
     // Any relay (incl. un-sending side) — used to look up partner position.
     relay_positions: Query<&crate::components::Position, With<DeepSpaceStructure>>,
     // Partner's structure definition for its range.

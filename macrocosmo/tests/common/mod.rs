@@ -260,6 +260,9 @@ pub fn test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
+            // #223: Deliverable ops run before process_command_queue so any
+            // injected MoveTo reaches the router in the same frame.
+            macrocosmo::ship::deliverable_ops::process_deliverable_commands,
             process_command_queue,
             resolve_combat,
             tick_ship_repair,
@@ -324,6 +327,8 @@ pub fn test_app() -> App {
             macrocosmo::deep_space::sensor_buoy_detect_system,
             macrocosmo::deep_space::verify_relay_pairings_system,
             macrocosmo::deep_space::relay_knowledge_propagate_system,
+            macrocosmo::deep_space::tick_platform_upgrade,
+            macrocosmo::deep_space::tick_scrapyard_despawn,
         )
             .after(macrocosmo::time_system::advance_game_time)
             .after(sublight_movement_system)
@@ -433,6 +438,7 @@ pub fn full_test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
+            macrocosmo::ship::deliverable_ops::process_deliverable_commands,
             process_command_queue,
             resolve_combat,
             tick_ship_repair,
@@ -487,6 +493,8 @@ pub fn full_test_app() -> App {
             macrocosmo::deep_space::sensor_buoy_detect_system,
             macrocosmo::deep_space::verify_relay_pairings_system,
             macrocosmo::deep_space::relay_knowledge_propagate_system,
+            macrocosmo::deep_space::tick_platform_upgrade,
+            macrocosmo::deep_space::tick_scrapyard_despawn,
         ),
     );
 
