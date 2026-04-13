@@ -651,15 +651,25 @@ pub fn design_derived(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> D
     let survey_speed = apply_modifiers(0.0, "ship.survey_speed", &sources);
     let colonize_speed = apply_modifiers(0.0, "ship.colonize_speed", &sources);
 
-    // Cost + maintenance: hull + Σ module, with 10% of module mineral cost
-    // added as maintenance (unchanged formula — user confirmed "式が正").
+    // Cost + maintenance: hull + Σ module. Each module adds
+    // 0.0001 × mineral_cost to energy maintenance per hexady — i.e. a module
+    // costing 100 minerals contributes 0.010 energy/hd.
+    //
+    // #257: Before this fix the formula was `Amt::milli(raw()/10)` which
+    // produced 10 energy/hd for a 100-mineral module (1000× too high) because
+    // `Amt::raw()` returns the internal fixed-point with SCALE=1000. The
+    // starter fleet's maintenance ballooned to ~93 energy/hd, dwarfing the
+    // ~30 energy/hd produced by the opening power plant.
+    //
+    // raw() is already scaled ×1000, so dividing by 10_000 before wrapping
+    // in `Amt::milli` lands on the intended 0.01% coefficient.
     let mut minerals = hull.build_cost_minerals;
     let mut energy = hull.build_cost_energy;
     let mut maintenance = hull.maintenance;
     for m in modules {
         minerals = minerals.add(m.cost_minerals);
         energy = energy.add(m.cost_energy);
-        maintenance = maintenance.add(Amt::milli(m.cost_minerals.raw() / 10));
+        maintenance = maintenance.add(Amt::milli(m.cost_minerals.raw() / 10_000));
     }
 
     DerivedStats {
@@ -875,6 +885,109 @@ mod tests {
         assert_eq!(explorer.hull_id, "corvette");
         assert_eq!(explorer.modules.len(), 2);
         assert_eq!(explorer.modules[0].module_id, "ftl_drive");
+    }
+
+    // ---------------------------------------------------------------------
+    // #257: Module maintenance scaling
+    // ---------------------------------------------------------------------
+
+    /// Each module contributes `0.0001 × mineral_cost` to energy maintenance
+    /// per hexady. A module costing 100 minerals must land on 0.010 energy/hd,
+    /// not 10 energy/hd (pre-fix the formula was 1000× too large because
+    /// `Amt::raw()` already carries the ×1000 scale factor).
+    #[test]
+    fn test_module_maintenance_formula_matches_ten_percent_intent() {
+        let hull = HullDefinition {
+            id: "frame".to_string(),
+            name: "Frame".to_string(),
+            description: String::new(),
+            base_hp: 1.0,
+            base_speed: 0.0,
+            base_evasion: 0.0,
+            slots: vec![],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            maintenance: Amt::ZERO,
+            modifiers: vec![],
+            prerequisites: None,
+        };
+        let module = ModuleDefinition {
+            id: "m100".to_string(),
+            name: "100-mineral module".to_string(),
+            description: String::new(),
+            slot_type: "utility".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(100),
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+        };
+
+        let derived = design_derived(&hull, &[&module]);
+        assert_eq!(
+            derived.maintenance,
+            Amt::milli(10),
+            "100-mineral module should contribute 0.010 energy/hd, got {}",
+            derived.maintenance
+        );
+    }
+
+    /// Regression: the starter explorer (ftl + survey modules) used to cost
+    /// 16.5 energy/hd of maintenance. With the fix its total must be under
+    /// 1 energy/hd — otherwise the opening economy is unplayable (see #257).
+    #[test]
+    fn test_starter_explorer_maintenance_under_one() {
+        let hull = HullDefinition {
+            id: "scout_hull".to_string(),
+            name: "Scout Hull".to_string(),
+            description: String::new(),
+            base_hp: 10.0,
+            base_speed: 1.0,
+            base_evasion: 30.0,
+            slots: vec![],
+            build_cost_minerals: Amt::units(50),
+            build_cost_energy: Amt::units(25),
+            build_time: 20,
+            // Starter hull maintenance — matches ships/hulls.lua ballpark.
+            maintenance: Amt::new(0, 500),
+            modifiers: vec![],
+            prerequisites: None,
+        };
+        let ftl = ModuleDefinition {
+            id: "ftl_drive_mk1".to_string(),
+            name: "FTL Drive Mk.I".to_string(),
+            description: String::new(),
+            slot_type: "ftl".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(100),
+            cost_energy: Amt::units(50),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+        };
+        let survey = ModuleDefinition {
+            id: "survey_equipment".to_string(),
+            name: "Survey Equipment".to_string(),
+            description: String::new(),
+            slot_type: "utility".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(60),
+            cost_energy: Amt::units(30),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+        };
+
+        let derived = design_derived(&hull, &[&ftl, &survey]);
+        // 0.500 (hull) + 0.010 (100 min) + 0.006 (60 min) = 0.516 energy/hd
+        assert!(
+            derived.maintenance < Amt::units(1),
+            "starter explorer maintenance must be < 1 energy/hd; got {}",
+            derived.maintenance
+        );
+        assert_eq!(derived.maintenance, Amt::milli(516));
     }
 
     // ---------------------------------------------------------------------
@@ -1367,7 +1480,9 @@ mod tests {
         assert_eq!(d.build_cost_minerals, Amt::units(290));
         assert_eq!(d.build_cost_energy, Amt::units(140));
         assert_eq!(d.build_time, 30);
-        // Maintenance: 0.3 + 0.1*(100+60+30) = 19.3
-        assert_eq!(d.maintenance, Amt::new(19, 300));
+        // #257: Maintenance uses 0.0001 × mineral_cost per module.
+        //   hull 0.300 + ftl 100×0.0001 + afterburner 60×0.0001 + cargo 30×0.0001
+        //   = 0.300 + 0.010 + 0.006 + 0.003 = 0.319
+        assert_eq!(d.maintenance, Amt::new(0, 319));
     }
 }
