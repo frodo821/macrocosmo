@@ -1,3 +1,4 @@
+use bevy::prelude::Entity;
 use bevy_egui::egui;
 
 use crate::amount::{Amt, SignedAmt};
@@ -5,6 +6,17 @@ use crate::time_system::{GameClock, GameSpeed};
 
 use super::ResearchPanelOpen;
 use super::overlays::ShipDesignerState;
+
+/// Observer-mode metadata for the top-bar badge + faction selector.
+///
+/// `observer_factions` is a sorted `(Entity, display_name)` list. When
+/// `enabled` is true, the top bar renders an "Observer Mode" badge and a
+/// ComboBox for switching the currently inspected faction.
+pub struct ObserverBarState<'a> {
+    pub enabled: bool,
+    pub selected: &'a mut Option<Entity>,
+    pub factions: &'a [(Entity, String)],
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_top_bar(
@@ -21,6 +33,7 @@ pub fn draw_top_bar(
     net_authority: SignedAmt,
     research_open: &mut ResearchPanelOpen,
     designer_state: &mut ShipDesignerState,
+    observer: Option<ObserverBarState<'_>>,
 ) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
@@ -91,6 +104,39 @@ pub fn draw_top_bar(
             };
             if ui.button(d_label).clicked() {
                 designer_state.open = !designer_state.open;
+            }
+
+            // Observer-mode badge + faction selector.
+            if let Some(obs) = observer {
+                if obs.enabled {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Observer Mode")
+                            .strong()
+                            .color(egui::Color32::from_rgb(230, 200, 90)),
+                    );
+
+                    let current_label = obs
+                        .selected
+                        .and_then(|sel| {
+                            obs.factions
+                                .iter()
+                                .find(|(e, _)| *e == sel)
+                                .map(|(_, n)| n.clone())
+                        })
+                        .unwrap_or_else(|| "(none)".to_string());
+
+                    egui::ComboBox::from_id_salt("observer_faction_select")
+                        .selected_text(current_label)
+                        .show_ui(ui, |ui| {
+                            for (entity, name) in obs.factions {
+                                let is_selected = Some(*entity) == *obs.selected;
+                                if ui.selectable_label(is_selected, name).clicked() {
+                                    *obs.selected = Some(*entity);
+                                }
+                            }
+                        });
+                }
             }
         });
     });

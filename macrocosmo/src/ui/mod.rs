@@ -230,6 +230,7 @@ fn compute_ui_state(
 // System 2: draw_top_bar_system
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn draw_top_bar_system(
     mut contexts: EguiContexts,
     ui_state: Res<UiState>,
@@ -237,10 +238,32 @@ fn draw_top_bar_system(
     mut speed: ResMut<GameSpeed>,
     mut research_open: ResMut<ResearchPanelOpen>,
     mut designer_state: ResMut<overlays::ShipDesignerState>,
+    observer_mode: Res<crate::observer::ObserverMode>,
+    mut observer_view: ResMut<crate::observer::ObserverView>,
+    factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+
+    // Build sorted (entity, name) list of empire factions for the selector.
+    let mut factions: Vec<(Entity, String)> = factions_q
+        .iter()
+        .map(|(e, f)| (e, f.name.clone()))
+        .collect();
+    factions.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut selected = observer_view.viewing;
+    let observer_state = if observer_mode.enabled {
+        Some(top_bar::ObserverBarState {
+            enabled: true,
+            selected: &mut selected,
+            factions: &factions,
+        })
+    } else {
+        None
+    };
+
     top_bar::draw_top_bar(
         ctx,
         &clock,
@@ -255,7 +278,12 @@ fn draw_top_bar_system(
         ui_state.net_authority,
         &mut research_open,
         &mut designer_state,
+        observer_state,
     );
+
+    if selected != observer_view.viewing {
+        observer_view.viewing = selected;
+    }
 }
 
 // ---------------------------------------------------------------------------
