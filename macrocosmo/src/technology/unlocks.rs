@@ -24,6 +24,10 @@ pub enum UnlockKind {
     Tech,
 }
 
+// NOTE: `UnlockKind::Building` was already declared but was not populated before
+// BuildingDefinition grew its `prerequisites` field. It is now wired up in
+// `build_tech_unlock_index` below.
+
 /// A single thing unlocked by a technology.
 #[derive(Clone, Debug)]
 pub struct UnlockEntry {
@@ -123,11 +127,20 @@ pub fn build_tech_unlock_index(
         }
     }
 
-    // Buildings: BuildingDefinition has no Condition prerequisites field today,
-    // but iterate so a future field gets picked up here. (No-op for now.)
-    for (_id, _def) in &buildings.buildings {
-        // Placeholder: when buildings gain a `prerequisites: Option<Condition>`
-        // field, walk it via `extract_tech_ids` and push entries.
+    // Buildings: walk the optional Condition tree for HasTech atoms.
+    for (id, def) in &buildings.buildings {
+        if let Some(cond) = &def.prerequisites {
+            for tech_id in extract_tech_ids(cond) {
+                index.push(
+                    tech_id,
+                    UnlockEntry {
+                        kind: UnlockKind::Building,
+                        id: id.clone(),
+                        name: def.name.clone(),
+                    },
+                );
+            }
+        }
     }
 
     // Structures: walk the optional Condition tree for HasTech atoms.
@@ -234,7 +247,7 @@ mod tests {
         }
     }
 
-    fn make_building(id: &str, name: &str) -> BuildingDefinition {
+    fn make_building(id: &str, name: &str, prereq: Option<Condition>) -> BuildingDefinition {
         BuildingDefinition {
             id: id.to_string(),
             name: name.to_string(),
@@ -251,6 +264,7 @@ mod tests {
             capabilities: HashMap::<String, BCapabilityParams>::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: prereq,
         }
     }
 
@@ -384,11 +398,9 @@ mod tests {
     }
 
     #[test]
-    fn building_registry_iteration_is_safe_no_op() {
-        // BuildingDefinition has no prerequisites field today; iterating it
-        // must simply not contribute any entries.
+    fn building_without_prerequisites_produces_no_entries() {
         let mut buildings = BuildingRegistry::default();
-        buildings.insert(make_building("mine", "Mine"));
+        buildings.insert(make_building("mine", "Mine", None));
         let index = run_index(
             ModuleRegistry::default(),
             buildings,
@@ -396,6 +408,50 @@ mod tests {
             TechTree::default(),
         );
         assert_eq!(index.total_entries(), 0);
+    }
+
+    #[test]
+    fn building_unlocked_by_has_tech() {
+        let mut buildings = BuildingRegistry::default();
+        let cond = Condition::Atom(ConditionAtom::has_tech("industrial_automated_mining"));
+        buildings.insert(make_building("advanced_mine", "Advanced Mine", Some(cond)));
+
+        let index = run_index(
+            ModuleRegistry::default(),
+            buildings,
+            StructureRegistry::default(),
+            TechTree::default(),
+        );
+
+        let entries = index.for_tech("industrial_automated_mining");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, UnlockKind::Building);
+        assert_eq!(entries[0].id, "advanced_mine");
+        assert_eq!(entries[0].name, "Advanced Mine");
+    }
+
+    #[test]
+    fn building_unlocked_by_complex_condition() {
+        let mut buildings = BuildingRegistry::default();
+        let cond = Condition::All(vec![
+            Condition::Atom(ConditionAtom::has_tech("tech_a")),
+            Condition::Any(vec![
+                Condition::Atom(ConditionAtom::has_tech("tech_b")),
+                Condition::Atom(ConditionAtom::has_flag("some_flag")),
+            ]),
+        ]);
+        buildings.insert(make_building("mega_mine", "Mega Mine", Some(cond)));
+        let index = run_index(
+            ModuleRegistry::default(),
+            buildings,
+            StructureRegistry::default(),
+            TechTree::default(),
+        );
+        // Both tech_a and tech_b should index the building; the has_flag atom is ignored.
+        assert_eq!(index.for_tech("tech_a").len(), 1);
+        assert_eq!(index.for_tech("tech_b").len(), 1);
+        assert_eq!(index.for_tech("tech_a")[0].kind, UnlockKind::Building);
+        assert_eq!(index.for_tech("tech_a")[0].id, "mega_mine");
     }
 
     #[test]

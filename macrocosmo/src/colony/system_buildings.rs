@@ -400,6 +400,7 @@ mod tests {
             capabilities: shipyard_caps,
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
         });
 
         let mut port_caps = HashMap::new();
@@ -427,6 +428,7 @@ mod tests {
             capabilities: port_caps,
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
         });
         registry
     }
