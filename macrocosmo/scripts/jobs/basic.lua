@@ -12,7 +12,7 @@ local farmer = define_job {
     label = "Farmer",
     -- Bumped from 0.6 (old base_output) to 1.0 so a 5-slot farm still yields
     -- 5.0 food/hexady matching the prior building balance.
-    modifiers = { { target = "colony.food_per_hexadies", base_add = 1.0 } },
+    modifiers = { { target = "colony.food_per_hexadies", base_add = 2.0 } },
 }
 
 local researcher = define_job {
