@@ -188,6 +188,9 @@ pub struct GameBalance {
     pub base_authority_per_hexadies: ModifiedValue,
     /// Authority cost per hexady per non-capital colony. Base = 0.5
     pub authority_cost_per_colony: ModifiedValue,
+    /// #223: Cargo mass equivalent of a single deliverable cargo_size slot.
+    /// Base = 1.0 (1 slot consumes the same cap as 1 Amt unit of resource).
+    pub mass_per_item_slot: ModifiedValue,
 }
 
 impl Default for GameBalance {
@@ -205,6 +208,7 @@ impl Default for GameBalance {
             colonization_build_time: ModifiedValue::new(Amt::units(90)),
             base_authority_per_hexadies: ModifiedValue::new(Amt::units(1)),
             authority_cost_per_colony: ModifiedValue::new(Amt::new(0, 500)),
+            mass_per_item_slot: ModifiedValue::new(Amt::units(1)),
         }
     }
 }
@@ -247,6 +251,17 @@ impl GameBalance {
         self.authority_cost_per_colony.final_value()
     }
 
+    /// #223: Mass equivalent of one deliverable cargo_size slot (as Amt).
+    pub fn mass_per_item_slot(&self) -> Amt {
+        self.mass_per_item_slot.final_value()
+    }
+
+    /// #223: Same as `mass_per_item_slot()` but returning the raw u64 (for
+    /// inline mass arithmetic inside `Cargo` helpers).
+    pub fn mass_per_item_slot_raw(&self) -> u64 {
+        self.mass_per_item_slot.final_value().raw()
+    }
+
     /// Look up a balance field's `ModifiedValue` by string target name (for
     /// use by the modifier pipeline). Returns `None` if the target is not a
     /// recognised balance field. The target is the part after the
@@ -265,6 +280,7 @@ impl GameBalance {
             "colonization_build_time" => Some(&mut self.colonization_build_time),
             "base_authority_per_hexadies" => Some(&mut self.base_authority_per_hexadies),
             "authority_cost_per_colony" => Some(&mut self.authority_cost_per_colony),
+            "mass_per_item_slot" => Some(&mut self.mass_per_item_slot),
             _ => None,
         }
     }
@@ -417,6 +433,7 @@ pub fn load_game_balance(
     set_integer(&mut balance.colonization_build_time, &table, "colonization_build_time");
     set_decimal(&mut balance.base_authority_per_hexadies, &table, "base_authority_per_hexadies");
     set_decimal(&mut balance.authority_cost_per_colony, &table, "authority_cost_per_colony");
+    set_decimal(&mut balance.mass_per_item_slot, &table, "mass_per_item_slot");
 
     info!("GameBalance loaded from Lua");
 }

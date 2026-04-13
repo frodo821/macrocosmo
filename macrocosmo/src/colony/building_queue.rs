@@ -5,11 +5,11 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem};
 use crate::components::Position;
 use crate::scripting::building_api::BuildingId;
-use crate::ship::{spawn_ship, Owner, Ship};
+use crate::ship::{spawn_ship, CargoItem, Owner, Ship};
 use crate::time_system::GameClock;
 
 use super::{
-    Colony, LastProductionTick, ResourceStockpile, SystemBuildings,
+    Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile, SystemBuildings,
 };
 
 #[derive(Component)]
@@ -17,7 +17,25 @@ pub struct BuildQueue {
     pub queue: Vec<BuildOrder>,
 }
 
+/// #223: What kind of thing a `BuildOrder` builds.
+///
+/// Keeping `Ship` as the default preserves existing call sites (the previous
+/// queue only built ships). `Deliverable` adds the new path used by #223:
+/// completed deliverables are pushed into the system's `DeliverableStockpile`
+/// instead of spawning a `Ship` entity.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum BuildKind {
+    #[default]
+    Ship,
+    Deliverable {
+        cargo_size: u32,
+    },
+}
+
 pub struct BuildOrder {
+    /// #223: What this order builds (Ship or Deliverable). Defaults to Ship
+    /// for back-compat with existing construction sites.
+    pub kind: BuildKind,
     pub design_id: String,
     pub display_name: String,
     pub minerals_cost: Amt,
@@ -136,6 +154,8 @@ impl BuildingQueue {
 }
 
 /// #32: build_time_remaining countdown, #35: shipyard check
+/// #223: Deliverable orders land in the system's DeliverableStockpile rather
+/// than spawning Ship entities.
 pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -144,6 +164,7 @@ pub fn tick_build_queue(
     building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
     mut colonies: Query<(&Colony, &mut BuildQueue)>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
+    mut deliverable_stockpiles: Query<&mut DeliverableStockpile, With<StarSystem>>,
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
@@ -160,12 +181,18 @@ pub fn tick_build_queue(
         return;
     }
 
+    // Per-order completion info (#223).
+    enum Completion {
+        Ship { design_id: String, display_name: String },
+        Deliverable { definition_id: String, display_name: String },
+    }
+
     // Collect build queue processing results
     struct BuildResult {
         system: Entity,
         minerals_consumed: Amt,
         energy_consumed: Amt,
-        completed_ships: Vec<(String, String)>, // (design_id, display_name)
+        completed: Vec<Completion>,
     }
 
     let mut results: Vec<BuildResult> = Vec::new();
@@ -173,10 +200,11 @@ pub fn tick_build_queue(
     for (colony, mut build_queue) in &mut colonies {
         let Some(sys) = colony.system(&planets) else { continue };
 
-        // #35: Skip ship construction if system has no shipyard capability
+        // #35: Skip ship construction if system has no shipyard capability.
+        // Deliverables also require a shipyard.
         let has_shipyard = system_buildings.get(sys).is_ok_and(|sb| sb.has_shipyard(&building_registry));
         if !build_queue.queue.is_empty() && !has_shipyard {
-            warn!("System lacks a Shipyard; skipping ship construction");
+            warn!("System lacks a Shipyard; skipping construction");
             continue;
         }
 
@@ -186,7 +214,7 @@ pub fn tick_build_queue(
         let mut available_energy = stockpile.energy;
         let mut total_minerals_consumed = Amt::ZERO;
         let mut total_energy_consumed = Amt::ZERO;
-        let mut completed_ships = Vec::new();
+        let mut completed: Vec<Completion> = Vec::new();
 
         for _ in 0..delta {
             if build_queue.queue.is_empty() {
@@ -210,8 +238,19 @@ pub fn tick_build_queue(
             order.build_time_remaining -= 1;
 
             if build_queue.queue[0].is_complete() {
-                let completed = build_queue.queue.remove(0);
-                completed_ships.push((completed.design_id, completed.display_name));
+                let completed_order = build_queue.queue.remove(0);
+                match completed_order.kind {
+                    BuildKind::Ship => completed.push(Completion::Ship {
+                        design_id: completed_order.design_id,
+                        display_name: completed_order.display_name,
+                    }),
+                    BuildKind::Deliverable { .. } => {
+                        completed.push(Completion::Deliverable {
+                            definition_id: completed_order.design_id,
+                            display_name: completed_order.display_name,
+                        });
+                    }
+                }
             }
         }
 
@@ -219,35 +258,60 @@ pub fn tick_build_queue(
             system: sys,
             minerals_consumed: total_minerals_consumed,
             energy_consumed: total_energy_consumed,
-            completed_ships,
+            completed,
         });
     }
 
-    // Apply stockpile changes and spawn ships
+    // Apply stockpile changes and spawn ships / enqueue deliverables
     for result in results {
         if let Ok(mut stockpile) = stockpiles.get_mut(result.system) {
             stockpile.minerals = stockpile.minerals.sub(result.minerals_consumed);
             stockpile.energy = stockpile.energy.sub(result.energy_consumed);
         }
-        for (design_id, display_name) in result.completed_ships {
-            if let Ok(pos) = positions.get(result.system) {
-                spawn_ship(
-                    &mut commands,
-                    &design_id,
-                    display_name.clone(),
-                    result.system,
-                    *pos,
-                    ship_owner,
-                    &design_registry,
-                );
-                let sys_name = stars.get(result.system).map(|s| s.name.clone()).unwrap_or_default();
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ShipBuilt,
-                    description: format!("{} built at {}", display_name, sys_name),
-                    related_system: Some(result.system),
-                });
-                info!("Ship built and launched: {}", display_name);
+        for c in result.completed {
+            let sys_name = stars.get(result.system).map(|s| s.name.clone()).unwrap_or_default();
+            match c {
+                Completion::Ship { design_id, display_name } => {
+                    if let Ok(pos) = positions.get(result.system) {
+                        spawn_ship(
+                            &mut commands,
+                            &design_id,
+                            display_name.clone(),
+                            result.system,
+                            *pos,
+                            ship_owner,
+                            &design_registry,
+                        );
+                        events.write(GameEvent {
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::ShipBuilt,
+                            description: format!("{} built at {}", display_name, sys_name),
+                            related_system: Some(result.system),
+                        });
+                        info!("Ship built and launched: {}", display_name);
+                    }
+                }
+                Completion::Deliverable { definition_id, display_name } => {
+                    // #223: Push the new CargoItem into the system's DeliverableStockpile.
+                    // If the component doesn't yet exist, add one via commands.
+                    let item = CargoItem::Deliverable { definition_id: definition_id.clone() };
+                    if let Ok(mut dstock) = deliverable_stockpiles.get_mut(result.system) {
+                        dstock.push(item);
+                    } else {
+                        commands.entity(result.system).insert(DeliverableStockpile {
+                            items: vec![item],
+                        });
+                    }
+                    events.write(GameEvent {
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::ShipBuilt,
+                        description: format!(
+                            "Deliverable '{}' produced at {}", display_name, sys_name
+                        ),
+                        related_system: Some(result.system),
+                    });
+                    info!("Deliverable produced: {} @ {}", display_name, sys_name);
+                }
             }
         }
     }
@@ -509,6 +573,7 @@ mod tests {
     fn make_order(minerals_cost: Amt, minerals_invested: Amt, energy_cost: Amt, energy_invested: Amt) -> BuildOrder {
         let build_time = 60;
         BuildOrder {
+            kind: BuildKind::default(),
             design_id: "explorer_mk1".to_string(),
             display_name: "Explorer".to_string(),
             minerals_cost,

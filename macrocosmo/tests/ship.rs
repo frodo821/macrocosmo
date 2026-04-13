@@ -296,6 +296,7 @@ fn test_build_queue_spawns_ship() {
         },
         BuildQueue {
             queue: vec![BuildOrder {
+                kind: macrocosmo::colony::BuildKind::default(),
                 design_id: "explorer_mk1".to_string(),
                 display_name: "Explorer".to_string(),
                 minerals_cost: Amt::units(50),
@@ -1564,6 +1565,7 @@ fn courier_route_resource_transport_delivers_at_destination() {
     app.world_mut().entity_mut(courier).insert(Cargo {
         minerals: Amt::units(300),
         energy: Amt::units(100),
+        items: Vec::new(),
     });
     let mut route = CourierRoute::new(vec![sys_a, sys_b], CourierMode::ResourceTransport);
     route.current_index = 1; // pretend we just arrived at sys_b

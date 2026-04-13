@@ -92,6 +92,32 @@ pub struct ResourceStockpile {
     pub authority: Amt,
 }
 
+/// #223: Per-star-system cargo-item stockpile. Shipyard-built deliverables
+/// land here when construction completes, ready to be loaded onto a ship's
+/// Cargo via `QueuedCommand::LoadDeliverable`.
+#[derive(Component, Default, Debug, Clone)]
+pub struct DeliverableStockpile {
+    pub items: Vec<crate::ship::CargoItem>,
+}
+
+impl DeliverableStockpile {
+    pub fn push(&mut self, item: crate::ship::CargoItem) {
+        self.items.push(item);
+    }
+
+    pub fn remove(&mut self, index: usize) -> Option<crate::ship::CargoItem> {
+        if index < self.items.len() {
+            Some(self.items.remove(index))
+        } else {
+            None
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 #[derive(Component)]
 pub struct ResourceCapacity {
     pub minerals: Amt,

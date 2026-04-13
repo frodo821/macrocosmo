@@ -1113,6 +1113,7 @@ fn test_build_queue_requires_shipyard() {
         },
         BuildQueue {
             queue: vec![BuildOrder {
+                kind: macrocosmo::colony::BuildKind::default(),
                 design_id: "explorer_mk1".to_string(),
                 display_name: "Explorer".to_string(),
                 minerals_cost: Amt::units(100),
@@ -1719,6 +1720,7 @@ fn test_134_existing_shipyard_gating_still_works() {
         },
         BuildQueue {
             queue: vec![BuildOrder {
+                kind: macrocosmo::colony::BuildKind::default(),
                 design_id: "explorer_mk1".to_string(),
                 display_name: "Explorer".to_string(),
                 minerals_cost: Amt::units(100),
