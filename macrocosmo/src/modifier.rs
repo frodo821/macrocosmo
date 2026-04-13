@@ -1,5 +1,46 @@
 use crate::amount::{Amt, SignedAmt};
 
+/// A declarative modifier parsed from a Lua definition (building / job / species).
+///
+/// Unlike `Modifier`, this carries a *target string* used by runtime sync systems
+/// to route it to the right `ModifiedValue` bucket. Target string conventions
+/// (see #241):
+///
+/// - `colony.<field>` — colony-level aggregator (e.g. `colony.minerals_per_hexadies`)
+/// - `colony.<job>_slot` — job slot capacity (e.g. `colony.miner_slot`)
+/// - `job:<job_id>::<target>` — per-job rate bucket (e.g.
+///   `job:miner::colony.minerals_per_hexadies`)
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedModifier {
+    pub target: String,
+    pub base_add: f64,
+    pub multiplier: f64,
+    pub add: f64,
+}
+
+impl ParsedModifier {
+    /// True iff this modifier targets a job-scoped bucket
+    /// (`job:<id>::...`). The part after `::` is returned alongside the job id.
+    pub fn job_scope(&self) -> Option<(&str, &str)> {
+        let rest = self.target.strip_prefix("job:")?;
+        let (job_id, target) = rest.split_once("::")?;
+        Some((job_id, target))
+    }
+
+    /// Build a `Modifier` with the given id/label.
+    pub fn to_modifier(&self, id: impl Into<String>, label: impl Into<String>) -> Modifier {
+        Modifier {
+            id: id.into(),
+            label: label.into(),
+            base_add: SignedAmt::from_f64(self.base_add),
+            multiplier: SignedAmt::from_f64(self.multiplier),
+            add: SignedAmt::from_f64(self.add),
+            expires_at: None,
+            on_expire_event: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Modifier {
     pub id: String,

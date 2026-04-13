@@ -47,6 +47,8 @@ impl Plugin for ColonyPlugin {
                     tick_timed_effects,
                     tick_authority,
                     sync_building_modifiers,
+                    crate::species::sync_job_assignment,
+                    sync_species_modifiers,
                     sync_system_building_maintenance,
                     sync_maintenance_modifiers,
                     sync_food_consumption,

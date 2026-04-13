@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
-use crate::modifier::ModifiedValue;
+use crate::modifier::ParsedModifier;
 
 // ---------------------------------------------------------------------------
 // Species definitions
@@ -15,8 +14,10 @@ pub struct SpeciesDefinition {
     pub name: String,
     pub description: String,
     pub base_growth_rate: f64,
-    /// job_id -> bonus ModifiedValue (base=1.0 + bonus, modifiers for techs etc.)
-    pub job_bonuses: HashMap<String, ModifiedValue>,
+    /// Raw modifiers declared in Lua. Targets are routed at runtime by
+    /// `sync_species_modifiers`: job-scoped (`job:<id>::...`) go into per-job
+    /// buckets, otherwise to the colony aggregator. See #241.
+    pub modifiers: Vec<ParsedModifier>,
 }
 
 #[derive(Resource, Default)]
@@ -78,8 +79,27 @@ pub struct JobDefinition {
     pub id: String,
     pub label: String,
     pub description: String,
-    /// resource_type -> amount per pop per hexady
-    pub base_output: HashMap<String, Amt>,
+    /// Per-pop rate modifiers declared in Lua. Prefix-less `colony.<x>` targets
+    /// are auto-prefixed to `job:<self_id>::colony.<x>` at parse time. See #241.
+    pub modifiers: Vec<ParsedModifier>,
+}
+
+impl JobDefinition {
+    /// Targets this job declares per-pop output for (i.e. every `job:<id>::<target>`
+    /// modifier it carries). Used by `tick_production` to know which colony
+    /// aggregators should receive this job's contribution.
+    #[allow(dead_code)]
+    pub fn declared_targets(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = self
+            .modifiers
+            .iter()
+            .filter_map(|m| m.job_scope())
+            .map(|(_, t)| t)
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
 }
 
 #[derive(Resource, Default)]
@@ -101,11 +121,31 @@ impl JobRegistry {
 // Colony jobs
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct JobSlot {
     pub job_id: String,
     pub capacity: u32,
     pub assigned: u32,
+    /// #241: Portion of `capacity` sourced from building `colony.<job>_slot`
+    /// modifiers. `sync_building_modifiers` resets this each tick; the rest
+    /// (`capacity - capacity_from_buildings`) is treated as an externally
+    /// configured fixed capacity (tests, events, etc.).
+    #[doc(hidden)]
+    pub capacity_from_buildings: u32,
+}
+
+impl JobSlot {
+    /// Create a slot with externally-configured fixed capacity. Building sync
+    /// will *add* to this, never reduce it below `capacity`.
+    #[allow(dead_code)]
+    pub fn fixed(job_id: impl Into<String>, capacity: u32) -> Self {
+        Self {
+            job_id: job_id.into(),
+            capacity,
+            assigned: 0,
+            capacity_from_buildings: 0,
+        }
+    }
 }
 
 #[derive(Component, Default)]
@@ -151,15 +191,14 @@ pub struct SpeciesPlugin;
 
 impl Plugin for SpeciesPlugin {
     fn build(&self, app: &mut App) {
+        // Note: `sync_job_assignment` is scheduled by ColonyPlugin so it runs
+        // between `sync_building_modifiers` (which sets slot capacities) and
+        // `tick_production` (which reads `slot.assigned`). See #241.
         app.init_resource::<SpeciesRegistry>()
             .init_resource::<JobRegistry>()
             .add_systems(
                 Startup,
                 load_species_and_jobs.after(crate::scripting::load_all_scripts),
-            )
-            .add_systems(
-                Update,
-                sync_job_assignment.after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -263,12 +302,12 @@ mod tests {
                 JobSlot {
                     job_id: "miner".to_string(),
                     capacity: 5,
-                    assigned: 5,
+                    assigned: 5, capacity_from_buildings: 0,
                 },
                 JobSlot {
                     job_id: "farmer".to_string(),
                     capacity: 5,
-                    assigned: 3,
+                    assigned: 3, capacity_from_buildings: 0,
                 },
             ],
         };
@@ -289,12 +328,12 @@ mod tests {
                 JobSlot {
                     job_id: "miner".to_string(),
                     capacity: 5,
-                    assigned: 5,
+                    assigned: 5, capacity_from_buildings: 0,
                 },
                 JobSlot {
                     job_id: "farmer".to_string(),
                     capacity: 5,
-                    assigned: 5,
+                    assigned: 5, capacity_from_buildings: 0,
                 },
             ],
         };
@@ -312,7 +351,7 @@ mod tests {
             name: "Human".to_string(),
             description: String::new(),
             base_growth_rate: 0.01,
-            job_bonuses: HashMap::new(),
+            modifiers: Vec::new(),
         });
 
         let human = registry.get("human").unwrap();
@@ -329,18 +368,17 @@ mod tests {
             id: "miner".to_string(),
             label: "Miner".to_string(),
             description: String::new(),
-            base_output: {
-                let mut m = HashMap::new();
-                m.insert("minerals".to_string(), Amt::new(0, 600));
-                m
-            },
+            modifiers: vec![ParsedModifier {
+                target: "job:miner::colony.minerals_per_hexadies".to_string(),
+                base_add: 0.6,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
         });
 
         let miner = registry.get("miner").unwrap();
         assert_eq!(miner.label, "Miner");
-        assert_eq!(
-            miner.base_output.get("minerals"),
-            Some(&Amt::new(0, 600))
-        );
+        let targets = miner.declared_targets();
+        assert_eq!(targets, vec!["colony.minerals_per_hexadies"]);
     }
 }

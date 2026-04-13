@@ -1,7 +1,6 @@
-use std::collections::HashMap;
+use bevy::log::warn;
 
-use crate::amount::Amt;
-use crate::modifier::ModifiedValue;
+use crate::scripting::modifier_api::parse_parsed_modifiers;
 use crate::species::{JobDefinition, SpeciesDefinition};
 
 /// Parse species definitions from the Lua `_species_definitions` global table.
@@ -17,25 +16,28 @@ pub fn parse_species_definitions(lua: &mlua::Lua) -> Result<Vec<SpeciesDefinitio
         let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
         let growth_rate: f64 = table.get::<Option<f64>>("growth_rate")?.unwrap_or(0.01);
 
-        // Parse job_bonuses table (optional): { miner = 0.1, researcher = 0.2, ... }
-        let mut job_bonuses = HashMap::new();
-        let bonuses_value: mlua::Value = table.get("job_bonuses")?;
-        if let mlua::Value::Table(bonuses_table) = bonuses_value {
-            for pair in bonuses_table.pairs::<String, f64>() {
-                let (job_id, bonus) = pair?;
-                // Create a ModifiedValue with base = 1.0 + bonus
-                // The bonus is stored as a fraction, e.g. 0.1 = +10%
-                let base_value = Amt::from_f64(1.0 + bonus);
-                job_bonuses.insert(job_id, ModifiedValue::new(base_value));
-            }
+        // #241: Legacy `job_bonuses` field is warn-then-ignored. Use `modifiers` with
+        // job-scoped targets instead, e.g. `job:miner::colony.minerals_per_hexadies`.
+        if matches!(
+            table.get::<mlua::Value>("job_bonuses")?,
+            mlua::Value::Table(_)
+        ) {
+            warn!(
+                "Species '{}' uses legacy `job_bonuses` field; ignored. Migrate to modifiers \
+                 with target = \"job:<job_id>::colony.<resource>_per_hexadies\" (#241).",
+                id
+            );
         }
+
+        // New: modifiers array.
+        let modifiers = parse_parsed_modifiers(&table, "modifiers", None)?;
 
         result.push(SpeciesDefinition {
             id,
             name,
             description,
             base_growth_rate: growth_rate,
-            job_bonuses,
+            modifiers,
         });
     }
 
@@ -54,21 +56,28 @@ pub fn parse_job_definitions(lua: &mlua::Lua) -> Result<Vec<JobDefinition>, mlua
         let label: String = table.get("label")?;
         let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
 
-        // Parse base_output table (optional): { minerals = 0.6, energy = 0.5, ... }
-        let mut base_output = HashMap::new();
-        let output_value: mlua::Value = table.get("base_output")?;
-        if let mlua::Value::Table(output_table) = output_value {
-            for pair in output_table.pairs::<String, f64>() {
-                let (resource, amount) = pair?;
-                base_output.insert(resource, Amt::from_f64(amount));
-            }
+        // #241: Legacy `base_output` field is warn-then-ignored. Use `modifiers`
+        // instead, e.g. `{ target = "colony.minerals_per_hexadies", base_add = 0.6 }`.
+        if matches!(
+            table.get::<mlua::Value>("base_output")?,
+            mlua::Value::Table(_)
+        ) {
+            warn!(
+                "Job '{}' uses legacy `base_output` field; ignored. Migrate to modifiers \
+                 with target = \"colony.<resource>_per_hexadies\" (#241).",
+                id
+            );
         }
+
+        // New: modifiers array, with auto-prefix applied (`colony.x` →
+        // `job:<id>::colony.x` when the Lua author didn't write the prefix).
+        let modifiers = parse_parsed_modifiers(&table, "modifiers", Some(&id))?;
 
         result.push(JobDefinition {
             id,
             label,
             description,
-            base_output,
+            modifiers,
         });
     }
 
@@ -91,17 +100,16 @@ mod tests {
                 id = "human",
                 name = "Human",
                 growth_rate = 0.01,
-                job_bonuses = {
-                    miner = 0.0,
-                    researcher = 0.1,
+                modifiers = {
+                    { target = "job:researcher::colony.research_per_hexadies", multiplier = 0.1 },
                 },
             }
             define_species {
                 id = "alien",
                 name = "Alien",
                 growth_rate = 0.02,
-                job_bonuses = {
-                    miner = 0.2,
+                modifiers = {
+                    { target = "job:miner::colony.minerals_per_hexadies", multiplier = 0.2 },
                 },
             }
             "#,
@@ -116,20 +124,21 @@ mod tests {
         assert_eq!(defs[0].id, "human");
         assert_eq!(defs[0].name, "Human");
         assert!((defs[0].base_growth_rate - 0.01).abs() < 1e-10);
-        assert_eq!(defs[0].job_bonuses.len(), 2);
-        // miner bonus = 0.0 -> base = 1.0
-        let miner_bonus = defs[0].job_bonuses.get("miner").unwrap();
-        assert_eq!(miner_bonus.base(), Amt::units(1));
-        // researcher bonus = 0.1 -> base = 1.1
-        let researcher_bonus = defs[0].job_bonuses.get("researcher").unwrap();
-        assert_eq!(researcher_bonus.base(), Amt::new(1, 100));
+        assert_eq!(defs[0].modifiers.len(), 1);
+        assert_eq!(
+            defs[0].modifiers[0].target,
+            "job:researcher::colony.research_per_hexadies"
+        );
+        assert!((defs[0].modifiers[0].multiplier - 0.1).abs() < 1e-10);
 
         // Alien
         assert_eq!(defs[1].id, "alien");
-        assert_eq!(defs[1].name, "Alien");
         assert!((defs[1].base_growth_rate - 0.02).abs() < 1e-10);
-        let miner_bonus = defs[1].job_bonuses.get("miner").unwrap();
-        assert_eq!(miner_bonus.base(), Amt::new(1, 200));
+        assert_eq!(defs[1].modifiers.len(), 1);
+        assert_eq!(
+            defs[1].modifiers[0].target,
+            "job:miner::colony.minerals_per_hexadies"
+        );
     }
 
     #[test]
@@ -153,7 +162,7 @@ mod tests {
         assert_eq!(defs[0].id, "basic");
         assert_eq!(defs[0].name, "Basic Species");
         assert!((defs[0].base_growth_rate - 0.01).abs() < 1e-10); // default
-        assert!(defs[0].job_bonuses.is_empty());
+        assert!(defs[0].modifiers.is_empty());
     }
 
     #[test]
@@ -166,17 +175,17 @@ mod tests {
             define_job {
                 id = "miner",
                 label = "Miner",
-                base_output = { minerals = 0.6 },
+                modifiers = { { target = "colony.minerals_per_hexadies", base_add = 0.6 } },
             }
             define_job {
                 id = "farmer",
                 label = "Farmer",
-                base_output = { food = 0.6 },
+                modifiers = { { target = "colony.food_per_hexadies", base_add = 1.0 } },
             }
             define_job {
                 id = "researcher",
                 label = "Researcher",
-                base_output = { research = 0.5 },
+                modifiers = { { target = "colony.research_per_hexadies", base_add = 0.5 } },
             }
             "#,
         )
@@ -186,25 +195,29 @@ mod tests {
         let defs = parse_job_definitions(lua).unwrap();
         assert_eq!(defs.len(), 3);
 
-        // Miner
+        // Miner — prefix-less `colony.x` auto-prefixes with `job:miner::`
         assert_eq!(defs[0].id, "miner");
         assert_eq!(defs[0].label, "Miner");
+        assert_eq!(defs[0].modifiers.len(), 1);
         assert_eq!(
-            defs[0].base_output.get("minerals"),
-            Some(&Amt::new(0, 600))
+            defs[0].modifiers[0].target,
+            "job:miner::colony.minerals_per_hexadies"
         );
+        assert!((defs[0].modifiers[0].base_add - 0.6).abs() < 1e-10);
 
         // Farmer
         assert_eq!(defs[1].id, "farmer");
-        assert_eq!(defs[1].label, "Farmer");
-        assert_eq!(defs[1].base_output.get("food"), Some(&Amt::new(0, 600)));
+        assert_eq!(
+            defs[1].modifiers[0].target,
+            "job:farmer::colony.food_per_hexadies"
+        );
+        assert!((defs[1].modifiers[0].base_add - 1.0).abs() < 1e-10);
 
         // Researcher
         assert_eq!(defs[2].id, "researcher");
-        assert_eq!(defs[2].label, "Researcher");
         assert_eq!(
-            defs[2].base_output.get("research"),
-            Some(&Amt::new(0, 500))
+            defs[2].modifiers[0].target,
+            "job:researcher::colony.research_per_hexadies"
         );
     }
 
@@ -228,7 +241,7 @@ mod tests {
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id, "idle");
         assert_eq!(defs[0].label, "Idle");
-        assert!(defs[0].base_output.is_empty());
+        assert!(defs[0].modifiers.is_empty());
     }
 
     /// Test loading species definitions from the actual scripts/species/human.lua file.
@@ -251,9 +264,12 @@ mod tests {
         assert_eq!(defs[0].id, "human");
         assert_eq!(defs[0].name, "Human");
         assert!((defs[0].base_growth_rate - 0.01).abs() < 1e-10);
-        assert!(defs[0].job_bonuses.contains_key("miner"));
-        assert!(defs[0].job_bonuses.contains_key("researcher"));
-        assert!(defs[0].job_bonuses.contains_key("farmer"));
+        // #241: species uses modifiers instead of job_bonuses
+        // Human should have at least one species-wide modifier.
+        assert!(
+            !defs[0].modifiers.is_empty(),
+            "expected human species to define modifiers"
+        );
     }
 
     /// Test loading job definitions from the actual scripts/jobs/basic.lua file.

@@ -304,6 +304,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::<String, BCapabilityParams>::new(),
             upgrade_to: Vec::new(),

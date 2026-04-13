@@ -1,28 +1,35 @@
+-- #241: Buildings declare `modifiers` with target strings.
+-- - `colony.<job>_slot` grants slot capacity (labor-intensive buildings)
+-- - `colony.<resource>_per_hexadies` directly contributes to production
+--   (fully-automated buildings — no pop required)
+-- The legacy `production_bonus = { ... }` field is warn-then-ignored.
 local mine = define_building {
     id = "mine",
     name = "Mine",
-    description = "Extracts minerals from planetary deposits",
+    description = "Extracts minerals from planetary deposits (labour-intensive)",
     cost = { minerals = 150, energy = 50 },
     build_time = 10,
     maintenance = 0.2,
-    production_bonus = { minerals = 3.0 },
+    modifiers = {
+        { target = "colony.miner_slot", base_add = 5 },
+    },
     is_system_building = false,
     upgrade_to = {
         { target = forward_ref("advanced_mine"), cost = { minerals = 200, energy = 100 }, build_time = 8 },
     },
 }
 
--- #236: maintenance refactor に伴う一時バランス対応。ship maintenance が
--- 10-40x に増えるため、初手赤字を回避する仮 10x 調整。job ベースへの移行で
--- 再調整予定 (別 issue)。
 local power_plant = define_building {
     id = "power_plant",
     name = "PowerPlant",
-    description = "Generates energy from local resources",
+    description = "Generates energy from local resources (labour-intensive)",
     cost = { minerals = 50, energy = 150 },
     build_time = 10,
     maintenance = 0.0,
-    production_bonus = { energy = 30.0 },
+    -- 5 power workers × 6.0 energy/pop = 30 energy, matches #236 balance.
+    modifiers = {
+        { target = "colony.power_worker_slot", base_add = 5 },
+    },
     is_system_building = false,
     upgrade_to = {
         { target = forward_ref("advanced_power_plant"), cost = { minerals = 150, energy = 200 }, build_time = 10 },
@@ -32,11 +39,14 @@ local power_plant = define_building {
 local research_lab = define_building {
     id = "research_lab",
     name = "ResearchLab",
-    description = "Conducts scientific research",
+    description = "Conducts scientific research (labour-intensive)",
     cost = { minerals = 100, energy = 100 },
     build_time = 15,
     maintenance = 0.5,
-    production_bonus = { research = 2.0 },
+    -- 4 researchers × 0.5 research/pop = 2.0 research, matches prior balance.
+    modifiers = {
+        { target = "colony.researcher_slot", base_add = 4 },
+    },
     is_system_building = true,
 }
 
@@ -65,11 +75,14 @@ local port = define_building {
 local farm = define_building {
     id = "farm",
     name = "Farm",
-    description = "Produces food to sustain population",
+    description = "Produces food to sustain population (labour-intensive)",
     cost = { minerals = 100, energy = 50 },
     build_time = 20,
     maintenance = 0.3,
-    production_bonus = { food = 5.0 },
+    -- 5 farmers × 1.0 food/pop = 5.0 food, matches prior balance.
+    modifiers = {
+        { target = "colony.farmer_slot", base_add = 5 },
+    },
     is_system_building = false,
 }
 
@@ -81,12 +94,14 @@ local advanced_mine = define_building {
     cost = nil,
     build_time = 10,
     maintenance = 0.4,
-    production_bonus = { minerals = 6.0 },
+    -- 10 miners × 0.6 minerals/pop = 6.0, double the basic mine.
+    modifiers = {
+        { target = "colony.miner_slot", base_add = 10 },
+    },
     is_system_building = false,
     prerequisites = has_tech(forward_ref("industrial_automated_mining")),
 }
 
--- #236: See power_plant comment — 10x temporary balance until job system.
 local advanced_power_plant = define_building {
     id = "advanced_power_plant",
     name = "Advanced PowerPlant",
@@ -94,7 +109,10 @@ local advanced_power_plant = define_building {
     cost = nil,
     build_time = 10,
     maintenance = 0.2,
-    production_bonus = { energy = 60.0 },
+    -- 10 power workers × 6.0 energy/pop = 60.0, double the basic plant.
+    modifiers = {
+        { target = "colony.power_worker_slot", base_add = 10 },
+    },
     is_system_building = false,
     prerequisites = has_tech(forward_ref("industrial_fusion_power")),
 }

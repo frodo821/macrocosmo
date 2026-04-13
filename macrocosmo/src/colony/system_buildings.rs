@@ -2,13 +2,13 @@ use bevy::prelude::*;
 
 use crate::amount::{Amt, SignedAmt};
 use crate::galaxy::Planet;
-use crate::modifier::{ModifiedValue, Modifier};
+use crate::modifier::Modifier;
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::time_system::GameClock;
 
 use super::{
     BuildingOrder, Colony, DemolitionOrder, LastProductionTick, MaintenanceCost,
-    Production, ResourceStockpile, UpgradeOrder,
+    ResourceStockpile, UpgradeOrder,
 };
 
 /// Default number of system building slots for any star system.
@@ -109,42 +109,32 @@ impl SystemBuildingQueue {
     }
 }
 
-/// Synchronise system building maintenance and production modifiers.
-/// System buildings' maintenance costs are pushed into the first colony of each system.
-/// System buildings' production bonuses (e.g. ResearchLab) are also pushed to the first colony.
+/// Synchronise system building maintenance. System buildings' maintenance
+/// costs are pushed as modifiers onto the MaintenanceCost of the first colony
+/// of each system.
+///
+/// #241: Production bonuses from system buildings (e.g. ResearchLab) are now
+/// handled uniformly by `sync_building_modifiers` via the unified `modifiers`
+/// field — this system only handles maintenance.
 pub fn sync_system_building_maintenance(
     registry: Res<BuildingRegistry>,
     system_buildings_q: Query<(Entity, &SystemBuildings)>,
-    mut colonies: Query<(&Colony, &mut MaintenanceCost, &mut Production)>,
+    mut colonies: Query<(&Colony, &mut MaintenanceCost)>,
     planets: Query<&Planet>,
 ) {
-    // Build a mapping of system entity -> system buildings
     let system_buildings: Vec<(Entity, &SystemBuildings)> = system_buildings_q.iter().collect();
 
     for (sys_entity, sys_bldgs) in &system_buildings {
-        // Find the first colony in this system to attach modifiers to
-        let colony_data: Option<()> = None;
-        let _ = colony_data; // suppress warning
-
-        for (colony, mut maint, mut prod) in &mut colonies {
+        for (colony, mut maint) in &mut colonies {
             if colony.system(&planets) != Some(*sys_entity) {
                 continue;
             }
 
-            // Push maintenance modifiers for system buildings
             for (slot_idx, slot) in sys_bldgs.slots.iter().enumerate() {
                 let maint_id = format!("sys_building_maint_{}", slot_idx);
-                let prod_id_m = format!("sys_building_{}_minerals", slot_idx);
-                let prod_id_e = format!("sys_building_{}_energy", slot_idx);
-                let prod_id_r = format!("sys_building_{}_research", slot_idx);
-                let prod_id_f = format!("sys_building_{}_food", slot_idx);
                 if let Some(bid) = slot {
                     let Some(def) = registry.get(bid.as_str()) else {
                         maint.energy_per_hexadies.pop_modifier(&maint_id);
-                        prod.minerals_per_hexadies.pop_modifier(&prod_id_m);
-                        prod.energy_per_hexadies.pop_modifier(&prod_id_e);
-                        prod.research_per_hexadies.pop_modifier(&prod_id_r);
-                        prod.food_per_hexadies.pop_modifier(&prod_id_f);
                         continue;
                     };
                     let cost = def.maintenance;
@@ -161,68 +151,8 @@ pub fn sync_system_building_maintenance(
                     } else {
                         maint.energy_per_hexadies.pop_modifier(&maint_id);
                     }
-
-                    // Production bonuses from system buildings (e.g. ResearchLab)
-                    let (m, e, r, f) = def.production_bonus();
-                    let label = format!("{} (sys slot {})", def.name, slot_idx);
-                    if m != Amt::ZERO {
-                        prod.minerals_per_hexadies.push_modifier(Modifier {
-                            id: prod_id_m,
-                            label: label.clone(),
-                            base_add: SignedAmt::from_amt(m),
-                            multiplier: SignedAmt::ZERO,
-                            add: SignedAmt::ZERO,
-                            expires_at: None,
-                            on_expire_event: None,
-                        });
-                    } else {
-                        prod.minerals_per_hexadies.pop_modifier(&prod_id_m);
-                    }
-                    if e != Amt::ZERO {
-                        prod.energy_per_hexadies.push_modifier(Modifier {
-                            id: prod_id_e,
-                            label: label.clone(),
-                            base_add: SignedAmt::from_amt(e),
-                            multiplier: SignedAmt::ZERO,
-                            add: SignedAmt::ZERO,
-                            expires_at: None,
-                            on_expire_event: None,
-                        });
-                    } else {
-                        prod.energy_per_hexadies.pop_modifier(&prod_id_e);
-                    }
-                    if r != Amt::ZERO {
-                        prod.research_per_hexadies.push_modifier(Modifier {
-                            id: prod_id_r,
-                            label: label.clone(),
-                            base_add: SignedAmt::from_amt(r),
-                            multiplier: SignedAmt::ZERO,
-                            add: SignedAmt::ZERO,
-                            expires_at: None,
-                            on_expire_event: None,
-                        });
-                    } else {
-                        prod.research_per_hexadies.pop_modifier(&prod_id_r);
-                    }
-                    if f != Amt::ZERO {
-                        prod.food_per_hexadies.push_modifier(Modifier {
-                            id: prod_id_f,
-                            label,
-                            base_add: SignedAmt::from_amt(f),
-                            multiplier: SignedAmt::ZERO,
-                            add: SignedAmt::ZERO,
-                            expires_at: None,
-                            on_expire_event: None,
-                        });
-                    } else {
-                        prod.food_per_hexadies.pop_modifier(&prod_id_f);
-                    }
                 } else {
                     maint.energy_per_hexadies.pop_modifier(&maint_id);
-                    prod.minerals_per_hexadies.pop_modifier(&prod_id_m);
-                    prod.energy_per_hexadies.pop_modifier(&prod_id_e);
-                    prod.research_per_hexadies.pop_modifier(&prod_id_r);
-                    prod.food_per_hexadies.pop_modifier(&prod_id_f);
                 }
             }
 
@@ -415,6 +345,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: true,
             capabilities: shipyard_caps,
             upgrade_to: Vec::new(),
@@ -443,6 +374,7 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: true,
             capabilities: port_caps,
             upgrade_to: Vec::new(),
