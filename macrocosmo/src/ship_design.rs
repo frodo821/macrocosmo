@@ -499,13 +499,17 @@ pub fn load_ship_designs(
     }
 
     // Parse ship designs and validate each against the hull/module registries.
+    // #236: Derived fields (hp/ftl_range/cost/maintenance/can_*) are computed
+    // here from hull + modules. Any values parsed from Lua are ignored — the
+    // parser has already emitted a `warn!` for each authored derived field.
     match ship_design_api::parse_ship_designs(engine.lua()) {
         Ok(defs) => {
             let mut loaded = 0usize;
             let mut rejected = 0usize;
-            for def in defs {
+            for mut def in defs {
                 match def.validate(&hulls, &modules) {
                     Ok(()) => {
+                        apply_derived_to_definition(&mut def, &hulls, &modules);
                         designs.insert(def);
                         loaded += 1;
                     }
@@ -522,6 +526,35 @@ pub fn load_ship_designs(
         }
         Err(e) => warn!("Failed to parse ship design definitions: {e}"),
     }
+}
+
+/// #236: Overwrite a definition's derived fields with values computed from
+/// its hull + modules. Used by the registry loader and by any code path that
+/// constructs a `ShipDesignDefinition` from Lua (or from the Ship Designer
+/// UI) and wants to ensure the resulting stats match hull + modules.
+pub fn apply_derived_to_definition(
+    def: &mut ShipDesignDefinition,
+    hulls: &HullRegistry,
+    modules: &ModuleRegistry,
+) {
+    let Some(hull) = hulls.get(&def.hull_id) else {
+        return;
+    };
+    let mod_defs: Vec<&ModuleDefinition> = def
+        .modules
+        .iter()
+        .filter_map(|a| modules.get(&a.module_id))
+        .collect();
+    let d = design_derived(hull, &mod_defs);
+    def.hp = d.hp;
+    def.sublight_speed = d.sublight_speed;
+    def.ftl_range = d.ftl_range;
+    def.maintenance = d.maintenance;
+    def.build_cost_minerals = d.build_cost_minerals;
+    def.build_cost_energy = d.build_cost_energy;
+    def.build_time = d.build_time;
+    def.can_survey = d.can_survey;
+    def.can_colonize = d.can_colonize;
 }
 
 /// #226: derive a ship design's effective prerequisites from its hull and
@@ -556,43 +589,121 @@ pub fn ship_design_effective_prerequisites(
     }
 }
 
-/// Compute total cost for a ship design: hull cost + sum of module costs.
-/// Returns (minerals, energy, build_time, maintenance).
-pub fn design_cost(
-    hull: &HullDefinition,
-    modules: &[&ModuleDefinition],
-) -> (Amt, Amt, i64, Amt) {
+/// #236: Derived statistics for a ship design, computed entirely from
+/// `HullDefinition` + a selection of `ModuleDefinition`s. Lua presets never
+/// author these values — they are derived at registry build time so that the
+/// hull + module content is the single source of truth.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DerivedStats {
+    pub hp: f64,
+    pub sublight_speed: f64,
+    pub evasion: f64,
+    pub ftl_range: f64,
+    pub survey_speed: f64,
+    pub colonize_speed: f64,
+    /// `survey_speed > 0` — capability derived, not authored.
+    pub can_survey: bool,
+    /// `colonize_speed > 0` — capability derived, not authored.
+    pub can_colonize: bool,
+    pub build_cost_minerals: Amt,
+    pub build_cost_energy: Amt,
+    pub build_time: i64,
+    pub maintenance: Amt,
+}
+
+/// Apply modifiers against a base value, using the same formula as
+/// `ModifiedValue::final_value`:
+/// ```text
+/// final = (base + Σ base_add) * (1 + Σ multiplier) + Σ add
+/// ```
+/// Negative values are clamped to 0 at each stage (matches ModifiedValue).
+fn apply_modifiers(base: f64, target: &str, sources: &[&[ModuleModifier]]) -> f64 {
+    let mut base_sum = base;
+    let mut mult_sum = 1.0;
+    let mut add_sum = 0.0;
+    for group in sources {
+        for m in *group {
+            if m.target == target {
+                base_sum += m.base_add;
+                mult_sum += m.multiplier;
+                add_sum += m.add;
+            }
+        }
+    }
+    (base_sum.max(0.0) * mult_sum.max(0.0) + add_sum).max(0.0)
+}
+
+/// #236: Compute all derived stats for a ship design from its hull + modules.
+/// Applies hull modifiers and module modifiers via the `ModifiedValue` formula.
+pub fn design_derived(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> DerivedStats {
+    let module_mods: Vec<&[ModuleModifier]> =
+        modules.iter().map(|m| m.modifiers.as_slice()).collect();
+    let mut sources: Vec<&[ModuleModifier]> = Vec::with_capacity(module_mods.len() + 1);
+    sources.push(hull.modifiers.as_slice());
+    for m in &module_mods {
+        sources.push(*m);
+    }
+
+    let hp = apply_modifiers(hull.base_hp, "ship.hp", &sources);
+    let sublight_speed = apply_modifiers(hull.base_speed, "ship.speed", &sources);
+    let evasion = apply_modifiers(hull.base_evasion, "ship.evasion", &sources);
+    let ftl_range = apply_modifiers(0.0, "ship.ftl_range", &sources);
+    let survey_speed = apply_modifiers(0.0, "ship.survey_speed", &sources);
+    let colonize_speed = apply_modifiers(0.0, "ship.colonize_speed", &sources);
+
+    // Cost + maintenance: hull + Σ module, with 10% of module mineral cost
+    // added as maintenance (unchanged formula — user confirmed "式が正").
     let mut minerals = hull.build_cost_minerals;
     let mut energy = hull.build_cost_energy;
     let mut maintenance = hull.maintenance;
     for m in modules {
         minerals = minerals.add(m.cost_minerals);
         energy = energy.add(m.cost_energy);
-        // Each module adds 10% of its mineral cost as maintenance
         maintenance = maintenance.add(Amt::milli(m.cost_minerals.raw() / 10));
     }
-    (minerals, energy, hull.build_time, maintenance)
+
+    DerivedStats {
+        hp,
+        sublight_speed,
+        evasion,
+        ftl_range,
+        survey_speed,
+        colonize_speed,
+        can_survey: survey_speed > 0.0,
+        can_colonize: colonize_speed > 0.0,
+        build_cost_minerals: minerals,
+        build_cost_energy: energy,
+        // #236: ModuleDefinition has no build_time field yet; use hull.build_time.
+        // Future: per-component time contribution (separate issue).
+        build_time: hull.build_time,
+        maintenance,
+    }
+}
+
+/// Compute total cost for a ship design: hull cost + sum of module costs.
+/// Returns (minerals, energy, build_time, maintenance).
+/// Retained as a thin wrapper around `design_derived` for existing call-sites.
+pub fn design_cost(
+    hull: &HullDefinition,
+    modules: &[&ModuleDefinition],
+) -> (Amt, Amt, i64, Amt) {
+    let d = design_derived(hull, modules);
+    (
+        d.build_cost_minerals,
+        d.build_cost_energy,
+        d.build_time,
+        d.maintenance,
+    )
 }
 
 /// Compute total stats for a design: HP, speed, evasion from hull + module modifiers.
+/// Retained as a thin wrapper around `design_derived` for existing call-sites.
 pub fn design_stats(
     hull: &HullDefinition,
     modules: &[&ModuleDefinition],
 ) -> (f64, f64, f64) {
-    let mut hp = hull.base_hp;
-    let mut speed = hull.base_speed;
-    let mut evasion = hull.base_evasion;
-    for m in modules {
-        for modifier in &m.modifiers {
-            match modifier.target.as_str() {
-                "ship.speed" => speed += modifier.base_add,
-                "ship.evasion" => evasion += modifier.base_add,
-                // HP modifiers affect hull HP
-                _ => {}
-            }
-        }
-    }
-    (hp, speed, evasion)
+    let d = design_derived(hull, modules);
+    (d.hp, d.sublight_speed, d.evasion)
 }
 
 /// #123: Convert a design's slot assignments into the EquippedModule list
@@ -1072,5 +1183,191 @@ mod tests {
         assert_eq!(equipped[0].module_id, "ftl_drive");
         assert_eq!(equipped[1].slot_type, "weapon");
         assert_eq!(equipped[1].module_id, "weapon_laser");
+    }
+
+    // -----------------------------------------------------------------
+    // #236: Regression tests — derive ship design stats from hull +
+    // modules. Preset-authored fields must be ignored; all stats flow
+    // through `design_derived` via the hull + modules registries.
+    // -----------------------------------------------------------------
+
+    /// Small helper building a hull + module fixture that mirrors the real
+    /// Lua courier_hull + ftl_drive content so we can assert exact numeric
+    /// expectations in the derive tests.
+    fn derive_fixture_courier() -> (HullDefinition, ModuleDefinition, ModuleDefinition, ModuleDefinition) {
+        let courier_hull = HullDefinition {
+            id: "courier_hull".into(),
+            name: "Courier Hull".into(),
+            description: String::new(),
+            base_hp: 35.0,
+            base_speed: 0.80,
+            base_evasion: 25.0,
+            slots: vec![
+                HullSlot { slot_type: "ftl".into(), count: 1 },
+                HullSlot { slot_type: "sublight".into(), count: 1 },
+                HullSlot { slot_type: "utility".into(), count: 2 },
+            ],
+            build_cost_minerals: Amt::units(100),
+            build_cost_energy: Amt::units(50),
+            build_time: 30,
+            maintenance: Amt::new(0, 300),
+            modifiers: vec![
+                ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 0.0, multiplier: 1.5, add: 0.0 },
+                ModuleModifier { target: "ship.ftl_range".into(), base_add: 0.0, multiplier: 1.2, add: 0.0 },
+            ],
+            prerequisites: None,
+        };
+        let ftl_drive = ModuleDefinition {
+            id: "ftl_drive".into(),
+            name: "FTL Drive".into(),
+            description: String::new(),
+            slot_type: "ftl".into(),
+            modifiers: vec![
+                ModuleModifier { target: "ship.ftl_range".into(), base_add: 15.0, multiplier: 0.0, add: 0.0 },
+            ],
+            weapon: None,
+            cost_minerals: Amt::units(100),
+            cost_energy: Amt::units(50),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+        };
+        let afterburner = ModuleDefinition {
+            id: "afterburner".into(),
+            name: "Afterburner".into(),
+            description: String::new(),
+            slot_type: "sublight".into(),
+            modifiers: vec![
+                ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 0.2, add: 0.0 },
+            ],
+            weapon: None,
+            cost_minerals: Amt::units(60),
+            cost_energy: Amt::units(40),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+        };
+        let cargo_bay = ModuleDefinition {
+            id: "cargo_bay".into(),
+            name: "Cargo Bay".into(),
+            description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![
+                ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 500.0, multiplier: 0.0, add: 0.0 },
+            ],
+            weapon: None,
+            cost_minerals: Amt::units(30),
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+        };
+        (courier_hull, ftl_drive, afterburner, cargo_bay)
+    }
+
+    /// #236 primary regression: Courier Mk.I must have FTL.
+    #[test]
+    fn test_courier_mk1_has_ftl_capability() {
+        let (hull, ftl, ab, cargo) = derive_fixture_courier();
+        let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
+        // (0 + 15) * (1 + 1.2) = 33.0
+        assert!(d.ftl_range > 0.0, "courier_mk1 must have FTL range > 0");
+        assert!((d.ftl_range - 33.0).abs() < 1e-9, "expected ftl_range 33.0, got {}", d.ftl_range);
+    }
+
+    /// #236: Hull modifiers feed into `design_derived`. Previously the inline
+    /// compute in overlays ignored hull.modifiers entirely.
+    #[test]
+    fn test_hull_modifiers_applied_in_derive() {
+        // courier_hull ftl_range multiplier 1.2x applies on top of ftl_drive.
+        let (courier, ftl, _, _) = derive_fixture_courier();
+        let d = design_derived(&courier, &[&ftl]);
+        assert!((d.ftl_range - 33.0).abs() < 1e-9, "courier hull ftl_range 1.2x must apply");
+
+        // scout_hull: survey_speed multiplier 1.3x applies on survey_equipment.
+        let scout = HullDefinition {
+            id: "scout_hull".into(),
+            name: "Scout Hull".into(),
+            description: String::new(),
+            base_hp: 40.0, base_speed: 0.85, base_evasion: 35.0,
+            slots: vec![HullSlot { slot_type: "utility".into(), count: 1 }],
+            build_cost_minerals: Amt::ZERO, build_cost_energy: Amt::ZERO,
+            build_time: 1, maintenance: Amt::ZERO,
+            modifiers: vec![
+                ModuleModifier { target: "ship.survey_speed".into(), base_add: 0.0, multiplier: 1.3, add: 0.0 },
+                ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 1.15, add: 0.0 },
+            ],
+            prerequisites: None,
+        };
+        let survey = ModuleDefinition {
+            id: "survey_equipment".into(), name: "Survey".into(), description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![
+                ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 },
+            ],
+            weapon: None, cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO,
+            prerequisites: None, upgrade_to: Vec::new(),
+        };
+        let d = design_derived(&scout, &[&survey]);
+        // (0 + 1.0) * (1 + 1.3) = 2.3
+        assert!((d.survey_speed - 2.3).abs() < 1e-9, "scout_hull survey_speed 1.3x must apply: got {}", d.survey_speed);
+        // sublight: 0.85 * (1 + 1.15) = 1.8275
+        assert!((d.sublight_speed - 1.8275).abs() < 1e-9, "scout_hull speed 1.15x must apply: got {}", d.sublight_speed);
+    }
+
+    /// #236: `can_survey` and `can_colonize` derive from speed fields, not
+    /// from authored flags. A ship with a survey module auto-gets can_survey.
+    #[test]
+    fn test_can_survey_derives_from_survey_speed() {
+        let bare_hull = HullDefinition {
+            id: "corvette".into(), name: "Corvette".into(), description: String::new(),
+            base_hp: 50.0, base_speed: 0.75, base_evasion: 30.0,
+            slots: vec![HullSlot { slot_type: "utility".into(), count: 1 }],
+            build_cost_minerals: Amt::ZERO, build_cost_energy: Amt::ZERO,
+            build_time: 1, maintenance: Amt::ZERO,
+            modifiers: vec![], prerequisites: None,
+        };
+        let survey = ModuleDefinition {
+            id: "survey_equipment".into(), name: "Survey".into(), description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![
+                ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 },
+            ],
+            weapon: None, cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO,
+            prerequisites: None, upgrade_to: Vec::new(),
+        };
+
+        // Without survey module → no survey capability.
+        let no_survey = design_derived(&bare_hull, &[]);
+        assert!(!no_survey.can_survey);
+        assert_eq!(no_survey.survey_speed, 0.0);
+
+        // With survey module → survey_speed > 0 → can_survey = true.
+        let with_survey = design_derived(&bare_hull, &[&survey]);
+        assert!(with_survey.can_survey);
+        assert!(with_survey.survey_speed > 0.0);
+        assert!(!with_survey.can_colonize);
+    }
+
+    /// #236: A full preset (hull + modules) derives to the expected stats.
+    /// Acts as a contract test for the whole derive pipeline.
+    #[test]
+    fn test_preset_designs_derived_from_modules() {
+        let (hull, ftl, ab, cargo) = derive_fixture_courier();
+        let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
+
+        // Stats
+        assert_eq!(d.hp, 35.0);
+        assert!((d.sublight_speed - 0.96).abs() < 1e-9, "0.80 * 1.2 = 0.96, got {}", d.sublight_speed);
+        assert_eq!(d.evasion, 25.0);
+        assert!((d.ftl_range - 33.0).abs() < 1e-9);
+        assert_eq!(d.survey_speed, 0.0);
+        assert_eq!(d.colonize_speed, 0.0);
+        assert!(!d.can_survey);
+        assert!(!d.can_colonize);
+
+        // Cost: 100+100+60+30 = 290, 50+50+40+0 = 140
+        assert_eq!(d.build_cost_minerals, Amt::units(290));
+        assert_eq!(d.build_cost_energy, Amt::units(140));
+        assert_eq!(d.build_time, 30);
+        // Maintenance: 0.3 + 0.1*(100+60+30) = 19.3
+        assert_eq!(d.maintenance, Amt::new(19, 300));
     }
 }

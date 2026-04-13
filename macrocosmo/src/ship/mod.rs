@@ -631,8 +631,12 @@ mod tests {
         assert!(!cargo.can_fit(6, Amt::units(10), lookup, 1000));
     }
 
+    // #236: In-Rust preset mirror. Values reflect `design_derived` output
+    // for the Lua presets (hull + modules). Hand-keep in sync; also covered
+    // by `test_preset_designs_derived_from_modules` regression test.
     fn test_design_registry() -> ShipDesignRegistry {
         let mut registry = ShipDesignRegistry::default();
+        // explorer_mk1 = corvette + ftl_drive (15) + survey_equipment
         registry.insert(ShipDesignDefinition {
             id: "explorer_mk1".to_string(),
             name: "Explorer Mk.I".to_string(),
@@ -641,15 +645,19 @@ mod tests {
             modules: Vec::new(),
             can_survey: true,
             can_colonize: false,
-            maintenance: Amt::new(0, 500),
-            build_cost_minerals: Amt::units(200),
-            build_cost_energy: Amt::units(100),
+            // 0.5 (hull) + 0.1*(100+60) = 0.5 + 16.0 = 16.5
+            maintenance: Amt::new(16, 500),
+            // 200 + 100 + 60 = 360
+            build_cost_minerals: Amt::units(360),
+            // 100 + 50 + 40 = 190
+            build_cost_energy: Amt::units(190),
             build_time: 60,
             hp: 50.0,
             sublight_speed: 0.75,
-            ftl_range: 10.0,
+            ftl_range: 15.0,
             revision: 0,
         });
+        // colony_ship_mk1 = frigate + ftl_drive + colony_module
         registry.insert(ShipDesignDefinition {
             id: "colony_ship_mk1".to_string(),
             name: "Colony Ship Mk.I".to_string(),
@@ -658,15 +666,19 @@ mod tests {
             modules: Vec::new(),
             can_survey: false,
             can_colonize: true,
-            maintenance: Amt::units(1),
-            build_cost_minerals: Amt::units(500),
-            build_cost_energy: Amt::units(300),
+            // 1.0 + 0.1*(100+300) = 1.0 + 40 = 41.0
+            maintenance: Amt::units(41),
+            // 400 + 100 + 300 = 800
+            build_cost_minerals: Amt::units(800),
+            // 200 + 50 + 200 = 450
+            build_cost_energy: Amt::units(450),
             build_time: 120,
-            hp: 100.0,
+            hp: 120.0,
             sublight_speed: 0.5,
             ftl_range: 15.0,
             revision: 0,
         });
+        // courier_mk1 = courier_hull + ftl_drive + afterburner + cargo_bay
         registry.insert(ShipDesignDefinition {
             id: "courier_mk1".to_string(),
             name: "Courier Mk.I".to_string(),
@@ -675,15 +687,21 @@ mod tests {
             modules: Vec::new(),
             can_survey: false,
             can_colonize: false,
-            maintenance: Amt::new(0, 300),
-            build_cost_minerals: Amt::units(100),
-            build_cost_energy: Amt::units(50),
+            // 0.3 + 0.1*(100+60+30) = 0.3 + 19 = 19.3
+            maintenance: Amt::new(19, 300),
+            // 100+100+60+30 = 290
+            build_cost_minerals: Amt::units(290),
+            // 50+50+40+0 = 140
+            build_cost_energy: Amt::units(140),
             build_time: 30,
             hp: 35.0,
-            sublight_speed: 0.80,
-            ftl_range: 0.0,
+            // 0.80 * (1+0.2) = 0.96
+            sublight_speed: 0.96,
+            // 15 * (1+1.2) = 33.0 (courier_hull ftl_range multiplier 1.2)
+            ftl_range: 33.0,
             revision: 0,
         });
+        // scout_mk1 = scout_hull + ftl_drive + survey_equipment
         registry.insert(ShipDesignDefinition {
             id: "scout_mk1".to_string(),
             name: "Scout Mk.I".to_string(),
@@ -692,13 +710,17 @@ mod tests {
             modules: Vec::new(),
             can_survey: true,
             can_colonize: false,
-            maintenance: Amt::new(0, 400),
-            build_cost_minerals: Amt::units(150),
-            build_cost_energy: Amt::units(80),
+            // 0.4 + 0.1*(100+60) = 0.4 + 16 = 16.4
+            maintenance: Amt::new(16, 400),
+            // 150+100+60 = 310
+            build_cost_minerals: Amt::units(310),
+            // 80+50+40 = 170
+            build_cost_energy: Amt::units(170),
             build_time: 45,
             hp: 40.0,
-            sublight_speed: 0.85,
-            ftl_range: 10.0,
+            // 0.85 * (1+1.15) = 1.8275
+            sublight_speed: 1.8275,
+            ftl_range: 15.0,
             revision: 0,
         });
         registry
@@ -741,10 +763,13 @@ mod tests {
 
     #[test]
     fn start_ftl_rejects_no_ftl_ship() {
+        // #236: courier_mk1 now has FTL (33.0 ly) because its modules include
+        // ftl_drive. Construct a manual non-FTL ship to cover this rejection.
         let mut world = World::new();
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
-        let ship = make_ship("courier_mk1");
+        let mut ship = make_ship("courier_mk1");
+        ship.ftl_range = 0.0;
         let mut state = ShipState::Docked { system: origin };
         let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest_pos = Position { x: 1.0, y: 0.0, z: 0.0 };
@@ -842,18 +867,20 @@ mod tests {
 
     #[test]
     fn ship_maintenance_costs() {
+        // #236: derived maintenance = hull + 10% of each module's mineral cost
         let registry = test_design_registry();
-        assert_eq!(registry.maintenance("explorer_mk1"), Amt::new(0, 500));
-        assert_eq!(registry.maintenance("colony_ship_mk1"), Amt::units(1));
-        assert_eq!(registry.maintenance("courier_mk1"), Amt::new(0, 300));
+        assert_eq!(registry.maintenance("explorer_mk1"), Amt::new(16, 500));
+        assert_eq!(registry.maintenance("colony_ship_mk1"), Amt::units(41));
+        assert_eq!(registry.maintenance("courier_mk1"), Amt::new(19, 300));
     }
 
     #[test]
     fn build_cost_returns_expected_values() {
+        // #236: derived build cost = hull + Σ module costs
         let registry = test_design_registry();
-        assert_eq!(registry.build_cost("explorer_mk1"), (Amt::units(200), Amt::units(100)));
-        assert_eq!(registry.build_cost("colony_ship_mk1"), (Amt::units(500), Amt::units(300)));
-        assert_eq!(registry.build_cost("courier_mk1"), (Amt::units(100), Amt::units(50)));
+        assert_eq!(registry.build_cost("explorer_mk1"), (Amt::units(360), Amt::units(190)));
+        assert_eq!(registry.build_cost("colony_ship_mk1"), (Amt::units(800), Amt::units(450)));
+        assert_eq!(registry.build_cost("courier_mk1"), (Amt::units(290), Amt::units(140)));
     }
 
     #[test]

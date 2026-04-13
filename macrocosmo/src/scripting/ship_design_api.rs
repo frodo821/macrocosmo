@@ -119,9 +119,28 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
 }
 
 /// Parse ship design definitions from the Lua `_ship_design_definitions` global table.
+///
+/// #236: Derived fields (`hp`, `sublight_speed`, `ftl_range`, `build_cost`,
+/// `build_time`, `maintenance`, `can_survey`, `can_colonize`) are no longer
+/// read from Lua. They are computed from the hull + modules by
+/// `ship_design::apply_derived_to_definition` after parse. Authoring any of
+/// those fields emits a `warn!` — the value is ignored but not an error, so
+/// existing preset files continue to load.
 pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, mlua::Error> {
     let defs: mlua::Table = lua.globals().get("_ship_design_definitions")?;
     let mut result = Vec::new();
+
+    // Names of derived fields that Lua is no longer allowed to author.
+    const DERIVED_FIELDS: &[&str] = &[
+        "hp",
+        "sublight_speed",
+        "ftl_range",
+        "build_cost",
+        "build_time",
+        "maintenance",
+        "can_survey",
+        "can_colonize",
+    ];
 
     for pair in defs.pairs::<i64, mlua::Table>() {
         let (_, table) = pair?;
@@ -135,32 +154,35 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
         // Parse modules array
         let modules = parse_design_modules(&table)?;
 
-        // Design-level overrides / capability flags
-        let can_survey: bool = table.get::<Option<bool>>("can_survey")?.unwrap_or(false);
-        let can_colonize: bool = table.get::<Option<bool>>("can_colonize")?.unwrap_or(false);
-        let maintenance_f64: f64 = table.get::<Option<f64>>("maintenance")?.unwrap_or(0.0);
-        let maintenance = Amt::from_f64(maintenance_f64);
-        let (build_cost_minerals, build_cost_energy) = parse_cost_table(&table, "build_cost")?;
-        let build_time: i64 = table.get::<Option<i64>>("build_time")?.unwrap_or(60);
-        let hp: f64 = table.get::<Option<f64>>("hp")?.unwrap_or(100.0);
-        let sublight_speed: f64 = table.get::<Option<f64>>("sublight_speed")?.unwrap_or(0.5);
-        let ftl_range: f64 = table.get::<Option<f64>>("ftl_range")?.unwrap_or(0.0);
+        // #236: Warn-then-ignore for any authored derived field. Parse as a
+        // generic Value so we detect presence regardless of type.
+        for field in DERIVED_FIELDS {
+            let v: mlua::Value = table.get(*field)?;
+            if !matches!(v, mlua::Value::Nil) {
+                bevy::log::warn!(
+                    "ship design '{}' authors derived field '{}'; value will be ignored (#236: derive from hull + modules)",
+                    id, field
+                );
+            }
+        }
 
+        // Zero-init derived fields; `apply_derived_to_definition` fills them
+        // after validation at registry-load time.
         result.push(ShipDesignDefinition {
             id,
             name,
             description,
             hull_id,
             modules,
-            can_survey,
-            can_colonize,
-            maintenance,
-            build_cost_minerals,
-            build_cost_energy,
-            build_time,
-            hp,
-            sublight_speed,
-            ftl_range,
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 0.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
             revision: 0,
         });
     }
@@ -767,5 +789,53 @@ mod tests {
         let adv = &defs[1];
         assert_eq!(adv.id, "weapon_adv_laser");
         assert!(adv.upgrade_to.is_empty());
+    }
+
+    /// #236: Authored derived fields (hp/ftl_range/...) must be zero-init on
+    /// the parsed definition. The registry loader overwrites them via
+    /// `apply_derived_to_definition` — but at parse time the value from Lua
+    /// must NOT be propagated.
+    #[test]
+    fn test_lua_authored_derived_fields_are_ignored() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_ship_design {
+                id = "bogus",
+                name = "Bogus",
+                hull = "corvette",
+                modules = {},
+                -- Every one of these fields is a "derived" field that used
+                -- to be authored in Lua. All must be ignored post-#236.
+                hp = 999,
+                sublight_speed = 99.0,
+                ftl_range = 999.0,
+                maintenance = 99.0,
+                build_cost = { minerals = 9999, energy = 9999 },
+                build_time = 9999,
+                can_survey = true,
+                can_colonize = true,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_ship_designs(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let d = &defs[0];
+        // All derived fields must be zero/false post-parse. The registry
+        // loader re-populates them via hull + modules.
+        assert_eq!(d.hp, 0.0, "hp authored in Lua must be ignored");
+        assert_eq!(d.sublight_speed, 0.0);
+        assert_eq!(d.ftl_range, 0.0, "ftl_range authored in Lua must be ignored");
+        assert_eq!(d.maintenance, Amt::ZERO);
+        assert_eq!(d.build_cost_minerals, Amt::ZERO);
+        assert_eq!(d.build_cost_energy, Amt::ZERO);
+        assert_eq!(d.build_time, 0);
+        assert!(!d.can_survey);
+        assert!(!d.can_colonize);
     }
 }

@@ -233,8 +233,8 @@ pub fn test_app() -> App {
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
     app.insert_resource(create_test_building_registry());
-    app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
-    app.init_resource::<macrocosmo::ship_design::HullRegistry>();
+    app.insert_resource(create_test_module_registry());
+    app.insert_resource(create_test_hull_registry());
     app.insert_resource(create_test_design_registry());
     app.init_resource::<macrocosmo::faction::FactionRelations>();
     app.init_resource::<macrocosmo::faction::HostileFactions>();
@@ -402,8 +402,8 @@ pub fn full_test_app() -> App {
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
     app.insert_resource(create_test_building_registry());
-    app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
-    app.init_resource::<macrocosmo::ship_design::HullRegistry>();
+    app.insert_resource(create_test_module_registry());
+    app.insert_resource(create_test_hull_registry());
     app.insert_resource(create_test_design_registry());
     app.init_resource::<macrocosmo::faction::FactionRelations>();
     app.init_resource::<macrocosmo::faction::HostileFactions>();
@@ -790,78 +790,157 @@ pub fn empire_entity(world: &mut World) -> Entity {
     query.single(world).expect("No player empire found in test world")
 }
 
-/// Create a ShipDesignRegistry populated with the standard 4 ship designs for tests.
+/// #236: Test fixture builders for hull + module registries that mirror the
+/// Lua preset content. Designs are built from these via `design_derived` so
+/// the test registry always reflects the canonical derivation formula.
+pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
+    use macrocosmo::ship_design::{HullDefinition, HullRegistry, HullSlot, ModuleModifier};
+    let mut hulls = HullRegistry::default();
+    let slot = |t: &str, c: u32| HullSlot { slot_type: t.to_string(), count: c };
+    hulls.insert(HullDefinition {
+        id: "corvette".into(), name: "Corvette".into(), description: String::new(),
+        base_hp: 50.0, base_speed: 0.75, base_evasion: 30.0,
+        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("weapon", 2), slot("defense", 1), slot("utility", 1), slot("power", 1)],
+        build_cost_minerals: Amt::units(200), build_cost_energy: Amt::units(100),
+        build_time: 60, maintenance: Amt::new(0, 500),
+        modifiers: vec![], prerequisites: None,
+    });
+    hulls.insert(HullDefinition {
+        id: "frigate".into(), name: "Frigate".into(), description: String::new(),
+        base_hp: 120.0, base_speed: 0.5, base_evasion: 15.0,
+        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("weapon", 3), slot("defense", 2), slot("utility", 2), slot("power", 1), slot("command", 1)],
+        build_cost_minerals: Amt::units(400), build_cost_energy: Amt::units(200),
+        build_time: 120, maintenance: Amt::units(1),
+        modifiers: vec![], prerequisites: None,
+    });
+    hulls.insert(HullDefinition {
+        id: "scout_hull".into(), name: "Scout Hull".into(), description: String::new(),
+        base_hp: 40.0, base_speed: 0.85, base_evasion: 35.0,
+        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("utility", 2), slot("weapon", 1), slot("power", 1)],
+        build_cost_minerals: Amt::units(150), build_cost_energy: Amt::units(80),
+        build_time: 45, maintenance: Amt::new(0, 400),
+        modifiers: vec![
+            ModuleModifier { target: "ship.survey_speed".into(), base_add: 0.0, multiplier: 1.3, add: 0.0 },
+            ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 1.15, add: 0.0 },
+        ],
+        prerequisites: None,
+    });
+    hulls.insert(HullDefinition {
+        id: "courier_hull".into(), name: "Courier Hull".into(), description: String::new(),
+        base_hp: 35.0, base_speed: 0.80, base_evasion: 25.0,
+        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("utility", 2), slot("power", 1)],
+        build_cost_minerals: Amt::units(100), build_cost_energy: Amt::units(50),
+        build_time: 30, maintenance: Amt::new(0, 300),
+        modifiers: vec![
+            ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 0.0, multiplier: 1.5, add: 0.0 },
+            ModuleModifier { target: "ship.ftl_range".into(), base_add: 0.0, multiplier: 1.2, add: 0.0 },
+        ],
+        prerequisites: None,
+    });
+    hulls
+}
+
+pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry {
+    use macrocosmo::ship_design::{ModuleDefinition, ModuleRegistry, ModuleModifier};
+    let mut modules = ModuleRegistry::default();
+    modules.insert(ModuleDefinition {
+        id: "ftl_drive".into(), name: "FTL Drive".into(), description: String::new(),
+        slot_type: "ftl".into(),
+        modifiers: vec![ModuleModifier { target: "ship.ftl_range".into(), base_add: 15.0, multiplier: 0.0, add: 0.0 }],
+        weapon: None, cost_minerals: Amt::units(100), cost_energy: Amt::units(50),
+        prerequisites: None, upgrade_to: Vec::new(),
+    });
+    modules.insert(ModuleDefinition {
+        id: "afterburner".into(), name: "Afterburner".into(), description: String::new(),
+        slot_type: "sublight".into(),
+        modifiers: vec![ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 0.2, add: 0.0 }],
+        weapon: None, cost_minerals: Amt::units(60), cost_energy: Amt::units(40),
+        prerequisites: None, upgrade_to: Vec::new(),
+    });
+    modules.insert(ModuleDefinition {
+        id: "survey_equipment".into(), name: "Survey Equipment".into(), description: String::new(),
+        slot_type: "utility".into(),
+        modifiers: vec![ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 }],
+        weapon: None, cost_minerals: Amt::units(60), cost_energy: Amt::units(40),
+        prerequisites: None, upgrade_to: Vec::new(),
+    });
+    modules.insert(ModuleDefinition {
+        id: "colony_module".into(), name: "Colony Module".into(), description: String::new(),
+        slot_type: "utility".into(),
+        modifiers: vec![ModuleModifier { target: "ship.colonize_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 }],
+        weapon: None, cost_minerals: Amt::units(300), cost_energy: Amt::units(200),
+        prerequisites: None, upgrade_to: Vec::new(),
+    });
+    modules.insert(ModuleDefinition {
+        id: "cargo_bay".into(), name: "Cargo Bay".into(), description: String::new(),
+        slot_type: "utility".into(),
+        modifiers: vec![ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 500.0, multiplier: 0.0, add: 0.0 }],
+        weapon: None, cost_minerals: Amt::units(30), cost_energy: Amt::ZERO,
+        prerequisites: None, upgrade_to: Vec::new(),
+    });
+    modules
+}
+
+/// Build a ShipDesignDefinition from hull + module IDs, with derived stats
+/// computed via `design_derived`. Used by the test fixture.
+fn build_derived_design(
+    id: &str,
+    name: &str,
+    hull_id: &str,
+    module_assignments: &[(&str, &str)],
+    hulls: &macrocosmo::ship_design::HullRegistry,
+    modules: &macrocosmo::ship_design::ModuleRegistry,
+) -> macrocosmo::ship_design::ShipDesignDefinition {
+    use macrocosmo::ship_design::{DesignSlotAssignment, ShipDesignDefinition};
+    let assignments: Vec<DesignSlotAssignment> = module_assignments
+        .iter()
+        .map(|(s, m)| DesignSlotAssignment { slot_type: s.to_string(), module_id: m.to_string() })
+        .collect();
+    let mut def = ShipDesignDefinition {
+        id: id.into(),
+        name: name.into(),
+        description: String::new(),
+        hull_id: hull_id.into(),
+        modules: assignments,
+        can_survey: false, can_colonize: false,
+        maintenance: Amt::ZERO,
+        build_cost_minerals: Amt::ZERO, build_cost_energy: Amt::ZERO,
+        build_time: 0, hp: 0.0, sublight_speed: 0.0, ftl_range: 0.0,
+        revision: 0,
+    };
+    macrocosmo::ship_design::apply_derived_to_definition(&mut def, hulls, modules);
+    def
+}
+
+/// Create a ShipDesignRegistry populated with the standard ship designs for
+/// tests. #236: All stats are derived from `create_test_hull_registry` +
+/// `create_test_module_registry` via `design_derived` — never hand-authored.
 pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegistry {
-    use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+    use macrocosmo::ship_design::ShipDesignRegistry;
+    let hulls = create_test_hull_registry();
+    let modules = create_test_module_registry();
     let mut registry = ShipDesignRegistry::default();
-    registry.insert(ShipDesignDefinition {
-        id: "explorer_mk1".to_string(),
-        name: "Explorer Mk.I".to_string(),
-        description: String::new(),
-        hull_id: "corvette".to_string(),
-        modules: Vec::new(),
-        can_survey: true,
-        can_colonize: false,
-        maintenance: Amt::new(0, 500),
-        build_cost_minerals: Amt::units(200),
-        build_cost_energy: Amt::units(100),
-        build_time: 60,
-        hp: 50.0,
-        sublight_speed: 0.75,
-        ftl_range: 10.0,
-        revision: 0,
-    });
-    registry.insert(ShipDesignDefinition {
-        id: "colony_ship_mk1".to_string(),
-        name: "Colony Ship Mk.I".to_string(),
-        description: String::new(),
-        hull_id: "frigate".to_string(),
-        modules: Vec::new(),
-        can_survey: false,
-        can_colonize: true,
-        maintenance: Amt::units(1),
-        build_cost_minerals: Amt::units(500),
-        build_cost_energy: Amt::units(300),
-        build_time: 120,
-        hp: 100.0,
-        sublight_speed: 0.5,
-        ftl_range: 15.0,
-        revision: 0,
-    });
-    registry.insert(ShipDesignDefinition {
-        id: "courier_mk1".to_string(),
-        name: "Courier Mk.I".to_string(),
-        description: String::new(),
-        hull_id: "courier_hull".to_string(),
-        modules: Vec::new(),
-        can_survey: false,
-        can_colonize: false,
-        maintenance: Amt::new(0, 300),
-        build_cost_minerals: Amt::units(100),
-        build_cost_energy: Amt::units(50),
-        build_time: 30,
-        hp: 35.0,
-        sublight_speed: 0.80,
-        ftl_range: 0.0,
-        revision: 0,
-    });
-    registry.insert(ShipDesignDefinition {
-        id: "scout_mk1".to_string(),
-        name: "Scout Mk.I".to_string(),
-        description: String::new(),
-        hull_id: "scout_hull".to_string(),
-        modules: Vec::new(),
-        can_survey: true,
-        can_colonize: false,
-        maintenance: Amt::new(0, 400),
-        build_cost_minerals: Amt::units(150),
-        build_cost_energy: Amt::units(80),
-        build_time: 45,
-        hp: 40.0,
-        sublight_speed: 0.85,
-        ftl_range: 10.0,
-        revision: 0,
-    });
+
+    registry.insert(build_derived_design(
+        "explorer_mk1", "Explorer Mk.I", "corvette",
+        &[("ftl", "ftl_drive"), ("utility", "survey_equipment")],
+        &hulls, &modules,
+    ));
+    registry.insert(build_derived_design(
+        "colony_ship_mk1", "Colony Ship Mk.I", "frigate",
+        &[("ftl", "ftl_drive"), ("utility", "colony_module")],
+        &hulls, &modules,
+    ));
+    registry.insert(build_derived_design(
+        "courier_mk1", "Courier Mk.I", "courier_hull",
+        &[("ftl", "ftl_drive"), ("sublight", "afterburner"), ("utility", "cargo_bay")],
+        &hulls, &modules,
+    ));
+    registry.insert(build_derived_design(
+        "scout_mk1", "Scout Mk.I", "scout_hull",
+        &[("ftl", "ftl_drive"), ("utility", "survey_equipment")],
+        &hulls, &modules,
+    ));
     registry
 }
 
