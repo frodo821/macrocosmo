@@ -24,15 +24,34 @@ pub struct ContextMenu {
     pub execute_default: bool,
 }
 
-/// #229: Pending deploy request set by the ship panel "Deploy" button.
-/// When `Some`, the next star click is interpreted as "deploy at this star's
-/// coordinates" and pushes a `QueuedCommand::DeployDeliverable` onto the ship's
-/// CommandQueue. Escape cancels. Only used for V1 (star-coordinate deploys;
-/// arbitrary deep-space coordinates are a future issue).
+/// #229 / #240: Pending deploy request set by the ship panel "Deploy" button.
+/// When `Some`, the next map click is interpreted as a deploy target and pushes
+/// a `QueuedCommand::DeployDeliverable` onto the ship's CommandQueue. Clicks
+/// that land close to a star snap to the star's coordinates; clicks on empty
+/// space deploy at the cursor's world position (z = 0). Escape cancels.
 #[derive(Clone, Copy, Debug)]
 pub struct DeployPending {
     pub ship: Entity,
     pub item_index: usize,
+}
+
+/// Pixel radius around a star within which a deploy click is snapped to the
+/// star's coordinates. Shared between the click resolver and the preview gizmo
+/// so the two always agree on snap behavior.
+pub const DEPLOY_STAR_SNAP_RADIUS_PX: f32 = 15.0;
+
+/// Pure helper used by `click_select_system` and tests to decide where a
+/// deploy click lands. If `snapped_star_world` is `Some`, the deploy snaps to
+/// that star's world coordinates (z unchanged). Otherwise the deploy uses the
+/// cursor's world position with `z = 0`.
+pub fn resolve_deploy_target(
+    snapped_star_world: Option<[f64; 3]>,
+    cursor_world: Vec2,
+) -> [f64; 3] {
+    match snapped_star_world {
+        Some(p) => p,
+        None => [cursor_world.x as f64, cursor_world.y as f64, 0.0],
+    }
 }
 
 #[derive(Resource, Default)]
@@ -62,6 +81,7 @@ impl Plugin for VisualizationPlugin {
             ships::draw_ships,
             stars::draw_deep_space_structures,
             stars::draw_forbidden_regions,
+            draw_deploy_preview_gizmo,
         ));
     }
 }
@@ -235,7 +255,7 @@ pub fn click_select_system(
     }
 
     // Find the closest star under cursor
-    let click_radius = 15.0;
+    let click_radius = DEPLOY_STAR_SNAP_RADIUS_PX;
     let mut best_star: Option<(Entity, f32)> = None;
 
     for (entity, _star, pos, obscured) in &stars {
@@ -251,32 +271,37 @@ pub fn click_select_system(
         }
     }
 
-    // #229: Deploy mode — if the user has just clicked "Deploy" on a cargo
-    // item and then clicks on a star, interpret that as "deploy at this
-    // star's coordinates". V1 restriction: deploys are always to star
-    // coordinates; arbitrary deep-space points are a future issue.
+    // #229 / #240: Deploy mode — if the user has just clicked "Deploy" on a
+    // cargo item and then clicks on the map, push a DeployDeliverable command.
+    // Clicks close to a star snap to that star's coordinates; clicks on empty
+    // space deploy at the cursor's world position (z = 0).
     if let Some(pending) = deploy_mode.0 {
-        if let Some((star_entity, _)) = best_star {
-            if let Ok(star_pos) = star_positions.get(star_entity) {
-                if let Ok(mut queue) = command_queues.get_mut(pending.ship) {
-                    let target_pos = star_pos.as_array();
-                    // Use direct push (no predicted-position tracker) because
-                    // we already know the exact coordinate from the star.
-                    queue.commands.push(QueuedCommand::DeployDeliverable {
-                        position: target_pos,
-                        item_index: pending.item_index,
-                    });
-                    queue.predicted_position = target_pos;
-                    queue.predicted_system = None;
-                    info!(
-                        "Deploy queued: ship {:?} -> cargo idx {} at star {:?}",
-                        pending.ship, pending.item_index, star_entity,
-                    );
-                }
+        let snapped_star_world = best_star
+            .and_then(|(star_entity, _)| star_positions.get(star_entity).ok())
+            .map(|p| p.as_array());
+        let target_pos = resolve_deploy_target(snapped_star_world, world_pos);
+        if let Ok(mut queue) = command_queues.get_mut(pending.ship) {
+            // Use direct push (bypassing `CommandQueue::push`) because we
+            // already know the exact coordinate and don't need the system
+            // position lookup helper.
+            queue.commands.push(QueuedCommand::DeployDeliverable {
+                position: target_pos,
+                item_index: pending.item_index,
+            });
+            queue.predicted_position = target_pos;
+            queue.predicted_system = None;
+            if snapped_star_world.is_some() {
+                info!(
+                    "Deploy queued: ship {:?} -> cargo idx {} at star {:?}",
+                    pending.ship, pending.item_index, best_star.map(|(e, _)| e),
+                );
+            } else {
+                info!(
+                    "Deploy queued: ship {:?} -> cargo idx {} at deep space {:?}",
+                    pending.ship, pending.item_index, target_pos,
+                );
             }
         }
-        // Whether or not the click landed on a star, leave deploy mode.
-        // Clicking empty space simply cancels the pending deploy.
         deploy_mode.0 = None;
         return;
     }
@@ -300,5 +325,109 @@ pub fn click_select_system(
         // Clicked empty space
         selected.0 = None;
         selected_ship.0 = None;
+    }
+}
+
+/// #240: Preview marker drawn while a deploy is pending. The marker tracks the
+/// cursor and switches between two visuals:
+/// - **Deep space (no snap):** an orange cross (+) at the cursor indicating a
+///   free-form deploy.
+/// - **Star snap:** a dashed orange ring around the nearest star within the
+///   snap radius, signalling that a click here will deploy at the star's
+///   coordinates (same radius `DEPLOY_STAR_SNAP_RADIUS_PX` the click handler
+///   uses).
+pub fn draw_deploy_preview_gizmo(
+    deploy_mode: Res<DeployMode>,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    stars: Query<(&StarSystem, &Position, Option<&ObscuredByGas>)>,
+    view: Res<GalaxyView>,
+    mut gizmos: Gizmos,
+) {
+    if deploy_mode.0.is_none() {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, global_transform)) = camera_q.single() else {
+        return;
+    };
+    let Ok(world_pos) = camera.viewport_to_world_2d(global_transform, cursor_pos) else {
+        return;
+    };
+
+    // Find the nearest visible star within the snap radius.
+    let mut best: Option<(Vec2, f32)> = None;
+    for (_star, pos, obscured) in &stars {
+        if obscured.is_some() {
+            continue;
+        }
+        let star_px = Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
+        let dist = world_pos.distance(star_px);
+        if dist < DEPLOY_STAR_SNAP_RADIUS_PX && best.map(|(_, d)| dist < d).unwrap_or(true) {
+            best = Some((star_px, dist));
+        }
+    }
+
+    let orange = Color::srgba(1.0, 0.6, 0.2, 0.9);
+    let orange_dim = Color::srgba(1.0, 0.6, 0.2, 0.45);
+
+    if let Some((star_px, _)) = best {
+        // Snap indicator: ring around the star plus a faint connector from
+        // cursor to show the snap is active.
+        gizmos.circle_2d(star_px, DEPLOY_STAR_SNAP_RADIUS_PX + 2.0, orange);
+        gizmos.circle_2d(star_px, DEPLOY_STAR_SNAP_RADIUS_PX - 1.0, orange_dim);
+    } else {
+        // Free-form cross (+) at the cursor.
+        let arm = 8.0;
+        gizmos.line_2d(
+            Vec2::new(world_pos.x - arm, world_pos.y),
+            Vec2::new(world_pos.x + arm, world_pos.y),
+            orange,
+        );
+        gizmos.line_2d(
+            Vec2::new(world_pos.x, world_pos.y - arm),
+            Vec2::new(world_pos.x, world_pos.y + arm),
+            orange,
+        );
+        // Small center dot for precision.
+        gizmos.circle_2d(world_pos, 1.5, orange);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deploy_at_arbitrary_coordinate() {
+        // #240: Empty-space click returns world_pos with z = 0.
+        let world = Vec2::new(12.5, -4.25);
+        let target = resolve_deploy_target(None, world);
+        assert_eq!(target, [12.5, -4.25, 0.0]);
+    }
+
+    #[test]
+    fn test_deploy_star_click_still_snaps() {
+        // #240: Star click keeps the V1 behavior — snaps to the star's
+        // coordinates (including the star's z) regardless of the cursor's
+        // world position.
+        let star = [7.0, 3.0, 0.5];
+        let cursor = Vec2::new(99.0, -99.0);
+        let target = resolve_deploy_target(Some(star), cursor);
+        assert_eq!(target, star);
+    }
+
+    #[test]
+    fn test_deploy_target_z_is_zero_for_deep_space() {
+        // Explicitly document the 2D-projection invariant: deep-space deploys
+        // always land on z = 0 even if the cursor would otherwise carry a
+        // different depth.
+        let target = resolve_deploy_target(None, Vec2::new(0.0, 0.0));
+        assert_eq!(target[2], 0.0);
     }
 }

@@ -94,9 +94,11 @@ pub struct ShipPanelActions {
     pub courier_clear_route: Option<Entity>,
     /// #117: Change the route's mode.
     pub courier_set_mode: Option<(Entity, CourierMode)>,
-    /// #229: Player clicked Deploy next to a cargo deliverable. The outer
-    /// system stashes this in `DeployMode`, then the next star click becomes
-    /// a `QueuedCommand::DeployDeliverable`. Payload: (ship, cargo item_index).
+    /// #229 / #240: Player clicked Deploy next to a cargo deliverable. The
+    /// outer system stashes this in `DeployMode`, then the next map click
+    /// becomes a `QueuedCommand::DeployDeliverable` (snapping to a nearby
+    /// star if one is within the snap radius, otherwise deploying at the
+    /// cursor's world position). Payload: (ship, cargo item_index).
     pub deploy_mode_request: Option<(Entity, usize)>,
     /// #229: Player requested resources transferred from the ship's Cargo
     /// into a ConstructionPlatform's accumulator pool. Payload:
