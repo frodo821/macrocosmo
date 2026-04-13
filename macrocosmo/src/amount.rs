@@ -5,7 +5,7 @@
 
 const SCALE: u64 = 1000;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Amt(pub u64);
 
 impl Amt {
@@ -180,7 +180,7 @@ const SIGNED_SCALE: i64 = 1000;
 
 /// Signed fixed-point amount. 1 displayed unit = 1000 internal units.
 /// Used for modifier values that can be negative (e.g., -20% = SignedAmt(-200)).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SignedAmt(pub i64);
 
 impl SignedAmt {

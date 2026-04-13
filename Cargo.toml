@@ -6,6 +6,10 @@ resolver = "2"
 version = "0.2.0"
 edition = "2024"
 
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+
 [profile.dev]
 opt-level = 1
 
