@@ -7,6 +7,7 @@ mod components;
 mod condition;
 mod deep_space;
 mod effect;
+mod empire;
 mod event_system;
 mod events;
 mod faction;

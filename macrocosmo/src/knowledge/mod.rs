@@ -20,10 +20,18 @@
 //! Producers should pick exactly one of `Direct / Relay / Scout`. The
 //! convention `observed_at: i64` (integer hexadies) is preserved — the
 //! [`perceived::PerceivedInfo`] facade only renames it to `last_updated`.
+pub mod facts;
 pub mod perceived;
 
 use bevy::prelude::*;
 use std::collections::HashMap;
+
+#[allow(unused_imports)]
+pub use facts::{
+    compute_fact_arrival, effective_relay_range, rebuild_relay_network, record_fact_or_local,
+    relay_delay_hexadies, ArrivalPlan, CombatVictor, KnowledgeFact, PendingFactQueue,
+    PerceivedFact, RelayNetwork, RelaySnapshot, FTL_RELAY_BASE_MULTIPLIER,
+};
 
 use crate::amount::Amt;
 use crate::colony::ResourceStockpile;
@@ -62,7 +70,8 @@ pub struct KnowledgePlugin;
 
 impl Plugin for KnowledgePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<RelayNetwork>()
+            .add_systems(
                 Startup,
                 initialize_capital_knowledge
                     .after(crate::galaxy::generate_galaxy)
@@ -72,7 +81,7 @@ impl Plugin for KnowledgePlugin {
             .add_systems(Update, propagate_knowledge)
             .add_systems(
                 Update,
-                snapshot_production_knowledge
+                (rebuild_relay_network, snapshot_production_knowledge)
                     .after(crate::time_system::advance_game_time),
             );
     }

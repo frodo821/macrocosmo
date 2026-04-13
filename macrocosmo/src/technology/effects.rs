@@ -220,6 +220,7 @@ pub fn apply_tech_effects(
             &mut GlobalParams,
             &mut EmpireModifiers,
             Option<&mut PendingColonyTechModifiers>,
+            Option<&mut crate::empire::CommsParams>,
         ),
         With<PlayerEmpire>,
     >,
@@ -237,6 +238,7 @@ pub fn apply_tech_effects(
         mut global_params,
         mut empire_modifiers,
         mut pending_colony_mods,
+        mut comms_params,
     )) = empire_q.single_mut()
     else {
         return;
@@ -249,6 +251,14 @@ pub fn apply_tech_effects(
     let pending_ref: &mut PendingColonyTechModifiers = match &mut pending_colony_mods {
         Some(p) => &mut *p,
         None => &mut scratch_pending,
+    };
+    // #233: Same fallback for CommsParams. Legacy empire entities without the
+    // component get a scratch bucket; the field values still "apply" but have
+    // no runtime effect, preserving forward-compat for old fixtures.
+    let mut scratch_comms = crate::empire::CommsParams::default();
+    let comms_ref: &mut crate::empire::CommsParams = match &mut comms_params {
+        Some(c) => &mut *c,
+        None => &mut scratch_comms,
     };
 
     if recently.techs.is_empty() {
@@ -303,6 +313,7 @@ pub fn apply_tech_effects(
                 &mut balance,
                 &mut empire_modifiers,
                 pending_ref,
+                comms_ref,
                 tech_id,
             );
         }
@@ -339,6 +350,7 @@ pub fn apply_tech_effects(
 }
 
 /// Apply a single DescriptiveEffect to game state.
+#[allow(clippy::too_many_arguments)]
 fn apply_effect(
     effect: &DescriptiveEffect,
     game_flags: &mut GameFlags,
@@ -347,6 +359,7 @@ fn apply_effect(
     balance: &mut GameBalance,
     empire_modifiers: &mut EmpireModifiers,
     pending_colony_mods: &mut PendingColonyTechModifiers,
+    comms_params: &mut crate::empire::CommsParams,
     source_tech_id: &TechId,
 ) {
     match effect {
@@ -385,6 +398,7 @@ fn apply_effect(
                     global_params,
                     empire_modifiers,
                     pending_colony_mods,
+                    comms_params,
                     source_tech_id,
                 );
             }
@@ -417,6 +431,7 @@ fn apply_effect(
                 balance,
                 empire_modifiers,
                 pending_colony_mods,
+                comms_params,
                 source_tech_id,
             );
         }
@@ -432,6 +447,7 @@ fn apply_effect(
 ///   `sync_tech_colony_modifiers`)
 /// - `combat.*`, `diplomacy.*` → warn (target systems not yet implemented)
 /// - Unknown targets → debug (harmless, future work)
+#[allow(clippy::too_many_arguments)]
 fn route_tech_modifier(
     target: &str,
     base_add: f64,
@@ -440,6 +456,7 @@ fn route_tech_modifier(
     global_params: &mut GlobalParams,
     empire_modifiers: &mut EmpireModifiers,
     pending_colony_mods: &mut PendingColonyTechModifiers,
+    comms_params: &mut crate::empire::CommsParams,
     source_tech_id: &TechId,
 ) {
     // 1) Ship/sensor/construction targets → GlobalParams (legacy routes kept).
@@ -447,6 +464,35 @@ fn route_tech_modifier(
         "ship.sublight_speed" | "ship.ftl_speed" | "ship.ftl_range"
         | "sensor.range" | "construction.speed" => {
             apply_modifier_to_params(global_params, target, base_add, multiplier, add);
+            return;
+        }
+        _ => {}
+    }
+
+    // 1b) #233: FTL Comm Relay modifiers → CommsParams.
+    match target {
+        "empire.comm_relay_range"
+        | "empire.comm_relay_inv_latency"
+        | "fleet.comm_relay_range"
+        | "fleet.comm_relay_inv_latency" => {
+            let modifier_id = format!("tech:{}:{}", source_tech_id.0, target);
+            let modifier = Modifier {
+                id: modifier_id,
+                label: format!("From tech '{}'", source_tech_id.0),
+                base_add: SignedAmt::from_f64(base_add),
+                multiplier: SignedAmt::from_f64(multiplier),
+                add: SignedAmt::from_f64(add),
+                expires_at: None,
+                on_expire_event: None,
+            };
+            let slot = match target {
+                "empire.comm_relay_range" => &mut comms_params.empire_relay_range,
+                "empire.comm_relay_inv_latency" => &mut comms_params.empire_relay_inv_latency,
+                "fleet.comm_relay_range" => &mut comms_params.fleet_relay_range,
+                "fleet.comm_relay_inv_latency" => &mut comms_params.fleet_relay_inv_latency,
+                _ => unreachable!(),
+            };
+            slot.push_modifier(modifier);
             return;
         }
         _ => {}
@@ -868,6 +914,7 @@ mod tests {
         };
 
         let tech_id = TechId("test_tech".into());
+        let mut comms = crate::empire::CommsParams::default();
         apply_effect(
             &effect,
             &mut game_flags,
@@ -876,6 +923,7 @@ mod tests {
             &mut balance,
             &mut empire_mods,
             &mut pending,
+            &mut comms,
             &tech_id,
         );
 
@@ -902,6 +950,7 @@ mod tests {
         };
 
         let tech_id = TechId("shrink_survey".into());
+        let mut comms = crate::empire::CommsParams::default();
         apply_effect(
             &effect,
             &mut game_flags,
@@ -910,6 +959,7 @@ mod tests {
             &mut balance,
             &mut empire_mods,
             &mut pending,
+            &mut comms,
             &tech_id,
         );
 
@@ -936,6 +986,7 @@ mod tests {
 
         // Should not panic; logs a warning and leaves balance untouched.
         let tech_id = TechId("buggy_tech".into());
+        let mut comms = crate::empire::CommsParams::default();
         apply_effect(
             &effect,
             &mut game_flags,
@@ -944,6 +995,7 @@ mod tests {
             &mut balance,
             &mut empire_mods,
             &mut pending,
+            &mut comms,
             &tech_id,
         );
 

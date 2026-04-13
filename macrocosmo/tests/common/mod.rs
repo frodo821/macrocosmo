@@ -148,6 +148,7 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
                 KnowledgeStore::default(),
                 CommandLog::default(),
                 ScopedFlags::default(),
+                macrocosmo::empire::CommsParams::default(),
             ),
         ))
         .id()
@@ -267,6 +268,12 @@ pub fn test_app() -> App {
     // values so tests exercise the same baseline behaviour).
     app.init_resource::<technology::GameBalance>();
     app.add_message::<GameEvent>();
+    // #233: Notification pipeline resources consumed by detect_hostiles_system
+    // and friends. Instantiated without the full NotificationsPlugin because
+    // the plugin registers egui-coupled systems that tests don't want.
+    app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
+    app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
+    app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
@@ -451,6 +458,11 @@ pub fn full_test_app() -> App {
 
     // --- Routing resource ---
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+
+    // --- #233 Notification pipeline resources ---
+    app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
+    app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
+    app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
 
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(
