@@ -126,6 +126,53 @@ pub struct SystemSnapshot {
     pub production_food: Amt,
     pub production_research: Amt,
     pub maintenance_energy: Amt,
+    /// #269: Per-colony snapshot. Populated by the snapshot build path so
+    /// remote colony detail UI reads from this instead of the live world.
+    /// Empty vec means "system is known but no colonies observed yet".
+    pub colonies: Vec<ColonySnapshot>,
+}
+
+/// #269: Snapshot of a single colony's observable state at the moment of
+/// last observation. Carries enough data for the remote colony detail
+/// panel to render without reading live components.
+#[derive(Clone, Debug)]
+pub struct ColonySnapshot {
+    pub colony_entity: Entity,
+    pub planet_entity: Entity,
+    pub planet_name: String,
+    pub population: f64,
+    pub carrying_cap_hint: f64,
+    pub production_minerals: Amt,
+    pub production_energy: Amt,
+    pub production_food: Amt,
+    pub production_research: Amt,
+    pub food_consumption: Amt,
+    pub maintenance_energy: Amt,
+    pub buildings: Vec<Option<crate::scripting::building_api::BuildingId>>,
+    pub build_queue: Vec<BuildQueueEntrySnapshot>,
+    pub demolition_queue: Vec<DemolitionSnapshot>,
+    pub upgrade_queue: Vec<UpgradeSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildQueueEntrySnapshot {
+    pub building_id: crate::scripting::building_api::BuildingId,
+    pub target_slot: usize,
+    pub build_time_remaining: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct DemolitionSnapshot {
+    pub target_slot: usize,
+    pub building_id: crate::scripting::building_api::BuildingId,
+    pub time_remaining: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct UpgradeSnapshot {
+    pub slot_index: usize,
+    pub target_id: crate::scripting::building_api::BuildingId,
+    pub build_time_remaining: i64,
 }
 
 /// #175: Snapshot of a ship's last known state for light-speed delayed visibility.
