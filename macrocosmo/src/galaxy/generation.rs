@@ -420,7 +420,7 @@ pub(crate) fn initialize_systems(
     planet_types: &[PlanetTypeDefinition],
     planet_weights: &[f64],
     overrides: &[SystemInitOverride],
-    hostile_factions: &HostileFactions,
+    hostile_factions: HostileFactions,
 ) {
     let actual_count = systems.len();
 
@@ -695,7 +695,7 @@ pub fn generate_galaxy(
     predefined_registry: Option<Res<PredefinedSystemRegistry>>,
     map_type_registry: Option<Res<MapTypeRegistry>>,
     rng_seed: Option<Res<crate::observer::RngSeed>>,
-    hostile_factions: Res<HostileFactions>,
+    hostile_factions: Option<Res<HostileFactions>>,
 ) {
     let mut rng: rand::rngs::StdRng = match rng_seed.as_deref().and_then(|s| s.0) {
         Some(seed) => {
@@ -774,7 +774,7 @@ pub fn generate_galaxy(
         &planet_types,
         &planet_weights,
         &overrides,
-        &hostile_factions,
+        hostile_factions.as_deref().copied().unwrap_or_default(),
     );
 }
 
