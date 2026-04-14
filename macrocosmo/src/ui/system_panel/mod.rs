@@ -369,6 +369,8 @@ pub fn draw_system_panel(
                                         structure_registry,
                                         deliverable_avail,
                                         system_actions_out,
+                                        is_local_system,
+                                        dispatches,
                                     );
                                 });
                         });
@@ -664,6 +666,9 @@ fn draw_right_panel(
     structure_registry: &StructureRegistry,
     deliverable_avail: &DeliverableAvailabilityCtx<'_>,
     system_actions_out: &mut SystemPanelActions,
+    // #270: Light-speed command routing.
+    is_local_system: bool,
+    dispatches: &mut crate::communication::PendingColonyDispatches,
 ) {
     // === Docked Ships ===
     ui.label(egui::RichText::new("Docked Ships").strong().color(egui::Color32::from_rgb(180, 180, 220)));
@@ -841,30 +846,60 @@ fn draw_right_panel(
         }
 
         if let Some((slot_idx, bid)) = sys_demolish_request {
-            if let Some(mut bq) = sys_bldg_queue {
-                let def = building_registry.get(bid.as_str());
-                let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
-                bq.demolition_queue.push(DemolitionOrder {
-                    target_slot: slot_idx,
-                    building_id: bid.clone(),
-                    time_remaining: demo_time,
-                    minerals_refund: m_refund,
-                    energy_refund: e_refund,
+            if is_local_system {
+                if let Some(mut bq) = sys_bldg_queue {
+                    let def = building_registry.get(bid.as_str());
+                    let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                    let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
+                    bq.demolition_queue.push(DemolitionOrder {
+                        target_slot: slot_idx,
+                        building_id: bid.clone(),
+                        time_remaining: demo_time,
+                        minerals_refund: m_refund,
+                        energy_refund: e_refund,
+                    });
+                    info!("System building demolition order added: {} in slot {}", bid, slot_idx);
+                }
+            } else {
+                dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                    target_system: sel_entity,
+                    command: crate::communication::ColonyCommand {
+                        target_planet: None,
+                        kind: crate::communication::ColonyCommandKind::DemolishBuilding {
+                            target_slot: slot_idx,
+                        },
+                    },
                 });
-                info!("System building demolition order added: {} in slot {}", bid, slot_idx);
+                info!("System building demolition dispatched to remote system (slot {}, {})", slot_idx, bid);
             }
         }
         if let Some((slot_idx, target_id, minerals, energy, time)) = sys_upgrade_request {
-            if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
-                bq.upgrade_queue.push(UpgradeOrder {
-                    slot_index: slot_idx,
-                    target_id: BuildingId::new(&target_id),
-                    minerals_remaining: minerals,
-                    energy_remaining: energy,
-                    build_time_remaining: time,
+            if is_local_system {
+                if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
+                    bq.upgrade_queue.push(UpgradeOrder {
+                        slot_index: slot_idx,
+                        target_id: BuildingId::new(&target_id),
+                        minerals_remaining: minerals,
+                        energy_remaining: energy,
+                        build_time_remaining: time,
+                    });
+                    info!("System building upgrade order added: {} in slot {}", target_id, slot_idx);
+                }
+            } else {
+                // #270: Remote path discards pre-computed cost/time; arrival
+                // re-resolves them from the UpgradePath at the target.
+                let _ = (minerals, energy, time);
+                dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                    target_system: sel_entity,
+                    command: crate::communication::ColonyCommand {
+                        target_planet: None,
+                        kind: crate::communication::ColonyCommandKind::UpgradeBuilding {
+                            slot_index: slot_idx,
+                            target_id: target_id.clone(),
+                        },
+                    },
                 });
-                info!("System building upgrade order added: {} in slot {}", target_id, slot_idx);
+                info!("System building upgrade dispatched to remote system (slot {} -> {})", slot_idx, target_id);
             }
         }
 
@@ -897,21 +932,35 @@ fn draw_right_panel(
                     }
                 }
                 if let Some(bid) = build_sys_building_request {
-                    if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
-                        let def = building_registry.get(bid.as_str());
-                        let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                        let base_time = def.map(|d| d.build_time).unwrap_or(10);
-                        let eff_m = base_m.mul_amt(bldg_cost_mod);
-                        let eff_e = base_e.mul_amt(bldg_cost_mod);
-                        let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                        bq.queue.push(BuildingOrder {
-                            building_id: bid.clone(),
-                            target_slot: slot_idx,
-                            minerals_remaining: eff_m,
-                            energy_remaining: eff_e,
-                            build_time_remaining: eff_time,
+                    if is_local_system {
+                        if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
+                            let def = building_registry.get(bid.as_str());
+                            let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                            let base_time = def.map(|d| d.build_time).unwrap_or(10);
+                            let eff_m = base_m.mul_amt(bldg_cost_mod);
+                            let eff_e = base_e.mul_amt(bldg_cost_mod);
+                            let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                            bq.queue.push(BuildingOrder {
+                                building_id: bid.clone(),
+                                target_slot: slot_idx,
+                                minerals_remaining: eff_m,
+                                energy_remaining: eff_e,
+                                build_time_remaining: eff_time,
+                            });
+                            info!("System building order added: {} in slot {}", bid, slot_idx);
+                        }
+                    } else {
+                        dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                            target_system: sel_entity,
+                            command: crate::communication::ColonyCommand {
+                                target_planet: None,
+                                kind: crate::communication::ColonyCommandKind::QueueBuilding {
+                                    building_id: bid.0.clone(),
+                                    target_slot: slot_idx,
+                                },
+                            },
                         });
-                        info!("System building order added: {} in slot {}", bid, slot_idx);
+                        info!("System building dispatched to remote system (slot {}, {})", slot_idx, bid);
                     }
                 }
             }

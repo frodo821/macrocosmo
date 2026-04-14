@@ -590,6 +590,85 @@ fn remote_dispatch_delayed_by_light_speed() {
     );
 }
 
+/// Remote system-level dispatch (Commit D): `target_planet: None` targets
+/// the `SystemBuildingQueue` on the target system.
+#[test]
+fn remote_system_level_dispatch_delayed() {
+    let mut app = build_app_with_dispatch();
+    let (home_sys, _home_planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Home",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let (target_sys, _target_planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Target",
+        [10.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    // spawn_test_colony attaches SystemBuildings/SystemBuildingQueue to the
+    // star system entity.
+    let _target_colony = spawn_test_colony(
+        app.world_mut(),
+        target_sys,
+        Amt::units(10_000),
+        Amt::units(10_000),
+        vec![],
+    );
+    app.world_mut()
+        .spawn((Player, StationedAt { system: home_sys }));
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: target_sys,
+            command: ColonyCommand {
+                target_planet: None,
+                kind: ColonyCommandKind::QueueBuilding {
+                    building_id: "shipyard".to_string(),
+                    target_slot: 0,
+                },
+            },
+        });
+
+    advance_time(&mut app, 1);
+
+    let sbq = app
+        .world()
+        .get::<SystemBuildingQueue>(target_sys)
+        .unwrap();
+    assert!(
+        sbq.queue.is_empty(),
+        "remote system queue should be empty before light delay"
+    );
+
+    let arrives_at = 1 + macrocosmo::physics::light_delay_hexadies(10.0);
+    run_until_arrival(&mut app, arrives_at);
+
+    let sbq = app
+        .world()
+        .get::<SystemBuildingQueue>(target_sys)
+        .unwrap();
+    let sys_bldgs = app
+        .world()
+        .get::<macrocosmo::colony::SystemBuildings>(target_sys)
+        .unwrap();
+    let present = sbq.queue.iter().any(|o| o.target_slot == 0)
+        || sys_bldgs
+            .slots
+            .get(0)
+            .and_then(|s| s.as_ref())
+            .is_some();
+    assert!(
+        present,
+        "remote system-level command should apply once clock reaches arrives_at"
+    );
+}
+
 // --------------------------------------------------------------------------
 // CommandLog arrival marking
 // --------------------------------------------------------------------------
