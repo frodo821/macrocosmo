@@ -614,10 +614,12 @@ pub fn tick_platform_upgrade(
             payload.insert("building_id".to_string(), target_id.clone());
             payload.insert("previous_id".to_string(), old_definition_id);
             event_system.fire_event_with_payload(
-                crate::event_system::BUILDING_BUILT_EVENT,
                 Some(entity),
                 clock.elapsed,
-                payload,
+                Box::new(crate::event_system::LuaDefinedEventContext::new(
+                    crate::event_system::BUILDING_BUILT_EVENT,
+                    payload,
+                )),
             );
             let origin_pos: Option<[f64; 3]> =
                 positions.get(entity).ok().map(|p| p.as_array());

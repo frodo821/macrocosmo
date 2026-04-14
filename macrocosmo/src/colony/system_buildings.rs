@@ -310,10 +310,12 @@ pub fn tick_system_building_queue(
                     payload.insert("slot".to_string(), completed_slot.to_string());
                     payload.insert("system".to_string(), system_entity.to_bits().to_string());
                     event_system.fire_event_with_payload(
-                        crate::event_system::BUILDING_BUILT_EVENT,
                         Some(system_entity),
                         clock.elapsed,
-                        payload,
+                        Box::new(crate::event_system::LuaDefinedEventContext::new(
+                            crate::event_system::BUILDING_BUILT_EVENT,
+                            payload,
+                        )),
                     );
                 }
             }
@@ -410,10 +412,12 @@ pub fn tick_system_building_queue(
                 payload.insert("slot".to_string(), completed.slot_index.to_string());
                 payload.insert("system".to_string(), system_entity.to_bits().to_string());
                 event_system.fire_event_with_payload(
-                    crate::event_system::BUILDING_BUILT_EVENT,
                     Some(system_entity),
                     clock.elapsed,
-                    payload,
+                    Box::new(crate::event_system::LuaDefinedEventContext::new(
+                        crate::event_system::BUILDING_BUILT_EVENT,
+                        payload,
+                    )),
                 );
             }
         }

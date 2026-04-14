@@ -623,10 +623,12 @@ pub fn tick_building_queue(
                     payload.insert("system".to_string(), sys.to_bits().to_string());
                     payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
                     event_system.fire_event_with_payload(
-                        crate::event_system::BUILDING_BUILT_EVENT,
                         Some(colony_entity),
                         clock.elapsed,
-                        payload,
+                        Box::new(crate::event_system::LuaDefinedEventContext::new(
+                            crate::event_system::BUILDING_BUILT_EVENT,
+                            payload,
+                        )),
                     );
                 } else {
                     warn!(
@@ -676,10 +678,12 @@ pub fn tick_building_queue(
                     payload.insert("building_id".to_string(), building_name);
                     payload.insert("slot".to_string(), slot_idx.to_string());
                     event_system.fire_event_with_payload(
-                        "macrocosmo:building_lost",
                         Some(colony_entity),
                         clock.elapsed,
-                        payload,
+                        Box::new(crate::event_system::LuaDefinedEventContext::new(
+                            "macrocosmo:building_lost",
+                            payload,
+                        )),
                     );
                 }
             }
@@ -745,10 +749,12 @@ pub fn tick_building_queue(
                 payload.insert("system".to_string(), sys.to_bits().to_string());
                 payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
                 event_system.fire_event_with_payload(
-                    crate::event_system::BUILDING_BUILT_EVENT,
                     Some(colony_entity),
                     clock.elapsed,
-                    payload,
+                    Box::new(crate::event_system::LuaDefinedEventContext::new(
+                        crate::event_system::BUILDING_BUILT_EVENT,
+                        payload,
+                    )),
                 );
             }
         }
