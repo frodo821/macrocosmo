@@ -569,8 +569,10 @@ pub(crate) fn initialize_systems(
             star_type: star_type.id.clone(),
         };
 
-        // Capital sovereignty will be set by update_sovereignty once
-        // the empire entity is spawned; start with default for all.
+        // #295 (S-1): Sovereignty is now a derived view of Core ship
+        // presence — `update_sovereignty` writes `owner` based on a
+        // `(AtSystem, FactionOwner)` query. Start at default (None) for
+        // all systems; ownership appears once a Core ship enters.
         let sovereignty = Sovereignty::default();
 
         // Build SystemModifiers with any known ship.* targets from the star type
