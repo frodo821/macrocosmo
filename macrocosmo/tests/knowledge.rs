@@ -1044,6 +1044,8 @@ fn install_sensor_buoy_definition(app: &mut App) {
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
+        on_built: None,
+        on_upgraded: None,
     });
 }
 
@@ -1653,6 +1655,8 @@ fn install_ftl_comm_relay_definition(app: &mut App, range_ly: f64) {
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
+        on_built: None,
+        on_upgraded: None,
     });
 }
 

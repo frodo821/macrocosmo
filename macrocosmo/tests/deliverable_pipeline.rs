@@ -61,6 +61,8 @@ fn install_test_deliverables(app: &mut App) {
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
+            on_built: None,
+        on_upgraded: None,
     });
     // Platform kit with a single upgrade edge.
     registry.insert(StructureDefinition {
@@ -92,6 +94,8 @@ fn install_test_deliverables(app: &mut App) {
             build_time: 60,
         }],
         upgrade_from: None,
+            on_built: None,
+        on_upgraded: None,
     });
     // Upgrade target — finished defense platform.
     registry.insert(StructureDefinition {
@@ -108,6 +112,8 @@ fn install_test_deliverables(app: &mut App) {
         deliverable: None, // upgrade-only
         upgrade_to: Vec::new(),
         upgrade_from: None,
+            on_built: None,
+        on_upgraded: None,
     });
     // Rebuild the effective-edges cache.
     registry.rebuild_effective_edges();

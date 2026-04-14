@@ -335,6 +335,8 @@ fn test_empire_comm_relay_range_extends_coverage() {
         deliverable: None,
         upgrade_to: Vec::new(),
         upgrade_from: None,
+            on_built: None,
+        on_upgraded: None,
     });
     app.insert_resource(registry);
 

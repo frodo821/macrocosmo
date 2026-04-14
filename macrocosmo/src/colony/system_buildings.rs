@@ -298,7 +298,23 @@ pub fn tick_system_building_queue(
                         "System building '{}' completed in slot {}",
                         completed.building_id, completed.target_slot
                     );
+                    let completed_id = completed.building_id.0.clone();
+                    let completed_slot = completed.target_slot;
                     buildings.slots[completed.target_slot] = Some(completed.building_id);
+                    // #281: Fire macrocosmo:building_built for system-level
+                    // construction. `colony` is omitted since system
+                    // buildings attach to the StarSystem entity itself.
+                    let mut payload = std::collections::HashMap::new();
+                    payload.insert("cause".to_string(), "construction".to_string());
+                    payload.insert("building_id".to_string(), completed_id);
+                    payload.insert("slot".to_string(), completed_slot.to_string());
+                    payload.insert("system".to_string(), system_entity.to_bits().to_string());
+                    event_system.fire_event_with_payload(
+                        crate::event_system::BUILDING_BUILT_EVENT,
+                        Some(system_entity),
+                        clock.elapsed,
+                        payload,
+                    );
                 }
             }
         }
@@ -385,6 +401,20 @@ pub fn tick_system_building_queue(
                     old_name, completed.target_id, completed.slot_index
                 );
                 event_system.fire_event("building_upgraded", Some(system_entity), clock.elapsed);
+                // #281: Fire macrocosmo:building_built with cause="upgrade"
+                // for system-level upgrade completion.
+                let mut payload = std::collections::HashMap::new();
+                payload.insert("cause".to_string(), "upgrade".to_string());
+                payload.insert("building_id".to_string(), completed.target_id.0.clone());
+                payload.insert("previous_id".to_string(), old_name);
+                payload.insert("slot".to_string(), completed.slot_index.to_string());
+                payload.insert("system".to_string(), system_entity.to_bits().to_string());
+                event_system.fire_event_with_payload(
+                    crate::event_system::BUILDING_BUILT_EVENT,
+                    Some(system_entity),
+                    clock.elapsed,
+                    payload,
+                );
             }
         }
 
@@ -433,6 +463,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         let mut port_caps = HashMap::new();
@@ -465,6 +497,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
         registry
     }

@@ -276,6 +276,8 @@ mod tests {
             deliverable: None,
             upgrade_to: Vec::new(),
             upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         }
     }
 
@@ -310,6 +312,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: prereq,
+            on_built: None,
+            on_upgraded: None,
         }
     }
 

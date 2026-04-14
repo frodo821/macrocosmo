@@ -200,6 +200,16 @@ pub struct DeliverableDefinition {
     /// build_time describe the upstream→this transition. Cf. `upgrade_to`
     /// which describes this→downstream transitions.
     pub upgrade_from: Option<UpgradeEdge>,
+
+    /// #281: Optional Lua hook invoked when this structure finishes
+    /// construction. Auto-subscribed as a filtered handler on
+    /// `macrocosmo:building_built` during `load_structure_definitions`.
+    pub on_built: Option<crate::event_system::LuaFunctionRef>,
+    /// #281: Reserved for future deep-space upgrade paths. Parsed from Lua
+    /// and auto-subscribed on `macrocosmo:building_built` with
+    /// `cause = "upgrade"` filter, but the current deep-space completion
+    /// path fires `cause = "construction"` exclusively.
+    pub on_upgraded: Option<crate::event_system::LuaFunctionRef>,
 }
 
 impl DeliverableDefinition {
@@ -344,6 +354,8 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
+                    on_built: None,
+            on_upgraded: None,
         },
         StructureDefinition {
             id: "ftl_comm_relay".to_string(),
@@ -369,6 +381,8 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
+                    on_built: None,
+            on_upgraded: None,
         },
         StructureDefinition {
             id: "interdictor".to_string(),
@@ -394,6 +408,8 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
+                    on_built: None,
+            on_upgraded: None,
         },
     ]
 }
@@ -524,6 +540,7 @@ pub fn tick_platform_upgrade(
     registry: Res<StructureRegistry>,
     clock: Res<crate::time_system::GameClock>,
     mut events: MessageWriter<crate::events::GameEvent>,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
     mut platforms: Query<(
         Entity,
         &mut DeepSpaceStructure,
@@ -567,6 +584,7 @@ pub fn tick_platform_upgrade(
         // Update the structure identity.
         if let Some(new_def) = registry.get(&target_id) {
             let old_name = structure.name.clone();
+            let old_definition_id = structure.definition_id.clone();
             structure.definition_id = target_id.clone();
             structure.name = new_def.name.clone();
             // Bump lifetime cost by the edge cost.
@@ -585,6 +603,22 @@ pub fn tick_platform_upgrade(
                 description: desc.clone(),
                 related_system: None,
             });
+            // #281: Fire macrocosmo:building_built for deep-space structure
+            // completion (platform → target). Treated as cause="construction"
+            // since the platform is an ephemeral kit, not a first-class
+            // structure the player had "built" in the modding sense.
+            // `previous_id` carries the platform/kit id so hooks can still
+            // chain off the specific construction path.
+            let mut payload = std::collections::HashMap::new();
+            payload.insert("cause".to_string(), "construction".to_string());
+            payload.insert("building_id".to_string(), target_id.clone());
+            payload.insert("previous_id".to_string(), old_definition_id);
+            event_system.fire_event_with_payload(
+                crate::event_system::BUILDING_BUILT_EVENT,
+                Some(entity),
+                clock.elapsed,
+                payload,
+            );
             let origin_pos: Option<[f64; 3]> =
                 positions.get(entity).ok().map(|p| p.as_array());
             if let (Some(v), Some(op)) = (vantage, origin_pos) {
@@ -1301,6 +1335,8 @@ mod tests {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
+                    on_built: None,
+            on_upgraded: None,
         });
 
         assert_eq!(registry.definitions.len(), 3);
@@ -1445,6 +1481,8 @@ mod tests {
             deliverable: None,
             upgrade_to: Vec::new(),
             upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         }
     }
 

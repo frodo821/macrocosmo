@@ -609,7 +609,25 @@ pub fn tick_building_queue(
                         "Building '{}' completed in slot {}",
                         completed.building_id, completed.target_slot
                     );
+                    let completed_id = completed.building_id.0.clone();
+                    let completed_slot = completed.target_slot;
                     buildings.slots[completed.target_slot] = Some(completed.building_id);
+                    // #281: Fire macrocosmo:building_built for planet-level
+                    // construction. Payload carries cause/building_id/system/
+                    // colony/slot so Lua filter handlers (incl. definition
+                    // `on_built` hooks) can react to the specific building.
+                    let mut payload = std::collections::HashMap::new();
+                    payload.insert("cause".to_string(), "construction".to_string());
+                    payload.insert("building_id".to_string(), completed_id);
+                    payload.insert("slot".to_string(), completed_slot.to_string());
+                    payload.insert("system".to_string(), sys.to_bits().to_string());
+                    payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
+                    event_system.fire_event_with_payload(
+                        crate::event_system::BUILDING_BUILT_EVENT,
+                        Some(colony_entity),
+                        clock.elapsed,
+                        payload,
+                    );
                 } else {
                     warn!(
                         "Building '{}' completed but target slot {} is out of range (max {})",
@@ -715,6 +733,23 @@ pub fn tick_building_queue(
                     old_name, completed.target_id, completed.slot_index
                 );
                 event_system.fire_event("building_upgraded", Some(colony_entity), clock.elapsed);
+                // #281: Fire macrocosmo:building_built with cause="upgrade" so
+                // Lua definition `on_upgraded` hooks (and external filters)
+                // see the completion alongside the legacy
+                // `building_upgraded` event.
+                let mut payload = std::collections::HashMap::new();
+                payload.insert("cause".to_string(), "upgrade".to_string());
+                payload.insert("building_id".to_string(), completed.target_id.0.clone());
+                payload.insert("previous_id".to_string(), old_name);
+                payload.insert("slot".to_string(), completed.slot_index.to_string());
+                payload.insert("system".to_string(), sys.to_bits().to_string());
+                payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
+                event_system.fire_event_with_payload(
+                    crate::event_system::BUILDING_BUILT_EVENT,
+                    Some(colony_entity),
+                    clock.elapsed,
+                    payload,
+                );
             }
         }
 

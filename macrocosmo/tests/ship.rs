@@ -2932,6 +2932,8 @@ fn test_scout_report_via_ftl_comm() {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         });
     }
 
