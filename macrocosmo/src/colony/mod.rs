@@ -23,7 +23,7 @@ pub use colonization::*;
 pub use maintenance::*;
 pub use population::*;
 pub use production::*;
-pub use remote::apply_colony_command;
+pub use remote::apply_remote_command;
 pub use system_buildings::*;
 
 pub struct ColonyPlugin;

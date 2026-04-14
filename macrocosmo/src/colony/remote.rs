@@ -15,7 +15,7 @@ use crate::colony::{
     BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony,
     DemolitionOrder, SystemBuildingQueue, SystemBuildings, UpgradeOrder,
 };
-use crate::communication::{ColonyCommand, ColonyCommandKind};
+use crate::communication::{BuildingKind, BuildingScope, ColonyCommand, RemoteCommand};
 use crate::scripting::building_api::{BuildingDefinition, BuildingId, BuildingRegistry};
 use crate::ship_design::ShipDesignRegistry;
 
@@ -33,16 +33,16 @@ pub type ApplyColoniesQuery<'w, 's> = Query<
 pub type ApplySystemBuildingsQuery<'w, 's> =
     Query<'w, 's, (&'static SystemBuildings, &'static mut SystemBuildingQueue)>;
 
-/// Apply a `ColonyCommand` that has just arrived at `target_system`. Cost,
-/// time, and refund amounts are resolved here against the *current*
-/// registry + modifier state at the target (see #270 design note: "the
-/// order takes effect under the conditions at the target when it
-/// arrives"). The payload only carries ids and slot indices.
+/// Apply a `RemoteCommand` that has just arrived. Cost, time, and refund
+/// amounts are resolved here against the *current* registry + modifier
+/// state at the target for building ops and ship builds;
+/// `DeliverableBuild` carries a pre-computed payload (defs live in
+/// `StructureRegistry`, which isn't plumbed into this handler).
 ///
 /// Silently warns and drops on unknown ids / missing slots / missing
 /// target components — arrival should never panic.
-pub fn apply_colony_command(
-    cc: &ColonyCommand,
+pub fn apply_remote_command(
+    cmd: &RemoteCommand,
     target_system: Entity,
     br: &BuildingRegistry,
     sdr: &ShipDesignRegistry,
@@ -51,13 +51,94 @@ pub fn apply_colony_command(
     colonies: &mut ApplyColoniesQuery,
     sys_buildings_q: &mut ApplySystemBuildingsQuery,
 ) {
+    match cmd {
+        RemoteCommand::BuildShip { .. } | RemoteCommand::SetProductionFocus { .. } => {
+            // Pre-#270 orphan API — not yet wired to any UI; intentional no-op.
+        }
+        RemoteCommand::Colony(cc) => apply_building_command(
+            cc,
+            target_system,
+            br,
+            bldg_cost_mod,
+            bldg_time_mod,
+            colonies,
+            sys_buildings_q,
+        ),
+        RemoteCommand::ShipBuild {
+            host_colony,
+            design_id,
+            build_kind,
+        } => {
+            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
+                warn!("ShipBuild: host_colony {:?} has no BuildQueue", host_colony);
+                return;
+            };
+            let Some(design) = sdr.get(design_id) else {
+                warn!("ShipBuild: unknown design_id '{}'", design_id);
+                return;
+            };
+            let build_time_total = sdr.build_time(design_id);
+            build_q.queue.push(BuildOrder {
+                kind: build_kind.clone(),
+                design_id: design_id.clone(),
+                display_name: design.name.clone(),
+                minerals_cost: design.build_cost_minerals,
+                minerals_invested: Amt::ZERO,
+                energy_cost: design.build_cost_energy,
+                energy_invested: Amt::ZERO,
+                build_time_total,
+                build_time_remaining: build_time_total,
+            });
+        }
+        RemoteCommand::DeliverableBuild {
+            host_colony,
+            def_id,
+            display_name,
+            cargo_size,
+            minerals_cost,
+            energy_cost,
+            build_time,
+        } => {
+            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
+                warn!(
+                    "DeliverableBuild: host_colony {:?} has no BuildQueue",
+                    host_colony
+                );
+                return;
+            };
+            build_q.queue.push(BuildOrder {
+                kind: BuildKind::Deliverable {
+                    cargo_size: *cargo_size,
+                },
+                design_id: def_id.clone(),
+                display_name: display_name.clone(),
+                minerals_cost: *minerals_cost,
+                minerals_invested: Amt::ZERO,
+                energy_cost: *energy_cost,
+                energy_invested: Amt::ZERO,
+                build_time_total: *build_time,
+                build_time_remaining: *build_time,
+            });
+        }
+    }
+}
+
+fn apply_building_command(
+    cc: &ColonyCommand,
+    target_system: Entity,
+    br: &BuildingRegistry,
+    bldg_cost_mod: Amt,
+    bldg_time_mod: Amt,
+    colonies: &mut ApplyColoniesQuery,
+    sys_buildings_q: &mut ApplySystemBuildingsQuery,
+) {
     match &cc.kind {
-        ColonyCommandKind::QueueBuilding {
+        BuildingKind::Queue {
             building_id,
             target_slot,
         } => {
             let Some(def) = br.get(building_id) else {
-                warn!("QueueBuilding: unknown building_id '{}'", building_id);
+                warn!("Queue: unknown building_id '{}'", building_id);
                 return;
             };
             let (base_m, base_e) = def.build_cost();
@@ -71,22 +152,24 @@ pub fn apply_colony_command(
                 energy_remaining: eff_e,
                 build_time_remaining: eff_time,
             };
-            match cc.target_planet {
-                Some(planet) => push_planet_building_order(planet, order, colonies),
-                None => {
+            match cc.scope {
+                BuildingScope::Planet(planet) => {
+                    push_planet_building_order(planet, order, colonies)
+                }
+                BuildingScope::System => {
                     if let Ok((_, mut sbq)) = sys_buildings_q.get_mut(target_system) {
                         sbq.queue.push(order);
                     } else {
                         warn!(
-                            "QueueBuilding (system): target_system {:?} has no SystemBuildingQueue",
+                            "Queue (system): target_system {:?} has no SystemBuildingQueue",
                             target_system
                         );
                     }
                 }
             }
         }
-        ColonyCommandKind::DemolishBuilding { target_slot } => match cc.target_planet {
-            Some(planet) => {
+        BuildingKind::Demolish { target_slot } => match cc.scope {
+            BuildingScope::Planet(planet) => {
                 let mut found = false;
                 for (colony, buildings, mut bq, _) in colonies.iter_mut() {
                     if colony.planet != planet {
@@ -95,14 +178,14 @@ pub fn apply_colony_command(
                     found = true;
                     let Some(Some(bid)) = buildings.slots.get(*target_slot).cloned() else {
                         warn!(
-                            "DemolishBuilding (planet): slot {} is empty or out of bounds",
+                            "Demolish (planet): slot {} is empty or out of bounds",
                             target_slot
                         );
                         break;
                     };
                     let Some(def) = br.get(bid.as_str()) else {
                         warn!(
-                            "DemolishBuilding (planet): unknown building '{}' in slot {}; dropping order to avoid silent free demolition",
+                            "Demolish (planet): unknown building '{}' in slot {}; dropping order to avoid silent free demolition",
                             bid, target_slot
                         );
                         break;
@@ -118,30 +201,27 @@ pub fn apply_colony_command(
                     break;
                 }
                 if !found {
-                    warn!(
-                        "DemolishBuilding (planet): no colony found on planet {:?}",
-                        planet
-                    );
+                    warn!("Demolish (planet): no colony found on planet {:?}", planet);
                 }
             }
-            None => {
+            BuildingScope::System => {
                 let Ok((sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system) else {
                     warn!(
-                        "DemolishBuilding (system): target_system {:?} has no SystemBuildings/Queue",
+                        "Demolish (system): target_system {:?} has no SystemBuildings/Queue",
                         target_system
                     );
                     return;
                 };
                 let Some(Some(bid)) = sys_buildings.slots.get(*target_slot).cloned() else {
                     warn!(
-                        "DemolishBuilding (system): slot {} is empty or out of bounds",
+                        "Demolish (system): slot {} is empty or out of bounds",
                         target_slot
                     );
                     return;
                 };
                 let Some(def) = br.get(bid.as_str()) else {
                     warn!(
-                        "DemolishBuilding (system): unknown building '{}' in slot {}; dropping order",
+                        "Demolish (system): unknown building '{}' in slot {}; dropping order",
                         bid, target_slot
                     );
                     return;
@@ -156,7 +236,7 @@ pub fn apply_colony_command(
                 });
             }
         },
-        ColonyCommandKind::UpgradeBuilding {
+        BuildingKind::Upgrade {
             slot_index,
             target_id,
         } => {
@@ -181,8 +261,8 @@ pub fn apply_colony_command(
                     build_time_remaining: eff_time,
                 })
             };
-            match cc.target_planet {
-                Some(planet) => {
+            match cc.scope {
+                BuildingScope::Planet(planet) => {
                     let mut handled = false;
                     for (colony, buildings, mut bq, _) in colonies.iter_mut() {
                         if colony.planet != planet {
@@ -191,12 +271,12 @@ pub fn apply_colony_command(
                         handled = true;
                         let Some(Some(source_bid)) = buildings.slots.get(*slot_index).cloned()
                         else {
-                            warn!("UpgradeBuilding (planet): slot {} empty or OOB", slot_index);
+                            warn!("Upgrade (planet): slot {} empty or OOB", slot_index);
                             break;
                         };
                         let Some(source_def) = br.get(source_bid.as_str()) else {
                             warn!(
-                                "UpgradeBuilding (planet): unknown source building '{}'",
+                                "Upgrade (planet): unknown source building '{}'",
                                 source_bid
                             );
                             break;
@@ -205,33 +285,33 @@ pub fn apply_colony_command(
                             bq.upgrade_queue.push(order);
                         } else {
                             warn!(
-                                "UpgradeBuilding (planet): no upgrade path '{}' -> '{}'",
+                                "Upgrade (planet): no upgrade path '{}' -> '{}'",
                                 source_bid, target_id
                             );
                         }
                         break;
                     }
                     if !handled {
-                        warn!("UpgradeBuilding (planet): no colony on planet {:?}", planet);
+                        warn!("Upgrade (planet): no colony on planet {:?}", planet);
                     }
                 }
-                None => {
+                BuildingScope::System => {
                     let Ok((sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system)
                     else {
                         warn!(
-                            "UpgradeBuilding (system): target_system {:?} missing components",
+                            "Upgrade (system): target_system {:?} missing components",
                             target_system
                         );
                         return;
                     };
                     let Some(Some(source_bid)) = sys_buildings.slots.get(*slot_index).cloned()
                     else {
-                        warn!("UpgradeBuilding (system): slot {} empty or OOB", slot_index);
+                        warn!("Upgrade (system): slot {} empty or OOB", slot_index);
                         return;
                     };
                     let Some(source_def) = br.get(source_bid.as_str()) else {
                         warn!(
-                            "UpgradeBuilding (system): unknown source building '{}'",
+                            "Upgrade (system): unknown source building '{}'",
                             source_bid
                         );
                         return;
@@ -240,74 +320,12 @@ pub fn apply_colony_command(
                         sbq.upgrade_queue.push(order);
                     } else {
                         warn!(
-                            "UpgradeBuilding (system): no upgrade path '{}' -> '{}'",
+                            "Upgrade (system): no upgrade path '{}' -> '{}'",
                             source_bid, target_id
                         );
                     }
                 }
             }
-        }
-        ColonyCommandKind::QueueShipBuild {
-            host_colony,
-            design_id,
-            build_kind,
-        } => {
-            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
-                warn!(
-                    "QueueShipBuild: host_colony {:?} has no BuildQueue",
-                    host_colony
-                );
-                return;
-            };
-            let Some(design) = sdr.get(design_id) else {
-                warn!("QueueShipBuild: unknown design_id '{}'", design_id);
-                return;
-            };
-            let minerals_cost = design.build_cost_minerals;
-            let energy_cost = design.build_cost_energy;
-            let build_time_total = sdr.build_time(design_id);
-            let display_name = design.name.clone();
-            build_q.queue.push(BuildOrder {
-                kind: build_kind.clone(),
-                design_id: design_id.clone(),
-                display_name,
-                minerals_cost,
-                minerals_invested: Amt::ZERO,
-                energy_cost,
-                energy_invested: Amt::ZERO,
-                build_time_total,
-                build_time_remaining: build_time_total,
-            });
-        }
-        ColonyCommandKind::QueueDeliverableBuild {
-            host_colony,
-            def_id,
-            display_name,
-            cargo_size,
-            minerals_cost,
-            energy_cost,
-            build_time,
-        } => {
-            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
-                warn!(
-                    "QueueDeliverableBuild: host_colony {:?} has no BuildQueue",
-                    host_colony
-                );
-                return;
-            };
-            build_q.queue.push(BuildOrder {
-                kind: BuildKind::Deliverable {
-                    cargo_size: *cargo_size,
-                },
-                design_id: def_id.clone(),
-                display_name: display_name.clone(),
-                minerals_cost: *minerals_cost,
-                minerals_invested: Amt::ZERO,
-                energy_cost: *energy_cost,
-                energy_invested: Amt::ZERO,
-                build_time_total: *build_time,
-                build_time_remaining: *build_time,
-            });
         }
     }
 }

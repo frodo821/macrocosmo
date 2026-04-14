@@ -853,24 +853,28 @@ fn draw_right_panel(
         if let Some((slot_idx, _bid)) = sys_demolish_request {
             dispatches.queue.push(crate::communication::PendingColonyDispatch {
                 target_system: sel_entity,
-                command: crate::communication::ColonyCommand {
-                    target_planet: None,
-                    kind: crate::communication::ColonyCommandKind::DemolishBuilding {
-                        target_slot: slot_idx,
+                command: crate::communication::RemoteCommand::Colony(
+                    crate::communication::ColonyCommand {
+                        scope: crate::communication::BuildingScope::System,
+                        kind: crate::communication::BuildingKind::Demolish {
+                            target_slot: slot_idx,
+                        },
                     },
-                },
+                ),
             });
         }
         if let Some((slot_idx, target_id, _, _, _)) = sys_upgrade_request {
             dispatches.queue.push(crate::communication::PendingColonyDispatch {
                 target_system: sel_entity,
-                command: crate::communication::ColonyCommand {
-                    target_planet: None,
-                    kind: crate::communication::ColonyCommandKind::UpgradeBuilding {
-                        slot_index: slot_idx,
-                        target_id,
+                command: crate::communication::RemoteCommand::Colony(
+                    crate::communication::ColonyCommand {
+                        scope: crate::communication::BuildingScope::System,
+                        kind: crate::communication::BuildingKind::Upgrade {
+                            slot_index: slot_idx,
+                            target_id,
+                        },
                     },
-                },
+                ),
             });
         }
 
@@ -905,13 +909,15 @@ fn draw_right_panel(
                 if let Some(bid) = build_sys_building_request {
                     dispatches.queue.push(crate::communication::PendingColonyDispatch {
                         target_system: sel_entity,
-                        command: crate::communication::ColonyCommand {
-                            target_planet: None,
-                            kind: crate::communication::ColonyCommandKind::QueueBuilding {
-                                building_id: bid.0,
-                                target_slot: slot_idx,
+                        command: crate::communication::RemoteCommand::Colony(
+                            crate::communication::ColonyCommand {
+                                scope: crate::communication::BuildingScope::System,
+                                kind: crate::communication::BuildingKind::Queue {
+                                    building_id: bid.0,
+                                    target_slot: slot_idx,
+                                },
                             },
-                        },
+                        ),
                     });
                 }
             }
@@ -1069,13 +1075,10 @@ fn draw_right_panel(
                 {
                     dispatches.queue.push(crate::communication::PendingColonyDispatch {
                         target_system: sel_entity,
-                        command: crate::communication::ColonyCommand {
-                            target_planet: None,
-                            kind: crate::communication::ColonyCommandKind::QueueShipBuild {
-                                host_colony: host,
-                                design_id,
-                                build_kind: crate::colony::BuildKind::Ship,
-                            },
+                        command: crate::communication::RemoteCommand::ShipBuild {
+                            host_colony: host,
+                            design_id,
+                            build_kind: crate::colony::BuildKind::Ship,
                         },
                     });
                 }
@@ -1138,17 +1141,14 @@ fn draw_right_panel(
                     {
                         dispatches.queue.push(crate::communication::PendingColonyDispatch {
                             target_system: sel_entity,
-                            command: crate::communication::ColonyCommand {
-                                target_planet: None,
-                                kind: crate::communication::ColonyCommandKind::QueueDeliverableBuild {
-                                    host_colony: host,
-                                    def_id,
-                                    display_name,
-                                    cargo_size,
-                                    minerals_cost: m_cost,
-                                    energy_cost: e_cost,
-                                    build_time,
-                                },
+                            command: crate::communication::RemoteCommand::DeliverableBuild {
+                                host_colony: host,
+                                def_id,
+                                display_name,
+                                cargo_size,
+                                minerals_cost: m_cost,
+                                energy_cost: e_cost,
+                                build_time,
                             },
                         });
                     }

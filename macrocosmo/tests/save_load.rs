@@ -923,7 +923,7 @@ fn test_save_load_deterministic_continuation() {
 /// into a fresh one, and verifies the remapped Entity is still valid.
 #[test]
 fn test_save_load_preserves_pending_colony_command() {
-    use macrocosmo::communication::{ColonyCommand, ColonyCommandKind, PendingCommand, RemoteCommand};
+    use macrocosmo::communication::{PendingCommand, RemoteCommand};
     let mut src = build_seed_world();
 
     // Pick two systems and a colony to reference.
@@ -949,14 +949,11 @@ fn test_save_load_preserves_pending_colony_command() {
 
     src.spawn(PendingCommand {
         target_system: alpha_centauri,
-        command: RemoteCommand::Colony(ColonyCommand {
-            target_planet: None,
-            kind: ColonyCommandKind::QueueShipBuild {
-                host_colony: colony_entity,
-                design_id: "explorer_mk1".into(),
-                build_kind: macrocosmo::colony::BuildKind::Ship,
-            },
-        }),
+        command: RemoteCommand::ShipBuild {
+            host_colony: colony_entity,
+            design_id: "explorer_mk1".into(),
+            build_kind: macrocosmo::colony::BuildKind::Ship,
+        },
         sent_at: 100,
         arrives_at: 700,
         origin_pos: [0.0, 0.0, 0.0],
@@ -988,10 +985,7 @@ fn test_save_load_preserves_pending_colony_command() {
     assert_eq!(cmd.sent_at, 100);
     assert_eq!(cmd.arrives_at, 700);
     match &cmd.command {
-        RemoteCommand::Colony(ColonyCommand {
-            target_planet: None,
-            kind: ColonyCommandKind::QueueShipBuild { host_colony, design_id, .. },
-        }) => {
+        RemoteCommand::ShipBuild { host_colony, design_id, .. } => {
             assert_eq!(*host_colony, colony_dst, "host_colony Entity remap");
             assert_eq!(design_id, "explorer_mk1");
         }

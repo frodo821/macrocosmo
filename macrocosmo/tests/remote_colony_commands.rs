@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue, BuildingQueue, SystemBuildingQueue};
 use macrocosmo::communication::{
-    self, ColonyCommand, ColonyCommandKind, CommandLog, PendingColonyDispatch,
+    self, BuildingKind, BuildingScope, ColonyCommand, CommandLog, PendingColonyDispatch,
     PendingColonyDispatches, PendingCommand, RemoteCommand,
 };
 use macrocosmo::components::Position;
@@ -52,16 +52,16 @@ fn build_app_with_dispatch() -> App {
     app
 }
 
-fn spawn_pending_colony_command(
+fn spawn_pending_remote_command(
     app: &mut App,
     target_system: Entity,
     sent_at: i64,
     arrives_at: i64,
-    cmd: ColonyCommand,
+    cmd: RemoteCommand,
 ) {
     app.world_mut().spawn(PendingCommand {
         target_system,
-        command: RemoteCommand::Colony(cmd),
+        command: cmd,
         sent_at,
         arrives_at,
         origin_pos: [0.0, 0.0, 0.0],
@@ -123,18 +123,15 @@ fn queue_building_planet_arrives_and_enqueues() {
         vec![None, None, None, None],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         10,
-        ColonyCommand {
-            target_planet: Some(planet),
-            kind: ColonyCommandKind::QueueBuilding {
+        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
                 building_id: "mine".to_string(),
                 target_slot: 1,
-            },
-        },
+            } }),
     );
 
     // Before arrival the queue should be empty.
@@ -169,18 +166,15 @@ fn queue_building_system_arrives_and_enqueues() {
         vec![],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         10,
-        ColonyCommand {
-            target_planet: None,
-            kind: ColonyCommandKind::QueueBuilding {
+        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::System, kind: BuildingKind::Queue {
                 building_id: "shipyard".to_string(),
                 target_slot: 0,
-            },
-        },
+            } }),
     );
 
     run_until_arrival(&mut app, 10);
@@ -213,15 +207,12 @@ fn demolish_building_planet_arrives_and_enqueues() {
         vec![Some(BuildingId::new("mine")), None, None, None],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         5,
-        ColonyCommand {
-            target_planet: Some(planet),
-            kind: ColonyCommandKind::DemolishBuilding { target_slot: 0 },
-        },
+        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Demolish { target_slot: 0 } }),
     );
 
     run_until_arrival(&mut app, 5);
@@ -261,18 +252,15 @@ fn upgrade_building_planet_without_path_warns_and_noops() {
         vec![Some(BuildingId::new("mine")), None, None, None],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         5,
-        ColonyCommand {
-            target_planet: Some(planet),
-            kind: ColonyCommandKind::UpgradeBuilding {
+        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Upgrade {
                 slot_index: 0,
                 target_id: "advanced_mine".to_string(),
-            },
-        },
+            } }),
     );
 
     run_until_arrival(&mut app, 5);
@@ -306,19 +294,12 @@ fn queue_ship_build_arrives_and_enqueues() {
         vec![],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         20,
-        ColonyCommand {
-            target_planet: None,
-            kind: ColonyCommandKind::QueueShipBuild {
-                host_colony: colony,
-                design_id: "explorer_mk1".to_string(),
-                build_kind: BuildKind::Ship,
-            },
-        },
+        RemoteCommand::ShipBuild { host_colony: colony, design_id: "explorer_mk1".to_string(), build_kind: BuildKind::Ship },
     );
 
     run_until_arrival(&mut app, 20);
@@ -351,14 +332,12 @@ fn queue_deliverable_build_arrives_and_enqueues() {
         vec![],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         20,
-        ColonyCommand {
-            target_planet: None,
-            kind: ColonyCommandKind::QueueDeliverableBuild {
+        RemoteCommand::DeliverableBuild {
                 host_colony: colony,
                 def_id: "sensor_buoy".to_string(),
                 display_name: "Sensor Buoy".to_string(),
@@ -367,7 +346,6 @@ fn queue_deliverable_build_arrives_and_enqueues() {
                 energy_cost: Amt::units(50),
                 build_time: 30,
             },
-        },
     );
 
     run_until_arrival(&mut app, 20);
@@ -405,18 +383,15 @@ fn pending_colony_command_not_applied_before_arrival() {
         vec![None, None, None, None],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         100,
-        ColonyCommand {
-            target_planet: Some(planet),
-            kind: ColonyCommandKind::QueueBuilding {
+        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
                 building_id: "mine".to_string(),
                 target_slot: 0,
-            },
-        },
+            } }),
     );
 
     // Advance halfway.
@@ -471,13 +446,10 @@ fn local_dispatch_applies_same_frame() {
         .queue
         .push(PendingColonyDispatch {
             target_system: sys,
-            command: ColonyCommand {
-                target_planet: Some(planet),
-                kind: ColonyCommandKind::QueueBuilding {
+            command: RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
                     building_id: "mine".to_string(),
                     target_slot: 0,
-                },
-            },
+                } }),
         });
 
     // Align LastProductionTick so the build queue tick sees delta=1.
@@ -538,13 +510,10 @@ fn remote_dispatch_delayed_by_light_speed() {
         .queue
         .push(PendingColonyDispatch {
             target_system: target_sys,
-            command: ColonyCommand {
-                target_planet: Some(target_planet),
-                kind: ColonyCommandKind::QueueBuilding {
+            command: RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(target_planet), kind: BuildingKind::Queue {
                     building_id: "mine".to_string(),
                     target_slot: 0,
-                },
-            },
+                } }),
         });
 
     // Run one frame. Dispatch drains and spawns PendingCommand;
@@ -592,7 +561,7 @@ fn remote_dispatch_delayed_by_light_speed() {
     );
 }
 
-/// Remote system-level dispatch (Commit D): `target_planet: None` targets
+/// Remote system-level dispatch (Commit D): `scope: BuildingScope::System` targets
 /// the `SystemBuildingQueue` on the target system.
 #[test]
 fn remote_system_level_dispatch_delayed() {
@@ -628,13 +597,10 @@ fn remote_system_level_dispatch_delayed() {
         .queue
         .push(PendingColonyDispatch {
             target_system: target_sys,
-            command: ColonyCommand {
-                target_planet: None,
-                kind: ColonyCommandKind::QueueBuilding {
+            command: RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::System, kind: BuildingKind::Queue {
                     building_id: "shipyard".to_string(),
                     target_slot: 0,
-                },
-            },
+                } }),
         });
 
     advance_time(&mut app, 1);
@@ -705,14 +671,7 @@ fn remote_ship_build_dispatch_delayed() {
         .queue
         .push(PendingColonyDispatch {
             target_system: target_sys,
-            command: ColonyCommand {
-                target_planet: None,
-                kind: ColonyCommandKind::QueueShipBuild {
-                    host_colony: target_colony,
-                    design_id: "explorer_mk1".to_string(),
-                    build_kind: BuildKind::Ship,
-                },
-            },
+            command: RemoteCommand::ShipBuild { host_colony: target_colony, design_id: "explorer_mk1".to_string(), build_kind: BuildKind::Ship },
         });
 
     advance_time(&mut app, 1);
@@ -757,18 +716,15 @@ fn arrival_marks_command_log_entry() {
         vec![None, None, None, None],
     );
 
-    spawn_pending_colony_command(
+    spawn_pending_remote_command(
         &mut app,
         sys,
         0,
         10,
-        ColonyCommand {
-            target_planet: Some(planet),
-            kind: ColonyCommandKind::QueueBuilding {
+        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
                 building_id: "mine".to_string(),
                 target_slot: 0,
-            },
-        },
+            } }),
     );
 
     run_until_arrival(&mut app, 10);
