@@ -6,6 +6,7 @@ pub mod effect_scope;
 pub mod engine;
 pub mod event_api;
 pub mod faction_api;
+pub mod gamestate_view;
 pub mod galaxy_api;
 pub mod galaxy_gen_ctx;
 pub mod game_rng;
