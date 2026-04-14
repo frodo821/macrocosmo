@@ -669,6 +669,70 @@ fn remote_system_level_dispatch_delayed() {
     );
 }
 
+/// Remote ship-build dispatch (Commit E): `QueueShipBuild { host_colony }`
+/// targets a specific colony's ship `BuildQueue` after light-speed delay.
+#[test]
+fn remote_ship_build_dispatch_delayed() {
+    let mut app = build_app_with_dispatch();
+    let (home_sys, _home_planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Home",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let (target_sys, target_planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Target",
+        [10.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let target_colony = spawn_test_colony(
+        app.world_mut(),
+        target_planet,
+        Amt::units(10_000),
+        Amt::units(10_000),
+        vec![],
+    );
+    app.world_mut()
+        .spawn((Player, StationedAt { system: home_sys }));
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: target_sys,
+            command: ColonyCommand {
+                target_planet: None,
+                kind: ColonyCommandKind::QueueShipBuild {
+                    host_colony: target_colony,
+                    design_id: "explorer_mk1".to_string(),
+                    build_kind: BuildKind::Ship,
+                },
+            },
+        });
+
+    advance_time(&mut app, 1);
+
+    let bq = app.world().get::<BuildQueue>(target_colony).unwrap();
+    assert!(
+        bq.queue.is_empty(),
+        "remote ship BuildQueue should be empty before light delay"
+    );
+
+    let arrives_at = 1 + macrocosmo::physics::light_delay_hexadies(10.0);
+    run_until_arrival(&mut app, arrives_at);
+
+    let bq = app.world().get::<BuildQueue>(target_colony).unwrap();
+    assert_eq!(
+        bq.queue.len(),
+        1,
+        "remote ship build should arrive and enqueue"
+    );
+    assert_eq!(bq.queue[0].design_id, "explorer_mk1");
+}
+
 // --------------------------------------------------------------------------
 // CommandLog arrival marking
 // --------------------------------------------------------------------------

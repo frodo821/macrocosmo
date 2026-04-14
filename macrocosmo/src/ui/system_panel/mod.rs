@@ -1116,29 +1116,48 @@ fn draw_right_panel(
                 if let Some((design_id, display_name, minerals_cost, energy_cost, build_time)) =
                     build_request
                 {
-                    // Re-query mutably to push the order onto the host colony's BuildQueue.
-                    let display_name_log = display_name.clone();
-                    for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
-                        colonies.iter_mut()
-                    {
-                        if colony_entity != host {
-                            continue;
+                    if is_local_system {
+                        // Re-query mutably to push the order onto the host colony's BuildQueue.
+                        let display_name_log = display_name.clone();
+                        for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
+                            colonies.iter_mut()
+                        {
+                            if colony_entity != host {
+                                continue;
+                            }
+                            if let Some(bq) = build_queue.as_mut() {
+                                bq.queue.push(BuildOrder {
+                                    kind: crate::colony::BuildKind::default(),
+                                    design_id: design_id.clone(),
+                                    display_name: display_name.clone(),
+                                    minerals_cost,
+                                    minerals_invested: Amt::ZERO,
+                                    energy_cost,
+                                    energy_invested: Amt::ZERO,
+                                    build_time_total: build_time,
+                                    build_time_remaining: build_time,
+                                });
+                                info!("Build order added: {}", display_name_log);
+                            }
+                            break;
                         }
-                        if let Some(bq) = build_queue.as_mut() {
-                            bq.queue.push(BuildOrder {
-                                kind: crate::colony::BuildKind::default(),
-                                design_id: design_id.clone(),
-                                display_name: display_name.clone(),
-                                minerals_cost,
-                                minerals_invested: Amt::ZERO,
-                                energy_cost,
-                                energy_invested: Amt::ZERO,
-                                build_time_total: build_time,
-                                build_time_remaining: build_time,
-                            });
-                            info!("Build order added: {}", display_name_log);
-                        }
-                        break;
+                    } else {
+                        // #270: Remote ship build. Arrival re-resolves cost /
+                        // time from ShipDesignRegistry (modifiers not applied
+                        // — ship builds have no empire modifier yet).
+                        let _ = (minerals_cost, energy_cost, build_time, display_name);
+                        dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                            target_system: sel_entity,
+                            command: crate::communication::ColonyCommand {
+                                target_planet: None,
+                                kind: crate::communication::ColonyCommandKind::QueueShipBuild {
+                                    host_colony: host,
+                                    design_id: design_id.clone(),
+                                    build_kind: crate::colony::BuildKind::Ship,
+                                },
+                            },
+                        });
+                        info!("Ship build dispatched to remote colony: {}", design_id);
                     }
                 }
 
@@ -1198,28 +1217,52 @@ fn draw_right_panel(
                     if let Some((def_id, display_name, cargo_size, m_cost, e_cost, build_time)) =
                         deliverable_request
                     {
-                        let display_name_log = display_name.clone();
-                        for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
-                            colonies.iter_mut()
-                        {
-                            if colony_entity != host {
-                                continue;
+                        if is_local_system {
+                            let display_name_log = display_name.clone();
+                            for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
+                                colonies.iter_mut()
+                            {
+                                if colony_entity != host {
+                                    continue;
+                                }
+                                if let Some(bq) = build_queue.as_mut() {
+                                    bq.queue.push(BuildOrder {
+                                        kind: crate::colony::BuildKind::Deliverable { cargo_size },
+                                        design_id: def_id.clone(),
+                                        display_name: display_name.clone(),
+                                        minerals_cost: m_cost,
+                                        minerals_invested: Amt::ZERO,
+                                        energy_cost: e_cost,
+                                        energy_invested: Amt::ZERO,
+                                        build_time_total: build_time,
+                                        build_time_remaining: build_time,
+                                    });
+                                    info!("Deliverable order added: {}", display_name_log);
+                                }
+                                break;
                             }
-                            if let Some(bq) = build_queue.as_mut() {
-                                bq.queue.push(BuildOrder {
-                                    kind: crate::colony::BuildKind::Deliverable { cargo_size },
-                                    design_id: def_id.clone(),
-                                    display_name: display_name.clone(),
-                                    minerals_cost: m_cost,
-                                    minerals_invested: Amt::ZERO,
-                                    energy_cost: e_cost,
-                                    energy_invested: Amt::ZERO,
-                                    build_time_total: build_time,
-                                    build_time_remaining: build_time,
-                                });
-                                info!("Deliverable order added: {}", display_name_log);
-                            }
-                            break;
+                        } else {
+                            // #270: Remote deliverable build. Note: deliverable
+                            // defs live in StructureRegistry (not ShipDesignRegistry),
+                            // so the current arrival handler can't re-resolve them.
+                            // Work around by sending a minimal dispatch that will
+                            // warn; proper deliverable-registry handling is a
+                            // follow-up. TODO(#270-followup).
+                            let _ = (display_name, m_cost, e_cost, build_time);
+                            dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                                target_system: sel_entity,
+                                command: crate::communication::ColonyCommand {
+                                    target_planet: None,
+                                    kind: crate::communication::ColonyCommandKind::QueueShipBuild {
+                                        host_colony: host,
+                                        design_id: def_id.clone(),
+                                        build_kind: crate::colony::BuildKind::Deliverable {
+                                            cargo_size,
+                                        },
+                                    },
+                                },
+                            });
+                            info!("Deliverable build dispatched to remote colony: {}", def_id);
                         }
                     }
                 }
