@@ -55,8 +55,8 @@ use crate::colony::{Colony, ResourceStockpile};
 use crate::condition::ScopedFlags;
 use crate::galaxy::{Planet, StarSystem};
 use crate::player::{Empire, PlayerEmpire};
-use crate::ship::{Owner, Ship};
 use crate::ship::fleet::Fleet;
+use crate::ship::{Owner, Ship};
 use crate::technology::{GameFlags, TechTree};
 use crate::time_system::GameClock;
 
@@ -154,7 +154,15 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         let mut system_q = world.query::<(Entity, &StarSystem)>();
         system_q
             .iter(world)
-            .map(|(e, s)| (e, s.name.clone(), s.surveyed, s.is_capital, s.star_type.clone()))
+            .map(|(e, s)| {
+                (
+                    e,
+                    s.name.clone(),
+                    s.surveyed,
+                    s.is_capital,
+                    s.star_type.clone(),
+                )
+            })
             .collect()
     };
     for (entity, name, surveyed, is_capital, star_type) in system_rows {
@@ -437,7 +445,10 @@ pub(crate) fn seal_table(lua: &Lua, table: &Table) -> mlua::Result<()> {
     let mt = lua.create_table()?;
     let newindex = lua.create_function(|_, (_t, k, _v): (Table, mlua::Value, mlua::Value)| {
         let key_desc = match k {
-            mlua::Value::String(s) => s.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "<?>".to_string()),
+            mlua::Value::String(s) => s
+                .to_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "<?>".to_string()),
             other => format!("{:?}", other),
         };
         Err::<(), _>(mlua::Error::RuntimeError(format!(
@@ -446,9 +457,11 @@ pub(crate) fn seal_table(lua: &Lua, table: &Table) -> mlua::Result<()> {
         )))
     })?;
     let shadow_for_index = shadow.clone();
-    let index = lua.create_function(move |_, (_t, k): (Table, mlua::Value)| -> mlua::Result<mlua::Value> {
-        shadow_for_index.get::<mlua::Value>(k)
-    })?;
+    let index = lua.create_function(
+        move |_, (_t, k): (Table, mlua::Value)| -> mlua::Result<mlua::Value> {
+            shadow_for_index.get::<mlua::Value>(k)
+        },
+    )?;
     // Preserve ipairs / # length by exposing shadow's length via __len.
     let shadow_for_len = shadow.clone();
     let len_fn = lua.create_function(move |_, _t: Table| -> mlua::Result<i64> {
@@ -456,11 +469,13 @@ pub(crate) fn seal_table(lua: &Lua, table: &Table) -> mlua::Result<()> {
     })?;
     // Enable pairs() to iterate the shadow for introspection/debugging.
     let shadow_for_pairs = shadow.clone();
-    let pairs_fn = lua.create_function(move |_lua, _t: Table| -> mlua::Result<(mlua::Function, Table, mlua::Value)> {
-        // Return (next, shadow, nil) so `for k,v in pairs(t)` iterates shadow.
-        let next: mlua::Function = _lua.globals().get("next")?;
-        Ok((next, shadow_for_pairs.clone(), mlua::Value::Nil))
-    })?;
+    let pairs_fn = lua.create_function(
+        move |_lua, _t: Table| -> mlua::Result<(mlua::Function, Table, mlua::Value)> {
+            // Return (next, shadow, nil) so `for k,v in pairs(t)` iterates shadow.
+            let next: mlua::Function = _lua.globals().get("next")?;
+            Ok((next, shadow_for_pairs.clone(), mlua::Value::Nil))
+        },
+    )?;
     mt.set("__newindex", newindex)?;
     mt.set("__index", index)?;
     mt.set("__len", len_fn)?;
@@ -489,7 +504,10 @@ fn seal_set_like_table(lua: &Lua, table: &Table) -> mlua::Result<()> {
     let mt = lua.create_table()?;
     let newindex = lua.create_function(|_, (_t, k, _v): (Table, mlua::Value, mlua::Value)| {
         let key_desc = match k {
-            mlua::Value::String(s) => s.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "<?>".to_string()),
+            mlua::Value::String(s) => s
+                .to_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "<?>".to_string()),
             other => format!("{:?}", other),
         };
         Err::<(), _>(mlua::Error::RuntimeError(format!(
@@ -498,18 +516,22 @@ fn seal_set_like_table(lua: &Lua, table: &Table) -> mlua::Result<()> {
         )))
     })?;
     let shadow_for_index = shadow.clone();
-    let index = lua.create_function(move |_, (_t, k): (Table, mlua::Value)| -> mlua::Result<bool> {
-        // Missing keys return false for ergonomic `if techs.foo then ...`.
-        Ok(matches!(
-            shadow_for_index.get::<mlua::Value>(k)?,
-            mlua::Value::Boolean(true)
-        ))
-    })?;
+    let index = lua.create_function(
+        move |_, (_t, k): (Table, mlua::Value)| -> mlua::Result<bool> {
+            // Missing keys return false for ergonomic `if techs.foo then ...`.
+            Ok(matches!(
+                shadow_for_index.get::<mlua::Value>(k)?,
+                mlua::Value::Boolean(true)
+            ))
+        },
+    )?;
     let shadow_for_pairs = shadow.clone();
-    let pairs_fn = lua.create_function(move |_lua, _t: Table| -> mlua::Result<(mlua::Function, Table, mlua::Value)> {
-        let next: mlua::Function = _lua.globals().get("next")?;
-        Ok((next, shadow_for_pairs.clone(), mlua::Value::Nil))
-    })?;
+    let pairs_fn = lua.create_function(
+        move |_lua, _t: Table| -> mlua::Result<(mlua::Function, Table, mlua::Value)> {
+            let next: mlua::Function = _lua.globals().get("next")?;
+            Ok((next, shadow_for_pairs.clone(), mlua::Value::Nil))
+        },
+    )?;
     mt.set("__newindex", newindex)?;
     mt.set("__index", index)?;
     mt.set("__pairs", pairs_fn)?;
@@ -539,14 +561,17 @@ mod tests {
         world.insert_resource(GameClock::new(123));
         // A player empire with a couple of techs and flags
         let mut tree = TechTree::default();
-        tree.researched.insert(crate::technology::TechId("industrial_mining".to_string()));
+        tree.researched
+            .insert(crate::technology::TechId("industrial_mining".to_string()));
         let mut flags = GameFlags::default();
         flags.set("first_contact");
         let mut scoped = ScopedFlags::default();
         scoped.set("empire_scoped");
 
         world.spawn((
-            Empire { name: "Test Empire".into() },
+            Empire {
+                name: "Test Empire".into(),
+            },
             PlayerEmpire,
             tree,
             flags,
@@ -651,16 +676,21 @@ mod tests {
         let r: mlua::Result<()> = engine.lua().load(r#"_test_gs.clock = nil"#).exec();
         assert!(r.is_err(), "mutating gamestate must fail");
         let err = r.err().unwrap().to_string();
-        assert!(err.contains("read-only"), "error should mention read-only: {err}");
+        assert!(
+            err.contains("read-only"),
+            "error should mention read-only: {err}"
+        );
 
         // Nested write
-        let r2: mlua::Result<()> = engine.lua()
+        let r2: mlua::Result<()> = engine
+            .lua()
             .load(r#"_test_gs.player_empire.resources.minerals = 9999"#)
             .exec();
         assert!(r2.is_err(), "mutating nested gamestate field must fail");
 
         // Tech table write
-        let r3: mlua::Result<()> = engine.lua()
+        let r3: mlua::Result<()> = engine
+            .lua()
             .load(r#"_test_gs.player_empire.techs.forged = true"#)
             .exec();
         assert!(r3.is_err(), "mutating tech set must fail");

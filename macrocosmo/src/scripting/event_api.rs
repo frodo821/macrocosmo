@@ -16,7 +16,9 @@ pub fn parse_event_definitions(lua: &mlua::Lua) -> Result<Vec<EventDefinition>, 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
 
         let trigger = parse_trigger(lua, &table, &id)?;
 
@@ -423,10 +425,7 @@ mod tests {
 
         let defs = parse_event_definitions(lua).unwrap();
         match &defs[0].trigger {
-            EventTrigger::Mtth {
-                fire_condition,
-                ..
-            } => {
+            EventTrigger::Mtth { fire_condition, .. } => {
                 assert!(fire_condition.is_some());
             }
             other => panic!("Expected Mtth trigger, got {:?}", other),

@@ -159,7 +159,12 @@ impl EventSystem {
         let fires_at = match self.definitions.get_mut(event_id) {
             Some(def) => match &mut def.trigger {
                 EventTrigger::Manual => now,
-                EventTrigger::Mtth { mean_hexadies, max_times, times_triggered, .. } => {
+                EventTrigger::Mtth {
+                    mean_hexadies,
+                    max_times,
+                    times_triggered,
+                    ..
+                } => {
                     if max_times.is_some_and(|max| *times_triggered >= max) {
                         return;
                     }
@@ -408,9 +413,9 @@ impl Plugin for EventSystemPlugin {
         app.insert_resource(EventSystem::default())
             .insert_resource(EventBus::default())
             .add_systems(
-            Update,
-            tick_events.after(crate::time_system::advance_game_time),
-        );
+                Update,
+                tick_events.after(crate::time_system::advance_game_time),
+            );
     }
 }
 
@@ -598,28 +603,25 @@ mod tests {
         });
 
         let check_should_fire = |system: &EventSystem, now: i64| -> bool {
-            system
-                .definitions
-                .iter()
-                .any(|(_, def)| {
-                    if let EventTrigger::Periodic {
-                        interval_hexadies,
-                        last_fired,
-                        max_times,
-                        times_triggered,
-                        ..
-                    } = &def.trigger
-                    {
-                        if let Some(max) = max_times {
-                            if *times_triggered >= *max {
-                                return false;
-                            }
+            system.definitions.iter().any(|(_, def)| {
+                if let EventTrigger::Periodic {
+                    interval_hexadies,
+                    last_fired,
+                    max_times,
+                    times_triggered,
+                    ..
+                } = &def.trigger
+                {
+                    if let Some(max) = max_times {
+                        if *times_triggered >= *max {
+                            return false;
                         }
-                        now - *last_fired >= *interval_hexadies
-                    } else {
-                        false
                     }
-                })
+                    now - *last_fired >= *interval_hexadies
+                } else {
+                    false
+                }
+            })
         };
 
         // Fire twice
@@ -694,7 +696,12 @@ mod tests {
         });
 
         let def = system.definitions.get("conditional_mtth").unwrap();
-        if let EventTrigger::Mtth { fire_condition, mean_hexadies, .. } = &def.trigger {
+        if let EventTrigger::Mtth {
+            fire_condition,
+            mean_hexadies,
+            ..
+        } = &def.trigger
+        {
             assert!(fire_condition.is_some(), "fire_condition should be stored");
             assert_eq!(fire_condition.as_ref().unwrap().id, 42);
             assert_eq!(*mean_hexadies, 30);
@@ -723,7 +730,13 @@ mod tests {
         });
 
         let def = system.definitions.get("conditional_periodic").unwrap();
-        if let EventTrigger::Periodic { fire_condition, interval_hexadies, max_times, .. } = &def.trigger {
+        if let EventTrigger::Periodic {
+            fire_condition,
+            interval_hexadies,
+            max_times,
+            ..
+        } = &def.trigger
+        {
             assert!(fire_condition.is_some(), "fire_condition should be stored");
             assert_eq!(fire_condition.as_ref().unwrap().id, 99);
             assert_eq!(*interval_hexadies, 10);
@@ -736,7 +749,11 @@ mod tests {
     #[test]
     fn test_event_bus_fire_calls_handler() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         // Register a handler via on() and fire an event
         lua.load(
@@ -765,7 +782,11 @@ mod tests {
     #[test]
     fn test_event_bus_filter_match() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"
@@ -788,7 +809,9 @@ mod tests {
         assert!(called);
 
         // Reset and fire with non-matching filter
-        lua.load(r#"_combat_handler_called = false"#).exec().unwrap();
+        lua.load(r#"_combat_handler_called = false"#)
+            .exec()
+            .unwrap();
         let mut payload2 = HashMap::new();
         payload2.insert("cause".to_string(), "recycled".to_string());
         let count2 = EventBus::fire(&lua, "macrocosmo:building_lost", &payload2);
@@ -800,7 +823,11 @@ mod tests {
     #[test]
     fn test_event_bus_no_filter_matches_all() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"
@@ -826,7 +853,11 @@ mod tests {
     #[test]
     fn test_event_bus_wrong_event_id_not_called() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"

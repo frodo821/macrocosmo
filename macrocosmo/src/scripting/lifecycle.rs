@@ -323,7 +323,13 @@ pub fn evaluate_fire_conditions(world: &mut World) {
     let mut es = world.resource_mut::<EventSystem>();
     let suppress_ids: std::collections::HashSet<String> = decisions
         .iter()
-        .filter_map(|d| if !d.fire { Some(d.event_id.clone()) } else { None })
+        .filter_map(|d| {
+            if !d.fire {
+                Some(d.event_id.clone())
+            } else {
+                None
+            }
+        })
         .collect();
     if suppress_ids.is_empty() {
         return;
@@ -341,9 +347,8 @@ pub fn evaluate_fire_conditions(world: &mut World) {
 
     // Suppress pending MTTH entries whose event id is in the suppress set
     // and whose fires_at <= now.
-    es.pending.retain(|pe| {
-        !(pe.fires_at <= now && suppress_ids.contains(&pe.event_id))
-    });
+    es.pending
+        .retain(|pe| !(pe.fires_at <= now && suppress_ids.contains(&pe.event_id)));
 }
 
 /// Per-tick **exclusive** system that dispatches recently fired events from
@@ -689,7 +694,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        lua.load(r#"fire_event("targeted_event", 42)"#).exec().unwrap();
+        lua.load(r#"fire_event("targeted_event", 42)"#)
+            .exec()
+            .unwrap();
 
         let events: mlua::Table = lua.globals().get("_pending_script_events").unwrap();
         assert_eq!(events.len().unwrap(), 1);
@@ -706,11 +713,15 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        lua.load(r#"
+        lua.load(
+            r#"
             fire_event("event_a")
             fire_event("event_b")
             fire_event("event_c")
-        "#).exec().unwrap();
+        "#,
+        )
+        .exec()
+        .unwrap();
 
         let events: mlua::Table = lua.globals().get("_pending_script_events").unwrap();
         assert_eq!(events.len().unwrap(), 3);
@@ -789,11 +800,7 @@ mod tests {
         let engine = world.resource::<ScriptEngine>();
         let now: i64 = engine.lua().globals().get("_captured_now").unwrap();
         assert_eq!(now, 42, "event.gamestate.clock.now must match GameClock");
-        let name: String = engine
-            .lua()
-            .globals()
-            .get("_captured_empire_name")
-            .unwrap();
+        let name: String = engine.lua().globals().get("_captured_empire_name").unwrap();
         assert_eq!(name, "E");
     }
 
@@ -838,7 +845,10 @@ mod tests {
         let called: bool = engine.lua().globals().get("_trigger_called").unwrap();
         assert!(called, "on_trigger must fire when event_id matches");
         let has_tech: bool = engine.lua().globals().get("_trigger_has_tech").unwrap();
-        assert!(has_tech, "gamestate techs lookup must work inside on_trigger");
+        assert!(
+            has_tech,
+            "gamestate techs lookup must work inside on_trigger"
+        );
     }
 
     #[test]
@@ -993,9 +1003,7 @@ mod tests {
 
     #[test]
     fn test_fire_condition_suppresses_pending_mtth_event() {
-        use crate::event_system::{
-            EventDefinition, EventTrigger, LuaFunctionRef, PendingEvent,
-        };
+        use crate::event_system::{EventDefinition, EventTrigger, LuaFunctionRef, PendingEvent};
 
         let mut world = make_world();
         let fref = {
