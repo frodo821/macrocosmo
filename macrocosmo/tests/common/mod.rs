@@ -214,9 +214,16 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
         .id()
 }
 
+/// #293: Test-only component carrying the intended faction bucket for a
+/// hostile. Needed because the new-component-only spawn path does not
+/// include `HostilePresence.hostile_type` which previously drove the
+/// faction mapping in `setup_test_hostile_factions`.
+#[derive(Component, Copy, Clone, Debug)]
+pub struct TestHostileFactionTag(pub macrocosmo::galaxy::HostileType);
+
 /// Test helper for #168: spawn passive hostile factions, seed Neutral/-100
 /// relations against the test empire, and attach `FactionOwner` to every
-/// existing `HostilePresence`. Tests that want combat to actually trigger
+/// existing hostile entity. Tests that want combat to actually trigger
 /// must call this after spawning their hostiles and ships.
 ///
 /// Returns `(space_creature_faction, ancient_defense_faction)` entities.
@@ -282,12 +289,23 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
         );
     }
 
-    // Attach FactionOwner to every existing HostilePresence based on hostile_type.
+    // Attach FactionOwner to every existing hostile entity. Preference order
+    // for picking the faction bucket (#293):
+    //   1. `TestHostileFactionTag` (new-component-only test spawns).
+    //   2. `HostilePresence.hostile_type` (legacy test spawns).
+    //   3. Default to `space_creature`.
     let assignments: Vec<(Entity, Entity)> = {
-        let mut q = world.query::<(Entity, &HostilePresence)>();
+        let mut q = world.query_filtered::<
+            (Entity, Option<&HostilePresence>, Option<&TestHostileFactionTag>),
+            With<macrocosmo::galaxy::Hostile>,
+        >();
         q.iter(world)
-            .map(|(e, h)| {
-                let owner = match h.hostile_type {
+            .map(|(e, hp, tag)| {
+                let chosen_type = tag
+                    .map(|t| t.0)
+                    .or_else(|| hp.map(|h| h.hostile_type))
+                    .unwrap_or(HostileType::SpaceCreature);
+                let owner = match chosen_type {
                     HostileType::SpaceCreature => space_creature,
                     HostileType::AncientDefense => ancient_defense,
                 };
@@ -739,9 +757,11 @@ pub fn full_test_app() -> App {
 /// want to verify the un-migrated behavior should run their own `app.update()`
 /// directly instead of using `advance_time`.
 pub fn advance_time(app: &mut App, hexadies: i64) {
+    // #293: detect hostile entities lacking FactionOwner via either the
+    // legacy `HostilePresence` component or the new `Hostile` marker.
     let needs_migration = {
         let mut q = app.world_mut().query_filtered::<Entity, (
-            With<macrocosmo::galaxy::HostilePresence>,
+            With<macrocosmo::galaxy::Hostile>,
             Without<macrocosmo::faction::FactionOwner>,
         )>();
         q.iter(app.world()).next().is_some()

@@ -746,7 +746,7 @@ fn test_uncolonized_system_no_propagation() {
 
 #[test]
 fn test_knowledge_snapshot_hostile_presence() {
-    use macrocosmo::galaxy::HostilePresence;
+    use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostilePresence, HostileStats};
 
     let mut app = test_app();
 
@@ -773,14 +773,7 @@ fn test_knowledge_snapshot_hostile_presence() {
     ));
 
     // Spawn hostile presence at remote system
-    app.world_mut().spawn(HostilePresence {
-        system: sys_hostile,
-        strength: 5.0,
-        hp: 100.0,
-        max_hp: 100.0,
-        hostile_type: macrocosmo::galaxy::HostileType::SpaceCreature,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys_hostile), HostileHitpoints { hp: 100.0, max_hp: 100.0 }, HostileStats { strength: 5.0, evasion: 0.0 }, Hostile));
 
     // Advance past light delay (1 LY = 60 hexadies)
     advance_time(&mut app, 61);

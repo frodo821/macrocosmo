@@ -4,7 +4,9 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEventKind};
-use macrocosmo::galaxy::{HostilePresence, HostileType};
+use macrocosmo::galaxy::{
+    AtSystem, Hostile, HostileHitpoints, HostilePresence, HostileStats, HostileType,
+};
 use macrocosmo::player::{AboardShip, Player, StationedAt};
 use macrocosmo::ship::*;
 
@@ -336,14 +338,7 @@ fn test_player_respawn_on_ship_destruction() {
         .insert(AboardShip { ship: ship_entity });
 
     // Spawn a powerful hostile
-    app.world_mut().spawn(HostilePresence {
-        system: remote,
-        strength: 100.0,
-        hp: 1000.0,
-        max_hp: 1000.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(remote), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
 
     // Run combat
     advance_time(&mut app, 1);
@@ -451,14 +446,7 @@ fn test_player_respawn_event_fires() {
         .entity_mut(player_entity)
         .insert(AboardShip { ship: ship_entity });
 
-    app.world_mut().spawn(HostilePresence {
-        system: remote,
-        strength: 100.0,
-        hp: 1000.0,
-        max_hp: 1000.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(remote), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
 
     advance_time(&mut app, 1);
 
