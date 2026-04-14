@@ -198,7 +198,10 @@ pub fn evaluate_fire_conditions(world: &mut World) {
     #[derive(Clone, Copy)]
     enum DecisionKind {
         Periodic,
-        PendingMtth(usize), // pending index at snapshot time
+        /// Pending MTTH entry — the full `pending` vector is re-scanned by
+        /// event id during the apply phase, so we don't need the index
+        /// captured at snapshot time.
+        PendingMtth,
     }
 
     let pending_decisions: Vec<PendingDecision> = {
@@ -233,7 +236,7 @@ pub fn evaluate_fire_conditions(world: &mut World) {
         }
 
         // Pending MTTH events whose time has come
-        for (idx, pe) in es.pending.iter().enumerate() {
+        for pe in &es.pending {
             if pe.fires_at > now {
                 continue;
             }
@@ -249,7 +252,7 @@ pub fn evaluate_fire_conditions(world: &mut World) {
                 });
             if fire_fn.is_some() {
                 out.push(PendingDecision {
-                    kind: DecisionKind::PendingMtth(idx),
+                    kind: DecisionKind::PendingMtth,
                     event_id: pe.event_id.clone(),
                     fire_fn,
                 });

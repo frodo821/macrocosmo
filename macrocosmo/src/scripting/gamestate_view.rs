@@ -140,7 +140,9 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         }
     }
     seal_table(lua, &empires_tbl)?;
-    seal_table(lua, &empire_ids)?;
+    // empire_ids: array — leave unsealed so Lua `ipairs` works natively.
+    // The list is a snapshot owned by the callback; scripts that mutate it
+    // only affect their local view, not the world.
     gs.set("empires", empires_tbl)?;
     gs.set("empire_ids", empire_ids)?;
     if let Some(pe) = player_empire_table {
@@ -187,7 +189,7 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         system_ids.push(entity.to_bits())?;
     }
     seal_table(lua, &systems_tbl)?;
-    seal_table(lua, &system_ids)?;
+    // system_ids: array — see `empire_ids` comment above.
     gs.set("systems", systems_tbl)?;
     gs.set("system_ids", system_ids)?;
 
@@ -243,7 +245,7 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         ship_ids.push(row.entity.to_bits())?;
     }
     seal_table(lua, &ships_tbl)?;
-    seal_table(lua, &ship_ids)?;
+    // ship_ids: array — see `empire_ids` comment above.
     gs.set("ships", ships_tbl)?;
     gs.set("ship_ids", ship_ids)?;
 
@@ -266,14 +268,14 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         for m in &members {
             members_tbl.push(m.to_bits())?;
         }
-        seal_table(lua, &members_tbl)?;
+        // members: array — unsealed so `ipairs` works from Lua.
         ftbl.set("members", members_tbl)?;
         seal_table(lua, &ftbl)?;
         fleets_tbl.set(entity.to_bits(), ftbl)?;
         fleet_ids.push(entity.to_bits())?;
     }
     seal_table(lua, &fleets_tbl)?;
-    seal_table(lua, &fleet_ids)?;
+    // fleet_ids: array — see `empire_ids` comment above.
     gs.set("fleets", fleets_tbl)?;
     gs.set("fleet_ids", fleet_ids)?;
 
@@ -302,7 +304,7 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         colony_ids.push(entity.to_bits())?;
     }
     seal_table(lua, &colonies_tbl)?;
-    seal_table(lua, &colony_ids)?;
+    // colony_ids: array — see `empire_ids` comment above.
     gs.set("colonies", colonies_tbl)?;
     gs.set("colony_ids", colony_ids)?;
 
@@ -409,7 +411,7 @@ fn build_empire_table(
             cids.push(cent.to_bits())?;
         }
     }
-    seal_table(lua, &cids)?;
+    // colony_ids: array — unsealed so `ipairs` works from Lua.
     etbl.set("colony_ids", cids)?;
 
     seal_table(lua, &etbl)?;
@@ -467,21 +469,18 @@ pub(crate) fn seal_table(lua: &Lua, table: &Table) -> mlua::Result<()> {
     let len_fn = lua.create_function(move |_, _t: Table| -> mlua::Result<i64> {
         Ok(shadow_for_len.len().unwrap_or(0))
     })?;
-    // Enable pairs() to iterate the shadow for introspection/debugging.
-    let shadow_for_pairs = shadow.clone();
-    let pairs_fn = lua.create_function(
-        move |_lua, _t: Table| -> mlua::Result<(mlua::Function, Table, mlua::Value)> {
-            // Return (next, shadow, nil) so `for k,v in pairs(t)` iterates shadow.
-            let next: mlua::Function = _lua.globals().get("next")?;
-            Ok((next, shadow_for_pairs.clone(), mlua::Value::Nil))
-        },
-    )?;
     mt.set("__newindex", newindex)?;
     mt.set("__index", index)?;
     mt.set("__len", len_fn)?;
-    mt.set("__pairs", pairs_fn)?;
     mt.set("__metatable", "locked")?;
     let _ = table.set_metatable(Some(mt));
+    // KNOWN LIMITATION (Phase 1): LuaJIT's `pairs()` does NOT honour the
+    // `__pairs` metamethod. Scripts that iterate via `for k,v in pairs(t)`
+    // will see an empty table because the visible table holds no fields.
+    // Scripts should use `ipairs` on the list-shaped fields (e.g.
+    // `gs.system_ids`) or known keys (`gs.systems[id]`) instead. Phase 2
+    // (`node:perspective(viewer)`) will ship a proper UserData-backed
+    // iteration API.
     Ok(())
 }
 
@@ -525,18 +524,12 @@ fn seal_set_like_table(lua: &Lua, table: &Table) -> mlua::Result<()> {
             ))
         },
     )?;
-    let shadow_for_pairs = shadow.clone();
-    let pairs_fn = lua.create_function(
-        move |_lua, _t: Table| -> mlua::Result<(mlua::Function, Table, mlua::Value)> {
-            let next: mlua::Function = _lua.globals().get("next")?;
-            Ok((next, shadow_for_pairs.clone(), mlua::Value::Nil))
-        },
-    )?;
     mt.set("__newindex", newindex)?;
     mt.set("__index", index)?;
-    mt.set("__pairs", pairs_fn)?;
     mt.set("__metatable", "locked")?;
     let _ = table.set_metatable(Some(mt));
+    // Same Phase 1 pairs()-iteration limitation as `seal_table` (LuaJIT does
+    // not invoke `__pairs`).
     Ok(())
 }
 
@@ -645,6 +638,33 @@ mod tests {
         assert!(flags.get::<bool>("first_contact").unwrap());
         assert!(flags.get::<bool>("empire_scoped").unwrap());
         assert!(!flags.get::<bool>("nonexistent_flag").unwrap());
+    }
+
+    #[test]
+    fn test_build_gamestate_list_iteration_from_lua() {
+        // Regression: `ipairs(gs.system_ids)` must actually iterate entries
+        // despite the shadow-table sealing pattern. LuaJIT's ipairs uses
+        // rawget-or-__index semantics; our __index metamethod bridges to
+        // the shadow so the loop sees the ids.
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = mini_world();
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+        engine.lua().globals().set("_test_gs", gs).unwrap();
+
+        let captured: String = engine
+            .lua()
+            .load(
+                r#"
+                local names = {}
+                for _, sid in ipairs(_test_gs.system_ids) do
+                    table.insert(names, _test_gs.systems[sid].name)
+                end
+                return table.concat(names, ",")
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(captured, "Sol");
     }
 
     #[test]
