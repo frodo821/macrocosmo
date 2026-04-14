@@ -316,6 +316,45 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     (space_creature, ancient_defense)
 }
 
+/// #293 follow-up: spawn a hostile entity with custom stats and the
+/// correct `FactionOwner` attached. Auto-initializes `HostileFactions`
+/// by calling `setup_test_hostile_factions` if not already populated,
+/// so call order is not load-bearing.
+pub fn spawn_raw_hostile(
+    world: &mut World,
+    sys: Entity,
+    hp: f64,
+    max_hp: f64,
+    strength: f64,
+    evasion: f64,
+    faction_id: &'static str,
+) -> Entity {
+    use macrocosmo::faction::{FactionOwner, HostileFactions};
+    use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
+    let needs_setup = {
+        let hf = world.resource::<HostileFactions>();
+        hf.space_creature.is_none() || hf.ancient_defense.is_none()
+    };
+    if needs_setup {
+        let _ = setup_test_hostile_factions(world);
+    }
+    let hf = *world.resource::<HostileFactions>();
+    let faction_entity = match faction_id {
+        "space_creature" => hf.space_creature.unwrap(),
+        "ancient_defense" => hf.ancient_defense.unwrap(),
+        other => panic!("unknown faction_id {:?}", other),
+    };
+    world
+        .spawn((
+            AtSystem(sys),
+            HostileHitpoints { hp, max_hp },
+            HostileStats { strength, evasion },
+            Hostile,
+            FactionOwner(faction_entity),
+        ))
+        .id()
+}
+
 /// Build a headless Bevy App with game logic systems but no rendering.
 pub fn test_app() -> App {
     let mut app = App::new();
@@ -734,14 +773,29 @@ pub fn full_test_app() -> App {
 pub fn advance_time(app: &mut App, hexadies: i64) {
     // #293: detect hostile entities lacking FactionOwner via either the
     // legacy `HostilePresence` component or the new `Hostile` marker.
-    let needs_migration = {
+    // #309: also migrate when there are `Hostile` entities alongside
+    // `Owner::Neutral` ships that have not yet been re-homed onto the test
+    // empire — `spawn_raw_hostile` attaches `FactionOwner` at spawn time,
+    // so the FactionOwner check alone can miss late-spawned neutral ships.
+    let has_hostile = {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<Entity, With<macrocosmo::galaxy::Hostile>>();
+        q.iter(app.world()).next().is_some()
+    };
+    let has_faction_ownerless_hostile = {
         let mut q = app.world_mut().query_filtered::<Entity, (
             With<macrocosmo::galaxy::Hostile>,
             Without<macrocosmo::faction::FactionOwner>,
         )>();
         q.iter(app.world()).next().is_some()
     };
-    if needs_migration {
+    let has_neutral_ship = {
+        let mut q = app.world_mut().query::<&macrocosmo::ship::Ship>();
+        q.iter(app.world())
+            .any(|s| matches!(s.owner, macrocosmo::ship::Owner::Neutral))
+    };
+    if has_faction_ownerless_hostile || (has_hostile && has_neutral_ship) {
         setup_test_hostile_factions(app.world_mut());
     }
 
