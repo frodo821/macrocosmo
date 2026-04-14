@@ -207,6 +207,7 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 9. **New game elements must be Lua-defined:** Rust provides the engine/framework, Lua defines specific content. No hardcoded enum variants for game content.
 10. **Use ModifiedValue for game-affecting numbers.** When touching a numeric value that could be affected by tech, modules, events, or modifiers, make it a `ModifiedValue` (or `ScopedModifiers`). Don't refactor untouched code, but apply this when adding/changing features.
 11. **Ship design fields are computed from hull + modules.** `ShipDesignDefinition` stats (hp, speed, ftl_range, build_cost, maintenance) must be calculated from hull + module definitions at registry time, not directly specified in Lua. `can_survey` = `survey_speed > 0`, `can_colonize` = `colonization_speed > 0` (no capability flags).
+12. **NPC empire AI (#173).** NPC empires spawn in both player and observer mode via `setup::run_all_factions_on_game_start` (ordered `.after(run_faction_on_game_start)`). The decision hook is `ai::npc_decision::npc_decision_tick`, registered under `AiTickSet::Reason`; today it invokes `NoOpPolicy` — future Lua / `macrocosmo-ai` policies plug in by replacing that call. The `macrocosmo-ai::mock` feature is **dev-dependency-only** (see `macrocosmo/Cargo.toml [dev-dependencies]`); production never activates it, and `ai-core-isolation.yml` CI enforces the `macrocosmo → macrocosmo-ai` direction. Real multi-tier planning (campaign / Nash / feasibility) lands under #189.
 
 ## Game Design Principles
 
