@@ -35,7 +35,8 @@ impl Plugin for GalaxyPlugin {
                 generate_galaxy
                     .after(load_galaxy_types)
                     .after(crate::scripting::load_predefined_system_registry)
-                    .after(crate::scripting::load_map_type_registry),
+                    .after(crate::scripting::load_map_type_registry)
+                    .after(crate::faction::spawn_hostile_factions),
             )
             .add_systems(
                 Startup,
@@ -169,28 +170,6 @@ pub struct Sovereignty {
 // disjoint from ship queries. Combat strength / evasion live on
 // `HostileStats` (populated from `FactionTypeDefinition.strength/evasion`
 // scaled by an environmental multiplier at galaxy generation time).
-
-/// Component carrying the faction id of a hostile entity until
-/// `attach_hostile_faction_owners` replaces it with a proper
-/// `FactionOwner`. After the backfill system runs the component can be
-/// removed — it is not used by gameplay systems.
-///
-/// `faction_id` values currently in use: `"space_creature"`,
-/// `"ancient_defense"`. Future Lua-defined hostile types can register
-/// additional buckets via `HostileFactions::get_by_id`.
-#[derive(Component, Clone, Debug)]
-pub struct HostileKind {
-    pub faction_id: String,
-}
-
-impl HostileKind {
-    pub fn space_creature() -> Self {
-        Self { faction_id: "space_creature".to_string() }
-    }
-    pub fn ancient_defense() -> Self {
-        Self { faction_id: "ancient_defense".to_string() }
-    }
-}
 
 /// Component declaring which star system this entity occupies. Attached to
 /// hostile entities (space_creature / ancient_defense) so the visibility /

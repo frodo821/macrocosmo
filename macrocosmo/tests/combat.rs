@@ -1167,7 +1167,27 @@ fn test_galaxy_has_hostiles() {
     });
     app.insert_resource(planet_reg);
 
-    app.add_systems(Startup, macrocosmo::galaxy::generate_galaxy);
+    // #293 follow-up: `generate_galaxy` now requires `HostileFactions` to be
+    // populated (no backfill system). Spawn a PlayerEmpire so
+    // `spawn_hostile_factions` has a target for relation seeding, and wire
+    // both startup systems with the required ordering.
+    app.init_resource::<macrocosmo::faction::FactionRelations>();
+    app.init_resource::<macrocosmo::faction::HostileFactions>();
+    app.world_mut().spawn((
+        macrocosmo::player::PlayerEmpire,
+        macrocosmo::player::Faction {
+            id: "humanity_empire".into(),
+            name: "Terran Federation".into(),
+        },
+    ));
+    app.add_systems(
+        Startup,
+        (
+            macrocosmo::faction::spawn_hostile_factions,
+            macrocosmo::galaxy::generate_galaxy
+                .after(macrocosmo::faction::spawn_hostile_factions),
+        ),
+    );
     app.update();
 
     // Check hostiles exist
@@ -1373,7 +1393,26 @@ fn test_hostile_cleared_allows_colonization() {
 /// always survives the round; combat triggering is detected by HP delta on
 /// the hostile, not by ship destruction. `faction_id` selects the
 /// passive-faction bucket: `"space_creature"` or `"ancient_defense"`.
+///
+/// #293 follow-up: auto-invokes `setup_test_hostile_factions` if
+/// `HostileFactions` has not been populated yet, so call order is not
+/// load-bearing.
 fn spawn_test_hostile(world: &mut World, sys: Entity, faction_id: &'static str) -> Entity {
+    use macrocosmo::faction::{FactionOwner, HostileFactions};
+    let hf_empty = {
+        let hf = world.resource::<HostileFactions>();
+        hf.space_creature.is_none() || hf.ancient_defense.is_none()
+    };
+    if hf_empty {
+        let _ = common::setup_test_hostile_factions(world);
+    }
+    let hf = *world.resource::<HostileFactions>();
+    let faction_entity = match faction_id {
+        "space_creature" => hf.space_creature,
+        "ancient_defense" => hf.ancient_defense,
+        other => panic!("unknown hostile faction_id {:?}", other),
+    }
+    .expect("HostileFactions not populated after setup_test_hostile_factions");
     world
         .spawn((
             AtSystem(sys),
@@ -1386,10 +1425,7 @@ fn spawn_test_hostile(world: &mut World, sys: Entity, faction_id: &'static str) 
                 evasion: 0.0,
             },
             Hostile,
-            // #293: `TestHostileFactionTag` carries the intended faction
-            // bucket so `setup_test_hostile_factions` can attach the right
-            // FactionOwner.
-            common::TestHostileFactionTag(faction_id),
+            FactionOwner(faction_entity),
         ))
         .id()
 }

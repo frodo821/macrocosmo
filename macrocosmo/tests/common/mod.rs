@@ -214,23 +214,20 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
         .id()
 }
 
-/// #293: Test-only component carrying the intended faction id bucket for
-/// a hostile entity. Needed so `setup_test_hostile_factions` can pair
-/// hostiles with the correct passive faction entity. Values: `"space_creature"`,
-/// `"ancient_defense"`.
-#[derive(Component, Clone, Debug)]
-pub struct TestHostileFactionTag(pub &'static str);
-
-/// Test helper for #168: spawn passive hostile factions, seed Neutral/-100
-/// relations against the test empire, and attach `FactionOwner` to every
-/// existing hostile entity. Tests that want combat to actually trigger
-/// must call this after spawning their hostiles and ships.
+/// Test helper for #168: spawn passive hostile factions and seed
+/// Neutral/-100 relations against the test empire. **Must be called
+/// before spawning hostile entities** so `spawn_test_hostile` can attach
+/// the correct `FactionOwner` at spawn time (#293 follow-up: no backfill
+/// system exists in production either).
+///
+/// Idempotent: if `HostileFactions` is already populated, reuses the
+/// existing faction entities. Also re-homes every `Owner::Neutral` ship
+/// onto the test empire so they participate in combat under the
+/// Faction-gated logic.
 ///
 /// Returns `(space_creature_faction, ancient_defense_faction)` entities.
 pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
-    use macrocosmo::faction::{
-        FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState,
-    };
+    use macrocosmo::faction::{FactionRelations, FactionView, HostileFactions, RelationState};
 
     // Find or create the player empire.
     let empire = {
@@ -286,39 +283,6 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
             empire,
             FactionView::new(RelationState::Neutral, -100.0),
         );
-    }
-
-    // Attach FactionOwner to every existing hostile entity. Preference order
-    // for picking the faction bucket (#293):
-    //   1. `TestHostileFactionTag` (test fixtures).
-    //   2. `HostileKind.faction_id` (generation-side backfill marker).
-    //   3. Default to `"space_creature"`.
-    let assignments: Vec<(Entity, Entity)> = {
-        let mut q = world.query_filtered::<
-            (
-                Entity,
-                Option<&macrocosmo::galaxy::HostileKind>,
-                Option<&TestHostileFactionTag>,
-            ),
-            With<macrocosmo::galaxy::Hostile>,
-        >();
-        q.iter(world)
-            .map(|(e, kind, tag)| {
-                let faction_id: &str = tag
-                    .map(|t| t.0)
-                    .or_else(|| kind.map(|k| k.faction_id.as_str()))
-                    .unwrap_or("space_creature");
-                let owner = match faction_id {
-                    "space_creature" => space_creature,
-                    "ancient_defense" => ancient_defense,
-                    _ => space_creature,
-                };
-                (e, owner)
-            })
-            .collect()
-    };
-    for (entity, owner) in assignments {
-        world.entity_mut(entity).insert(FactionOwner(owner));
     }
 
     // Re-home every Neutral ship onto the test empire so they participate in
@@ -382,12 +346,6 @@ pub fn test_app() -> App {
     // but must be registered because other systems use .after(advance_game_time)
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
     app.add_systems(Update, macrocosmo::time_system::advance_game_time);
-    // #293: Bridge system — backfills decomposed hostile components
-    // (AtSystem/HostileHitpoints/HostileStats/Hostile) on legacy-only
-    // HostilePresence spawns so migrated readers see them. Runs in the
-    // PreUpdate schedule so commands flush before any Update system
-    // queries hostiles.
-    app.add_systems(PreUpdate, macrocosmo::faction::attach_hostile_faction_owners);
     app.add_systems(
         Update,
         (
@@ -585,9 +543,6 @@ pub fn full_test_app() -> App {
     app.init_resource::<macrocosmo::knowledge::NextEventId>();
     app.init_resource::<macrocosmo::knowledge::NotifiedEventIds>();
     app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
-
-    // #293: Bridge system for legacy HostilePresence → decomposed components.
-    app.add_systems(PreUpdate, macrocosmo::faction::attach_hostile_faction_owners);
 
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(

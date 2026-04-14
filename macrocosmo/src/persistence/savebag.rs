@@ -48,8 +48,8 @@ use crate::faction::{
     DiplomaticAction, FactionOwner, FactionView, PendingDiplomaticAction, RelationState,
 };
 use crate::galaxy::{
-    Anomalies, Anomaly, AtSystem, ForbiddenRegion, Hostile, HostileHitpoints, HostileKind,
-    HostileStats, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
+    Anomalies, Anomaly, AtSystem, ForbiddenRegion, Hostile, HostileHitpoints, HostileStats, Planet,
+    PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::facts::CombatVictor;
 use crate::knowledge::{
@@ -348,24 +348,6 @@ impl SavedHostileStats {
     }
     pub fn into_live(self) -> HostileStats {
         HostileStats { strength: self.strength, evasion: self.evasion }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedHostileKind {
-    pub faction_id: String,
-}
-
-impl SavedHostileKind {
-    pub fn from_live(v: &HostileKind) -> Self {
-        Self {
-            faction_id: v.faction_id.clone(),
-        }
-    }
-    pub fn into_live(self) -> HostileKind {
-        HostileKind {
-            faction_id: self.faction_id,
-        }
     }
 }
 
@@ -4246,8 +4228,6 @@ pub struct SavedComponentBag {
     pub hostile_hitpoints: Option<SavedHostileHitpoints>,
     #[serde(default)]
     pub hostile_stats: Option<SavedHostileStats>,
-    #[serde(default)]
-    pub hostile_kind: Option<SavedHostileKind>,
     #[serde(default)]
     pub hostile_marker: Option<SavedHostileMarker>,
     pub obscured_by_gas: Option<SavedObscuredByGas>,

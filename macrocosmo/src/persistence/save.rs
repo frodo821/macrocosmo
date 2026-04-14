@@ -38,8 +38,8 @@ use crate::empire::CommsParams;
 use crate::events::EventLog;
 use crate::faction::{FactionOwner, FactionRelations, PendingDiplomaticAction};
 use crate::galaxy::{
-    Anomalies, AtSystem, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints, HostileKind,
-    HostileStats, ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
+    Anomalies, AtSystem, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints, HostileStats,
+    ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::{KnowledgeStore, PendingFactQueue};
 use crate::notifications::NotificationQueue;
@@ -325,9 +325,6 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if let Some(stats) = e_ref.get::<HostileStats>() {
         bag.hostile_stats = Some(SavedHostileStats::from_live(stats));
-    }
-    if let Some(kind) = e_ref.get::<HostileKind>() {
-        bag.hostile_kind = Some(SavedHostileKind::from_live(kind));
     }
     if e_ref.get::<Hostile>().is_some() {
         bag.hostile_marker = Some(SavedHostileMarker);

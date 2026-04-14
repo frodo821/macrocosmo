@@ -215,9 +215,6 @@ fn apply_component_bag(
     if let Some(stats) = &bag.hostile_stats {
         ec.insert(stats.clone().into_live());
     }
-    if let Some(kind) = &bag.hostile_kind {
-        ec.insert(kind.clone().into_live());
-    }
     if bag.hostile_marker.is_some() {
         ec.insert(crate::galaxy::Hostile);
     }
