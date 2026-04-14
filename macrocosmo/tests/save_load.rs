@@ -12,7 +12,7 @@ use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
 use macrocosmo::galaxy::{GalaxyConfig, Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::persistence::{
-    SCRIPTS_VERSION, SaveId, capture_save, load::load_game_from_reader, save::save_game_to_writer,
+    capture_save, load::load_game_from_reader, save::save_game_to_writer, SaveId, SCRIPTS_VERSION,
 };
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::scripting::game_rng::GameRng;
@@ -347,7 +347,7 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
     // and continues. We simulate a mismatch by hand-crafting a GameSave with
     // a different scripts_version, re-encoding, and asserting that load
     // succeeds.
-    use macrocosmo::persistence::save::{GameSave, SAVE_VERSION, SavedResources};
+    use macrocosmo::persistence::save::{GameSave, SavedResources, SAVE_VERSION};
 
     let save = GameSave {
         version: SAVE_VERSION,
@@ -748,10 +748,9 @@ fn test_save_load_preserves_tech_tree() {
         .iter(&dst)
         .next()
         .expect("TechTree + ResearchQueue must round-trip");
-    assert!(
-        tt.researched
-            .contains(&TechId("industrial_automated_mining".into()))
-    );
+    assert!(tt
+        .researched
+        .contains(&TechId("industrial_automated_mining".into())));
     assert!(tt.researched.contains(&TechId("physics_ftl_drive".into())));
     assert_eq!(rq.current, Some(TechId("social_central_planning".into())));
     assert!((rq.accumulated - 42.5).abs() < 1e-9);
@@ -1148,4 +1147,175 @@ fn test_save_load_preserves_colony_snapshot() {
     assert_eq!(cs.build_queue.len(), 1);
     assert_eq!(cs.build_queue[0].building_id.0, "farm");
     assert_eq!(cs.build_queue[0].build_time_remaining, 7);
+}
+
+/// #247 acceptance: `test_save_load_preserves_pending_commands`.
+///
+/// Three categories of in-flight commands must all survive the save/load
+/// path with their Entity references remapped correctly. This is the
+/// umbrella regression test named in the issue spec:
+///
+/// 1. `PendingCommand` (light-speed-delayed remote orders)
+/// 2. `PendingShipCommand` (light-speed-delayed ship orders)
+/// 3. `PendingDiplomaticAction` (light-speed-delayed diplomacy)
+///
+/// The finer-grained tests (`test_save_load_preserves_pending_colony_command`,
+/// `test_save_load_preserves_pending_facts`) stay — this one pins the
+/// issue-named contract that all three pending-command kinds round-trip in a
+/// single save.
+#[test]
+fn test_save_load_preserves_pending_commands() {
+    use macrocosmo::communication::{PendingCommand, RemoteCommand};
+    use macrocosmo::faction::{DiplomaticAction, PendingDiplomaticAction};
+    use macrocosmo::ship::{PendingShipCommand, ShipCommand};
+
+    let (mut src, ship, sol) = seed_world_with_ship();
+    let alpha = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+    let xeno = src
+        .query::<(Entity, &Faction)>()
+        .iter(&src)
+        .find(|(_, f)| f.id == "xeno")
+        .map(|(e, _)| e)
+        .unwrap();
+    let colony_entity = src
+        .query_filtered::<Entity, With<Colony>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    // (1) PendingCommand — RemoteCommand::ShipBuild references a colony.
+    src.spawn(PendingCommand {
+        target_system: alpha,
+        command: RemoteCommand::ShipBuild {
+            host_colony: colony_entity,
+            design_id: "explorer_mk1".into(),
+            build_kind: BuildKind::Ship,
+        },
+        sent_at: 100,
+        arrives_at: 700,
+        origin_pos: [0.0, 0.0, 0.0],
+        destination_pos: [4.3, 0.0, 0.0],
+    });
+
+    // (2) PendingShipCommand — a Survey order in flight toward `ship`.
+    src.spawn(PendingShipCommand {
+        ship,
+        command: ShipCommand::Survey { target: alpha },
+        arrives_at: 820,
+    });
+
+    // (3) PendingDiplomaticAction — a DeclareWar from empire to xeno.
+    src.spawn(PendingDiplomaticAction {
+        from: empire,
+        to: xeno,
+        action: DiplomaticAction::DeclareWar,
+        arrives_at: 930,
+        one_way_delay_hexadies: 40,
+    });
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Resolve remapped anchors in the loaded world.
+    let alpha_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+    let colony_dst = dst
+        .query_filtered::<Entity, With<Colony>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+    let empire_dst = dst
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+    let xeno_dst = dst
+        .query::<(Entity, &Faction)>()
+        .iter(&dst)
+        .find(|(_, f)| f.id == "xeno")
+        .map(|(e, _)| e)
+        .unwrap();
+    let ship_dst = dst
+        .query_filtered::<Entity, With<Ship>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+
+    // (1) PendingCommand round-trip.
+    {
+        let mut q = dst.query::<&PendingCommand>();
+        let pc = q
+            .iter(&dst)
+            .next()
+            .expect("PendingCommand must survive load");
+        assert_eq!(pc.target_system, alpha_dst);
+        assert_eq!(pc.arrives_at, 700);
+        match &pc.command {
+            RemoteCommand::ShipBuild {
+                host_colony,
+                design_id,
+                build_kind,
+            } => {
+                assert_eq!(*host_colony, colony_dst, "PendingCommand host_colony remap");
+                assert_eq!(design_id, "explorer_mk1");
+                assert!(matches!(build_kind, BuildKind::Ship));
+            }
+            other => panic!("unexpected RemoteCommand variant: {:?}", other),
+        }
+    }
+
+    // (2) PendingShipCommand round-trip.
+    {
+        let mut q = dst.query::<&PendingShipCommand>();
+        let psc = q
+            .iter(&dst)
+            .next()
+            .expect("PendingShipCommand must survive load");
+        assert_eq!(psc.ship, ship_dst, "PendingShipCommand.ship remap");
+        assert_eq!(psc.arrives_at, 820);
+        match &psc.command {
+            ShipCommand::Survey { target } => {
+                assert_eq!(*target, alpha_dst, "PendingShipCommand survey target remap");
+            }
+            other => panic!("unexpected ShipCommand variant: {:?}", other),
+        }
+    }
+
+    // (3) PendingDiplomaticAction round-trip.
+    {
+        let mut q = dst.query::<&PendingDiplomaticAction>();
+        let pda = q
+            .iter(&dst)
+            .next()
+            .expect("PendingDiplomaticAction must survive load");
+        assert_eq!(pda.from, empire_dst, "PendingDiplomaticAction.from remap");
+        assert_eq!(pda.to, xeno_dst, "PendingDiplomaticAction.to remap");
+        assert_eq!(pda.arrives_at, 930);
+        assert_eq!(pda.one_way_delay_hexadies, 40);
+        assert!(matches!(pda.action, DiplomaticAction::DeclareWar));
+    }
+
+    // Sol exists as a sanity anchor — seed_world_with_ship ties the ship here.
+    let sol_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    let _ = (sol, sol_dst);
 }
