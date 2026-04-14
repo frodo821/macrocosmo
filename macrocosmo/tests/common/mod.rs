@@ -981,6 +981,18 @@ pub fn empire_entity(world: &mut World) -> Entity {
         .expect("No player empire found in test world")
 }
 
+/// #295 (S-1): Spawn a mock "Core ship" bearing `(AtSystem, FactionOwner)` so
+/// `update_sovereignty` sees the system as owned by `faction`.
+///
+/// This is a placeholder for the real Core ship that S-3 (#296) will define.
+/// Tests targeting sovereignty behaviour call this helper instead of waiting
+/// for the S-3 marker and auto-spawn systems.
+pub fn spawn_mock_core_ship(world: &mut World, system: Entity, faction: Entity) -> Entity {
+    use macrocosmo::faction::FactionOwner;
+    use macrocosmo::galaxy::AtSystem;
+    world.spawn((AtSystem(system), FactionOwner(faction))).id()
+}
+
 /// #236: Test fixture builders for hull + module registries that mirror the
 /// Lua preset content. Designs are built from these via `design_derived` so
 /// the test registry always reflects the canonical derivation formula.
