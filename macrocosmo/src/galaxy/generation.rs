@@ -15,8 +15,9 @@ use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
 use super::{
-    Anomalies, GalaxyConfig, HostilePresence, HostileType, ObscuredByGas, Planet,
-    Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes, SystemModifiers,
+    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostilePresence, HostileType,
+    ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes,
+    SystemModifiers,
 };
 use crate::amount::SignedAmt;
 use crate::modifier::Modifier;
@@ -664,14 +665,24 @@ pub(crate) fn initialize_systems(
             HostileType::AncientDefense => 10.0,
         };
 
-        commands.spawn(HostilePresence {
-            system: system_entity,
-            strength,
-            hp,
-            max_hp: hp,
-            hostile_type,
-            evasion,
-        });
+        // #293: Dual-spawn — legacy HostilePresence AND new decomposed
+        // components. Subsequent commits migrate readers onto the new
+        // components and then delete HostilePresence. `FactionOwner` is
+        // backfilled by `attach_hostile_faction_owners` once
+        // `HostileFactions` is populated.
+        commands.spawn((
+            HostilePresence {
+                system: system_entity,
+                strength,
+                hp,
+                max_hp: hp,
+                hostile_type,
+                evasion,
+            },
+            AtSystem(system_entity),
+            HostileHitpoints { hp, max_hp: hp },
+            Hostile,
+        ));
         hostile_count += 1;
     }
 
