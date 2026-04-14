@@ -711,8 +711,12 @@ pub fn draw_ship_panel(
         if has_colony { Some(dock_sys) } else { None }
     });
 
+    let default_pos = {
+        let rect = ctx.screen_rect();
+        egui::pos2(rect.max.x - 270.0, rect.max.y - 130.0)
+    };
     egui::Window::new("Selected Ship")
-        .anchor(egui::Align2::RIGHT_BOTTOM, [-270.0, -130.0])
+        .default_pos(default_pos)
         .resizable(false)
         .collapsible(true)
         .show(ctx, |ui| {
