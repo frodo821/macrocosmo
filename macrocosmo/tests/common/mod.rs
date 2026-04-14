@@ -1,3 +1,8 @@
+// #247: Committed fixture loader (`load_fixture`) + `fixtures_dir`.
+// Kept as a sub-module so individual integration tests can opt in via
+// `use common::fixture::load_fixture;`.
+pub mod fixture;
+
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;

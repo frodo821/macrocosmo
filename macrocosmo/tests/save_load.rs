@@ -12,7 +12,7 @@ use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
 use macrocosmo::galaxy::{GalaxyConfig, Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::persistence::{
-    SCRIPTS_VERSION, SaveId, capture_save, load::load_game_from_reader, save::save_game_to_writer,
+    capture_save, load::load_game_from_reader, save::save_game_to_writer, SaveId, SCRIPTS_VERSION,
 };
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::scripting::game_rng::GameRng;
@@ -347,7 +347,7 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
     // and continues. We simulate a mismatch by hand-crafting a GameSave with
     // a different scripts_version, re-encoding, and asserting that load
     // succeeds.
-    use macrocosmo::persistence::save::{GameSave, SAVE_VERSION, SavedResources};
+    use macrocosmo::persistence::save::{GameSave, SavedResources, SAVE_VERSION};
 
     let save = GameSave {
         version: SAVE_VERSION,
@@ -748,10 +748,9 @@ fn test_save_load_preserves_tech_tree() {
         .iter(&dst)
         .next()
         .expect("TechTree + ResearchQueue must round-trip");
-    assert!(
-        tt.researched
-            .contains(&TechId("industrial_automated_mining".into()))
-    );
+    assert!(tt
+        .researched
+        .contains(&TechId("industrial_automated_mining".into())));
     assert!(tt.researched.contains(&TechId("physics_ftl_drive".into())));
     assert_eq!(rq.current, Some(TechId("social_central_planning".into())));
     assert!((rq.accumulated - 42.5).abs() < 1e-9);
@@ -906,54 +905,81 @@ fn test_save_load_preserves_ftl_comm_relay_pairing() {
     }
 }
 
+/// Build a lightweight Bevy `App` whose state has been restored from a save
+/// blob. Registers a deterministic clock-advance system (+1 hexady per
+/// tick, no dependency on wall-clock deltas) and a "draw one RNG sample
+/// per tick" system so we can exercise Schedule-driven determinism without
+/// pulling in the full `test_app()` surface (which spawns its own empire
+/// and would conflict with the loaded entities). Returns the App and an
+/// Arc<Mutex<Vec<u64>>> where drawn samples accumulate.
+fn load_into_scheduled_app(bytes: &[u8]) -> (App, std::sync::Arc<std::sync::Mutex<Vec<u64>>>) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    load_game_from_reader(app.world_mut(), bytes).expect("load bytes");
+
+    /// Deterministic tick: advance the clock by exactly one hexady per
+    /// `app.update()`, independent of wall-clock delta. Real production uses
+    /// `advance_game_time` which accumulates `real_time.delta * speed`; that
+    /// path is validated elsewhere but is flaky in tests because
+    /// `MinimalPlugins`' `Time` tracks real wall clock.
+    fn tick_clock(mut clock: ResMut<GameClock>) {
+        clock.elapsed += 1;
+    }
+
+    let samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let writer = samples.clone();
+    app.add_systems(Update, tick_clock);
+    // Draw a single RNG sample per tick, ordered after the clock tick.
+    app.add_systems(
+        Update,
+        (move |rng: Res<GameRng>| {
+            let handle = rng.handle();
+            let mut g = handle.lock().unwrap();
+            writer.lock().unwrap().push(g.random::<u64>());
+        })
+        .after(tick_clock),
+    );
+    (app, samples)
+}
+
 #[test]
 fn test_save_load_deterministic_continuation() {
-    // Build two identical worlds, save one, load into another, advance each
-    // by the same number of hexadies, and verify their GameClock + RNG state
-    // continue in lockstep. This is the Phase B "big" integration marker.
+    // Phase B "big" integration marker: two independent loads of the same
+    // save must advance in lockstep when the real Schedule drives
+    // `advance_game_time` and shared RNG consumers. Stronger than
+    // hand-adjusting `clock.elapsed`: this exercises the actual tick
+    // pipeline so drift from systems that consume `GameRng` post-load would
+    // surface.
     let mut src = build_seed_world();
     let bytes = round_trip_bytes(&mut src);
 
-    let mut dst_a = World::new();
-    load_game_from_reader(&mut dst_a, &bytes[..]).expect("load a");
-    let mut dst_b = World::new();
-    load_game_from_reader(&mut dst_b, &bytes[..]).expect("load b");
+    let (mut app_a, samples_a) = load_into_scheduled_app(&bytes);
+    let (mut app_b, samples_b) = load_into_scheduled_app(&bytes);
 
-    // Simulate a tick advance (hand-advance the clock; the real pipeline
-    // pumps the whole schedule, but the determinism contract for save/load
-    // is that two independent loads advance identically).
-    {
-        let mut c = dst_a.resource_mut::<GameClock>();
-        c.elapsed += 100;
-    }
-    {
-        let mut c = dst_b.resource_mut::<GameClock>();
-        c.elapsed += 100;
+    const TICKS: usize = 16;
+    for _ in 0..TICKS {
+        app_a.update();
+        app_b.update();
     }
 
-    // Draw the same number of RNG samples from each and confirm bit-for-bit.
-    let rng_a = dst_a.resource::<GameRng>().clone();
-    let rng_b = dst_b.resource::<GameRng>().clone();
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    {
-        let ha = rng_a.handle();
-        let hb = rng_b.handle();
-        let mut ga = ha.lock().unwrap();
-        let mut gb = hb.lock().unwrap();
-        for _ in 0..64 {
-            xs.push(ga.random::<u64>());
-            ys.push(gb.random::<u64>());
-        }
-    }
+    let xs = samples_a.lock().unwrap().clone();
+    let ys = samples_b.lock().unwrap().clone();
+    assert_eq!(xs.len(), TICKS, "app_a must draw one RNG sample per tick");
     assert_eq!(
         xs, ys,
-        "deterministic continuation: two loads must yield identical RNG streams post-tick"
+        "RNG stream must stay divergence-free across independent loads"
+    );
+
+    let clock_a = app_a.world().resource::<GameClock>().elapsed;
+    let clock_b = app_b.world().resource::<GameClock>().elapsed;
+    assert_eq!(
+        clock_a, clock_b,
+        "GameClock.elapsed must match after Schedule-driven advance"
     );
     assert_eq!(
-        dst_a.resource::<GameClock>().elapsed,
-        dst_b.resource::<GameClock>().elapsed,
-        "clock must advance identically"
+        clock_a,
+        123 + TICKS as i64,
+        "clock must advance by exactly TICKS hexadies (seed was 123)"
     );
 }
 
@@ -1148,4 +1174,280 @@ fn test_save_load_preserves_colony_snapshot() {
     assert_eq!(cs.build_queue.len(), 1);
     assert_eq!(cs.build_queue[0].building_id.0, "farm");
     assert_eq!(cs.build_queue[0].build_time_remaining, 7);
+}
+
+/// #247 × #295 interaction regression: after #295, `Sovereignty.owner` is a
+/// cached derived view of Core-ship presence (see `update_sovereignty` in
+/// `colony/authority.rs`). The save path still persists the cached value so
+/// existing savebag readers keep working, but on load we must:
+///
+/// 1. Decode the cached `Sovereignty.owner` verbatim.
+/// 2. Re-derive it from the actual Core ship's `AtSystem + FactionOwner`
+///    when `update_sovereignty` next runs — i.e. the cache must be a
+///    subordinate view, not authoritative.
+///
+/// If either contract breaks, a save written pre-#295 (or any save whose
+/// cached owner drifts from Core-ship presence) would desync after load.
+/// This regression pins both halves: the raw cached value survives the
+/// round-trip *and* the live derive produces the right answer once a
+/// Core ship is present.
+#[test]
+fn test_save_load_sovereignty_derived_cache_regression() {
+    use macrocosmo::colony::authority::update_sovereignty;
+    use macrocosmo::galaxy::AtSystem;
+
+    let mut src = build_seed_world();
+    let sol = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    // Pre-populate the cache to a "stale" None so the load-side assertion
+    // that update_sovereignty rewrites it is meaningful.
+    {
+        let mut sov = src.get_mut::<Sovereignty>(sol).unwrap();
+        sov.owner = None;
+        sov.control_score = 0.0;
+    }
+
+    // Add a Core ship stationed at Sol. `Ship` triggers SaveableMarker, so
+    // the AtSystem + FactionOwner pair rides the save/load path.
+    let core_ship = src
+        .spawn((
+            Ship {
+                name: "TestCore".into(),
+                design_id: "core_mk1".into(),
+                hull_id: "core".into(),
+                modules: Vec::new(),
+                owner: Owner::Empire(empire),
+                sublight_speed: 0.5,
+                ftl_range: 10.0,
+                player_aboard: false,
+                home_port: sol,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::Docked { system: sol },
+            AtSystem(sol),
+            FactionOwner(empire),
+        ))
+        .id();
+    let _ = core_ship;
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Sanity: the stale cached `None` survives the round-trip verbatim.
+    let sol_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    assert_eq!(
+        dst.get::<Sovereignty>(sol_dst).unwrap().owner,
+        None,
+        "cached Sovereignty.owner must round-trip verbatim (even when stale)"
+    );
+
+    // Run the real `update_sovereignty` system on the loaded world and
+    // verify the cache converges to the Core-ship-derived value.
+    let mut schedule = Schedule::default();
+    schedule.add_systems(update_sovereignty);
+    schedule.run(&mut dst);
+
+    let empire_dst = dst
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+    let sov = dst.get::<Sovereignty>(sol_dst).unwrap();
+    assert_eq!(
+        sov.owner,
+        Some(Owner::Empire(empire_dst)),
+        "update_sovereignty must re-derive owner from the loaded Core ship"
+    );
+    assert_eq!(
+        sov.control_score, 1.0,
+        "control_score must track owned/unowned (#295 placeholder)"
+    );
+}
+
+/// #247 acceptance: `test_save_load_preserves_pending_commands`.
+///
+/// Three categories of in-flight commands must all survive the save/load
+/// path with their Entity references remapped correctly. This is the
+/// umbrella regression test named in the issue spec:
+///
+/// 1. `PendingCommand` (light-speed-delayed remote orders)
+/// 2. `PendingShipCommand` (light-speed-delayed ship orders)
+/// 3. `PendingDiplomaticAction` (light-speed-delayed diplomacy)
+///
+/// The finer-grained tests (`test_save_load_preserves_pending_colony_command`,
+/// `test_save_load_preserves_pending_facts`) stay — this one pins the
+/// issue-named contract that all three pending-command kinds round-trip in a
+/// single save.
+#[test]
+fn test_save_load_preserves_pending_commands() {
+    use macrocosmo::communication::{PendingCommand, RemoteCommand};
+    use macrocosmo::faction::{DiplomaticAction, PendingDiplomaticAction};
+    use macrocosmo::ship::{PendingShipCommand, ShipCommand};
+
+    let (mut src, ship, sol) = seed_world_with_ship();
+    let alpha = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+    let xeno = src
+        .query::<(Entity, &Faction)>()
+        .iter(&src)
+        .find(|(_, f)| f.id == "xeno")
+        .map(|(e, _)| e)
+        .unwrap();
+    let colony_entity = src
+        .query_filtered::<Entity, With<Colony>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    // (1) PendingCommand — RemoteCommand::ShipBuild references a colony.
+    src.spawn(PendingCommand {
+        target_system: alpha,
+        command: RemoteCommand::ShipBuild {
+            host_colony: colony_entity,
+            design_id: "explorer_mk1".into(),
+            build_kind: BuildKind::Ship,
+        },
+        sent_at: 100,
+        arrives_at: 700,
+        origin_pos: [0.0, 0.0, 0.0],
+        destination_pos: [4.3, 0.0, 0.0],
+    });
+
+    // (2) PendingShipCommand — a Survey order in flight toward `ship`.
+    src.spawn(PendingShipCommand {
+        ship,
+        command: ShipCommand::Survey { target: alpha },
+        arrives_at: 820,
+    });
+
+    // (3) PendingDiplomaticAction — a DeclareWar from empire to xeno.
+    src.spawn(PendingDiplomaticAction {
+        from: empire,
+        to: xeno,
+        action: DiplomaticAction::DeclareWar,
+        arrives_at: 930,
+        one_way_delay_hexadies: 40,
+    });
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Resolve remapped anchors in the loaded world.
+    let alpha_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+    let colony_dst = dst
+        .query_filtered::<Entity, With<Colony>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+    let empire_dst = dst
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+    let xeno_dst = dst
+        .query::<(Entity, &Faction)>()
+        .iter(&dst)
+        .find(|(_, f)| f.id == "xeno")
+        .map(|(e, _)| e)
+        .unwrap();
+    let ship_dst = dst
+        .query_filtered::<Entity, With<Ship>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+
+    // (1) PendingCommand round-trip.
+    {
+        let mut q = dst.query::<&PendingCommand>();
+        let pc = q
+            .iter(&dst)
+            .next()
+            .expect("PendingCommand must survive load");
+        assert_eq!(pc.target_system, alpha_dst);
+        assert_eq!(pc.arrives_at, 700);
+        match &pc.command {
+            RemoteCommand::ShipBuild {
+                host_colony,
+                design_id,
+                build_kind,
+            } => {
+                assert_eq!(*host_colony, colony_dst, "PendingCommand host_colony remap");
+                assert_eq!(design_id, "explorer_mk1");
+                assert!(matches!(build_kind, BuildKind::Ship));
+            }
+            other => panic!("unexpected RemoteCommand variant: {:?}", other),
+        }
+    }
+
+    // (2) PendingShipCommand round-trip.
+    {
+        let mut q = dst.query::<&PendingShipCommand>();
+        let psc = q
+            .iter(&dst)
+            .next()
+            .expect("PendingShipCommand must survive load");
+        assert_eq!(psc.ship, ship_dst, "PendingShipCommand.ship remap");
+        assert_eq!(psc.arrives_at, 820);
+        match &psc.command {
+            ShipCommand::Survey { target } => {
+                assert_eq!(*target, alpha_dst, "PendingShipCommand survey target remap");
+            }
+            other => panic!("unexpected ShipCommand variant: {:?}", other),
+        }
+    }
+
+    // (3) PendingDiplomaticAction round-trip.
+    {
+        let mut q = dst.query::<&PendingDiplomaticAction>();
+        let pda = q
+            .iter(&dst)
+            .next()
+            .expect("PendingDiplomaticAction must survive load");
+        assert_eq!(pda.from, empire_dst, "PendingDiplomaticAction.from remap");
+        assert_eq!(pda.to, xeno_dst, "PendingDiplomaticAction.to remap");
+        assert_eq!(pda.arrives_at, 930);
+        assert_eq!(pda.one_way_delay_hexadies, 40);
+        assert!(matches!(pda.action, DiplomaticAction::DeclareWar));
+    }
+
+    // Sol exists as a sanity anchor — seed_world_with_ship ties the ship here.
+    let sol_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    let _ = (sol, sol_dst);
 }

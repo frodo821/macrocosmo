@@ -1,15 +1,22 @@
-//! Save-game deserialization (#247, Phase A).
+//! Save-game deserialization (#247).
 //!
 //! Reads a postcard-encoded [`GameSave`] blob, overwrites persistable
 //! resources in the Bevy [`World`], despawns existing persistable entities,
 //! then spawns fresh entities and re-inserts their components via the
-//! [`EntityMap`] rebuilt from save ids.
+//! [`EntityMap`] rebuilt from save ids (two-pass spawn → map → insert).
 //!
-//! Phase A semantics:
-//! - `scripts_version` mismatch is warn-logged but loading proceeds.
+//! Contract:
+//! - [`SAVE_VERSION`](crate::persistence::SAVE_VERSION) mismatches are a hard
+//!   error ([`LoadError::VersionMismatch`]).
+//! - `scripts_version` mismatches are warn-logged but loading proceeds — the
+//!   live Lua registries (re-derived from `scripts/` at startup) are the
+//!   source of truth for content definitions.
 //! - Persistent resources not covered by the save (Lua registries,
-//!   BuildingRegistry, ShipDesignRegistry, ScriptEngine, Bevy internals) are
-//!   retained — the load does not touch them.
+//!   `BuildingRegistry`, `HullRegistry`, `ModuleRegistry`,
+//!   `ShipDesignRegistry`, `StructureRegistry`, `SpeciesRegistry`,
+//!   `JobRegistry`, `TechRegistry`, `ScriptEngine`, Bevy internals) are
+//!   retained — the load does not touch them. Callers must ensure the App
+//!   has already initialised these before calling [`load_game_from`].
 //! - Entity references that cannot be resolved (corrupt save) fall back to
 //!   `Entity::PLACEHOLDER` so a stray missing id degrades rather than panics.
 
@@ -28,7 +35,7 @@ use crate::technology::TechTree;
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::remap::EntityMap;
-use super::save::{GameSave, SaveId, SaveableMarker, SCRIPTS_VERSION};
+use super::save::{GameSave, SCRIPTS_VERSION, SaveId, SaveableMarker};
 use super::savebag::SavedComponentBag;
 
 #[derive(Debug)]
@@ -100,7 +107,11 @@ fn apply_resources(world: &mut World, save: &GameSave) -> Result<(), LoadError> 
         // entities spawn; stash a placeholder now and refresh later.
         world.insert_resource(EventLog {
             entries: Vec::new(),
-            max_entries: if log.max_entries == 0 { 50 } else { log.max_entries },
+            max_entries: if log.max_entries == 0 {
+                50
+            } else {
+                log.max_entries
+            },
         });
     }
     // Phase B — notification queue.
@@ -160,9 +171,7 @@ fn spawn_entities_and_remap(world: &mut World, save: &GameSave) -> EntityMap {
     let mut staged: Vec<(Entity, &SavedComponentBag, u64)> =
         Vec::with_capacity(save.entities.len());
     for saved in &save.entities {
-        let e = world
-            .spawn((SaveId(saved.save_id), SaveableMarker))
-            .id();
+        let e = world.spawn((SaveId(saved.save_id), SaveableMarker)).id();
         map.insert(saved.save_id, e);
         staged.push((e, &saved.components, saved.save_id));
     }

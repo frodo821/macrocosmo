@@ -1,19 +1,24 @@
-//! Save-game serialization (#247, Phase A).
+//! Save-game serialization (#247).
 //!
 //! Walks the Bevy [`World`], snapshots selected resources and persistable
 //! entities into a [`GameSave`] root struct, then postcard-encodes the result
 //! to a writer or on-disk path. The sibling [`super::load`] module performs
 //! the inverse operation.
 //!
-//! Phase A persists: galaxy (StarSystem/Planet/attributes/sovereignty/hostile/
-//! ports), colonies (Colony/stockpile/capacity), ship basics
-//! (Ship/ShipState/HP/cargo), faction identity (FactionOwner/Faction), player
-//! location (Player/StationedAt/AboardShip/Empire/PlayerEmpire), galaxy config,
-//! game clock + speed, production tick, game RNG stream, and faction relations.
+//! Persists the full in-memory game state: galaxy entities, colony stack
+//! (buildings/queues/production/jobs/colonization), ship stack
+//! (hitpoints/cargo/command queue/courier route/surveys/scouts/fleets/ROE/
+//! pending commands), deep-space structures, knowledge store, tech tree,
+//! research queue, pending commands/facts/diplomatic actions, event +
+//! notification logs, faction relations, game clock + speed, production
+//! tick, and the full Xoshiro256++ RNG state for deterministic continuation.
+//! See [`crate::persistence::savebag::SavedComponentBag`] for the complete
+//! component inventory.
 //!
-//! Deferred to Phase B/C: ship command queues, colony build queues, deep-space
-//! structures, knowledge store, tech tree, pending commands, event/notification
-//! logs, Lua registries (re-derived from scripts on load).
+//! Lua-loaded registries (buildings, hulls, modules, ship designs, species,
+//! jobs, tech, events, star/planet types, structure definitions) are **not**
+//! serialized — they are reloaded from `scripts/` on load. `scripts_version`
+//! mismatches warn but do not hard-fail.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -22,7 +27,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::colony::{
-    AuthorityParams, BuildQueue, Buildings, BuildingQueue, Colony, ColonizationQueue,
+    AuthorityParams, BuildQueue, BuildingQueue, Buildings, ColonizationQueue, Colony,
     ColonyJobRates, ConstructionParams, DeliverableStockpile, FoodConsumption, LastProductionTick,
     MaintenanceCost, PendingColonizationOrder, Production, ProductionFocus, ResourceCapacity,
     ResourceStockpile, SystemBuildingQueue, SystemBuildings,
@@ -47,9 +52,8 @@ use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, Stationed
 use crate::scripting::game_rng::GameRng;
 use crate::ship::scout::ScoutReport;
 use crate::ship::{
-    Cargo, CommandQueue, CourierRoute, DetectedHostiles, Fleet, FleetMembers,
-    PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState,
-    SurveyData,
+    Cargo, CommandQueue, CourierRoute, DetectedHostiles, Fleet, FleetMembers, PendingShipCommand,
+    RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState, SurveyData,
 };
 use crate::species::{ColonyJobs, ColonyPopulation};
 use crate::technology::{
@@ -59,7 +63,7 @@ use crate::technology::{
 };
 use crate::time_system::{GameClock, GameSpeed};
 
-use super::remap::{entity_pair_map_serde, EntityMap};
+use super::remap::{EntityMap, entity_pair_map_serde};
 use super::rng_serde::SavedGameRng;
 use super::savebag::*;
 
@@ -179,40 +183,34 @@ fn assign_save_ids(world: &mut World) {
     let mut to_assign: Vec<Entity> = Vec::new();
     {
         // First OR bundle (up to 15 filters per Or tuple).
-        let mut q = world.query_filtered::<
-            Entity,
-            Or<(
-                With<StarSystem>,
-                With<Planet>,
-                With<Colony>,
-                With<Ship>,
-                With<Hostile>,
-                With<Empire>,
-                With<Faction>,
-                With<Player>,
-                With<DeepSpaceStructure>,
-                With<Fleet>,
-                With<PendingShipCommand>,
-                With<PendingDiplomaticAction>,
-                With<PendingCommand>,
-                With<PendingResearch>,
-                With<PendingKnowledgePropagation>,
-            )>,
-        >();
+        let mut q = world.query_filtered::<Entity, Or<(
+            With<StarSystem>,
+            With<Planet>,
+            With<Colony>,
+            With<Ship>,
+            With<Hostile>,
+            With<Empire>,
+            With<Faction>,
+            With<Player>,
+            With<DeepSpaceStructure>,
+            With<Fleet>,
+            With<PendingShipCommand>,
+            With<PendingDiplomaticAction>,
+            With<PendingCommand>,
+            With<PendingResearch>,
+            With<PendingKnowledgePropagation>,
+        )>>();
         for e in q.iter(world) {
             to_assign.push(e);
         }
     }
     {
         // Second bundle — additional types split for the 15-tuple limit.
-        let mut q = world.query_filtered::<
-            Entity,
-            Or<(
-                With<PendingColonizationOrder>,
-                With<ForbiddenRegion>,
-                With<PortFacility>,
-            )>,
-        >();
+        let mut q = world.query_filtered::<Entity, Or<(
+            With<PendingColonizationOrder>,
+            With<ForbiddenRegion>,
+            With<PortFacility>,
+        )>>();
         for e in q.iter(world) {
             to_assign.push(e);
         }
@@ -221,9 +219,7 @@ fn assign_save_ids(world: &mut World) {
     for e in to_assign {
         if world.entity(e).get::<SaveId>().is_none() {
             let id = e.to_bits();
-            world
-                .entity_mut(e)
-                .insert((SaveId(id), SaveableMarker));
+            world.entity_mut(e).insert((SaveId(id), SaveableMarker));
         }
     }
 }
@@ -574,7 +570,10 @@ pub fn capture_save(world: &mut World) -> Result<GameSave, SaveError> {
 
     for (save_id, entity) in all {
         let components = capture_entity_components(world, entity);
-        entities.push(SavedEntity { save_id, components });
+        entities.push(SavedEntity {
+            save_id,
+            components,
+        });
     }
 
     Ok(GameSave {
