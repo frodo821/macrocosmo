@@ -13,7 +13,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue, BuildingQueue, SystemBuildingQueue};
 use macrocosmo::communication::{
     self, BuildingKind, BuildingScope, ColonyCommand, CommandLog, PendingColonyDispatch,
-    PendingColonyDispatches, PendingCommand, RemoteCommand,
+    PendingColonyDispatches, PendingCommand, RemoteCommand, MAX_DISPATCH_RETRY_FRAMES,
 };
 use macrocosmo::components::Position;
 use macrocosmo::player::{Player, PlayerEmpire, StationedAt};
@@ -1115,4 +1115,191 @@ fn order_id_preserved_across_save_load() {
     let json = serde_json::to_string(&one).expect("serialize");
     let back: SavedBuildOrder = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.order_id, 42);
+}
+
+// #276: Observer mode / transient empire unavailability
+// --------------------------------------------------------------------------
+
+/// Regression for #276: when `PlayerEmpire` is absent (observer mode,
+/// load/teardown), the dispatcher must retain the queue instead of
+/// clearing it, so queued UI clicks are not silently lost.
+#[test]
+fn dispatch_preserves_queue_when_empire_absent() {
+    let mut app = build_app_with_dispatch();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let _colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+
+    // Despawn the empire to simulate observer / teardown mode.
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().entity_mut(empire).despawn();
+
+    // Push a click into the queue.
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: sys,
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(planet),
+                kind: BuildingKind::Queue {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            }),
+        });
+
+    // Run a frame with no empire. The queue must be retained.
+    advance_time(&mut app, 1);
+
+    let q = app.world().resource::<PendingColonyDispatches>();
+    assert_eq!(
+        q.queue.len(),
+        1,
+        "queue must be preserved while PlayerEmpire is absent"
+    );
+    assert!(q.retry_frames >= 1, "retry_frames should have incremented");
+
+    // No PendingCommand should have been spawned (nothing dispatched).
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        pending_count, 0,
+        "no PendingCommand should be spawned while empire is absent"
+    );
+}
+
+/// Regression for #276: once the empire reappears, the retained queue
+/// should be dispatched on the next frame and `retry_frames` reset.
+#[test]
+fn dispatch_resumes_after_empire_reappears() {
+    let mut app = build_app_with_dispatch();
+    let (home_sys, _home_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
+    let (target_sys, target_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let _target_colony = spawn_test_colony(
+        app.world_mut(),
+        target_planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+
+    // Despawn empire; push click; advance one frame (queue retained).
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().entity_mut(empire).despawn();
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: target_sys,
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(target_planet),
+                kind: BuildingKind::Queue {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            }),
+        });
+    advance_time(&mut app, 1);
+    assert_eq!(
+        app.world()
+            .resource::<PendingColonyDispatches>()
+            .queue
+            .len(),
+        1,
+        "queue retained while empire absent"
+    );
+
+    // Restore the empire + a player stationed somewhere with a resolvable
+    // origin, then run another frame — the retained command should drain
+    // into a PendingCommand and the retry counter should reset.
+    common::spawn_test_empire(app.world_mut());
+    app.world_mut()
+        .spawn((Player, StationedAt { system: home_sys }));
+
+    advance_time(&mut app, 1);
+
+    let q = app.world().resource::<PendingColonyDispatches>();
+    assert!(
+        q.queue.is_empty(),
+        "queue should drain once empire + player origin are available"
+    );
+    assert_eq!(
+        q.retry_frames, 0,
+        "retry_frames should reset after successful dispatch"
+    );
+
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        pending_count, 1,
+        "retained command should have produced a PendingCommand"
+    );
+}
+
+/// Regression for #276: after `MAX_DISPATCH_RETRY_FRAMES` consecutive
+/// failed frames, the queue is dropped so long observation sessions do
+/// not accumulate unbounded state.
+#[test]
+fn dispatch_drops_queue_after_max_retry_frames() {
+    let mut app = build_app_with_dispatch();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let _colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().entity_mut(empire).despawn();
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: sys,
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(planet),
+                kind: BuildingKind::Queue {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            }),
+        });
+
+    // Pre-seed retry_frames to just below the threshold so we don't need
+    // to pump 300 frames in a test.
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .retry_frames = MAX_DISPATCH_RETRY_FRAMES - 1;
+
+    advance_time(&mut app, 1);
+
+    let q = app.world().resource::<PendingColonyDispatches>();
+    assert!(
+        q.queue.is_empty(),
+        "queue should be dropped once retry window is exhausted"
+    );
+    assert_eq!(
+        q.retry_frames, 0,
+        "retry_frames should reset after dropping the queue"
+    );
 }
