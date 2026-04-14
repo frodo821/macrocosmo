@@ -50,6 +50,7 @@ fn test_hostile_destroyed_when_hp_zero() {
             cost_energy: Amt::ZERO,
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         },
     );
 
@@ -210,6 +211,7 @@ fn test_combat_takes_multiple_ticks() {
             cost_energy: Amt::ZERO,
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         },
     );
 
@@ -287,6 +289,7 @@ fn test_shield_regenerates() {
             weapon: None,
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
     }
 
@@ -359,6 +362,7 @@ fn test_shield_regen_caps_at_max() {
             weapon: None,
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
     }
 
@@ -426,6 +430,7 @@ fn test_combat_damages_3_layers() {
             weapon: None,
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "shield_unit".to_string(),
@@ -439,6 +444,7 @@ fn test_combat_damages_3_layers() {
             weapon: None,
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
     }
 
@@ -565,6 +571,7 @@ fn test_weapon_cooldown() {
         }),
         cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     });
     module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
         id: "slow_gun".to_string(),
@@ -580,6 +587,7 @@ fn test_weapon_cooldown() {
         }),
         cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     });
 
     // Hostile A: attacked by fast gun
@@ -663,6 +671,7 @@ fn test_shield_piercing() {
             }),
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         },
     );
 
@@ -742,6 +751,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
             }),
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         },
     );
 
@@ -871,6 +881,7 @@ fn test_aggressive_ships_engage_combat() {
             }),
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         },
     );
 
@@ -943,6 +954,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
             }),
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         },
     );
 
@@ -1015,6 +1027,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
             }),
             cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         },
     );
 
@@ -1477,6 +1490,7 @@ fn install_test_weapon_module(app: &mut App) {
             cost_energy: Amt::ZERO,
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
 }
 

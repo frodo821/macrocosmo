@@ -2243,6 +2243,7 @@ fn install_refit_fixture(app: &mut App) {
         cost_energy: Amt::units(energy),
         prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     };
     modules.insert(mk("laser_mk1", 50, 20));
     modules.insert(mk("laser_mk2", 80, 30));

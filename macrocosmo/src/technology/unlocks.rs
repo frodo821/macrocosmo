@@ -261,6 +261,7 @@ mod tests {
             cost_energy: Amt::ZERO,
             prerequisites: prereq,
             upgrade_to: Vec::new(),
+            build_time: 0,
         }
     }
 
@@ -629,6 +630,7 @@ mod tests {
             cost_energy: Amt::ZERO,
             prerequisites: Some(Condition::Atom(ConditionAtom::has_tech("T2"))),
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
 
         let mut designs = ShipDesignRegistry::default();

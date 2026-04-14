@@ -126,6 +126,12 @@ pub struct ModuleDefinition {
     pub prerequisites: Option<Condition>,
     /// Available upgrade paths from this module.
     pub upgrade_to: Vec<ModuleUpgradePath>,
+    /// #239: Build time contribution (in hexadies). The design's total build
+    /// time is `hull.build_time + Σ module.build_time`. Added to make refits
+    /// and upgrades pay a time cost proportional to the loadout, not just the
+    /// hull. Defaults to 0 when Lua omits the field so existing content keeps
+    /// compiling.
+    pub build_time: i64,
 }
 
 #[derive(Resource, Default)]
@@ -666,10 +672,17 @@ pub fn design_derived(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> D
     let mut minerals = hull.build_cost_minerals;
     let mut energy = hull.build_cost_energy;
     let mut maintenance = hull.maintenance;
+    // #239: Total build time is `hull.build_time + Σ module.build_time`.
+    // Previously only the hull contributed, which made heavy loadouts (and
+    // therefore refits) disproportionately cheap in time. Summed as i64 and
+    // clamped to ≥ 1 at the end so degenerate zero-time designs never slip
+    // through the build queue.
+    let mut build_time = hull.build_time;
     for m in modules {
         minerals = minerals.add(m.cost_minerals);
         energy = energy.add(m.cost_energy);
         maintenance = maintenance.add(Amt::milli(m.cost_minerals.raw() / 10_000));
+        build_time = build_time.saturating_add(m.build_time);
     }
 
     DerivedStats {
@@ -683,9 +696,7 @@ pub fn design_derived(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> D
         can_colonize: colonize_speed > 0.0,
         build_cost_minerals: minerals,
         build_cost_energy: energy,
-        // #236: ModuleDefinition has no build_time field yet; use hull.build_time.
-        // Future: per-component time contribution (separate issue).
-        build_time: hull.build_time,
+        build_time: build_time.max(1),
         maintenance,
     }
 }
@@ -755,6 +766,12 @@ pub fn refit_cost_to_design(
 
 /// Compute refit cost: new module cost - 50% of old module value.
 /// Returns (minerals, energy, time).
+///
+/// #239: Time cost is `(hull.build_time + Σ new_module.build_time) / 2`,
+/// matching the `design_derived` build_time formula halved. Before this
+/// change refits only paid `hull.build_time / 2` regardless of the new
+/// loadout, which made wholesale module swaps nearly free in time — one
+/// of the explicit motivations for the issue.
 pub fn refit_cost(
     old_modules: &[&ModuleDefinition],
     new_modules: &[&ModuleDefinition],
@@ -768,17 +785,20 @@ pub fn refit_cost(
     }
     let mut new_m = Amt::ZERO;
     let mut new_e = Amt::ZERO;
+    let mut new_build_time: i64 = 0;
     for m in new_modules {
         new_m = new_m.add(m.cost_minerals);
         new_e = new_e.add(m.cost_energy);
+        new_build_time = new_build_time.saturating_add(m.build_time);
     }
     // Refund 50% of old module value
     let refund_m = Amt::milli(old_m.raw() / 2);
     let refund_e = Amt::milli(old_e.raw() / 2);
     let cost_m = if new_m > refund_m { new_m.sub(refund_m) } else { Amt::ZERO };
     let cost_e = if new_e > refund_e { new_e.sub(refund_e) } else { Amt::ZERO };
-    // Refit time: half hull build time
-    let time = hull.build_time / 2;
+    // Refit time: half of the full (hull + modules) build time.
+    let total_time = hull.build_time.saturating_add(new_build_time);
+    let time = total_time / 2;
     (cost_m, cost_e, time.max(1))
 }
 
@@ -838,6 +858,7 @@ mod tests {
             cost_energy: Amt::units(50),
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
 
         let ftl = registry.get("ftl_drive").unwrap();
@@ -923,6 +944,7 @@ mod tests {
             cost_energy: Amt::ZERO,
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         };
 
         let derived = design_derived(&hull, &[&module]);
@@ -966,6 +988,7 @@ mod tests {
             cost_energy: Amt::units(50),
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         };
         let survey = ModuleDefinition {
             id: "survey_equipment".to_string(),
@@ -978,6 +1001,7 @@ mod tests {
             cost_energy: Amt::units(30),
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         };
 
         let derived = design_derived(&hull, &[&ftl, &survey]);
@@ -1029,6 +1053,7 @@ mod tests {
             cost_energy: Amt::ZERO,
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         };
         modules.insert(make("ftl_drive", "ftl"));
         modules.insert(make("weapon_laser", "weapon"));
@@ -1343,6 +1368,7 @@ mod tests {
             cost_energy: Amt::units(50),
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         };
         let afterburner = ModuleDefinition {
             id: "afterburner".into(),
@@ -1357,6 +1383,7 @@ mod tests {
             cost_energy: Amt::units(40),
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         };
         let cargo_bay = ModuleDefinition {
             id: "cargo_bay".into(),
@@ -1371,6 +1398,7 @@ mod tests {
             cost_energy: Amt::ZERO,
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         };
         (courier_hull, ftl_drive, afterburner, cargo_bay)
     }
@@ -1416,7 +1444,7 @@ mod tests {
                 ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 },
             ],
             weapon: None, cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO,
-            prerequisites: None, upgrade_to: Vec::new(),
+            prerequisites: None, upgrade_to: Vec::new(), build_time: 0,
         };
         let d = design_derived(&scout, &[&survey]);
         // (0 + 1.0) * (1 + 1.3) = 2.3
@@ -1444,7 +1472,7 @@ mod tests {
                 ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 },
             ],
             weapon: None, cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO,
-            prerequisites: None, upgrade_to: Vec::new(),
+            prerequisites: None, upgrade_to: Vec::new(), build_time: 0,
         };
 
         // Without survey module → no survey capability.
@@ -1484,5 +1512,172 @@ mod tests {
         //   hull 0.300 + ftl 100×0.0001 + afterburner 60×0.0001 + cargo 30×0.0001
         //   = 0.300 + 0.010 + 0.006 + 0.003 = 0.319
         assert_eq!(d.maintenance, Amt::new(0, 319));
+    }
+
+    // -----------------------------------------------------------------
+    // #239: ModuleDefinition.build_time contribution
+    // -----------------------------------------------------------------
+
+    /// Helper producing a minimal hull with a configurable build_time and
+    /// utility slots (so we can stack modules).
+    fn tiny_hull(build_time: i64) -> HullDefinition {
+        HullDefinition {
+            id: "tiny".into(),
+            name: "Tiny".into(),
+            description: String::new(),
+            base_hp: 10.0,
+            base_speed: 1.0,
+            base_evasion: 0.0,
+            slots: vec![HullSlot { slot_type: "utility".into(), count: 4 }],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time,
+            maintenance: Amt::ZERO,
+            modifiers: vec![],
+            prerequisites: None,
+        }
+    }
+
+    fn tiny_module(id: &str, build_time: i64, mineral_cost: u64) -> ModuleDefinition {
+        ModuleDefinition {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(mineral_cost),
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time,
+        }
+    }
+
+    /// #239 primary regression: design build_time is hull + Σ module.
+    #[test]
+    fn test_design_derived_build_time_sums_hull_and_modules() {
+        let hull = tiny_hull(10);
+        let a = tiny_module("a", 5, 0);
+        let b = tiny_module("b", 5, 0);
+
+        let d = design_derived(&hull, &[&a, &b]);
+        assert_eq!(d.build_time, 20, "build_time must be hull(10) + Σ(5+5)");
+
+        // No modules → build_time equals hull.build_time (clamped to ≥ 1).
+        let d_bare = design_derived(&hull, &[]);
+        assert_eq!(d_bare.build_time, 10);
+    }
+
+    /// #239: A zero hull + zero modules design still reports build_time
+    /// of at least 1 so the build queue never divides by zero.
+    #[test]
+    fn test_design_derived_build_time_clamped_to_one() {
+        let hull = tiny_hull(0);
+        let d = design_derived(&hull, &[]);
+        assert_eq!(d.build_time, 1);
+    }
+
+    /// #239: Refit time scales with Σ new_module.build_time, not only the
+    /// hull. Swapping in heavier modules costs more refit time.
+    #[test]
+    fn test_refit_cost_uses_module_build_time() {
+        let hull = tiny_hull(20); // hull alone → baseline refit time 10
+        let old_m = tiny_module("old", 0, 0);
+        let new_light = tiny_module("new_light", 0, 0);
+        let new_heavy = tiny_module("new_heavy", 10, 0);
+
+        // Light → (20 + 0)/2 = 10 hd
+        let (_, _, t_light) = refit_cost(&[&old_m], &[&new_light], &hull);
+        assert_eq!(t_light, 10);
+
+        // Heavy → (20 + 10)/2 = 15 hd. Must be strictly greater than the
+        // light case — this is the key behavioural change the issue asks
+        // for.
+        let (_, _, t_heavy) = refit_cost(&[&old_m], &[&new_heavy], &hull);
+        assert_eq!(t_heavy, 15);
+        assert!(
+            t_heavy > t_light,
+            "heavier modules must cost more refit time"
+        );
+    }
+
+    /// #239: `refit_cost_to_design` routes module lookup through the
+    /// registry and still sees the build_time contribution.
+    #[test]
+    fn test_refit_cost_to_design_includes_module_build_time() {
+        let mut hulls = HullRegistry::default();
+        hulls.insert(tiny_hull(20));
+        let mut modules = ModuleRegistry::default();
+        modules.insert(tiny_module("heavy", 10, 0));
+
+        let hull = hulls.get("tiny").unwrap();
+
+        let design = ShipDesignDefinition {
+            id: "d".into(),
+            name: "d".into(),
+            description: String::new(),
+            hull_id: "tiny".into(),
+            modules: vec![DesignSlotAssignment {
+                slot_type: "utility".into(),
+                module_id: "heavy".into(),
+            }],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 0.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+        };
+
+        let (_, _, t) = refit_cost_to_design(&[], &design, hull, &modules);
+        // (20 + 10)/2 = 15
+        assert_eq!(t, 15);
+    }
+
+    /// #239 regression: preset build times match the new formula. Asserts
+    /// the `design_derived` output against a hand-computed value using the
+    /// same hull + module fixture produced by `derive_fixture_courier`.
+    /// When we eventually give the courier fixture non-zero module build
+    /// times this test guards against regressions in the summation.
+    #[test]
+    fn test_preset_build_times_match_new_formula() {
+        let (hull, ftl, ab, cargo) = derive_fixture_courier();
+
+        // The courier_hull fixture carries hull.build_time = 30 and the
+        // three modules default to 0 — so the pre-#239 hull-only value and
+        // the post-#239 sum match by construction. Intentional: if anyone
+        // later gives the fixture non-zero module times without updating
+        // the expectation, the test fails and forces a consistent update.
+        let expected = hull.build_time
+            + ftl.build_time
+            + ab.build_time
+            + cargo.build_time;
+        let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
+        assert_eq!(d.build_time, expected);
+    }
+
+    /// #239: Two designs with identical hull but heavier module loadout
+    /// must differ in build time. Protects against a future regression
+    /// where the summation is accidentally reduced back to
+    /// `hull.build_time`.
+    #[test]
+    fn test_heavier_loadout_costs_more_build_time() {
+        let hull = tiny_hull(10);
+        let light = tiny_module("light", 5, 0);
+        let heavy = tiny_module("heavy", 20, 0);
+
+        let d_light = design_derived(&hull, &[&light]);
+        let d_heavy = design_derived(&hull, &[&heavy]);
+        assert!(
+            d_heavy.build_time > d_light.build_time,
+            "heavier module loadout must produce a longer build time"
+        );
+        assert_eq!(d_light.build_time, 15);
+        assert_eq!(d_heavy.build_time, 30);
     }
 }
