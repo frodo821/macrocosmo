@@ -203,6 +203,16 @@ pub struct HostileHitpoints {
     pub max_hp: f64,
 }
 
+/// Per-entity combat stats for a hostile. `strength` is derived from
+/// `FactionTypeDefinition.strength` scaled by an environmental modifier
+/// at galaxy generation time (distance-from-center). `evasion` comes
+/// straight from the faction type definition.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct HostileStats {
+    pub strength: f64,
+    pub evasion: f64,
+}
+
 /// Zero-sized marker distinguishing hostile entities from other
 /// `FactionOwner`-bearing entities (ships, structures). Hostile-side queries
 /// use `With<Hostile>` to stay disjoint from ship-side queries and avoid

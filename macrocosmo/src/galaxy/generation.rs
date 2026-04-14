@@ -15,9 +15,9 @@ use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
 use super::{
-    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostilePresence, HostileType,
-    ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes,
-    SystemModifiers,
+    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostilePresence, HostileStats,
+    HostileType, ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet,
+    SystemAttributes, SystemModifiers,
 };
 use crate::amount::SignedAmt;
 use crate::modifier::Modifier;
@@ -681,6 +681,7 @@ pub(crate) fn initialize_systems(
             },
             AtSystem(system_entity),
             HostileHitpoints { hp, max_hp: hp },
+            HostileStats { strength, evasion },
             Hostile,
         ));
         hostile_count += 1;

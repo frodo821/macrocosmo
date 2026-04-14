@@ -26,7 +26,7 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use crate::components::Position;
-use crate::galaxy::{HostilePresence, StarSystem};
+use crate::galaxy::{AtSystem, Hostile, HostileStats, StarSystem};
 use crate::knowledge::{
     KnowledgeStore, ObservationSource, ShipSnapshot, ShipSnapshotState, SystemKnowledge,
     SystemSnapshot,
@@ -202,15 +202,36 @@ pub fn tick_scout_observation(
     clock: Res<GameClock>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &Position, &ShipHitpoints)>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
-    hostiles: Query<&HostilePresence>,
+    hostiles: Query<
+        (
+            &AtSystem,
+            &HostileStats,
+            Option<&crate::faction::FactionOwner>,
+        ),
+        With<Hostile>,
+    >,
+    faction_relations: Res<crate::faction::FactionRelations>,
+    empire_entity_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
     let now = clock.elapsed;
 
-    // Hostile systems lookup.
-    let hostile_map: HashMap<Entity, &HostilePresence> = hostiles
-        .iter()
-        .map(|h| (h.system, h))
-        .collect();
+    // #293: Hostile systems lookup keyed by star system entity with
+    // summed strength. Filter by FactionRelations so hostiles the viewing
+    // empire considers non-aggressive do not register as "hostile" in
+    // scout reports.
+    let viewer = empire_entity_q.iter().next();
+    let mut hostile_map: HashMap<Entity, f64> = HashMap::new();
+    for (at_system, stats, owner) in &hostiles {
+        let include = match (viewer, owner) {
+            (Some(v), Some(o)) => faction_relations
+                .get_or_default(v, o.0)
+                .can_attack_aggressive(),
+            _ => true,
+        };
+        if include {
+            *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+        }
+    }
 
     // First pass: collect an owned snapshot of every ship so we can sensor-
     // scan without borrowing the mutable query twice. Also identify which
@@ -307,10 +328,7 @@ pub fn tick_scout_observation(
         };
 
         let has_hostile_here = hostile_map.contains_key(&target_system);
-        let hostile_strength = hostile_map
-            .get(&target_system)
-            .map(|h| h.strength)
-            .unwrap_or(0.0);
+        let hostile_strength = hostile_map.get(&target_system).copied().unwrap_or(0.0);
 
         let system_snapshot = SystemSnapshot {
             name: system_name,

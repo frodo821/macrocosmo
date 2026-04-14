@@ -360,6 +360,12 @@ pub fn test_app() -> App {
     // but must be registered because other systems use .after(advance_game_time)
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
     app.add_systems(Update, macrocosmo::time_system::advance_game_time);
+    // #293: Bridge system — backfills decomposed hostile components
+    // (AtSystem/HostileHitpoints/HostileStats/Hostile) on legacy-only
+    // HostilePresence spawns so migrated readers see them. Runs in the
+    // PreUpdate schedule so commands flush before any Update system
+    // queries hostiles.
+    app.add_systems(PreUpdate, macrocosmo::faction::attach_hostile_faction_owners);
     app.add_systems(
         Update,
         (
@@ -557,6 +563,9 @@ pub fn full_test_app() -> App {
     app.init_resource::<macrocosmo::knowledge::NextEventId>();
     app.init_resource::<macrocosmo::knowledge::NotifiedEventIds>();
     app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
+
+    // #293: Bridge system for legacy HostilePresence → decomposed components.
+    app.add_systems(PreUpdate, macrocosmo::faction::attach_hostile_faction_owners);
 
     // --- Ship systems (from ShipPlugin) ---
     app.add_systems(

@@ -827,10 +827,9 @@ pub fn relay_knowledge_propagate_system(
         (Entity, &DeepSpaceStructure, &crate::components::Position, &FTLCommRelay),
         (Without<ConstructionPlatform>, Without<Scrapyard>),
     >,
-    // Any relay (incl. un-sending side) — used to look up partner position.
-    relay_positions: Query<&crate::components::Position, With<DeepSpaceStructure>>,
-    // Partner's structure definition for its range.
-    partner_structures: Query<&DeepSpaceStructure>,
+    // Any relay (incl. un-sending side) — used to look up partner position
+    // and structure definition. #293: fused to free a system-param slot.
+    partner_q: Query<(&DeepSpaceStructure, &crate::components::Position)>,
     ships: Query<(
         Entity,
         &crate::ship::Ship,
@@ -840,7 +839,10 @@ pub fn relay_knowledge_propagate_system(
     )>,
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
     positions: Query<&crate::components::Position>,
-    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        (Entity, &mut crate::knowledge::KnowledgeStore),
+        With<crate::player::PlayerEmpire>,
+    >,
     // #145: Forbidden regions that block FTL comm propagation.
     ftl_comm_blocking_regions: Query<&crate::galaxy::ForbiddenRegion>,
     // #216: Star system data for FTL-relayed SystemKnowledge updates. Mirrors
@@ -856,7 +858,15 @@ pub fn relay_knowledge_propagate_system(
     colonies: crate::knowledge::ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
     planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
-    hostiles: Query<&crate::galaxy::HostilePresence>,
+    hostiles: Query<
+        (
+            &crate::galaxy::AtSystem,
+            &crate::galaxy::HostileStats,
+            Option<&crate::faction::FactionOwner>,
+        ),
+        With<crate::galaxy::Hostile>,
+    >,
+    faction_relations: Res<crate::faction::FactionRelations>,
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     // Build region blockers (pairs segment check); only regions carrying the
@@ -868,7 +878,7 @@ pub fn relay_knowledge_propagate_system(
         .collect();
     use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
-    let Ok(mut store) = empire_q.single_mut() else {
+    let Ok((empire_entity, mut store)) = empire_q.single_mut() else {
         return;
     };
     let Some(stationed) = player_q.iter().next() else {
@@ -898,11 +908,8 @@ pub fn relay_knowledge_propagate_system(
         };
 
         let partner_entity = relay.paired_with;
-        let Ok(partner_structure) = partner_structures.get(partner_entity) else {
+        let Ok((partner_structure, partner_pos)) = partner_q.get(partner_entity) else {
             // Dangling pair — verify_relay_pairings_system will clean up.
-            continue;
-        };
-        let Ok(partner_pos) = relay_positions.get(partner_entity) else {
             continue;
         };
         let Some(partner_range) = relay_range_for(partner_structure) else {
@@ -998,8 +1005,21 @@ pub fn relay_knowledge_propagate_system(
         // here we additionally deliver the system-level snapshot (resources,
         // colonization, hostile presence, etc.) through the same pair.
         let observed_at = clock.elapsed;
-        let hostile_map: std::collections::HashMap<Entity, &crate::galaxy::HostilePresence> =
-            hostiles.iter().map(|h| (h.system, h)).collect();
+        // #293: system → aggregated hostile strength, filtered by
+        // FactionRelations relative to the receiving empire entity.
+        let mut hostile_map: std::collections::HashMap<Entity, f64> =
+            std::collections::HashMap::new();
+        for (at_system, stats, owner) in &hostiles {
+            let include = match owner {
+                Some(o) => faction_relations
+                    .get_or_default(empire_entity, o.0)
+                    .can_attack_aggressive(),
+                None => true,
+            };
+            if include {
+                *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+            }
+        }
 
         for (sys_entity, star, sys_pos, stockpile, sys_buildings) in &system_q {
             let dist = crate::physics::distance_ly(source_pos, sys_pos);

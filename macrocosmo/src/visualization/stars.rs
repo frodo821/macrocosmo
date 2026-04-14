@@ -4,7 +4,7 @@ use super::GalaxyView;
 use crate::colony::{BuildingRegistry, Buildings, Colony, SystemBuildings};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
-use crate::galaxy::{GalaxyConfig, HostilePresence, ObscuredByGas, Planet, StarSystem};
+use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Ship, ShipState};
@@ -231,12 +231,13 @@ pub fn draw_galaxy_overlay(
     selected: Res<SelectedSystem>,
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
-    empire_params_q: Query<(&GlobalParams, &KnowledgeStore), With<PlayerEmpire>>,
+    empire_params_q: Query<(Entity, &GlobalParams, &KnowledgeStore), With<PlayerEmpire>>,
     system_buildings: Query<(Entity, &SystemBuildings)>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
     galaxy_config: Option<Res<GalaxyConfig>>,
-    hostiles: Query<&HostilePresence>,
+    hostiles: Query<(&AtSystem, Option<&crate::faction::FactionOwner>), With<Hostile>>,
+    faction_relations: Res<crate::faction::FactionRelations>,
     building_registry: Res<BuildingRegistry>,
 ) {
     // Galaxy outline: center marker and boundary circle
@@ -262,7 +263,7 @@ pub fn draw_galaxy_overlay(
         );
     }
 
-    let Ok((global_params, knowledge)) = empire_params_q.single() else {
+    let Ok((viewer_empire, global_params, knowledge)) = empire_params_q.single() else {
         return;
     };
     let Ok(stationed) = player_q.single() else {
@@ -395,14 +396,26 @@ pub fn draw_galaxy_overlay(
     }
 
     // #52/#56/#176: Hostile presence markers — red X on surveyed systems with hostiles
-    // Local system: read HostilePresence directly. Remote: use KnowledgeStore.
+    // #293: Local system: query (AtSystem, FactionOwner, With<Hostile>) filtered by
+    // FactionRelations. Remote: use KnowledgeStore.
     {
         // Local system hostiles (real-time)
-        for hostile in &hostiles {
-            if hostile.system != player_system {
+        for (at_system, owner) in &hostiles {
+            if at_system.0 != player_system {
                 continue;
             }
-            let Ok((_, star, star_pos)) = stars.get(hostile.system) else {
+            // Only draw if the empire considers this faction hostile.
+            // Hostiles without FactionOwner fall through (drawn) — matches
+            // legacy behavior when FactionRelations isn't populated yet.
+            if let Some(o) = owner {
+                if !faction_relations
+                    .get_or_default(viewer_empire, o.0)
+                    .can_attack_aggressive()
+                {
+                    continue;
+                }
+            }
+            let Ok((_, star, star_pos)) = stars.get(at_system.0) else {
                 continue;
             };
             if !star.surveyed {

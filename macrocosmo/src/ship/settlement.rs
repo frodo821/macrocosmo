@@ -8,7 +8,7 @@ use crate::colony::{
 };
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{HostilePresence, StarSystem, SystemAttributes};
+use crate::galaxy::{AtSystem, Hostile, StarSystem, SystemAttributes};
 use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
@@ -35,7 +35,9 @@ pub fn process_settling(
     existing_stockpiles: Query<&ResourceStockpile, With<StarSystem>>,
     existing_system_buildings: Query<&SystemBuildings>,
     mut events: MessageWriter<GameEvent>,
-    hostiles: Query<&HostilePresence>,
+    hostiles: Query<(&AtSystem, Option<&crate::faction::FactionOwner>), With<Hostile>>,
+    faction_relations: Res<crate::faction::FactionRelations>,
+    empire_entity_q: Query<Entity, With<crate::player::PlayerEmpire>>,
     player_q: Query<&StationedAt, Without<Ship>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
@@ -67,7 +69,22 @@ pub fn process_settling(
             let sys_pos_arr = sys_pos.as_array();
 
             // #52/#56: Check for hostile presence — cannot colonize while hostiles remain
-            let has_hostile = hostiles.iter().any(|h| h.system == system_entity);
+            // #293: Only block on hostiles the viewing empire considers
+            // aggressive. Hostiles without `FactionOwner` (tests that skip
+            // `setup_test_hostile_factions`, or pre-faction-backfill frames)
+            // default to blocking — preserves legacy behavior.
+            let viewer = empire_entity_q.iter().next();
+            let has_hostile = hostiles.iter().any(|(at_system, owner)| {
+                if at_system.0 != system_entity {
+                    return false;
+                }
+                match (viewer, owner) {
+                    (Some(v), Some(o)) => faction_relations
+                        .get_or_default(v, o.0)
+                        .can_attack_aggressive(),
+                    _ => true,
+                }
+            });
             if has_hostile {
                 info!(
                     "Colony Ship {} cannot settle at {} — hostile presence!",

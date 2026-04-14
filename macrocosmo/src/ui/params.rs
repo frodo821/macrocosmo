@@ -8,7 +8,8 @@ use crate::colony::{
 use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
-use crate::galaxy::{Anomalies, HostilePresence, Planet, StarSystem, SystemAttributes};
+use crate::galaxy::{Anomalies, AtSystem, Hostile, Planet, StarSystem, SystemAttributes};
+use crate::faction::FactionOwner;
 use crate::ship::{CourierRoute, Fleet, FleetMembership, PendingShipCommand, RulesOfEngagement};
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
@@ -22,7 +23,13 @@ pub struct MainPanelWorldQueries<'w, 's> {
     pub system_buildings: Query<'w, 's, (Option<&'static mut SystemBuildings>, Option<&'static mut SystemBuildingQueue>)>,
     pub colonization_queues: Query<'w, 's, &'static ColonizationQueue>,
     pub roe: Query<'w, 's, &'static RulesOfEngagement>,
-    pub hostile_presence: Query<'w, 's, &'static HostilePresence>,
+    /// #293: Hostile entities — `(AtSystem, Option<FactionOwner>)` tuple
+    /// keyed off the `Hostile` marker. UI readers build a hostile-systems
+    /// HashSet filtered by FactionRelations at the call site. `FactionOwner`
+    /// is optional because tests may spawn legacy hostiles before the
+    /// backfill system runs.
+    pub hostile_presence:
+        Query<'w, 's, (&'static AtSystem, Option<&'static FactionOwner>), With<Hostile>>,
     pub pending_commands: Query<'w, 's, &'static PendingShipCommand>,
     pub anomalies: Query<'w, 's, &'static Anomalies>,
     /// #117: Courier route data for ship panel display.
