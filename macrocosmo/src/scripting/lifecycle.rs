@@ -225,7 +225,16 @@ pub fn evaluate_fire_conditions(world: &mut World) {
                         continue;
                     }
                 }
-                if now - *last_fired >= *interval_hexadies {
+                if now - *last_fired >= *interval_hexadies && fire_condition.is_some() {
+                    // #320: Only queue suppression checks for periodics that
+                    // actually declare a fire_condition. Without one,
+                    // `evaluate_fire_conditions` would build a gamestate
+                    // snapshot just to answer "yes, fire" for every tick —
+                    // wasted Lua work (and aux-stack pressure) since the
+                    // actual fire is driven by `event_system::tick_events`
+                    // and `evaluate_fire_conditions` only ever *suppresses*
+                    // events that return false. Symmetric with the MTTH
+                    // branch below, which already filters None out.
                     out.push(PendingDecision {
                         kind: DecisionKind::Periodic,
                         event_id: id.clone(),
