@@ -853,7 +853,7 @@ pub fn relay_knowledge_propagate_system(
         Option<&crate::colony::ResourceStockpile>,
         Option<&crate::colony::SystemBuildings>,
     )>,
-    colonies: Query<&crate::colony::Colony>,
+    colonies: crate::knowledge::ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
     planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
     hostiles: Query<&crate::galaxy::HostilePresence>,

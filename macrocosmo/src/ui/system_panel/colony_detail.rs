@@ -5,6 +5,7 @@ use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates
 use crate::communication::{
     ColonyCommand, ColonyCommandKind, PendingColonyDispatch, PendingColonyDispatches,
 };
+use crate::knowledge::{ColonySnapshot, ObservationSource, SystemKnowledge};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::galaxy::SystemAttributes;
 use crate::amount::{Amt, SignedAmt};
@@ -50,6 +51,11 @@ pub(super) fn draw_colony_detail(
     job_registry: &JobRegistry,
     colony_panel_tab: &mut ColonyPanelTab,
     dispatches: &mut PendingColonyDispatches,
+    // #269: When the selected system is not the player's local, read from
+    // the empire's KnowledgeStore snapshot instead of live components.
+    is_local_system: bool,
+    k_data: Option<&SystemKnowledge>,
+    clock_elapsed: i64,
 ) {
     ui.label(
         egui::RichText::new("Colony")
@@ -57,7 +63,34 @@ pub(super) fn draw_colony_detail(
             .color(egui::Color32::from_rgb(100, 200, 100)),
     );
 
-    // #252: Tab selector.
+    if !is_local_system {
+        let snapshot = k_data
+            .and_then(|k| k.data.colonies.iter().find(|c| c.planet_entity == planet_entity));
+        match snapshot {
+            None => {
+                ui.label(
+                    egui::RichText::new("No intelligence available for this colony.")
+                        .italics()
+                        .color(egui::Color32::from_rgb(180, 180, 180)),
+                );
+                // Dispatch buttons are still useful on remote — they fire
+                // PendingColonyDispatch regardless. Fall through to the
+                // Overview tab which renders them even without snapshot data.
+                // (Intentional: observation can land between clicks.)
+            }
+            Some(cs) => {
+                let age = k_data.map(|k| clock_elapsed - k.observed_at).unwrap_or(0);
+                let source = k_data.map(|k| k.source).unwrap_or(ObservationSource::Direct);
+                draw_colony_detail_snapshot(ui, cs, age, source);
+                // Build/Demolish/Upgrade buttons for remote colonies are
+                // rendered via the dispatcher pipeline — the snapshot view
+                // above is read-only.
+                return;
+            }
+        }
+    }
+
+    // #252: Tab selector (local view or remote-without-snapshot fallback).
     ui.horizontal(|ui| {
         if ui
             .selectable_label(*colony_panel_tab == ColonyPanelTab::Overview, "Overview")
@@ -96,6 +129,96 @@ pub(super) fn draw_colony_detail(
             colony_pop_view,
             job_registry,
         ),
+    }
+}
+
+/// #269: Render colony detail from a `ColonySnapshot` only. No live
+/// component access — reads the freshness banner (source + age), then
+/// population, production, buildings, and queue progress as they were at
+/// `observed_at`.
+fn draw_colony_detail_snapshot(
+    ui: &mut egui::Ui,
+    cs: &ColonySnapshot,
+    age: i64,
+    source: ObservationSource,
+) {
+    let source_tag = match source {
+        ObservationSource::Direct => "Direct",
+        ObservationSource::Relay => "Relay",
+        ObservationSource::Scout => "Scout",
+        ObservationSource::Stale => "Stale",
+    };
+    let banner_color = if age >= crate::knowledge::STALE_THRESHOLD_HEXADIES {
+        egui::Color32::from_rgb(200, 140, 140)
+    } else if age >= 60 {
+        egui::Color32::from_rgb(220, 200, 140)
+    } else {
+        egui::Color32::from_rgb(180, 220, 180)
+    };
+    ui.label(
+        egui::RichText::new(format!(
+            "Remote colony intelligence [{}] — {} hd old",
+            source_tag, age
+        ))
+        .italics()
+        .color(banner_color),
+    );
+    ui.separator();
+
+    ui.label(format!(
+        "Population: {:.0} / {:.0} (at observation)",
+        cs.population, cs.carrying_cap_hint
+    ));
+    ui.label(egui::RichText::new("Income/hd (snapshot):").strong());
+    ui.label(format!("  Food:     {}", cs.production_food.display_compact()));
+    if cs.food_consumption > Amt::ZERO {
+        ui.label(format!("  (consume {})", cs.food_consumption.display_compact()));
+    }
+    ui.label(format!("  Energy:   {}", cs.production_energy.display_compact()));
+    if cs.maintenance_energy > Amt::ZERO {
+        ui.label(format!("  (maintain {})", cs.maintenance_energy.display_compact()));
+    }
+    ui.label(format!("  Minerals: {}", cs.production_minerals.display_compact()));
+    ui.label(format!("  Research: {}", cs.production_research.display_compact()));
+
+    ui.separator();
+    ui.label(egui::RichText::new("Buildings (snapshot)").strong());
+    for (i, slot) in cs.buildings.iter().enumerate() {
+        match slot {
+            Some(bid) => {
+                ui.label(format!("[{}] {}", i, bid));
+            }
+            None => {
+                if let Some(order) = cs.build_queue.iter().find(|o| o.target_slot == i) {
+                    ui.label(format!(
+                        "[{}] (Building: {}) ~{} hd remaining (as of {} hd ago)",
+                        i, order.building_id, order.build_time_remaining, age
+                    ));
+                } else {
+                    ui.label(format!("[{}] (empty)", i));
+                }
+            }
+        }
+    }
+    if !cs.demolition_queue.is_empty() {
+        ui.separator();
+        ui.label(egui::RichText::new("Demolition (snapshot)").strong());
+        for d in &cs.demolition_queue {
+            ui.label(format!(
+                "[{}] {} — {} hd remaining (as of {} hd ago)",
+                d.target_slot, d.building_id, d.time_remaining, age
+            ));
+        }
+    }
+    if !cs.upgrade_queue.is_empty() {
+        ui.separator();
+        ui.label(egui::RichText::new("Upgrades (snapshot)").strong());
+        for u in &cs.upgrade_queue {
+            ui.label(format!(
+                "[{}] -> {} — {} hd remaining (as of {} hd ago)",
+                u.slot_index, u.target_id, u.build_time_remaining, age
+            ));
+        }
     }
 }
 

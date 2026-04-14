@@ -404,6 +404,9 @@ pub fn draw_system_panel(
         job_registry,
         colony_panel_tab,
         dispatches,
+        is_local_system,
+        k_data,
+        clock.elapsed,
     );
 }
 

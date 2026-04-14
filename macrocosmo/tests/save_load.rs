@@ -999,3 +999,111 @@ fn test_save_load_preserves_pending_colony_command() {
     }
 }
 
+/// #269: `SystemKnowledge::data.colonies` must round-trip through the real
+/// save/load path, including the `colony_entity` / `planet_entity` remap via
+/// `EntityMap` and nested `BuildQueueEntrySnapshot` contents.
+#[test]
+fn test_save_load_preserves_colony_snapshot() {
+    use macrocosmo::knowledge::{
+        BuildQueueEntrySnapshot, ColonySnapshot, KnowledgeStore, ObservationSource,
+        SystemKnowledge, SystemSnapshot,
+    };
+    use macrocosmo::scripting::building_api::BuildingId;
+    let mut src = build_seed_world();
+
+    let (sol, alpha) = {
+        let mut q = src.query::<(Entity, &StarSystem)>();
+        let mut sol = None;
+        let mut alpha = None;
+        for (e, s) in q.iter(&src) {
+            match s.name.as_str() {
+                "Sol" => sol = Some(e),
+                "Alpha Centauri" => alpha = Some(e),
+                _ => {}
+            }
+        }
+        (sol.unwrap(), alpha.unwrap())
+    };
+    let (colony_entity, planet_entity) = src
+        .query::<(Entity, &Colony)>()
+        .iter(&src)
+        .next()
+        .map(|(e, c)| (e, c.planet))
+        .unwrap();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    let colony_snap = ColonySnapshot {
+        colony_entity,
+        planet_entity,
+        planet_name: "Earth".into(),
+        population: 1234.0,
+        carrying_cap_hint: 2000.0,
+        production_minerals: Amt::units(5),
+        production_energy: Amt::units(3),
+        production_food: Amt::units(2),
+        production_research: Amt::units(1),
+        food_consumption: Amt::units(4),
+        maintenance_energy: Amt::units(1),
+        buildings: vec![Some(BuildingId::new("mine")), None, None, None],
+        build_queue: vec![BuildQueueEntrySnapshot {
+            building_id: BuildingId::new("farm"),
+            target_slot: 1,
+            build_time_remaining: 7,
+        }],
+        demolition_queue: vec![],
+        upgrade_queue: vec![],
+    };
+    let mut store = KnowledgeStore::default();
+    store.update(SystemKnowledge {
+        system: alpha,
+        observed_at: 50,
+        received_at: 50,
+        data: SystemSnapshot {
+            name: "Alpha Centauri".into(),
+            position: [4.3, 0.0, 0.0],
+            surveyed: true,
+            colonized: true,
+            colonies: vec![colony_snap],
+            ..SystemSnapshot::default()
+        },
+        source: ObservationSource::Direct,
+    });
+    src.entity_mut(empire).insert(store);
+    let _ = sol;
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let alpha_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+    let (colony_dst, planet_dst) = dst
+        .query::<(Entity, &Colony)>()
+        .iter(&dst)
+        .next()
+        .map(|(e, c)| (e, c.planet))
+        .unwrap();
+    let mut eq = dst.query_filtered::<&KnowledgeStore, With<PlayerEmpire>>();
+    let store = eq.single(&dst).expect("loaded KnowledgeStore");
+    let entry = store.get(alpha_dst).expect("alpha knowledge");
+    assert_eq!(entry.data.colonies.len(), 1);
+    let cs = &entry.data.colonies[0];
+    assert_eq!(cs.colony_entity, colony_dst, "colony_entity Entity remap");
+    assert_eq!(cs.planet_entity, planet_dst, "planet_entity Entity remap");
+    assert_eq!(cs.planet_name, "Earth");
+    assert!((cs.population - 1234.0).abs() < 1e-9);
+    assert_eq!(cs.buildings.len(), 4);
+    assert_eq!(cs.buildings[0].as_ref().map(|b| b.0.as_str()), Some("mine"));
+    assert_eq!(cs.build_queue.len(), 1);
+    assert_eq!(cs.build_queue[0].building_id.0, "farm");
+    assert_eq!(cs.build_queue[0].build_time_remaining, 7);
+}
+

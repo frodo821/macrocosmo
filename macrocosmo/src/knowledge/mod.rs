@@ -126,6 +126,53 @@ pub struct SystemSnapshot {
     pub production_food: Amt,
     pub production_research: Amt,
     pub maintenance_energy: Amt,
+    /// #269: Per-colony snapshot. Populated by the snapshot build path so
+    /// remote colony detail UI reads from this instead of the live world.
+    /// Empty vec means "system is known but no colonies observed yet".
+    pub colonies: Vec<ColonySnapshot>,
+}
+
+/// #269: Snapshot of a single colony's observable state at the moment of
+/// last observation. Carries enough data for the remote colony detail
+/// panel to render without reading live components.
+#[derive(Clone, Debug)]
+pub struct ColonySnapshot {
+    pub colony_entity: Entity,
+    pub planet_entity: Entity,
+    pub planet_name: String,
+    pub population: f64,
+    pub carrying_cap_hint: f64,
+    pub production_minerals: Amt,
+    pub production_energy: Amt,
+    pub production_food: Amt,
+    pub production_research: Amt,
+    pub food_consumption: Amt,
+    pub maintenance_energy: Amt,
+    pub buildings: Vec<Option<crate::scripting::building_api::BuildingId>>,
+    pub build_queue: Vec<BuildQueueEntrySnapshot>,
+    pub demolition_queue: Vec<DemolitionSnapshot>,
+    pub upgrade_queue: Vec<UpgradeSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildQueueEntrySnapshot {
+    pub building_id: crate::scripting::building_api::BuildingId,
+    pub target_slot: usize,
+    pub build_time_remaining: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct DemolitionSnapshot {
+    pub target_slot: usize,
+    pub building_id: crate::scripting::building_api::BuildingId,
+    pub time_remaining: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct UpgradeSnapshot {
+    pub slot_index: usize,
+    pub target_id: crate::scripting::building_api::BuildingId,
+    pub build_time_remaining: i64,
 }
 
 /// #175: Snapshot of a ship's last known state for light-speed delayed visibility.
@@ -286,22 +333,38 @@ fn initialize_capital_knowledge(
 ///
 /// `hostile_map` is an `entity → HostilePresence` lookup the caller builds
 /// once per tick; passing it in lets both call sites share the allocation.
+/// #269: The rich colony query used when building a `SystemSnapshot`. Pulled
+/// out as a type alias so `build_system_snapshot` call sites don't repeat
+/// the whole tuple.
+pub type ColonySnapshotQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static crate::colony::Colony,
+        Option<&'static crate::colony::Production>,
+        Option<&'static crate::colony::Buildings>,
+        Option<&'static crate::colony::BuildingQueue>,
+        Option<&'static crate::colony::MaintenanceCost>,
+        Option<&'static crate::colony::FoodConsumption>,
+    ),
+>;
+
 pub fn build_system_snapshot(
     entity: Entity,
     star: &StarSystem,
     sys_pos: &Position,
     stockpile: Option<&ResourceStockpile>,
     sys_buildings: Option<&crate::colony::SystemBuildings>,
-    colonies: &Query<&crate::colony::Colony>,
+    colonies: &ColonySnapshotQuery,
     planets: &Query<&crate::galaxy::Planet>,
     planet_attrs: &Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
     hostile_map: &HashMap<Entity, &crate::galaxy::HostilePresence>,
     building_registry: &crate::colony::BuildingRegistry,
 ) -> SystemSnapshot {
-    // Derive colonized status from whether any colony has a planet in this system
     let is_colonized = colonies
         .iter()
-        .any(|c| c.system(planets) == Some(entity));
+        .any(|(_, c, _, _, _, _, _)| c.system(planets) == Some(entity));
 
     // Resource snapshot from StarSystem's stockpile (#106)
     let (minerals, energy, food, authority) = stockpile
@@ -334,6 +397,8 @@ pub fn build_system_snapshot(
             ))
             .unwrap_or((None, None, None, None, None));
 
+    let colony_snapshots = build_colony_snapshots(entity, colonies, planets, planet_attrs);
+
     SystemSnapshot {
         name: star.name.clone(),
         position: sys_pos.as_array(),
@@ -352,8 +417,100 @@ pub fn build_system_snapshot(
         energy_potential,
         research_potential,
         max_building_slots,
+        colonies: colony_snapshots,
         ..SystemSnapshot::default()
     }
+}
+
+/// #269: Build per-colony snapshots for the colonies living in `system`.
+/// Population, production, maintenance, buildings, and queue contents are
+/// frozen at the current world state — the returned vec becomes the
+/// snapshot the remote colony detail panel reads from.
+fn build_colony_snapshots(
+    system: Entity,
+    colonies: &ColonySnapshotQuery,
+    planets: &Query<&crate::galaxy::Planet>,
+    planet_attrs: &Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
+) -> Vec<ColonySnapshot> {
+    use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
+    let mut out = Vec::new();
+    for (colony_entity, colony, production, buildings, bq, maintenance, food) in colonies.iter() {
+        if colony.system(planets) != Some(system) {
+            continue;
+        }
+        let planet_name = planets
+            .get(colony.planet)
+            .ok()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let habitability = planet_attrs
+            .get(colony.planet)
+            .ok()
+            .map(|(_, a)| a.habitability)
+            .unwrap_or(0.5);
+        let food_prod = production.map(|p| p.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
+        let k_habitat = BASE_CARRYING_CAPACITY * habitability;
+        let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
+            food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
+        } else {
+            k_habitat
+        };
+        let carrying_cap_hint = k_habitat.min(k_food).max(1.0);
+        let build_queue = bq
+            .map(|b| {
+                b.queue
+                    .iter()
+                    .map(|o| BuildQueueEntrySnapshot {
+                        building_id: o.building_id.clone(),
+                        target_slot: o.target_slot,
+                        build_time_remaining: o.build_time_remaining,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let demolition_queue = bq
+            .map(|b| {
+                b.demolition_queue
+                    .iter()
+                    .map(|d| DemolitionSnapshot {
+                        target_slot: d.target_slot,
+                        building_id: d.building_id.clone(),
+                        time_remaining: d.time_remaining,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let upgrade_queue = bq
+            .map(|b| {
+                b.upgrade_queue
+                    .iter()
+                    .map(|u| UpgradeSnapshot {
+                        slot_index: u.slot_index,
+                        target_id: u.target_id.clone(),
+                        build_time_remaining: u.build_time_remaining,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(ColonySnapshot {
+            colony_entity,
+            planet_entity: colony.planet,
+            planet_name,
+            population: colony.population,
+            carrying_cap_hint,
+            production_minerals: production.map(|p| p.minerals_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
+            production_energy: production.map(|p| p.energy_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
+            production_food: food_prod,
+            production_research: production.map(|p| p.research_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
+            food_consumption: food.map(|f| f.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
+            maintenance_energy: maintenance.map(|m| m.energy_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
+            buildings: buildings.map(|b| b.slots.clone()).unwrap_or_default(),
+            build_queue,
+            demolition_queue,
+            upgrade_queue,
+        });
+    }
+    out
 }
 
 pub fn propagate_knowledge(
@@ -368,7 +525,7 @@ pub fn propagate_knowledge(
     )>,
     positions: Query<&Position>,
     mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
-    colonies: Query<&crate::colony::Colony>,
+    colonies: ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
     planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
     hostiles: Query<&crate::galaxy::HostilePresence>,

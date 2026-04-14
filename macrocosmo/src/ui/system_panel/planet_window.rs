@@ -48,6 +48,9 @@ pub(super) fn draw_planet_window(
     job_registry: &crate::species::JobRegistry,
     colony_panel_tab: &mut crate::ui::ColonyPanelTab,
     dispatches: &mut PendingColonyDispatches,
+    is_local_system: bool,
+    k_data: Option<&crate::knowledge::SystemKnowledge>,
+    clock_elapsed: i64,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
         return;
@@ -117,6 +120,9 @@ pub(super) fn draw_planet_window(
                             job_registry,
                             colony_panel_tab,
                             dispatches,
+                            is_local_system,
+                            k_data,
+                            clock_elapsed,
                         );
                     });
             } else {

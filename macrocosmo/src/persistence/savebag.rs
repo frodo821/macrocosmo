@@ -1315,7 +1315,7 @@ impl SavedScoutReport {
             origin_system: remap_entity(self.origin_system_bits, map),
             observed_at: self.observed_at,
             report_mode: self.report_mode.into(),
-            system_snapshot: self.system_snapshot.into_live(),
+            system_snapshot: self.system_snapshot.into_live(map),
             ship_snapshots: self.ship_snapshots.into_iter().map(|s| s.into_live(map)).collect(),
             return_queued: self.return_queued,
         }
@@ -2256,6 +2256,117 @@ pub struct SavedSystemSnapshot {
     pub production_food: Amt,
     pub production_research: Amt,
     pub maintenance_energy: Amt,
+    /// #269: Per-colony snapshots. `#[serde(default)]` so older saves that
+    /// predate this field still deserialize with an empty vec.
+    #[serde(default)]
+    pub colonies: Vec<SavedColonySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedColonySnapshot {
+    pub colony_entity_bits: u64,
+    pub planet_entity_bits: u64,
+    pub planet_name: String,
+    pub population: f64,
+    pub carrying_cap_hint: f64,
+    pub production_minerals: Amt,
+    pub production_energy: Amt,
+    pub production_food: Amt,
+    pub production_research: Amt,
+    pub food_consumption: Amt,
+    pub maintenance_energy: Amt,
+    pub buildings: Vec<Option<String>>,
+    pub build_queue: Vec<SavedBuildQueueEntrySnapshot>,
+    pub demolition_queue: Vec<SavedDemolitionSnapshot>,
+    pub upgrade_queue: Vec<SavedUpgradeSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedBuildQueueEntrySnapshot {
+    pub building_id: String,
+    pub target_slot: usize,
+    pub build_time_remaining: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedDemolitionSnapshot {
+    pub target_slot: usize,
+    pub building_id: String,
+    pub time_remaining: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedUpgradeSnapshot {
+    pub slot_index: usize,
+    pub target_id: String,
+    pub build_time_remaining: i64,
+}
+
+impl SavedColonySnapshot {
+    pub fn from_live(v: &crate::knowledge::ColonySnapshot) -> Self {
+        Self {
+            colony_entity_bits: v.colony_entity.to_bits(),
+            planet_entity_bits: v.planet_entity.to_bits(),
+            planet_name: v.planet_name.clone(),
+            population: v.population,
+            carrying_cap_hint: v.carrying_cap_hint,
+            production_minerals: v.production_minerals,
+            production_energy: v.production_energy,
+            production_food: v.production_food,
+            production_research: v.production_research,
+            food_consumption: v.food_consumption,
+            maintenance_energy: v.maintenance_energy,
+            buildings: v.buildings.iter().map(|s| s.as_ref().map(|b| b.0.clone())).collect(),
+            build_queue: v.build_queue.iter().map(|e| SavedBuildQueueEntrySnapshot {
+                building_id: e.building_id.0.clone(),
+                target_slot: e.target_slot,
+                build_time_remaining: e.build_time_remaining,
+            }).collect(),
+            demolition_queue: v.demolition_queue.iter().map(|d| SavedDemolitionSnapshot {
+                target_slot: d.target_slot,
+                building_id: d.building_id.0.clone(),
+                time_remaining: d.time_remaining,
+            }).collect(),
+            upgrade_queue: v.upgrade_queue.iter().map(|u| SavedUpgradeSnapshot {
+                slot_index: u.slot_index,
+                target_id: u.target_id.0.clone(),
+                build_time_remaining: u.build_time_remaining,
+            }).collect(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::knowledge::ColonySnapshot {
+        use crate::knowledge::{BuildQueueEntrySnapshot, ColonySnapshot, DemolitionSnapshot, UpgradeSnapshot};
+        use crate::scripting::building_api::BuildingId;
+        ColonySnapshot {
+            colony_entity: remap_entity(self.colony_entity_bits, map),
+            planet_entity: remap_entity(self.planet_entity_bits, map),
+            planet_name: self.planet_name,
+            population: self.population,
+            carrying_cap_hint: self.carrying_cap_hint,
+            production_minerals: self.production_minerals,
+            production_energy: self.production_energy,
+            production_food: self.production_food,
+            production_research: self.production_research,
+            food_consumption: self.food_consumption,
+            maintenance_energy: self.maintenance_energy,
+            buildings: self.buildings.into_iter().map(|s| s.map(BuildingId::new)).collect(),
+            build_queue: self.build_queue.into_iter().map(|e| BuildQueueEntrySnapshot {
+                building_id: BuildingId::new(e.building_id),
+                target_slot: e.target_slot,
+                build_time_remaining: e.build_time_remaining,
+            }).collect(),
+            demolition_queue: self.demolition_queue.into_iter().map(|d| DemolitionSnapshot {
+                target_slot: d.target_slot,
+                building_id: BuildingId::new(d.building_id),
+                time_remaining: d.time_remaining,
+            }).collect(),
+            upgrade_queue: self.upgrade_queue.into_iter().map(|u| UpgradeSnapshot {
+                slot_index: u.slot_index,
+                target_id: BuildingId::new(u.target_id),
+                build_time_remaining: u.build_time_remaining,
+            }).collect(),
+        }
+    }
 }
 
 impl SavedSystemSnapshot {
@@ -2285,9 +2396,10 @@ impl SavedSystemSnapshot {
             production_food: v.production_food,
             production_research: v.production_research,
             maintenance_energy: v.maintenance_energy,
+            colonies: v.colonies.iter().map(SavedColonySnapshot::from_live).collect(),
         }
     }
-    pub fn into_live(self) -> SystemSnapshot {
+    pub fn into_live(self, map: &EntityMap) -> SystemSnapshot {
         SystemSnapshot {
             name: self.name,
             position: self.position,
@@ -2313,6 +2425,7 @@ impl SavedSystemSnapshot {
             production_food: self.production_food,
             production_research: self.production_research,
             maintenance_energy: self.maintenance_energy,
+            colonies: self.colonies.into_iter().map(|c| c.into_live(map)).collect(),
         }
     }
 }
@@ -2340,7 +2453,7 @@ impl SavedSystemKnowledge {
             system: remap_entity(self.system_bits, map),
             observed_at: self.observed_at,
             received_at: self.received_at,
-            data: self.data.into_live(),
+            data: self.data.into_live(map),
             source: self.source.into(),
         }
     }

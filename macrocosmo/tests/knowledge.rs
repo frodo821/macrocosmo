@@ -2312,3 +2312,101 @@ fn test_relay_chain_aggregates_system_resources() {
     assert_eq!(entry.data.authority, Amt::units(10));
 }
 
+// #269: ColonySnapshot population tests.
+
+#[test]
+fn test_system_snapshot_includes_colonies_after_propagation() {
+    let mut app = test_app();
+    let capital = spawn_test_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true);
+    let remote = spawn_test_system(app.world_mut(), "Remote", [10.0, 0.0, 0.0], 0.8, true, false);
+    app.world_mut().spawn((Player, StationedAt { system: capital }));
+
+    let remote_planet = find_planet(app.world_mut(), remote);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        remote_planet,
+        Amt::units(500),
+        Amt::units(500),
+        vec![Some(BuildingId::new("mine")), None, None, None],
+    );
+
+    advance_time(&mut app, light_delay_hexadies(10.0));
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let entry = store.get(remote).expect("remote system knowledge must exist");
+    assert_eq!(entry.data.colonies.len(), 1, "one colony snapshot expected");
+    let cs = &entry.data.colonies[0];
+    assert_eq!(cs.colony_entity, colony);
+    assert_eq!(cs.planet_entity, remote_planet);
+    assert!((cs.population - 100.0).abs() < 1e-9, "population preserved");
+    assert_eq!(cs.buildings.len(), 4, "slot count preserved");
+    assert_eq!(cs.buildings[0].as_ref().map(|b| b.0.as_str()), Some("mine"));
+}
+
+#[test]
+fn test_colony_snapshot_preserves_build_queue_entries() {
+    let mut app = test_app();
+    let capital = spawn_test_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true);
+    let remote = spawn_test_system(app.world_mut(), "Remote", [10.0, 0.0, 0.0], 0.8, true, false);
+    app.world_mut().spawn((Player, StationedAt { system: capital }));
+
+    let remote_planet = find_planet(app.world_mut(), remote);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        remote_planet,
+        Amt::units(500),
+        Amt::units(500),
+        vec![None, None, None, None],
+    );
+    {
+        let mut bq = app.world_mut().get_mut::<BuildingQueue>(colony).unwrap();
+        bq.queue.push(BuildingOrder {
+            building_id: BuildingId::new("mine"),
+            target_slot: 1,
+            minerals_remaining: Amt::units(150),
+            energy_remaining: Amt::units(50),
+            build_time_remaining: 10,
+        });
+    }
+
+    advance_time(&mut app, light_delay_hexadies(10.0));
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let entry = store.get(remote).unwrap();
+    let cs = entry.data.colonies.iter().find(|c| c.colony_entity == colony).unwrap();
+    assert_eq!(cs.build_queue.len(), 1);
+    assert_eq!(cs.build_queue[0].target_slot, 1);
+    assert_eq!(cs.build_queue[0].building_id.0, "mine");
+}
+
+#[test]
+fn test_local_colony_snapshot_also_populated() {
+    // Even when the player is local, propagate_knowledge writes snapshots for
+    // local systems (observed_at = clock.elapsed). This is relied on by the
+    // UI's fallback path when a system panel is opened before the first
+    // observation tick.
+    let mut app = test_app();
+    let capital = spawn_test_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true);
+    app.world_mut().spawn((Player, StationedAt { system: capital }));
+
+    let capital_planet = find_planet(app.world_mut(), capital);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        capital_planet,
+        Amt::units(500),
+        Amt::units(500),
+        vec![None, None, None, None],
+    );
+
+    advance_time(&mut app, 1);
+
+    let empire = empire_entity(app.world_mut());
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let entry = store.get(capital).expect("local system has knowledge");
+    assert_eq!(entry.data.colonies.len(), 1);
+    assert_eq!(entry.data.colonies[0].colony_entity, colony);
+}
+
+
