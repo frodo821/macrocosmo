@@ -178,6 +178,38 @@ pub enum HostileType {
     AncientDefense,
 }
 
+// ---------------------------------------------------------------------------
+// #293: Hostile-entity component decomposition (replaces HostilePresence)
+// ---------------------------------------------------------------------------
+// New hostile entities carry `(AtSystem, FactionOwner, HostileHitpoints,
+// Hostile)`. Readers use `Query<..., With<Hostile>>` to stay disjoint from
+// ship queries. Combat strength / evasion are read from
+// `FactionTypeDefinition` via the faction's `FactionOwner -> Faction -> type`
+// chain. `HostilePresence` remains for now (dual-spawn) and is removed in a
+// later commit.
+
+/// Component declaring which star system this entity occupies. Attached to
+/// hostile entities (space_creature / ancient_defense) so the visibility /
+/// combat / knowledge layers can key their per-system maps without touching
+/// the legacy [`HostilePresence`] struct.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct AtSystem(pub Entity);
+
+/// Hitpoints for a hostile entity. Separate from [`crate::ship::ShipHitpoints`]
+/// which applies to player ships.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct HostileHitpoints {
+    pub hp: f64,
+    pub max_hp: f64,
+}
+
+/// Zero-sized marker distinguishing hostile entities from other
+/// `FactionOwner`-bearing entities (ships, structures). Hostile-side queries
+/// use `With<Hostile>` to stay disjoint from ship-side queries and avoid
+/// Bevy B0001 conflicts.
+#[derive(Component, Default, Clone, Copy, Debug)]
+pub struct Hostile;
+
 /// Marker for systems obscured by interstellar gas
 #[derive(Component)]
 pub struct ObscuredByGas;
