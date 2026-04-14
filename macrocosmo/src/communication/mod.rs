@@ -135,6 +135,54 @@ pub struct PendingCommand {
 pub enum RemoteCommand {
     BuildShip { design_id: String },
     SetProductionFocus { minerals: f64, energy: f64, research: f64 },
+    /// #270: Colony or system build/demolish/upgrade/cancel command routed
+    /// through light-speed delay. Cost/time/refund amounts are NOT carried in
+    /// the payload — they are computed on arrival from the current
+    /// `BuildingRegistry` / `ShipDesignRegistry` at the target. This keeps the
+    /// payload small and matches the existing `BuildShip` convention.
+    Colony(ColonyCommand),
+}
+
+/// #270: A colony-scoped remote command. `target_planet = Some(planet)`
+/// addresses a planet-level `BuildingQueue`/`Buildings`; `None` addresses the
+/// system-level `SystemBuildingQueue`/`SystemBuildings` on the target system.
+#[derive(Clone, Debug)]
+pub struct ColonyCommand {
+    pub target_planet: Option<Entity>,
+    pub kind: ColonyCommandKind,
+}
+
+/// #270: Payload-free colony command variants. Arrival handler looks up the
+/// current cost/time/refund from registries when applying the command.
+#[derive(Clone, Debug)]
+pub enum ColonyCommandKind {
+    /// Enqueue construction of `building_id` into `target_slot`.
+    QueueBuilding {
+        building_id: String,
+        target_slot: usize,
+    },
+    /// Enqueue demolition of whatever occupies `target_slot`.
+    DemolishBuilding { target_slot: usize },
+    /// Enqueue an upgrade of the building in `slot_index` to `target_id`.
+    UpgradeBuilding {
+        slot_index: usize,
+        target_id: String,
+    },
+    /// Cancel the (head of the) pending build order targeting `target_slot`.
+    CancelBuildingOrder { target_slot: usize },
+    /// Enqueue a ship (or deliverable) build on `host_colony`'s `BuildQueue`.
+    QueueShipBuild {
+        host_colony: Entity,
+        design_id: String,
+        build_kind: crate::colony::BuildKind,
+    },
+    /// Cancel a ship build order on `host_colony`'s `BuildQueue` at `queue_index`.
+    /// NOTE: by-index cancel is best-effort — queues can shift between
+    /// dispatch and arrival. Stable order-ids are a follow-up (see #270 plan).
+    CancelShipOrder {
+        host_colony: Entity,
+        queue_index: usize,
+    },
 }
 
 /// Tracks command status for UI display.

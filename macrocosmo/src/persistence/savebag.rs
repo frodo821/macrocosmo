@@ -32,7 +32,9 @@ use crate::colony::{
     PendingColonizationOrder, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
     SystemBuildingQueue, SystemBuildings, UpgradeOrder,
 };
-use crate::communication::{CommandLog, CommandLogEntry, PendingCommand, RemoteCommand};
+use crate::communication::{
+    ColonyCommand, ColonyCommandKind, CommandLog, CommandLogEntry, PendingCommand, RemoteCommand,
+};
 use crate::components::{MovementState, Position};
 use crate::condition::ScopedFlags;
 use crate::deep_space::{
@@ -2808,6 +2810,8 @@ impl SavedPendingDiplomaticAction {
 pub enum SavedRemoteCommand {
     BuildShip { design_id: String },
     SetProductionFocus { minerals: f64, energy: f64, research: f64 },
+    /// #270: Colony/system build command routed via light-speed delay.
+    Colony(SavedColonyCommand),
 }
 impl From<&RemoteCommand> for SavedRemoteCommand {
     fn from(v: &RemoteCommand) -> Self {
@@ -2816,16 +2820,119 @@ impl From<&RemoteCommand> for SavedRemoteCommand {
             RemoteCommand::SetProductionFocus { minerals, energy, research } => Self::SetProductionFocus {
                 minerals: *minerals, energy: *energy, research: *research,
             },
+            RemoteCommand::Colony(cc) => Self::Colony(SavedColonyCommand::from_live(cc)),
         }
     }
 }
-impl From<SavedRemoteCommand> for RemoteCommand {
-    fn from(v: SavedRemoteCommand) -> Self {
+impl SavedRemoteCommand {
+    pub fn into_live(self, map: &EntityMap) -> RemoteCommand {
+        match self {
+            SavedRemoteCommand::BuildShip { design_id } => RemoteCommand::BuildShip { design_id },
+            SavedRemoteCommand::SetProductionFocus { minerals, energy, research } => {
+                RemoteCommand::SetProductionFocus { minerals, energy, research }
+            }
+            SavedRemoteCommand::Colony(sc) => RemoteCommand::Colony(sc.into_live(map)),
+        }
+    }
+}
+
+/// #270: Saved mirror of `ColonyCommand`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedColonyCommand {
+    pub target_planet_bits: Option<u64>,
+    pub kind: SavedColonyCommandKind,
+}
+
+impl SavedColonyCommand {
+    pub fn from_live(v: &ColonyCommand) -> Self {
+        Self {
+            target_planet_bits: v.target_planet.map(|e| e.to_bits()),
+            kind: SavedColonyCommandKind::from_live(&v.kind),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> ColonyCommand {
+        ColonyCommand {
+            target_planet: self.target_planet_bits.map(|b| remap_entity(b, map)),
+            kind: self.kind.into_live(map),
+        }
+    }
+}
+
+/// #270: Saved mirror of `ColonyCommandKind`. `BuildKind` is mirrored via the
+/// existing `SavedBuildKind`. Entity fields go through `remap_entity` on load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SavedColonyCommandKind {
+    QueueBuilding { building_id: String, target_slot: usize },
+    DemolishBuilding { target_slot: usize },
+    UpgradeBuilding { slot_index: usize, target_id: String },
+    CancelBuildingOrder { target_slot: usize },
+    QueueShipBuild {
+        host_colony_bits: u64,
+        design_id: String,
+        build_kind: SavedBuildKind,
+    },
+    CancelShipOrder { host_colony_bits: u64, queue_index: usize },
+}
+
+impl SavedColonyCommandKind {
+    pub fn from_live(v: &ColonyCommandKind) -> Self {
         match v {
-            SavedRemoteCommand::BuildShip { design_id } => Self::BuildShip { design_id },
-            SavedRemoteCommand::SetProductionFocus { minerals, energy, research } => Self::SetProductionFocus {
-                minerals, energy, research,
+            ColonyCommandKind::QueueBuilding { building_id, target_slot } => Self::QueueBuilding {
+                building_id: building_id.clone(),
+                target_slot: *target_slot,
             },
+            ColonyCommandKind::DemolishBuilding { target_slot } => {
+                Self::DemolishBuilding { target_slot: *target_slot }
+            }
+            ColonyCommandKind::UpgradeBuilding { slot_index, target_id } => Self::UpgradeBuilding {
+                slot_index: *slot_index,
+                target_id: target_id.clone(),
+            },
+            ColonyCommandKind::CancelBuildingOrder { target_slot } => {
+                Self::CancelBuildingOrder { target_slot: *target_slot }
+            }
+            ColonyCommandKind::QueueShipBuild { host_colony, design_id, build_kind } => {
+                Self::QueueShipBuild {
+                    host_colony_bits: host_colony.to_bits(),
+                    design_id: design_id.clone(),
+                    build_kind: build_kind.into(),
+                }
+            }
+            ColonyCommandKind::CancelShipOrder { host_colony, queue_index } => {
+                Self::CancelShipOrder {
+                    host_colony_bits: host_colony.to_bits(),
+                    queue_index: *queue_index,
+                }
+            }
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> ColonyCommandKind {
+        match self {
+            Self::QueueBuilding { building_id, target_slot } => {
+                ColonyCommandKind::QueueBuilding { building_id, target_slot }
+            }
+            Self::DemolishBuilding { target_slot } => {
+                ColonyCommandKind::DemolishBuilding { target_slot }
+            }
+            Self::UpgradeBuilding { slot_index, target_id } => {
+                ColonyCommandKind::UpgradeBuilding { slot_index, target_id }
+            }
+            Self::CancelBuildingOrder { target_slot } => {
+                ColonyCommandKind::CancelBuildingOrder { target_slot }
+            }
+            Self::QueueShipBuild { host_colony_bits, design_id, build_kind } => {
+                ColonyCommandKind::QueueShipBuild {
+                    host_colony: remap_entity(host_colony_bits, map),
+                    design_id,
+                    build_kind: build_kind.into(),
+                }
+            }
+            Self::CancelShipOrder { host_colony_bits, queue_index } => {
+                ColonyCommandKind::CancelShipOrder {
+                    host_colony: remap_entity(host_colony_bits, map),
+                    queue_index,
+                }
+            }
         }
     }
 }
@@ -2853,7 +2960,7 @@ impl SavedPendingCommand {
     pub fn into_live(self, map: &EntityMap) -> PendingCommand {
         PendingCommand {
             target_system: remap_entity(self.target_system_bits, map),
-            command: self.command.into(),
+            command: self.command.into_live(map),
             sent_at: self.sent_at,
             arrives_at: self.arrives_at,
             origin_pos: self.origin_pos,
@@ -3460,5 +3567,102 @@ impl RemapEntities for SavedComponentBag {
         // All entity references are stored as `u64` bits; remapping is done
         // when wire structs are converted back into live components via
         // their `into_live(map)` methods. No in-place rewriting needed here.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::colony::BuildKind;
+    use crate::communication::{ColonyCommand, ColonyCommandKind, RemoteCommand};
+
+    /// #270: `RemoteCommand::Colony` survives a save/load round-trip through
+    /// `SavedRemoteCommand`. Exercises every `ColonyCommandKind` variant and
+    /// confirms `Entity` fields are remapped (not left raw-bit-equal).
+    #[test]
+    fn colony_remote_command_savebag_roundtrip() {
+        // Fake-save-id -> fresh-Entity remap table, as would be built during
+        // a real load. We use two entities to represent: (a) the planet
+        // target, (b) the host colony for ship builds.
+        let mut map = EntityMap::new();
+        let live_planet = Entity::from_raw_u32(42).unwrap();
+        let live_host = Entity::from_raw_u32(77).unwrap();
+        map.insert(live_planet.to_bits(), live_planet);
+        map.insert(live_host.to_bits(), live_host);
+
+        let originals = vec![
+            RemoteCommand::Colony(ColonyCommand {
+                target_planet: Some(live_planet),
+                kind: ColonyCommandKind::QueueBuilding {
+                    building_id: "mine".to_string(),
+                    target_slot: 2,
+                },
+            }),
+            RemoteCommand::Colony(ColonyCommand {
+                target_planet: Some(live_planet),
+                kind: ColonyCommandKind::DemolishBuilding { target_slot: 1 },
+            }),
+            RemoteCommand::Colony(ColonyCommand {
+                target_planet: None,
+                kind: ColonyCommandKind::UpgradeBuilding {
+                    slot_index: 3,
+                    target_id: "advanced_shipyard".to_string(),
+                },
+            }),
+            RemoteCommand::Colony(ColonyCommand {
+                target_planet: None,
+                kind: ColonyCommandKind::CancelBuildingOrder { target_slot: 0 },
+            }),
+            RemoteCommand::Colony(ColonyCommand {
+                target_planet: None,
+                kind: ColonyCommandKind::QueueShipBuild {
+                    host_colony: live_host,
+                    design_id: "explorer_mk1".to_string(),
+                    build_kind: BuildKind::Deliverable { cargo_size: 4 },
+                },
+            }),
+            RemoteCommand::Colony(ColonyCommand {
+                target_planet: None,
+                kind: ColonyCommandKind::CancelShipOrder {
+                    host_colony: live_host,
+                    queue_index: 2,
+                },
+            }),
+        ];
+
+        for original in &originals {
+            let saved = SavedRemoteCommand::from(original);
+            let bytes = serde_json::to_vec(&saved).expect("serialize");
+            let restored: SavedRemoteCommand = serde_json::from_slice(&bytes).expect("deserialize");
+            let live = restored.into_live(&map);
+
+            // Structural equality via Debug — RemoteCommand doesn't impl Eq.
+            assert_eq!(
+                format!("{:?}", original),
+                format!("{:?}", live),
+                "round-trip mismatch for {:?}",
+                original
+            );
+        }
+    }
+
+    /// #270: Pre-existing `BuildShip` and `SetProductionFocus` variants still
+    /// round-trip through the updated `into_live(map)` signature.
+    #[test]
+    fn legacy_remote_command_variants_still_roundtrip() {
+        let map = EntityMap::new();
+        let bs = RemoteCommand::BuildShip {
+            design_id: "scout".to_string(),
+        };
+        let bs_back = SavedRemoteCommand::from(&bs).into_live(&map);
+        assert_eq!(format!("{:?}", bs), format!("{:?}", bs_back));
+
+        let focus = RemoteCommand::SetProductionFocus {
+            minerals: 0.5,
+            energy: 0.3,
+            research: 0.2,
+        };
+        let focus_back = SavedRemoteCommand::from(&focus).into_live(&map);
+        assert_eq!(format!("{:?}", focus), format!("{:?}", focus_back));
     }
 }
