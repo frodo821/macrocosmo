@@ -1,19 +1,21 @@
-use bevy::prelude::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
+use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
-use macrocosmo::scripting::building_api::BuildingId;
-use macrocosmo::species;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
+use macrocosmo::condition::ScopedFlags;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
-use macrocosmo::galaxy::{Anomalies, Planet, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
+use macrocosmo::galaxy::{
+    Anomalies, Planet, Sovereignty, StarSystem, SystemAttributes, SystemModifiers,
+};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
-use macrocosmo::condition::ScopedFlags;
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
+use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::ship::*;
+use macrocosmo::species;
 use macrocosmo::technology::{self, TechKnowledge};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
@@ -27,8 +29,8 @@ use macrocosmo::visualization;
 /// to work. Real (Lua) buildings primarily grant job slots; see
 /// `scripts/buildings/basic.lua`.
 pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
-    use macrocosmo::scripting::building_api::{BuildingDefinition, CapabilityParams};
     use macrocosmo::modifier::ParsedModifier;
+    use macrocosmo::scripting::building_api::{BuildingDefinition, CapabilityParams};
     use std::collections::HashMap;
     let pm = |target: &str, base_add: f64| ParsedModifier {
         target: target.to_string(),
@@ -38,82 +40,140 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
     };
     let mut registry = macrocosmo::colony::BuildingRegistry::default();
     registry.insert(BuildingDefinition {
-        id: "mine".into(), name: "Mine".into(), description: String::new(),
-        minerals_cost: Amt::units(150), energy_cost: Amt::units(50), build_time: 10,
+        id: "mine".into(),
+        name: "Mine".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(150),
+        energy_cost: Amt::units(50),
+        build_time: 10,
         maintenance: Amt::new(0, 200),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
         modifiers: vec![pm("colony.minerals_per_hexadies", 3.0)],
-        is_system_building: false, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        is_system_building: false,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
         prerequisites: None,
     });
     registry.insert(BuildingDefinition {
-        id: "power_plant".into(), name: "PowerPlant".into(), description: String::new(),
-        minerals_cost: Amt::units(50), energy_cost: Amt::units(150), build_time: 10,
+        id: "power_plant".into(),
+        name: "PowerPlant".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(50),
+        energy_cost: Amt::units(150),
+        build_time: 10,
         maintenance: Amt::ZERO,
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
         modifiers: vec![pm("colony.energy_per_hexadies", 3.0)],
-        is_system_building: false, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        is_system_building: false,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
         prerequisites: None,
     });
     registry.insert(BuildingDefinition {
-        id: "research_lab".into(), name: "ResearchLab".into(), description: String::new(),
-        minerals_cost: Amt::units(100), energy_cost: Amt::units(100), build_time: 15,
+        id: "research_lab".into(),
+        name: "ResearchLab".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(100),
+        energy_cost: Amt::units(100),
+        build_time: 15,
         maintenance: Amt::new(0, 500),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
         modifiers: vec![pm("colony.research_per_hexadies", 2.0)],
-        is_system_building: true, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        is_system_building: true,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
         prerequisites: None,
     });
     let mut shipyard_caps = HashMap::new();
-    shipyard_caps.insert("shipyard".to_string(), CapabilityParams {
-        params: { let mut m = HashMap::new(); m.insert("concurrent_builds".to_string(), 1.0); m },
-    });
+    shipyard_caps.insert(
+        "shipyard".to_string(),
+        CapabilityParams {
+            params: {
+                let mut m = HashMap::new();
+                m.insert("concurrent_builds".to_string(), 1.0);
+                m
+            },
+        },
+    );
     registry.insert(BuildingDefinition {
-        id: "shipyard".into(), name: "Shipyard".into(), description: String::new(),
-        minerals_cost: Amt::units(300), energy_cost: Amt::units(200), build_time: 30,
+        id: "shipyard".into(),
+        name: "Shipyard".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(300),
+        energy_cost: Amt::units(200),
+        build_time: 30,
         maintenance: Amt::units(1),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
         modifiers: Vec::new(),
-        is_system_building: true, capabilities: shipyard_caps,
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        is_system_building: true,
+        capabilities: shipyard_caps,
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
         prerequisites: None,
     });
     let mut port_caps = HashMap::new();
-    port_caps.insert("port".to_string(), CapabilityParams {
-        params: {
-            let mut m = HashMap::new();
-            m.insert("ftl_range_bonus".to_string(), 10.0);
-            m.insert("travel_time_factor".to_string(), 0.8);
-            m
+    port_caps.insert(
+        "port".to_string(),
+        CapabilityParams {
+            params: {
+                let mut m = HashMap::new();
+                m.insert("ftl_range_bonus".to_string(), 10.0);
+                m.insert("travel_time_factor".to_string(), 0.8);
+                m
+            },
         },
-    });
+    );
     registry.insert(BuildingDefinition {
-        id: "port".into(), name: "Port".into(), description: String::new(),
-        minerals_cost: Amt::units(400), energy_cost: Amt::units(300), build_time: 40,
+        id: "port".into(),
+        name: "Port".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(400),
+        energy_cost: Amt::units(300),
+        build_time: 40,
         maintenance: Amt::new(0, 500),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
         modifiers: Vec::new(),
-        is_system_building: true, capabilities: port_caps,
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        is_system_building: true,
+        capabilities: port_caps,
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
         prerequisites: None,
     });
     registry.insert(BuildingDefinition {
-        id: "farm".into(), name: "Farm".into(), description: String::new(),
-        minerals_cost: Amt::units(100), energy_cost: Amt::units(50), build_time: 20,
+        id: "farm".into(),
+        name: "Farm".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(100),
+        energy_cost: Amt::units(50),
+        build_time: 20,
         maintenance: Amt::new(0, 300),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
         modifiers: vec![pm("colony.food_per_hexadies", 5.0)],
-        is_system_building: false, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        is_system_building: false,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
         prerequisites: None,
     });
     registry
@@ -161,7 +221,9 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
 ///
 /// Returns `(space_creature_faction, ancient_defense_faction)` entities.
 pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
-    use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState};
+    use macrocosmo::faction::{
+        FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState,
+    };
     use macrocosmo::galaxy::{HostilePresence, HostileType};
 
     // Find or create the player empire.
@@ -198,10 +260,26 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     // Seed default hostile relations: Neutral + -100 standing both directions.
     {
         let mut rel = world.resource_mut::<FactionRelations>();
-        rel.set(empire, space_creature, FactionView::new(RelationState::Neutral, -100.0));
-        rel.set(space_creature, empire, FactionView::new(RelationState::Neutral, -100.0));
-        rel.set(empire, ancient_defense, FactionView::new(RelationState::Neutral, -100.0));
-        rel.set(ancient_defense, empire, FactionView::new(RelationState::Neutral, -100.0));
+        rel.set(
+            empire,
+            space_creature,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        rel.set(
+            space_creature,
+            empire,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        rel.set(
+            empire,
+            ancient_defense,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        rel.set(
+            ancient_defense,
+            empire,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
     }
 
     // Attach FactionOwner to every existing HostilePresence based on hostile_type.
@@ -542,7 +620,10 @@ pub fn full_test_app() -> App {
         )
             .chain(),
     );
-    app.add_systems(Update, (update_sovereignty, apply_pending_colonization_orders));
+    app.add_systems(
+        Update,
+        (update_sovereignty, apply_pending_colonization_orders),
+    );
 
     // --- Knowledge system (from KnowledgePlugin) ---
     app.add_systems(Update, propagate_knowledge);
@@ -592,8 +673,7 @@ pub fn full_test_app() -> App {
     // it will early-return. Registered here for query-conflict detection.
     app.add_systems(
         Update,
-        technology::apply_tech_effects
-            .after(technology::tick_research),
+        technology::apply_tech_effects.after(technology::tick_research),
     );
     app.add_systems(
         Update,
@@ -613,10 +693,7 @@ pub fn full_test_app() -> App {
             macrocosmo::events::auto_pause_on_event,
         ),
     );
-    app.add_systems(
-        Update,
-        macrocosmo::event_system::tick_events,
-    );
+    app.add_systems(Update, macrocosmo::event_system::tick_events);
 
     // --- Time systems (from GameTimePlugin) ---
     app.add_systems(
@@ -632,12 +709,7 @@ pub fn full_test_app() -> App {
     app.add_systems(Update, macrocosmo::player::update_player_location);
 
     // --- Visualization systems (excluding Gizmos-dependent ones) ---
-    app.add_systems(
-        Update,
-        (
-            visualization::camera_controls,
-        ),
-    );
+    app.add_systems(Update, (visualization::camera_controls,));
 
     // --- Faction systems (#171) ---
     app.add_systems(Update, macrocosmo::faction::tick_diplomatic_actions);
@@ -659,12 +731,10 @@ pub fn full_test_app() -> App {
 /// directly instead of using `advance_time`.
 pub fn advance_time(app: &mut App, hexadies: i64) {
     let needs_migration = {
-        let mut q = app
-            .world_mut()
-            .query_filtered::<Entity, (
-                With<macrocosmo::galaxy::HostilePresence>,
-                Without<macrocosmo::faction::FactionOwner>,
-            )>();
+        let mut q = app.world_mut().query_filtered::<Entity, (
+            With<macrocosmo::galaxy::HostilePresence>,
+            Without<macrocosmo::faction::FactionOwner>,
+        )>();
         q.iter(app.world()).next().is_some()
     };
     if needs_migration {
@@ -761,7 +831,8 @@ pub fn spawn_test_colony(
 
     // Separate buildings into planet and system buildings
     let mut planet_buildings = Vec::new();
-    let mut system_building_slots: Vec<Option<BuildingId>> = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
+    let mut system_building_slots: Vec<Option<BuildingId>> =
+        vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
     let mut sys_slot_idx = 0;
     for b in &buildings {
         if let Some(bid) = b {
@@ -795,7 +866,9 @@ pub fn spawn_test_colony(
     // Add SystemBuildings and SystemBuildingQueue to the StarSystem if not already present
     if world.get::<SystemBuildings>(system).is_none() {
         world.entity_mut(system).insert((
-            SystemBuildings { slots: system_building_slots },
+            SystemBuildings {
+                slots: system_building_slots,
+            },
             SystemBuildingQueue::default(),
         ));
     }
@@ -813,10 +886,10 @@ pub fn spawn_test_colony(
                 research_per_hexadies: ModifiedValue::new(Amt::units(1)),
                 food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
-            BuildQueue {
-                queue: Vec::new(),
+            BuildQueue::default(),
+            Buildings {
+                slots: planet_buildings,
             },
-            Buildings { slots: planet_buildings },
             BuildingQueue::default(),
             ProductionFocus::default(),
             MaintenanceCost::default(),
@@ -845,7 +918,9 @@ pub fn find_planet(world: &mut World, system: Entity) -> Entity {
 /// Find the player empire entity in the world.
 pub fn empire_entity(world: &mut World) -> Entity {
     let mut query = world.query_filtered::<Entity, With<PlayerEmpire>>();
-    query.single(world).expect("No player empire found in test world")
+    query
+        .single(world)
+        .expect("No player empire found in test world")
 }
 
 /// #236: Test fixture builders for hull + module registries that mirror the
@@ -854,44 +929,119 @@ pub fn empire_entity(world: &mut World) -> Entity {
 pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
     use macrocosmo::ship_design::{HullDefinition, HullRegistry, HullSlot, ModuleModifier};
     let mut hulls = HullRegistry::default();
-    let slot = |t: &str, c: u32| HullSlot { slot_type: t.to_string(), count: c };
+    let slot = |t: &str, c: u32| HullSlot {
+        slot_type: t.to_string(),
+        count: c,
+    };
     hulls.insert(HullDefinition {
-        id: "corvette".into(), name: "Corvette".into(), description: String::new(),
-        base_hp: 50.0, base_speed: 0.75, base_evasion: 30.0,
-        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("weapon", 2), slot("defense", 1), slot("utility", 1), slot("power", 1)],
-        build_cost_minerals: Amt::units(200), build_cost_energy: Amt::units(100),
-        build_time: 60, maintenance: Amt::new(0, 500),
-        modifiers: vec![], prerequisites: None,
+        id: "corvette".into(),
+        name: "Corvette".into(),
+        description: String::new(),
+        base_hp: 50.0,
+        base_speed: 0.75,
+        base_evasion: 30.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot("weapon", 2),
+            slot("defense", 1),
+            slot("utility", 1),
+            slot("power", 1),
+        ],
+        build_cost_minerals: Amt::units(200),
+        build_cost_energy: Amt::units(100),
+        build_time: 60,
+        maintenance: Amt::new(0, 500),
+        modifiers: vec![],
+        prerequisites: None,
     });
     hulls.insert(HullDefinition {
-        id: "frigate".into(), name: "Frigate".into(), description: String::new(),
-        base_hp: 120.0, base_speed: 0.5, base_evasion: 15.0,
-        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("weapon", 3), slot("defense", 2), slot("utility", 2), slot("power", 1), slot("command", 1)],
-        build_cost_minerals: Amt::units(400), build_cost_energy: Amt::units(200),
-        build_time: 120, maintenance: Amt::units(1),
-        modifiers: vec![], prerequisites: None,
+        id: "frigate".into(),
+        name: "Frigate".into(),
+        description: String::new(),
+        base_hp: 120.0,
+        base_speed: 0.5,
+        base_evasion: 15.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot("weapon", 3),
+            slot("defense", 2),
+            slot("utility", 2),
+            slot("power", 1),
+            slot("command", 1),
+        ],
+        build_cost_minerals: Amt::units(400),
+        build_cost_energy: Amt::units(200),
+        build_time: 120,
+        maintenance: Amt::units(1),
+        modifiers: vec![],
+        prerequisites: None,
     });
     hulls.insert(HullDefinition {
-        id: "scout_hull".into(), name: "Scout Hull".into(), description: String::new(),
-        base_hp: 40.0, base_speed: 0.85, base_evasion: 35.0,
-        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("utility", 2), slot("weapon", 1), slot("power", 1)],
-        build_cost_minerals: Amt::units(150), build_cost_energy: Amt::units(80),
-        build_time: 45, maintenance: Amt::new(0, 400),
+        id: "scout_hull".into(),
+        name: "Scout Hull".into(),
+        description: String::new(),
+        base_hp: 40.0,
+        base_speed: 0.85,
+        base_evasion: 35.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot("utility", 2),
+            slot("weapon", 1),
+            slot("power", 1),
+        ],
+        build_cost_minerals: Amt::units(150),
+        build_cost_energy: Amt::units(80),
+        build_time: 45,
+        maintenance: Amt::new(0, 400),
         modifiers: vec![
-            ModuleModifier { target: "ship.survey_speed".into(), base_add: 0.0, multiplier: 1.3, add: 0.0 },
-            ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 1.15, add: 0.0 },
+            ModuleModifier {
+                target: "ship.survey_speed".into(),
+                base_add: 0.0,
+                multiplier: 1.3,
+                add: 0.0,
+            },
+            ModuleModifier {
+                target: "ship.speed".into(),
+                base_add: 0.0,
+                multiplier: 1.15,
+                add: 0.0,
+            },
         ],
         prerequisites: None,
     });
     hulls.insert(HullDefinition {
-        id: "courier_hull".into(), name: "Courier Hull".into(), description: String::new(),
-        base_hp: 35.0, base_speed: 0.80, base_evasion: 25.0,
-        slots: vec![slot("ftl", 1), slot("sublight", 1), slot("utility", 2), slot("power", 1)],
-        build_cost_minerals: Amt::units(100), build_cost_energy: Amt::units(50),
-        build_time: 30, maintenance: Amt::new(0, 300),
+        id: "courier_hull".into(),
+        name: "Courier Hull".into(),
+        description: String::new(),
+        base_hp: 35.0,
+        base_speed: 0.80,
+        base_evasion: 25.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot("utility", 2),
+            slot("power", 1),
+        ],
+        build_cost_minerals: Amt::units(100),
+        build_cost_energy: Amt::units(50),
+        build_time: 30,
+        maintenance: Amt::new(0, 300),
         modifiers: vec![
-            ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 0.0, multiplier: 1.5, add: 0.0 },
-            ModuleModifier { target: "ship.ftl_range".into(), base_add: 0.0, multiplier: 1.2, add: 0.0 },
+            ModuleModifier {
+                target: "ship.cargo_capacity".into(),
+                base_add: 0.0,
+                multiplier: 1.5,
+                add: 0.0,
+            },
+            ModuleModifier {
+                target: "ship.ftl_range".into(),
+                base_add: 0.0,
+                multiplier: 1.2,
+                add: 0.0,
+            },
         ],
         prerequisites: None,
     });
@@ -899,42 +1049,92 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
 }
 
 pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry {
-    use macrocosmo::ship_design::{ModuleDefinition, ModuleRegistry, ModuleModifier};
+    use macrocosmo::ship_design::{ModuleDefinition, ModuleModifier, ModuleRegistry};
     let mut modules = ModuleRegistry::default();
     modules.insert(ModuleDefinition {
-        id: "ftl_drive".into(), name: "FTL Drive".into(), description: String::new(),
+        id: "ftl_drive".into(),
+        name: "FTL Drive".into(),
+        description: String::new(),
         slot_type: "ftl".into(),
-        modifiers: vec![ModuleModifier { target: "ship.ftl_range".into(), base_add: 15.0, multiplier: 0.0, add: 0.0 }],
-        weapon: None, cost_minerals: Amt::units(100), cost_energy: Amt::units(50),
-        prerequisites: None, upgrade_to: Vec::new(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.ftl_range".into(),
+            base_add: 15.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(100),
+        cost_energy: Amt::units(50),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
     });
     modules.insert(ModuleDefinition {
-        id: "afterburner".into(), name: "Afterburner".into(), description: String::new(),
+        id: "afterburner".into(),
+        name: "Afterburner".into(),
+        description: String::new(),
         slot_type: "sublight".into(),
-        modifiers: vec![ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 0.2, add: 0.0 }],
-        weapon: None, cost_minerals: Amt::units(60), cost_energy: Amt::units(40),
-        prerequisites: None, upgrade_to: Vec::new(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.speed".into(),
+            base_add: 0.0,
+            multiplier: 0.2,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(60),
+        cost_energy: Amt::units(40),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
     });
     modules.insert(ModuleDefinition {
-        id: "survey_equipment".into(), name: "Survey Equipment".into(), description: String::new(),
+        id: "survey_equipment".into(),
+        name: "Survey Equipment".into(),
+        description: String::new(),
         slot_type: "utility".into(),
-        modifiers: vec![ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 }],
-        weapon: None, cost_minerals: Amt::units(60), cost_energy: Amt::units(40),
-        prerequisites: None, upgrade_to: Vec::new(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.survey_speed".into(),
+            base_add: 1.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(60),
+        cost_energy: Amt::units(40),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
     });
     modules.insert(ModuleDefinition {
-        id: "colony_module".into(), name: "Colony Module".into(), description: String::new(),
+        id: "colony_module".into(),
+        name: "Colony Module".into(),
+        description: String::new(),
         slot_type: "utility".into(),
-        modifiers: vec![ModuleModifier { target: "ship.colonize_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 }],
-        weapon: None, cost_minerals: Amt::units(300), cost_energy: Amt::units(200),
-        prerequisites: None, upgrade_to: Vec::new(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.colonize_speed".into(),
+            base_add: 1.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(300),
+        cost_energy: Amt::units(200),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
     });
     modules.insert(ModuleDefinition {
-        id: "cargo_bay".into(), name: "Cargo Bay".into(), description: String::new(),
+        id: "cargo_bay".into(),
+        name: "Cargo Bay".into(),
+        description: String::new(),
         slot_type: "utility".into(),
-        modifiers: vec![ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 500.0, multiplier: 0.0, add: 0.0 }],
-        weapon: None, cost_minerals: Amt::units(30), cost_energy: Amt::ZERO,
-        prerequisites: None, upgrade_to: Vec::new(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.cargo_capacity".into(),
+            base_add: 500.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(30),
+        cost_energy: Amt::ZERO,
+        prerequisites: None,
+        upgrade_to: Vec::new(),
     });
     modules
 }
@@ -952,7 +1152,10 @@ fn build_derived_design(
     use macrocosmo::ship_design::{DesignSlotAssignment, ShipDesignDefinition};
     let assignments: Vec<DesignSlotAssignment> = module_assignments
         .iter()
-        .map(|(s, m)| DesignSlotAssignment { slot_type: s.to_string(), module_id: m.to_string() })
+        .map(|(s, m)| DesignSlotAssignment {
+            slot_type: s.to_string(),
+            module_id: m.to_string(),
+        })
         .collect();
     let mut def = ShipDesignDefinition {
         id: id.into(),
@@ -960,10 +1163,15 @@ fn build_derived_design(
         description: String::new(),
         hull_id: hull_id.into(),
         modules: assignments,
-        can_survey: false, can_colonize: false,
+        can_survey: false,
+        can_colonize: false,
         maintenance: Amt::ZERO,
-        build_cost_minerals: Amt::ZERO, build_cost_energy: Amt::ZERO,
-        build_time: 0, hp: 0.0, sublight_speed: 0.0, ftl_range: 0.0,
+        build_cost_minerals: Amt::ZERO,
+        build_cost_energy: Amt::ZERO,
+        build_time: 0,
+        hp: 0.0,
+        sublight_speed: 0.0,
+        ftl_range: 0.0,
         revision: 0,
     };
     macrocosmo::ship_design::apply_derived_to_definition(&mut def, hulls, modules);
@@ -980,24 +1188,40 @@ pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegis
     let mut registry = ShipDesignRegistry::default();
 
     registry.insert(build_derived_design(
-        "explorer_mk1", "Explorer Mk.I", "corvette",
+        "explorer_mk1",
+        "Explorer Mk.I",
+        "corvette",
         &[("ftl", "ftl_drive"), ("utility", "survey_equipment")],
-        &hulls, &modules,
+        &hulls,
+        &modules,
     ));
     registry.insert(build_derived_design(
-        "colony_ship_mk1", "Colony Ship Mk.I", "frigate",
+        "colony_ship_mk1",
+        "Colony Ship Mk.I",
+        "frigate",
         &[("ftl", "ftl_drive"), ("utility", "colony_module")],
-        &hulls, &modules,
+        &hulls,
+        &modules,
     ));
     registry.insert(build_derived_design(
-        "courier_mk1", "Courier Mk.I", "courier_hull",
-        &[("ftl", "ftl_drive"), ("sublight", "afterburner"), ("utility", "cargo_bay")],
-        &hulls, &modules,
+        "courier_mk1",
+        "Courier Mk.I",
+        "courier_hull",
+        &[
+            ("ftl", "ftl_drive"),
+            ("sublight", "afterburner"),
+            ("utility", "cargo_bay"),
+        ],
+        &hulls,
+        &modules,
     ));
     registry.insert(build_derived_design(
-        "scout_mk1", "Scout Mk.I", "scout_hull",
+        "scout_mk1",
+        "Scout Mk.I",
+        "scout_hull",
         &[("ftl", "ftl_drive"), ("utility", "survey_equipment")],
-        &hulls, &modules,
+        &hulls,
+        &modules,
     ));
     registry
 }
@@ -1011,7 +1235,9 @@ pub fn spawn_test_ship(
     pos: [f64; 3],
 ) -> Entity {
     let design_registry = create_test_design_registry();
-    let design = design_registry.get(design_id).expect(&format!("unknown test design: {}", design_id));
+    let design = design_registry
+        .get(design_id)
+        .expect(&format!("unknown test design: {}", design_id));
     let hull_hp = design.hp;
     world
         .spawn((

@@ -179,8 +179,10 @@ fn spawn_colony_with(
                 research_per_hexadies: ModifiedValue::new(Amt::ZERO),
                 food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
-            BuildQueue { queue: Vec::new() },
-            Buildings { slots: slot_entries },
+            BuildQueue::default(),
+            Buildings {
+                slots: slot_entries,
+            },
             BuildingQueue::default(),
             ProductionFocus::default(),
             MaintenanceCost::default(),
@@ -212,7 +214,14 @@ fn test_job_slot_computed_from_building_modifiers() {
     install_basic_jobs(&mut app);
     app.insert_resource(slot_based_building_registry());
 
-    let sys = spawn_test_system(app.world_mut(), "Test Sys", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Test Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
     let colony = spawn_colony_with(
         &mut app,
         sys,
@@ -225,12 +234,20 @@ fn test_job_slot_computed_from_building_modifiers() {
 
     let jobs = app.world().get::<ColonyJobs>(colony).unwrap();
     assert_eq!(
-        jobs.slots.iter().find(|s| s.job_id == "miner").unwrap().capacity,
+        jobs.slots
+            .iter()
+            .find(|s| s.job_id == "miner")
+            .unwrap()
+            .capacity,
         5,
         "mine should grant 5 miner slots"
     );
     assert_eq!(
-        jobs.slots.iter().find(|s| s.job_id == "farmer").unwrap().capacity,
+        jobs.slots
+            .iter()
+            .find(|s| s.job_id == "farmer")
+            .unwrap()
+            .capacity,
         5,
         "farm should grant 5 farmer slots"
     );
@@ -242,14 +259,15 @@ fn test_pop_assigned_to_slots_contributes_production() {
     install_basic_jobs(&mut app);
     app.insert_resource(slot_based_building_registry());
 
-    let sys = spawn_test_system(app.world_mut(), "Prod Sys", [0.0, 0.0, 0.0], 1.0, true, true);
-    let _colony = spawn_colony_with(
-        &mut app,
-        sys,
-        5,
-        vec!["mine"],
-        vec![("miner", 0)],
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Prod Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
     );
+    let _colony = spawn_colony_with(&mut app, sys, 5, vec!["mine"], vec![("miner", 0)]);
     advance_time(&mut app, 1);
 
     // 5 miners × 0.6 = 3.0 minerals/hexady, minus 1 hexady already elapsed.
@@ -270,7 +288,14 @@ fn test_unemployed_pop_does_not_produce() {
     install_basic_jobs(&mut app);
     app.insert_resource(slot_based_building_registry());
 
-    let sys = spawn_test_system(app.world_mut(), "Idle Sys", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Idle Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
     // Pop=5 but no buildings → 0 slots → 0 assigned → 0 production.
     let _colony = spawn_colony_with(&mut app, sys, 5, vec![], vec![("miner", 0)]);
 
@@ -308,13 +333,7 @@ fn test_species_scoped_modifier_applies_only_to_assigned_job() {
     app.insert_resource(species);
 
     let sys = spawn_test_system(app.world_mut(), "Spc Sys", [0.0, 0.0, 0.0], 1.0, true, true);
-    let _colony = spawn_colony_with(
-        &mut app,
-        sys,
-        5,
-        vec!["mine"],
-        vec![("miner", 0)],
-    );
+    let _colony = spawn_colony_with(&mut app, sys, 5, vec!["mine"], vec![("miner", 0)]);
 
     advance_time(&mut app, 1);
 
@@ -338,7 +357,14 @@ fn test_automated_building_produces_without_pop() {
     // Leave the default `test_app` fixture registry in place (mine/farm push
     // directly into colony.<X>_per_hexadies).
 
-    let sys = spawn_test_system(app.world_mut(), "Auto Sys", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Auto Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
     // Zero pops — automation path should still produce.
     let _colony = spawn_colony_with(&mut app, sys, 0, vec!["mine"], vec![]);
 
@@ -358,7 +384,14 @@ fn test_building_demolition_clears_slots() {
     install_basic_jobs(&mut app);
     app.insert_resource(slot_based_building_registry());
 
-    let sys = spawn_test_system(app.world_mut(), "Demo Sys", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Demo Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
     let colony = spawn_colony_with(
         &mut app,
         sys,
@@ -432,7 +465,14 @@ fn test_target_prefix_routes_to_job_bucket() {
     });
     app.insert_resource(registry);
 
-    let sys = spawn_test_system(app.world_mut(), "Route Sys", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Route Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
     let _colony = spawn_colony_with(&mut app, sys, 5, vec!["mine"], vec![("miner", 0)]);
 
     advance_time(&mut app, 1);
@@ -451,8 +491,8 @@ fn test_target_prefix_routes_to_job_bucket() {
 fn test_auto_prefix_in_define_job() {
     // `define_job { modifiers = { { target = "colony.X", ... } } }` gets its
     // target auto-prefixed to `job:<self_id>::colony.X` at parse time.
-    use macrocosmo::scripting::species_api::parse_job_definitions;
     use macrocosmo::scripting::ScriptEngine;
+    use macrocosmo::scripting::species_api::parse_job_definitions;
 
     let engine = ScriptEngine::new().unwrap();
     engine
@@ -476,10 +516,18 @@ fn test_auto_prefix_in_define_job() {
     assert_eq!(defs.len(), 1);
     let trader = &defs[0];
     assert_eq!(trader.modifiers.len(), 2);
-    assert!(trader.modifiers.iter().any(|m| m.target
-        == "job:trader::colony.minerals_per_hexadies"));
-    assert!(trader.modifiers.iter().any(|m| m.target
-        == "job:trader::colony.energy_per_hexadies"));
+    assert!(
+        trader
+            .modifiers
+            .iter()
+            .any(|m| m.target == "job:trader::colony.minerals_per_hexadies")
+    );
+    assert!(
+        trader
+            .modifiers
+            .iter()
+            .any(|m| m.target == "job:trader::colony.energy_per_hexadies")
+    );
 }
 
 #[test]
@@ -500,14 +548,15 @@ fn test_tech_effect_increases_slot_count() {
     install_basic_jobs(&mut app);
     app.insert_resource(slot_based_building_registry());
 
-    let sys = spawn_test_system(app.world_mut(), "Tech Sys", [0.0, 0.0, 0.0], 1.0, true, true);
-    let colony = spawn_colony_with(
-        &mut app,
-        sys,
-        10,
-        vec!["mine"],
-        vec![("miner", 0)],
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Tech Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
     );
+    let colony = spawn_colony_with(&mut app, sys, 10, vec!["mine"], vec![("miner", 0)]);
     advance_time(&mut app, 1);
 
     // Baseline: mine gives miner_slot = 5.
@@ -527,7 +576,11 @@ fn test_tech_effect_increases_slot_count() {
     // into ColonyJobRates, slot-count tech effects go through the same
     // BuildingRegistry path used by upgrades).
     let _ = colony; // slot modification via direct Buildings mutation:
-    app.world_mut().get_mut::<Buildings>(colony).unwrap().slots.push(Some(BuildingId::new("mine")));
+    app.world_mut()
+        .get_mut::<Buildings>(colony)
+        .unwrap()
+        .slots
+        .push(Some(BuildingId::new("mine")));
     advance_time(&mut app, 1);
 
     let miner_cap = app
@@ -597,7 +650,7 @@ fn spawn_capital_like_colony(
                 research_per_hexadies: ModifiedValue::new(Amt::ZERO),
                 food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
-            BuildQueue { queue: Vec::new() },
+            BuildQueue::default(),
             Buildings {
                 slots: buildings
                     .into_iter()
@@ -626,7 +679,14 @@ fn test_issue_250_capital_production_reflects_buildings_and_jobs() {
     install_basic_jobs(&mut app);
     app.insert_resource(slot_based_building_registry());
 
-    let sys = spawn_test_system(app.world_mut(), "Issue250", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Issue250",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
     app.world_mut().entity_mut(sys).insert((
         ResourceStockpile {
             minerals: Amt::ZERO,
@@ -679,7 +739,14 @@ fn test_issue_250_aggregator_runs_while_paused() {
     install_basic_jobs(&mut app);
     app.insert_resource(slot_based_building_registry());
 
-    let sys = spawn_test_system(app.world_mut(), "PausedProd", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "PausedProd",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
     app.world_mut().entity_mut(sys).insert((
         ResourceStockpile {
             minerals: Amt::ZERO,
@@ -728,8 +795,8 @@ fn test_issue_250_aggregator_runs_while_paused() {
 
 #[test]
 fn test_issue_250_lua_building_modifiers_parse_correctly() {
-    use macrocosmo::scripting::building_api::parse_building_definitions;
     use macrocosmo::scripting::ScriptEngine;
+    use macrocosmo::scripting::building_api::parse_building_definitions;
 
     let engine = ScriptEngine::new().expect("ScriptEngine::new()");
     let init = engine.scripts_dir().join("init.lua");
@@ -739,11 +806,15 @@ fn test_issue_250_lua_building_modifiers_parse_correctly() {
     let ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
     eprintln!("[issue #250] building ids: {ids:?}");
 
-    let mine = defs.iter().find(|d| d.id == "mine").expect("mine not defined");
+    let mine = defs
+        .iter()
+        .find(|d| d.id == "mine")
+        .expect("mine not defined");
     eprintln!("[issue #250] mine.modifiers = {:?}", mine.modifiers);
     assert!(
-        mine.modifiers.iter().any(|m| m.target == "colony.miner_slot"
-            && (m.base_add - 5.0).abs() < 1e-9),
+        mine.modifiers
+            .iter()
+            .any(|m| m.target == "colony.miner_slot" && (m.base_add - 5.0).abs() < 1e-9),
         "mine should declare modifier colony.miner_slot base_add=5; got {:?}",
         mine.modifiers
     );
@@ -757,17 +828,20 @@ fn test_issue_250_lua_building_modifiers_parse_correctly() {
         power
             .modifiers
             .iter()
-            .any(|m| m.target == "colony.power_worker_slot"
-                && (m.base_add - 5.0).abs() < 1e-9),
+            .any(|m| m.target == "colony.power_worker_slot" && (m.base_add - 5.0).abs() < 1e-9),
         "power_plant should declare modifier colony.power_worker_slot base_add=5; got {:?}",
         power.modifiers
     );
 
-    let farm = defs.iter().find(|d| d.id == "farm").expect("farm not defined");
+    let farm = defs
+        .iter()
+        .find(|d| d.id == "farm")
+        .expect("farm not defined");
     eprintln!("[issue #250] farm.modifiers = {:?}", farm.modifiers);
     assert!(
-        farm.modifiers.iter().any(|m| m.target == "colony.farmer_slot"
-            && (m.base_add - 5.0).abs() < 1e-9),
+        farm.modifiers
+            .iter()
+            .any(|m| m.target == "colony.farmer_slot" && (m.base_add - 5.0).abs() < 1e-9),
         "farm should declare modifier colony.farmer_slot base_add=5; got {:?}",
         farm.modifiers
     );
@@ -775,8 +849,8 @@ fn test_issue_250_lua_building_modifiers_parse_correctly() {
 
 #[test]
 fn test_issue_250_lua_job_modifiers_parse_correctly() {
-    use macrocosmo::scripting::species_api::parse_job_definitions;
     use macrocosmo::scripting::ScriptEngine;
+    use macrocosmo::scripting::species_api::parse_job_definitions;
 
     let engine = ScriptEngine::new().expect("ScriptEngine::new()");
     let init = engine.scripts_dir().join("init.lua");
@@ -807,11 +881,9 @@ fn test_issue_250_lua_job_modifiers_parse_correctly() {
         power_worker.modifiers
     );
     assert!(
-        power_worker
-            .modifiers
-            .iter()
-            .any(|m| m.target == "job:power_worker::colony.energy_per_hexadies"
-                && (m.base_add - 6.0).abs() < 1e-9),
+        power_worker.modifiers.iter().any(|m| m.target
+            == "job:power_worker::colony.energy_per_hexadies"
+            && (m.base_add - 6.0).abs() < 1e-9),
         "power_worker per-pop rate should be 6.0; got {:?}",
         power_worker.modifiers
     );

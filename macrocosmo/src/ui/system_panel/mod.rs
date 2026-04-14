@@ -4,16 +4,20 @@ mod planet_window;
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DeliverableStockpile, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
+use crate::amount::Amt;
+use crate::colony::{
+    BuildOrder, BuildQueue, BuildingQueue, Buildings, ColonizationQueue, Colony,
+    ConstructionParams, DeliverableStockpile, FoodConsumption, MaintenanceCost, Production,
+    ResourceCapacity, ResourceStockpile, SystemBuildingQueue, SystemBuildings,
+};
+use crate::components::Position;
 use crate::condition::{EvalContext, ScopeData};
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry};
-use crate::scripting::building_api::{BuildingId, BuildingRegistry};
-use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes, habitability_label, is_colonizable};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
-use crate::amount::Amt;
+use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
@@ -120,15 +124,28 @@ pub fn draw_system_panel(
         Option<&crate::species::ColonyJobs>,
         Option<&crate::colony::ColonyJobRates>,
     )>,
-    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    system_stockpiles: &mut Query<
+        (&mut ResourceStockpile, Option<&ResourceCapacity>),
+        With<StarSystem>,
+    >,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     positions: &Query<&Position>,
     knowledge: &KnowledgeStore,
     clock: &GameClock,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
-    system_buildings_q: &mut Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>,
+    system_buildings_q: &mut Query<(
+        Option<&mut SystemBuildings>,
+        Option<&mut SystemBuildingQueue>,
+    )>,
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
@@ -163,7 +180,11 @@ pub fn draw_system_panel(
     // #176: Determine if this is the player's local system
     let player_system = player_q.iter().next().map(|(_, s, _)| s.system);
     let is_local_system = player_system == Some(sel_entity);
-    let k_data = if is_local_system { None } else { knowledge.get(sel_entity) };
+    let k_data = if is_local_system {
+        None
+    } else {
+        knowledge.get(sel_entity)
+    };
 
     // Collect planets in this system with attributes for map rendering
     let colonized_planets: std::collections::HashSet<Entity> = colonies
@@ -178,18 +199,26 @@ pub fn draw_system_panel(
         if planet.system == sel_entity {
             let is_colonized = colonized_planets.contains(&planet_entity);
             let hab = attrs.map(|a| a.habitability);
-            system_planets.push((planet_entity, planet.name.clone(), planet.planet_type.clone(), is_colonized, hab));
+            system_planets.push((
+                planet_entity,
+                planet.name.clone(),
+                planet.planet_type.clone(),
+                is_colonized,
+                hab,
+            ));
         }
     }
     system_planets.sort_by(|a, b| a.1.cmp(&b.1));
 
     // Auto-select planet: if no planet selected or selected planet not in this system,
     // pick first colonized planet, or first planet
-    let current_planet_valid = selected_planet.0
+    let current_planet_valid = selected_planet
+        .0
         .map(|pe| system_planets.iter().any(|(e, _, _, _, _)| *e == pe))
         .unwrap_or(false);
     if !current_planet_valid {
-        selected_planet.0 = system_planets.iter()
+        selected_planet.0 = system_planets
+            .iter()
             .find(|(_, _, _, colonized, _)| *colonized)
             .or(system_planets.first())
             .map(|(e, _, _, _, _)| *e);
@@ -206,79 +235,84 @@ pub fn draw_system_panel(
     let docked_ships = ships_docked_at(sel_entity, ships_query);
     // #229: Is the currently-selected ship docked at this system? Enables
     // the "Load" button on DeliverableStockpile rows.
-    let selected_ship_docked_here: Option<Entity> =
-        selected_ship.0.filter(|e| docked_ships.iter().any(|(se, _, _)| se == e));
+    let selected_ship_docked_here: Option<Entity> = selected_ship
+        .0
+        .filter(|e| docked_ships.iter().any(|(se, _, _)| se == e));
 
     // Collect system stockpile info for display
-    let stockpile_info: Option<(Amt, Amt, Amt, Amt)> = system_stockpiles.get(sel_entity).ok()
+    let stockpile_info: Option<(Amt, Amt, Amt, Amt)> = system_stockpiles
+        .get(sel_entity)
+        .ok()
         .map(|(s, _)| (s.minerals, s.energy, s.food, s.authority));
 
     let screen = ctx.screen_rect();
     let mut close_system_view = false;
 
     // Full-screen window with three-column layout
-    egui::Window::new(format!("{} ({})", star.name, format_star_type(&star.star_type)))
-        .id(egui::Id::new("system_detail_view"))
-        .fixed_pos(egui::pos2(0.0, 28.0))
-        .fixed_size(egui::vec2(screen.width(), screen.height() - 28.0))
-        .title_bar(false)
-        .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(10, 10, 20)))
-        .show(ctx, |ui| {
-            // === Top bar with system name and close button ===
-            ui.horizontal(|ui| {
-                if ui.button("\u{2190} Back to Galaxy").clicked() {
-                    close_system_view = true;
+    egui::Window::new(format!(
+        "{} ({})",
+        star.name,
+        format_star_type(&star.star_type)
+    ))
+    .id(egui::Id::new("system_detail_view"))
+    .fixed_pos(egui::pos2(0.0, 28.0))
+    .fixed_size(egui::vec2(screen.width(), screen.height() - 28.0))
+    .title_bar(false)
+    .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(10, 10, 20)))
+    .show(ctx, |ui| {
+        // === Top bar with system name and close button ===
+        ui.horizontal(|ui| {
+            if ui.button("\u{2190} Back to Galaxy").clicked() {
+                close_system_view = true;
+            }
+            ui.separator();
+            ui.label(
+                egui::RichText::new(&star.name)
+                    .heading()
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 220, 255)),
+            );
+            ui.label(
+                egui::RichText::new(format!("({})", format_star_type(&star.star_type)))
+                    .color(egui::Color32::from_rgb(160, 160, 200)),
+            );
+
+            if let Ok((_, stationed, _)) = player_q.single() {
+                if let Ok(player_pos) = positions.get(stationed.system) {
+                    let dist = physics::distance_ly(player_pos, star_pos);
+                    let delay_sd = physics::light_delay_hexadies(dist);
+                    ui.separator();
+                    ui.label(format!("{:.1} ly | {} hd delay", dist, delay_sd));
                 }
+            }
+
+            if effective_surveyed {
                 ui.separator();
                 ui.label(
-                    egui::RichText::new(&star.name)
-                        .heading()
-                        .strong()
-                        .color(egui::Color32::from_rgb(220, 220, 255)),
+                    egui::RichText::new("Surveyed").color(egui::Color32::from_rgb(100, 200, 100)),
                 );
+            } else {
+                ui.separator();
                 ui.label(
-                    egui::RichText::new(format!("({})", format_star_type(&star.star_type)))
-                        .color(egui::Color32::from_rgb(160, 160, 200)),
+                    egui::RichText::new("Unsurveyed").color(egui::Color32::from_rgb(200, 150, 100)),
                 );
+            }
+        });
+        ui.separator();
 
-                if let Ok((_, stationed, _)) = player_q.single() {
-                    if let Ok(player_pos) = positions.get(stationed.system) {
-                        let dist = physics::distance_ly(player_pos, star_pos);
-                        let delay_sd = physics::light_delay_hexadies(dist);
-                        ui.separator();
-                        ui.label(format!("{:.1} ly | {} hd delay", dist, delay_sd));
-                    }
-                }
+        // === Three-column layout ===
+        let available_width = ui.available_width();
+        let available_height = ui.available_height();
+        let left_width = (available_width * 0.22).clamp(180.0, 320.0);
+        let right_width = (available_width * 0.25).clamp(200.0, 380.0);
+        let center_width = (available_width - left_width - right_width - 16.0).max(200.0);
 
-                if effective_surveyed {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new("Surveyed")
-                            .color(egui::Color32::from_rgb(100, 200, 100)),
-                    );
-                } else {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new("Unsurveyed")
-                            .color(egui::Color32::from_rgb(200, 150, 100)),
-                    );
-                }
-            });
-            ui.separator();
-
-            // === Three-column layout ===
-            let available_width = ui.available_width();
-            let available_height = ui.available_height();
-            let left_width = (available_width * 0.22).clamp(180.0, 320.0);
-            let right_width = (available_width * 0.25).clamp(200.0, 380.0);
-            let center_width = (available_width - left_width - right_width - 16.0).max(200.0);
-
-            ui.horizontal_top(|ui| {
-                // === LEFT PANEL: System info ===
-                ui.allocate_ui_with_layout(
-                    egui::vec2(left_width, available_height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
+        ui.horizontal_top(|ui| {
+            // === LEFT PANEL: System info ===
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_width, available_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
                     egui::Frame::NONE
                         .fill(egui::Color32::from_rgb(15, 15, 28))
                         .inner_margin(6.0)
@@ -310,13 +344,14 @@ pub fn draw_system_panel(
                                     );
                                 });
                         });
-                });
+                },
+            );
 
-                // === CENTER: System map ===
-                ui.allocate_ui_with_layout(
-                    egui::vec2(center_width, available_height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
+            // === CENTER: System map ===
+            ui.allocate_ui_with_layout(
+                egui::vec2(center_width, available_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
                     egui::Frame::NONE
                         .fill(egui::Color32::from_rgb(6, 6, 14))
                         .inner_margin(4.0)
@@ -331,13 +366,14 @@ pub fn draw_system_panel(
                                 design_registry,
                             );
                         });
-                });
+                },
+            );
 
-                // === RIGHT PANEL: Actions ===
-                ui.allocate_ui_with_layout(
-                    egui::vec2(right_width, available_height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
+            // === RIGHT PANEL: Actions ===
+            ui.allocate_ui_with_layout(
+                egui::vec2(right_width, available_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
                     egui::Frame::NONE
                         .fill(egui::Color32::from_rgb(15, 15, 28))
                         .inner_margin(6.0)
@@ -375,9 +411,10 @@ pub fn draw_system_panel(
                                     );
                                 });
                         });
-                });
-            });
+                },
+            );
         });
+    });
 
     if close_system_view {
         selected_system.0 = None;
@@ -436,7 +473,11 @@ fn draw_left_panel(
     system_actions_out: &mut SystemPanelActions,
 ) {
     // --- Survey & Distance ---
-    ui.label(egui::RichText::new("System Info").strong().color(egui::Color32::from_rgb(180, 180, 220)));
+    ui.label(
+        egui::RichText::new("System Info")
+            .strong()
+            .color(egui::Color32::from_rgb(180, 180, 220)),
+    );
     ui.separator();
 
     if let Ok((_, stationed, _)) = player_q.single() {
@@ -453,7 +494,9 @@ fn draw_left_panel(
         ui.label("Approximate position only. Survey required.");
     }
 
-    if let Some(perceived) = crate::knowledge::perceived_system(knowledge, sel_entity, clock.elapsed) {
+    if let Some(perceived) =
+        crate::knowledge::perceived_system(knowledge, sel_entity, clock.elapsed)
+    {
         let age = perceived.age(clock.elapsed);
         let years = age as f64 / HEXADIES_PER_YEAR as f64;
         let freshness = if age < 60 {
@@ -479,7 +522,11 @@ fn draw_left_panel(
     // --- Resource stockpile ---
     if let Some((minerals, energy, food, authority)) = stockpile_info {
         ui.separator();
-        ui.label(egui::RichText::new("System Stockpile").strong().color(egui::Color32::from_rgb(180, 180, 220)));
+        ui.label(
+            egui::RichText::new("System Stockpile")
+                .strong()
+                .color(egui::Color32::from_rgb(180, 180, 220)),
+        );
         ui.label(format!("Minerals: {}", minerals.display_compact()));
         ui.label(format!("Energy:   {}", energy.display_compact()));
         ui.label(format!("Food:     {}", food.display_compact()));
@@ -503,20 +550,17 @@ fn draw_left_panel(
                     ui.label(format!("  #{}: {}", i, item.definition_id()));
                     if let Some(ship_e) = selected_ship_docked_here {
                         if ui.small_button("Load").clicked() {
-                            system_actions_out.load_deliverable =
-                                Some((ship_e, sel_entity, i));
+                            system_actions_out.load_deliverable = Some((ship_e, sel_entity, i));
                         }
                     }
                 });
             }
             if selected_ship_docked_here.is_none() {
                 ui.label(
-                    egui::RichText::new(
-                        "(Select a ship docked here to Load a deliverable.)",
-                    )
-                    .small()
-                    .italics()
-                    .weak(),
+                    egui::RichText::new("(Select a ship docked here to Load a deliverable.)")
+                        .small()
+                        .italics()
+                        .weak(),
                 );
             }
         }
@@ -527,23 +571,39 @@ fn draw_left_panel(
         if let Some(k) = k_data {
             let snap = &k.data;
             ui.separator();
-            ui.label(egui::RichText::new("Remote Intelligence").strong()
-                .color(egui::Color32::from_rgb(200, 180, 100)));
+            ui.label(
+                egui::RichText::new("Remote Intelligence")
+                    .strong()
+                    .color(egui::Color32::from_rgb(200, 180, 100)),
+            );
             ui.label(egui::RichText::new("(light-speed delayed)").weak().small());
             if snap.colonized {
-                ui.label(format!("M {} | E {} | F {} | A {}",
-                    snap.minerals.display_compact(), snap.energy.display_compact(),
-                    snap.food.display_compact(), snap.authority.display_compact()));
-                if snap.production_minerals > Amt::ZERO || snap.production_energy > Amt::ZERO
-                    || snap.production_food > Amt::ZERO || snap.production_research > Amt::ZERO
+                ui.label(format!(
+                    "M {} | E {} | F {} | A {}",
+                    snap.minerals.display_compact(),
+                    snap.energy.display_compact(),
+                    snap.food.display_compact(),
+                    snap.authority.display_compact()
+                ));
+                if snap.production_minerals > Amt::ZERO
+                    || snap.production_energy > Amt::ZERO
+                    || snap.production_food > Amt::ZERO
+                    || snap.production_research > Amt::ZERO
                 {
                     ui.label(egui::RichText::new("Production/hd:").strong());
-                    ui.label(format!("M {} | E {} | F {} | R {}",
-                        snap.production_minerals.display_compact(), snap.production_energy.display_compact(),
-                        snap.production_food.display_compact(), snap.production_research.display_compact()));
+                    ui.label(format!(
+                        "M {} | E {} | F {} | R {}",
+                        snap.production_minerals.display_compact(),
+                        snap.production_energy.display_compact(),
+                        snap.production_food.display_compact(),
+                        snap.production_research.display_compact()
+                    ));
                 }
                 if snap.maintenance_energy > Amt::ZERO {
-                    ui.label(format!("Maintenance: E {}/hd", snap.maintenance_energy.display_compact()));
+                    ui.label(format!(
+                        "Maintenance: E {}/hd",
+                        snap.maintenance_energy.display_compact()
+                    ));
                 }
             }
             if snap.has_hostile {
@@ -583,8 +643,11 @@ fn draw_left_panel(
             }
         } else if !star.is_capital {
             ui.separator();
-            ui.label(egui::RichText::new("No intelligence available for this system.")
-                .weak().italics());
+            ui.label(
+                egui::RichText::new("No intelligence available for this system.")
+                    .weak()
+                    .italics(),
+            );
         }
     }
 
@@ -592,12 +655,23 @@ fn draw_left_panel(
     if let Ok(anomalies) = anomalies_q.get(sel_entity) {
         if !anomalies.discoveries.is_empty() {
             ui.separator();
-            ui.label(egui::RichText::new(format!("Anomalies ({})", anomalies.discoveries.len())).strong());
+            ui.label(
+                egui::RichText::new(format!("Anomalies ({})", anomalies.discoveries.len()))
+                    .strong(),
+            );
             for anomaly in &anomalies.discoveries {
-                let discovered_yr = anomaly.discovered_at as f64 / crate::time_system::HEXADIES_PER_YEAR as f64;
+                let discovered_yr =
+                    anomaly.discovered_at as f64 / crate::time_system::HEXADIES_PER_YEAR as f64;
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&anomaly.name).color(egui::Color32::from_rgb(200, 180, 100)));
-                    ui.label(egui::RichText::new(format!("(t={:.1}yr)", discovered_yr)).weak().small());
+                    ui.label(
+                        egui::RichText::new(&anomaly.name)
+                            .color(egui::Color32::from_rgb(200, 180, 100)),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("(t={:.1}yr)", discovered_yr))
+                            .weak()
+                            .small(),
+                    );
                 });
                 ui.label(egui::RichText::new(&anomaly.description).weak().small());
             }
@@ -607,7 +681,11 @@ fn draw_left_panel(
     // --- Planet list ---
     if !system_planets.is_empty() {
         ui.separator();
-        ui.label(egui::RichText::new("Planets").strong().color(egui::Color32::from_rgb(180, 180, 220)));
+        ui.label(
+            egui::RichText::new("Planets")
+                .strong()
+                .color(egui::Color32::from_rgb(180, 180, 220)),
+        );
         for (planet_entity, name, planet_type, is_colonized, hab) in system_planets {
             let is_selected = selected_planet.0 == Some(*planet_entity);
             let label_text = format!(
@@ -641,7 +719,10 @@ fn draw_right_panel(
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
-    system_buildings_q: &mut Query<(Option<&mut SystemBuildings>, Option<&mut SystemBuildingQueue>)>,
+    system_buildings_q: &mut Query<(
+        Option<&mut SystemBuildings>,
+        Option<&mut SystemBuildingQueue>,
+    )>,
     construction_params: &ConstructionParams,
     building_registry: &BuildingRegistry,
     colonized_planets: &std::collections::HashSet<Entity>,
@@ -676,14 +757,21 @@ fn draw_right_panel(
     draw_in_flight_commands_section(ui, sel_entity, remote_commands, clock_elapsed);
 
     // === Docked Ships ===
-    ui.label(egui::RichText::new("Docked Ships").strong().color(egui::Color32::from_rgb(180, 180, 220)));
+    ui.label(
+        egui::RichText::new("Docked Ships")
+            .strong()
+            .color(egui::Color32::from_rgb(180, 180, 220)),
+    );
     ui.separator();
     if docked_ships.is_empty() {
         ui.label(egui::RichText::new("No ships docked").weak().italics());
     } else {
         for (entity, name, design_id) in docked_ships {
             let is_selected = selected_ship.0 == Some(*entity);
-            let design_name = design_registry.get(design_id).map(|d| d.name.as_str()).unwrap_or(design_id);
+            let design_name = design_registry
+                .get(design_id)
+                .map(|d| d.name.as_str())
+                .unwrap_or(design_id);
             let label = format!(
                 "{} ({}){}",
                 name,
@@ -699,28 +787,38 @@ fn draw_right_panel(
     // === System Buildings ===
     if let Ok((Some(sys_bldgs), sys_bldg_queue)) = system_buildings_q.get_mut(sel_entity) {
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("System Buildings").strong().color(egui::Color32::from_rgb(180, 180, 220)));
+        ui.label(
+            egui::RichText::new("System Buildings")
+                .strong()
+                .color(egui::Color32::from_rgb(180, 180, 220)),
+        );
         ui.separator();
 
         let mut sys_demolish_request: Option<(usize, BuildingId)> = None;
         let mut sys_upgrade_request: Option<(usize, String, Amt, Amt, i64)> = None;
+        // #275: Cancel requests for system-level build / demo / upgrade orders.
+        let mut sys_cancel_request: Option<u64> = None;
         let sys_bldg_cost_mod = construction_params.building_cost_modifier.final_value();
-        let sys_bldg_time_mod = construction_params.building_build_time_modifier.final_value();
+        let sys_bldg_time_mod = construction_params
+            .building_build_time_modifier
+            .final_value();
 
         // #260: Collect pending system-building construction orders so empty
         // slots can show their in-progress target + progress bar. Mirrors the
         // planet-side logic in `colony_detail::draw_colony_detail`. Kept inline
         // (no shared helper yet) to minimise churn — see issue for the
         // follow-up on extracting a common row renderer.
-        let sys_pending_orders: Vec<(usize, String, f32)> = sys_bldg_queue
+        // #275: `order_id` tagged along so the cancel button can dispatch.
+        let sys_pending_orders: Vec<(usize, String, f32, u64)> = sys_bldg_queue
             .as_ref()
             .map(|bq| {
                 bq.queue
                     .iter()
                     .map(|order| {
                         let def = building_registry.get(order.building_id.as_str());
-                        let (total_m, total_e) =
-                            def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                        let (total_m, total_e) = def
+                            .map(|d| d.build_cost())
+                            .unwrap_or((Amt::ZERO, Amt::ZERO));
                         let m_pct = if total_m.raw() > 0 {
                             1.0 - (order.minerals_remaining.raw() as f32 / total_m.raw() as f32)
                         } else {
@@ -741,7 +839,7 @@ fn draw_right_panel(
                         let name = def
                             .map(|d| d.name.clone())
                             .unwrap_or_else(|| order.building_id.0.clone());
-                        (order.target_slot, name, pct)
+                        (order.target_slot, name, pct, order.order_id)
                     })
                     .collect()
             })
@@ -759,72 +857,105 @@ fn draw_right_panel(
 
             match slot {
                 Some(bid) if is_demolishing => {
-                    let remaining = sys_bldg_queue
+                    let (remaining, demo_order_id) = sys_bldg_queue
                         .as_ref()
-                        .and_then(|bq| bq.demolition_time_remaining(i))
-                        .unwrap_or(0);
-                    let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
-                    ui.label(format!(
-                        "[{}] {} — Demolishing ({} hd)",
-                        i, name, remaining
-                    ));
+                        .and_then(|bq| {
+                            bq.demolition_queue
+                                .iter()
+                                .find(|d| d.target_slot == i)
+                                .map(|d| (d.time_remaining, d.order_id))
+                        })
+                        .unwrap_or((0, 0));
+                    let name = building_registry
+                        .get(bid.as_str())
+                        .map(|d| d.name.as_str())
+                        .unwrap_or(bid.as_str());
+                    ui.horizontal(|ui| {
+                        ui.label(format!("[{}] {} — Demolishing ({} hd)", i, name, remaining));
+                        // #275: Cancel the in-progress demolition.
+                        if ui
+                            .small_button("×")
+                            .on_hover_text("Cancel demolition")
+                            .clicked()
+                        {
+                            sys_cancel_request = Some(demo_order_id);
+                        }
+                    });
                 }
                 Some(bid) if is_upgrading => {
-                    let upgrade_info = sys_bldg_queue
-                        .as_ref()
-                        .and_then(|bq| bq.upgrade_info(i));
-                    let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                    let upgrade_info = sys_bldg_queue.as_ref().and_then(|bq| bq.upgrade_info(i));
+                    let name = building_registry
+                        .get(bid.as_str())
+                        .map(|d| d.name.as_str())
+                        .unwrap_or(bid.as_str());
                     let target_name = upgrade_info
                         .and_then(|u| building_registry.get(u.target_id.as_str()))
                         .map(|d| d.name.as_str())
                         .unwrap_or("?");
                     let remaining = upgrade_info.map(|u| u.build_time_remaining).unwrap_or(0);
-                    ui.label(format!(
-                        "[{}] {} -> {} ({} hd)",
-                        i, name, target_name, remaining
-                    ));
+                    let upgrade_order_id = upgrade_info.map(|u| u.order_id).unwrap_or(0);
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "[{}] {} -> {} ({} hd)",
+                            i, name, target_name, remaining
+                        ));
+                        // #275: Cancel the in-progress upgrade.
+                        if ui
+                            .small_button("×")
+                            .on_hover_text("Cancel upgrade")
+                            .clicked()
+                        {
+                            sys_cancel_request = Some(upgrade_order_id);
+                        }
+                    });
                 }
                 Some(bid) => {
                     let def = building_registry.get(bid.as_str());
                     let name = def.map(|d| d.name.as_str()).unwrap_or(bid.as_str());
-                    let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                    let (m_refund, e_refund) = def
+                        .map(|d| d.demolition_refund())
+                        .unwrap_or((Amt::ZERO, Amt::ZERO));
                     let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                     ui.horizontal(|ui| {
                         ui.label(format!("[{}] {}", i, name));
                         let tooltip = format!(
                             "Demolish: {} hd | Refund M:{} E:{}",
-                            demo_time, m_refund.display_compact(), e_refund.display_compact()
+                            demo_time,
+                            m_refund.display_compact(),
+                            e_refund.display_compact()
                         );
                         // #260: `"Demolish"` matches the planet-side label so
                         // the button is discoverable. The previous `"X"` was
                         // effectively hidden.
-                        if ui
-                            .small_button("Demolish")
-                            .on_hover_text(tooltip)
-                            .clicked()
-                        {
+                        if ui.small_button("Demolish").on_hover_text(tooltip).clicked() {
                             sys_demolish_request = Some((i, bid.clone()));
                         }
                         if let Some(src_def) = def {
                             for up in &src_def.upgrade_to {
                                 let target_def = building_registry.get(&up.target_id);
-                                let target_name = target_def.map(|d| d.name.as_str()).unwrap_or(&up.target_id);
+                                let target_name =
+                                    target_def.map(|d| d.name.as_str()).unwrap_or(&up.target_id);
                                 let eff_m = up.cost_minerals.mul_amt(sys_bldg_cost_mod);
                                 let eff_e = up.cost_energy.mul_amt(sys_bldg_cost_mod);
                                 let base_time = up.build_time.unwrap_or_else(|| {
                                     target_def.map(|d| d.build_time / 2).unwrap_or(5)
                                 });
-                                let eff_time = (base_time as f64 * sys_bldg_time_mod.to_f64()).ceil() as i64;
+                                let eff_time =
+                                    (base_time as f64 * sys_bldg_time_mod.to_f64()).ceil() as i64;
                                 let tooltip = format!(
                                     "Upgrade to {} (M:{} E:{} | {} hd)",
-                                    target_name, eff_m.display_compact(), eff_e.display_compact(), eff_time
+                                    target_name,
+                                    eff_m.display_compact(),
+                                    eff_e.display_compact(),
+                                    eff_time
                                 );
                                 if ui
                                     .small_button(format!("-> {}", target_name))
                                     .on_hover_text(tooltip)
                                     .clicked()
                                 {
-                                    sys_upgrade_request = Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
+                                    sys_upgrade_request =
+                                        Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
                                 }
                             }
                         }
@@ -835,13 +966,21 @@ fn draw_right_panel(
                     // way `colony_detail` does for planet buildings. Without
                     // this the player has no feedback after queueing a
                     // shipyard/port — the slot stays blank until completion.
-                    if let Some((_, name, pct)) =
-                        sys_pending_orders.iter().find(|(s, _, _)| *s == i)
+                    if let Some((_, name, pct, order_id)) =
+                        sys_pending_orders.iter().find(|(s, _, _, _)| *s == i)
                     {
                         ui.horizontal(|ui| {
                             ui.label(format!("[{}] (Building: {})", i, name));
                             let bar = egui::ProgressBar::new(*pct).desired_width(80.0);
                             ui.add(bar);
+                            // #275: Cancel an in-progress system construction.
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("Cancel construction")
+                                .clicked()
+                            {
+                                sys_cancel_request = Some(*order_id);
+                            }
                         });
                     } else {
                         ui.label(format!("[{}] (empty)", i));
@@ -851,31 +990,46 @@ fn draw_right_panel(
         }
 
         if let Some((slot_idx, _bid)) = sys_demolish_request {
-            dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                target_system: sel_entity,
-                command: crate::communication::RemoteCommand::Colony(
-                    crate::communication::ColonyCommand {
-                        scope: crate::communication::BuildingScope::System,
-                        kind: crate::communication::BuildingKind::Demolish {
-                            target_slot: slot_idx,
+            dispatches
+                .queue
+                .push(crate::communication::PendingColonyDispatch {
+                    target_system: sel_entity,
+                    command: crate::communication::RemoteCommand::Colony(
+                        crate::communication::ColonyCommand {
+                            scope: crate::communication::BuildingScope::System,
+                            kind: crate::communication::BuildingKind::Demolish {
+                                target_slot: slot_idx,
+                            },
                         },
-                    },
-                ),
-            });
+                    ),
+                });
         }
         if let Some((slot_idx, target_id, _, _, _)) = sys_upgrade_request {
-            dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                target_system: sel_entity,
-                command: crate::communication::RemoteCommand::Colony(
-                    crate::communication::ColonyCommand {
-                        scope: crate::communication::BuildingScope::System,
-                        kind: crate::communication::BuildingKind::Upgrade {
-                            slot_index: slot_idx,
-                            target_id,
+            dispatches
+                .queue
+                .push(crate::communication::PendingColonyDispatch {
+                    target_system: sel_entity,
+                    command: crate::communication::RemoteCommand::Colony(
+                        crate::communication::ColonyCommand {
+                            scope: crate::communication::BuildingScope::System,
+                            kind: crate::communication::BuildingKind::Upgrade {
+                                slot_index: slot_idx,
+                                target_id,
+                            },
                         },
-                    },
-                ),
-            });
+                    ),
+                });
+        }
+        // #275: Dispatch a system-level cancel. `CancelBuildingOrder`
+        // does not need explicit scope — the arrival handler searches
+        // both planet and system queues by id.
+        if let Some(order_id) = sys_cancel_request {
+            dispatches
+                .queue
+                .push(crate::communication::PendingColonyDispatch {
+                    target_system: sel_entity,
+                    command: crate::communication::RemoteCommand::CancelBuildingOrder { order_id },
+                });
         }
 
         // Build system building buttons
@@ -894,31 +1048,40 @@ fn draw_right_panel(
                 ui.label(egui::RichText::new("Build System Building").strong());
                 let system_building_defs = building_registry.system_buildings();
                 let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
-                let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
+                let bldg_time_mod = construction_params
+                    .building_build_time_modifier
+                    .final_value();
                 let mut build_sys_building_request: Option<BuildingId> = None;
                 for def in &system_building_defs {
                     let (base_m, base_e) = def.build_cost();
                     let eff_m = base_m.mul_amt(bldg_cost_mod);
                     let eff_e = base_e.mul_amt(bldg_cost_mod);
                     let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                    let tooltip = format!("M:{} E:{} | {} hexadies", eff_m.display_compact(), eff_e.display_compact(), eff_time);
+                    let tooltip = format!(
+                        "M:{} E:{} | {} hexadies",
+                        eff_m.display_compact(),
+                        eff_e.display_compact(),
+                        eff_time
+                    );
                     if ui.button(&def.name).on_hover_text(tooltip).clicked() {
                         build_sys_building_request = Some(BuildingId::new(&def.id));
                     }
                 }
                 if let Some(bid) = build_sys_building_request {
-                    dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                        target_system: sel_entity,
-                        command: crate::communication::RemoteCommand::Colony(
-                            crate::communication::ColonyCommand {
-                                scope: crate::communication::BuildingScope::System,
-                                kind: crate::communication::BuildingKind::Queue {
-                                    building_id: bid.0,
-                                    target_slot: slot_idx,
+                    dispatches
+                        .queue
+                        .push(crate::communication::PendingColonyDispatch {
+                            target_system: sel_entity,
+                            command: crate::communication::RemoteCommand::Colony(
+                                crate::communication::ColonyCommand {
+                                    scope: crate::communication::BuildingScope::System,
+                                    kind: crate::communication::BuildingKind::Queue {
+                                        building_id: bid.0,
+                                        target_slot: slot_idx,
+                                    },
                                 },
-                            },
-                        ),
-                    });
+                            ),
+                        });
                 }
             }
         }
@@ -937,8 +1100,11 @@ fn draw_right_panel(
         // Also remember the first colony entity, which we will use as the host for
         // newly enqueued ship orders (BuildQueue is per-colony but ship construction
         // is gated by system-level shipyard).
+        // #275: Each snapshot carries (host_colony_entity, order_id) so the
+        // cancel button can dispatch `CancelShipOrder { host_colony, order_id }`.
         let mut host_colony: Option<Entity> = None;
-        let mut queue_snapshots: Vec<(String, Amt, Amt, Amt, Amt, i64, i64)> = Vec::new();
+        let mut queue_snapshots: Vec<(String, Amt, Amt, Amt, Amt, i64, i64, Entity, u64)> =
+            Vec::new();
         for (colony_entity, colony, _prod, build_queue, _b, _bq, _m, _f) in colonies.iter() {
             if colony.system(planets) != Some(sel_entity) {
                 continue;
@@ -956,6 +1122,8 @@ fn draw_right_panel(
                         order.energy_cost,
                         order.build_time_remaining,
                         order.build_time_total,
+                        colony_entity,
+                        order.order_id,
                     ));
                 }
             }
@@ -984,10 +1152,14 @@ fn draw_right_panel(
 
         // --- Build Queue (combined across colonies in this system) ---
         ui.label(egui::RichText::new("Build Queue").strong());
+        // #275: Cancel request for a ship / deliverable build order.
+        let mut ship_cancel_request: Option<(Entity, u64)> = None;
         if queue_snapshots.is_empty() {
             ui.label("[empty]");
         } else {
-            for (name, m_inv, m_cost, e_inv, e_cost, time_rem, time_total) in &queue_snapshots {
+            for (name, m_inv, m_cost, e_inv, e_cost, time_rem, time_total, host, order_id) in
+                &queue_snapshots
+            {
                 let m_pct = if m_cost.raw() > 0 {
                     (m_inv.raw() as f32 / m_cost.raw() as f32).min(1.0)
                 } else {
@@ -1011,10 +1183,33 @@ fn draw_right_panel(
                     if m_pct < 1.0 || e_pct < 1.0 {
                         ui.label(egui::RichText::new("(awaiting resources)").weak().small());
                     } else if time_pct < 1.0 {
-                        ui.label(egui::RichText::new(format!("{} hd", time_rem)).weak().small());
+                        ui.label(
+                            egui::RichText::new(format!("{} hd", time_rem))
+                                .weak()
+                                .small(),
+                        );
+                    }
+                    // #275: Cancel this ship / deliverable build order.
+                    if ui
+                        .small_button("×")
+                        .on_hover_text("Cancel build order")
+                        .clicked()
+                    {
+                        ship_cancel_request = Some((*host, *order_id));
                     }
                 });
             }
+        }
+        if let Some((host, order_id)) = ship_cancel_request {
+            dispatches
+                .queue
+                .push(crate::communication::PendingColonyDispatch {
+                    target_system: sel_entity,
+                    command: crate::communication::RemoteCommand::CancelShipOrder {
+                        host_colony: host,
+                        order_id,
+                    },
+                });
         }
 
         // --- Build buttons (only if a shipyard is present and a host colony exists) ---
@@ -1030,57 +1225,63 @@ fn draw_right_panel(
                     egui::ScrollArea::horizontal()
                         .id_salt("system_panel_build_ship")
                         .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for design_id in &design_ids {
-                                let design = &design_registry.designs[design_id];
-                                let hull = hull_registry.get(&design.hull_id);
-                                let (base_m, base_e, base_time) = if let Some(hull) = hull {
-                                    let mods: Vec<_> = design
-                                        .modules
-                                        .iter()
-                                        .filter_map(|a| module_registry.get(&a.module_id))
-                                        .collect();
-                                    let (m, e, t, _maint) =
-                                        crate::ship_design::design_cost(hull, &mods);
-                                    (m, e, t)
-                                } else {
-                                    (
-                                        design.build_cost_minerals,
-                                        design.build_cost_energy,
-                                        design.build_time,
-                                    )
-                                };
-                                let eff_m = base_m.mul_amt(ship_mod);
-                                let eff_e = base_e.mul_amt(ship_mod);
-                                let eff_time =
-                                    (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
-                                let tooltip =
-                                    format!("M:{} E:{} | {} hd", eff_m.display_compact(), eff_e.display_compact(), eff_time);
-                                if ui.button(&design.name).on_hover_text(tooltip).clicked() {
-                                    build_request = Some((
-                                        design_id.clone(),
-                                        design.name.clone(),
-                                        eff_m,
-                                        eff_e,
-                                        eff_time,
-                                    ));
+                            ui.horizontal(|ui| {
+                                for design_id in &design_ids {
+                                    let design = &design_registry.designs[design_id];
+                                    let hull = hull_registry.get(&design.hull_id);
+                                    let (base_m, base_e, base_time) = if let Some(hull) = hull {
+                                        let mods: Vec<_> = design
+                                            .modules
+                                            .iter()
+                                            .filter_map(|a| module_registry.get(&a.module_id))
+                                            .collect();
+                                        let (m, e, t, _maint) =
+                                            crate::ship_design::design_cost(hull, &mods);
+                                        (m, e, t)
+                                    } else {
+                                        (
+                                            design.build_cost_minerals,
+                                            design.build_cost_energy,
+                                            design.build_time,
+                                        )
+                                    };
+                                    let eff_m = base_m.mul_amt(ship_mod);
+                                    let eff_e = base_e.mul_amt(ship_mod);
+                                    let eff_time =
+                                        (base_time as f64 * ship_time_mod.to_f64()).ceil() as i64;
+                                    let tooltip = format!(
+                                        "M:{} E:{} | {} hd",
+                                        eff_m.display_compact(),
+                                        eff_e.display_compact(),
+                                        eff_time
+                                    );
+                                    if ui.button(&design.name).on_hover_text(tooltip).clicked() {
+                                        build_request = Some((
+                                            design_id.clone(),
+                                            design.name.clone(),
+                                            eff_m,
+                                            eff_e,
+                                            eff_time,
+                                        ));
+                                    }
                                 }
-                            }
+                            });
                         });
-                    });
                 }
 
                 if let Some((design_id, _display_name, _minerals_cost, _energy_cost, _build_time)) =
                     build_request
                 {
-                    dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                        target_system: sel_entity,
-                        command: crate::communication::RemoteCommand::ShipBuild {
-                            host_colony: host,
-                            design_id,
-                            build_kind: crate::colony::BuildKind::Ship,
-                        },
-                    });
+                    dispatches
+                        .queue
+                        .push(crate::communication::PendingColonyDispatch {
+                            target_system: sel_entity,
+                            command: crate::communication::RemoteCommand::ShipBuild {
+                                host_colony: host,
+                                design_id,
+                                build_kind: crate::colony::BuildKind::Ship,
+                            },
+                        });
                 }
 
                 // #229: Deliverables — shipyard-buildable deep-space structures.
@@ -1090,10 +1291,8 @@ fn draw_right_panel(
                 // with `kind = BuildKind::Deliverable { cargo_size }` so the
                 // building_queue tick routes the completed item to the
                 // DeliverableStockpile instead of spawning a Ship entity.
-                let available = available_shipyard_deliverables(
-                    structure_registry,
-                    deliverable_avail,
-                );
+                let available =
+                    available_shipyard_deliverables(structure_registry, deliverable_avail);
                 if !available.is_empty() {
                     ui.separator();
                     ui.label(egui::RichText::new("Deliverables").strong());
@@ -1112,9 +1311,9 @@ fn draw_right_panel(
                                     };
                                     let eff_m = meta.cost.minerals.mul_amt(ship_mod);
                                     let eff_e = meta.cost.energy.mul_amt(ship_mod);
-                                    let eff_time = (meta.build_time as f64
-                                        * ship_time_mod.to_f64())
-                                    .ceil() as i64;
+                                    let eff_time = (meta.build_time as f64 * ship_time_mod.to_f64())
+                                        .ceil()
+                                        as i64;
                                     let tooltip = format!(
                                         "M:{} E:{} | {} hd | cargo {}",
                                         eff_m.display_compact(),
@@ -1139,18 +1338,20 @@ fn draw_right_panel(
                     if let Some((def_id, display_name, cargo_size, m_cost, e_cost, build_time)) =
                         deliverable_request
                     {
-                        dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                            target_system: sel_entity,
-                            command: crate::communication::RemoteCommand::DeliverableBuild {
-                                host_colony: host,
-                                def_id,
-                                display_name,
-                                cargo_size,
-                                minerals_cost: m_cost,
-                                energy_cost: e_cost,
-                                build_time,
-                            },
-                        });
+                        dispatches
+                            .queue
+                            .push(crate::communication::PendingColonyDispatch {
+                                target_system: sel_entity,
+                                command: crate::communication::RemoteCommand::DeliverableBuild {
+                                    host_colony: host,
+                                    def_id,
+                                    display_name,
+                                    cargo_size,
+                                    minerals_cost: m_cost,
+                                    energy_cost: e_cost,
+                                    build_time,
+                                },
+                            });
                     }
                 }
             }
@@ -1171,12 +1372,7 @@ fn draw_right_panel(
             if pos.distance_to(star_pos) > STRUCTURE_SYSTEM_RADIUS_LY {
                 continue;
             }
-            in_system.push((
-                entity,
-                ds.name.clone(),
-                platform.is_some(),
-                scrap.is_some(),
-            ));
+            in_system.push((entity, ds.name.clone(), platform.is_some(), scrap.is_some()));
         }
         if !in_system.is_empty() {
             ui.add_space(8.0);
@@ -1218,15 +1414,20 @@ fn draw_right_panel(
         for (pe, planet, attrs) in planet_entities.iter() {
             if planet.system == sel_entity
                 && !colonized_planets.contains(&pe)
-                && attrs.map(|a| {
-                    is_colonizable(a.habitability)
-                }).unwrap_or(false)
+                && attrs
+                    .map(|a| is_colonizable(a.habitability))
+                    .unwrap_or(false)
             {
-                let in_queue = colonization_queues.get(sel_entity)
+                let in_queue = colonization_queues
+                    .get(sel_entity)
                     .map(|cq| cq.orders.iter().any(|o| o.target_planet == pe))
                     .unwrap_or(false);
                 if !in_queue {
-                    colonizable.push((pe, planet.name.clone(), format_planet_type(&planet.planet_type)));
+                    colonizable.push((
+                        pe,
+                        planet.name.clone(),
+                        format_planet_type(&planet.planet_type),
+                    ));
                 }
             }
         }
@@ -1234,16 +1435,24 @@ fn draw_right_panel(
 
         if !colonizable.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Colonize Planet").strong().color(egui::Color32::from_rgb(180, 180, 220)));
+            ui.label(
+                egui::RichText::new("Colonize Planet")
+                    .strong()
+                    .color(egui::Color32::from_rgb(180, 180, 220)),
+            );
             ui.separator();
-            ui.label(egui::RichText::new(format!(
-                "Cost: {} M, {} E, {} hd",
-                crate::colony::COLONIZATION_MINERAL_COST,
-                crate::colony::COLONIZATION_ENERGY_COST,
-                crate::colony::COLONIZATION_BUILD_TIME,
-            )).small());
+            ui.label(
+                egui::RichText::new(format!(
+                    "Cost: {} M, {} E, {} hd",
+                    crate::colony::COLONIZATION_MINERAL_COST,
+                    crate::colony::COLONIZATION_ENERGY_COST,
+                    crate::colony::COLONIZATION_BUILD_TIME,
+                ))
+                .small(),
+            );
 
-            let source_colony: Option<Entity> = colonies.iter()
+            let source_colony: Option<Entity> = colonies
+                .iter()
                 .find(|(_, c, _, _, _, _, _, _)| {
                     c.system(planets) == Some(sel_entity)
                         && c.population > crate::colony::COLONIZATION_MIN_POPULATION
@@ -1253,7 +1462,10 @@ fn draw_right_panel(
             for (pe, name, ptype) in &colonizable {
                 let label = format!("{} ({})", name, ptype);
                 let enabled = source_colony.is_some();
-                if ui.add_enabled(enabled, egui::Button::new(format!("Colonize {}", label))).clicked() {
+                if ui
+                    .add_enabled(enabled, egui::Button::new(format!("Colonize {}", label)))
+                    .clicked()
+                {
                     if let Some(source) = source_colony {
                         colonization_actions_out.push(ColonizationAction {
                             system_entity: sel_entity,
@@ -1282,13 +1494,24 @@ fn draw_right_panel(
                 ui.separator();
                 ui.label(egui::RichText::new("Colonization In Progress").strong());
                 for order in &cq.orders {
-                    let planet_name = planets.get(order.target_planet)
+                    let planet_name = planets
+                        .get(order.target_planet)
                         .map(|p| p.name.as_str())
                         .unwrap_or("Unknown");
                     let total_time = crate::colony::COLONIZATION_BUILD_TIME;
                     let elapsed = total_time - order.build_time_remaining;
-                    let pct = if total_time > 0 { elapsed as f32 / total_time as f32 } else { 1.0 };
-                    ui.label(format!("{}: {}/{} hd ({:.0}%)", planet_name, elapsed, total_time, pct * 100.0));
+                    let pct = if total_time > 0 {
+                        elapsed as f32 / total_time as f32
+                    } else {
+                        1.0
+                    };
+                    ui.label(format!(
+                        "{}: {}/{} hd ({:.0}%)",
+                        planet_name,
+                        elapsed,
+                        total_time,
+                        pct * 100.0
+                    ));
                     let bar = egui::ProgressBar::new(pct);
                     ui.add(bar);
                 }
@@ -1311,10 +1534,8 @@ fn draw_system_map(
 ) {
     // Use the entire available area for the map
     let available = ui.available_size();
-    let (response, painter) = ui.allocate_painter(
-        egui::vec2(available.x, available.y),
-        egui::Sense::click(),
-    );
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(available.x, available.y), egui::Sense::click());
     let rect = response.rect;
     let center = rect.center();
 
@@ -1328,24 +1549,37 @@ fn draw_system_map(
         t if t.contains("white") => egui::Color32::from_rgb(240, 240, 255),
         t if t.contains("orange") => egui::Color32::from_rgb(255, 180, 80),
         t if t.contains("brown") || t.contains("dwarf") => egui::Color32::from_rgb(180, 120, 80),
-        t if t.contains("neutron") || t.contains("pulsar") => egui::Color32::from_rgb(200, 200, 255),
+        t if t.contains("neutron") || t.contains("pulsar") => {
+            egui::Color32::from_rgb(200, 200, 255)
+        }
         _ => egui::Color32::from_rgb(255, 220, 80), // Yellow default
     };
 
     // Draw star glow
     let star_radius = 20.0;
-    painter.circle_filled(center, star_radius + 8.0, egui::Color32::from_rgba_premultiplied(
-        star_color.r(), star_color.g(), star_color.b(), 30,
-    ));
-    painter.circle_filled(center, star_radius + 4.0, egui::Color32::from_rgba_premultiplied(
-        star_color.r(), star_color.g(), star_color.b(), 60,
-    ));
+    painter.circle_filled(
+        center,
+        star_radius + 8.0,
+        egui::Color32::from_rgba_premultiplied(star_color.r(), star_color.g(), star_color.b(), 30),
+    );
+    painter.circle_filled(
+        center,
+        star_radius + 4.0,
+        egui::Color32::from_rgba_premultiplied(star_color.r(), star_color.g(), star_color.b(), 60),
+    );
     painter.circle_filled(center, star_radius, star_color);
-    painter.circle_stroke(center, star_radius, egui::Stroke::new(1.0, egui::Color32::from_rgb(
-        (star_color.r() as u16 * 3 / 4) as u8,
-        (star_color.g() as u16 * 3 / 4) as u8,
-        (star_color.b() as u16 * 3 / 4) as u8,
-    )));
+    painter.circle_stroke(
+        center,
+        star_radius,
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(
+                (star_color.r() as u16 * 3 / 4) as u8,
+                (star_color.g() as u16 * 3 / 4) as u8,
+                (star_color.b() as u16 * 3 / 4) as u8,
+            ),
+        ),
+    );
 
     // Star label
     painter.text(
@@ -1366,7 +1600,9 @@ fn draw_system_map(
     };
 
     // Draw planets on orbital rings
-    for (i, (planet_entity, name, _planet_type, is_colonized, hab)) in system_planets.iter().enumerate() {
+    for (i, (planet_entity, name, _planet_type, is_colonized, hab)) in
+        system_planets.iter().enumerate()
+    {
         let orbit_r = 50.0 + (i as f32) * orbit_spacing;
 
         // Orbit ring
@@ -1400,8 +1636,16 @@ fn draw_system_map(
         // Selected planet highlight
         let is_selected = selected_planet.0 == Some(*planet_entity);
         if is_selected {
-            painter.circle_filled(planet_pos, planet_radius + 5.0, egui::Color32::from_rgba_premultiplied(255, 255, 100, 40));
-            painter.circle_stroke(planet_pos, planet_radius + 5.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 255, 100)));
+            painter.circle_filled(
+                planet_pos,
+                planet_radius + 5.0,
+                egui::Color32::from_rgba_premultiplied(255, 255, 100, 40),
+            );
+            painter.circle_stroke(
+                planet_pos,
+                planet_radius + 5.0,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 255, 100)),
+            );
         }
 
         // Planet body
@@ -1409,7 +1653,11 @@ fn draw_system_map(
 
         // Colonized indicator ring
         if *is_colonized {
-            painter.circle_stroke(planet_pos, planet_radius + 2.5, egui::Stroke::new(2.0, egui::Color32::from_rgb(50, 130, 255)));
+            painter.circle_stroke(
+                planet_pos,
+                planet_radius + 2.5,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(50, 130, 255)),
+            );
         }
 
         // Planet name label
@@ -1477,7 +1725,10 @@ fn draw_system_map(
             ));
 
             // Ship name
-            let design_name = design_registry.get(design_id).map(|d| d.name.as_str()).unwrap_or(design_id);
+            let design_name = design_registry
+                .get(design_id)
+                .map(|d| d.name.as_str())
+                .unwrap_or(design_id);
             painter.text(
                 egui::pos2(sx, sy + ship_size + 3.0),
                 egui::Align2::CENTER_TOP,
@@ -1628,8 +1879,7 @@ mod tests_229 {
             max_hp: 100.0,
             energy_drain: Amt::ZERO,
             capabilities: Default::default(),
-            prerequisites: prereq_tech
-                .map(|t| Condition::Atom(ConditionAtom::has_tech(t))),
+            prerequisites: prereq_tech.map(|t| Condition::Atom(ConditionAtom::has_tech(t))),
             deliverable: if shipyard_buildable {
                 Some(DeliverableMetadata {
                     cost: ResourceCost::default(),

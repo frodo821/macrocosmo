@@ -2,9 +2,9 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::colony::{
-    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption, MaintenanceCost, Production,
-    ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue, SystemBuildings,
-    DEFAULT_SYSTEM_BUILDING_SLOTS,
+    BuildQueue, BuildingQueue, Buildings, Colony, DEFAULT_SYSTEM_BUILDING_SLOTS, FoodConsumption,
+    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+    SystemBuildingQueue, SystemBuildings,
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
@@ -14,13 +14,13 @@ use crate::knowledge::KnowledgeStore;
 use crate::modifier::ModifiedValue;
 use crate::observer::{in_observer_mode, not_in_observer_mode};
 use crate::player::{Empire, Faction, PlayerEmpire};
+use crate::scripting::ScriptEngine;
 use crate::scripting::building_api::BuildingId;
-use crate::scripting::faction_api::{lookup_on_game_start, FactionRegistry};
+use crate::scripting::faction_api::{FactionRegistry, lookup_on_game_start};
 use crate::scripting::game_start_ctx::{
     GameStartActions, GameStartCtx, PlanetAttributesSpec, PlanetRef, SpawnedPlanetSpec,
 };
-use crate::scripting::ScriptEngine;
-use crate::ship::{spawn_ship, Owner};
+use crate::ship::{Owner, spawn_ship};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::technology::{
@@ -70,10 +70,8 @@ pub fn init_observer_view(
     if view.viewing.is_some() {
         return;
     }
-    let mut items: Vec<(Entity, String)> = empires
-        .iter()
-        .map(|(e, f)| (e, f.name.clone()))
-        .collect();
+    let mut items: Vec<(Entity, String)> =
+        empires.iter().map(|(e, f)| (e, f.name.clone())).collect();
     items.sort_by(|a, b| a.1.cmp(&b.1));
     if let Some((e, name)) = items.into_iter().next() {
         view.viewing = Some(e);
@@ -92,11 +90,7 @@ fn player_faction_id(world: &mut World) -> Option<String> {
 /// mirrors `crate::player::spawn_player_empire` so observer-mode empires are
 /// indistinguishable from the player empire (aside from the `PlayerEmpire`
 /// marker).
-fn empire_bundle(
-    name: String,
-    faction_id: String,
-    faction_name: String,
-) -> impl Bundle {
+fn empire_bundle(name: String, faction_id: String, faction_name: String) -> impl Bundle {
     (
         Empire { name },
         Faction {
@@ -144,9 +138,7 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
     // so we don't double-spawn.
     let existing_by_id: std::collections::HashMap<String, Entity> = {
         let mut q = world.query_filtered::<(Entity, &Faction), Without<Empire>>();
-        q.iter(world)
-            .map(|(e, f)| (f.id.clone(), e))
-            .collect()
+        q.iter(world).map(|(e, f)| (f.id.clone(), e)).collect()
     };
 
     for (faction_id, faction_name, has_callback) in &registry_ids {
@@ -156,8 +148,8 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
             // Leave passive factions (space_creature, ancient_defense) alone
             // — they're added by FactionRelationsPlugin and shouldn't be
             // promoted to full empires.
-            let is_passive = faction_id == "space_creature_faction"
-                || faction_id == "ancient_defense_faction";
+            let is_passive =
+                faction_id == "space_creature_faction" || faction_id == "ancient_defense_faction";
             if is_passive {
                 continue;
             }
@@ -178,7 +170,10 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
                 faction_id.clone(),
                 faction_name.clone(),
             ));
-            info!("Observer mode: spawned NPC Empire for faction '{}'", faction_id);
+            info!(
+                "Observer mode: spawned NPC Empire for faction '{}'",
+                faction_id
+            );
         }
 
         if *has_callback {
@@ -282,11 +277,7 @@ pub fn run_faction_on_game_start(world: &mut World) {
 
 /// Resolve a `PlanetRef` to a planet `Entity` using the existing-planets list and the
 /// freshly spawned-planets list. Returns `None` if the index is out of range.
-fn resolve_planet_ref(
-    pref: PlanetRef,
-    existing: &[Entity],
-    spawned: &[Entity],
-) -> Option<Entity> {
+fn resolve_planet_ref(pref: PlanetRef, existing: &[Entity], spawned: &[Entity]) -> Option<Entity> {
     match pref {
         PlanetRef::Existing(idx) => {
             if idx == 0 || idx > existing.len() {
@@ -356,7 +347,7 @@ fn spawn_colony_on_planet(world: &mut World, planet_entity: Entity, num_slots: u
                 research_per_hexadies: ModifiedValue::new(Amt::ZERO),
                 food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
-            BuildQueue { queue: Vec::new() },
+            BuildQueue::default(),
             Buildings {
                 slots: vec![None; num_slots],
             },
@@ -632,10 +623,8 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
             }
         };
         // Use SystemState to obtain a Commands queue from the world.
-        let mut state: bevy::ecs::system::SystemState<(
-            Commands,
-            Res<ShipDesignRegistry>,
-        )> = bevy::ecs::system::SystemState::new(world);
+        let mut state: bevy::ecs::system::SystemState<(Commands, Res<ShipDesignRegistry>)> =
+            bevy::ecs::system::SystemState::new(world);
         {
             let (mut commands, registry) = state.get_mut(world);
             for (design_id, name) in &actions.ships {
@@ -670,9 +659,9 @@ mod tests {
     use super::*;
     use crate::amount::Amt;
     use crate::colony::{
-        BuildQueue, BuildingQueue, Colony, FoodConsumption, MaintenanceCost, Production,
-        ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
-        DEFAULT_SYSTEM_BUILDING_SLOTS,
+        BuildQueue, BuildingQueue, Colony, DEFAULT_SYSTEM_BUILDING_SLOTS, FoodConsumption,
+        MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+        SystemBuildingQueue,
     };
     use crate::components::Position;
     use crate::condition::ScopedFlags;
@@ -751,7 +740,7 @@ mod tests {
                 research_per_hexadies: ModifiedValue::new(Amt::units(1)),
                 food_per_hexadies: ModifiedValue::new(Amt::units(5)),
             },
-            BuildQueue { queue: Vec::new() },
+            BuildQueue::default(),
             crate::colony::Buildings {
                 slots: vec![None; 5],
             },
@@ -871,8 +860,12 @@ mod tests {
         let (mut world, capital, _planet) = setup_world();
 
         let mut actions = GameStartActions::default();
-        actions.ships.push(("explorer_mk1".into(), "Explorer-1".into()));
-        actions.ships.push(("explorer_mk1".into(), "Explorer-2".into()));
+        actions
+            .ships
+            .push(("explorer_mk1".into(), "Explorer-1".into()));
+        actions
+            .ships
+            .push(("explorer_mk1".into(), "Explorer-2".into()));
 
         apply_game_start_actions(&mut world, "test_faction", actions);
 
@@ -1125,4 +1118,3 @@ mod tests {
         assert_eq!(sq.iter(&world).count(), 1);
     }
 }
-

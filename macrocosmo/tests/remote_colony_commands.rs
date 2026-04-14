@@ -688,6 +688,435 @@ fn arrival_marks_command_log_entry() {
 }
 
 // --------------------------------------------------------------------------
+// #275: Cancel commands — order_id based
+// --------------------------------------------------------------------------
+
+/// Helper that seeds a planet-level building order on a colony's
+/// BuildingQueue via the public `push_build_order` helper so the returned
+/// `order_id` matches what the cancel command will reference.
+fn seed_building_order(app: &mut App, colony: Entity) -> u64 {
+    use macrocosmo::colony::BuildingOrder;
+    let mut bq = app
+        .world_mut()
+        .get_mut::<BuildingQueue>(colony)
+        .expect("colony has BuildingQueue");
+    bq.push_build_order(BuildingOrder {
+        order_id: 0,
+        building_id: BuildingId::new("mine"),
+        target_slot: 1,
+        minerals_remaining: Amt::units(100),
+        energy_remaining: Amt::units(50),
+        build_time_remaining: 50,
+    })
+}
+
+/// #275 Phase 1: `BuildingQueue::push_build_order` auto-assigns ids so
+/// sequentially pushed orders get distinct ids starting at 1.
+#[test]
+fn push_order_assigns_unique_incrementing_ids() {
+    let mut app = build_app();
+    let (_sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "S", [0.0, 0.0, 0.0], 1.0, true);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    let id1 = seed_building_order(&mut app, colony);
+    let id2 = seed_building_order(&mut app, colony);
+    let id3 = seed_building_order(&mut app, colony);
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+    assert_eq!(id3, 3);
+    let bq = app.world().get::<BuildingQueue>(colony).unwrap();
+    assert_eq!(bq.queue[0].order_id, 1);
+    assert_eq!(bq.queue[1].order_id, 2);
+    assert_eq!(bq.queue[2].order_id, 3);
+    assert_eq!(bq.next_order_id, 4);
+}
+
+/// #275 Phase 2: `CancelBuildingOrder` at zero distance (local) applies
+/// the same frame it's dispatched — mirrors the Queue path.
+#[test]
+fn local_cancel_building_order_applies_same_frame() {
+    let mut app = build_app_with_dispatch();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    app.world_mut().spawn((Player, StationedAt { system: sys }));
+    let order_id = seed_building_order(&mut app, colony);
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: sys,
+            command: RemoteCommand::CancelBuildingOrder { order_id },
+        });
+
+    // Align LastProductionTick so delta=1 (no giant catch-up).
+    app.world_mut()
+        .resource_mut::<macrocosmo::colony::LastProductionTick>()
+        .0 = 0;
+    advance_time(&mut app, 1);
+
+    let bq = app.world().get::<BuildingQueue>(colony).unwrap();
+    assert!(
+        bq.queue.is_empty(),
+        "local cancel should remove the order same frame"
+    );
+}
+
+/// #275 Phase 2: remote cancel is delayed by light-speed. Order stays
+/// enqueued until arrival.
+#[test]
+fn remote_cancel_building_order_delayed() {
+    let mut app = build_app_with_dispatch();
+    let (home_sys, _home_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
+    let (target_sys, target_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let target_colony = spawn_test_colony(
+        app.world_mut(),
+        target_planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    app.world_mut()
+        .spawn((Player, StationedAt { system: home_sys }));
+    let order_id = seed_building_order(&mut app, target_colony);
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: target_sys,
+            command: RemoteCommand::CancelBuildingOrder { order_id },
+        });
+
+    advance_time(&mut app, 1);
+    // Order should still be present before light-delay elapses.
+    let bq = app.world().get::<BuildingQueue>(target_colony).unwrap();
+    assert_eq!(bq.queue.len(), 1, "cancel should not apply before arrival");
+
+    let arrives_at = 1 + macrocosmo::physics::light_delay_hexadies(10.0);
+    run_until_arrival(&mut app, arrives_at);
+
+    let bq = app.world().get::<BuildingQueue>(target_colony).unwrap();
+    assert!(
+        bq.queue.is_empty(),
+        "remote cancel should remove order once light delay elapses"
+    );
+}
+
+/// #275 Phase 2: Cancel against a non-existent order_id logs a warn but
+/// does not panic / affect unrelated orders. Simulates the race where
+/// the order completed (or was cancelled by a previous dispatch) during
+/// the light-speed trip.
+#[test]
+fn cancel_missing_order_is_noop_warn() {
+    let mut app = build_app();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    // Seed one real order whose id we will NOT cancel.
+    let _real = seed_building_order(&mut app, colony);
+
+    spawn_pending_remote_command(
+        &mut app,
+        sys,
+        0,
+        5,
+        RemoteCommand::CancelBuildingOrder { order_id: 9999 },
+    );
+
+    run_until_arrival(&mut app, 5);
+
+    let bq = app.world().get::<BuildingQueue>(colony).unwrap();
+    assert_eq!(
+        bq.queue.len(),
+        1,
+        "unrelated order must stay put when cancel misses"
+    );
+}
+
+/// #275 Phase 2 (regression): `CancelBuildingOrder` must not cross
+/// system boundaries. `order_id` counters are per-queue so the same
+/// numeric id can exist independently on different systems; a cancel
+/// dispatched for system A should only scan colonies in system A.
+#[test]
+fn cancel_scoped_to_target_system_does_not_affect_other_systems() {
+    let mut app = build_app();
+    let (sys_a, planet_a) =
+        spawn_test_system_with_planet(app.world_mut(), "A", [0.0, 0.0, 0.0], 1.0, true);
+    let (sys_b, planet_b) =
+        spawn_test_system_with_planet(app.world_mut(), "B", [20.0, 0.0, 0.0], 1.0, true);
+    let colony_a = spawn_test_colony(
+        app.world_mut(),
+        planet_a,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    let colony_b = spawn_test_colony(
+        app.world_mut(),
+        planet_b,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    // Seed one order on each colony. Both will get order_id=1 because
+    // each BuildingQueue has its own counter.
+    let id_a = seed_building_order(&mut app, colony_a);
+    let id_b = seed_building_order(&mut app, colony_b);
+    assert_eq!(id_a, id_b, "pre-condition: per-queue counters collide");
+
+    // Dispatch a cancel to system B for order_id=1. System A's order
+    // must stay put.
+    spawn_pending_remote_command(
+        &mut app,
+        sys_b,
+        0,
+        5,
+        RemoteCommand::CancelBuildingOrder { order_id: 1 },
+    );
+    run_until_arrival(&mut app, 5);
+
+    let bq_a = app.world().get::<BuildingQueue>(colony_a).unwrap();
+    let bq_b = app.world().get::<BuildingQueue>(colony_b).unwrap();
+    assert_eq!(
+        bq_a.queue.len(),
+        1,
+        "system A order must not be cancelled by a dispatch to system B"
+    );
+    assert!(
+        bq_b.queue.is_empty(),
+        "system B order should have been cancelled"
+    );
+    let _ = sys_a; // suppress unused
+}
+
+/// #275 Phase 2: `CancelBuildingOrder` also targets the system-level
+/// `SystemBuildingQueue` when the id lives there (scope derived at
+/// arrival, not at send time).
+#[test]
+fn cancel_system_level_order() {
+    let mut app = build_app();
+    let (sys, _planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    // spawn_test_colony attaches SystemBuildings/SystemBuildingQueue.
+    let _colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![],
+    );
+    use macrocosmo::colony::BuildingOrder;
+    let sys_order_id = {
+        let mut sbq = app.world_mut().get_mut::<SystemBuildingQueue>(sys).unwrap();
+        sbq.push_build_order(BuildingOrder {
+            order_id: 0,
+            building_id: BuildingId::new("shipyard"),
+            target_slot: 0,
+            minerals_remaining: Amt::units(200),
+            energy_remaining: Amt::units(100),
+            build_time_remaining: 30,
+        })
+    };
+
+    spawn_pending_remote_command(
+        &mut app,
+        sys,
+        0,
+        5,
+        RemoteCommand::CancelBuildingOrder {
+            order_id: sys_order_id,
+        },
+    );
+    run_until_arrival(&mut app, 5);
+
+    let sbq = app.world().get::<SystemBuildingQueue>(sys).unwrap();
+    assert!(
+        sbq.queue.is_empty(),
+        "system-level order should be cancelled"
+    );
+}
+
+/// #275 Phase 2: `CancelShipOrder { host_colony, order_id }` removes a
+/// pending ship BuildOrder from the specified colony's BuildQueue.
+#[test]
+fn cancel_ship_order_removes_from_host_colony_queue() {
+    let mut app = build_app();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(10_000),
+        Amt::units(10_000),
+        vec![],
+    );
+    // Seed a ship order and grab its id.
+    let ship_order_id = {
+        use macrocosmo::colony::BuildOrder;
+        let mut bq = app.world_mut().get_mut::<BuildQueue>(colony).unwrap();
+        bq.push_order(BuildOrder {
+            order_id: 0,
+            kind: BuildKind::Ship,
+            design_id: "explorer_mk1".to_string(),
+            display_name: "Explorer".to_string(),
+            minerals_cost: Amt::units(500),
+            minerals_invested: Amt::ZERO,
+            energy_cost: Amt::units(300),
+            energy_invested: Amt::ZERO,
+            build_time_total: 60,
+            build_time_remaining: 60,
+        })
+    };
+
+    spawn_pending_remote_command(
+        &mut app,
+        sys,
+        0,
+        5,
+        RemoteCommand::CancelShipOrder {
+            host_colony: colony,
+            order_id: ship_order_id,
+        },
+    );
+    run_until_arrival(&mut app, 5);
+
+    let bq = app.world().get::<BuildQueue>(colony).unwrap();
+    assert!(bq.queue.is_empty(), "ship order should be cancelled");
+}
+
+/// #275 Phase 2: Cancelling a ship order with an unknown id is a warn+
+/// noop — queue unchanged. Simulates the race where the order already
+/// completed (producing a Ship entity) before the cancel arrived.
+#[test]
+fn cancel_ship_order_with_missing_id_is_noop() {
+    let mut app = build_app();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(10_000),
+        Amt::units(10_000),
+        vec![],
+    );
+    // Seed a ship order whose id we will NOT cancel.
+    let _real = {
+        use macrocosmo::colony::BuildOrder;
+        let mut bq = app.world_mut().get_mut::<BuildQueue>(colony).unwrap();
+        bq.push_order(BuildOrder {
+            order_id: 0,
+            kind: BuildKind::Ship,
+            design_id: "explorer_mk1".to_string(),
+            display_name: "Explorer".to_string(),
+            minerals_cost: Amt::units(500),
+            minerals_invested: Amt::ZERO,
+            energy_cost: Amt::units(300),
+            energy_invested: Amt::ZERO,
+            build_time_total: 60,
+            build_time_remaining: 60,
+        })
+    };
+
+    spawn_pending_remote_command(
+        &mut app,
+        sys,
+        0,
+        5,
+        RemoteCommand::CancelShipOrder {
+            host_colony: colony,
+            order_id: 9999,
+        },
+    );
+    run_until_arrival(&mut app, 5);
+
+    let bq = app.world().get::<BuildQueue>(colony).unwrap();
+    assert_eq!(bq.queue.len(), 1, "unrelated ship order must stay put");
+}
+
+/// #275 Phase 1: `order_id` and `next_order_id` survive save/load.
+#[test]
+fn order_id_preserved_across_save_load() {
+    use macrocosmo::colony::{BuildOrder, BuildQueue as LiveBuildQueue};
+    use macrocosmo::persistence::savebag::{SavedBuildOrder, SavedBuildQueue};
+
+    let live = LiveBuildQueue {
+        queue: vec![
+            BuildOrder {
+                order_id: 7,
+                kind: BuildKind::Ship,
+                design_id: "x".into(),
+                display_name: "x".into(),
+                minerals_cost: Amt::units(1),
+                minerals_invested: Amt::ZERO,
+                energy_cost: Amt::units(1),
+                energy_invested: Amt::ZERO,
+                build_time_total: 10,
+                build_time_remaining: 10,
+            },
+            BuildOrder {
+                order_id: 9,
+                kind: BuildKind::Ship,
+                design_id: "y".into(),
+                display_name: "y".into(),
+                minerals_cost: Amt::units(1),
+                minerals_invested: Amt::ZERO,
+                energy_cost: Amt::units(1),
+                energy_invested: Amt::ZERO,
+                build_time_total: 10,
+                build_time_remaining: 10,
+            },
+        ],
+        next_order_id: 10,
+    };
+    let saved = SavedBuildQueue::from_live(&live);
+    assert_eq!(saved.next_order_id, 10);
+    assert_eq!(saved.queue[0].order_id, 7);
+    assert_eq!(saved.queue[1].order_id, 9);
+    let restored: LiveBuildQueue = saved.into_live();
+    assert_eq!(restored.next_order_id, 10);
+    assert_eq!(restored.queue[0].order_id, 7);
+    assert_eq!(restored.queue[1].order_id, 9);
+
+    // Serde round-trip (bincode) covers the #[serde(default)] paths too.
+    let one = SavedBuildOrder::from_live(&BuildOrder {
+        order_id: 42,
+        kind: BuildKind::Ship,
+        design_id: "z".into(),
+        display_name: "z".into(),
+        minerals_cost: Amt::units(1),
+        minerals_invested: Amt::ZERO,
+        energy_cost: Amt::units(1),
+        energy_invested: Amt::ZERO,
+        build_time_total: 1,
+        build_time_remaining: 1,
+    });
+    let json = serde_json::to_string(&one).expect("serialize");
+    let back: SavedBuildOrder = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.order_id, 42);
+}
+
 // #276: Observer mode / transient empire unavailability
 // --------------------------------------------------------------------------
 

@@ -3,13 +3,16 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
-use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
 use macrocosmo::events::{EventLog, GameEventKind};
+use macrocosmo::modifier::ModifiedValue;
 
 use macrocosmo::modifier::Modifier;
 
-use common::{advance_time, find_planet, spawn_test_colony, spawn_test_system, test_app, test_app_with_event_log};
+use common::{
+    advance_time, find_planet, spawn_test_colony, spawn_test_system, test_app,
+    test_app_with_event_log,
+};
 
 #[test]
 fn test_expired_modifier_has_on_expire_event() {
@@ -25,13 +28,7 @@ fn test_expired_modifier_has_on_expire_event() {
         true,
     );
 
-    let colony_id = spawn_test_colony(
-        app.world_mut(),
-        sys,
-        Amt::ZERO,
-        Amt::ZERO,
-        vec![],
-    );
+    let colony_id = spawn_test_colony(app.world_mut(), sys, Amt::ZERO, Amt::ZERO, vec![]);
 
     // Push a modifier with duration=5 and on_expire_event="test_event"
     {
@@ -137,8 +134,8 @@ fn test_periodic_event_fires() {
 
 #[test]
 fn test_tick_timed_effects_cleans_all_components() {
-    use macrocosmo::modifier::Modifier;
     use macrocosmo::amount::SignedAmt;
+    use macrocosmo::modifier::Modifier;
 
     let mut app = test_app();
 
@@ -218,7 +215,11 @@ fn test_tick_timed_effects_cleans_all_components() {
     // Verify Production modifier removed
     let prod = app.world().get::<Production>(colony).unwrap();
     assert_eq!(
-        prod.minerals_per_hexadies.modifiers().iter().filter(|m| m.id == "timed_prod").count(),
+        prod.minerals_per_hexadies
+            .modifiers()
+            .iter()
+            .filter(|m| m.id == "timed_prod")
+            .count(),
         0,
         "Production timed modifier should have been removed"
     );
@@ -226,7 +227,12 @@ fn test_tick_timed_effects_cleans_all_components() {
     // Verify MaintenanceCost modifier removed
     let maint = app.world().get::<MaintenanceCost>(colony).unwrap();
     assert_eq!(
-        maint.energy_per_hexadies.modifiers().iter().filter(|m| m.id == "timed_maint").count(),
+        maint
+            .energy_per_hexadies
+            .modifiers()
+            .iter()
+            .filter(|m| m.id == "timed_maint")
+            .count(),
         0,
         "MaintenanceCost timed modifier should have been removed"
     );
@@ -234,7 +240,11 @@ fn test_tick_timed_effects_cleans_all_components() {
     // Verify FoodConsumption modifier removed
     let fc = app.world().get::<FoodConsumption>(colony).unwrap();
     assert_eq!(
-        fc.food_per_hexadies.modifiers().iter().filter(|m| m.id == "timed_food").count(),
+        fc.food_per_hexadies
+            .modifiers()
+            .iter()
+            .filter(|m| m.id == "timed_food")
+            .count(),
         0,
         "FoodConsumption timed modifier should have been removed"
     );
@@ -244,9 +254,9 @@ fn test_tick_timed_effects_cleans_all_components() {
 
 #[test]
 fn test_on_expire_event_fires_named_event() {
+    use macrocosmo::amount::SignedAmt;
     use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
     use macrocosmo::modifier::Modifier;
-    use macrocosmo::amount::SignedAmt;
 
     let mut app = test_app();
 
@@ -329,89 +339,120 @@ fn test_food_depletion_alert() {
 
     // Colony with food = 0
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::units(500),
             research: Amt::ZERO,
             food: Amt::ZERO,
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
-    let _colony = app.world_mut().spawn((
-        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
-        Production {
-            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
-        Buildings { slots: vec![] },
-        BuildingQueue::default(),
-        ProductionFocus::default(),
-        MaintenanceCost::default(),
-        FoodConsumption::default(),
-    )).id();
+        ResourceCapacity::default(),
+    ));
+    let _colony = app
+        .world_mut()
+        .spawn((
+            Colony {
+                planet: planet_sys,
+                population: 100.0,
+                growth_rate: 0.01,
+            },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue::default(),
+            Buildings { slots: vec![] },
+            BuildingQueue::default(),
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id();
 
     advance_time(&mut app, 1);
     app.update();
 
     let log = app.world().resource::<EventLog>();
-    let alerts: Vec<_> = log.entries.iter()
+    let alerts: Vec<_> = log
+        .entries
+        .iter()
         .filter(|e| e.kind == GameEventKind::ResourceAlert)
         .collect();
     assert!(!alerts.is_empty(), "Expected a food depletion alert");
-    assert!(alerts[0].description.contains("Starvation"), "Alert should mention starvation");
+    assert!(
+        alerts[0].description.contains("Starvation"),
+        "Alert should mention starvation"
+    );
     assert!(alerts[0].related_system == Some(sys));
 }
 
 #[test]
 fn test_energy_depletion_alert() {
     let mut app = test_app_with_event_log();
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "NoPower",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "NoPower", [0.0, 0.0, 0.0], 1.0, true, true);
 
     // Colony with energy = 0
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::ZERO,
             research: Amt::ZERO,
             food: Amt::units(100),
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
-    let _colony = app.world_mut().spawn((
-        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
-        Production {
-            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
-        Buildings { slots: vec![] },
-        BuildingQueue::default(),
-        ProductionFocus::default(),
-        MaintenanceCost::default(),
-        FoodConsumption::default(),
-    )).id();
+        ResourceCapacity::default(),
+    ));
+    let _colony = app
+        .world_mut()
+        .spawn((
+            Colony {
+                planet: planet_sys,
+                population: 100.0,
+                growth_rate: 0.01,
+            },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue::default(),
+            Buildings { slots: vec![] },
+            BuildingQueue::default(),
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id();
 
     advance_time(&mut app, 1);
     // Second update so collect_events picks up messages from previous frame
     app.update();
 
     let log = app.world().resource::<EventLog>();
-    let alerts: Vec<_> = log.entries.iter()
+    let alerts: Vec<_> = log
+        .entries
+        .iter()
         .filter(|e| e.kind == GameEventKind::ResourceAlert)
         .collect();
-    assert!(!alerts.is_empty(), "Expected an energy depletion alert, got: {:?}", alerts.iter().map(|a| &a.description).collect::<Vec<_>>());
-    let energy_alerts: Vec<_> = alerts.iter().filter(|a| a.description.contains("Energy depleted")).collect();
-    assert!(!energy_alerts.is_empty(), "Alert should mention energy depletion, got: {:?}", alerts.iter().map(|a| &a.description).collect::<Vec<_>>());
+    assert!(
+        !alerts.is_empty(),
+        "Expected an energy depletion alert, got: {:?}",
+        alerts.iter().map(|a| &a.description).collect::<Vec<_>>()
+    );
+    let energy_alerts: Vec<_> = alerts
+        .iter()
+        .filter(|a| a.description.contains("Energy depleted"))
+        .collect();
+    assert!(
+        !energy_alerts.is_empty(),
+        "Alert should mention energy depletion, got: {:?}",
+        alerts.iter().map(|a| &a.description).collect::<Vec<_>>()
+    );
     assert!(energy_alerts[0].related_system == Some(sys));
 }
 
@@ -428,41 +469,62 @@ fn test_alert_cooldown() {
     );
     // Colony with food = 0 and no food production
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::units(500),
             research: Amt::ZERO,
             food: Amt::ZERO,
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
-    let _colony = app.world_mut().spawn((
-        Colony { planet: planet_sys, population: 100.0, growth_rate: 0.01 },
-        Production {
-            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
-        Buildings { slots: vec![] },
-        BuildingQueue::default(),
-        ProductionFocus::default(),
-        MaintenanceCost::default(),
-        FoodConsumption::default(),
-    )).id();
+        ResourceCapacity::default(),
+    ));
+    let _colony = app
+        .world_mut()
+        .spawn((
+            Colony {
+                planet: planet_sys,
+                population: 100.0,
+                growth_rate: 0.01,
+            },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue::default(),
+            Buildings { slots: vec![] },
+            BuildingQueue::default(),
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id();
 
     // First tick: alert fires
     advance_time(&mut app, 1);
     app.update(); // collect messages
-    let count_1 = app.world().resource::<EventLog>().entries.iter()
+    let count_1 = app
+        .world()
+        .resource::<EventLog>()
+        .entries
+        .iter()
         .filter(|e| e.kind == GameEventKind::ResourceAlert)
         .count();
-    assert_eq!(count_1, 1, "First tick should produce exactly one food alert");
+    assert_eq!(
+        count_1, 1,
+        "First tick should produce exactly one food alert"
+    );
 
     // Advance less than 30 hexadies: no duplicate
     advance_time(&mut app, 10);
     app.update(); // collect messages
-    let count_2 = app.world().resource::<EventLog>().entries.iter()
+    let count_2 = app
+        .world()
+        .resource::<EventLog>()
+        .entries
+        .iter()
         .filter(|e| e.kind == GameEventKind::ResourceAlert)
         .count();
     assert_eq!(count_2, 1, "Alert should not repeat within cooldown period");
@@ -470,8 +532,15 @@ fn test_alert_cooldown() {
     // Advance past 30 hexadies total from first alert: alert fires again
     advance_time(&mut app, 25);
     app.update(); // collect messages
-    let count_3 = app.world().resource::<EventLog>().entries.iter()
+    let count_3 = app
+        .world()
+        .resource::<EventLog>()
+        .entries
+        .iter()
         .filter(|e| e.kind == GameEventKind::ResourceAlert)
         .count();
-    assert!(count_3 >= 2, "Alert should fire again after cooldown expires");
+    assert!(
+        count_3 >= 2,
+        "Alert should fire again after cooldown expires"
+    );
 }

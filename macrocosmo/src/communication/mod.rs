@@ -200,6 +200,22 @@ pub enum RemoteCommand {
         energy_cost: crate::amount::Amt,
         build_time: i64,
     },
+    /// #275: Cancel a planet- or system-level building order (construction,
+    /// demolition, or upgrade) by stable `order_id`. Scope is derived at
+    /// arrival by which queue holds the id — the cancel command itself
+    /// doesn't carry scope, which keeps the send-side UI simple and
+    /// robust against queue shifts during light-speed transit.
+    CancelBuildingOrder {
+        order_id: u64,
+    },
+    /// #275: Cancel a ship / deliverable `BuildOrder` by stable
+    /// `order_id`. Ship orders live on a specific `host_colony`'s
+    /// `BuildQueue`, so we carry that entity explicitly — the id alone
+    /// isn't scoped across colonies.
+    CancelShipOrder {
+        host_colony: Entity,
+        order_id: u64,
+    },
 }
 
 /// Building-slot op against the target system. `scope` picks planet-level
@@ -261,6 +277,12 @@ impl RemoteCommand {
             RemoteCommand::ShipBuild { design_id, .. } => format!("Build ship: {}", design_id),
             RemoteCommand::DeliverableBuild { display_name, .. } => {
                 format!("Build deliverable: {}", display_name)
+            }
+            RemoteCommand::CancelBuildingOrder { order_id } => {
+                format!("Cancel building order #{}", order_id)
+            }
+            RemoteCommand::CancelShipOrder { order_id, .. } => {
+                format!("Cancel ship order #{}", order_id)
             }
         }
     }
@@ -407,6 +429,7 @@ pub fn process_pending_commands(
     ship_design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     mut colonies: crate::colony::remote::ApplyColoniesQuery,
     mut sys_buildings_q: crate::colony::remote::ApplySystemBuildingsQuery,
+    planets: crate::colony::remote::ApplyPlanetsQuery,
 ) {
     let Ok((mut command_log, construction_params)) = empire_q.single_mut() else {
         return;
@@ -434,6 +457,7 @@ pub fn process_pending_commands(
                 bldg_time_mod,
                 &mut colonies,
                 &mut sys_buildings_q,
+                &planets,
             );
 
             for entry in command_log.entries.iter_mut() {
