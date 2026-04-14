@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::amount::Amt;
-use crate::faction::{FactionOwner, system_owner};
+use crate::faction::{system_owner, FactionOwner};
 use crate::galaxy::{AtSystem, Planet, Sovereignty, StarSystem};
 use crate::modifier::ModifiedValue;
 use crate::ship::Owner;
