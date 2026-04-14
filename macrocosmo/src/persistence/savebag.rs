@@ -33,7 +33,8 @@ use crate::colony::{
     SystemBuildingQueue, SystemBuildings, UpgradeOrder,
 };
 use crate::communication::{
-    ColonyCommand, ColonyCommandKind, CommandLog, CommandLogEntry, PendingCommand, RemoteCommand,
+    BuildingKind, BuildingScope, ColonyCommand, CommandLog, CommandLogEntry, PendingCommand,
+    RemoteCommand,
 };
 use crate::components::{MovementState, Position};
 use crate::condition::ScopedFlags;
@@ -2921,18 +2922,66 @@ impl SavedPendingDiplomaticAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedRemoteCommand {
-    BuildShip { design_id: String },
-    SetProductionFocus { minerals: f64, energy: f64, research: f64 },
+    BuildShip {
+        design_id: String,
+    },
+    SetProductionFocus {
+        minerals: f64,
+        energy: f64,
+        research: f64,
+    },
     Colony(SavedColonyCommand),
+    ShipBuild {
+        host_colony_bits: u64,
+        design_id: String,
+        build_kind: SavedBuildKind,
+    },
+    DeliverableBuild {
+        host_colony_bits: u64,
+        def_id: String,
+        display_name: String,
+        cargo_size: u32,
+        minerals_cost: Amt,
+        energy_cost: Amt,
+        build_time: i64,
+    },
 }
 impl From<&RemoteCommand> for SavedRemoteCommand {
     fn from(v: &RemoteCommand) -> Self {
         match v {
-            RemoteCommand::BuildShip { design_id } => Self::BuildShip { design_id: design_id.clone() },
-            RemoteCommand::SetProductionFocus { minerals, energy, research } => Self::SetProductionFocus {
-                minerals: *minerals, energy: *energy, research: *research,
+            RemoteCommand::BuildShip { design_id } => Self::BuildShip {
+                design_id: design_id.clone(),
             },
+            RemoteCommand::SetProductionFocus { minerals, energy, research } => {
+                Self::SetProductionFocus {
+                    minerals: *minerals,
+                    energy: *energy,
+                    research: *research,
+                }
+            }
             RemoteCommand::Colony(cc) => Self::Colony(SavedColonyCommand::from_live(cc)),
+            RemoteCommand::ShipBuild { host_colony, design_id, build_kind } => Self::ShipBuild {
+                host_colony_bits: host_colony.to_bits(),
+                design_id: design_id.clone(),
+                build_kind: build_kind.into(),
+            },
+            RemoteCommand::DeliverableBuild {
+                host_colony,
+                def_id,
+                display_name,
+                cargo_size,
+                minerals_cost,
+                energy_cost,
+                build_time,
+            } => Self::DeliverableBuild {
+                host_colony_bits: host_colony.to_bits(),
+                def_id: def_id.clone(),
+                display_name: display_name.clone(),
+                cargo_size: *cargo_size,
+                minerals_cost: *minerals_cost,
+                energy_cost: *energy_cost,
+                build_time: *build_time,
+            },
         }
     }
 }
@@ -2944,111 +2993,14 @@ impl SavedRemoteCommand {
                 RemoteCommand::SetProductionFocus { minerals, energy, research }
             }
             SavedRemoteCommand::Colony(sc) => RemoteCommand::Colony(sc.into_live(map)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedColonyCommand {
-    pub target_planet_bits: Option<u64>,
-    pub kind: SavedColonyCommandKind,
-}
-
-impl SavedColonyCommand {
-    pub fn from_live(v: &ColonyCommand) -> Self {
-        Self {
-            target_planet_bits: v.target_planet.map(|e| e.to_bits()),
-            kind: SavedColonyCommandKind::from_live(&v.kind),
-        }
-    }
-    pub fn into_live(self, map: &EntityMap) -> ColonyCommand {
-        ColonyCommand {
-            target_planet: self.target_planet_bits.map(|b| remap_entity(b, map)),
-            kind: self.kind.into_live(map),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SavedColonyCommandKind {
-    QueueBuilding { building_id: String, target_slot: usize },
-    DemolishBuilding { target_slot: usize },
-    UpgradeBuilding { slot_index: usize, target_id: String },
-    QueueShipBuild {
-        host_colony_bits: u64,
-        design_id: String,
-        build_kind: SavedBuildKind,
-    },
-    QueueDeliverableBuild {
-        host_colony_bits: u64,
-        def_id: String,
-        display_name: String,
-        cargo_size: u32,
-        minerals_cost: Amt,
-        energy_cost: Amt,
-        build_time: i64,
-    },
-}
-
-impl SavedColonyCommandKind {
-    pub fn from_live(v: &ColonyCommandKind) -> Self {
-        match v {
-            ColonyCommandKind::QueueBuilding { building_id, target_slot } => Self::QueueBuilding {
-                building_id: building_id.clone(),
-                target_slot: *target_slot,
-            },
-            ColonyCommandKind::DemolishBuilding { target_slot } => {
-                Self::DemolishBuilding { target_slot: *target_slot }
-            }
-            ColonyCommandKind::UpgradeBuilding { slot_index, target_id } => Self::UpgradeBuilding {
-                slot_index: *slot_index,
-                target_id: target_id.clone(),
-            },
-            ColonyCommandKind::QueueShipBuild { host_colony, design_id, build_kind } => {
-                Self::QueueShipBuild {
-                    host_colony_bits: host_colony.to_bits(),
-                    design_id: design_id.clone(),
-                    build_kind: build_kind.into(),
-                }
-            }
-            ColonyCommandKind::QueueDeliverableBuild {
-                host_colony,
-                def_id,
-                display_name,
-                cargo_size,
-                minerals_cost,
-                energy_cost,
-                build_time,
-            } => Self::QueueDeliverableBuild {
-                host_colony_bits: host_colony.to_bits(),
-                def_id: def_id.clone(),
-                display_name: display_name.clone(),
-                cargo_size: *cargo_size,
-                minerals_cost: *minerals_cost,
-                energy_cost: *energy_cost,
-                build_time: *build_time,
-            },
-        }
-    }
-    pub fn into_live(self, map: &EntityMap) -> ColonyCommandKind {
-        match self {
-            Self::QueueBuilding { building_id, target_slot } => {
-                ColonyCommandKind::QueueBuilding { building_id, target_slot }
-            }
-            Self::DemolishBuilding { target_slot } => {
-                ColonyCommandKind::DemolishBuilding { target_slot }
-            }
-            Self::UpgradeBuilding { slot_index, target_id } => {
-                ColonyCommandKind::UpgradeBuilding { slot_index, target_id }
-            }
-            Self::QueueShipBuild { host_colony_bits, design_id, build_kind } => {
-                ColonyCommandKind::QueueShipBuild {
+            SavedRemoteCommand::ShipBuild { host_colony_bits, design_id, build_kind } => {
+                RemoteCommand::ShipBuild {
                     host_colony: remap_entity(host_colony_bits, map),
                     design_id,
                     build_kind: build_kind.into(),
                 }
             }
-            Self::QueueDeliverableBuild {
+            SavedRemoteCommand::DeliverableBuild {
                 host_colony_bits,
                 def_id,
                 display_name,
@@ -3056,7 +3008,7 @@ impl SavedColonyCommandKind {
                 minerals_cost,
                 energy_cost,
                 build_time,
-            } => ColonyCommandKind::QueueDeliverableBuild {
+            } => RemoteCommand::DeliverableBuild {
                 host_colony: remap_entity(host_colony_bits, map),
                 def_id,
                 display_name,
@@ -3065,6 +3017,94 @@ impl SavedColonyCommandKind {
                 energy_cost,
                 build_time,
             },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedColonyCommand {
+    pub scope: SavedBuildingScope,
+    pub kind: SavedBuildingKind,
+}
+
+impl SavedColonyCommand {
+    pub fn from_live(v: &ColonyCommand) -> Self {
+        Self {
+            scope: SavedBuildingScope::from_live(&v.scope),
+            kind: SavedBuildingKind::from_live(&v.kind),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> ColonyCommand {
+        ColonyCommand {
+            scope: self.scope.into_live(map),
+            kind: self.kind.into_live(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SavedBuildingScope {
+    Planet { planet_bits: u64 },
+    System,
+}
+
+impl SavedBuildingScope {
+    pub fn from_live(v: &BuildingScope) -> Self {
+        match v {
+            BuildingScope::Planet(e) => Self::Planet {
+                planet_bits: e.to_bits(),
+            },
+            BuildingScope::System => Self::System,
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> BuildingScope {
+        match self {
+            Self::Planet { planet_bits } => BuildingScope::Planet(remap_entity(planet_bits, map)),
+            Self::System => BuildingScope::System,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SavedBuildingKind {
+    Queue {
+        building_id: String,
+        target_slot: usize,
+    },
+    Demolish {
+        target_slot: usize,
+    },
+    Upgrade {
+        slot_index: usize,
+        target_id: String,
+    },
+}
+
+impl SavedBuildingKind {
+    pub fn from_live(v: &BuildingKind) -> Self {
+        match v {
+            BuildingKind::Queue { building_id, target_slot } => Self::Queue {
+                building_id: building_id.clone(),
+                target_slot: *target_slot,
+            },
+            BuildingKind::Demolish { target_slot } => Self::Demolish {
+                target_slot: *target_slot,
+            },
+            BuildingKind::Upgrade { slot_index, target_id } => Self::Upgrade {
+                slot_index: *slot_index,
+                target_id: target_id.clone(),
+            },
+        }
+    }
+    pub fn into_live(self) -> BuildingKind {
+        match self {
+            Self::Queue { building_id, target_slot } => {
+                BuildingKind::Queue { building_id, target_slot }
+            }
+            Self::Demolish { target_slot } => BuildingKind::Demolish { target_slot },
+            Self::Upgrade { slot_index, target_id } => {
+                BuildingKind::Upgrade { slot_index, target_id }
+            }
         }
     }
 }
@@ -3706,7 +3746,7 @@ impl RemapEntities for SavedComponentBag {
 mod tests {
     use super::*;
     use crate::colony::BuildKind;
-    use crate::communication::{ColonyCommand, ColonyCommandKind, RemoteCommand};
+    use crate::communication::{BuildingKind, BuildingScope, ColonyCommand, RemoteCommand};
 
     #[test]
     fn colony_remote_command_savebag_roundtrip() {
@@ -3718,43 +3758,37 @@ mod tests {
 
         let originals = vec![
             RemoteCommand::Colony(ColonyCommand {
-                target_planet: Some(live_planet),
-                kind: ColonyCommandKind::QueueBuilding {
+                scope: BuildingScope::Planet(live_planet),
+                kind: BuildingKind::Queue {
                     building_id: "mine".to_string(),
                     target_slot: 2,
                 },
             }),
             RemoteCommand::Colony(ColonyCommand {
-                target_planet: Some(live_planet),
-                kind: ColonyCommandKind::DemolishBuilding { target_slot: 1 },
+                scope: BuildingScope::Planet(live_planet),
+                kind: BuildingKind::Demolish { target_slot: 1 },
             }),
             RemoteCommand::Colony(ColonyCommand {
-                target_planet: None,
-                kind: ColonyCommandKind::UpgradeBuilding {
+                scope: BuildingScope::System,
+                kind: BuildingKind::Upgrade {
                     slot_index: 3,
                     target_id: "advanced_shipyard".to_string(),
                 },
             }),
-            RemoteCommand::Colony(ColonyCommand {
-                target_planet: None,
-                kind: ColonyCommandKind::QueueShipBuild {
-                    host_colony: live_host,
-                    design_id: "explorer_mk1".to_string(),
-                    build_kind: BuildKind::Deliverable { cargo_size: 4 },
-                },
-            }),
-            RemoteCommand::Colony(ColonyCommand {
-                target_planet: None,
-                kind: ColonyCommandKind::QueueDeliverableBuild {
-                    host_colony: live_host,
-                    def_id: "sensor_buoy".to_string(),
-                    display_name: "Sensor Buoy".to_string(),
-                    cargo_size: 2,
-                    minerals_cost: crate::amount::Amt::units(100),
-                    energy_cost: crate::amount::Amt::units(50),
-                    build_time: 30,
-                },
-            }),
+            RemoteCommand::ShipBuild {
+                host_colony: live_host,
+                design_id: "explorer_mk1".to_string(),
+                build_kind: BuildKind::Deliverable { cargo_size: 4 },
+            },
+            RemoteCommand::DeliverableBuild {
+                host_colony: live_host,
+                def_id: "sensor_buoy".to_string(),
+                display_name: "Sensor Buoy".to_string(),
+                cargo_size: 2,
+                minerals_cost: crate::amount::Amt::units(100),
+                energy_cost: crate::amount::Amt::units(50),
+                build_time: 30,
+            },
         ];
 
         for original in &originals {

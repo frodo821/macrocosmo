@@ -3,7 +3,7 @@ use bevy_egui::egui;
 
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
 use crate::communication::{
-    ColonyCommand, ColonyCommandKind, PendingColonyDispatch, PendingColonyDispatches,
+    BuildingKind, BuildingScope, ColonyCommand, PendingColonyDispatch, PendingColonyDispatches,
 };
 use crate::knowledge::{ColonySnapshot, ObservationSource, SystemKnowledge};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
@@ -510,22 +510,22 @@ fn draw_overview_tab(
             if let Some((slot_idx, _bid)) = demolish_request {
                 dispatches.queue.push(PendingColonyDispatch {
                     target_system: system_entity,
-                    command: ColonyCommand {
-                        target_planet: Some(planet_entity),
-                        kind: ColonyCommandKind::DemolishBuilding { target_slot: slot_idx },
-                    },
+                    command: crate::communication::RemoteCommand::Colony(ColonyCommand {
+                        scope: BuildingScope::Planet(planet_entity),
+                        kind: BuildingKind::Demolish { target_slot: slot_idx },
+                    }),
                 });
             }
             if let Some((slot_idx, target_id, _, _, _)) = upgrade_request {
                 dispatches.queue.push(PendingColonyDispatch {
                     target_system: system_entity,
-                    command: ColonyCommand {
-                        target_planet: Some(planet_entity),
-                        kind: ColonyCommandKind::UpgradeBuilding {
+                    command: crate::communication::RemoteCommand::Colony(ColonyCommand {
+                        scope: BuildingScope::Planet(planet_entity),
+                        kind: BuildingKind::Upgrade {
                             slot_index: slot_idx,
                             target_id,
                         },
-                    },
+                    }),
                 });
             }
 
@@ -554,13 +554,13 @@ fn draw_overview_tab(
                 if let Some(bid) = build_building_request {
                     dispatches.queue.push(PendingColonyDispatch {
                         target_system: system_entity,
-                        command: ColonyCommand {
-                            target_planet: Some(planet_entity),
-                            kind: ColonyCommandKind::QueueBuilding {
+                        command: crate::communication::RemoteCommand::Colony(ColonyCommand {
+                            scope: BuildingScope::Planet(planet_entity),
+                            kind: BuildingKind::Queue {
                                 building_id: bid.0,
                                 target_slot: slot_idx,
                             },
-                        },
+                        }),
                     });
                 }
             }

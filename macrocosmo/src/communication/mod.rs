@@ -33,7 +33,7 @@ pub struct PendingColonyDispatches {
 
 pub struct PendingColonyDispatch {
     pub target_system: Entity,
-    pub command: ColonyCommand,
+    pub command: RemoteCommand,
 }
 
 /// A message in transit (light-speed or via courier)
@@ -154,26 +154,62 @@ pub struct PendingCommand {
 
 /// The kinds of remote commands a player can issue.
 ///
-/// Build-related payloads (`Colony(ColonyCommand)`) are deliberately minimal —
+/// Building slot ops (`Colony(ColonyCommand)`) are deliberately minimal —
 /// cost/time/refund amounts are re-resolved on arrival from the target's
-/// current `BuildingRegistry` + `ConstructionParams`. `QueueDeliverableBuild`
-/// is the exception (defs live in a separate registry; see variant doc).
+/// current `BuildingRegistry` + `ConstructionParams`. Ship / deliverable
+/// builds carry their own `host_colony` entity; `ShipBuild` re-resolves
+/// from `ShipDesignRegistry` at arrival while `DeliverableBuild` freezes
+/// the full payload at send time (defs live in `StructureRegistry`).
 #[derive(Clone, Debug)]
 pub enum RemoteCommand {
     BuildShip { design_id: String },
     SetProductionFocus { minerals: f64, energy: f64, research: f64 },
     Colony(ColonyCommand),
+    ShipBuild {
+        host_colony: Entity,
+        design_id: String,
+        build_kind: crate::colony::BuildKind,
+    },
+    DeliverableBuild {
+        host_colony: Entity,
+        def_id: String,
+        display_name: String,
+        cargo_size: u32,
+        minerals_cost: crate::amount::Amt,
+        energy_cost: crate::amount::Amt,
+        build_time: i64,
+    },
 }
 
-/// A colony-scoped remote command. `target_planet = Some(p)` addresses a
-/// planet-level `BuildingQueue`/`Buildings`; `None` addresses the
-/// system-level `SystemBuildingQueue`/`SystemBuildings` on `target_system`.
-/// Some variants (`QueueShipBuild`, `QueueDeliverableBuild`) carry their
-/// own `host_colony` and ignore `target_planet`.
+/// Building-slot op against the target system. `scope` picks planet-level
+/// vs system-level; `kind` is the action.
 #[derive(Clone, Debug)]
 pub struct ColonyCommand {
-    pub target_planet: Option<Entity>,
-    pub kind: ColonyCommandKind,
+    pub scope: BuildingScope,
+    pub kind: BuildingKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BuildingScope {
+    /// Acts on the planet-level `BuildingQueue` of the colony on this planet.
+    Planet(Entity),
+    /// Acts on the system-level `SystemBuildingQueue` of the target system.
+    System,
+}
+
+#[derive(Clone, Debug)]
+pub enum BuildingKind {
+    Queue {
+        building_id: String,
+        target_slot: usize,
+    },
+    Demolish {
+        target_slot: usize,
+    },
+    Upgrade {
+        slot_index: usize,
+        target_id: String,
+    },
 }
 
 impl RemoteCommand {
@@ -185,60 +221,22 @@ impl RemoteCommand {
             RemoteCommand::BuildShip { design_id } => format!("Build ship: {}", design_id),
             RemoteCommand::SetProductionFocus { .. } => "Set production focus".to_string(),
             RemoteCommand::Colony(cc) => match &cc.kind {
-                ColonyCommandKind::QueueBuilding { building_id, target_slot } => {
+                BuildingKind::Queue { building_id, target_slot } => {
                     format!("Build {} → slot {}", building_id, target_slot)
                 }
-                ColonyCommandKind::DemolishBuilding { target_slot } => {
+                BuildingKind::Demolish { target_slot } => {
                     format!("Demolish slot {}", target_slot)
                 }
-                ColonyCommandKind::UpgradeBuilding { slot_index, target_id } => {
+                BuildingKind::Upgrade { slot_index, target_id } => {
                     format!("Upgrade slot {} → {}", slot_index, target_id)
                 }
-                ColonyCommandKind::QueueShipBuild { design_id, .. } => {
-                    format!("Build ship: {}", design_id)
-                }
-                ColonyCommandKind::QueueDeliverableBuild { display_name, .. } => {
-                    format!("Build deliverable: {}", display_name)
-                }
             },
+            RemoteCommand::ShipBuild { design_id, .. } => format!("Build ship: {}", design_id),
+            RemoteCommand::DeliverableBuild { display_name, .. } => {
+                format!("Build deliverable: {}", display_name)
+            }
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum ColonyCommandKind {
-    /// Enqueue construction of `building_id` into `target_slot`.
-    QueueBuilding {
-        building_id: String,
-        target_slot: usize,
-    },
-    /// Enqueue demolition of whatever occupies `target_slot`.
-    DemolishBuilding { target_slot: usize },
-    /// Enqueue an upgrade of the building in `slot_index` to `target_id`.
-    UpgradeBuilding {
-        slot_index: usize,
-        target_id: String,
-    },
-    /// Enqueue a ship (or deliverable) build on `host_colony`'s `BuildQueue`.
-    QueueShipBuild {
-        host_colony: Entity,
-        design_id: String,
-        build_kind: crate::colony::BuildKind,
-    },
-    /// Enqueue a deliverable build on `host_colony`'s `BuildQueue`. Full
-    /// payload (def_id/display_name/cargo_size/cost/time) is frozen at
-    /// send time because deliverable defs live in `StructureRegistry`,
-    /// not `ShipDesignRegistry`, so arrival-time re-resolution would
-    /// require a second registry lookup path.
-    QueueDeliverableBuild {
-        host_colony: Entity,
-        def_id: String,
-        display_name: String,
-        cargo_size: u32,
-        minerals_cost: crate::amount::Amt,
-        energy_cost: crate::amount::Amt,
-        build_time: i64,
-    },
 }
 
 /// Tracks command status for UI display.
@@ -302,7 +300,7 @@ pub fn dispatch_pending_colony_commands(
             origin,
             destination,
             clock.elapsed,
-            RemoteCommand::Colony(dispatch.command),
+            dispatch.command,
             dispatch.target_system,
             &mut command_log,
         );
@@ -371,18 +369,16 @@ pub fn process_pending_commands(
                 cmd.command.describe()
             );
 
-            if let RemoteCommand::Colony(cc) = &cmd.command {
-                crate::colony::apply_colony_command(
-                    cc,
-                    cmd.target_system,
-                    &building_registry,
-                    &ship_design_registry,
-                    bldg_cost_mod,
-                    bldg_time_mod,
-                    &mut colonies,
-                    &mut sys_buildings_q,
-                );
-            }
+            crate::colony::apply_remote_command(
+                &cmd.command,
+                cmd.target_system,
+                &building_registry,
+                &ship_design_registry,
+                bldg_cost_mod,
+                bldg_time_mod,
+                &mut colonies,
+                &mut sys_buildings_q,
+            );
 
             for entry in command_log.entries.iter_mut() {
                 if entry.sent_at == cmd.sent_at
