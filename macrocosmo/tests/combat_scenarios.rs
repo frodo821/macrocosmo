@@ -87,6 +87,7 @@ fn install_scenario_weapon(app: &mut App) {
         }),
         cost_minerals: Amt::ZERO,
         cost_energy: Amt::ZERO,
+        build_time: 0,
         prerequisites: None,
         upgrade_to: Vec::new(),
     });
