@@ -62,4 +62,19 @@ define_faction {
     end,
 }
 
+-- #173: NPC empires. Defined without `on_game_start` so they do not compete
+-- with the player empire for the single capital star system. Homeworlds and
+-- starting fleets for NPC empires are a follow-up under #189.
+define_faction {
+    id = "vesk_hegemony",
+    name = "Vesk Hegemony",
+    faction_type = types.empire,
+}
+
+define_faction {
+    id = "aurelian_concord",
+    name = "Aurelian Concord",
+    faction_type = types.empire,
+}
+
 return {}

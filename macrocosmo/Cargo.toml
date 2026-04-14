@@ -13,3 +13,11 @@ serde_json = "1"
 serde.workspace = true
 postcard.workspace = true
 macrocosmo-ai = { path = "../macrocosmo-ai", features = ["playthrough"] }
+
+[dev-dependencies]
+# #173: activate `mock` + `playthrough` features on the AI crate for
+# integration tests only. The production binary never sees the `mock`
+# feature — `ai-core-isolation.yml` CI enforces that the direction
+# remains `macrocosmo → macrocosmo-ai` and that no production code
+# depends on the mock module.
+macrocosmo-ai = { path = "../macrocosmo-ai", features = ["mock", "playthrough"] }

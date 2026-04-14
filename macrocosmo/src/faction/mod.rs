@@ -64,6 +64,19 @@ impl Plugin for FactionRelationsPlugin {
                 // reverse `.after(spawn_hostile_factions)` in galaxy/mod.rs.
                 spawn_hostile_factions.after(crate::player::spawn_player_empire),
             )
+            // #173: After NPC empires have been promoted to `Empire`
+            // entities by `run_all_factions_on_game_start`, seed their
+            // relations against the passive hostile factions and against
+            // each other. `spawn_hostile_factions` only seeds
+            // PlayerEmpire ↔ hostile pairs, so NPCs would otherwise see
+            // hostiles as Neutral / standing=0 and never engage under the
+            // aggressive ROE.
+            .add_systems(
+                Startup,
+                seed_npc_relations
+                    .after(spawn_hostile_factions)
+                    .after(crate::setup::run_all_factions_on_game_start),
+            )
             .add_systems(
                 Update,
                 tick_diplomatic_actions.after(crate::time_system::advance_game_time),
@@ -74,6 +87,49 @@ impl Plugin for FactionRelationsPlugin {
                     .after(crate::time_system::advance_game_time)
                     .after(tick_diplomatic_actions),
             );
+    }
+}
+
+/// Startup system (#173) that seeds NPC empire relations after
+/// `run_all_factions_on_game_start` has spawned NPC `Empire` entities.
+///
+/// Seeds two kinds of relations:
+/// 1. `NPC ↔ passive hostile` (space_creature, ancient_defense) with
+///    `Neutral` + `standing = -100`, mirroring
+///    [`spawn_hostile_factions`] for PlayerEmpires.
+/// 2. `NPC ↔ NPC` with `Neutral` + `standing = 0` (no pre-existing
+///    hostility — diplomacy can evolve through #172 actions).
+///
+/// The player empire is deliberately left alone here; its relations are
+/// seeded by [`spawn_hostile_factions`].
+pub fn seed_npc_relations(
+    mut relations: ResMut<FactionRelations>,
+    hostiles: Res<HostileFactions>,
+    npcs: Query<Entity, (With<crate::player::Empire>, Without<crate::player::PlayerEmpire>)>,
+) {
+    let npc_entities: Vec<Entity> = npcs.iter().collect();
+    if npc_entities.is_empty() {
+        return;
+    }
+
+    // 1. NPC ↔ passive hostiles.
+    for &npc in &npc_entities {
+        if let Some(sc) = hostiles.space_creature {
+            relations.set(npc, sc, FactionView::new(RelationState::Neutral, -100.0));
+            relations.set(sc, npc, FactionView::new(RelationState::Neutral, -100.0));
+        }
+        if let Some(ad) = hostiles.ancient_defense {
+            relations.set(npc, ad, FactionView::new(RelationState::Neutral, -100.0));
+            relations.set(ad, npc, FactionView::new(RelationState::Neutral, -100.0));
+        }
+    }
+
+    // 2. NPC ↔ NPC (other direction picked up on the symmetric iteration).
+    for (i, &a) in npc_entities.iter().enumerate() {
+        for &b in &npc_entities[i + 1..] {
+            relations.set(a, b, FactionView::new(RelationState::Neutral, 0.0));
+            relations.set(b, a, FactionView::new(RelationState::Neutral, 0.0));
+        }
     }
 }
 

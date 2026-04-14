@@ -21,6 +21,13 @@
 //!   — `SystemParam` helpers wrapping write / read / drain access to the
 //!   bus with automatic tick stamping from `GameClock`.
 //! - [`convert`] — `Entity`/`GameClock` ↔ `macrocosmo-ai` type helpers.
+//! - [`npc_decision`] — #173 hook point for per-faction NPC AI. Today the
+//!   production policy is a hand-written [`npc_decision::NoOpPolicy`];
+//!   future issues under #189 will swap in `macrocosmo-ai`-backed
+//!   policies without touching the tick-system wiring. The
+//!   `macrocosmo-ai::mock` feature is activated **only** as a
+//!   dev-dependency (`macrocosmo/Cargo.toml [dev-dependencies]`), never
+//!   in the production binary; `ai-core-isolation.yml` CI enforces this.
 //!
 //! Content (metrics/commands/evidence) is declared by downstream issues via
 //! [`schema::declare_all`]; this integration issue (#203) establishes the
@@ -31,6 +38,7 @@
 
 pub mod convert;
 pub mod emit;
+pub mod npc_decision;
 pub mod plugin;
 pub mod schema;
 

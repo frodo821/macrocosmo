@@ -42,6 +42,12 @@ impl Plugin for GameSetupPlugin {
                 .after(crate::scripting::load_faction_registry)
                 .run_if(not_in_observer_mode),
         )
+        // #173: `run_all_factions_on_game_start` spawns NPC empires for every
+        // registered non-passive faction. Runs in BOTH player and observer
+        // modes so NPC empires exist in regular play. `.after(run_faction_on_game_start)`
+        // guarantees the player empire is fully set up before NPC spawns
+        // iterate the registry, and existing double-spawn guards
+        // (`existing_by_id` + passive-skip) prevent duplicates.
         .add_systems(
             Startup,
             run_all_factions_on_game_start
@@ -49,7 +55,7 @@ impl Plugin for GameSetupPlugin {
                 .after(crate::colony::spawn_capital_colony)
                 .after(crate::scripting::load_all_scripts)
                 .after(crate::scripting::load_faction_registry)
-                .run_if(in_observer_mode),
+                .after(run_faction_on_game_start),
         )
         .add_systems(
             Startup,
@@ -113,11 +119,12 @@ fn empire_bundle(name: String, faction_id: String, faction_name: String) -> impl
     )
 }
 
-/// Startup system for observer mode: iterate every registered NPC faction
-/// and spawn a full `Empire` entity for each, then run its `on_game_start`
-/// Lua callback. The `PlayerEmpire` marker is NEVER added. Hostile /
-/// passive factions (already spawned by `spawn_hostile_factions`) are
-/// skipped here.
+/// Startup system for both player and observer modes (#173): iterate every
+/// registered non-passive faction and spawn a full `Empire` entity for each
+/// missing one, then run its `on_game_start` Lua callback. The `PlayerEmpire`
+/// marker is NEVER added here — the player empire is spawned earlier by
+/// `spawn_player_empire` and skipped below. Hostile / passive factions
+/// (already spawned by `spawn_hostile_factions`) are skipped too.
 pub fn run_all_factions_on_game_start(world: &mut World) {
     // Snapshot the registry into a plain Vec so we can drop the borrow
     // before mutating the world.
@@ -130,18 +137,31 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
     };
 
     if registry_ids.is_empty() {
-        warn!("Observer mode: FactionRegistry is empty; no NPC empires spawned");
+        warn!("Setup: FactionRegistry is empty; no NPC empires spawned");
         return;
     }
 
-    // Collect pre-existing Faction entities (e.g. spawned by faction plugin)
-    // so we don't double-spawn.
+    // Collect pre-existing bare Faction entities (e.g. spawned by the
+    // faction plugin as hostile) so we don't double-spawn.
     let existing_by_id: std::collections::HashMap<String, Entity> = {
         let mut q = world.query_filtered::<(Entity, &Faction), Without<Empire>>();
         q.iter(world).map(|(e, f)| (f.id.clone(), e)).collect()
     };
 
+    // #173: Collect pre-existing Empire entities (the player empire, or any
+    // Empire already promoted by a prior run) so we skip them.
+    let existing_empire_ids: std::collections::HashSet<String> = {
+        let mut q = world.query_filtered::<&Faction, With<Empire>>();
+        q.iter(world).map(|f| f.id.clone()).collect()
+    };
+
     for (faction_id, faction_name, has_callback) in &registry_ids {
+        // #173: Skip factions that already have an Empire (e.g. the player
+        // empire spawned by `spawn_player_empire`). Don't re-run their
+        // `on_game_start` — that is handled by `run_faction_on_game_start`.
+        if existing_empire_ids.contains(faction_id) {
+            continue;
+        }
         // If a bare Faction entity already exists (without Empire), upgrade
         // it to an Empire by inserting the bundle. Otherwise spawn fresh.
         if let Some(entity) = existing_by_id.get(faction_id) {
@@ -153,15 +173,15 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
             if is_passive {
                 continue;
             }
-            // Upgrade: this branch is primarily defensive — in observer mode
-            // no prior Faction entity should already exist for these ids.
+            // Upgrade: defensive branch — normally no prior Faction entity
+            // exists for an empire id that isn't passive.
             world.entity_mut(*entity).insert(empire_bundle(
                 faction_name.clone(),
                 faction_id.clone(),
                 faction_name.clone(),
             ));
             info!(
-                "Observer mode: upgraded existing Faction '{}' to full Empire",
+                "Setup: upgraded existing Faction '{}' to full Empire",
                 faction_id
             );
         } else {
@@ -170,10 +190,7 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
                 faction_id.clone(),
                 faction_name.clone(),
             ));
-            info!(
-                "Observer mode: spawned NPC Empire for faction '{}'",
-                faction_id
-            );
+            info!("Setup: spawned NPC Empire for faction '{}'", faction_id);
         }
 
         if *has_callback {
