@@ -3,24 +3,22 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
-use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Sovereignty, StarSystem};
 use macrocosmo::knowledge::*;
+use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::physics::sublight_travel_hexadies;
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::technology;
 use macrocosmo::time_system::GameClock;
 
-use common::{advance_time, empire_entity, find_planet, full_test_app, spawn_test_colony, spawn_test_system, test_app};
+use common::{
+    advance_time, empire_entity, find_planet, full_test_app, spawn_test_colony, spawn_test_system,
+    test_app,
+};
 
-fn spawn_ftl_explorer(
-    world: &mut World,
-    name: &str,
-    system: Entity,
-    pos: [f64; 3],
-) -> Entity {
+fn spawn_ftl_explorer(world: &mut World, name: &str, system: Entity, pos: [f64; 3]) -> Entity {
     world
         .spawn((
             Ship {
@@ -82,28 +80,31 @@ fn test_sublight_travel_and_arrival() {
     assert_eq!(travel_time, 80);
 
     // Spawn explorer docked at System-A
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Scout-1".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-        },
-        ShipState::SubLight {
-            origin: [0.0, 0.0, 0.0],
-            destination: [1.0, 0.0, 0.0],
-            target_system: Some(sys_b),
-            departed_at: 0,
-            arrival_at: travel_time,
-        },
-        Position::from([0.0, 0.0, 0.0]),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Scout-1".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+            },
+            ShipState::SubLight {
+                origin: [0.0, 0.0, 0.0],
+                destination: [1.0, 0.0, 0.0],
+                target_system: Some(sys_b),
+                departed_at: 0,
+                arrival_at: travel_time,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+        ))
+        .id();
 
     // Advance exactly to arrival time
     advance_time(&mut app, travel_time);
@@ -114,12 +115,19 @@ fn test_sublight_travel_and_arrival() {
         ShipState::Docked { system } => {
             assert_eq!(*system, sys_b, "Ship should be docked at System-B");
         }
-        _ => panic!("Expected ship to be Docked, got {:?}", std::mem::discriminant(state)),
+        _ => panic!(
+            "Expected ship to be Docked, got {:?}",
+            std::mem::discriminant(state)
+        ),
     }
 
     // Position should match System-B
     let pos = app.world().get::<Position>(ship_entity).unwrap();
-    assert!((pos.x - 1.0).abs() < 1e-9, "Ship x should be 1.0, got {}", pos.x);
+    assert!(
+        (pos.x - 1.0).abs() < 1e-9,
+        "Ship x should be 1.0, got {}",
+        pos.x
+    );
     assert!((pos.y).abs() < 1e-9, "Ship y should be 0.0, got {}", pos.y);
 }
 
@@ -146,38 +154,47 @@ fn test_survey_completes_and_marks_system() {
     );
 
     // Spawn explorer in Surveying state targeting System-B
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Scout-1".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-        },
-        ShipState::Surveying {
-            target_system: sys_b,
-            started_at: 0,
-            completes_at: SURVEY_DURATION_HEXADIES,
-        },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Scout-1".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+            },
+            ShipState::Surveying {
+                target_system: sys_b,
+                started_at: 0,
+                completes_at: SURVEY_DURATION_HEXADIES,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+        ))
+        .id();
 
     // Advance by survey duration
     advance_time(&mut app, SURVEY_DURATION_HEXADIES);
 
     // System-B should now be surveyed
-    let star = app.world().get::<macrocosmo::galaxy::StarSystem>(sys_b).unwrap();
+    let star = app
+        .world()
+        .get::<macrocosmo::galaxy::StarSystem>(sys_b)
+        .unwrap();
     assert!(star.surveyed, "System-B should be marked as surveyed");
 
     // Ship should be back to Docked at the target system
@@ -215,27 +232,30 @@ fn test_ftl_travel_and_arrival() {
 
     // FTL arrival at 120 sd
     let arrival_at: i64 = 120;
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Colony-1".to_string(),
-            design_id: "colony_ship_mk1".to_string(),
-            hull_id: "freighter".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.5,
-            ftl_range: 30.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-        },
-        ShipState::InFTL {
-            origin_system: sys_a,
-            destination_system: sys_b,
-            departed_at: 0,
-            arrival_at,
-        },
-        Position::from([0.0, 0.0, 0.0]),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Colony-1".to_string(),
+                design_id: "colony_ship_mk1".to_string(),
+                hull_id: "freighter".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.5,
+                ftl_range: 30.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+            },
+            ShipState::InFTL {
+                origin_system: sys_a,
+                destination_system: sys_b,
+                departed_at: 0,
+                arrival_at,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+        ))
+        .id();
 
     // Advance to arrival
     advance_time(&mut app, arrival_at);
@@ -244,14 +264,21 @@ fn test_ftl_travel_and_arrival() {
     let state = app.world().get::<ShipState>(ship_entity).unwrap();
     match state {
         ShipState::Docked { system } => {
-            assert_eq!(*system, sys_b, "Ship should be docked at System-B after FTL");
+            assert_eq!(
+                *system, sys_b,
+                "Ship should be docked at System-B after FTL"
+            );
         }
         _ => panic!("Expected ship to be Docked after FTL travel"),
     }
 
     // Position should match System-B (20, 0, 0)
     let pos = app.world().get::<Position>(ship_entity).unwrap();
-    assert!((pos.x - 20.0).abs() < 1e-9, "Ship x should be 20.0, got {}", pos.x);
+    assert!(
+        (pos.x - 20.0).abs() < 1e-9,
+        "Ship x should be 20.0, got {}",
+        pos.x
+    );
 }
 
 #[test]
@@ -270,15 +297,24 @@ fn test_build_queue_spawns_ship() {
 
     // Colony with ample resources and a build order for an Explorer
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::units(1000),
             energy: Amt::units(1000),
             research: Amt::ZERO,
             food: Amt::ZERO,
             authority: Amt::ZERO,
-        }, ResourceCapacity::default(),
+        },
+        ResourceCapacity::default(),
         SystemBuildings {
-            slots: vec![Some(BuildingId::new("shipyard")), None, None, None, None, None],
+            slots: vec![
+                Some(BuildingId::new("shipyard")),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
         },
         SystemBuildingQueue::default(),
     ));
@@ -296,6 +332,7 @@ fn test_build_queue_spawns_ship() {
         },
         BuildQueue {
             queue: vec![BuildOrder {
+                order_id: 0,
                 kind: macrocosmo::colony::BuildKind::default(),
                 design_id: "explorer_mk1".to_string(),
                 display_name: "Explorer".to_string(),
@@ -306,6 +343,7 @@ fn test_build_queue_spawns_ship() {
                 build_time_total: 60,
                 build_time_remaining: 0, // set to 0 so it completes with resources
             }],
+            next_order_id: 0,
         },
         Buildings {
             slots: vec![None, None, None, None],
@@ -336,7 +374,10 @@ fn test_build_queue_spawns_ship() {
     // Build queue should be empty now
     let mut bq_query = app.world_mut().query::<&BuildQueue>();
     let bq = bq_query.iter(app.world()).next().unwrap();
-    assert!(bq.queue.is_empty(), "Build queue should be empty after completion");
+    assert!(
+        bq.queue.is_empty(),
+        "Build queue should be empty after completion"
+    );
 }
 
 // CRITICAL: Owner::Empire ships (#3)
@@ -357,31 +398,37 @@ fn test_empire_owned_ships() {
     );
 
     // Spawn a ship with Owner::Empire
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Imperial Scout".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Empire(empire),
-            sublight_speed: 0.75,
-            ftl_range: 10.0,
-            player_aboard: false,
-            home_port: sys,
-            design_revision: 0,
-        },
-        ShipState::Docked { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Imperial Scout".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Empire(empire),
+                sublight_speed: 0.75,
+                ftl_range: 10.0,
+                player_aboard: false,
+                home_port: sys,
+                design_revision: 0,
+            },
+            ShipState::Docked { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     // Verify the owner is correctly set
     let ship = app.world().get::<Ship>(ship_entity).unwrap();
@@ -426,62 +473,58 @@ fn test_ftl_range_bonus_extends_range() {
 
     // Set ftl_range_bonus to 5.0
     {
-        let mut params = app.world_mut().get_mut::<technology::GlobalParams>(empire).unwrap();
+        let mut params = app
+            .world_mut()
+            .get_mut::<technology::GlobalParams>(empire)
+            .unwrap();
         params.ftl_range_bonus = 5.0;
     }
 
-    let sys_a = spawn_test_system(
-        app.world_mut(),
-        "Origin",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys_a = spawn_test_system(app.world_mut(), "Origin", [0.0, 0.0, 0.0], 1.0, true, true);
 
     // System at 12 LY -- within range (10 base + 5 bonus = 15)
-    let sys_b = spawn_test_system(
-        app.world_mut(),
-        "Near",
-        [12.0, 0.0, 0.0],
-        0.7,
-        true,
-        false,
-    );
+    let sys_b = spawn_test_system(app.world_mut(), "Near", [12.0, 0.0, 0.0], 0.7, true, false);
 
     // Spawn ship with ftl_range = 10.0 and Owner::Empire
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "FTL Scout".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Empire(empire),
-            sublight_speed: 0.75,
-            ftl_range: 10.0,
-            player_aboard: false,
-            home_port: sys_a,
-            design_revision: 0,
-        },
-        ShipState::Docked { system: sys_a },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "FTL Scout".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Empire(empire),
+                sublight_speed: 0.75,
+                ftl_range: 10.0,
+                player_aboard: false,
+                home_port: sys_a,
+                design_revision: 0,
+            },
+            ShipState::Docked { system: sys_a },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     // Issue FTL command via command queue
     {
-        let mut queue = app.world_mut().get_mut::<CommandQueue>(ship_entity).unwrap();
-        queue.commands.push(QueuedCommand::MoveTo {
-            system: sys_b,
-        });
+        let mut queue = app
+            .world_mut()
+            .get_mut::<CommandQueue>(ship_entity)
+            .unwrap();
+        queue.commands.push(QueuedCommand::MoveTo { system: sys_b });
     }
 
     advance_time(&mut app, 1);
@@ -531,14 +574,7 @@ fn test_scrap_ship_refund_amounts() {
 fn test_scrap_ship_despawns_entity() {
     let mut app = test_app();
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sol",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sol", [0.0, 0.0, 0.0], 1.0, true, true);
 
     let ship = common::spawn_test_ship(
         app.world_mut(),
@@ -559,14 +595,7 @@ fn test_scrap_ship_despawns_entity() {
 fn test_scrap_ship_refunds_resources() {
     let mut app = test_app();
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sol",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sol", [0.0, 0.0, 0.0], 1.0, true, true);
 
     let colony = spawn_test_colony(
         app.world_mut(),
@@ -587,7 +616,8 @@ fn test_scrap_ship_refunds_resources() {
     // #236: explorer_mk1 derived build cost = 360 min / 190 energy, refund 50%.
     let design_registry = common::create_test_design_registry();
     let empty_module_registry = macrocosmo::ship_design::ModuleRegistry::default();
-    let (refund_m, refund_e) = design_registry.scrap_refund("explorer_mk1", &[], &empty_module_registry);
+    let (refund_m, refund_e) =
+        design_registry.scrap_refund("explorer_mk1", &[], &empty_module_registry);
     assert_eq!(refund_m, Amt::units(180));
     assert_eq!(refund_e, Amt::units(95));
 
@@ -604,7 +634,7 @@ fn test_scrap_ship_refunds_resources() {
     // Verify resources were added
     let stockpile = app.world().get::<ResourceStockpile>(sys).unwrap();
     assert_eq!(stockpile.minerals, Amt::units(280)); // 100 + 180 refund
-    assert_eq!(stockpile.energy, Amt::units(195));   // 100 + 95 refund
+    assert_eq!(stockpile.energy, Amt::units(195)); // 100 + 95 refund
 
     // Verify ship is gone
     assert!(app.world().get_entity(ship).is_err());
@@ -652,12 +682,8 @@ fn test_clear_command_queue() {
 
     // Add commands to queue
     let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
-    queue.commands.push(QueuedCommand::MoveTo {
-        system: sys_b,
-    });
-    queue.commands.push(QueuedCommand::MoveTo {
-        system: sys_c,
-    });
+    queue.commands.push(QueuedCommand::MoveTo { system: sys_b });
+    queue.commands.push(QueuedCommand::MoveTo { system: sys_c });
 
     // Verify commands exist
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
@@ -669,7 +695,10 @@ fn test_clear_command_queue() {
 
     // Verify empty
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
-    assert!(queue.commands.is_empty(), "Command queue should be empty after clear");
+    assert!(
+        queue.commands.is_empty(),
+        "Command queue should be empty after clear"
+    );
 }
 
 /// Cancelling an individual command removes only that command.
@@ -712,15 +741,9 @@ fn test_cancel_individual_command() {
 
     // Add 3 commands to queue
     let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
-    queue.commands.push(QueuedCommand::MoveTo {
-        system: sys_a,
-    });
-    queue.commands.push(QueuedCommand::MoveTo {
-        system: sys_b,
-    });
-    queue.commands.push(QueuedCommand::MoveTo {
-        system: sys_c,
-    });
+    queue.commands.push(QueuedCommand::MoveTo { system: sys_a });
+    queue.commands.push(QueuedCommand::MoveTo { system: sys_b });
+    queue.commands.push(QueuedCommand::MoveTo { system: sys_c });
 
     // Cancel the middle command (index 1)
     let mut queue = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
@@ -728,10 +751,17 @@ fn test_cancel_individual_command() {
 
     // Verify: 2 commands remain, the second system should be sys_c
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
-    assert_eq!(queue.commands.len(), 2, "Should have 2 commands after cancelling one");
+    assert_eq!(
+        queue.commands.len(),
+        2,
+        "Should have 2 commands after cancelling one"
+    );
     match &queue.commands[1] {
         QueuedCommand::MoveTo { system, .. } => {
-            assert_eq!(*system, sys_c, "Second remaining command should target System-C");
+            assert_eq!(
+                *system, sys_c,
+                "Second remaining command should target System-C"
+            );
         }
         _ => panic!("Expected MoveTo command"),
     }
@@ -841,15 +871,24 @@ fn test_ftl_survey_stores_data_on_ship() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-B",
+        [3.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
 
-    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_a }));
 
     let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [3.0, 0.0, 0.0]);
     *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
@@ -861,7 +900,10 @@ fn test_ftl_survey_stores_data_on_ship() {
     common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
 
     let star = app.world().get::<StarSystem>(sys_b).unwrap();
-    assert!(!star.surveyed, "FTL ship should NOT mark system as surveyed immediately");
+    assert!(
+        !star.surveyed,
+        "FTL ship should NOT mark system as surveyed immediately"
+    );
 
     let survey_data = app.world().get::<SurveyData>(ship);
     assert!(survey_data.is_some(), "FTL ship should carry survey data");
@@ -873,15 +915,24 @@ fn test_ftl_survey_auto_queues_return() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-B",
+        [3.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
 
-    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_a }));
 
     let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [3.0, 0.0, 0.0]);
     *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
@@ -896,9 +947,10 @@ fn test_ftl_survey_auto_queues_return() {
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
 
     let in_ftl_to_a = matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_a);
-    let queued_ftl_to_a = queue.commands.iter().any(|cmd| {
-        matches!(cmd, QueuedCommand::MoveTo { system, .. } if *system == sys_a)
-    });
+    let queued_ftl_to_a = queue
+        .commands
+        .iter()
+        .any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system, .. } if *system == sys_a));
 
     assert!(
         in_ftl_to_a || queued_ftl_to_a,
@@ -911,15 +963,24 @@ fn test_ftl_survey_delivers_on_dock_at_player_system() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-B",
+        [3.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
 
-    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_a }));
 
     let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_a, [0.0, 0.0, 0.0]);
     app.world_mut().entity_mut(ship).insert(SurveyData {
@@ -932,10 +993,16 @@ fn test_ftl_survey_delivers_on_dock_at_player_system() {
     common::advance_time(&mut app, 1);
 
     let star = app.world().get::<StarSystem>(sys_b).unwrap();
-    assert!(star.surveyed, "System should be marked surveyed after delivery");
+    assert!(
+        star.surveyed,
+        "System should be marked surveyed after delivery"
+    );
 
     let survey_data = app.world().get::<SurveyData>(ship);
-    assert!(survey_data.is_none(), "Survey data should be cleared after delivery");
+    assert!(
+        survey_data.is_none(),
+        "Survey data should be cleared after delivery"
+    );
 }
 
 #[test]
@@ -943,18 +1010,30 @@ fn test_non_ftl_survey_marks_system_immediately() {
     let mut app = common::test_app();
 
     let _sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [3.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-B",
+        [3.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
 
     // #236: courier_mk1 now has FTL via derive — force ftl_range to 0 on
     // this instance so the test covers the non-FTL survey codepath.
     let ship = common::spawn_test_ship(
-        app.world_mut(), "Scout-1", "courier_mk1", sys_b, [3.0, 0.0, 0.0],
+        app.world_mut(),
+        "Scout-1",
+        "courier_mk1",
+        sys_b,
+        [3.0, 0.0, 0.0],
     );
     app.world_mut().get_mut::<Ship>(ship).unwrap().ftl_range = 0.0;
     *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
@@ -966,10 +1045,16 @@ fn test_non_ftl_survey_marks_system_immediately() {
     common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
 
     let star = app.world().get::<StarSystem>(sys_b).unwrap();
-    assert!(star.surveyed, "Non-FTL ship should mark system as surveyed immediately");
+    assert!(
+        star.surveyed,
+        "Non-FTL ship should mark system as surveyed immediately"
+    );
 
     let survey_data = app.world().get::<SurveyData>(ship);
-    assert!(survey_data.is_none(), "Non-FTL ship should not carry survey data");
+    assert!(
+        survey_data.is_none(),
+        "Non-FTL ship should not carry survey data"
+    );
 }
 
 // --- Regression: FTL must not jump to unsurveyed systems ---
@@ -979,20 +1064,30 @@ fn test_plan_ftl_route_rejects_unsurveyed_destination() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false, // surveyed=true
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false, // surveyed=true
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, false, false, // surveyed=false
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        false,
+        false, // surveyed=false
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
 
     // Queue MoveTo unsurveyed system
-    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
-        QueuedCommand::MoveTo { system: sys_b },
-    );
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::MoveTo { system: sys_b });
 
     // Process command queue — should NOT FTL (unsurveyed), should sublight
     common::advance_time(&mut app, 1);
@@ -1010,20 +1105,30 @@ fn test_plan_ftl_route_allows_surveyed_destination() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false, // surveyed=true
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false, // surveyed=true
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, true, false, // surveyed=true
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        true,
+        false, // surveyed=true
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
 
     // Queue MoveTo surveyed system within FTL range
-    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
-        QueuedCommand::MoveTo { system: sys_b },
-    );
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::MoveTo { system: sys_b });
 
     common::advance_time(&mut app, 1);
 
@@ -1040,23 +1145,34 @@ fn test_survey_return_uses_ftl_to_surveyed_home() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, false, false, // unsurveyed target
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        false,
+        false, // unsurveyed target
     );
 
-    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_a }));
 
     // Spawn FTL explorer docked at sys_b (as if it arrived by sublight and completed survey)
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_b, [5.0, 0.0, 0.0]);
 
     // Queue return MoveTo home (surveyed)
-    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
-        QueuedCommand::MoveTo { system: sys_a },
-    );
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::MoveTo { system: sys_a });
 
     common::advance_time(&mut app, 1);
 
@@ -1076,24 +1192,38 @@ fn test_multi_hop_ftl_route() {
 
     // A --8ly-- B --8ly-- C (all surveyed, FTL range 10ly, can't direct A→C at 16ly)
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let _sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [8.0, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [8.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
     let sys_c = common::spawn_test_system(
-        app.world_mut(), "System-C", [16.0, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-C",
+        [16.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
 
     // FTL range 10ly — can reach B from A, C from B, but NOT C from A directly
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
 
-    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
-        QueuedCommand::MoveTo { system: sys_c },
-    );
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::MoveTo { system: sys_c });
 
     // First tick: should FTL to intermediate hop (B)
     common::advance_time(&mut app, 1);
@@ -1107,7 +1237,10 @@ fn test_multi_hop_ftl_route() {
     // Queue should still have remaining hop(s) to C
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
     assert!(
-        queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_c)),
+        queue
+            .commands
+            .iter()
+            .any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_c)),
         "Queue should contain remaining MoveTo for final destination"
     );
 }
@@ -1124,23 +1257,37 @@ fn test_hybrid_ftl_sublight_route() {
     // FTL range 10ly: can FTL A→B, but C is unsurveyed so no FTL to C
     // Hybrid: FTL A→B, sublight B→C should be faster than sublight A→C direct
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, true, false, // surveyed
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        true,
+        false, // surveyed
     );
     let sys_c = common::spawn_test_system(
-        app.world_mut(), "System-C", [10.0, 0.0, 0.0],
-        0.7, false, false, // unsurveyed
+        app.world_mut(),
+        "System-C",
+        [10.0, 0.0, 0.0],
+        0.7,
+        false,
+        false, // unsurveyed
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
 
-    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
-        QueuedCommand::MoveTo { system: sys_c },
-    );
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::MoveTo { system: sys_c });
 
     common::advance_time(&mut app, 1);
 
@@ -1149,7 +1296,10 @@ fn test_hybrid_ftl_sublight_route() {
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
 
     let in_ftl_to_b = matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_b);
-    let has_move_to_b = queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_b));
+    let has_move_to_b = queue
+        .commands
+        .iter()
+        .any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_b));
 
     assert!(
         in_ftl_to_b || has_move_to_b,
@@ -1157,7 +1307,10 @@ fn test_hybrid_ftl_sublight_route() {
     );
 
     // C should still be in the queue for after the waypoint
-    let has_move_to_c = queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_c));
+    let has_move_to_c = queue
+        .commands
+        .iter()
+        .any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_c));
     assert!(has_move_to_c, "Final destination C should remain in queue");
 }
 
@@ -1166,20 +1319,33 @@ fn test_survey_data_not_delivered_at_wrong_system() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
     let sys_c = common::spawn_test_system(
-        app.world_mut(), "System-C", [10.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-C",
+        [10.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
 
     // Player stationed at System-A
-    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_a }));
 
     // Ship docked at System-C (NOT the player's system), carrying survey data for B
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_c, [10.0, 0.0, 0.0]);
@@ -1194,10 +1360,16 @@ fn test_survey_data_not_delivered_at_wrong_system() {
 
     // System-B should NOT be surveyed (ship is not at player's system)
     let star = app.world().get::<StarSystem>(sys_b).unwrap();
-    assert!(!star.surveyed, "Survey data should NOT be delivered at non-player system");
+    assert!(
+        !star.surveyed,
+        "Survey data should NOT be delivered at non-player system"
+    );
 
     // SurveyData should still be on ship
-    assert!(app.world().get::<SurveyData>(ship).is_some(), "SurveyData should remain on ship");
+    assert!(
+        app.world().get::<SurveyData>(ship).is_some(),
+        "SurveyData should remain on ship"
+    );
 }
 
 // --- Regression: Auto-insert move when Survey queued at wrong system ---
@@ -1207,20 +1379,30 @@ fn test_queued_survey_auto_inserts_move() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, false, false, // unsurveyed
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        false,
+        false, // unsurveyed
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
 
     // Queue Survey for system B while docked at A
-    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
-        QueuedCommand::Survey { system: sys_b },
-    );
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::Survey { system: sys_b });
 
     // Process: should auto-insert MoveTo before Survey
     common::advance_time(&mut app, 1);
@@ -1231,17 +1413,25 @@ fn test_queued_survey_auto_inserts_move() {
     let state = app.world().get::<ShipState>(ship).unwrap().clone();
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
     let in_sublight = matches!(state, ShipState::SubLight { .. });
-    let has_move_queued = queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_b));
+    let has_move_queued = queue
+        .commands
+        .iter()
+        .any(|cmd| matches!(cmd, QueuedCommand::MoveTo { system } if *system == sys_b));
     assert!(
         in_sublight || has_move_queued,
         "Ship should be in SubLight or have MoveTo queued. in_sublight={}, has_move={}, queue_len={}",
-        in_sublight, has_move_queued, queue.commands.len()
+        in_sublight,
+        has_move_queued,
+        queue.commands.len()
     );
 
     // Queue should still have Survey queued for after arrival
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
     assert!(
-        queue.commands.iter().any(|cmd| matches!(cmd, QueuedCommand::Survey { system } if *system == sys_b)),
+        queue
+            .commands
+            .iter()
+            .any(|cmd| matches!(cmd, QueuedCommand::Survey { system } if *system == sys_b)),
         "Survey should remain queued for after arrival"
     );
 }
@@ -1253,16 +1443,28 @@ fn test_command_queue_predicted_position() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
     let sys_c = common::spawn_test_system(
-        app.world_mut(), "System-C", [10.0, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-C",
+        [10.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
 
     let ship = spawn_ftl_explorer(app.world_mut(), "Scout", sys_a, [0.0, 0.0, 0.0]);
@@ -1289,21 +1491,33 @@ fn test_ftl_survey_uses_light_speed_when_faster() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [2.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-B",
+        [2.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
 
-    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_a }));
 
     // Set ftl_speed_multiplier very low so FTL is slower than light
     // At 0.05x, effective FTL speed = 0.5c, FTL return at 2 ly = 240 hd, light delay = 120 hd
     let empire = empire_entity(app.world_mut());
     {
-        let mut params = app.world_mut().get_mut::<technology::GlobalParams>(empire).unwrap();
+        let mut params = app
+            .world_mut()
+            .get_mut::<technology::GlobalParams>(empire)
+            .unwrap();
         params.ftl_speed_multiplier = 0.05;
     }
 
@@ -1317,10 +1531,16 @@ fn test_ftl_survey_uses_light_speed_when_faster() {
     common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
 
     let star = app.world().get::<StarSystem>(sys_b).unwrap();
-    assert!(star.surveyed, "System should be marked surveyed via light-speed propagation");
+    assert!(
+        star.surveyed,
+        "System should be marked surveyed via light-speed propagation"
+    );
 
     let survey_data = app.world().get::<SurveyData>(ship);
-    assert!(survey_data.is_none(), "Ship should not carry survey data when light-speed is faster");
+    assert!(
+        survey_data.is_none(),
+        "Ship should not carry survey data when light-speed is faster"
+    );
 }
 
 #[test]
@@ -1328,15 +1548,24 @@ fn test_ftl_survey_uses_carry_back_when_ftl_faster() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [2.0, 0.0, 0.0],
-        0.7, false, false,
+        app.world_mut(),
+        "System-B",
+        [2.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
     );
 
-    app.world_mut().spawn((Player, StationedAt { system: sys_a }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_a }));
 
     let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [2.0, 0.0, 0.0]);
     *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
@@ -1348,10 +1577,16 @@ fn test_ftl_survey_uses_carry_back_when_ftl_faster() {
     common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
 
     let star = app.world().get::<StarSystem>(sys_b).unwrap();
-    assert!(!star.surveyed, "System should NOT be marked surveyed when FTL return is faster");
+    assert!(
+        !star.surveyed,
+        "System should NOT be marked surveyed when FTL return is faster"
+    );
 
     let survey_data = app.world().get::<SurveyData>(ship);
-    assert!(survey_data.is_some(), "Ship should carry survey data for FTL carry-back");
+    assert!(
+        survey_data.is_some(),
+        "Ship should carry survey data for FTL carry-back"
+    );
 }
 
 // --- Regression: Non-FTL ship should not attempt FTL routing ---
@@ -1361,24 +1596,38 @@ fn test_non_ftl_ship_no_ftl_routing_loop() {
     let mut app = common::test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [5.0, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [5.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
 
     // #236: courier_mk1 now has FTL via derive — force ftl_range to 0 on
     // this instance to exercise the non-FTL routing path.
     let ship = common::spawn_test_ship(
-        app.world_mut(), "Courier-1", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+        app.world_mut(),
+        "Courier-1",
+        "courier_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
     );
     app.world_mut().get_mut::<Ship>(ship).unwrap().ftl_range = 0.0;
 
-    app.world_mut().get_mut::<CommandQueue>(ship).unwrap().commands.push(
-        QueuedCommand::MoveTo { system: sys_b },
-    );
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::MoveTo { system: sys_b });
 
     common::advance_time(&mut app, 1);
 
@@ -1391,7 +1640,10 @@ fn test_non_ftl_ship_no_ftl_routing_loop() {
 
     // Queue should be empty (command consumed)
     let queue = app.world().get::<CommandQueue>(ship).unwrap();
-    assert!(queue.commands.is_empty(), "Queue should be empty after command consumed");
+    assert!(
+        queue.commands.is_empty(),
+        "Queue should be empty after command consumed"
+    );
 }
 
 /// Hull modifiers from HullDefinition should be pushed to ShipModifiers
@@ -1413,8 +1665,14 @@ fn test_hull_modifiers_applied_to_ship() {
             base_speed: 0.85,
             base_evasion: 35.0,
             slots: vec![
-                HullSlot { slot_type: "utility".to_string(), count: 2 },
-                HullSlot { slot_type: "ftl".to_string(), count: 1 },
+                HullSlot {
+                    slot_type: "utility".to_string(),
+                    count: 2,
+                },
+                HullSlot {
+                    slot_type: "ftl".to_string(),
+                    count: 1,
+                },
             ],
             build_cost_minerals: Amt::units(150),
             build_cost_energy: Amt::units(80),
@@ -1438,14 +1696,7 @@ fn test_hull_modifiers_applied_to_ship() {
         });
     }
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sol",
-        [0.0, 0.0, 0.0],
-        0.4,
-        true,
-        false,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sol", [0.0, 0.0, 0.0], 0.4, true, false);
 
     let ship = {
         let world = app.world_mut();
@@ -1486,7 +1737,10 @@ fn test_hull_modifiers_applied_to_ship() {
     let mods = app.world().get::<ShipModifiers>(ship).unwrap();
     // survey_speed should have 1 modifier with multiplier 1.3
     assert_eq!(mods.survey_speed.modifiers().len(), 1);
-    assert_eq!(mods.survey_speed.modifiers()[0].id, "hull_scout_hull_ship.survey_speed");
+    assert_eq!(
+        mods.survey_speed.modifiers()[0].id,
+        "hull_scout_hull_ship.survey_speed"
+    );
     // speed should have 1 modifier with multiplier 1.15
     assert_eq!(mods.speed.modifiers().len(), 1);
     assert_eq!(mods.speed.modifiers()[0].id, "hull_scout_hull_ship.speed");
@@ -1513,23 +1767,37 @@ fn courier_route_resource_transport_picks_up_at_start() {
     let mut app = test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [1.0, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [1.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
     install_stockpile(app.world_mut(), sys_a, Amt::units(1000), Amt::units(800));
     install_stockpile(app.world_mut(), sys_b, Amt::ZERO, Amt::ZERO);
 
     let courier = common::spawn_test_ship(
-        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+        app.world_mut(),
+        "Hermes",
+        "courier_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
     );
-    app.world_mut().entity_mut(courier).insert(CourierRoute::new(
-        vec![sys_a, sys_b],
-        CourierMode::ResourceTransport,
-    ));
+    app.world_mut()
+        .entity_mut(courier)
+        .insert(CourierRoute::new(
+            vec![sys_a, sys_b],
+            CourierMode::ResourceTransport,
+        ));
 
     // First tick: the courier is at sys_a (its current waypoint), so it
     // should load up to capacity and queue MoveTo sys_b.
@@ -1537,11 +1805,17 @@ fn courier_route_resource_transport_picks_up_at_start() {
 
     let cargo = app.world().get::<Cargo>(courier).unwrap();
     let cap = COURIER_DEFAULT_CARGO_CAPACITY;
-    assert_eq!(cargo.minerals, cap, "courier should be loaded with minerals");
+    assert_eq!(
+        cargo.minerals, cap,
+        "courier should be loaded with minerals"
+    );
     assert_eq!(cargo.energy, cap, "courier should be loaded with energy");
 
     let route = app.world().get::<CourierRoute>(courier).unwrap();
-    assert_eq!(route.current_index, 1, "next waypoint should be index 1 (sys_b)");
+    assert_eq!(
+        route.current_index, 1,
+        "next waypoint should be index 1 (sys_b)"
+    );
 
     let stockpile_a = app.world().get::<ResourceStockpile>(sys_a).unwrap();
     assert_eq!(stockpile_a.minerals, Amt::units(1000).sub(cap));
@@ -1553,12 +1827,20 @@ fn courier_route_resource_transport_delivers_at_destination() {
     let mut app = test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [0.5, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [0.5, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
     install_stockpile(app.world_mut(), sys_a, Amt::ZERO, Amt::ZERO);
     install_stockpile(app.world_mut(), sys_b, Amt::ZERO, Amt::ZERO);
@@ -1568,7 +1850,11 @@ fn courier_route_resource_transport_delivers_at_destination() {
     // attempt to pick up (nothing available), and queue the move back
     // toward sys_a (the next waypoint after wrapping).
     let courier = common::spawn_test_ship(
-        app.world_mut(), "Hermes", "courier_mk1", sys_b, [0.5, 0.0, 0.0],
+        app.world_mut(),
+        "Hermes",
+        "courier_mk1",
+        sys_b,
+        [0.5, 0.0, 0.0],
     );
     app.world_mut().entity_mut(courier).insert(Cargo {
         minerals: Amt::units(300),
@@ -1587,15 +1873,24 @@ fn courier_route_resource_transport_delivers_at_destination() {
     let stockpile_b = app.world().get::<ResourceStockpile>(sys_b).unwrap();
     let expected_remaining_m = Amt::units(300).sub(cap.min(Amt::units(300)));
     let expected_remaining_e = Amt::units(100).sub(cap.min(Amt::units(100)));
-    assert_eq!(stockpile_b.minerals, expected_remaining_m, "minerals after deliver+pickup");
-    assert_eq!(stockpile_b.energy, expected_remaining_e, "energy after deliver+pickup");
+    assert_eq!(
+        stockpile_b.minerals, expected_remaining_m,
+        "minerals after deliver+pickup"
+    );
+    assert_eq!(
+        stockpile_b.energy, expected_remaining_e,
+        "energy after deliver+pickup"
+    );
 
     let cargo = app.world().get::<Cargo>(courier).unwrap();
     assert_eq!(cargo.minerals, cap.min(Amt::units(300)));
     assert_eq!(cargo.energy, cap.min(Amt::units(100)));
 
     let route = app.world().get::<CourierRoute>(courier).unwrap();
-    assert_eq!(route.current_index, 0, "after sys_b, index should wrap to sys_a");
+    assert_eq!(
+        route.current_index, 0,
+        "after sys_b, index should wrap to sys_a"
+    );
 
     // The queue may already be empty in the same frame if process_command_queue
     // consumed the MoveTo and started travel — verify by checking either
@@ -1605,7 +1900,10 @@ fn courier_route_resource_transport_delivers_at_destination() {
     let dispatched = !queue.commands.is_empty()
         || matches!(state, ShipState::SubLight { target_system: Some(t), .. } if *t == sys_a)
         || matches!(state, ShipState::InFTL { destination_system, .. } if *destination_system == sys_a);
-    assert!(dispatched, "courier should be dispatched toward sys_a (queued or in transit)");
+    assert!(
+        dispatched,
+        "courier should be dispatched toward sys_a (queued or in transit)"
+    );
 }
 
 #[test]
@@ -1615,23 +1913,37 @@ fn courier_route_resource_transport_full_round_trip() {
     let mut app = test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [0.5, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [0.5, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
     install_stockpile(app.world_mut(), sys_a, Amt::units(1000), Amt::units(1000));
     install_stockpile(app.world_mut(), sys_b, Amt::ZERO, Amt::ZERO);
 
     let courier = common::spawn_test_ship(
-        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+        app.world_mut(),
+        "Hermes",
+        "courier_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
     );
-    app.world_mut().entity_mut(courier).insert(CourierRoute::new(
-        vec![sys_a, sys_b],
-        CourierMode::ResourceTransport,
-    ));
+    app.world_mut()
+        .entity_mut(courier)
+        .insert(CourierRoute::new(
+            vec![sys_a, sys_b],
+            CourierMode::ResourceTransport,
+        ));
 
     // Tick 1: pickup at sys_a, queue MoveTo sys_b.
     common::advance_time(&mut app, 1);
@@ -1657,12 +1969,16 @@ fn courier_route_resource_transport_full_round_trip() {
     assert!(
         cargo_after.minerals > Amt::ZERO || cargo_after.energy > Amt::ZERO,
         "Courier should be carrying a fresh load after sys_b dock; got M:{} E:{}",
-        cargo_after.minerals, cargo_after.energy
+        cargo_after.minerals,
+        cargo_after.energy
     );
 
     // Route index should have advanced past sys_b (wrapped to 0 = sys_a).
     let route_after = app.world().get::<CourierRoute>(courier).unwrap();
-    assert_eq!(route_after.current_index, 0, "route should wrap back to sys_a");
+    assert_eq!(
+        route_after.current_index, 0,
+        "route should wrap back to sys_a"
+    );
 }
 
 #[test]
@@ -1670,22 +1986,31 @@ fn courier_route_paused_does_not_dispatch() {
     let mut app = test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [1.0, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [1.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
     install_stockpile(app.world_mut(), sys_a, Amt::units(500), Amt::units(500));
 
     let courier = common::spawn_test_ship(
-        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+        app.world_mut(),
+        "Hermes",
+        "courier_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
     );
-    let mut route = CourierRoute::new(
-        vec![sys_a, sys_b],
-        CourierMode::ResourceTransport,
-    );
+    let mut route = CourierRoute::new(vec![sys_a, sys_b], CourierMode::ResourceTransport);
     route.paused = true;
     app.world_mut().entity_mut(courier).insert(route);
 
@@ -1695,7 +2020,10 @@ fn courier_route_paused_does_not_dispatch() {
     assert_eq!(cargo.minerals, Amt::ZERO, "paused route should not pick up");
     assert_eq!(cargo.energy, Amt::ZERO, "paused route should not pick up");
     let queue = app.world().get::<CommandQueue>(courier).unwrap();
-    assert!(queue.commands.is_empty(), "paused route should not queue moves");
+    assert!(
+        queue.commands.is_empty(),
+        "paused route should not queue moves"
+    );
 }
 
 #[test]
@@ -1703,16 +2031,28 @@ fn courier_route_knowledge_relay_delivers_pre_loaded_cargo() {
     let mut app = test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [0.3, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [0.3, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
     let sys_x = common::spawn_test_system(
-        app.world_mut(), "System-X", [10.0, 0.0, 0.0],
-        0.5, false, false,
+        app.world_mut(),
+        "System-X",
+        [10.0, 0.0, 0.0],
+        0.5,
+        false,
+        false,
     );
 
     // Empire's KnowledgeStore: install a stale snapshot of sys_x (observed_at=5).
@@ -1738,33 +2078,45 @@ fn courier_route_knowledge_relay_delivers_pre_loaded_cargo() {
     // current_index points at sys_b so the tick will execute deliver+pickup
     // immediately.
     let courier = common::spawn_test_ship(
-        app.world_mut(), "Hermes", "courier_mk1", sys_b, [0.3, 0.0, 0.0],
+        app.world_mut(),
+        "Hermes",
+        "courier_mk1",
+        sys_b,
+        [0.3, 0.0, 0.0],
     );
     let mut route = CourierRoute::new(vec![sys_a, sys_b], CourierMode::KnowledgeRelay);
     route.current_index = 1;
     app.world_mut().entity_mut(courier).insert(route);
-    app.world_mut().entity_mut(courier).insert(CourierKnowledgeCargo {
-        entries: vec![SystemKnowledge {
-            system: sys_x,
-            observed_at: 50,
-            received_at: 50,
-            data: SystemSnapshot {
-                name: "System-X".to_string(),
-                position: [10.0, 0.0, 0.0],
-                surveyed: true,
-                ..Default::default()
-            },
-            source: macrocosmo::knowledge::ObservationSource::Direct,
-        }],
-    });
+    app.world_mut()
+        .entity_mut(courier)
+        .insert(CourierKnowledgeCargo {
+            entries: vec![SystemKnowledge {
+                system: sys_x,
+                observed_at: 50,
+                received_at: 50,
+                data: SystemSnapshot {
+                    name: "System-X".to_string(),
+                    position: [10.0, 0.0, 0.0],
+                    surveyed: true,
+                    ..Default::default()
+                },
+                source: macrocosmo::knowledge::ObservationSource::Direct,
+            }],
+        });
 
     common::advance_time(&mut app, 1);
 
     let empire = common::empire_entity(app.world_mut());
     let store = app.world().get::<KnowledgeStore>(empire).unwrap();
     let entry = store.get(sys_x).expect("sys_x knowledge entry");
-    assert_eq!(entry.observed_at, 50, "newer cargo snapshot should win on delivery");
-    assert!(entry.data.surveyed, "newer snapshot's surveyed flag should propagate");
+    assert_eq!(
+        entry.observed_at, 50,
+        "newer cargo snapshot should win on delivery"
+    );
+    assert!(
+        entry.data.surveyed,
+        "newer snapshot's surveyed flag should propagate"
+    );
 }
 
 #[test]
@@ -1772,12 +2124,20 @@ fn courier_route_knowledge_relay_pickup_refreshes_received_at() {
     let mut app = test_app();
 
     let sys_a = common::spawn_test_system(
-        app.world_mut(), "System-A", [0.0, 0.0, 0.0],
-        1.0, true, false,
+        app.world_mut(),
+        "System-A",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
     );
     let sys_b = common::spawn_test_system(
-        app.world_mut(), "System-B", [0.3, 0.0, 0.0],
-        0.7, true, false,
+        app.world_mut(),
+        "System-B",
+        [0.3, 0.0, 0.0],
+        0.7,
+        true,
+        false,
     );
 
     // Empire knowledge has a stale entry for sys_a observed long ago.
@@ -1799,22 +2159,40 @@ fn courier_route_knowledge_relay_pickup_refreshes_received_at() {
     }
 
     let courier = common::spawn_test_ship(
-        app.world_mut(), "Hermes", "courier_mk1", sys_a, [0.0, 0.0, 0.0],
+        app.world_mut(),
+        "Hermes",
+        "courier_mk1",
+        sys_a,
+        [0.0, 0.0, 0.0],
     );
-    app.world_mut().entity_mut(courier).insert(CourierRoute::new(
-        vec![sys_a, sys_b],
-        CourierMode::KnowledgeRelay,
-    ));
+    app.world_mut()
+        .entity_mut(courier)
+        .insert(CourierRoute::new(
+            vec![sys_a, sys_b],
+            CourierMode::KnowledgeRelay,
+        ));
     // Set the clock high so the pickup's received_at update is observable.
     app.world_mut().resource_mut::<GameClock>().elapsed = 100;
 
     app.update();
 
-    let bag = app.world().get::<CourierKnowledgeCargo>(courier)
+    let bag = app
+        .world()
+        .get::<CourierKnowledgeCargo>(courier)
         .expect("courier should have CourierKnowledgeCargo after first tick");
-    assert!(!bag.entries.is_empty(), "bag should have copied store entries on pickup");
-    let sys_a_entry = bag.entries.iter().find(|k| k.system == sys_a).expect("sys_a entry");
-    assert_eq!(sys_a_entry.received_at, 100, "received_at should refresh to current time on pickup");
+    assert!(
+        !bag.entries.is_empty(),
+        "bag should have copied store entries on pickup"
+    );
+    let sys_a_entry = bag
+        .entries
+        .iter()
+        .find(|k| k.system == sys_a)
+        .expect("sys_a entry");
+    assert_eq!(
+        sys_a_entry.received_at, 100,
+        "received_at should refresh to current time on pickup"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1834,7 +2212,10 @@ fn install_refit_fixture(app: &mut App) {
         base_hp: 50.0,
         base_speed: 0.75,
         base_evasion: 30.0,
-        slots: vec![HullSlot { slot_type: "weapon".into(), count: 1 }],
+        slots: vec![HullSlot {
+            slot_type: "weapon".into(),
+            count: 1,
+        }],
         build_cost_minerals: Amt::units(200),
         build_cost_energy: Amt::units(100),
         build_time: 60,
@@ -1907,9 +2288,12 @@ fn spawn_rev_test_ship(world: &mut World, system: Entity, design_revision: u64) 
             ShipState::Docked { system },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
-                hull: 50.0, hull_max: 50.0,
-                armor: 0.0, armor_max: 0.0,
-                shield: 0.0, shield_max: 0.0,
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
                 shield_regen: 0.0,
             },
             CommandQueue::default(),
@@ -1923,16 +2307,22 @@ fn spawn_rev_test_ship(world: &mut World, system: Entity, design_revision: u64) 
 
 #[test]
 fn editing_design_bumps_revision_flagging_existing_ships() {
-    use macrocosmo::ship_design::{
-        DesignSlotAssignment, ShipDesignDefinition, ShipDesignRegistry,
-    };
+    use macrocosmo::ship_design::{DesignSlotAssignment, ShipDesignDefinition, ShipDesignRegistry};
     let mut app = test_app();
     install_refit_fixture(&mut app);
 
-    let sys = app.world_mut().spawn((
-        StarSystem { name: "S".into(), star_type: "g_main".into(), is_capital: false, surveyed: true },
-        Position::from([0.0, 0.0, 0.0]),
-    )).id();
+    let sys = app
+        .world_mut()
+        .spawn((
+            StarSystem {
+                name: "S".into(),
+                star_type: "g_main".into(),
+                is_capital: false,
+                surveyed: true,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+        ))
+        .id();
 
     let ship = spawn_rev_test_ship(app.world_mut(), sys, 0);
 
@@ -1954,33 +2344,48 @@ fn editing_design_bumps_revision_flagging_existing_ships() {
     assert_eq!(new_rev, 1);
 
     // Ship's recorded revision should now be behind the registry's.
-    let design = app.world().resource::<ShipDesignRegistry>().get("rev_test").unwrap();
+    let design = app
+        .world()
+        .resource::<ShipDesignRegistry>()
+        .get("rev_test")
+        .unwrap();
     let ship_rev = app.world().get::<Ship>(ship).unwrap().design_revision;
     assert!(
         ship_rev < design.revision,
         "ship should be flagged as needing refit (ship={} < design={})",
-        ship_rev, design.revision,
+        ship_rev,
+        design.revision,
     );
 }
 
 #[test]
 fn refit_completes_brings_ship_in_sync_with_design() {
-    use macrocosmo::ship_design::{
-        DesignSlotAssignment, ShipDesignRegistry,
-    };
+    use macrocosmo::ship_design::{DesignSlotAssignment, ShipDesignRegistry};
     let mut app = test_app();
     install_refit_fixture(&mut app);
 
-    let sys = app.world_mut().spawn((
-        StarSystem { name: "S".into(), star_type: "g_main".into(), is_capital: false, surveyed: true },
-        Position::from([0.0, 0.0, 0.0]),
-    )).id();
+    let sys = app
+        .world_mut()
+        .spawn((
+            StarSystem {
+                name: "S".into(),
+                star_type: "g_main".into(),
+                is_capital: false,
+                surveyed: true,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+        ))
+        .id();
 
     let ship = spawn_rev_test_ship(app.world_mut(), sys, 0);
 
     // Edit the design (revision 0 -> 1) and capture the new modules.
-    let mut design = app.world().resource::<ShipDesignRegistry>()
-        .get("rev_test").unwrap().clone();
+    let mut design = app
+        .world()
+        .resource::<ShipDesignRegistry>()
+        .get("rev_test")
+        .unwrap()
+        .clone();
     design.modules = vec![DesignSlotAssignment {
         slot_type: "weapon".into(),
         module_id: "laser_mk2".into(),
@@ -2029,16 +2434,22 @@ fn refit_in_flight_does_not_apply_when_design_edited_again() {
     // If the design is bumped *during* a refit, the ship still completes
     // refit to the revision recorded when refit started — it remains "behind"
     // the latest design but isn't stuck at the older revision either.
-    use macrocosmo::ship_design::{
-        DesignSlotAssignment, ShipDesignRegistry,
-    };
+    use macrocosmo::ship_design::{DesignSlotAssignment, ShipDesignRegistry};
     let mut app = test_app();
     install_refit_fixture(&mut app);
 
-    let sys = app.world_mut().spawn((
-        StarSystem { name: "S".into(), star_type: "g_main".into(), is_capital: false, surveyed: true },
-        Position::from([0.0, 0.0, 0.0]),
-    )).id();
+    let sys = app
+        .world_mut()
+        .spawn((
+            StarSystem {
+                name: "S".into(),
+                star_type: "g_main".into(),
+                is_capital: false,
+                surveyed: true,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+        ))
+        .id();
     let ship = spawn_rev_test_ship(app.world_mut(), sys, 0);
 
     // Bump design once and start refit at target=1.
@@ -2057,7 +2468,8 @@ fn refit_in_flight_does_not_apply_when_design_edited_again() {
         started_at: now,
         completes_at: now + 5,
         new_modules: vec![EquippedModule {
-            slot_type: "weapon".into(), module_id: "laser_mk2".into(),
+            slot_type: "weapon".into(),
+            module_id: "laser_mk2".into(),
         }],
         target_revision: 1,
     };
@@ -2080,8 +2492,12 @@ fn refit_in_flight_does_not_apply_when_design_edited_again() {
     // Ship is at target_revision 1, still behind the live design (2) — that's
     // the expected behavior: a fresh refit must be triggered.
     assert_eq!(ship_comp.design_revision, 1);
-    let live_rev = app.world().resource::<ShipDesignRegistry>()
-        .get("rev_test").unwrap().revision;
+    let live_rev = app
+        .world()
+        .resource::<ShipDesignRegistry>()
+        .get("rev_test")
+        .unwrap()
+        .revision;
     assert_eq!(live_rev, 2);
     assert!(ship_comp.design_revision < live_rev);
 }
@@ -2095,42 +2511,38 @@ fn test_sublight_arrival_with_no_target_system_transitions_to_loitering() {
     let mut app = test_app();
 
     // System at origin (so player has a base for tests using KnowledgeStore later).
-    let _sys = spawn_test_system(
-        app.world_mut(),
-        "Origin",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        false,
-    );
+    let _sys = spawn_test_system(app.world_mut(), "Origin", [0.0, 0.0, 0.0], 1.0, true, false);
 
     // Travel time for 1 LY at 0.75c = 80 hexadies.
     let travel_time = sublight_travel_hexadies(1.0, 0.75);
     assert_eq!(travel_time, 80);
 
     let dest = [1.0_f64, 0.0, 0.0];
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Loiterer".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-        },
-        ShipState::SubLight {
-            origin: [0.0, 0.0, 0.0],
-            destination: dest,
-            target_system: None,
-            departed_at: 0,
-            arrival_at: travel_time,
-        },
-        Position::from([0.0, 0.0, 0.0]),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Loiterer".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+            },
+            ShipState::SubLight {
+                origin: [0.0, 0.0, 0.0],
+                destination: dest,
+                target_system: None,
+                departed_at: 0,
+                arrival_at: travel_time,
+            },
+            Position::from([0.0, 0.0, 0.0]),
+        ))
+        .id();
 
     advance_time(&mut app, travel_time);
 
@@ -2160,14 +2572,7 @@ fn test_move_to_coordinates_command_results_in_loitering_arrival() {
     // test_app() already spawns the empire entity.
     let mut app = test_app();
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Origin",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Origin", [0.0, 0.0, 0.0], 1.0, true, true);
 
     let ship = common::spawn_test_ship(
         app.world_mut(),
@@ -2188,8 +2593,15 @@ fn test_move_to_coordinates_command_results_in_loitering_arrival() {
     {
         let state = app.world().get::<ShipState>(ship).unwrap();
         match state {
-            ShipState::SubLight { target_system, destination, .. } => {
-                assert_eq!(*target_system, None, "MoveToCoordinates must use target_system=None");
+            ShipState::SubLight {
+                target_system,
+                destination,
+                ..
+            } => {
+                assert_eq!(
+                    *target_system, None,
+                    "MoveToCoordinates must use target_system=None"
+                );
                 assert!((destination[0] - target[0]).abs() < 1e-9);
             }
             _ => panic!("Expected SubLight after queue dispatch"),
@@ -2205,8 +2617,10 @@ fn test_move_to_coordinates_command_results_in_loitering_arrival() {
         ShipState::Loitering { position } => {
             assert!((position[0] - target[0]).abs() < 1e-9);
         }
-        _ => panic!("Expected Loitering after MoveToCoordinates arrival, got {:?}",
-            std::mem::discriminant(state)),
+        _ => panic!(
+            "Expected Loitering after MoveToCoordinates arrival, got {:?}",
+            std::mem::discriminant(state)
+        ),
     }
 }
 
@@ -2239,31 +2653,39 @@ fn test_loitering_ship_not_engaged_by_resolve_combat() {
 
     // Spawn a Loitering ship at the SAME coordinates as the hostile system but with
     // ShipState::Loitering — combat should ignore it because it's not Docked.
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Loiter-1".to_string(),
-            design_id: "courier_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.85,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-        },
-        ShipState::Loitering { position: [0.0, 0.0, 0.0] },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 0.01, hull_max: 20.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Loiter-1".to_string(),
+                design_id: "courier_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.85,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+            },
+            ShipState::Loitering {
+                position: [0.0, 0.0, 0.0],
+            },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 0.01,
+                hull_max: 20.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     // Run several ticks of combat — the Loitering ship would be obliterated if it
     // were in combat (hull is 0.01 vs strength 100), but it must survive.
@@ -2283,53 +2705,49 @@ fn test_loitering_ship_can_leave_via_move_to_system() {
     let mut app = test_app();
 
     // Two systems: origin (capital, surveyed) and target.
-    let _sys_origin = spawn_test_system(
-        app.world_mut(),
-        "Origin",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
-    let sys_target = spawn_test_system(
-        app.world_mut(),
-        "Target",
-        [2.0, 0.0, 0.0],
-        0.7,
-        true,
-        false,
-    );
+    let _sys_origin =
+        spawn_test_system(app.world_mut(), "Origin", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys_target =
+        spawn_test_system(app.world_mut(), "Target", [2.0, 0.0, 0.0], 0.7, true, false);
 
     // Spawn a non-FTL ship at deep-space coordinates (1.0, 0.0, 0.0), Loitering.
-    let ship = app.world_mut().spawn((
-        Ship {
-            name: "Loiterer".to_string(),
-            design_id: "courier_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.85,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-        },
-        ShipState::Loitering { position: [1.0, 0.0, 0.0] },
-        Position::from([1.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 35.0, hull_max: 35.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue {
-            commands: vec![QueuedCommand::MoveTo { system: sys_target }],
-            ..Default::default()
-        },
-        Cargo::default(),
-        RulesOfEngagement::default(),
-    )).id();
+    let ship = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Loiterer".to_string(),
+                design_id: "courier_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.85,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+            },
+            ShipState::Loitering {
+                position: [1.0, 0.0, 0.0],
+            },
+            Position::from([1.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 35.0,
+                hull_max: 35.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue {
+                commands: vec![QueuedCommand::MoveTo { system: sys_target }],
+                ..Default::default()
+            },
+            Cargo::default(),
+            RulesOfEngagement::default(),
+        ))
+        .id();
 
     // After one tick, the Loitering ship should have entered SubLight toward sys_target.
     advance_time(&mut app, 1);
@@ -2337,8 +2755,11 @@ fn test_loitering_ship_can_leave_via_move_to_system() {
     let state = app.world().get::<ShipState>(ship).unwrap();
     match state {
         ShipState::SubLight { target_system, .. } => {
-            assert_eq!(*target_system, Some(sys_target),
-                "Loitering->MoveTo must enter SubLight with the target system set");
+            assert_eq!(
+                *target_system,
+                Some(sys_target),
+                "Loitering->MoveTo must enter SubLight with the target system set"
+            );
         }
         _ => panic!(
             "Expected SubLight after MoveTo from Loitering, got {:?}",
@@ -2403,7 +2824,8 @@ fn test_scout_command_dispatches_ship() {
         true, // surveyed so FTL route works
         false,
     );
-    app.world_mut().spawn((Player, StationedAt { system: sys_home }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_home }));
 
     let ship = spawn_scout_ship(app.world_mut(), sys_home, [0.0, 0.0, 0.0]);
 
@@ -2481,9 +2903,8 @@ fn test_scout_report_via_ftl_comm() {
     // empire KnowledgeStore with source=Scout and observed_at = observation
     // completion time.
     use macrocosmo::deep_space::{
-        pair_relay_command, CapabilityParams, CommDirection, DeepSpaceStructure,
-        DeliverableMetadata, ResourceCost, StructureDefinition, StructureHitpoints,
-        StructureRegistry,
+        CapabilityParams, CommDirection, DeepSpaceStructure, DeliverableMetadata, ResourceCost,
+        StructureDefinition, StructureHitpoints, StructureRegistry, pair_relay_command,
     };
     use std::collections::HashMap;
 
@@ -2523,7 +2944,8 @@ fn test_scout_report_via_ftl_comm() {
         true,
         false,
     );
-    app.world_mut().spawn((Player, StationedAt { system: sys_home }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_home }));
 
     // Relay A near home (within 3 ly of player at home origin).
     let relay_a = app
@@ -2557,8 +2979,13 @@ fn test_scout_report_via_ftl_comm() {
             Position::from([19.0, 0.0, 0.0]),
         ))
         .id();
-    pair_relay_command(app.world_mut(), relay_a, relay_b, CommDirection::Bidirectional)
-        .expect("pairing");
+    pair_relay_command(
+        app.world_mut(),
+        relay_a,
+        relay_b,
+        CommDirection::Bidirectional,
+    )
+    .expect("pairing");
 
     // Scout ship with FTL range 10 — can't reach target in one hop, but
     // we'll teleport it manually to simplify the test (skip movement logic).
@@ -2617,15 +3044,10 @@ fn test_scout_report_via_return() {
     let mut app = test_app();
     let sys_home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
     // Target at 5 ly (FTL-reachable direct jump).
-    let sys_target = spawn_test_system(
-        app.world_mut(),
-        "Target",
-        [5.0, 0.0, 0.0],
-        0.5,
-        true,
-        false,
-    );
-    app.world_mut().spawn((Player, StationedAt { system: sys_home }));
+    let sys_target =
+        spawn_test_system(app.world_mut(), "Target", [5.0, 0.0, 0.0], 0.5, true, false);
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys_home }));
 
     let ship = spawn_scout_ship(app.world_mut(), sys_target, [5.0, 0.0, 0.0]);
 
@@ -2713,22 +3135,9 @@ fn test_scout_report_via_return() {
 #[test]
 fn test_moveto_from_loitering_routes_ship_out() {
     let mut app = test_app();
-    let sys_home = spawn_test_system(
-        app.world_mut(),
-        "Home",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        false,
-    );
-    let sys_target = spawn_test_system(
-        app.world_mut(),
-        "Target",
-        [5.0, 0.0, 0.0],
-        1.0,
-        true,
-        false,
-    );
+    let sys_home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, false);
+    let sys_target =
+        spawn_test_system(app.world_mut(), "Target", [5.0, 0.0, 0.0], 1.0, true, false);
 
     let loiter_pos = [2.0, 0.0, 0.0];
     let ship = app
@@ -2746,7 +3155,9 @@ fn test_moveto_from_loitering_routes_ship_out() {
                 home_port: sys_home,
                 design_revision: 0,
             },
-            ShipState::Loitering { position: loiter_pos },
+            ShipState::Loitering {
+                position: loiter_pos,
+            },
             Position::from(loiter_pos),
             ShipHitpoints {
                 hull: 50.0,

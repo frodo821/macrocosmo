@@ -108,10 +108,7 @@ pub fn process_messages(
                 }
                 MessageContent::Report(report) => {
                     let age = clock.elapsed - report.info_timestamp;
-                    info!(
-                        "Report received (information age: {} sd)",
-                        age
-                    );
+                    info!("Report received (information age: {} sd)", age);
                 }
             }
             commands.entity(entity).despawn();
@@ -162,8 +159,14 @@ pub struct PendingCommand {
 /// the full payload at send time (defs live in `StructureRegistry`).
 #[derive(Clone, Debug)]
 pub enum RemoteCommand {
-    BuildShip { design_id: String },
-    SetProductionFocus { minerals: f64, energy: f64, research: f64 },
+    BuildShip {
+        design_id: String,
+    },
+    SetProductionFocus {
+        minerals: f64,
+        energy: f64,
+        research: f64,
+    },
     Colony(ColonyCommand),
     ShipBuild {
         host_colony: Entity,
@@ -178,6 +181,22 @@ pub enum RemoteCommand {
         minerals_cost: crate::amount::Amt,
         energy_cost: crate::amount::Amt,
         build_time: i64,
+    },
+    /// #275: Cancel a planet- or system-level building order (construction,
+    /// demolition, or upgrade) by stable `order_id`. Scope is derived at
+    /// arrival by which queue holds the id — the cancel command itself
+    /// doesn't carry scope, which keeps the send-side UI simple and
+    /// robust against queue shifts during light-speed transit.
+    CancelBuildingOrder {
+        order_id: u64,
+    },
+    /// #275: Cancel a ship / deliverable `BuildOrder` by stable
+    /// `order_id`. Ship orders live on a specific `host_colony`'s
+    /// `BuildQueue`, so we carry that entity explicitly — the id alone
+    /// isn't scoped across colonies.
+    CancelShipOrder {
+        host_colony: Entity,
+        order_id: u64,
     },
 }
 
@@ -221,19 +240,31 @@ impl RemoteCommand {
             RemoteCommand::BuildShip { design_id } => format!("Build ship: {}", design_id),
             RemoteCommand::SetProductionFocus { .. } => "Set production focus".to_string(),
             RemoteCommand::Colony(cc) => match &cc.kind {
-                BuildingKind::Queue { building_id, target_slot } => {
+                BuildingKind::Queue {
+                    building_id,
+                    target_slot,
+                } => {
                     format!("Build {} → slot {}", building_id, target_slot)
                 }
                 BuildingKind::Demolish { target_slot } => {
                     format!("Demolish slot {}", target_slot)
                 }
-                BuildingKind::Upgrade { slot_index, target_id } => {
+                BuildingKind::Upgrade {
+                    slot_index,
+                    target_id,
+                } => {
                     format!("Upgrade slot {} → {}", slot_index, target_id)
                 }
             },
             RemoteCommand::ShipBuild { design_id, .. } => format!("Build ship: {}", design_id),
             RemoteCommand::DeliverableBuild { display_name, .. } => {
                 format!("Build deliverable: {}", display_name)
+            }
+            RemoteCommand::CancelBuildingOrder { order_id } => {
+                format!("Cancel building order #{}", order_id)
+            }
+            RemoteCommand::CancelShipOrder { order_id, .. } => {
+                format!("Cancel ship order #{}", order_id)
             }
         }
     }
@@ -259,7 +290,10 @@ pub fn dispatch_pending_colony_commands(
     stars: Query<&crate::components::Position, With<crate::galaxy::StarSystem>>,
     ship_positions: Query<&crate::components::Position, With<crate::ship::Ship>>,
     player_q: Query<
-        (&crate::player::StationedAt, Option<&crate::player::AboardShip>),
+        (
+            &crate::player::StationedAt,
+            Option<&crate::player::AboardShip>,
+        ),
         With<crate::player::Player>,
     >,
     mut empire_q: Query<&mut CommandLog, With<crate::player::PlayerEmpire>>,
@@ -351,6 +385,7 @@ pub fn process_pending_commands(
     ship_design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     mut colonies: crate::colony::remote::ApplyColoniesQuery,
     mut sys_buildings_q: crate::colony::remote::ApplySystemBuildingsQuery,
+    planets: crate::colony::remote::ApplyPlanetsQuery,
 ) {
     let Ok((mut command_log, construction_params)) = empire_q.single_mut() else {
         return;
@@ -378,6 +413,7 @@ pub fn process_pending_commands(
                 bldg_time_mod,
                 &mut colonies,
                 &mut sys_buildings_q,
+                &planets,
             );
 
             for entry in command_log.entries.iter_mut() {
@@ -394,7 +430,6 @@ pub fn process_pending_commands(
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Existing helpers

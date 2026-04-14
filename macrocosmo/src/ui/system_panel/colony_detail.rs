@@ -1,14 +1,17 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceStockpile};
+use crate::amount::{Amt, SignedAmt};
+use crate::colony::{
+    BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, ConstructionParams,
+    FoodConsumption, MaintenanceCost, Production, ResourceStockpile,
+};
 use crate::communication::{
     BuildingKind, BuildingScope, ColonyCommand, PendingColonyDispatch, PendingColonyDispatches,
 };
+use crate::galaxy::SystemAttributes;
 use crate::knowledge::{ColonySnapshot, ObservationSource, SystemKnowledge};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
-use crate::galaxy::SystemAttributes;
-use crate::amount::{Amt, SignedAmt};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry, JobSlot};
 use crate::ui::ColonyPanelTab;
@@ -40,8 +43,21 @@ pub(super) fn draw_colony_detail(
         Option<&ColonyJobs>,
         Option<&ColonyJobRates>,
     )>,
-    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&crate::colony::ResourceCapacity>), With<crate::galaxy::StarSystem>>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    system_stockpiles: &mut Query<
+        (
+            &mut ResourceStockpile,
+            Option<&crate::colony::ResourceCapacity>,
+        ),
+        With<crate::galaxy::StarSystem>,
+    >,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     construction_params: &ConstructionParams,
     planets: &Query<&crate::galaxy::Planet>,
     _hull_registry: &crate::ship_design::HullRegistry,
@@ -64,8 +80,12 @@ pub(super) fn draw_colony_detail(
     );
 
     if !is_local_system {
-        let snapshot = k_data
-            .and_then(|k| k.data.colonies.iter().find(|c| c.planet_entity == planet_entity));
+        let snapshot = k_data.and_then(|k| {
+            k.data
+                .colonies
+                .iter()
+                .find(|c| c.planet_entity == planet_entity)
+        });
         match snapshot {
             None => {
                 ui.label(
@@ -80,7 +100,9 @@ pub(super) fn draw_colony_detail(
             }
             Some(cs) => {
                 let age = k_data.map(|k| clock_elapsed - k.observed_at).unwrap_or(0);
-                let source = k_data.map(|k| k.source).unwrap_or(ObservationSource::Direct);
+                let source = k_data
+                    .map(|k| k.source)
+                    .unwrap_or(ObservationSource::Direct);
                 draw_colony_detail_snapshot(ui, cs, age, source);
                 // Build/Demolish/Upgrade buttons for remote colonies are
                 // rendered via the dispatcher pipeline — the snapshot view
@@ -99,7 +121,10 @@ pub(super) fn draw_colony_detail(
             *colony_panel_tab = ColonyPanelTab::Overview;
         }
         if ui
-            .selectable_label(*colony_panel_tab == ColonyPanelTab::PopManagement, "Pop & Job Management")
+            .selectable_label(
+                *colony_panel_tab == ColonyPanelTab::PopManagement,
+                "Pop & Job Management",
+            )
             .clicked()
         {
             *colony_panel_tab = ColonyPanelTab::PopManagement;
@@ -122,13 +147,9 @@ pub(super) fn draw_colony_detail(
             building_registry,
             dispatches,
         ),
-        ColonyPanelTab::PopManagement => draw_pop_management_tab(
-            ui,
-            planet_entity,
-            colonies,
-            colony_pop_view,
-            job_registry,
-        ),
+        ColonyPanelTab::PopManagement => {
+            draw_pop_management_tab(ui, planet_entity, colonies, colony_pop_view, job_registry)
+        }
     }
 }
 
@@ -170,16 +191,34 @@ fn draw_colony_detail_snapshot(
         cs.population, cs.carrying_cap_hint
     ));
     ui.label(egui::RichText::new("Income/hd (snapshot):").strong());
-    ui.label(format!("  Food:     {}", cs.production_food.display_compact()));
+    ui.label(format!(
+        "  Food:     {}",
+        cs.production_food.display_compact()
+    ));
     if cs.food_consumption > Amt::ZERO {
-        ui.label(format!("  (consume {})", cs.food_consumption.display_compact()));
+        ui.label(format!(
+            "  (consume {})",
+            cs.food_consumption.display_compact()
+        ));
     }
-    ui.label(format!("  Energy:   {}", cs.production_energy.display_compact()));
+    ui.label(format!(
+        "  Energy:   {}",
+        cs.production_energy.display_compact()
+    ));
     if cs.maintenance_energy > Amt::ZERO {
-        ui.label(format!("  (maintain {})", cs.maintenance_energy.display_compact()));
+        ui.label(format!(
+            "  (maintain {})",
+            cs.maintenance_energy.display_compact()
+        ));
     }
-    ui.label(format!("  Minerals: {}", cs.production_minerals.display_compact()));
-    ui.label(format!("  Research: {}", cs.production_research.display_compact()));
+    ui.label(format!(
+        "  Minerals: {}",
+        cs.production_minerals.display_compact()
+    ));
+    ui.label(format!(
+        "  Research: {}",
+        cs.production_research.display_compact()
+    ));
 
     ui.separator();
     ui.label(egui::RichText::new("Buildings (snapshot)").strong());
@@ -242,16 +281,37 @@ fn draw_overview_tab(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&crate::colony::ResourceCapacity>), With<crate::galaxy::StarSystem>>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    system_stockpiles: &mut Query<
+        (
+            &mut ResourceStockpile,
+            Option<&crate::colony::ResourceCapacity>,
+        ),
+        With<crate::galaxy::StarSystem>,
+    >,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     construction_params: &ConstructionParams,
     planets: &Query<&crate::galaxy::Planet>,
     design_registry: &crate::ship_design::ShipDesignRegistry,
     building_registry: &BuildingRegistry,
     dispatches: &mut PendingColonyDispatches,
 ) {
-    for (_colony_entity, colony, production, _build_queue, buildings, building_queue, maintenance_cost, food_consumption) in
-        colonies.iter_mut()
+    for (
+        _colony_entity,
+        colony,
+        production,
+        _build_queue,
+        buildings,
+        building_queue,
+        maintenance_cost,
+        food_consumption,
+    ) in colonies.iter_mut()
     {
         if colony.planet != planet_entity {
             continue;
@@ -262,7 +322,9 @@ fn draw_overview_tab(
             use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
             let hab_score = planet_attrs.map(|a| a.habitability).unwrap_or(0.5);
             let k_habitat = BASE_CARRYING_CAPACITY * hab_score;
-            let food_prod = production.map(|p| p.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
+            let food_prod = production
+                .map(|p| p.food_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO);
             let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
                 food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
             } else {
@@ -270,7 +332,10 @@ fn draw_overview_tab(
             };
             k_habitat.min(k_food).max(1.0)
         };
-        ui.label(format!("Population: {:.0} / {:.0}", colony.population, carrying_cap));
+        ui.label(format!(
+            "Population: {:.0} / {:.0}",
+            colony.population, carrying_cap
+        ));
 
         if let Some(prod) = production {
             let green = egui::Color32::from_rgb(100, 200, 100);
@@ -280,34 +345,64 @@ fn draw_overview_tab(
 
             // Food: production - consumption
             let food_prod = prod.food_per_hexadies.final_value();
-            let food_cons = food_consumption.map(|fc| fc.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
-            let food_net = SignedAmt::from_amt(food_prod).add(SignedAmt(0 - SignedAmt::from_amt(food_cons).raw()));
-            let food_color = if food_net.raw() > 0 { green } else if food_net.raw() < 0 { red } else { egui::Color32::GRAY };
+            let food_cons = food_consumption
+                .map(|fc| fc.food_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO);
+            let food_net = SignedAmt::from_amt(food_prod)
+                .add(SignedAmt(0 - SignedAmt::from_amt(food_cons).raw()));
+            let food_color = if food_net.raw() > 0 {
+                green
+            } else if food_net.raw() < 0 {
+                red
+            } else {
+                egui::Color32::GRAY
+            };
             ui.horizontal(|ui| {
                 ui.label("  Food:    ");
                 ui.label(egui::RichText::new(food_net.display_compact()).color(food_color));
                 if food_cons > Amt::ZERO {
-                    ui.label(format!("(produce {}, consume {})", food_prod.display_compact(), food_cons.display_compact()));
+                    ui.label(format!(
+                        "(produce {}, consume {})",
+                        food_prod.display_compact(),
+                        food_cons.display_compact()
+                    ));
                 }
             });
 
             // Energy: production - maintenance
             let energy_prod = prod.energy_per_hexadies.final_value();
-            let maint = maintenance_cost.map(|mc| mc.energy_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
-            let energy_net = SignedAmt::from_amt(energy_prod).add(SignedAmt(0 - SignedAmt::from_amt(maint).raw()));
-            let energy_color = if energy_net.raw() > 0 { green } else if energy_net.raw() < 0 { red } else { egui::Color32::GRAY };
+            let maint = maintenance_cost
+                .map(|mc| mc.energy_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO);
+            let energy_net = SignedAmt::from_amt(energy_prod)
+                .add(SignedAmt(0 - SignedAmt::from_amt(maint).raw()));
+            let energy_color = if energy_net.raw() > 0 {
+                green
+            } else if energy_net.raw() < 0 {
+                red
+            } else {
+                egui::Color32::GRAY
+            };
             ui.horizontal(|ui| {
                 ui.label("  Energy:  ");
                 ui.label(egui::RichText::new(energy_net.display_compact()).color(energy_color));
                 if maint > Amt::ZERO {
-                    ui.label(format!("(produce {}, maintain {})", energy_prod.display_compact(), maint.display_compact()));
+                    ui.label(format!(
+                        "(produce {}, maintain {})",
+                        energy_prod.display_compact(),
+                        maint.display_compact()
+                    ));
                 }
             });
 
             // Minerals: just production
             let minerals_prod = prod.minerals_per_hexadies.final_value();
             let minerals_net = SignedAmt::from_amt(minerals_prod);
-            let minerals_color = if minerals_net.raw() > 0 { green } else { egui::Color32::GRAY };
+            let minerals_color = if minerals_net.raw() > 0 {
+                green
+            } else {
+                egui::Color32::GRAY
+            };
             ui.horizontal(|ui| {
                 ui.label("  Minerals:");
                 ui.label(egui::RichText::new(minerals_net.display_compact()).color(minerals_color));
@@ -338,7 +433,10 @@ fn draw_overview_tab(
                 for slot in &b.slots {
                     if let Some(bid) = slot {
                         building_maintenance = building_maintenance.add(
-                            building_registry.get(bid.as_str()).map(|d| d.maintenance).unwrap_or(Amt::ZERO)
+                            building_registry
+                                .get(bid.as_str())
+                                .map(|d| d.maintenance)
+                                .unwrap_or(Amt::ZERO),
                         );
                     }
                 }
@@ -347,19 +445,27 @@ fn draw_overview_tab(
             let mut ships_based_here = 0u32;
             for (_, ship, _, _, _, _) in ships_query.iter() {
                 if colony.system(planets) == Some(ship.home_port) {
-                    ship_maintenance = ship_maintenance.add(design_registry.maintenance(&ship.design_id));
+                    ship_maintenance =
+                        ship_maintenance.add(design_registry.maintenance(&ship.design_id));
                     ships_based_here += 1;
                 }
             }
             let total_maintenance = building_maintenance.add(ship_maintenance);
             if total_maintenance > Amt::ZERO {
-                ui.label(format!("Maintenance: {} E/hd", total_maintenance.display_compact()));
-                ui.label(format!("  Buildings: {} E/hd", building_maintenance.display_compact()));
+                ui.label(format!(
+                    "Maintenance: {} E/hd",
+                    total_maintenance.display_compact()
+                ));
+                ui.label(format!(
+                    "  Buildings: {} E/hd",
+                    building_maintenance.display_compact()
+                ));
             }
             if ships_based_here > 0 {
                 ui.label(format!(
                     "Ships based here: {} (maintenance: {} E/hd)",
-                    ships_based_here, ship_maintenance.display_compact()
+                    ships_based_here,
+                    ship_maintenance.display_compact()
                 ));
             }
         }
@@ -374,16 +480,22 @@ fn draw_overview_tab(
 
             let mut demolish_request: Option<(usize, BuildingId)> = None;
             let mut upgrade_request: Option<(usize, String, Amt, Amt, i64)> = None;
+            // #275: Any of the three queues can produce a cancel.
+            let mut cancel_request: Option<u64> = None;
 
-            // Collect pending building slots so we can show in-progress orders
-            let pending_orders: Vec<(usize, String, f32)> = building_queue
+            // Collect pending building slots so we can show in-progress orders.
+            // #275: `order_id` is carried through so the cancel button on the
+            // in-progress row can dispatch `CancelBuildingOrder`.
+            let pending_orders: Vec<(usize, String, f32, u64)> = building_queue
                 .as_ref()
                 .map(|bq| {
                     bq.queue
                         .iter()
                         .map(|order| {
                             let def = building_registry.get(order.building_id.as_str());
-                            let (total_m, total_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                            let (total_m, total_e) = def
+                                .map(|d| d.build_cost())
+                                .unwrap_or((Amt::ZERO, Amt::ZERO));
                             let m_pct = if total_m.raw() > 0 {
                                 1.0 - (order.minerals_remaining.raw() as f32 / total_m.raw() as f32)
                             } else {
@@ -401,15 +513,19 @@ fn draw_overview_tab(
                                 1.0
                             };
                             let pct = m_pct.min(e_pct).min(time_pct).max(0.0);
-                            let name = def.map(|d| d.name.clone()).unwrap_or_else(|| order.building_id.0.clone());
-                            (order.target_slot, name, pct)
+                            let name = def
+                                .map(|d| d.name.clone())
+                                .unwrap_or_else(|| order.building_id.0.clone());
+                            (order.target_slot, name, pct, order.order_id)
                         })
                         .collect()
                 })
                 .unwrap_or_default();
 
             let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
-            let bldg_time_mod = construction_params.building_build_time_modifier.final_value();
+            let bldg_time_mod = construction_params
+                .building_build_time_modifier
+                .final_value();
 
             for (i, slot) in buildings.slots.iter().enumerate() {
                 let is_demolishing = building_queue
@@ -423,82 +539,127 @@ fn draw_overview_tab(
 
                 match slot {
                     Some(bid) if is_demolishing => {
-                        let remaining = building_queue
+                        let (remaining, demo_order_id) = building_queue
                             .as_ref()
-                            .and_then(|bq| bq.demolition_time_remaining(i))
-                            .unwrap_or(0);
-                        let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
-                        ui.label(format!(
-                            "  [{}] {} — Demolishing... ({} hd remaining)",
-                            i, name, remaining
-                        ));
+                            .and_then(|bq| {
+                                bq.demolition_queue
+                                    .iter()
+                                    .find(|d| d.target_slot == i)
+                                    .map(|d| (d.time_remaining, d.order_id))
+                            })
+                            .unwrap_or((0, 0));
+                        let name = building_registry
+                            .get(bid.as_str())
+                            .map(|d| d.name.as_str())
+                            .unwrap_or(bid.as_str());
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "  [{}] {} — Demolishing... ({} hd remaining)",
+                                i, name, remaining
+                            ));
+                            // #275: Cancel the demolition mid-flight.
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("Cancel demolition")
+                                .clicked()
+                            {
+                                cancel_request = Some(demo_order_id);
+                            }
+                        });
                     }
                     Some(bid) if is_upgrading => {
-                        let upgrade_info = building_queue
-                            .as_ref()
-                            .and_then(|bq| bq.upgrade_info(i));
-                        let name = building_registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                        let upgrade_info =
+                            building_queue.as_ref().and_then(|bq| bq.upgrade_info(i));
+                        let name = building_registry
+                            .get(bid.as_str())
+                            .map(|d| d.name.as_str())
+                            .unwrap_or(bid.as_str());
                         let target_name = upgrade_info
                             .and_then(|u| building_registry.get(u.target_id.as_str()))
                             .map(|d| d.name.as_str())
                             .unwrap_or("?");
                         let remaining = upgrade_info.map(|u| u.build_time_remaining).unwrap_or(0);
-                        ui.label(format!(
-                            "  [{}] {} — Upgrading to {} ({} hd remaining)",
-                            i, name, target_name, remaining
-                        ));
+                        let upgrade_order_id = upgrade_info.map(|u| u.order_id).unwrap_or(0);
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "  [{}] {} — Upgrading to {} ({} hd remaining)",
+                                i, name, target_name, remaining
+                            ));
+                            // #275: Cancel the in-progress upgrade.
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("Cancel upgrade")
+                                .clicked()
+                            {
+                                cancel_request = Some(upgrade_order_id);
+                            }
+                        });
                     }
                     Some(bid) => {
                         let def = building_registry.get(bid.as_str());
                         let name = def.map(|d| d.name.as_str()).unwrap_or(bid.as_str());
-                        let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                        let (m_refund, e_refund) = def
+                            .map(|d| d.demolition_refund())
+                            .unwrap_or((Amt::ZERO, Amt::ZERO));
                         let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                         ui.horizontal(|ui| {
                             ui.label(format!("  [{}] {}", i, name));
                             let tooltip = format!(
                                 "Demolish: {} hd | Refund M:{} E:{}",
-                                demo_time, m_refund.display_compact(), e_refund.display_compact()
+                                demo_time,
+                                m_refund.display_compact(),
+                                e_refund.display_compact()
                             );
-                            if ui
-                                .small_button("Demolish")
-                                .on_hover_text(tooltip)
-                                .clicked()
-                            {
+                            if ui.small_button("Demolish").on_hover_text(tooltip).clicked() {
                                 demolish_request = Some((i, bid.clone()));
                             }
                             // Show upgrade buttons if upgrade paths exist
                             if let Some(src_def) = def {
                                 for up in &src_def.upgrade_to {
                                     let target_def = building_registry.get(&up.target_id);
-                                    let target_name = target_def.map(|d| d.name.as_str()).unwrap_or(&up.target_id);
+                                    let target_name = target_def
+                                        .map(|d| d.name.as_str())
+                                        .unwrap_or(&up.target_id);
                                     let eff_m = up.cost_minerals.mul_amt(bldg_cost_mod);
                                     let eff_e = up.cost_energy.mul_amt(bldg_cost_mod);
                                     let base_time = up.build_time.unwrap_or_else(|| {
                                         target_def.map(|d| d.build_time / 2).unwrap_or(5)
                                     });
-                                    let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                                    let eff_time =
+                                        (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
                                     let tooltip = format!(
                                         "Upgrade to {} (M:{} E:{} | {} hd)",
-                                        target_name, eff_m.display_compact(), eff_e.display_compact(), eff_time
+                                        target_name,
+                                        eff_m.display_compact(),
+                                        eff_e.display_compact(),
+                                        eff_time
                                     );
                                     let btn_label = format!("-> {}", target_name);
-                                    if ui
-                                        .small_button(&btn_label)
-                                        .on_hover_text(tooltip)
-                                        .clicked()
+                                    if ui.small_button(&btn_label).on_hover_text(tooltip).clicked()
                                     {
-                                        upgrade_request = Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
+                                        upgrade_request =
+                                            Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
                                     }
                                 }
                             }
                         });
                     }
                     None => {
-                        if let Some((_, name, pct)) = pending_orders.iter().find(|(s, _, _)| *s == i) {
+                        if let Some((_, name, pct, order_id)) =
+                            pending_orders.iter().find(|(s, _, _, _)| *s == i)
+                        {
                             ui.horizontal(|ui| {
                                 ui.label(format!("  [{}] (Building: {})", i, name));
                                 let bar = egui::ProgressBar::new(*pct).desired_width(80.0);
                                 ui.add(bar);
+                                // #275: Cancel an in-progress construction.
+                                if ui
+                                    .small_button("×")
+                                    .on_hover_text("Cancel construction")
+                                    .clicked()
+                                {
+                                    cancel_request = Some(*order_id);
+                                }
                             });
                         } else {
                             ui.label(format!("  [{}] (empty)", i));
@@ -512,7 +673,9 @@ fn draw_overview_tab(
                     target_system: system_entity,
                     command: crate::communication::RemoteCommand::Colony(ColonyCommand {
                         scope: BuildingScope::Planet(planet_entity),
-                        kind: BuildingKind::Demolish { target_slot: slot_idx },
+                        kind: BuildingKind::Demolish {
+                            target_slot: slot_idx,
+                        },
                     }),
                 });
             }
@@ -528,8 +691,17 @@ fn draw_overview_tab(
                     }),
                 });
             }
+            // #275: Dispatch a cancel by stable order_id. Cancels travel
+            // through the same light-speed pipeline — local (zero-delay)
+            // cancel applies the same frame it's pushed.
+            if let Some(order_id) = cancel_request {
+                dispatches.queue.push(PendingColonyDispatch {
+                    target_system: system_entity,
+                    command: crate::communication::RemoteCommand::CancelBuildingOrder { order_id },
+                });
+            }
 
-            let pending_slots: Vec<usize> = pending_orders.iter().map(|(s, _, _)| *s).collect();
+            let pending_slots: Vec<usize> = pending_orders.iter().map(|(s, _, _, _)| *s).collect();
             let empty_slot = buildings
                 .slots
                 .iter()
@@ -546,7 +718,12 @@ fn draw_overview_tab(
                     let eff_m = base_m.mul_amt(bldg_cost_mod);
                     let eff_e = base_e.mul_amt(bldg_cost_mod);
                     let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                    let tooltip = format!("M:{} E:{} | {} hexadies", eff_m.display_compact(), eff_e.display_compact(), eff_time);
+                    let tooltip = format!(
+                        "M:{} E:{} | {} hexadies",
+                        eff_m.display_compact(),
+                        eff_e.display_compact(),
+                        eff_time
+                    );
                     if ui.button(&def.name).on_hover_text(tooltip).clicked() {
                         build_building_request = Some(BuildingId::new(&def.id));
                     }
@@ -749,8 +926,8 @@ fn draw_pop_management_tab(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modifier::{Modifier, ModifiedValue};
     use crate::amount::SignedAmt;
+    use crate::modifier::{ModifiedValue, Modifier};
     use crate::species::{JobDefinition, JobSlot};
 
     fn make_bucket(base_add_f64: f64) -> ModifiedValue {
@@ -883,7 +1060,10 @@ mod tests {
 
     #[test]
     fn short_target_label_strips_common_prefix_and_suffix() {
-        assert_eq!(short_target_label("colony.minerals_per_hexadies"), "minerals");
+        assert_eq!(
+            short_target_label("colony.minerals_per_hexadies"),
+            "minerals"
+        );
         assert_eq!(short_target_label("colony.food_per_hexadies"), "food");
         assert_eq!(short_target_label("custom_target"), "custom_target");
     }

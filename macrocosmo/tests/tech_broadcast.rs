@@ -15,8 +15,8 @@ use bevy::prelude::*;
 
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::{
-    Buildings, BuildQueue, BuildingQueue, Colony, ColonyJobRates, FoodConsumption,
-    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+    BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, FoodConsumption, MaintenanceCost,
+    Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
 };
 use macrocosmo::modifier::{ModifiedValue, ParsedModifier};
 use macrocosmo::scripting::building_api::BuildingId;
@@ -24,13 +24,13 @@ use macrocosmo::species::{
     ColonyJobs, ColonyPopulation, ColonySpecies, JobDefinition, JobRegistry, JobSlot,
 };
 use macrocosmo::technology::{
-    apply_tech_effects, sync_tech_colony_modifiers, EmpireModifiers, RecentlyResearched, TechCost,
-    TechEffectsLog, TechId, TechTree, Technology,
+    EmpireModifiers, RecentlyResearched, TechCost, TechEffectsLog, TechId, TechTree, Technology,
+    apply_tech_effects, sync_tech_colony_modifiers,
 };
 
 use common::{
-    advance_time, empire_entity, find_planet, spawn_test_system,
-    spawn_test_system_with_planet, test_app,
+    advance_time, empire_entity, find_planet, spawn_test_system, spawn_test_system_with_planet,
+    test_app,
 };
 
 // ---------------------------------------------------------------------------
@@ -154,8 +154,10 @@ fn spawn_simple_colony(app: &mut App, sys: Entity, pop: u32) -> Entity {
                 research_per_hexadies: ModifiedValue::new(Amt::ZERO),
                 food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
-            BuildQueue { queue: Vec::new() },
-            Buildings { slots: vec![None; 5] },
+            BuildQueue::default(),
+            Buildings {
+                slots: vec![None; 5],
+            },
             BuildingQueue::default(),
             ProductionFocus::default(),
             MaintenanceCost::default(),
@@ -186,14 +188,7 @@ fn test_tech_modifier_reaches_colony_production() {
         r#"scope:push_modifier("colony.minerals_per_hexadies", { multiplier = 0.15 })"#,
     );
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sys",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sys", [0.0, 0.0, 0.0], 1.0, true, true);
     let colony = spawn_simple_colony(&mut app, sys, 0);
     // Seed a base mineral production so the multiplier is observable.
     app.world_mut()
@@ -227,14 +222,7 @@ fn test_tech_job_scoped_modifier_reaches_colony_job_rate() {
 
     // Slot-granting registry so buildings produce miner slots.
     app.insert_resource(job_slot_registry());
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sys",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sys", [0.0, 0.0, 0.0], 1.0, true, true);
     let colony = spawn_colony_with_building(&mut app, sys, 5, vec!["mine"]);
 
     mark_tech_researched(&mut app, "test_miner_boost");
@@ -309,7 +297,7 @@ fn test_tech_modifier_applies_to_new_colony() {
 #[test]
 fn test_colony_job_rates_attached_on_spawn() {
     use macrocosmo::colony::{
-        ColonizationOrder, ColonizationQueue, COLONIZATION_POPULATION_TRANSFER,
+        COLONIZATION_POPULATION_TRANSFER, ColonizationOrder, ColonizationQueue,
     };
 
     // Path 1: `spawn_colony_on_planet` is exercised in the setup module's own
@@ -367,14 +355,7 @@ fn test_tech_modifier_idempotent() {
         r#"scope:push_modifier("colony.minerals_per_hexadies", { multiplier = 0.5 })"#,
     );
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sys",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sys", [0.0, 0.0, 0.0], 1.0, true, true);
     let colony = spawn_simple_colony(&mut app, sys, 0);
     app.world_mut()
         .get_mut::<Production>(colony)
@@ -423,14 +404,7 @@ fn test_tech_slot_modifier_increases_capacity() {
         r#"scope:push_modifier("colony.miner_slot", { base_add = 2.0 })"#,
     );
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sys",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sys", [0.0, 0.0, 0.0], 1.0, true, true);
     let colony = spawn_colony_with_building(&mut app, sys, 10, vec!["mine"]);
 
     // Before the tech, mine alone grants 5 miner slots.
@@ -520,14 +494,7 @@ fn test_industrial_automated_mining_boosts_minerals() {
         r#"scope:push_modifier("colony.minerals_per_hexadies", { multiplier = 0.15 })"#,
     );
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Sys",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Sys", [0.0, 0.0, 0.0], 1.0, true, true);
     let colony = spawn_simple_colony(&mut app, sys, 0);
     // Baseline: 20 minerals/hexady from a pre-existing source (e.g. mine).
     app.world_mut()
@@ -546,7 +513,10 @@ fn test_industrial_automated_mining_boosts_minerals() {
     );
 
     // Clear stockpile, research the tech, measure again.
-    app.world_mut().get_mut::<ResourceStockpile>(sys).unwrap().minerals = Amt::ZERO;
+    app.world_mut()
+        .get_mut::<ResourceStockpile>(sys)
+        .unwrap()
+        .minerals = Amt::ZERO;
     mark_tech_researched(&mut app, "industrial_automated_mining");
     advance_time(&mut app, 1);
     let stockpile_post = app.world().get::<ResourceStockpile>(sys).unwrap();
@@ -599,9 +569,12 @@ fn test_existing_balance_preserved() {
             research_per_hexadies: ModifiedValue::new(Amt::ZERO),
             food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
+        BuildQueue::default(),
         Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("power_plant"))],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("power_plant")),
+            ],
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
@@ -726,7 +699,7 @@ fn spawn_colony_with_building(
                 research_per_hexadies: ModifiedValue::new(Amt::ZERO),
                 food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
-            BuildQueue { queue: Vec::new() },
+            BuildQueue::default(),
             Buildings { slots },
             BuildingQueue::default(),
             ProductionFocus::default(),
@@ -745,4 +718,3 @@ fn spawn_colony_with_building(
         ))
         .id()
 }
-

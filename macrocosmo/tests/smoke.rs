@@ -3,9 +3,9 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
-use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
+use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::time_system::GameClock;
@@ -26,7 +26,8 @@ fn all_systems_no_query_conflict() {
     let mut app = common::full_test_app();
 
     // Capital star system with all components
-    let capital = app.world_mut()
+    let capital = app
+        .world_mut()
         .spawn((
             StarSystem {
                 name: "Capital".into(),
@@ -41,7 +42,8 @@ fn all_systems_no_query_conflict() {
             },
         ))
         .id();
-    let capital_planet = app.world_mut()
+    let capital_planet = app
+        .world_mut()
         .spawn((
             Planet {
                 name: "Capital I".into(),
@@ -60,7 +62,8 @@ fn all_systems_no_query_conflict() {
         .id();
 
     // Second star system (unsurveyed target)
-    let _target = app.world_mut()
+    let _target = app
+        .world_mut()
         .spawn((
             StarSystem {
                 name: "Target".into(),
@@ -89,7 +92,8 @@ fn all_systems_no_query_conflict() {
     ));
 
     // Third star system (surveyed, not colonized)
-    let _surveyed = app.world_mut()
+    let _surveyed = app
+        .world_mut()
         .spawn((
             StarSystem {
                 name: "Surveyed".into(),
@@ -118,16 +122,20 @@ fn all_systems_no_query_conflict() {
     ));
 
     // Player stationed at capital
-    app.world_mut().spawn((Player, StationedAt { system: capital }));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: capital }));
 
     // Colony at capital
-    app.world_mut().entity_mut(capital).insert((ResourceStockpile {
+    app.world_mut().entity_mut(capital).insert((
+        ResourceStockpile {
             minerals: Amt::units(500),
             energy: Amt::units(500),
             research: Amt::ZERO,
             food: Amt::units(100),
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
+        },
+        ResourceCapacity::default(),
+    ));
     app.world_mut().spawn((
         Colony {
             planet: capital_planet,
@@ -142,6 +150,7 @@ fn all_systems_no_query_conflict() {
         },
         BuildQueue {
             queue: vec![],
+            next_order_id: 0,
         },
         Buildings {
             slots: vec![

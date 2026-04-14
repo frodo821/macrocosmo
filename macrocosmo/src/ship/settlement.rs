@@ -2,18 +2,16 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::colony::{
-    BuildQueue, Buildings, BuildingQueue, Colony, ColonyJobRates, FoodConsumption,
-    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
-    SystemBuildings, SystemBuildingQueue,
+    BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, FoodConsumption, MaintenanceCost,
+    Production, ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
+    SystemBuildings,
 };
 use crate::components::Position;
-use crate::knowledge::{
- FactSysParam, KnowledgeFact, PlayerVantage,
-};
-use crate::player::{AboardShip, Player, StationedAt};
-use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{HostilePresence, StarSystem, SystemAttributes};
+use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
+use crate::player::{AboardShip, Player, StationedAt};
+use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
 use super::{Ship, ShipState};
@@ -75,7 +73,9 @@ pub fn process_settling(
                     "Colony Ship {} cannot settle at {} — hostile presence!",
                     ship.name, star_system.name
                 );
-                *state = ShipState::Docked { system: system_entity };
+                *state = ShipState::Docked {
+                    system: system_entity,
+                };
                 // #249: Dual-write ColonyFailed.
                 let event_id = fact_sys.allocate_event_id();
                 let desc = format!(
@@ -103,15 +103,17 @@ pub fn process_settling(
             }
 
             // Collect planets that already have a colony
-            let colonized_planets: Vec<Entity> = existing_colonies.iter()
-                .map(|c| c.planet)
-                .collect();
+            let colonized_planets: Vec<Entity> =
+                existing_colonies.iter().map(|c| c.planet).collect();
 
             // If a specific planet was targeted, try to use it
             let target_planet = if let Some(target_pe) = target_planet_entity {
                 // Verify target planet is valid and not already colonized
                 if colonized_planets.contains(&target_pe) {
-                    info!("Target planet in {} is already colonized, settling aborted", star_system.name);
+                    info!(
+                        "Target planet in {} is already colonized, settling aborted",
+                        star_system.name
+                    );
                     commands.entity(ship_entity).despawn();
                     continue;
                 }
@@ -126,7 +128,10 @@ pub fn process_settling(
             };
 
             let Some((planet_entity, _, attrs)) = target_planet else {
-                info!("Colony Ship {} found no habitable planet at {}", ship.name, star_system.name);
+                info!(
+                    "Colony Ship {} found no habitable planet at {}",
+                    ship.name, star_system.name
+                );
                 commands.entity(ship_entity).despawn();
                 continue;
             };
@@ -149,9 +154,7 @@ pub fn process_settling(
                     research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                     food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                 },
-                BuildQueue {
-                    queue: Vec::new(),
-                },
+                BuildQueue::default(),
                 Buildings {
                     slots: vec![None; num_slots],
                 },
@@ -245,9 +248,18 @@ pub fn process_refitting(
 
     for (_entity, mut ship, mut state) in &mut ships {
         let (system, completes_at, new_modules, target_revision) = match &*state {
-            ShipState::Refitting { system, completes_at, new_modules, target_revision, .. } => {
-                (*system, *completes_at, new_modules.clone(), *target_revision)
-            }
+            ShipState::Refitting {
+                system,
+                completes_at,
+                new_modules,
+                target_revision,
+                ..
+            } => (
+                *system,
+                *completes_at,
+                new_modules.clone(),
+                *target_revision,
+            ),
             _ => continue,
         };
 

@@ -12,7 +12,7 @@ use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
 use macrocosmo::galaxy::{GalaxyConfig, Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::persistence::{
-    capture_save, load::load_game_from_reader, save::save_game_to_writer, SaveId, SCRIPTS_VERSION,
+    SCRIPTS_VERSION, SaveId, capture_save, load::load_game_from_reader, save::save_game_to_writer,
 };
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::scripting::game_rng::GameRng;
@@ -244,7 +244,7 @@ fn test_save_load_preserves_galaxy() {
 
     // Spot-check Earth planet's link to its system survives the remap.
     let mut saw_earth = false;
-    for (planet, ) in dst.query::<(&Planet,)>().iter(&dst) {
+    for (planet,) in dst.query::<(&Planet,)>().iter(&dst) {
         if planet.name == "Earth" {
             saw_earth = true;
             // The system entity is freshly allocated, but looking it up should
@@ -333,7 +333,10 @@ fn test_save_load_preserves_game_rng_deterministic() {
             ys.push(gb.random::<u64>());
         }
     }
-    assert_eq!(xs, ys, "two loads of the same save must yield identical RNG streams");
+    assert_eq!(
+        xs, ys,
+        "two loads of the same save must yield identical RNG streams"
+    );
 }
 
 #[test]
@@ -344,7 +347,7 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
     // and continues. We simulate a mismatch by hand-crafting a GameSave with
     // a different scripts_version, re-encoding, and asserting that load
     // succeeds.
-    use macrocosmo::persistence::save::{GameSave, SavedResources, SAVE_VERSION};
+    use macrocosmo::persistence::save::{GameSave, SAVE_VERSION, SavedResources};
 
     let save = GameSave {
         version: SAVE_VERSION,
@@ -379,17 +382,15 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
 // ===========================================================================
 
 use macrocosmo::colony::{
-    BuildKind, BuildOrder, BuildQueue, Buildings, BuildingQueue, ColonyJobRates,
+    BuildKind, BuildOrder, BuildQueue, BuildingQueue, Buildings, ColonyJobRates,
 };
-use macrocosmo::deep_space::{
-    CommDirection, DeepSpaceStructure, FTLCommRelay, StructureHitpoints,
-};
+use macrocosmo::deep_space::{CommDirection, DeepSpaceStructure, FTLCommRelay, StructureHitpoints};
 use macrocosmo::events::{EventLog, GameEvent, GameEventKind};
+use macrocosmo::knowledge::facts::{CombatVictor, KnowledgeFact};
 use macrocosmo::knowledge::{
     KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact, SystemKnowledge,
     SystemSnapshot,
 };
-use macrocosmo::knowledge::facts::{CombatVictor, KnowledgeFact};
 use macrocosmo::notifications::{NotificationPriority, NotificationQueue};
 use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::ship::{
@@ -427,9 +428,12 @@ fn seed_world_with_ship() -> (World, Entity, Entity) {
             },
             ShipState::Docked { system: sol },
             macrocosmo::ship::ShipHitpoints {
-                hull: 50.0, hull_max: 50.0,
-                armor: 0.0, armor_max: 0.0,
-                shield: 0.0, shield_max: 0.0,
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
                 shield_regen: 0.0,
             },
         ))
@@ -477,7 +481,10 @@ fn test_save_load_preserves_command_queue() {
         .find(|(_, s)| s.name == "Alpha Centauri")
         .map(|(e, _)| e)
         .unwrap();
-    assert_eq!(survey_target, alpha_dst, "Entity remap must route to the same star system");
+    assert_eq!(
+        survey_target, alpha_dst,
+        "Entity remap must route to the same star system"
+    );
 }
 
 #[test]
@@ -524,8 +531,18 @@ fn test_save_load_preserves_colony_jobs_and_rates() {
     src.entity_mut(colony_ent).insert((
         ColonyJobs {
             slots: vec![
-                JobSlot { job_id: "miner".into(), capacity: 10, assigned: 5, capacity_from_buildings: 8 },
-                JobSlot { job_id: "farmer".into(), capacity: 6, assigned: 6, capacity_from_buildings: 4 },
+                JobSlot {
+                    job_id: "miner".into(),
+                    capacity: 10,
+                    assigned: 5,
+                    capacity_from_buildings: 8,
+                },
+                JobSlot {
+                    job_id: "farmer".into(),
+                    capacity: 6,
+                    assigned: 6,
+                    capacity_from_buildings: 4,
+                },
             ],
         },
         {
@@ -548,7 +565,9 @@ fn test_save_load_preserves_colony_jobs_and_rates() {
     assert_eq!(jobs.slots.len(), 2);
     assert_eq!(jobs.slots[0].job_id, "miner");
     assert_eq!(jobs.slots[0].assigned, 5);
-    let bucket = rates.get("miner", "colony.minerals_per_hexadies").expect("bucket must exist");
+    let bucket = rates
+        .get("miner", "colony.minerals_per_hexadies")
+        .expect("bucket must exist");
     assert_eq!(bucket.base(), Amt::units(3));
 }
 
@@ -563,6 +582,7 @@ fn test_save_load_preserves_build_queue() {
     src.entity_mut(colony_ent).insert((
         BuildQueue {
             queue: vec![BuildOrder {
+                order_id: 0,
                 kind: BuildKind::Ship,
                 design_id: "explorer_mk1".into(),
                 display_name: "Explorer".into(),
@@ -573,6 +593,7 @@ fn test_save_load_preserves_build_queue() {
                 build_time_total: 60,
                 build_time_remaining: 45,
             }],
+            next_order_id: 0,
         },
         Buildings {
             slots: vec![
@@ -726,7 +747,10 @@ fn test_save_load_preserves_tech_tree() {
         .iter(&dst)
         .next()
         .expect("TechTree + ResearchQueue must round-trip");
-    assert!(tt.researched.contains(&TechId("industrial_automated_mining".into())));
+    assert!(
+        tt.researched
+            .contains(&TechId("industrial_automated_mining".into()))
+    );
     assert!(tt.researched.contains(&TechId("physics_ftl_drive".into())));
     assert_eq!(rq.current, Some(TechId("social_central_planning".into())));
     assert!((rq.accumulated - 42.5).abs() < 1e-9);
@@ -822,8 +846,15 @@ fn test_save_load_preserves_ftl_comm_relay_pairing() {
                 name: "Relay A".into(),
                 owner: Owner::Empire(empire),
             },
-            Position { x: 1.0, y: 0.0, z: 0.0 },
-            StructureHitpoints { current: 50.0, max: 50.0 },
+            Position {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            StructureHitpoints {
+                current: 50.0,
+                max: 50.0,
+            },
         ))
         .id();
     let relay_b = src
@@ -833,8 +864,15 @@ fn test_save_load_preserves_ftl_comm_relay_pairing() {
                 name: "Relay B".into(),
                 owner: Owner::Empire(empire),
             },
-            Position { x: 49.0, y: 0.0, z: 0.0 },
-            StructureHitpoints { current: 50.0, max: 50.0 },
+            Position {
+                x: 49.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            StructureHitpoints {
+                current: 50.0,
+                max: 50.0,
+            },
         ))
         .id();
     src.entity_mut(relay_a).insert(FTLCommRelay {
@@ -859,7 +897,10 @@ fn test_save_load_preserves_ftl_comm_relay_pairing() {
     assert_eq!(relays.len(), 2);
     // Each should reference the other.
     for (self_e, paired) in &relays {
-        let partner_pair = relays.iter().find(|(e, _)| *e == *paired).expect("partner must exist");
+        let partner_pair = relays
+            .iter()
+            .find(|(e, _)| *e == *paired)
+            .expect("partner must exist");
         assert_eq!(partner_pair.1, *self_e, "pairing is symmetric post-load");
     }
 }
@@ -980,12 +1021,19 @@ fn test_save_load_preserves_pending_colony_command() {
         .expect("colony must round-trip");
 
     let mut q = dst.query::<&PendingCommand>();
-    let cmd = q.iter(&dst).next().expect("pending command must round-trip");
+    let cmd = q
+        .iter(&dst)
+        .next()
+        .expect("pending command must round-trip");
     assert_eq!(cmd.target_system, alpha_dst, "target_system Entity remap");
     assert_eq!(cmd.sent_at, 100);
     assert_eq!(cmd.arrives_at, 700);
     match &cmd.command {
-        RemoteCommand::ShipBuild { host_colony, design_id, .. } => {
+        RemoteCommand::ShipBuild {
+            host_colony,
+            design_id,
+            ..
+        } => {
             assert_eq!(*host_colony, colony_dst, "host_colony Entity remap");
             assert_eq!(design_id, "explorer_mk1");
         }
@@ -1100,4 +1148,3 @@ fn test_save_load_preserves_colony_snapshot() {
     assert_eq!(cs.build_queue[0].building_id.0, "farm");
     assert_eq!(cs.build_queue[0].build_time_remaining, 7);
 }
-

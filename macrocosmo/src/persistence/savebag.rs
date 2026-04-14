@@ -26,8 +26,8 @@ use std::collections::HashMap;
 
 use crate::amount::Amt;
 use crate::colony::{
-    AlertCooldowns, AuthorityParams, BuildKind, BuildOrder, BuildQueue, Buildings, BuildingOrder,
-    BuildingQueue, Colony, ColonizationOrder, ColonizationQueue, ColonyJobRates,
+    AlertCooldowns, AuthorityParams, BuildKind, BuildOrder, BuildQueue, BuildingOrder,
+    BuildingQueue, Buildings, ColonizationOrder, ColonizationQueue, Colony, ColonyJobRates,
     ConstructionParams, DeliverableStockpile, DemolitionOrder, FoodConsumption, MaintenanceCost,
     PendingColonizationOrder, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
     SystemBuildingQueue, SystemBuildings, UpgradeOrder,
@@ -51,11 +51,11 @@ use crate::galaxy::{
     Anomalies, Anomaly, ForbiddenRegion, HostilePresence, HostileType, Planet, PortFacility,
     Sovereignty, StarSystem, SystemAttributes,
 };
-use crate::knowledge::{
-    KnowledgeFact, KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact, ShipSnapshot,
-    ShipSnapshotState, SystemKnowledge, SystemSnapshot,
-};
 use crate::knowledge::facts::CombatVictor;
+use crate::knowledge::{
+    KnowledgeFact, KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact,
+    ShipSnapshot, ShipSnapshotState, SystemKnowledge, SystemSnapshot,
+};
 use crate::modifier::{ModifiedValue, ScopedModifiers};
 use crate::notifications::{Notification, NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Empire, Faction, Player, StationedAt};
@@ -63,8 +63,8 @@ use crate::scripting::building_api::BuildingId;
 use crate::ship::scout::ScoutReport;
 use crate::ship::{
     Cargo, CargoItem, CommandQueue, CourierMode, CourierRoute, DetectedHostiles, Fleet,
-    FleetMembership, Owner, PendingShipCommand, QueuedCommand, ReportMode, RulesOfEngagement,
-    Ship, ShipCommand, ShipHitpoints, ShipModifiers, ShipState, SurveyData,
+    FleetMembership, Owner, PendingShipCommand, QueuedCommand, ReportMode, RulesOfEngagement, Ship,
+    ShipCommand, ShipHitpoints, ShipModifiers, ShipState, SurveyData,
 };
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies, JobSlot};
 use crate::technology::{
@@ -92,7 +92,9 @@ fn remap_entity(bits: u64, map: &EntityMap) -> Entity {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedMovementState {
-    Docked { system_bits: u64 },
+    Docked {
+        system_bits: u64,
+    },
     SubLight {
         origin: Position,
         destination: Position,
@@ -981,7 +983,9 @@ pub struct SavedEmpire {
 
 impl SavedEmpire {
     pub fn from_live(v: &Empire) -> Self {
-        Self { name: v.name.clone() }
+        Self {
+            name: v.name.clone(),
+        }
     }
     pub fn into_live(self) -> Empire {
         Empire { name: self.name }
@@ -1057,41 +1061,86 @@ impl From<SavedRulesOfEngagement> for RulesOfEngagement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedQueuedCommand {
-    MoveTo { system_bits: u64 },
-    Survey { system_bits: u64 },
-    Colonize { system_bits: u64, planet_bits: Option<u64> },
-    MoveToCoordinates { target: [f64; 3] },
-    Scout { target_system_bits: u64, observation_duration: i64, report_mode: SavedReportMode },
-    LoadDeliverable { system_bits: u64, stockpile_index: usize },
-    DeployDeliverable { position: [f64; 3], item_index: usize },
-    TransferToStructure { structure_bits: u64, minerals: Amt, energy: Amt },
-    LoadFromScrapyard { structure_bits: u64 },
+    MoveTo {
+        system_bits: u64,
+    },
+    Survey {
+        system_bits: u64,
+    },
+    Colonize {
+        system_bits: u64,
+        planet_bits: Option<u64>,
+    },
+    MoveToCoordinates {
+        target: [f64; 3],
+    },
+    Scout {
+        target_system_bits: u64,
+        observation_duration: i64,
+        report_mode: SavedReportMode,
+    },
+    LoadDeliverable {
+        system_bits: u64,
+        stockpile_index: usize,
+    },
+    DeployDeliverable {
+        position: [f64; 3],
+        item_index: usize,
+    },
+    TransferToStructure {
+        structure_bits: u64,
+        minerals: Amt,
+        energy: Amt,
+    },
+    LoadFromScrapyard {
+        structure_bits: u64,
+    },
 }
 
 impl SavedQueuedCommand {
     pub fn from_live(v: &QueuedCommand) -> Self {
         match v {
-            QueuedCommand::MoveTo { system } => Self::MoveTo { system_bits: system.to_bits() },
-            QueuedCommand::Survey { system } => Self::Survey { system_bits: system.to_bits() },
+            QueuedCommand::MoveTo { system } => Self::MoveTo {
+                system_bits: system.to_bits(),
+            },
+            QueuedCommand::Survey { system } => Self::Survey {
+                system_bits: system.to_bits(),
+            },
             QueuedCommand::Colonize { system, planet } => Self::Colonize {
                 system_bits: system.to_bits(),
                 planet_bits: planet.map(|e| e.to_bits()),
             },
-            QueuedCommand::MoveToCoordinates { target } => Self::MoveToCoordinates { target: *target },
-            QueuedCommand::Scout { target_system, observation_duration, report_mode } => Self::Scout {
+            QueuedCommand::MoveToCoordinates { target } => {
+                Self::MoveToCoordinates { target: *target }
+            }
+            QueuedCommand::Scout {
+                target_system,
+                observation_duration,
+                report_mode,
+            } => Self::Scout {
                 target_system_bits: target_system.to_bits(),
                 observation_duration: *observation_duration,
                 report_mode: report_mode.into(),
             },
-            QueuedCommand::LoadDeliverable { system, stockpile_index } => Self::LoadDeliverable {
+            QueuedCommand::LoadDeliverable {
+                system,
+                stockpile_index,
+            } => Self::LoadDeliverable {
                 system_bits: system.to_bits(),
                 stockpile_index: *stockpile_index,
             },
-            QueuedCommand::DeployDeliverable { position, item_index } => Self::DeployDeliverable {
+            QueuedCommand::DeployDeliverable {
+                position,
+                item_index,
+            } => Self::DeployDeliverable {
                 position: *position,
                 item_index: *item_index,
             },
-            QueuedCommand::TransferToStructure { structure, minerals, energy } => Self::TransferToStructure {
+            QueuedCommand::TransferToStructure {
+                structure,
+                minerals,
+                energy,
+            } => Self::TransferToStructure {
                 structure_bits: structure.to_bits(),
                 minerals: *minerals,
                 energy: *energy,
@@ -1104,24 +1153,48 @@ impl SavedQueuedCommand {
 
     pub fn into_live(self, map: &EntityMap) -> QueuedCommand {
         match self {
-            Self::MoveTo { system_bits } => QueuedCommand::MoveTo { system: remap_entity(system_bits, map) },
-            Self::Survey { system_bits } => QueuedCommand::Survey { system: remap_entity(system_bits, map) },
-            Self::Colonize { system_bits, planet_bits } => QueuedCommand::Colonize {
+            Self::MoveTo { system_bits } => QueuedCommand::MoveTo {
+                system: remap_entity(system_bits, map),
+            },
+            Self::Survey { system_bits } => QueuedCommand::Survey {
+                system: remap_entity(system_bits, map),
+            },
+            Self::Colonize {
+                system_bits,
+                planet_bits,
+            } => QueuedCommand::Colonize {
                 system: remap_entity(system_bits, map),
                 planet: planet_bits.map(|b| remap_entity(b, map)),
             },
             Self::MoveToCoordinates { target } => QueuedCommand::MoveToCoordinates { target },
-            Self::Scout { target_system_bits, observation_duration, report_mode } => QueuedCommand::Scout {
+            Self::Scout {
+                target_system_bits,
+                observation_duration,
+                report_mode,
+            } => QueuedCommand::Scout {
                 target_system: remap_entity(target_system_bits, map),
                 observation_duration,
                 report_mode: report_mode.into(),
             },
-            Self::LoadDeliverable { system_bits, stockpile_index } => QueuedCommand::LoadDeliverable {
+            Self::LoadDeliverable {
+                system_bits,
+                stockpile_index,
+            } => QueuedCommand::LoadDeliverable {
                 system: remap_entity(system_bits, map),
                 stockpile_index,
             },
-            Self::DeployDeliverable { position, item_index } => QueuedCommand::DeployDeliverable { position, item_index },
-            Self::TransferToStructure { structure_bits, minerals, energy } => QueuedCommand::TransferToStructure {
+            Self::DeployDeliverable {
+                position,
+                item_index,
+            } => QueuedCommand::DeployDeliverable {
+                position,
+                item_index,
+            },
+            Self::TransferToStructure {
+                structure_bits,
+                minerals,
+                energy,
+            } => QueuedCommand::TransferToStructure {
                 structure: remap_entity(structure_bits, map),
                 minerals,
                 energy,
@@ -1143,14 +1216,22 @@ pub struct SavedCommandQueue {
 impl SavedCommandQueue {
     pub fn from_live(v: &CommandQueue) -> Self {
         Self {
-            commands: v.commands.iter().map(SavedQueuedCommand::from_live).collect(),
+            commands: v
+                .commands
+                .iter()
+                .map(SavedQueuedCommand::from_live)
+                .collect(),
             predicted_position: v.predicted_position,
             predicted_system_bits: v.predicted_system.map(|e| e.to_bits()),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> CommandQueue {
         CommandQueue {
-            commands: self.commands.into_iter().map(|c| c.into_live(map)).collect(),
+            commands: self
+                .commands
+                .into_iter()
+                .map(|c| c.into_live(map))
+                .collect(),
             predicted_position: self.predicted_position,
             predicted_system: self.predicted_system_bits.map(|b| remap_entity(b, map)),
         }
@@ -1251,7 +1332,11 @@ impl SavedCourierRoute {
     }
     pub fn into_live(self, map: &EntityMap) -> CourierRoute {
         CourierRoute {
-            waypoints: self.waypoints_bits.into_iter().map(|b| remap_entity(b, map)).collect(),
+            waypoints: self
+                .waypoints_bits
+                .into_iter()
+                .map(|b| remap_entity(b, map))
+                .collect(),
             current_index: self.current_index,
             mode: self.mode.into(),
             repeat: self.repeat,
@@ -1306,7 +1391,11 @@ impl SavedScoutReport {
             observed_at: v.observed_at,
             report_mode: (&v.report_mode).into(),
             system_snapshot: SavedSystemSnapshot::from_live(&v.system_snapshot),
-            ship_snapshots: v.ship_snapshots.iter().map(SavedShipSnapshot::from_live).collect(),
+            ship_snapshots: v
+                .ship_snapshots
+                .iter()
+                .map(SavedShipSnapshot::from_live)
+                .collect(),
             return_queued: v.return_queued,
         }
     }
@@ -1317,7 +1406,11 @@ impl SavedScoutReport {
             observed_at: self.observed_at,
             report_mode: self.report_mode.into(),
             system_snapshot: self.system_snapshot.into_live(map),
-            ship_snapshots: self.ship_snapshots.into_iter().map(|s| s.into_live(map)).collect(),
+            ship_snapshots: self
+                .ship_snapshots
+                .into_iter()
+                .map(|s| s.into_live(map))
+                .collect(),
             return_queued: self.return_queued,
         }
     }
@@ -1341,7 +1434,11 @@ impl SavedFleet {
     pub fn into_live(self, map: &EntityMap) -> Fleet {
         Fleet {
             name: self.name,
-            members: self.members_bits.into_iter().map(|b| remap_entity(b, map)).collect(),
+            members: self
+                .members_bits
+                .into_iter()
+                .map(|b| remap_entity(b, map))
+                .collect(),
             flagship: remap_entity(self.flagship_bits, map),
         }
     }
@@ -1354,10 +1451,14 @@ pub struct SavedFleetMembership {
 
 impl SavedFleetMembership {
     pub fn from_live(v: &FleetMembership) -> Self {
-        Self { fleet_bits: v.fleet.to_bits() }
+        Self {
+            fleet_bits: v.fleet.to_bits(),
+        }
     }
     pub fn into_live(self, map: &EntityMap) -> FleetMembership {
-        FleetMembership { fleet: remap_entity(self.fleet_bits, map) }
+        FleetMembership {
+            fleet: remap_entity(self.fleet_bits, map),
+        }
     }
 }
 
@@ -1401,17 +1502,27 @@ pub enum SavedShipCommand {
 impl SavedShipCommand {
     pub fn from_live(v: &ShipCommand) -> Self {
         match v {
-            ShipCommand::MoveTo { destination } => Self::MoveTo { destination_bits: destination.to_bits() },
-            ShipCommand::Survey { target } => Self::Survey { target_bits: target.to_bits() },
+            ShipCommand::MoveTo { destination } => Self::MoveTo {
+                destination_bits: destination.to_bits(),
+            },
+            ShipCommand::Survey { target } => Self::Survey {
+                target_bits: target.to_bits(),
+            },
             ShipCommand::Colonize => Self::Colonize,
             ShipCommand::SetROE { roe } => Self::SetROE { roe: roe.into() },
-            ShipCommand::EnqueueCommand(c) => Self::EnqueueCommand(SavedQueuedCommand::from_live(c)),
+            ShipCommand::EnqueueCommand(c) => {
+                Self::EnqueueCommand(SavedQueuedCommand::from_live(c))
+            }
         }
     }
     pub fn into_live(self, map: &EntityMap) -> ShipCommand {
         match self {
-            Self::MoveTo { destination_bits } => ShipCommand::MoveTo { destination: remap_entity(destination_bits, map) },
-            Self::Survey { target_bits } => ShipCommand::Survey { target: remap_entity(target_bits, map) },
+            Self::MoveTo { destination_bits } => ShipCommand::MoveTo {
+                destination: remap_entity(destination_bits, map),
+            },
+            Self::Survey { target_bits } => ShipCommand::Survey {
+                target: remap_entity(target_bits, map),
+            },
             Self::Colonize => ShipCommand::Colonize,
             Self::SetROE { roe } => ShipCommand::SetROE { roe: roe.into() },
             Self::EnqueueCommand(c) => ShipCommand::EnqueueCommand(c.into_live(map)),
@@ -1450,7 +1561,9 @@ impl From<&BuildKind> for SavedBuildKind {
     fn from(v: &BuildKind) -> Self {
         match v {
             BuildKind::Ship => Self::Ship,
-            BuildKind::Deliverable { cargo_size } => Self::Deliverable { cargo_size: *cargo_size },
+            BuildKind::Deliverable { cargo_size } => Self::Deliverable {
+                cargo_size: *cargo_size,
+            },
         }
     }
 }
@@ -1465,6 +1578,9 @@ impl From<SavedBuildKind> for BuildKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedBuildOrder {
+    /// #275: Stable order id for cancel commands. Preserved across saves.
+    #[serde(default)]
+    pub order_id: u64,
     pub kind: SavedBuildKind,
     pub design_id: String,
     pub display_name: String,
@@ -1479,6 +1595,7 @@ pub struct SavedBuildOrder {
 impl SavedBuildOrder {
     pub fn from_live(v: &BuildOrder) -> Self {
         Self {
+            order_id: v.order_id,
             kind: (&v.kind).into(),
             design_id: v.design_id.clone(),
             display_name: v.display_name.clone(),
@@ -1492,6 +1609,7 @@ impl SavedBuildOrder {
     }
     pub fn into_live(self) -> BuildOrder {
         BuildOrder {
+            order_id: self.order_id,
             kind: self.kind.into(),
             design_id: self.design_id,
             display_name: self.display_name,
@@ -1508,19 +1626,36 @@ impl SavedBuildOrder {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedBuildQueue {
     pub queue: Vec<SavedBuildOrder>,
+    /// #275: `BuildQueue::next_order_id` counter. Preserved so ids stay
+    /// unique across save/load.
+    #[serde(default)]
+    pub next_order_id: u64,
 }
 
 impl SavedBuildQueue {
     pub fn from_live(v: &BuildQueue) -> Self {
-        Self { queue: v.queue.iter().map(SavedBuildOrder::from_live).collect() }
+        Self {
+            queue: v.queue.iter().map(SavedBuildOrder::from_live).collect(),
+            next_order_id: v.next_order_id,
+        }
     }
     pub fn into_live(self) -> BuildQueue {
-        BuildQueue { queue: self.queue.into_iter().map(SavedBuildOrder::into_live).collect() }
+        BuildQueue {
+            queue: self
+                .queue
+                .into_iter()
+                .map(SavedBuildOrder::into_live)
+                .collect(),
+            next_order_id: self.next_order_id,
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedBuildingOrder {
+    /// #275: Stable order id for cancel commands.
+    #[serde(default)]
+    pub order_id: u64,
     pub building_id: String,
     pub target_slot: usize,
     pub minerals_remaining: Amt,
@@ -1531,6 +1666,7 @@ pub struct SavedBuildingOrder {
 impl SavedBuildingOrder {
     pub fn from_live(v: &BuildingOrder) -> Self {
         Self {
+            order_id: v.order_id,
             building_id: v.building_id.0.clone(),
             target_slot: v.target_slot,
             minerals_remaining: v.minerals_remaining,
@@ -1540,6 +1676,7 @@ impl SavedBuildingOrder {
     }
     pub fn into_live(self) -> BuildingOrder {
         BuildingOrder {
+            order_id: self.order_id,
             building_id: BuildingId::new(self.building_id),
             target_slot: self.target_slot,
             minerals_remaining: self.minerals_remaining,
@@ -1551,6 +1688,9 @@ impl SavedBuildingOrder {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedDemolitionOrder {
+    /// #275: Stable order id for cancel commands.
+    #[serde(default)]
+    pub order_id: u64,
     pub target_slot: usize,
     pub building_id: String,
     pub time_remaining: i64,
@@ -1561,6 +1701,7 @@ pub struct SavedDemolitionOrder {
 impl SavedDemolitionOrder {
     pub fn from_live(v: &DemolitionOrder) -> Self {
         Self {
+            order_id: v.order_id,
             target_slot: v.target_slot,
             building_id: v.building_id.0.clone(),
             time_remaining: v.time_remaining,
@@ -1570,6 +1711,7 @@ impl SavedDemolitionOrder {
     }
     pub fn into_live(self) -> DemolitionOrder {
         DemolitionOrder {
+            order_id: self.order_id,
             target_slot: self.target_slot,
             building_id: BuildingId::new(self.building_id),
             time_remaining: self.time_remaining,
@@ -1581,6 +1723,9 @@ impl SavedDemolitionOrder {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedUpgradeOrder {
+    /// #275: Stable order id for cancel commands.
+    #[serde(default)]
+    pub order_id: u64,
     pub slot_index: usize,
     pub target_id: String,
     pub minerals_remaining: Amt,
@@ -1591,6 +1736,7 @@ pub struct SavedUpgradeOrder {
 impl SavedUpgradeOrder {
     pub fn from_live(v: &UpgradeOrder) -> Self {
         Self {
+            order_id: v.order_id,
             slot_index: v.slot_index,
             target_id: v.target_id.0.clone(),
             minerals_remaining: v.minerals_remaining,
@@ -1600,6 +1746,7 @@ impl SavedUpgradeOrder {
     }
     pub fn into_live(self) -> UpgradeOrder {
         UpgradeOrder {
+            order_id: self.order_id,
             slot_index: self.slot_index,
             target_id: BuildingId::new(self.target_id),
             minerals_remaining: self.minerals_remaining,
@@ -1614,21 +1761,47 @@ pub struct SavedBuildingQueue {
     pub queue: Vec<SavedBuildingOrder>,
     pub demolition_queue: Vec<SavedDemolitionOrder>,
     pub upgrade_queue: Vec<SavedUpgradeOrder>,
+    /// #275: `BuildingQueue::next_order_id` counter, preserved across
+    /// save/load so ids stay unique.
+    #[serde(default)]
+    pub next_order_id: u64,
 }
 
 impl SavedBuildingQueue {
     pub fn from_live(v: &BuildingQueue) -> Self {
         Self {
             queue: v.queue.iter().map(SavedBuildingOrder::from_live).collect(),
-            demolition_queue: v.demolition_queue.iter().map(SavedDemolitionOrder::from_live).collect(),
-            upgrade_queue: v.upgrade_queue.iter().map(SavedUpgradeOrder::from_live).collect(),
+            demolition_queue: v
+                .demolition_queue
+                .iter()
+                .map(SavedDemolitionOrder::from_live)
+                .collect(),
+            upgrade_queue: v
+                .upgrade_queue
+                .iter()
+                .map(SavedUpgradeOrder::from_live)
+                .collect(),
+            next_order_id: v.next_order_id,
         }
     }
     pub fn into_live(self) -> BuildingQueue {
         BuildingQueue {
-            queue: self.queue.into_iter().map(SavedBuildingOrder::into_live).collect(),
-            demolition_queue: self.demolition_queue.into_iter().map(SavedDemolitionOrder::into_live).collect(),
-            upgrade_queue: self.upgrade_queue.into_iter().map(SavedUpgradeOrder::into_live).collect(),
+            queue: self
+                .queue
+                .into_iter()
+                .map(SavedBuildingOrder::into_live)
+                .collect(),
+            demolition_queue: self
+                .demolition_queue
+                .into_iter()
+                .map(SavedDemolitionOrder::into_live)
+                .collect(),
+            upgrade_queue: self
+                .upgrade_queue
+                .into_iter()
+                .map(SavedUpgradeOrder::into_live)
+                .collect(),
+            next_order_id: self.next_order_id,
         }
     }
 }
@@ -1640,10 +1813,22 @@ pub struct SavedBuildings {
 
 impl SavedBuildings {
     pub fn from_live(v: &Buildings) -> Self {
-        Self { slots: v.slots.iter().map(|s| s.as_ref().map(|b| b.0.clone())).collect() }
+        Self {
+            slots: v
+                .slots
+                .iter()
+                .map(|s| s.as_ref().map(|b| b.0.clone()))
+                .collect(),
+        }
     }
     pub fn into_live(self) -> Buildings {
-        Buildings { slots: self.slots.into_iter().map(|s| s.map(BuildingId::new)).collect() }
+        Buildings {
+            slots: self
+                .slots
+                .into_iter()
+                .map(|s| s.map(BuildingId::new))
+                .collect(),
+        }
     }
 }
 
@@ -1654,10 +1839,22 @@ pub struct SavedSystemBuildings {
 
 impl SavedSystemBuildings {
     pub fn from_live(v: &SystemBuildings) -> Self {
-        Self { slots: v.slots.iter().map(|s| s.as_ref().map(|b| b.0.clone())).collect() }
+        Self {
+            slots: v
+                .slots
+                .iter()
+                .map(|s| s.as_ref().map(|b| b.0.clone()))
+                .collect(),
+        }
     }
     pub fn into_live(self) -> SystemBuildings {
-        SystemBuildings { slots: self.slots.into_iter().map(|s| s.map(BuildingId::new)).collect() }
+        SystemBuildings {
+            slots: self
+                .slots
+                .into_iter()
+                .map(|s| s.map(BuildingId::new))
+                .collect(),
+        }
     }
 }
 
@@ -1666,21 +1863,46 @@ pub struct SavedSystemBuildingQueue {
     pub queue: Vec<SavedBuildingOrder>,
     pub demolition_queue: Vec<SavedDemolitionOrder>,
     pub upgrade_queue: Vec<SavedUpgradeOrder>,
+    /// #275: `SystemBuildingQueue::next_order_id` counter.
+    #[serde(default)]
+    pub next_order_id: u64,
 }
 
 impl SavedSystemBuildingQueue {
     pub fn from_live(v: &SystemBuildingQueue) -> Self {
         Self {
             queue: v.queue.iter().map(SavedBuildingOrder::from_live).collect(),
-            demolition_queue: v.demolition_queue.iter().map(SavedDemolitionOrder::from_live).collect(),
-            upgrade_queue: v.upgrade_queue.iter().map(SavedUpgradeOrder::from_live).collect(),
+            demolition_queue: v
+                .demolition_queue
+                .iter()
+                .map(SavedDemolitionOrder::from_live)
+                .collect(),
+            upgrade_queue: v
+                .upgrade_queue
+                .iter()
+                .map(SavedUpgradeOrder::from_live)
+                .collect(),
+            next_order_id: v.next_order_id,
         }
     }
     pub fn into_live(self) -> SystemBuildingQueue {
         SystemBuildingQueue {
-            queue: self.queue.into_iter().map(SavedBuildingOrder::into_live).collect(),
-            demolition_queue: self.demolition_queue.into_iter().map(SavedDemolitionOrder::into_live).collect(),
-            upgrade_queue: self.upgrade_queue.into_iter().map(SavedUpgradeOrder::into_live).collect(),
+            queue: self
+                .queue
+                .into_iter()
+                .map(SavedBuildingOrder::into_live)
+                .collect(),
+            demolition_queue: self
+                .demolition_queue
+                .into_iter()
+                .map(SavedDemolitionOrder::into_live)
+                .collect(),
+            upgrade_queue: self
+                .upgrade_queue
+                .into_iter()
+                .map(SavedUpgradeOrder::into_live)
+                .collect(),
+            next_order_id: self.next_order_id,
         }
     }
 }
@@ -1768,10 +1990,18 @@ pub struct SavedColonyJobs {
 
 impl SavedColonyJobs {
     pub fn from_live(v: &ColonyJobs) -> Self {
-        Self { slots: v.slots.iter().map(SavedJobSlot::from_live).collect() }
+        Self {
+            slots: v.slots.iter().map(SavedJobSlot::from_live).collect(),
+        }
     }
     pub fn into_live(self) -> ColonyJobs {
-        ColonyJobs { slots: self.slots.into_iter().map(SavedJobSlot::into_live).collect() }
+        ColonyJobs {
+            slots: self
+                .slots
+                .into_iter()
+                .map(SavedJobSlot::into_live)
+                .collect(),
+        }
     }
 }
 
@@ -1784,7 +2014,10 @@ pub struct SavedColonyJobRates {
 impl SavedColonyJobRates {
     pub fn from_live(v: &ColonyJobRates) -> Self {
         Self {
-            buckets: v.iter().map(|(j, t, mv)| (j.clone(), t.clone(), mv.clone())).collect(),
+            buckets: v
+                .iter()
+                .map(|(j, t, mv)| (j.clone(), t.clone(), mv.clone()))
+                .collect(),
         }
     }
     pub fn into_live(self) -> ColonyJobRates {
@@ -1803,10 +2036,16 @@ pub struct SavedColonySpecies {
 }
 impl SavedColonySpecies {
     pub fn from_live(v: &ColonySpecies) -> Self {
-        Self { species_id: v.species_id.clone(), population: v.population }
+        Self {
+            species_id: v.species_id.clone(),
+            population: v.population,
+        }
     }
     pub fn into_live(self) -> ColonySpecies {
-        ColonySpecies { species_id: self.species_id, population: self.population }
+        ColonySpecies {
+            species_id: self.species_id,
+            population: self.population,
+        }
     }
 }
 
@@ -1816,10 +2055,22 @@ pub struct SavedColonyPopulation {
 }
 impl SavedColonyPopulation {
     pub fn from_live(v: &ColonyPopulation) -> Self {
-        Self { species: v.species.iter().map(SavedColonySpecies::from_live).collect() }
+        Self {
+            species: v
+                .species
+                .iter()
+                .map(SavedColonySpecies::from_live)
+                .collect(),
+        }
     }
     pub fn into_live(self) -> ColonyPopulation {
-        ColonyPopulation { species: self.species.into_iter().map(SavedColonySpecies::into_live).collect() }
+        ColonyPopulation {
+            species: self
+                .species
+                .into_iter()
+                .map(SavedColonySpecies::into_live)
+                .collect(),
+        }
     }
 }
 
@@ -1856,10 +2107,16 @@ pub struct SavedAuthorityParams {
 }
 impl SavedAuthorityParams {
     pub fn from_live(v: &AuthorityParams) -> Self {
-        Self { production: v.production.clone(), cost_per_colony: v.cost_per_colony.clone() }
+        Self {
+            production: v.production.clone(),
+            cost_per_colony: v.cost_per_colony.clone(),
+        }
     }
     pub fn into_live(self) -> AuthorityParams {
-        AuthorityParams { production: self.production, cost_per_colony: self.cost_per_colony }
+        AuthorityParams {
+            production: self.production,
+            cost_per_colony: self.cost_per_colony,
+        }
     }
 }
 
@@ -1869,10 +2126,14 @@ pub struct SavedMaintenanceCost {
 }
 impl SavedMaintenanceCost {
     pub fn from_live(v: &MaintenanceCost) -> Self {
-        Self { energy_per_hexadies: v.energy_per_hexadies.clone() }
+        Self {
+            energy_per_hexadies: v.energy_per_hexadies.clone(),
+        }
     }
     pub fn into_live(self) -> MaintenanceCost {
-        MaintenanceCost { energy_per_hexadies: self.energy_per_hexadies }
+        MaintenanceCost {
+            energy_per_hexadies: self.energy_per_hexadies,
+        }
     }
 }
 
@@ -1882,10 +2143,14 @@ pub struct SavedFoodConsumption {
 }
 impl SavedFoodConsumption {
     pub fn from_live(v: &FoodConsumption) -> Self {
-        Self { food_per_hexadies: v.food_per_hexadies.clone() }
+        Self {
+            food_per_hexadies: v.food_per_hexadies.clone(),
+        }
     }
     pub fn into_live(self) -> FoodConsumption {
-        FoodConsumption { food_per_hexadies: self.food_per_hexadies }
+        FoodConsumption {
+            food_per_hexadies: self.food_per_hexadies,
+        }
     }
 }
 
@@ -1895,10 +2160,14 @@ pub struct SavedDeliverableStockpile {
 }
 impl SavedDeliverableStockpile {
     pub fn from_live(v: &DeliverableStockpile) -> Self {
-        Self { items: v.items.iter().map(Into::into).collect() }
+        Self {
+            items: v.items.iter().map(Into::into).collect(),
+        }
     }
     pub fn into_live(self) -> DeliverableStockpile {
-        DeliverableStockpile { items: self.items.into_iter().map(Into::into).collect() }
+        DeliverableStockpile {
+            items: self.items.into_iter().map(Into::into).collect(),
+        }
     }
 }
 
@@ -1942,7 +2211,13 @@ pub struct SavedColonizationQueue {
 
 impl SavedColonizationQueue {
     pub fn from_live(v: &ColonizationQueue) -> Self {
-        Self { orders: v.orders.iter().map(SavedColonizationOrder::from_live).collect() }
+        Self {
+            orders: v
+                .orders
+                .iter()
+                .map(SavedColonizationOrder::from_live)
+                .collect(),
+        }
     }
     pub fn into_live(self, map: &EntityMap) -> ColonizationQueue {
         ColonizationQueue {
@@ -2007,10 +2282,18 @@ pub struct SavedAnomalies {
 }
 impl SavedAnomalies {
     pub fn from_live(v: &Anomalies) -> Self {
-        Self { discoveries: v.discoveries.iter().map(SavedAnomaly::from_live).collect() }
+        Self {
+            discoveries: v.discoveries.iter().map(SavedAnomaly::from_live).collect(),
+        }
     }
     pub fn into_live(self) -> Anomalies {
-        Anomalies { discoveries: self.discoveries.into_iter().map(SavedAnomaly::into_live).collect() }
+        Anomalies {
+            discoveries: self
+                .discoveries
+                .into_iter()
+                .map(SavedAnomaly::into_live)
+                .collect(),
+        }
     }
 }
 
@@ -2025,10 +2308,16 @@ pub struct SavedResourceCost {
 }
 impl SavedResourceCost {
     pub fn from_live(v: &ResourceCost) -> Self {
-        Self { minerals: v.minerals, energy: v.energy }
+        Self {
+            minerals: v.minerals,
+            energy: v.energy,
+        }
     }
     pub fn into_live(self) -> ResourceCost {
-        ResourceCost { minerals: self.minerals, energy: self.energy }
+        ResourceCost {
+            minerals: self.minerals,
+            energy: self.energy,
+        }
     }
 }
 
@@ -2104,10 +2393,16 @@ pub struct SavedStructureHitpoints {
 }
 impl SavedStructureHitpoints {
     pub fn from_live(v: &StructureHitpoints) -> Self {
-        Self { current: v.current, max: v.max }
+        Self {
+            current: v.current,
+            max: v.max,
+        }
     }
     pub fn into_live(self) -> StructureHitpoints {
-        StructureHitpoints { current: self.current, max: self.max }
+        StructureHitpoints {
+            current: self.current,
+            max: self.max,
+        }
     }
 }
 
@@ -2157,7 +2452,9 @@ pub struct SavedLifetimeCost {
 }
 impl SavedLifetimeCost {
     pub fn from_live(v: &LifetimeCost) -> Self {
-        Self { cost: SavedResourceCost::from_live(&v.0) }
+        Self {
+            cost: SavedResourceCost::from_live(&v.0),
+        }
     }
     pub fn into_live(self) -> LifetimeCost {
         LifetimeCost(self.cost.into_live())
@@ -2317,26 +2614,44 @@ impl SavedColonySnapshot {
             production_research: v.production_research,
             food_consumption: v.food_consumption,
             maintenance_energy: v.maintenance_energy,
-            buildings: v.buildings.iter().map(|s| s.as_ref().map(|b| b.0.clone())).collect(),
-            build_queue: v.build_queue.iter().map(|e| SavedBuildQueueEntrySnapshot {
-                building_id: e.building_id.0.clone(),
-                target_slot: e.target_slot,
-                build_time_remaining: e.build_time_remaining,
-            }).collect(),
-            demolition_queue: v.demolition_queue.iter().map(|d| SavedDemolitionSnapshot {
-                target_slot: d.target_slot,
-                building_id: d.building_id.0.clone(),
-                time_remaining: d.time_remaining,
-            }).collect(),
-            upgrade_queue: v.upgrade_queue.iter().map(|u| SavedUpgradeSnapshot {
-                slot_index: u.slot_index,
-                target_id: u.target_id.0.clone(),
-                build_time_remaining: u.build_time_remaining,
-            }).collect(),
+            buildings: v
+                .buildings
+                .iter()
+                .map(|s| s.as_ref().map(|b| b.0.clone()))
+                .collect(),
+            build_queue: v
+                .build_queue
+                .iter()
+                .map(|e| SavedBuildQueueEntrySnapshot {
+                    building_id: e.building_id.0.clone(),
+                    target_slot: e.target_slot,
+                    build_time_remaining: e.build_time_remaining,
+                })
+                .collect(),
+            demolition_queue: v
+                .demolition_queue
+                .iter()
+                .map(|d| SavedDemolitionSnapshot {
+                    target_slot: d.target_slot,
+                    building_id: d.building_id.0.clone(),
+                    time_remaining: d.time_remaining,
+                })
+                .collect(),
+            upgrade_queue: v
+                .upgrade_queue
+                .iter()
+                .map(|u| SavedUpgradeSnapshot {
+                    slot_index: u.slot_index,
+                    target_id: u.target_id.0.clone(),
+                    build_time_remaining: u.build_time_remaining,
+                })
+                .collect(),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> crate::knowledge::ColonySnapshot {
-        use crate::knowledge::{BuildQueueEntrySnapshot, ColonySnapshot, DemolitionSnapshot, UpgradeSnapshot};
+        use crate::knowledge::{
+            BuildQueueEntrySnapshot, ColonySnapshot, DemolitionSnapshot, UpgradeSnapshot,
+        };
         use crate::scripting::building_api::BuildingId;
         ColonySnapshot {
             colony_entity: remap_entity(self.colony_entity_bits, map),
@@ -2350,22 +2665,38 @@ impl SavedColonySnapshot {
             production_research: self.production_research,
             food_consumption: self.food_consumption,
             maintenance_energy: self.maintenance_energy,
-            buildings: self.buildings.into_iter().map(|s| s.map(BuildingId::new)).collect(),
-            build_queue: self.build_queue.into_iter().map(|e| BuildQueueEntrySnapshot {
-                building_id: BuildingId::new(e.building_id),
-                target_slot: e.target_slot,
-                build_time_remaining: e.build_time_remaining,
-            }).collect(),
-            demolition_queue: self.demolition_queue.into_iter().map(|d| DemolitionSnapshot {
-                target_slot: d.target_slot,
-                building_id: BuildingId::new(d.building_id),
-                time_remaining: d.time_remaining,
-            }).collect(),
-            upgrade_queue: self.upgrade_queue.into_iter().map(|u| UpgradeSnapshot {
-                slot_index: u.slot_index,
-                target_id: BuildingId::new(u.target_id),
-                build_time_remaining: u.build_time_remaining,
-            }).collect(),
+            buildings: self
+                .buildings
+                .into_iter()
+                .map(|s| s.map(BuildingId::new))
+                .collect(),
+            build_queue: self
+                .build_queue
+                .into_iter()
+                .map(|e| BuildQueueEntrySnapshot {
+                    building_id: BuildingId::new(e.building_id),
+                    target_slot: e.target_slot,
+                    build_time_remaining: e.build_time_remaining,
+                })
+                .collect(),
+            demolition_queue: self
+                .demolition_queue
+                .into_iter()
+                .map(|d| DemolitionSnapshot {
+                    target_slot: d.target_slot,
+                    building_id: BuildingId::new(d.building_id),
+                    time_remaining: d.time_remaining,
+                })
+                .collect(),
+            upgrade_queue: self
+                .upgrade_queue
+                .into_iter()
+                .map(|u| UpgradeSnapshot {
+                    slot_index: u.slot_index,
+                    target_id: BuildingId::new(u.target_id),
+                    build_time_remaining: u.build_time_remaining,
+                })
+                .collect(),
         }
     }
 }
@@ -2397,7 +2728,11 @@ impl SavedSystemSnapshot {
             production_food: v.production_food,
             production_research: v.production_research,
             maintenance_energy: v.maintenance_energy,
-            colonies: v.colonies.iter().map(SavedColonySnapshot::from_live).collect(),
+            colonies: v
+                .colonies
+                .iter()
+                .map(SavedColonySnapshot::from_live)
+                .collect(),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> SystemSnapshot {
@@ -2426,7 +2761,11 @@ impl SavedSystemSnapshot {
             production_food: self.production_food,
             production_research: self.production_research,
             maintenance_energy: self.maintenance_energy,
-            colonies: self.colonies.into_iter().map(|c| c.into_live(map)).collect(),
+            colonies: self
+                .colonies
+                .into_iter()
+                .map(|c| c.into_live(map))
+                .collect(),
         }
     }
 }
@@ -2479,7 +2818,9 @@ impl From<&ShipSnapshotState> for SavedShipSnapshotState {
             ShipSnapshotState::Settling => Self::Settling,
             ShipSnapshotState::Refitting => Self::Refitting,
             ShipSnapshotState::Destroyed => Self::Destroyed,
-            ShipSnapshotState::Loitering { position } => Self::Loitering { position: *position },
+            ShipSnapshotState::Loitering { position } => Self::Loitering {
+                position: *position,
+            },
         }
     }
 }
@@ -2547,8 +2888,14 @@ pub struct SavedKnowledgeStore {
 impl SavedKnowledgeStore {
     pub fn from_live(v: &KnowledgeStore) -> Self {
         Self {
-            entries: v.iter().map(|(_, k)| SavedSystemKnowledge::from_live(k)).collect(),
-            ship_snapshots: v.iter_ships().map(|(_, s)| SavedShipSnapshot::from_live(s)).collect(),
+            entries: v
+                .iter()
+                .map(|(_, k)| SavedSystemKnowledge::from_live(k))
+                .collect(),
+            ship_snapshots: v
+                .iter_ships()
+                .map(|(_, s)| SavedShipSnapshot::from_live(s))
+                .collect(),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> KnowledgeStore {
@@ -2658,37 +3005,69 @@ pub enum SavedKnowledgeFact {
 impl SavedKnowledgeFact {
     pub fn from_live(v: &KnowledgeFact) -> Self {
         match v {
-            KnowledgeFact::HostileDetected { event_id, target, detector, target_pos, description } => Self::HostileDetected {
+            KnowledgeFact::HostileDetected {
+                event_id,
+                target,
+                detector,
+                target_pos,
+                description,
+            } => Self::HostileDetected {
                 target_bits: target.to_bits(),
                 detector_bits: detector.to_bits(),
                 target_pos: *target_pos,
                 description: description.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::CombatOutcome { event_id, system, victor, detail } => Self::CombatOutcome {
+            KnowledgeFact::CombatOutcome {
+                event_id,
+                system,
+                victor,
+                detail,
+            } => Self::CombatOutcome {
                 system_bits: system.to_bits(),
                 victor: victor.into(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::SurveyComplete { event_id, system, system_name, detail } => Self::SurveyComplete {
+            KnowledgeFact::SurveyComplete {
+                event_id,
+                system,
+                system_name,
+                detail,
+            } => Self::SurveyComplete {
                 system_bits: system.to_bits(),
                 system_name: system_name.clone(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::AnomalyDiscovered { event_id, system, anomaly_id, detail } => Self::AnomalyDiscovered {
+            KnowledgeFact::AnomalyDiscovered {
+                event_id,
+                system,
+                anomaly_id,
+                detail,
+            } => Self::AnomalyDiscovered {
                 system_bits: system.to_bits(),
                 anomaly_id: anomaly_id.clone(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::SurveyDiscovery { event_id, system, detail } => Self::SurveyDiscovery {
+            KnowledgeFact::SurveyDiscovery {
+                event_id,
+                system,
+                detail,
+            } => Self::SurveyDiscovery {
                 system_bits: system.to_bits(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::StructureBuilt { event_id, system, kind, name, destroyed, detail } => Self::StructureBuilt {
+            KnowledgeFact::StructureBuilt {
+                event_id,
+                system,
+                kind,
+                name,
+                destroyed,
+                detail,
+            } => Self::StructureBuilt {
                 system_bits: system.map(|e| e.to_bits()),
                 kind: kind.clone(),
                 name: name.clone(),
@@ -2696,20 +3075,36 @@ impl SavedKnowledgeFact {
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::ColonyEstablished { event_id, system, planet, name, detail } => Self::ColonyEstablished {
+            KnowledgeFact::ColonyEstablished {
+                event_id,
+                system,
+                planet,
+                name,
+                detail,
+            } => Self::ColonyEstablished {
                 system_bits: system.to_bits(),
                 planet_bits: planet.to_bits(),
                 name: name.clone(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::ColonyFailed { event_id, system, name, reason } => Self::ColonyFailed {
+            KnowledgeFact::ColonyFailed {
+                event_id,
+                system,
+                name,
+                reason,
+            } => Self::ColonyFailed {
                 system_bits: system.to_bits(),
                 name: name.clone(),
                 reason: reason.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            KnowledgeFact::ShipArrived { event_id, system, name, detail } => Self::ShipArrived {
+            KnowledgeFact::ShipArrived {
+                event_id,
+                system,
+                name,
+                detail,
+            } => Self::ShipArrived {
                 system_bits: system.map(|e| e.to_bits()),
                 name: name.clone(),
                 detail: detail.clone(),
@@ -2720,56 +3115,110 @@ impl SavedKnowledgeFact {
     pub fn into_live(self, map: &EntityMap) -> KnowledgeFact {
         use crate::knowledge::EventId;
         match self {
-            Self::HostileDetected { target_bits, detector_bits, target_pos, description, event_id } => KnowledgeFact::HostileDetected {
+            Self::HostileDetected {
+                target_bits,
+                detector_bits,
+                target_pos,
+                description,
+                event_id,
+            } => KnowledgeFact::HostileDetected {
                 event_id: event_id.map(EventId),
                 target: remap_entity(target_bits, map),
                 detector: remap_entity(detector_bits, map),
                 target_pos,
                 description,
             },
-            Self::CombatOutcome { system_bits, victor, detail, event_id } => KnowledgeFact::CombatOutcome {
+            Self::CombatOutcome {
+                system_bits,
+                victor,
+                detail,
+                event_id,
+            } => KnowledgeFact::CombatOutcome {
                 event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 victor: victor.into(),
                 detail,
             },
-            Self::SurveyComplete { system_bits, system_name, detail, event_id } => KnowledgeFact::SurveyComplete {
+            Self::SurveyComplete {
+                system_bits,
+                system_name,
+                detail,
+                event_id,
+            } => KnowledgeFact::SurveyComplete {
                 event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 system_name,
                 detail,
             },
-            Self::AnomalyDiscovered { system_bits, anomaly_id, detail, event_id } => KnowledgeFact::AnomalyDiscovered {
+            Self::AnomalyDiscovered {
+                system_bits,
+                anomaly_id,
+                detail,
+                event_id,
+            } => KnowledgeFact::AnomalyDiscovered {
                 event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 anomaly_id,
                 detail,
             },
-            Self::SurveyDiscovery { system_bits, detail, event_id } => KnowledgeFact::SurveyDiscovery {
+            Self::SurveyDiscovery {
+                system_bits,
+                detail,
+                event_id,
+            } => KnowledgeFact::SurveyDiscovery {
                 event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 detail,
             },
-            Self::StructureBuilt { system_bits, kind, name, destroyed, detail, event_id } => KnowledgeFact::StructureBuilt {
+            Self::StructureBuilt {
+                system_bits,
+                kind,
+                name,
+                destroyed,
+                detail,
+                event_id,
+            } => KnowledgeFact::StructureBuilt {
                 event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
-                kind, name, destroyed, detail,
+                kind,
+                name,
+                destroyed,
+                detail,
             },
-            Self::ColonyEstablished { system_bits, planet_bits, name, detail, event_id } => KnowledgeFact::ColonyEstablished {
+            Self::ColonyEstablished {
+                system_bits,
+                planet_bits,
+                name,
+                detail,
+                event_id,
+            } => KnowledgeFact::ColonyEstablished {
                 event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 planet: remap_entity(planet_bits, map),
-                name, detail,
+                name,
+                detail,
             },
-            Self::ColonyFailed { system_bits, name, reason, event_id } => KnowledgeFact::ColonyFailed {
+            Self::ColonyFailed {
+                system_bits,
+                name,
+                reason,
+                event_id,
+            } => KnowledgeFact::ColonyFailed {
                 event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
-                name, reason,
+                name,
+                reason,
             },
-            Self::ShipArrived { system_bits, name, detail, event_id } => KnowledgeFact::ShipArrived {
+            Self::ShipArrived {
+                system_bits,
+                name,
+                detail,
+                event_id,
+            } => KnowledgeFact::ShipArrived {
                 event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
-                name, detail,
+                name,
+                detail,
             },
         }
     }
@@ -2815,7 +3264,9 @@ pub struct SavedPendingFactQueue {
 
 impl SavedPendingFactQueue {
     pub fn from_live(v: &PendingFactQueue) -> Self {
-        Self { facts: v.facts.iter().map(SavedPerceivedFact::from_live).collect() }
+        Self {
+            facts: v.facts.iter().map(SavedPerceivedFact::from_live).collect(),
+        }
     }
     pub fn into_live(self, map: &EntityMap) -> PendingFactQueue {
         PendingFactQueue {
@@ -2945,6 +3396,15 @@ pub enum SavedRemoteCommand {
         energy_cost: Amt,
         build_time: i64,
     },
+    /// #275: `RemoteCommand::CancelBuildingOrder`.
+    CancelBuildingOrder {
+        order_id: u64,
+    },
+    /// #275: `RemoteCommand::CancelShipOrder`.
+    CancelShipOrder {
+        host_colony_bits: u64,
+        order_id: u64,
+    },
 }
 impl From<&RemoteCommand> for SavedRemoteCommand {
     fn from(v: &RemoteCommand) -> Self {
@@ -2952,15 +3412,21 @@ impl From<&RemoteCommand> for SavedRemoteCommand {
             RemoteCommand::BuildShip { design_id } => Self::BuildShip {
                 design_id: design_id.clone(),
             },
-            RemoteCommand::SetProductionFocus { minerals, energy, research } => {
-                Self::SetProductionFocus {
-                    minerals: *minerals,
-                    energy: *energy,
-                    research: *research,
-                }
-            }
+            RemoteCommand::SetProductionFocus {
+                minerals,
+                energy,
+                research,
+            } => Self::SetProductionFocus {
+                minerals: *minerals,
+                energy: *energy,
+                research: *research,
+            },
             RemoteCommand::Colony(cc) => Self::Colony(SavedColonyCommand::from_live(cc)),
-            RemoteCommand::ShipBuild { host_colony, design_id, build_kind } => Self::ShipBuild {
+            RemoteCommand::ShipBuild {
+                host_colony,
+                design_id,
+                build_kind,
+            } => Self::ShipBuild {
                 host_colony_bits: host_colony.to_bits(),
                 design_id: design_id.clone(),
                 build_kind: build_kind.into(),
@@ -2982,6 +3448,16 @@ impl From<&RemoteCommand> for SavedRemoteCommand {
                 energy_cost: *energy_cost,
                 build_time: *build_time,
             },
+            RemoteCommand::CancelBuildingOrder { order_id } => Self::CancelBuildingOrder {
+                order_id: *order_id,
+            },
+            RemoteCommand::CancelShipOrder {
+                host_colony,
+                order_id,
+            } => Self::CancelShipOrder {
+                host_colony_bits: host_colony.to_bits(),
+                order_id: *order_id,
+            },
         }
     }
 }
@@ -2989,17 +3465,25 @@ impl SavedRemoteCommand {
     pub fn into_live(self, map: &EntityMap) -> RemoteCommand {
         match self {
             SavedRemoteCommand::BuildShip { design_id } => RemoteCommand::BuildShip { design_id },
-            SavedRemoteCommand::SetProductionFocus { minerals, energy, research } => {
-                RemoteCommand::SetProductionFocus { minerals, energy, research }
-            }
+            SavedRemoteCommand::SetProductionFocus {
+                minerals,
+                energy,
+                research,
+            } => RemoteCommand::SetProductionFocus {
+                minerals,
+                energy,
+                research,
+            },
             SavedRemoteCommand::Colony(sc) => RemoteCommand::Colony(sc.into_live(map)),
-            SavedRemoteCommand::ShipBuild { host_colony_bits, design_id, build_kind } => {
-                RemoteCommand::ShipBuild {
-                    host_colony: remap_entity(host_colony_bits, map),
-                    design_id,
-                    build_kind: build_kind.into(),
-                }
-            }
+            SavedRemoteCommand::ShipBuild {
+                host_colony_bits,
+                design_id,
+                build_kind,
+            } => RemoteCommand::ShipBuild {
+                host_colony: remap_entity(host_colony_bits, map),
+                design_id,
+                build_kind: build_kind.into(),
+            },
             SavedRemoteCommand::DeliverableBuild {
                 host_colony_bits,
                 def_id,
@@ -3016,6 +3500,16 @@ impl SavedRemoteCommand {
                 minerals_cost,
                 energy_cost,
                 build_time,
+            },
+            SavedRemoteCommand::CancelBuildingOrder { order_id } => {
+                RemoteCommand::CancelBuildingOrder { order_id }
+            }
+            SavedRemoteCommand::CancelShipOrder {
+                host_colony_bits,
+                order_id,
+            } => RemoteCommand::CancelShipOrder {
+                host_colony: remap_entity(host_colony_bits, map),
+                order_id,
             },
         }
     }
@@ -3083,14 +3577,20 @@ pub enum SavedBuildingKind {
 impl SavedBuildingKind {
     pub fn from_live(v: &BuildingKind) -> Self {
         match v {
-            BuildingKind::Queue { building_id, target_slot } => Self::Queue {
+            BuildingKind::Queue {
+                building_id,
+                target_slot,
+            } => Self::Queue {
                 building_id: building_id.clone(),
                 target_slot: *target_slot,
             },
             BuildingKind::Demolish { target_slot } => Self::Demolish {
                 target_slot: *target_slot,
             },
-            BuildingKind::Upgrade { slot_index, target_id } => Self::Upgrade {
+            BuildingKind::Upgrade {
+                slot_index,
+                target_id,
+            } => Self::Upgrade {
                 slot_index: *slot_index,
                 target_id: target_id.clone(),
             },
@@ -3098,13 +3598,21 @@ impl SavedBuildingKind {
     }
     pub fn into_live(self) -> BuildingKind {
         match self {
-            Self::Queue { building_id, target_slot } => {
-                BuildingKind::Queue { building_id, target_slot }
-            }
+            Self::Queue {
+                building_id,
+                target_slot,
+            } => BuildingKind::Queue {
+                building_id,
+                target_slot,
+            },
             Self::Demolish { target_slot } => BuildingKind::Demolish { target_slot },
-            Self::Upgrade { slot_index, target_id } => {
-                BuildingKind::Upgrade { slot_index, target_id }
-            }
+            Self::Upgrade {
+                slot_index,
+                target_id,
+            } => BuildingKind::Upgrade {
+                slot_index,
+                target_id,
+            },
         }
     }
 }
@@ -3173,10 +3681,22 @@ pub struct SavedCommandLog {
 }
 impl SavedCommandLog {
     pub fn from_live(v: &CommandLog) -> Self {
-        Self { entries: v.entries.iter().map(SavedCommandLogEntry::from_live).collect() }
+        Self {
+            entries: v
+                .entries
+                .iter()
+                .map(SavedCommandLogEntry::from_live)
+                .collect(),
+        }
     }
     pub fn into_live(self) -> CommandLog {
-        CommandLog { entries: self.entries.into_iter().map(SavedCommandLogEntry::into_live).collect() }
+        CommandLog {
+            entries: self
+                .entries
+                .into_iter()
+                .map(SavedCommandLogEntry::into_live)
+                .collect(),
+        }
     }
 }
 
@@ -3191,7 +3711,9 @@ pub struct SavedTechTree {
 }
 impl SavedTechTree {
     pub fn from_live(v: &TechTree) -> Self {
-        Self { researched: v.researched.iter().map(|t| t.0.clone()).collect() }
+        Self {
+            researched: v.researched.iter().map(|t| t.0.clone()).collect(),
+        }
     }
     /// Merge into an existing TechTree (preserves the tree's `technologies`
     /// field which was populated from Lua scripts at startup).
@@ -3242,7 +3764,9 @@ impl SavedResearchPool {
         Self { points: v.points }
     }
     pub fn into_live(self) -> ResearchPool {
-        ResearchPool { points: self.points }
+        ResearchPool {
+            points: self.points,
+        }
     }
 }
 
@@ -3252,10 +3776,14 @@ pub struct SavedRecentlyResearched {
 }
 impl SavedRecentlyResearched {
     pub fn from_live(v: &RecentlyResearched) -> Self {
-        Self { techs: v.techs.iter().map(|t| t.0.clone()).collect() }
+        Self {
+            techs: v.techs.iter().map(|t| t.0.clone()).collect(),
+        }
     }
     pub fn into_live(self) -> RecentlyResearched {
-        RecentlyResearched { techs: self.techs.into_iter().map(TechId).collect() }
+        RecentlyResearched {
+            techs: self.techs.into_iter().map(TechId).collect(),
+        }
     }
 }
 
@@ -3266,10 +3794,16 @@ pub struct SavedPendingResearch {
 }
 impl SavedPendingResearch {
     pub fn from_live(v: &PendingResearch) -> Self {
-        Self { amount: v.amount, arrives_at: v.arrives_at }
+        Self {
+            amount: v.amount,
+            arrives_at: v.arrives_at,
+        }
     }
     pub fn into_live(self) -> PendingResearch {
-        PendingResearch { amount: self.amount, arrives_at: self.arrives_at }
+        PendingResearch {
+            amount: self.amount,
+            arrives_at: self.arrives_at,
+        }
     }
 }
 
@@ -3279,7 +3813,9 @@ pub struct SavedTechKnowledge {
 }
 impl SavedTechKnowledge {
     pub fn from_live(v: &TechKnowledge) -> Self {
-        Self { known_techs: v.known_techs.iter().map(|t| t.0.clone()).collect() }
+        Self {
+            known_techs: v.known_techs.iter().map(|t| t.0.clone()).collect(),
+        }
     }
     pub fn into_live(self) -> TechKnowledge {
         TechKnowledge {
@@ -3344,12 +3880,20 @@ pub struct SavedPendingColonyTechModifiers {
 impl SavedPendingColonyTechModifiers {
     pub fn from_live(v: &PendingColonyTechModifiers) -> Self {
         Self {
-            entries: v.entries.iter().map(|(t, pm)| (t.0.clone(), SavedParsedModifier::from_live(pm))).collect(),
+            entries: v
+                .entries
+                .iter()
+                .map(|(t, pm)| (t.0.clone(), SavedParsedModifier::from_live(pm)))
+                .collect(),
         }
     }
     pub fn into_live(self) -> PendingColonyTechModifiers {
         PendingColonyTechModifiers {
-            entries: self.entries.into_iter().map(|(t, pm)| (TechId(t), pm.into_live())).collect(),
+            entries: self
+                .entries
+                .into_iter()
+                .map(|(t, pm)| (TechId(t), pm.into_live()))
+                .collect(),
         }
     }
 }
@@ -3360,10 +3904,14 @@ pub struct SavedEmpireModifiers {
 }
 impl SavedEmpireModifiers {
     pub fn from_live(v: &EmpireModifiers) -> Self {
-        Self { population_growth: v.population_growth.clone() }
+        Self {
+            population_growth: v.population_growth.clone(),
+        }
     }
     pub fn into_live(self) -> EmpireModifiers {
-        EmpireModifiers { population_growth: self.population_growth }
+        EmpireModifiers {
+            population_growth: self.population_growth,
+        }
     }
 }
 
@@ -3373,10 +3921,14 @@ pub struct SavedGameFlags {
 }
 impl SavedGameFlags {
     pub fn from_live(v: &GameFlags) -> Self {
-        Self { flags: v.flags.iter().cloned().collect() }
+        Self {
+            flags: v.flags.iter().cloned().collect(),
+        }
     }
     pub fn into_live(self) -> GameFlags {
-        GameFlags { flags: self.flags.into_iter().collect() }
+        GameFlags {
+            flags: self.flags.into_iter().collect(),
+        }
     }
 }
 
@@ -3386,10 +3938,14 @@ pub struct SavedScopedFlags {
 }
 impl SavedScopedFlags {
     pub fn from_live(v: &ScopedFlags) -> Self {
-        Self { flags: v.flags.iter().cloned().collect() }
+        Self {
+            flags: v.flags.iter().cloned().collect(),
+        }
     }
     pub fn into_live(self) -> ScopedFlags {
-        ScopedFlags { flags: self.flags.into_iter().collect() }
+        ScopedFlags {
+            flags: self.flags.into_iter().collect(),
+        }
     }
 }
 
@@ -3531,7 +4087,11 @@ impl SavedEventLog {
     pub fn into_live(self, map: &EntityMap) -> EventLog {
         EventLog {
             entries: self.entries.into_iter().map(|e| e.into_live(map)).collect(),
-            max_entries: if self.max_entries == 0 { 50 } else { self.max_entries },
+            max_entries: if self.max_entries == 0 {
+                50
+            } else {
+                self.max_entries
+            },
         }
     }
 }

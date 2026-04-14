@@ -7,8 +7,8 @@ use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::time_system::GameClock;
 
 use super::{
-    BuildingOrder, Colony, DemolitionOrder, LastProductionTick, MaintenanceCost,
-    ResourceStockpile, UpgradeOrder,
+    BuildingOrder, CancelledOrderKind, Colony, DemolitionOrder, LastProductionTick,
+    MaintenanceCost, ResourceStockpile, UpgradeOrder,
 };
 
 /// Default number of system building slots for any star system.
@@ -23,21 +23,30 @@ pub struct SystemBuildings {
 impl SystemBuildings {
     /// Check if any slot contains a building with the given id.
     pub fn has_building(&self, id: &str) -> bool {
-        self.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == id))
+        self.slots
+            .iter()
+            .any(|s| s.as_ref().is_some_and(|b| b.0 == id))
     }
 
     /// Check if any building in slots has the given capability (looked up via BuildingRegistry).
     pub fn has_capability(&self, capability: &str, registry: &BuildingRegistry) -> bool {
         self.slots.iter().any(|slot| {
             slot.as_ref().is_some_and(|id| {
-                registry.get(id.as_str()).is_some_and(|def| def.capabilities.contains_key(capability))
+                registry
+                    .get(id.as_str())
+                    .is_some_and(|def| def.capabilities.contains_key(capability))
             })
         })
     }
 
     /// Get a named parameter from the first building with the given capability.
     /// Returns None if no building has the capability or the param is not defined.
-    pub fn get_capability_param(&self, capability: &str, param: &str, registry: &BuildingRegistry) -> Option<f64> {
+    pub fn get_capability_param(
+        &self,
+        capability: &str,
+        param: &str,
+        registry: &BuildingRegistry,
+    ) -> Option<f64> {
         for slot in &self.slots {
             if let Some(id) = slot {
                 if let Some(def) = registry.get(id.as_str()) {
@@ -83,9 +92,70 @@ pub struct SystemBuildingQueue {
     pub queue: Vec<BuildingOrder>,
     pub demolition_queue: Vec<DemolitionOrder>,
     pub upgrade_queue: Vec<UpgradeOrder>,
+    /// #275: Shared monotonic counter for `order_id`. See
+    /// `BuildingQueue::next_order_id` for rationale.
+    pub next_order_id: u64,
 }
 
 impl SystemBuildingQueue {
+    fn allocate_order_id(&mut self) -> u64 {
+        if self.next_order_id == 0 {
+            self.next_order_id = 1;
+        }
+        let id = self.next_order_id;
+        self.next_order_id = self.next_order_id.wrapping_add(1);
+        id
+    }
+
+    /// #275: Push a construction order, auto-assigning `order_id`.
+    pub fn push_build_order(&mut self, mut order: BuildingOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.queue.push(order);
+        id
+    }
+
+    /// #275: Push a demolition order, auto-assigning `order_id`.
+    pub fn push_demolition_order(&mut self, mut order: DemolitionOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.demolition_queue.push(order);
+        id
+    }
+
+    /// #275: Push an upgrade order, auto-assigning `order_id`.
+    pub fn push_upgrade_order(&mut self, mut order: UpgradeOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.upgrade_queue.push(order);
+        id
+    }
+
+    /// #275: See `BuildingQueue::cancel_order`.
+    pub fn cancel_order(&mut self, order_id: u64) -> Option<CancelledOrderKind> {
+        if let Some(pos) = self.queue.iter().position(|o| o.order_id == order_id) {
+            self.queue.remove(pos);
+            return Some(CancelledOrderKind::Construction);
+        }
+        if let Some(pos) = self
+            .demolition_queue
+            .iter()
+            .position(|o| o.order_id == order_id)
+        {
+            self.demolition_queue.remove(pos);
+            return Some(CancelledOrderKind::Demolition);
+        }
+        if let Some(pos) = self
+            .upgrade_queue
+            .iter()
+            .position(|o| o.order_id == order_id)
+        {
+            self.upgrade_queue.remove(pos);
+            return Some(CancelledOrderKind::Upgrade);
+        }
+        None
+    }
+
     /// Check if a given slot is currently being demolished.
     pub fn is_demolishing(&self, slot: usize) -> bool {
         self.demolition_queue.iter().any(|d| d.target_slot == slot)
@@ -93,7 +163,8 @@ impl SystemBuildingQueue {
 
     /// Get the remaining demolition time for a slot, if any.
     pub fn demolition_time_remaining(&self, slot: usize) -> Option<i64> {
-        self.demolition_queue.iter()
+        self.demolition_queue
+            .iter()
             .find(|d| d.target_slot == slot)
             .map(|d| d.time_remaining)
     }
@@ -166,7 +237,12 @@ pub fn sync_system_building_maintenance(
 pub fn tick_system_building_queue(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    mut query: Query<(Entity, &mut SystemBuildingQueue, &mut SystemBuildings, &mut ResourceStockpile)>,
+    mut query: Query<(
+        Entity,
+        &mut SystemBuildingQueue,
+        &mut SystemBuildings,
+        &mut ResourceStockpile,
+    )>,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -204,8 +280,8 @@ pub fn tick_system_building_queue(
             // planet-level building queue so starved system builds don't
             // sink into negative-time limbo.
             let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
-            let no_more_needed = order.minerals_remaining == Amt::ZERO
-                && order.energy_remaining == Amt::ZERO;
+            let no_more_needed =
+                order.minerals_remaining == Amt::ZERO && order.energy_remaining == Amt::ZERO;
             super::build_tick::maybe_tick_build_time(
                 &mut order.build_time_remaining,
                 transferred,
@@ -236,7 +312,11 @@ pub fn tick_system_building_queue(
             }
         }
         for slot_idx in completed_demolitions {
-            if let Some(pos) = bq.demolition_queue.iter().position(|d| d.target_slot == slot_idx) {
+            if let Some(pos) = bq
+                .demolition_queue
+                .iter()
+                .position(|d| d.target_slot == slot_idx)
+            {
                 let completed = bq.demolition_queue.remove(pos);
                 if slot_idx < buildings.slots.len() {
                     let building_name = buildings.slots[slot_idx]
@@ -304,15 +384,14 @@ pub fn tick_system_building_queue(
                     "System building upgrade completed: {} -> {} in slot {}",
                     old_name, completed.target_id, completed.slot_index
                 );
-                event_system.fire_event(
-                    "building_upgraded",
-                    Some(system_entity),
-                    clock.elapsed,
-                );
+                event_system.fire_event("building_upgraded", Some(system_entity), clock.elapsed);
             }
         }
 
-        stockpile.minerals = stockpile.minerals.sub(minerals_consumed).add(minerals_refunded);
+        stockpile.minerals = stockpile
+            .minerals
+            .sub(minerals_consumed)
+            .add(minerals_refunded);
         stockpile.energy = stockpile.energy.sub(energy_consumed).add(energy_refunded);
     }
 }
@@ -326,13 +405,16 @@ mod tests {
     fn test_building_registry() -> BuildingRegistry {
         let mut registry = BuildingRegistry::default();
         let mut shipyard_caps = HashMap::new();
-        shipyard_caps.insert("shipyard".to_string(), CapabilityParams {
-            params: {
-                let mut m = HashMap::new();
-                m.insert("concurrent_builds".to_string(), 1.0);
-                m
+        shipyard_caps.insert(
+            "shipyard".to_string(),
+            CapabilityParams {
+                params: {
+                    let mut m = HashMap::new();
+                    m.insert("concurrent_builds".to_string(), 1.0);
+                    m
+                },
             },
-        });
+        );
         registry.insert(BuildingDefinition {
             id: "shipyard".to_string(),
             name: "Shipyard".to_string(),
@@ -354,14 +436,17 @@ mod tests {
         });
 
         let mut port_caps = HashMap::new();
-        port_caps.insert("port".to_string(), CapabilityParams {
-            params: {
-                let mut m = HashMap::new();
-                m.insert("ftl_range_bonus".to_string(), 10.0);
-                m.insert("travel_time_factor".to_string(), 0.8);
-                m
+        port_caps.insert(
+            "port".to_string(),
+            CapabilityParams {
+                params: {
+                    let mut m = HashMap::new();
+                    m.insert("ftl_range_bonus".to_string(), 10.0);
+                    m.insert("travel_time_factor".to_string(), 0.8);
+                    m
+                },
             },
-        });
+        );
         registry.insert(BuildingDefinition {
             id: "port".to_string(),
             name: "Port".to_string(),
@@ -420,7 +505,11 @@ mod tests {
     fn system_buildings_has_capability() {
         let registry = test_building_registry();
         let sb = SystemBuildings {
-            slots: vec![Some(BuildingId::new("shipyard")), Some(BuildingId::new("port")), None],
+            slots: vec![
+                Some(BuildingId::new("shipyard")),
+                Some(BuildingId::new("port")),
+                None,
+            ],
         };
         assert!(sb.has_capability("shipyard", &registry));
         assert!(sb.has_capability("port", &registry));
@@ -449,6 +538,7 @@ mod tests {
         let bq = SystemBuildingQueue {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
+                order_id: 0,
                 target_slot: 1,
                 building_id: BuildingId::new("shipyard"),
                 time_remaining: 15,
@@ -456,6 +546,7 @@ mod tests {
                 energy_refund: Amt::ZERO,
             }],
             upgrade_queue: Vec::new(),
+            next_order_id: 0,
         };
         assert!(bq.is_demolishing(1));
         assert!(!bq.is_demolishing(0));

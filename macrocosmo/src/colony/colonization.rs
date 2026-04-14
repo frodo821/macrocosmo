@@ -1,22 +1,20 @@
 use bevy::prelude::*;
 
 use crate::amount::Amt;
-use crate::galaxy::{Planet, StarSystem, SystemAttributes};
-use crate::modifier::ModifiedValue;
-use crate::events::GameEvent;
 use crate::colony::ColonyJobRates;
 use crate::components::Position;
-use crate::knowledge::{
- FactSysParam, KnowledgeFact, PlayerVantage,
-};
+use crate::events::GameEvent;
+use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
+use crate::modifier::ModifiedValue;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
 use super::{
-    Buildings, BuildQueue, BuildingQueue, Colony, FoodConsumption, LastProductionTick,
-    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
-    SystemBuildings, SystemBuildingQueue, DEFAULT_SYSTEM_BUILDING_SLOTS,
+    BuildQueue, BuildingQueue, Buildings, Colony, DEFAULT_SYSTEM_BUILDING_SLOTS, FoodConsumption,
+    LastProductionTick, MaintenanceCost, Production, ProductionFocus, ResourceCapacity,
+    ResourceStockpile, SystemBuildingQueue, SystemBuildings,
 };
 
 /// #114: Default cost/time to colonize a new planet from an existing colony in the same system.
@@ -97,9 +95,7 @@ pub fn spawn_capital_colony(
             research_per_hexadies: ModifiedValue::new(Amt::ZERO),
             food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue {
-            queue: Vec::new(),
-        },
+        BuildQueue::default(),
         Buildings { slots },
         BuildingQueue::default(),
         ProductionFocus::default(),
@@ -124,7 +120,9 @@ pub fn spawn_capital_colony(
             authority: Amt::ZERO,
         },
         ResourceCapacity::default(),
-        SystemBuildings { slots: system_slots },
+        SystemBuildings {
+            slots: system_slots,
+        },
         SystemBuildingQueue::default(),
     ));
     info!("Capital colony scaffold created on {}", capital_star.name);
@@ -220,8 +218,10 @@ pub fn tick_colonization_queue(
                     research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                     food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                 },
-                BuildQueue { queue: Vec::new() },
-                Buildings { slots: vec![None; num_slots] },
+                BuildQueue::default(),
+                Buildings {
+                    slots: vec![None; num_slots],
+                },
                 BuildingQueue::default(),
                 ProductionFocus::default(),
                 MaintenanceCost::default(),
@@ -259,7 +259,10 @@ pub fn tick_colonization_queue(
                 fact_sys.record(fact, op, clock.elapsed, &v);
             }
 
-            info!("Colony established on {} via build queue colonization", planet_name);
+            info!(
+                "Colony established on {} via build queue colonization",
+                planet_name
+            );
         }
     }
 }
@@ -288,16 +291,18 @@ pub fn apply_pending_colonization_orders(
                 initial_population: COLONIZATION_POPULATION_TRANSFER,
             });
         } else {
-            commands.entity(order.system_entity).insert(ColonizationQueue {
-                orders: vec![ColonizationOrder {
-                    target_planet: order.target_planet,
-                    source_colony: order.source_colony,
-                    minerals_remaining: mineral_cost,
-                    energy_remaining: energy_cost,
-                    build_time_remaining: build_time,
-                    initial_population: COLONIZATION_POPULATION_TRANSFER,
-                }],
-            });
+            commands
+                .entity(order.system_entity)
+                .insert(ColonizationQueue {
+                    orders: vec![ColonizationOrder {
+                        target_planet: order.target_planet,
+                        source_colony: order.source_colony,
+                        minerals_remaining: mineral_cost,
+                        energy_remaining: energy_cost,
+                        build_time_remaining: build_time,
+                        initial_population: COLONIZATION_POPULATION_TRANSFER,
+                    }],
+                });
         }
         commands.entity(entity).despawn();
     }

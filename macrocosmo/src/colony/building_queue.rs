@@ -1,24 +1,49 @@
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem};
-use crate::components::Position;
-use crate::knowledge::{
- FactSysParam, KnowledgeFact, PlayerVantage,
-};
+use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::scripting::building_api::BuildingId;
-use crate::ship::{spawn_ship, CargoItem, Owner, Ship};
+use crate::ship::{CargoItem, Owner, Ship, spawn_ship};
 use crate::time_system::GameClock;
 
-use super::{
-    Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile, SystemBuildings,
-};
+use super::{Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile, SystemBuildings};
 
-#[derive(Component)]
+#[derive(Component, Default)]
 pub struct BuildQueue {
     pub queue: Vec<BuildOrder>,
+    /// #275: Monotonic counter used to stamp stable `BuildOrder::order_id`
+    /// values. Starts at 1 so that 0 is reserved as a "manufactured / never
+    /// pushed via helper" sentinel for test scaffolding. Wraps on overflow
+    /// — practically unreachable.
+    pub next_order_id: u64,
+}
+
+impl BuildQueue {
+    /// #275: Push a new order, auto-assigning a unique `order_id`. Returns
+    /// the assigned id so the caller can correlate (e.g. dispatch a cancel
+    /// later). Ignores any id pre-set on `order`.
+    pub fn push_order(&mut self, mut order: BuildOrder) -> u64 {
+        if self.next_order_id == 0 {
+            self.next_order_id = 1;
+        }
+        let id = self.next_order_id;
+        self.next_order_id = self.next_order_id.wrapping_add(1);
+        order.order_id = id;
+        self.queue.push(order);
+        id
+    }
+
+    /// #275: Remove the first order matching `order_id`. Returns the
+    /// removed `BuildOrder` if found, or `None` if no match (e.g. the
+    /// order already completed / was cancelled by a racing arrival).
+    pub fn remove_order(&mut self, order_id: u64) -> Option<BuildOrder> {
+        let pos = self.queue.iter().position(|o| o.order_id == order_id)?;
+        Some(self.queue.remove(pos))
+    }
 }
 
 /// #223: What kind of thing a `BuildOrder` builds.
@@ -37,6 +62,12 @@ pub enum BuildKind {
 }
 
 pub struct BuildOrder {
+    /// #275: Stable id assigned at push time. Used by cancel commands to
+    /// survive queue shifts under light-speed delay (the index at
+    /// send-time may not match the index at arrival). Pushing via
+    /// `BuildQueue::push_order` auto-assigns; manually constructed orders
+    /// (test scaffolding, save-game restores) carry the caller's value.
+    pub order_id: u64,
     /// #223: What this order builds (Ship or Deliverable). Defaults to Ship
     /// for back-compat with existing construction sites.
     pub kind: BuildKind,
@@ -60,13 +91,26 @@ impl BuildOrder {
     }
 
     /// Returns the build time in hexadies for a given design_id.
-    pub fn build_time_for(design_id: &str, design_registry: &crate::ship_design::ShipDesignRegistry) -> i64 {
+    pub fn build_time_for(
+        design_id: &str,
+        design_registry: &crate::ship_design::ShipDesignRegistry,
+    ) -> i64 {
         design_registry.build_time(design_id)
     }
 }
 
 // BuildingType enum has been removed. Use BuildingId + BuildingRegistry instead.
 // BuildingId is defined in scripting::building_api.
+
+/// #275: Tag returned by `BuildingQueue::cancel_order` / `SystemBuildingQueue::cancel_order`
+/// identifying which sub-queue the cancelled order lived in. Primarily for log
+/// context; callers rarely branch on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelledOrderKind {
+    Construction,
+    Demolition,
+    Upgrade,
+}
 
 #[derive(Component)]
 pub struct Buildings {
@@ -76,14 +120,22 @@ pub struct Buildings {
 impl Buildings {
     /// Check if any slot contains a building with the given id.
     pub fn has_building(&self, id: &str) -> bool {
-        self.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == id))
+        self.slots
+            .iter()
+            .any(|s| s.as_ref().is_some_and(|b| b.0 == id))
     }
 
     /// Check if any building in slots has the given capability (looked up via BuildingRegistry).
-    pub fn has_capability(&self, capability: &str, registry: &crate::scripting::building_api::BuildingRegistry) -> bool {
+    pub fn has_capability(
+        &self,
+        capability: &str,
+        registry: &crate::scripting::building_api::BuildingRegistry,
+    ) -> bool {
         self.slots.iter().any(|slot| {
             slot.as_ref().is_some_and(|id| {
-                registry.get(id.as_str()).is_some_and(|def| def.capabilities.contains_key(capability))
+                registry
+                    .get(id.as_str())
+                    .is_some_and(|def| def.capabilities.contains_key(capability))
             })
         })
     }
@@ -104,9 +156,16 @@ pub struct BuildingQueue {
     pub queue: Vec<BuildingOrder>,
     pub demolition_queue: Vec<DemolitionOrder>,
     pub upgrade_queue: Vec<UpgradeOrder>,
+    /// #275: Shared monotonic counter for `order_id` across all three
+    /// sub-queues (construction / demolition / upgrade). A single counter
+    /// lets the cancel command carry a single opaque `order_id` without
+    /// the caller having to remember which sub-queue holds it.
+    pub next_order_id: u64,
 }
 
 pub struct BuildingOrder {
+    /// #275: Stable id (see `BuildOrder::order_id`).
+    pub order_id: u64,
     pub building_id: BuildingId,
     pub target_slot: usize,
     pub minerals_remaining: Amt,
@@ -115,6 +174,8 @@ pub struct BuildingOrder {
 }
 
 pub struct DemolitionOrder {
+    /// #275: Stable id (see `BuildOrder::order_id`).
+    pub order_id: u64,
     pub target_slot: usize,
     pub building_id: BuildingId,
     pub time_remaining: i64,
@@ -126,6 +187,8 @@ pub struct DemolitionOrder {
 /// During the upgrade, the original building remains active. On completion,
 /// the slot's building ID is replaced with the target.
 pub struct UpgradeOrder {
+    /// #275: Stable id (see `BuildOrder::order_id`).
+    pub order_id: u64,
     pub slot_index: usize,
     pub target_id: BuildingId,
     pub minerals_remaining: Amt,
@@ -134,6 +197,69 @@ pub struct UpgradeOrder {
 }
 
 impl BuildingQueue {
+    fn allocate_order_id(&mut self) -> u64 {
+        if self.next_order_id == 0 {
+            self.next_order_id = 1;
+        }
+        let id = self.next_order_id;
+        self.next_order_id = self.next_order_id.wrapping_add(1);
+        id
+    }
+
+    /// #275: Push a construction order, auto-assigning `order_id`. Returns
+    /// the assigned id.
+    pub fn push_build_order(&mut self, mut order: BuildingOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.queue.push(order);
+        id
+    }
+
+    /// #275: Push a demolition order, auto-assigning `order_id`.
+    pub fn push_demolition_order(&mut self, mut order: DemolitionOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.demolition_queue.push(order);
+        id
+    }
+
+    /// #275: Push an upgrade order, auto-assigning `order_id`.
+    pub fn push_upgrade_order(&mut self, mut order: UpgradeOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.upgrade_queue.push(order);
+        id
+    }
+
+    /// #275: Find and remove an order across all three sub-queues by
+    /// `order_id`. Returns the sub-queue the order lived in (for caller
+    /// logging) or `None` if no match. Invested resources are NOT
+    /// refunded on construction cancel; demolitions are cancelled before
+    /// they refund (no double-refund risk).
+    pub fn cancel_order(&mut self, order_id: u64) -> Option<CancelledOrderKind> {
+        if let Some(pos) = self.queue.iter().position(|o| o.order_id == order_id) {
+            self.queue.remove(pos);
+            return Some(CancelledOrderKind::Construction);
+        }
+        if let Some(pos) = self
+            .demolition_queue
+            .iter()
+            .position(|o| o.order_id == order_id)
+        {
+            self.demolition_queue.remove(pos);
+            return Some(CancelledOrderKind::Demolition);
+        }
+        if let Some(pos) = self
+            .upgrade_queue
+            .iter()
+            .position(|o| o.order_id == order_id)
+        {
+            self.upgrade_queue.remove(pos);
+            return Some(CancelledOrderKind::Upgrade);
+        }
+        None
+    }
+
     /// Check if a given slot is currently being demolished.
     pub fn is_demolishing(&self, slot: usize) -> bool {
         self.demolition_queue.iter().any(|d| d.target_slot == slot)
@@ -141,7 +267,8 @@ impl BuildingQueue {
 
     /// Get the remaining demolition time for a slot, if any.
     pub fn demolition_time_remaining(&self, slot: usize) -> Option<i64> {
-        self.demolition_queue.iter()
+        self.demolition_queue
+            .iter()
             .find(|d| d.target_slot == slot)
             .map(|d| d.time_remaining)
     }
@@ -202,8 +329,14 @@ pub fn tick_build_queue(
 
     // Per-order completion info (#223).
     enum Completion {
-        Ship { design_id: String, display_name: String },
-        Deliverable { definition_id: String, display_name: String },
+        Ship {
+            design_id: String,
+            display_name: String,
+        },
+        Deliverable {
+            definition_id: String,
+            display_name: String,
+        },
     }
 
     // Collect build queue processing results
@@ -217,18 +350,24 @@ pub fn tick_build_queue(
     let mut results: Vec<BuildResult> = Vec::new();
 
     for (colony, mut build_queue) in &mut colonies {
-        let Some(sys) = colony.system(&planets) else { continue };
+        let Some(sys) = colony.system(&planets) else {
+            continue;
+        };
 
         // #35: Skip ship construction if system has no shipyard capability.
         // Deliverables also require a shipyard.
-        let has_shipyard = system_buildings.get(sys).is_ok_and(|sb| sb.has_shipyard(&building_registry));
+        let has_shipyard = system_buildings
+            .get(sys)
+            .is_ok_and(|sb| sb.has_shipyard(&building_registry));
         if !build_queue.queue.is_empty() && !has_shipyard {
             warn!("System lacks a Shipyard; skipping construction");
             continue;
         }
 
         // Get current stockpile amounts for this system
-        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let Ok(stockpile) = stockpiles.get(sys) else {
+            continue;
+        };
         let mut available_minerals = stockpile.minerals;
         let mut available_energy = stockpile.energy;
         let mut total_minerals_consumed = Amt::ZERO;
@@ -288,9 +427,15 @@ pub fn tick_build_queue(
             stockpile.energy = stockpile.energy.sub(result.energy_consumed);
         }
         for c in result.completed {
-            let sys_name = stars.get(result.system).map(|s| s.name.clone()).unwrap_or_default();
+            let sys_name = stars
+                .get(result.system)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
             match c {
-                Completion::Ship { design_id, display_name } => {
+                Completion::Ship {
+                    design_id,
+                    display_name,
+                } => {
                     if let Ok(pos) = positions.get(result.system) {
                         spawn_ship(
                             &mut commands,
@@ -311,10 +456,8 @@ pub fn tick_build_queue(
                             description: desc.clone(),
                             related_system: Some(result.system),
                         });
-                        let origin_pos: Option<[f64; 3]> = positions
-                            .get(result.system)
-                            .ok()
-                            .map(|p| p.as_array());
+                        let origin_pos: Option<[f64; 3]> =
+                            positions.get(result.system).ok().map(|p| p.as_array());
                         if let (Some(v), Some(op)) = (vantage, origin_pos) {
                             let fact = KnowledgeFact::StructureBuilt {
                                 event_id: Some(event_id),
@@ -329,16 +472,21 @@ pub fn tick_build_queue(
                         info!("Ship built and launched: {}", display_name);
                     }
                 }
-                Completion::Deliverable { definition_id, display_name } => {
+                Completion::Deliverable {
+                    definition_id,
+                    display_name,
+                } => {
                     // #223: Push the new CargoItem into the system's DeliverableStockpile.
                     // If the component doesn't yet exist, add one via commands.
-                    let item = CargoItem::Deliverable { definition_id: definition_id.clone() };
+                    let item = CargoItem::Deliverable {
+                        definition_id: definition_id.clone(),
+                    };
                     if let Ok(mut dstock) = deliverable_stockpiles.get_mut(result.system) {
                         dstock.push(item);
                     } else {
-                        commands.entity(result.system).insert(DeliverableStockpile {
-                            items: vec![item],
-                        });
+                        commands
+                            .entity(result.system)
+                            .insert(DeliverableStockpile { items: vec![item] });
                     }
                     let event_id = fact_sys.allocate_event_id();
                     let desc = format!("Deliverable '{}' produced at {}", display_name, sys_name);
@@ -389,13 +537,18 @@ pub fn tick_building_queue(
         minerals_refunded: Amt,
         energy_refunded: Amt,
     }
-    let mut system_deltas: std::collections::HashMap<Entity, SystemDelta> = std::collections::HashMap::new();
+    let mut system_deltas: std::collections::HashMap<Entity, SystemDelta> =
+        std::collections::HashMap::new();
 
     for (colony_entity, colony, mut bq, mut buildings) in &mut query {
-        let Some(sys) = colony.system(&planets) else { continue };
+        let Some(sys) = colony.system(&planets) else {
+            continue;
+        };
 
         // Get available resources from system stockpile
-        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let Ok(stockpile) = stockpiles.get(sys) else {
+            continue;
+        };
         let mut available_minerals = stockpile.minerals;
         let mut available_energy = stockpile.energy;
 
@@ -407,8 +560,12 @@ pub fn tick_building_queue(
 
         // Also account for deltas already accumulated for this system by previous colonies
         if let Some(existing) = system_deltas.get(&sys) {
-            available_minerals = available_minerals.sub(existing.minerals_consumed).add(existing.minerals_refunded);
-            available_energy = available_energy.sub(existing.energy_consumed).add(existing.energy_refunded);
+            available_minerals = available_minerals
+                .sub(existing.minerals_consumed)
+                .add(existing.minerals_refunded);
+            available_energy = available_energy
+                .sub(existing.energy_consumed)
+                .add(existing.energy_refunded);
         }
 
         // --- Process construction queue ---
@@ -434,8 +591,8 @@ pub fn tick_building_queue(
             // the completion check (which also requires 0 remaining cost)
             // keeps blocking completion.
             let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
-            let no_more_needed = order.minerals_remaining == Amt::ZERO
-                && order.energy_remaining == Amt::ZERO;
+            let no_more_needed =
+                order.minerals_remaining == Amt::ZERO && order.energy_remaining == Amt::ZERO;
             super::build_tick::maybe_tick_build_time(
                 &mut order.build_time_remaining,
                 transferred,
@@ -473,7 +630,11 @@ pub fn tick_building_queue(
             }
         }
         for slot_idx in completed_demolitions {
-            if let Some(pos) = bq.demolition_queue.iter().position(|d| d.target_slot == slot_idx) {
+            if let Some(pos) = bq
+                .demolition_queue
+                .iter()
+                .position(|d| d.target_slot == slot_idx)
+            {
                 let completed = bq.demolition_queue.remove(pos);
                 if slot_idx < buildings.slots.len() {
                     let building_name = buildings.slots[slot_idx]
@@ -553,11 +714,7 @@ pub fn tick_building_queue(
                     "Building upgrade completed: {} -> {} in slot {}",
                     old_name, completed.target_id, completed.slot_index
                 );
-                event_system.fire_event(
-                    "building_upgraded",
-                    Some(colony_entity),
-                    clock.elapsed,
-                );
+                event_system.fire_event("building_upgraded", Some(colony_entity), clock.elapsed);
             }
         }
 
@@ -576,8 +733,14 @@ pub fn tick_building_queue(
     // Apply all stockpile changes
     for (sys, delta) in system_deltas {
         if let Ok(mut stockpile) = stockpiles.get_mut(sys) {
-            stockpile.minerals = stockpile.minerals.sub(delta.minerals_consumed).add(delta.minerals_refunded);
-            stockpile.energy = stockpile.energy.sub(delta.energy_consumed).add(delta.energy_refunded);
+            stockpile.minerals = stockpile
+                .minerals
+                .sub(delta.minerals_consumed)
+                .add(delta.minerals_refunded);
+            stockpile.energy = stockpile
+                .energy
+                .sub(delta.energy_consumed)
+                .add(delta.energy_refunded);
         }
     }
 }
@@ -643,9 +806,15 @@ mod tests {
         registry
     }
 
-    fn make_order(minerals_cost: Amt, minerals_invested: Amt, energy_cost: Amt, energy_invested: Amt) -> BuildOrder {
+    fn make_order(
+        minerals_cost: Amt,
+        minerals_invested: Amt,
+        energy_cost: Amt,
+        energy_invested: Amt,
+    ) -> BuildOrder {
         let build_time = 60;
         BuildOrder {
+            order_id: 0,
             kind: BuildKind::default(),
             design_id: "explorer_mk1".to_string(),
             display_name: "Explorer".to_string(),
@@ -660,25 +829,45 @@ mod tests {
 
     #[test]
     fn build_order_complete_when_both_met() {
-        let order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(50));
+        let order = make_order(
+            Amt::units(100),
+            Amt::units(100),
+            Amt::units(50),
+            Amt::units(50),
+        );
         assert!(order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_minerals_short() {
-        let order = make_order(Amt::units(100), Amt::units(80), Amt::units(50), Amt::units(50));
+        let order = make_order(
+            Amt::units(100),
+            Amt::units(80),
+            Amt::units(50),
+            Amt::units(50),
+        );
         assert!(!order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_energy_short() {
-        let order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(30));
+        let order = make_order(
+            Amt::units(100),
+            Amt::units(100),
+            Amt::units(50),
+            Amt::units(30),
+        );
         assert!(!order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_time_remaining() {
-        let mut order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(50));
+        let mut order = make_order(
+            Amt::units(100),
+            Amt::units(100),
+            Amt::units(50),
+            Amt::units(50),
+        );
         order.build_time_remaining = 5;
         assert!(!order.is_complete());
     }
@@ -712,7 +901,11 @@ mod tests {
     #[test]
     fn has_shipyard_true() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("shipyard")),
+                None,
+            ],
         };
         assert!(buildings.has_shipyard());
     }
@@ -720,24 +913,40 @@ mod tests {
     #[test]
     fn has_shipyard_false() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("power_plant")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("power_plant")),
+                None,
+            ],
         };
         assert!(!buildings.has_shipyard());
     }
 
     #[test]
     fn production_focus_labels() {
-        assert_eq!(super::super::ProductionFocus::balanced().label(), "Balanced");
-        assert_eq!(super::super::ProductionFocus::minerals().label(), "Minerals");
+        assert_eq!(
+            super::super::ProductionFocus::balanced().label(),
+            "Balanced"
+        );
+        assert_eq!(
+            super::super::ProductionFocus::minerals().label(),
+            "Minerals"
+        );
         assert_eq!(super::super::ProductionFocus::energy().label(), "Energy");
-        assert_eq!(super::super::ProductionFocus::research().label(), "Research");
+        assert_eq!(
+            super::super::ProductionFocus::research().label(),
+            "Research"
+        );
     }
 
     #[test]
     fn build_order_build_time_for() {
         let registry = test_design_registry();
         assert_eq!(BuildOrder::build_time_for("explorer_mk1", &registry), 60);
-        assert_eq!(BuildOrder::build_time_for("colony_ship_mk1", &registry), 120);
+        assert_eq!(
+            BuildOrder::build_time_for("colony_ship_mk1", &registry),
+            120
+        );
         assert_eq!(BuildOrder::build_time_for("courier_mk1", &registry), 30);
         assert_eq!(BuildOrder::build_time_for("unknown", &registry), 60);
     }
@@ -747,7 +956,11 @@ mod tests {
     #[test]
     fn has_port_true() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("port")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("port")),
+                None,
+            ],
         };
         assert!(buildings.has_port());
     }
@@ -755,7 +968,11 @@ mod tests {
     #[test]
     fn has_port_false() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("shipyard")),
+                None,
+            ],
         };
         assert!(!buildings.has_port());
     }
@@ -765,6 +982,7 @@ mod tests {
         let bq = BuildingQueue {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
+                order_id: 0,
                 target_slot: 2,
                 building_id: BuildingId::new("mine"),
                 time_remaining: 5,
@@ -772,6 +990,7 @@ mod tests {
                 energy_refund: Amt::ZERO,
             }],
             upgrade_queue: Vec::new(),
+            next_order_id: 0,
         };
         assert!(bq.is_demolishing(2));
         assert!(!bq.is_demolishing(0));
