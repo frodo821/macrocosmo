@@ -57,6 +57,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     registry.insert(BuildingDefinition {
         id: "power_plant".into(),
@@ -76,6 +78,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     registry.insert(BuildingDefinition {
         id: "research_lab".into(),
@@ -95,6 +99,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     let mut shipyard_caps = HashMap::new();
     shipyard_caps.insert(
@@ -125,6 +131,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     let mut port_caps = HashMap::new();
     port_caps.insert(
@@ -156,6 +164,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     registry.insert(BuildingDefinition {
         id: "farm".into(),
@@ -175,6 +185,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     registry
 }

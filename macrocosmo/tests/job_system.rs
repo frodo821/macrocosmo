@@ -46,6 +46,8 @@ fn slot_based_building_registry() -> BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     registry.insert(BuildingDefinition {
         id: "farm".into(),
@@ -65,6 +67,8 @@ fn slot_based_building_registry() -> BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     // Shipyard — capability-only, no production/slots.
     registry.insert(BuildingDefinition {
@@ -92,6 +96,8 @@ fn slot_based_building_registry() -> BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     registry
 }
@@ -462,6 +468,8 @@ fn test_target_prefix_routes_to_job_bucket() {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     app.insert_resource(registry);
 

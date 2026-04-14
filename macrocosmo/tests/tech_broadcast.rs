@@ -640,6 +640,8 @@ fn job_slot_registry() -> macrocosmo::colony::BuildingRegistry {
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
     });
     registry
 }

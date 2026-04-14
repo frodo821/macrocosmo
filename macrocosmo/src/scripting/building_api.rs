@@ -4,6 +4,7 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::condition::Condition;
+use crate::event_system::LuaFunctionRef;
 use crate::modifier::ParsedModifier;
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::scripting::modifier_api::parse_parsed_modifiers;
@@ -53,6 +54,14 @@ pub struct BuildingDefinition {
     /// Optional Condition tree gating construction / upgrade of this building.
     /// Populated from the Lua `prerequisites = has_tech(...)` / `all(...)` / ... field.
     pub prerequisites: Option<Condition>,
+    /// #281: Optional Lua hook invoked when a building of this id finishes
+    /// fresh construction (cause = "construction"). Auto-subscribed as a
+    /// filtered handler on `macrocosmo:building_built` during registry load.
+    pub on_built: Option<LuaFunctionRef>,
+    /// #281: Optional Lua hook invoked when an upgrade to a building of this
+    /// id completes (cause = "upgrade"). The event payload carries
+    /// `previous_id` so the hook can distinguish upgrade sources.
+    pub on_upgraded: Option<LuaFunctionRef>,
 }
 
 /// Parameters for a named building capability.
@@ -209,6 +218,10 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let upgrade_to = parse_upgrade_to_table(&table)?;
         let prerequisites = parse_prerequisites_field(&table)?;
         let modifiers = parse_parsed_modifiers(&table, "modifiers", None)?;
+        // #281: `on_built` fires after fresh construction completes;
+        // `on_upgraded` fires after an upgrade path to this id completes.
+        let on_built = crate::scripting::parse_lua_function_field(lua, &table, "on_built")?;
+        let on_upgraded = crate::scripting::parse_lua_function_field(lua, &table, "on_upgraded")?;
 
         result.push(BuildingDefinition {
             id,
@@ -228,6 +241,8 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             upgrade_to,
             is_direct_buildable,
             prerequisites,
+            on_built,
+            on_upgraded,
         });
     }
 
@@ -447,6 +462,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         let mine = registry.get("mine").unwrap();
@@ -473,6 +490,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -574,6 +593,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         // Replace with updated values
@@ -595,6 +616,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         assert_eq!(registry.buildings.len(), 1);
@@ -681,6 +704,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         // Upgrade-only planet building
@@ -702,6 +727,8 @@ mod tests {
             upgrade_to: Vec::new(),
             is_direct_buildable: false,
             prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         // planet_buildings() should only return direct-buildable ones

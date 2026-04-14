@@ -221,6 +221,13 @@ impl EventSystem {
 // Built-in events use "macrocosmo:" prefix.
 // Examples: "macrocosmo:building_lost", "macrocosmo:ship_lost", "macrocosmo:tech_researched"
 
+/// #281: Event id fired when a building/structure finishes construction or an
+/// upgrade path completes. Payload keys: `cause` (`"construction"` |
+/// `"upgrade"`), `building_id`, `slot` (when applicable), `system` (entity id
+/// as decimal string), `colony` (planet building only), `previous_id`
+/// (upgrade only).
+pub const BUILDING_BUILT_EVENT: &str = "macrocosmo:building_built";
+
 /// Central event bus for dispatching events to Lua handlers.
 ///
 /// Handlers are stored in the Lua global `_event_handlers` table to avoid

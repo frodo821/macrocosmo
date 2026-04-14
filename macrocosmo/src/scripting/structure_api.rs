@@ -22,7 +22,7 @@ pub fn parse_structure_definitions(lua: &mlua::Lua) -> Result<Vec<StructureDefin
     let structures: mlua::Table = lua.globals().get("_structure_definitions")?;
     for pair in structures.pairs::<i64, mlua::Table>() {
         let (_, table) = pair?;
-        result.push(parse_one(&table, /* deliverable_api */ false)?);
+        result.push(parse_one(lua, &table, /* deliverable_api */ false)?);
     }
 
     // Pass 2: `define_deliverable` — shipyard-buildable deliverables.
@@ -30,7 +30,7 @@ pub fn parse_structure_definitions(lua: &mlua::Lua) -> Result<Vec<StructureDefin
     if let Ok(deliverables) = lua.globals().get::<mlua::Table>("_deliverable_definitions") {
         for pair in deliverables.pairs::<i64, mlua::Table>() {
             let (_, table) = pair?;
-            result.push(parse_one(&table, /* deliverable_api */ true)?);
+            result.push(parse_one(lua, &table, /* deliverable_api */ true)?);
         }
     }
 
@@ -46,7 +46,7 @@ pub fn parse_structure_definitions(lua: &mlua::Lua) -> Result<Vec<StructureDefin
 ///
 /// `deliverable_api = false` means `define_structure` (world-side only). `cost`
 /// is honoured for legacy scripts but no DeliverableMetadata is synthesised.
-fn parse_one(table: &mlua::Table, deliverable_api: bool) -> Result<StructureDefinition, mlua::Error> {
+fn parse_one(lua: &mlua::Lua, table: &mlua::Table, deliverable_api: bool) -> Result<StructureDefinition, mlua::Error> {
     let id: String = table.get("id")?;
     let name: String = table.get::<Option<String>>("name")?.unwrap_or_else(|| id.clone());
     let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
@@ -104,6 +104,9 @@ fn parse_one(table: &mlua::Table, deliverable_api: bool) -> Result<StructureDefi
 
     let upgrade_to = parse_upgrade_to(table)?;
     let upgrade_from = parse_upgrade_from(table)?;
+    // #281: Definition-level lifecycle hooks.
+    let on_built = crate::scripting::parse_lua_function_field(lua, table, "on_built")?;
+    let on_upgraded = crate::scripting::parse_lua_function_field(lua, table, "on_upgraded")?;
 
     Ok(StructureDefinition {
         id,
@@ -116,6 +119,8 @@ fn parse_one(table: &mlua::Table, deliverable_api: bool) -> Result<StructureDefi
         deliverable,
         upgrade_to,
         upgrade_from,
+        on_built,
+        on_upgraded,
     })
 }
 
