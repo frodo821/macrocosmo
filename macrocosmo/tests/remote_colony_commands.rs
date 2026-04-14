@@ -82,12 +82,14 @@ fn spawn_pending_colony_command(
     }
 }
 
-/// Position the clock one tick before arrival and advance by exactly 1
-/// hexadies, so the resulting `delta` seen by production/build-tick systems
-/// is 1. Without the `LastProductionTick` alignment, the tick systems would
-/// see `delta = arrives_at - 0` and complete arbitrarily cheap buildings in
-/// a single frame — this fixture focuses on the arrival dispatcher's
-/// enqueue step, not downstream build completion.
+/// Jump the clock to the frame of arrival. Tests here fast-forward from
+/// t=0 to t=arrives_at (which may be hundreds of hd for remote commands),
+/// so we also pin `LastProductionTick` to keep the build-tick `delta` at
+/// 1 — otherwise tick_building_queue would "catch up" 600 iterations in
+/// one frame and complete arbitrarily cheap orders before the assertions
+/// run. This is about delta management during fast-forward, not the
+/// arrival-vs-consumption ordering invariant (which is enforced in the
+/// production schedule via `tick_building_queue.after(process_pending_commands)`).
 fn run_until_arrival(app: &mut App, arrives_at: i64) {
     let pre = arrives_at - 1;
     app.world_mut()

@@ -915,3 +915,87 @@ fn test_save_load_deterministic_continuation() {
     );
 }
 
+/// #270: In-flight `PendingCommand::Colony` entities must survive the real
+/// save/load path — the savebag-struct-only roundtrip test in
+/// `persistence::savebag::tests` doesn't exercise `EntityMap` binding
+/// coverage on live entity save-ids. This test spawns a command whose
+/// payload references a `host_colony` Entity, saves the whole world, loads
+/// into a fresh one, and verifies the remapped Entity is still valid.
+#[test]
+fn test_save_load_preserves_pending_colony_command() {
+    use macrocosmo::communication::{ColonyCommand, ColonyCommandKind, PendingCommand, RemoteCommand};
+    let mut src = build_seed_world();
+
+    // Pick two systems and a colony to reference.
+    let (sol, alpha_centauri) = {
+        let mut q = src.query::<(Entity, &StarSystem)>();
+        let mut sol = None;
+        let mut alpha = None;
+        for (e, s) in q.iter(&src) {
+            match s.name.as_str() {
+                "Sol" => sol = Some(e),
+                "Alpha Centauri" => alpha = Some(e),
+                _ => {}
+            }
+        }
+        (sol.unwrap(), alpha.unwrap())
+    };
+    let colony_entity = src
+        .query::<(Entity, &Colony)>()
+        .iter(&src)
+        .next()
+        .map(|(e, _)| e)
+        .expect("build_seed_world spawned a colony");
+
+    src.spawn(PendingCommand {
+        target_system: alpha_centauri,
+        command: RemoteCommand::Colony(ColonyCommand {
+            target_planet: None,
+            kind: ColonyCommandKind::QueueShipBuild {
+                host_colony: colony_entity,
+                design_id: "explorer_mk1".into(),
+                build_kind: macrocosmo::colony::BuildKind::Ship,
+            },
+        }),
+        sent_at: 100,
+        arrives_at: 700,
+        origin_pos: [0.0, 0.0, 0.0],
+        destination_pos: [4.3, 0.0, 0.0],
+    });
+    let _ = sol;
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Resolve the remapped Alpha Centauri + colony so we can compare.
+    let alpha_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Alpha Centauri")
+        .map(|(e, _)| e)
+        .unwrap();
+    let colony_dst = dst
+        .query::<(Entity, &Colony)>()
+        .iter(&dst)
+        .next()
+        .map(|(e, _)| e)
+        .expect("colony must round-trip");
+
+    let mut q = dst.query::<&PendingCommand>();
+    let cmd = q.iter(&dst).next().expect("pending command must round-trip");
+    assert_eq!(cmd.target_system, alpha_dst, "target_system Entity remap");
+    assert_eq!(cmd.sent_at, 100);
+    assert_eq!(cmd.arrives_at, 700);
+    match &cmd.command {
+        RemoteCommand::Colony(ColonyCommand {
+            target_planet: None,
+            kind: ColonyCommandKind::QueueShipBuild { host_colony, design_id, .. },
+        }) => {
+            assert_eq!(*host_colony, colony_dst, "host_colony Entity remap");
+            assert_eq!(design_id, "explorer_mk1");
+        }
+        other => panic!("unexpected command variant after load: {:?}", other),
+    }
+}
+

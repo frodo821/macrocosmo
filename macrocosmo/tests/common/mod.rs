@@ -562,13 +562,16 @@ pub fn full_test_app() -> App {
     );
 
     // --- Communication systems (from CommunicationPlugin) ---
+    app.init_resource::<communication::PendingColonyDispatches>();
     app.add_systems(
         Update,
         (
             communication::process_messages,
             communication::process_courier_ships,
+            communication::dispatch_pending_colony_commands,
             communication::process_pending_commands,
-        ),
+        )
+            .chain(),
     );
 
     // --- Technology resources ---
