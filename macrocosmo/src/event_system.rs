@@ -2,13 +2,85 @@ use bevy::prelude::*;
 use mlua::prelude::*;
 use rand::Rng;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::time_system::{GameClock, HEXADIES_PER_MONTH, HEXADIES_PER_YEAR};
 
-/// Reference to a Lua function stored in the registry.
-/// For now, store the registry key as an integer.
+/// Reference to a Lua function stored in the `mlua` registry.
+///
+/// Until #263 the placeholder variant was a plain `i64` stored on
+/// `LuaFunctionRef(pub i64)`; it was never actually usable for calling
+/// back into the function because `format!("{:?}", key).len()` was used as
+/// the identifier — multiple distinct functions collide on the same id.
+///
+/// The new representation holds an `Arc<mlua::RegistryKey>` so multiple
+/// `Clone`s of the same `EventTrigger` keep the function alive for the
+/// lifetime of the `EventSystem`, and the dispatcher can recover the
+/// `mlua::Function` via `lua.registry_value::<mlua::Function>(&key)`.
+///
+/// The historical `pub i64` field is preserved as a transparent accessor
+/// for backward-compatibility with pre-existing tests that construct
+/// `LuaFunctionRef(42)` literals — those cases never had a real function,
+/// so we map them to a `None` inner key.
 #[derive(Clone, Debug)]
-pub struct LuaFunctionRef(pub i64);
+pub struct LuaFunctionRef {
+    /// Deprecated placeholder id, kept for the `LuaFunctionRef(i64)` tuple
+    /// constructor that still appears in tests. Use `key()` to check for a
+    /// real Lua function instead.
+    pub id: i64,
+    inner: Option<Arc<mlua::RegistryKey>>,
+}
+
+impl LuaFunctionRef {
+    /// Build a real reference from a Lua function (consumes the function
+    /// into the registry).
+    pub fn from_function(lua: &Lua, f: mlua::Function) -> mlua::Result<Self> {
+        let key = lua.create_registry_value(f)?;
+        // Deterministic-ish id for logging / debugging only. The string form
+        // of `RegistryKey` is not stable across mlua versions, so we hash it
+        // with a simple fingerprint. Downstream code never relies on id for
+        // correctness.
+        let id = fingerprint_registry_key(&key);
+        Ok(Self {
+            id,
+            inner: Some(Arc::new(key)),
+        })
+    }
+
+    /// Historical tuple-style constructor. Produces a ref with no real
+    /// function attached; callers must not dispatch on it.
+    pub fn placeholder(id: i64) -> Self {
+        Self { id, inner: None }
+    }
+
+    /// Acquire the Lua function, if one is attached. Returns `Ok(None)` if
+    /// this ref is a historical placeholder with no real function.
+    pub fn get(&self, lua: &Lua) -> mlua::Result<Option<mlua::Function>> {
+        match &self.inner {
+            Some(arc) => Ok(Some(lua.registry_value(arc.as_ref())?)),
+            None => Ok(None),
+        }
+    }
+}
+
+// Allow the legacy `LuaFunctionRef(42)` tuple construction to keep
+// compiling. We treat the argument as the placeholder id.
+#[allow(non_snake_case)]
+impl LuaFunctionRef {
+    /// Deprecated: use [`Self::placeholder`] or [`Self::from_function`].
+    #[deprecated(note = "Use LuaFunctionRef::placeholder or from_function")]
+    pub fn new_legacy(id: i64) -> Self {
+        Self::placeholder(id)
+    }
+}
+
+fn fingerprint_registry_key(key: &mlua::RegistryKey) -> i64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    format!("{:p}", key as *const _).hash(&mut h);
+    h.finish() as i64
+}
 
 /// Convert years/months/sd (sub-divisions, i.e. raw hexadies) to hexadies.
 pub fn time_to_hexadies(years: i64, months: i64, sd: i64) -> i64 {
@@ -87,7 +159,12 @@ impl EventSystem {
         let fires_at = match self.definitions.get_mut(event_id) {
             Some(def) => match &mut def.trigger {
                 EventTrigger::Manual => now,
-                EventTrigger::Mtth { mean_hexadies, max_times, times_triggered, .. } => {
+                EventTrigger::Mtth {
+                    mean_hexadies,
+                    max_times,
+                    times_triggered,
+                    ..
+                } => {
                     if max_times.is_some_and(|max| *times_triggered >= max) {
                         return;
                     }
@@ -336,9 +413,9 @@ impl Plugin for EventSystemPlugin {
         app.insert_resource(EventSystem::default())
             .insert_resource(EventBus::default())
             .add_systems(
-            Update,
-            tick_events.after(crate::time_system::advance_game_time),
-        );
+                Update,
+                tick_events.after(crate::time_system::advance_game_time),
+            );
     }
 }
 
@@ -526,28 +603,25 @@ mod tests {
         });
 
         let check_should_fire = |system: &EventSystem, now: i64| -> bool {
-            system
-                .definitions
-                .iter()
-                .any(|(_, def)| {
-                    if let EventTrigger::Periodic {
-                        interval_hexadies,
-                        last_fired,
-                        max_times,
-                        times_triggered,
-                        ..
-                    } = &def.trigger
-                    {
-                        if let Some(max) = max_times {
-                            if *times_triggered >= *max {
-                                return false;
-                            }
+            system.definitions.iter().any(|(_, def)| {
+                if let EventTrigger::Periodic {
+                    interval_hexadies,
+                    last_fired,
+                    max_times,
+                    times_triggered,
+                    ..
+                } = &def.trigger
+                {
+                    if let Some(max) = max_times {
+                        if *times_triggered >= *max {
+                            return false;
                         }
-                        now - *last_fired >= *interval_hexadies
-                    } else {
-                        false
                     }
-                })
+                    now - *last_fired >= *interval_hexadies
+                } else {
+                    false
+                }
+            })
         };
 
         // Fire twice
@@ -608,7 +682,7 @@ mod tests {
     #[test]
     fn test_fire_condition_stored_on_mtth() {
         let mut system = EventSystem::default();
-        let lua_ref = LuaFunctionRef(42);
+        let lua_ref = LuaFunctionRef::placeholder(42);
         system.register(EventDefinition {
             id: "conditional_mtth".to_string(),
             name: "Conditional MTTH".to_string(),
@@ -622,9 +696,14 @@ mod tests {
         });
 
         let def = system.definitions.get("conditional_mtth").unwrap();
-        if let EventTrigger::Mtth { fire_condition, mean_hexadies, .. } = &def.trigger {
+        if let EventTrigger::Mtth {
+            fire_condition,
+            mean_hexadies,
+            ..
+        } = &def.trigger
+        {
             assert!(fire_condition.is_some(), "fire_condition should be stored");
-            assert_eq!(fire_condition.as_ref().unwrap().0, 42);
+            assert_eq!(fire_condition.as_ref().unwrap().id, 42);
             assert_eq!(*mean_hexadies, 30);
         } else {
             panic!("Expected Mtth trigger");
@@ -636,7 +715,7 @@ mod tests {
     #[test]
     fn test_fire_condition_stored_on_periodic() {
         let mut system = EventSystem::default();
-        let lua_ref = LuaFunctionRef(99);
+        let lua_ref = LuaFunctionRef::placeholder(99);
         system.register(EventDefinition {
             id: "conditional_periodic".to_string(),
             name: "Conditional Periodic".to_string(),
@@ -651,9 +730,15 @@ mod tests {
         });
 
         let def = system.definitions.get("conditional_periodic").unwrap();
-        if let EventTrigger::Periodic { fire_condition, interval_hexadies, max_times, .. } = &def.trigger {
+        if let EventTrigger::Periodic {
+            fire_condition,
+            interval_hexadies,
+            max_times,
+            ..
+        } = &def.trigger
+        {
             assert!(fire_condition.is_some(), "fire_condition should be stored");
-            assert_eq!(fire_condition.as_ref().unwrap().0, 99);
+            assert_eq!(fire_condition.as_ref().unwrap().id, 99);
             assert_eq!(*interval_hexadies, 10);
             assert_eq!(*max_times, Some(5));
         } else {
@@ -664,7 +749,11 @@ mod tests {
     #[test]
     fn test_event_bus_fire_calls_handler() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         // Register a handler via on() and fire an event
         lua.load(
@@ -693,7 +782,11 @@ mod tests {
     #[test]
     fn test_event_bus_filter_match() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"
@@ -716,7 +809,9 @@ mod tests {
         assert!(called);
 
         // Reset and fire with non-matching filter
-        lua.load(r#"_combat_handler_called = false"#).exec().unwrap();
+        lua.load(r#"_combat_handler_called = false"#)
+            .exec()
+            .unwrap();
         let mut payload2 = HashMap::new();
         payload2.insert("cause".to_string(), "recycled".to_string());
         let count2 = EventBus::fire(&lua, "macrocosmo:building_lost", &payload2);
@@ -728,7 +823,11 @@ mod tests {
     #[test]
     fn test_event_bus_no_filter_matches_all() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"
@@ -754,7 +853,11 @@ mod tests {
     #[test]
     fn test_event_bus_wrong_event_id_not_called() {
         let lua = Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"

@@ -6,6 +6,7 @@ pub mod effect_scope;
 pub mod engine;
 pub mod event_api;
 pub mod faction_api;
+pub mod gamestate_view;
 pub mod galaxy_api;
 pub mod galaxy_gen_ctx;
 pub mod game_rng;
@@ -90,6 +91,14 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Update,
                 lifecycle::drain_script_events.after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
+                // Must run before tick_events so suppressed events never hit
+                // the fired_log. #263.
+                lifecycle::evaluate_fire_conditions
+                    .before(crate::event_system::tick_events)
+                    .after(crate::time_system::advance_game_time),
             )
             .add_systems(
                 Update,

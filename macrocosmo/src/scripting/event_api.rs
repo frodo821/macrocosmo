@@ -16,7 +16,9 @@ pub fn parse_event_definitions(lua: &mlua::Lua) -> Result<Vec<EventDefinition>, 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
 
         let trigger = parse_trigger(lua, &table, &id)?;
 
@@ -123,7 +125,12 @@ fn parse_periodic_trigger(
     })
 }
 
-/// Try to read a Lua function from a table field and store it as a registry key.
+/// Try to read a Lua function from a table field and store it as a proper
+/// `mlua::RegistryKey` wrapped inside a [`LuaFunctionRef`]. Prior to #263
+/// this helper stored a bogus placeholder id (`format!("{:?}", key).len()`),
+/// which collides across distinct functions and made `fire_condition`
+/// undispatchable. It now stores the real function so the dispatcher can
+/// actually call it.
 fn parse_lua_function_ref(
     lua: &mlua::Lua,
     table: &mlua::Table,
@@ -131,18 +138,7 @@ fn parse_lua_function_ref(
 ) -> Result<Option<LuaFunctionRef>, mlua::Error> {
     let value: mlua::Value = table.get(field)?;
     match value {
-        mlua::Value::Function(f) => {
-            let key = lua.create_registry_value(f)?;
-            // Registry keys in mlua are RegistryKey, not i64.
-            // For now, store a hash/placeholder since LuaFunctionRef uses i64.
-            // We use the debug representation to get a unique identifier.
-            // TODO: Consider changing LuaFunctionRef to hold RegistryKey directly.
-            let key_id = format!("{:?}", key);
-            let hash = key_id.len() as i64; // simple placeholder
-            // Keep the registry value alive by NOT dropping `key` — leak it into the registry
-            std::mem::forget(key);
-            Ok(Some(LuaFunctionRef(hash)))
-        }
+        mlua::Value::Function(f) => Ok(Some(LuaFunctionRef::from_function(lua, f)?)),
         mlua::Value::Nil => Ok(None),
         _ => Err(mlua::Error::RuntimeError(format!(
             "Expected function or nil for field '{}', got {:?}",
@@ -429,10 +425,7 @@ mod tests {
 
         let defs = parse_event_definitions(lua).unwrap();
         match &defs[0].trigger {
-            EventTrigger::Mtth {
-                fire_condition,
-                ..
-            } => {
+            EventTrigger::Mtth { fire_condition, .. } => {
                 assert!(fire_condition.is_some());
             }
             other => panic!("Expected Mtth trigger, got {:?}", other),
