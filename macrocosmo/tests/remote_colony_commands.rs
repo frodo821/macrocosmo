@@ -283,60 +283,6 @@ fn upgrade_building_planet_without_path_warns_and_noops() {
 }
 
 // --------------------------------------------------------------------------
-// CancelBuildingOrder
-// --------------------------------------------------------------------------
-
-#[test]
-fn cancel_building_order_planet_removes_matching_slot() {
-    let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
-    let colony = spawn_test_colony(
-        app.world_mut(),
-        planet,
-        Amt::units(1000),
-        Amt::units(1000),
-        vec![None, None, None, None],
-    );
-
-    // Pre-populate the queue with an order for slot 2.
-    {
-        let mut bq = app.world_mut().get_mut::<BuildingQueue>(colony).unwrap();
-        bq.queue.push(macrocosmo::colony::BuildingOrder {
-            building_id: BuildingId::new("mine"),
-            target_slot: 2,
-            minerals_remaining: Amt::units(150),
-            energy_remaining: Amt::units(50),
-            build_time_remaining: 10,
-        });
-    }
-
-    spawn_pending_colony_command(
-        &mut app,
-        sys,
-        0,
-        5,
-        ColonyCommand {
-            target_planet: Some(planet),
-            kind: ColonyCommandKind::CancelBuildingOrder { target_slot: 2 },
-        },
-    );
-
-    run_until_arrival(&mut app, 5);
-
-    let bq = app.world().get::<BuildingQueue>(colony).unwrap();
-    assert!(
-        bq.queue.is_empty(),
-        "queue entry matching slot 2 should be removed on arrival"
-    );
-}
-
-// --------------------------------------------------------------------------
 // QueueShipBuild
 // --------------------------------------------------------------------------
 

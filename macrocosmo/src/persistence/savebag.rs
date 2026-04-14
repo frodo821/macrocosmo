@@ -2810,7 +2810,6 @@ impl SavedPendingDiplomaticAction {
 pub enum SavedRemoteCommand {
     BuildShip { design_id: String },
     SetProductionFocus { minerals: f64, energy: f64, research: f64 },
-    /// #270: Colony/system build command routed via light-speed delay.
     Colony(SavedColonyCommand),
 }
 impl From<&RemoteCommand> for SavedRemoteCommand {
@@ -2836,7 +2835,6 @@ impl SavedRemoteCommand {
     }
 }
 
-/// #270: Saved mirror of `ColonyCommand`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedColonyCommand {
     pub target_planet_bits: Option<u64>,
@@ -2858,14 +2856,11 @@ impl SavedColonyCommand {
     }
 }
 
-/// #270: Saved mirror of `ColonyCommandKind`. `BuildKind` is mirrored via the
-/// existing `SavedBuildKind`. Entity fields go through `remap_entity` on load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedColonyCommandKind {
     QueueBuilding { building_id: String, target_slot: usize },
     DemolishBuilding { target_slot: usize },
     UpgradeBuilding { slot_index: usize, target_id: String },
-    CancelBuildingOrder { target_slot: usize },
     QueueShipBuild {
         host_colony_bits: u64,
         design_id: String,
@@ -2880,7 +2875,6 @@ pub enum SavedColonyCommandKind {
         energy_cost: Amt,
         build_time: i64,
     },
-    CancelShipOrder { host_colony_bits: u64, queue_index: usize },
 }
 
 impl SavedColonyCommandKind {
@@ -2897,9 +2891,6 @@ impl SavedColonyCommandKind {
                 slot_index: *slot_index,
                 target_id: target_id.clone(),
             },
-            ColonyCommandKind::CancelBuildingOrder { target_slot } => {
-                Self::CancelBuildingOrder { target_slot: *target_slot }
-            }
             ColonyCommandKind::QueueShipBuild { host_colony, design_id, build_kind } => {
                 Self::QueueShipBuild {
                     host_colony_bits: host_colony.to_bits(),
@@ -2924,12 +2915,6 @@ impl SavedColonyCommandKind {
                 energy_cost: *energy_cost,
                 build_time: *build_time,
             },
-            ColonyCommandKind::CancelShipOrder { host_colony, queue_index } => {
-                Self::CancelShipOrder {
-                    host_colony_bits: host_colony.to_bits(),
-                    queue_index: *queue_index,
-                }
-            }
         }
     }
     pub fn into_live(self, map: &EntityMap) -> ColonyCommandKind {
@@ -2942,9 +2927,6 @@ impl SavedColonyCommandKind {
             }
             Self::UpgradeBuilding { slot_index, target_id } => {
                 ColonyCommandKind::UpgradeBuilding { slot_index, target_id }
-            }
-            Self::CancelBuildingOrder { target_slot } => {
-                ColonyCommandKind::CancelBuildingOrder { target_slot }
             }
             Self::QueueShipBuild { host_colony_bits, design_id, build_kind } => {
                 ColonyCommandKind::QueueShipBuild {
@@ -2970,12 +2952,6 @@ impl SavedColonyCommandKind {
                 energy_cost,
                 build_time,
             },
-            Self::CancelShipOrder { host_colony_bits, queue_index } => {
-                ColonyCommandKind::CancelShipOrder {
-                    host_colony: remap_entity(host_colony_bits, map),
-                    queue_index,
-                }
-            }
         }
     }
 }
@@ -3619,14 +3595,8 @@ mod tests {
     use crate::colony::BuildKind;
     use crate::communication::{ColonyCommand, ColonyCommandKind, RemoteCommand};
 
-    /// #270: `RemoteCommand::Colony` survives a save/load round-trip through
-    /// `SavedRemoteCommand`. Exercises every `ColonyCommandKind` variant and
-    /// confirms `Entity` fields are remapped (not left raw-bit-equal).
     #[test]
     fn colony_remote_command_savebag_roundtrip() {
-        // Fake-save-id -> fresh-Entity remap table, as would be built during
-        // a real load. We use two entities to represent: (a) the planet
-        // target, (b) the host colony for ship builds.
         let mut map = EntityMap::new();
         let live_planet = Entity::from_raw_u32(42).unwrap();
         let live_host = Entity::from_raw_u32(77).unwrap();
@@ -3654,10 +3624,6 @@ mod tests {
             }),
             RemoteCommand::Colony(ColonyCommand {
                 target_planet: None,
-                kind: ColonyCommandKind::CancelBuildingOrder { target_slot: 0 },
-            }),
-            RemoteCommand::Colony(ColonyCommand {
-                target_planet: None,
                 kind: ColonyCommandKind::QueueShipBuild {
                     host_colony: live_host,
                     design_id: "explorer_mk1".to_string(),
@@ -3674,13 +3640,6 @@ mod tests {
                     minerals_cost: crate::amount::Amt::units(100),
                     energy_cost: crate::amount::Amt::units(50),
                     build_time: 30,
-                },
-            }),
-            RemoteCommand::Colony(ColonyCommand {
-                target_planet: None,
-                kind: ColonyCommandKind::CancelShipOrder {
-                    host_colony: live_host,
-                    queue_index: 2,
                 },
             }),
         ];
@@ -3701,8 +3660,6 @@ mod tests {
         }
     }
 
-    /// #270: Pre-existing `BuildShip` and `SetProductionFocus` variants still
-    /// round-trip through the updated `into_live(map)` signature.
     #[test]
     fn legacy_remote_command_variants_still_roundtrip() {
         let map = EntityMap::new();

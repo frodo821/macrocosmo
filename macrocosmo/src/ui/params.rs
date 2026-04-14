@@ -62,9 +62,6 @@ pub struct MainPanelWorldQueries<'w, 's> {
             Option<&'static ColonyJobRates>,
         ),
     >,
-    /// #270: In-flight remote commands, so the system panel can display an
-    /// "Dispatched → arrives in N hd" list for the selected system while
-    /// the light-speed delay ticks down.
     pub remote_commands: Query<'w, 's, &'static crate::communication::PendingCommand>,
 }
 
@@ -92,9 +89,6 @@ pub struct MainPanelDeliverableRes<'w, 's> {
         (&'static crate::technology::GameFlags, &'static crate::condition::ScopedFlags),
         With<crate::player::PlayerEmpire>,
     >,
-    /// #270: Write-queue for remote colony build commands. UI systems push
-    /// entries here; `dispatch_pending_colony_commands` drains them during
-    /// `Update` and turns each into a `PendingCommand` with light-speed delay.
     pub colony_dispatches: ResMut<'w, crate::communication::PendingColonyDispatches>,
 }
 

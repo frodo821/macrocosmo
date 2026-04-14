@@ -8,13 +8,13 @@ pub struct CommunicationPlugin;
 impl Plugin for CommunicationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingColonyDispatches>();
+        // Dispatcher chained before process_pending_commands so local
+        // (zero-delay) commands apply within the same Update pass.
         app.add_systems(
             Update,
             (
                 process_messages,
                 process_courier_ships,
-                // #270: Must drain BEFORE process_pending_commands so
-                // zero-delay (local) dispatches arrive the same frame.
                 dispatch_pending_colony_commands,
                 process_pending_commands,
             )
@@ -23,11 +23,9 @@ impl Plugin for CommunicationPlugin {
     }
 }
 
-/// #270: UI-to-dispatcher queue for colony build commands. UI code pushes
-/// `PendingColonyDispatch` entries from within egui systems;
-/// `dispatch_pending_colony_commands` drains them during `Update` and turns
-/// each entry into a `PendingCommand` with the appropriate light-speed
-/// delay (zero if the player is at the target system).
+/// UI-to-dispatcher queue for colony build commands. UI code pushes
+/// `PendingColonyDispatch` entries; `dispatch_pending_colony_commands`
+/// drains and turns each into a `PendingCommand` with light-speed delay.
 #[derive(Resource, Default)]
 pub struct PendingColonyDispatches {
     pub queue: Vec<PendingColonyDispatch>,
@@ -155,29 +153,58 @@ pub struct PendingCommand {
 }
 
 /// The kinds of remote commands a player can issue.
+///
+/// Build-related payloads (`Colony(ColonyCommand)`) are deliberately minimal —
+/// cost/time/refund amounts are re-resolved on arrival from the target's
+/// current `BuildingRegistry` + `ConstructionParams`. `QueueDeliverableBuild`
+/// is the exception (defs live in a separate registry; see variant doc).
 #[derive(Clone, Debug)]
 pub enum RemoteCommand {
     BuildShip { design_id: String },
     SetProductionFocus { minerals: f64, energy: f64, research: f64 },
-    /// #270: Colony or system build/demolish/upgrade/cancel command routed
-    /// through light-speed delay. Cost/time/refund amounts are NOT carried in
-    /// the payload — they are computed on arrival from the current
-    /// `BuildingRegistry` / `ShipDesignRegistry` at the target. This keeps the
-    /// payload small and matches the existing `BuildShip` convention.
     Colony(ColonyCommand),
 }
 
-/// #270: A colony-scoped remote command. `target_planet = Some(planet)`
-/// addresses a planet-level `BuildingQueue`/`Buildings`; `None` addresses the
-/// system-level `SystemBuildingQueue`/`SystemBuildings` on the target system.
+/// A colony-scoped remote command. `target_planet = Some(p)` addresses a
+/// planet-level `BuildingQueue`/`Buildings`; `None` addresses the
+/// system-level `SystemBuildingQueue`/`SystemBuildings` on `target_system`.
+/// Some variants (`QueueShipBuild`, `QueueDeliverableBuild`) carry their
+/// own `host_colony` and ignore `target_planet`.
 #[derive(Clone, Debug)]
 pub struct ColonyCommand {
     pub target_planet: Option<Entity>,
     pub kind: ColonyCommandKind,
 }
 
-/// #270: Payload-free colony command variants. Arrival handler looks up the
-/// current cost/time/refund from registries when applying the command.
+impl RemoteCommand {
+    /// Short player-facing label. Used in CommandLog entries and the
+    /// in-flight list so players don't see raw `{:?}` output with entity
+    /// indices.
+    pub fn describe(&self) -> String {
+        match self {
+            RemoteCommand::BuildShip { design_id } => format!("Build ship: {}", design_id),
+            RemoteCommand::SetProductionFocus { .. } => "Set production focus".to_string(),
+            RemoteCommand::Colony(cc) => match &cc.kind {
+                ColonyCommandKind::QueueBuilding { building_id, target_slot } => {
+                    format!("Build {} → slot {}", building_id, target_slot)
+                }
+                ColonyCommandKind::DemolishBuilding { target_slot } => {
+                    format!("Demolish slot {}", target_slot)
+                }
+                ColonyCommandKind::UpgradeBuilding { slot_index, target_id } => {
+                    format!("Upgrade slot {} → {}", slot_index, target_id)
+                }
+                ColonyCommandKind::QueueShipBuild { design_id, .. } => {
+                    format!("Build ship: {}", design_id)
+                }
+                ColonyCommandKind::QueueDeliverableBuild { display_name, .. } => {
+                    format!("Build deliverable: {}", display_name)
+                }
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ColonyCommandKind {
     /// Enqueue construction of `building_id` into `target_slot`.
@@ -192,19 +219,17 @@ pub enum ColonyCommandKind {
         slot_index: usize,
         target_id: String,
     },
-    /// Cancel the (head of the) pending build order targeting `target_slot`.
-    CancelBuildingOrder { target_slot: usize },
     /// Enqueue a ship (or deliverable) build on `host_colony`'s `BuildQueue`.
     QueueShipBuild {
         host_colony: Entity,
         design_id: String,
         build_kind: crate::colony::BuildKind,
     },
-    /// Enqueue a deliverable build on `host_colony`'s `BuildQueue`. Carries
-    /// the full payload because deliverable definitions live in
-    /// `StructureRegistry`, not `ShipDesignRegistry` — the arrival handler
-    /// can't re-resolve them from the ship registry. Cost/time are
-    /// frozen at send time.
+    /// Enqueue a deliverable build on `host_colony`'s `BuildQueue`. Full
+    /// payload (def_id/display_name/cargo_size/cost/time) is frozen at
+    /// send time because deliverable defs live in `StructureRegistry`,
+    /// not `ShipDesignRegistry`, so arrival-time re-resolution would
+    /// require a second registry lookup path.
     QueueDeliverableBuild {
         host_colony: Entity,
         def_id: String,
@@ -213,13 +238,6 @@ pub enum ColonyCommandKind {
         minerals_cost: crate::amount::Amt,
         energy_cost: crate::amount::Amt,
         build_time: i64,
-    },
-    /// Cancel a ship build order on `host_colony`'s `BuildQueue` at `queue_index`.
-    /// NOTE: by-index cancel is best-effort — queues can shift between
-    /// dispatch and arrival. Stable order-ids are a follow-up (see #270 plan).
-    CancelShipOrder {
-        host_colony: Entity,
-        queue_index: usize,
     },
 }
 
@@ -236,10 +254,6 @@ pub struct CommandLogEntry {
     pub arrived: bool,
 }
 
-/// #270: Drain `PendingColonyDispatches` and turn each entry into a
-/// `PendingCommand` with the appropriate light-speed delay. Runs in
-/// `Update` before `process_pending_commands` so local (zero-delay)
-/// commands are applied the same frame.
 pub fn dispatch_pending_colony_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -311,7 +325,7 @@ pub fn send_remote_command(
     let arrives_at = sent_at + delay;
 
     command_log.entries.push(CommandLogEntry {
-        description: format!("{:?}", command),
+        description: command.describe(),
         sent_at,
         arrives_at,
         arrived: false,
@@ -360,11 +374,11 @@ pub fn process_pending_commands(
         if clock.elapsed >= cmd.arrives_at {
             let delay = cmd.arrives_at - cmd.sent_at;
             info!(
-                "Remote command arrived at target (delay: {} sd): {:?}",
-                delay, cmd.command
+                "Remote command arrived at target (delay: {} sd): {}",
+                delay,
+                cmd.command.describe()
             );
 
-            // #270: Dispatch colony-scoped commands on arrival.
             if let RemoteCommand::Colony(cc) = &cmd.command {
                 apply_colony_command(
                     cc,
@@ -377,11 +391,7 @@ pub fn process_pending_commands(
                     &mut sys_buildings_q,
                 );
             }
-            // NOTE: BuildShip / SetProductionFocus remain as pre-#270 "orphan
-            // API" — no UI wires them today. They'll be wired when the
-            // SetProductionFocus UI lands, tracked separately.
 
-            // Mark the matching log entry as arrived.
             for entry in command_log.entries.iter_mut() {
                 if entry.sent_at == cmd.sent_at
                     && entry.arrives_at == cmd.arrives_at
@@ -397,9 +407,6 @@ pub fn process_pending_commands(
     }
 }
 
-/// #270: Apply a `ColonyCommand` to the target queues. Cost / time / refund
-/// amounts are resolved here from the current registry state — the payload
-/// only carries ids and slot indices.
 fn apply_colony_command(
     cc: &ColonyCommand,
     target_system: Entity,
@@ -473,14 +480,18 @@ fn apply_colony_command(
                         );
                         break;
                     };
-                    let def = br.get(bid.as_str());
-                    let (m_ref, e_ref) =
-                        def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                    let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
+                    let Some(def) = br.get(bid.as_str()) else {
+                        warn!(
+                            "DemolishBuilding (planet): unknown building '{}' in slot {}; dropping order to avoid silent free demolition",
+                            bid, target_slot
+                        );
+                        break;
+                    };
+                    let (m_ref, e_ref) = def.demolition_refund();
                     bq.demolition_queue.push(DemolitionOrder {
                         target_slot: *target_slot,
                         building_id: bid,
-                        time_remaining: demo_time,
+                        time_remaining: def.demolition_time(),
                         minerals_refund: m_ref,
                         energy_refund: e_ref,
                     });
@@ -508,14 +519,18 @@ fn apply_colony_command(
                     );
                     return;
                 };
-                let def = br.get(bid.as_str());
-                let (m_ref, e_ref) =
-                    def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
+                let Some(def) = br.get(bid.as_str()) else {
+                    warn!(
+                        "DemolishBuilding (system): unknown building '{}' in slot {}; dropping order",
+                        bid, target_slot
+                    );
+                    return;
+                };
+                let (m_ref, e_ref) = def.demolition_refund();
                 sbq.demolition_queue.push(DemolitionOrder {
                     target_slot: *target_slot,
                     building_id: bid,
-                    time_remaining: demo_time,
+                    time_remaining: def.demolition_time(),
                     minerals_refund: m_ref,
                     energy_refund: e_ref,
                 });
@@ -618,44 +633,6 @@ fn apply_colony_command(
                 }
             }
         }
-        ColonyCommandKind::CancelBuildingOrder { target_slot } => match cc.target_planet {
-            Some(planet) => {
-                for (colony, _, mut bq, _) in colonies.iter_mut() {
-                    if colony.planet == planet {
-                        if let Some(pos) = bq.queue.iter().position(|o| o.target_slot == *target_slot) {
-                            bq.queue.remove(pos);
-                        } else {
-                            warn!(
-                                "CancelBuildingOrder (planet): no queued order for slot {}",
-                                target_slot
-                            );
-                        }
-                        return;
-                    }
-                }
-                warn!(
-                    "CancelBuildingOrder (planet): no colony on planet {:?}",
-                    planet
-                );
-            }
-            None => {
-                if let Ok((_, mut sbq)) = sys_buildings_q.get_mut(target_system) {
-                    if let Some(pos) = sbq.queue.iter().position(|o| o.target_slot == *target_slot) {
-                        sbq.queue.remove(pos);
-                    } else {
-                        warn!(
-                            "CancelBuildingOrder (system): no queued order for slot {}",
-                            target_slot
-                        );
-                    }
-                } else {
-                    warn!(
-                        "CancelBuildingOrder (system): target_system {:?} missing",
-                        target_system
-                    );
-                }
-            }
-        },
         ColonyCommandKind::QueueShipBuild {
             host_colony,
             design_id,
@@ -672,10 +649,6 @@ fn apply_colony_command(
                 warn!("QueueShipBuild: unknown design_id '{}'", design_id);
                 return;
             };
-            // NOTE: Ship cost/time don't yet run through an empire modifier
-            // the way buildings do (no ship_cost_modifier), so take the
-            // registry values as-is. If such a modifier lands later, apply
-            // it here at arrival time.
             let minerals_cost = design.build_cost_minerals;
             let energy_cost = design.build_cost_energy;
             let build_time_total = sdr.build_time(design_id);
@@ -721,27 +694,6 @@ fn apply_colony_command(
                 build_time_total: *build_time,
                 build_time_remaining: *build_time,
             });
-        }
-        ColonyCommandKind::CancelShipOrder {
-            host_colony,
-            queue_index,
-        } => {
-            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
-                warn!(
-                    "CancelShipOrder: host_colony {:?} has no BuildQueue",
-                    host_colony
-                );
-                return;
-            };
-            if *queue_index < build_q.queue.len() {
-                build_q.queue.remove(*queue_index);
-            } else {
-                warn!(
-                    "CancelShipOrder: queue_index {} out of bounds (len={})",
-                    queue_index,
-                    build_q.queue.len()
-                );
-            }
         }
     }
 }

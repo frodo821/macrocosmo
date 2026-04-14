@@ -149,9 +149,7 @@ pub fn draw_system_panel(
     structure_registry: &StructureRegistry,
     deliverable_avail: &DeliverableAvailabilityCtx<'_>,
     system_actions_out: &mut SystemPanelActions,
-    // #270: Resource used by planet/system/ship UI to queue remote commands.
     dispatches: &mut crate::communication::PendingColonyDispatches,
-    // #270: Read-only view of in-flight commands, for transit feedback.
     remote_commands: &Query<&crate::communication::PendingCommand>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
@@ -1498,17 +1496,12 @@ fn draw_system_map(
     );
 }
 
-/// #270: Render the in-flight remote-commands list for a system. Lists
-/// each `PendingCommand` whose `target_system == sel_entity` with the
-/// remaining hexadies until arrival. Silently collapses to a no-op when
-/// there are no in-flight commands for this system.
 fn draw_in_flight_commands_section(
     ui: &mut egui::Ui,
     sel_entity: Entity,
     remote_commands: &Query<&crate::communication::PendingCommand>,
     clock_elapsed: i64,
 ) {
-    use crate::communication::{ColonyCommandKind, RemoteCommand};
     let mut items: Vec<&crate::communication::PendingCommand> = remote_commands
         .iter()
         .filter(|cmd| cmd.target_system == sel_entity)
@@ -1516,7 +1509,6 @@ fn draw_in_flight_commands_section(
     if items.is_empty() {
         return;
     }
-    // Sort by arrives_at so the next-to-land entry is at the top.
     items.sort_by_key(|c| c.arrives_at);
 
     ui.label(
@@ -1527,35 +1519,8 @@ fn draw_in_flight_commands_section(
     ui.separator();
     for cmd in items {
         let remaining = (cmd.arrives_at - clock_elapsed).max(0);
-        let verb = match &cmd.command {
-            RemoteCommand::Colony(cc) => match &cc.kind {
-                ColonyCommandKind::QueueBuilding { building_id, target_slot } => {
-                    format!("Build {} → slot {}", building_id, target_slot)
-                }
-                ColonyCommandKind::DemolishBuilding { target_slot } => {
-                    format!("Demolish slot {}", target_slot)
-                }
-                ColonyCommandKind::UpgradeBuilding { slot_index, target_id } => {
-                    format!("Upgrade slot {} → {}", slot_index, target_id)
-                }
-                ColonyCommandKind::CancelBuildingOrder { target_slot } => {
-                    format!("Cancel order @ slot {}", target_slot)
-                }
-                ColonyCommandKind::QueueShipBuild { design_id, .. } => {
-                    format!("Build ship: {}", design_id)
-                }
-                ColonyCommandKind::QueueDeliverableBuild { display_name, .. } => {
-                    format!("Build deliverable: {}", display_name)
-                }
-                ColonyCommandKind::CancelShipOrder { queue_index, .. } => {
-                    format!("Cancel ship order [{}]", queue_index)
-                }
-            },
-            RemoteCommand::BuildShip { design_id } => format!("Build ship: {}", design_id),
-            RemoteCommand::SetProductionFocus { .. } => "Set production focus".to_string(),
-        };
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("• {}", verb)).weak());
+            ui.label(egui::RichText::new(format!("• {}", cmd.command.describe())).weak());
             ui.label(
                 egui::RichText::new(format!("arrives in {} hd", remaining))
                     .italics()
