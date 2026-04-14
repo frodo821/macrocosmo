@@ -58,7 +58,10 @@ pub fn draw_context_menu(
         } else {
             None
         };
-        // For non-docked ships, determine origin position from current state
+        // For non-docked ships, determine origin position from current state.
+        // #266: Loitering ships have no associated system but DO have a known
+        // deep-space position — carry it as a fallback so context menu can
+        // still compute light delay and open properly.
         let current_destination_system = match &*state {
             ShipState::SubLight { target_system, .. } => *target_system,
             ShipState::InFTL { destination_system, .. } => Some(*destination_system),
@@ -66,11 +69,12 @@ pub fn draw_context_menu(
             ShipState::Settling { system, .. } => Some(*system),
             ShipState::Docked { .. } => None, // handled via docked_system
             ShipState::Refitting { system, .. } => Some(*system),
-            // #185: Loitering ships have no associated system; commands will be queued
-            // and routed via MoveTo (which handles loitering->system sublight).
             ShipState::Loitering { .. } => None,
-            // #217: Scouting ships are parked at the observation target.
             ShipState::Scouting { target_system, .. } => Some(*target_system),
+        };
+        let loitering_pos: Option<[f64; 3]> = match &*state {
+            ShipState::Loitering { position } => Some(*position),
+            _ => None,
         };
         (
             ship.name.clone(),
@@ -79,28 +83,47 @@ pub fn draw_context_menu(
             ship.sublight_speed,
             docked_system,
             current_destination_system,
+            loitering_pos,
         )
     };
 
-    let (ship_name, design_id, ftl_range, sublight_speed, docked_system, current_destination_system) = ship_data;
+    let (
+        ship_name,
+        design_id,
+        ftl_range,
+        sublight_speed,
+        docked_system,
+        current_destination_system,
+        loitering_pos,
+    ) = ship_data;
 
     let is_docked = docked_system.is_some();
 
     // For docked ships, the origin is the docked system.
-    // For non-docked ships, the origin is their current destination (where they'll end up).
+    // For non-docked ships, the origin is either the current destination
+    // (in-transit / parked at target) or a loitering deep-space position
+    // (#266).
     let origin_system = if let Some(ds) = docked_system {
         Some(ds)
     } else {
         current_destination_system
     };
 
-    let Some(origin_system) = origin_system else {
-        // No origin determinable; close menu
+    // Resolve the ship's current Position — either from a system entity (the
+    // common case) or a deep-space loitering coordinate.
+    let ship_pos: Option<Position> = if let Some(sys) = origin_system {
+        positions.get(sys).ok().copied()
+    } else {
+        loitering_pos.map(Position::from)
+    };
+
+    let Some(ship_pos) = ship_pos else {
+        // No origin determinable; close menu.
         context_menu.open = false;
         return;
     };
 
-    let same_system = is_docked && target_entity == origin_system;
+    let same_system = is_docked && origin_system == Some(target_entity);
 
     // #76: Calculate light-speed delay from player to ship's location.
     // For in-transit ships, the command must also wait for the ship to arrive
@@ -111,8 +134,7 @@ pub fn draw_context_menu(
             .ok()
             .and_then(|(_, stationed, _)| {
                 let player_pos = positions.get(stationed.system).ok()?;
-                let ship_pos = positions.get(origin_system).ok()?;
-                let dist = physics::distance_ly(player_pos, ship_pos);
+                let dist = physics::distance_ly(player_pos, &ship_pos);
                 Some(physics::light_delay_hexadies(dist))
             })
             .unwrap_or(0);
@@ -143,12 +165,8 @@ pub fn draw_context_menu(
         context_menu.open = false;
         return;
     };
-    let Ok(origin_pos) = positions.get(origin_system) else {
-        context_menu.open = false;
-        return;
-    };
 
-    let dist = physics::distance_ly(origin_pos, target_pos);
+    let dist = physics::distance_ly(&ship_pos, target_pos);
     let target_name = target_star.name.clone();
     let target_surveyed = target_star.surveyed;
 
