@@ -1132,33 +1132,24 @@ fn draw_right_panel(
                             });
                         });
 
-                    // #270: Deliverable dispatch wiring lands in Commit H
-                    // (QueueDeliverableBuild payload variant). Until then,
-                    // deliverable pushes go directly to the host BuildQueue.
                     if let Some((def_id, display_name, cargo_size, m_cost, e_cost, build_time)) =
                         deliverable_request
                     {
-                        for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
-                            colonies.iter_mut()
-                        {
-                            if colony_entity != host {
-                                continue;
-                            }
-                            if let Some(bq) = build_queue.as_mut() {
-                                bq.queue.push(BuildOrder {
-                                    kind: crate::colony::BuildKind::Deliverable { cargo_size },
-                                    design_id: def_id,
+                        dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                            target_system: sel_entity,
+                            command: crate::communication::ColonyCommand {
+                                target_planet: None,
+                                kind: crate::communication::ColonyCommandKind::QueueDeliverableBuild {
+                                    host_colony: host,
+                                    def_id,
                                     display_name,
+                                    cargo_size,
                                     minerals_cost: m_cost,
-                                    minerals_invested: Amt::ZERO,
                                     energy_cost: e_cost,
-                                    energy_invested: Amt::ZERO,
-                                    build_time_total: build_time,
-                                    build_time_remaining: build_time,
-                                });
-                            }
-                            break;
-                        }
+                                    build_time,
+                                },
+                            },
+                        });
                     }
                 }
             }
@@ -1552,6 +1543,9 @@ fn draw_in_flight_commands_section(
                 }
                 ColonyCommandKind::QueueShipBuild { design_id, .. } => {
                     format!("Build ship: {}", design_id)
+                }
+                ColonyCommandKind::QueueDeliverableBuild { display_name, .. } => {
+                    format!("Build deliverable: {}", display_name)
                 }
                 ColonyCommandKind::CancelShipOrder { queue_index, .. } => {
                     format!("Cancel ship order [{}]", queue_index)

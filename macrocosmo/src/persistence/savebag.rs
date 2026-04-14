@@ -2871,6 +2871,15 @@ pub enum SavedColonyCommandKind {
         design_id: String,
         build_kind: SavedBuildKind,
     },
+    QueueDeliverableBuild {
+        host_colony_bits: u64,
+        def_id: String,
+        display_name: String,
+        cargo_size: u32,
+        minerals_cost: Amt,
+        energy_cost: Amt,
+        build_time: i64,
+    },
     CancelShipOrder { host_colony_bits: u64, queue_index: usize },
 }
 
@@ -2898,6 +2907,23 @@ impl SavedColonyCommandKind {
                     build_kind: build_kind.into(),
                 }
             }
+            ColonyCommandKind::QueueDeliverableBuild {
+                host_colony,
+                def_id,
+                display_name,
+                cargo_size,
+                minerals_cost,
+                energy_cost,
+                build_time,
+            } => Self::QueueDeliverableBuild {
+                host_colony_bits: host_colony.to_bits(),
+                def_id: def_id.clone(),
+                display_name: display_name.clone(),
+                cargo_size: *cargo_size,
+                minerals_cost: *minerals_cost,
+                energy_cost: *energy_cost,
+                build_time: *build_time,
+            },
             ColonyCommandKind::CancelShipOrder { host_colony, queue_index } => {
                 Self::CancelShipOrder {
                     host_colony_bits: host_colony.to_bits(),
@@ -2927,6 +2953,23 @@ impl SavedColonyCommandKind {
                     build_kind: build_kind.into(),
                 }
             }
+            Self::QueueDeliverableBuild {
+                host_colony_bits,
+                def_id,
+                display_name,
+                cargo_size,
+                minerals_cost,
+                energy_cost,
+                build_time,
+            } => ColonyCommandKind::QueueDeliverableBuild {
+                host_colony: remap_entity(host_colony_bits, map),
+                def_id,
+                display_name,
+                cargo_size,
+                minerals_cost,
+                energy_cost,
+                build_time,
+            },
             Self::CancelShipOrder { host_colony_bits, queue_index } => {
                 ColonyCommandKind::CancelShipOrder {
                     host_colony: remap_entity(host_colony_bits, map),
@@ -3619,6 +3662,18 @@ mod tests {
                     host_colony: live_host,
                     design_id: "explorer_mk1".to_string(),
                     build_kind: BuildKind::Deliverable { cargo_size: 4 },
+                },
+            }),
+            RemoteCommand::Colony(ColonyCommand {
+                target_planet: None,
+                kind: ColonyCommandKind::QueueDeliverableBuild {
+                    host_colony: live_host,
+                    def_id: "sensor_buoy".to_string(),
+                    display_name: "Sensor Buoy".to_string(),
+                    cargo_size: 2,
+                    minerals_cost: crate::amount::Amt::units(100),
+                    energy_cost: crate::amount::Amt::units(50),
+                    build_time: 30,
                 },
             }),
             RemoteCommand::Colony(ColonyCommand {

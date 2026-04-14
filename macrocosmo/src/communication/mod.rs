@@ -200,6 +200,20 @@ pub enum ColonyCommandKind {
         design_id: String,
         build_kind: crate::colony::BuildKind,
     },
+    /// Enqueue a deliverable build on `host_colony`'s `BuildQueue`. Carries
+    /// the full payload because deliverable definitions live in
+    /// `StructureRegistry`, not `ShipDesignRegistry` — the arrival handler
+    /// can't re-resolve them from the ship registry. Cost/time are
+    /// frozen at send time.
+    QueueDeliverableBuild {
+        host_colony: Entity,
+        def_id: String,
+        display_name: String,
+        cargo_size: u32,
+        minerals_cost: crate::amount::Amt,
+        energy_cost: crate::amount::Amt,
+        build_time: i64,
+    },
     /// Cancel a ship build order on `host_colony`'s `BuildQueue` at `queue_index`.
     /// NOTE: by-index cancel is best-effort — queues can shift between
     /// dispatch and arrival. Stable order-ids are a follow-up (see #270 plan).
@@ -676,6 +690,36 @@ fn apply_colony_command(
                 energy_invested: Amt::ZERO,
                 build_time_total,
                 build_time_remaining: build_time_total,
+            });
+        }
+        ColonyCommandKind::QueueDeliverableBuild {
+            host_colony,
+            def_id,
+            display_name,
+            cargo_size,
+            minerals_cost,
+            energy_cost,
+            build_time,
+        } => {
+            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
+                warn!(
+                    "QueueDeliverableBuild: host_colony {:?} has no BuildQueue",
+                    host_colony
+                );
+                return;
+            };
+            build_q.queue.push(BuildOrder {
+                kind: crate::colony::BuildKind::Deliverable {
+                    cargo_size: *cargo_size,
+                },
+                design_id: def_id.clone(),
+                display_name: display_name.clone(),
+                minerals_cost: *minerals_cost,
+                minerals_invested: Amt::ZERO,
+                energy_cost: *energy_cost,
+                energy_invested: Amt::ZERO,
+                build_time_total: *build_time,
+                build_time_remaining: *build_time,
             });
         }
         ColonyCommandKind::CancelShipOrder {

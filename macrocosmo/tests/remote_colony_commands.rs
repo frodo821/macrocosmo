@@ -381,6 +381,60 @@ fn queue_ship_build_arrives_and_enqueues() {
     assert!(matches!(bq.queue[0].kind, BuildKind::Ship));
 }
 
+/// #270 Commit H: Deliverable dispatch carries full payload so arrival
+/// doesn't need StructureRegistry access. Verify a
+/// `QueueDeliverableBuild` lands a `BuildOrder` with
+/// `kind: BuildKind::Deliverable { cargo_size }` on the host colony.
+#[test]
+fn queue_deliverable_build_arrives_and_enqueues() {
+    let mut app = build_app();
+    let (sys, planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Target",
+        [10.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(10_000),
+        Amt::units(10_000),
+        vec![],
+    );
+
+    spawn_pending_colony_command(
+        &mut app,
+        sys,
+        0,
+        20,
+        ColonyCommand {
+            target_planet: None,
+            kind: ColonyCommandKind::QueueDeliverableBuild {
+                host_colony: colony,
+                def_id: "sensor_buoy".to_string(),
+                display_name: "Sensor Buoy".to_string(),
+                cargo_size: 2,
+                minerals_cost: Amt::units(100),
+                energy_cost: Amt::units(50),
+                build_time: 30,
+            },
+        },
+    );
+
+    run_until_arrival(&mut app, 20);
+
+    let bq = app.world().get::<BuildQueue>(colony).unwrap();
+    assert_eq!(bq.queue.len(), 1);
+    assert_eq!(bq.queue[0].design_id, "sensor_buoy");
+    assert!(matches!(
+        bq.queue[0].kind,
+        BuildKind::Deliverable { cargo_size: 2 }
+    ));
+    assert_eq!(bq.queue[0].minerals_cost, Amt::units(100));
+    assert_eq!(bq.queue[0].build_time_total, 30);
+}
+
 // --------------------------------------------------------------------------
 // Timing: commands before arrival do NOT fire
 // --------------------------------------------------------------------------
