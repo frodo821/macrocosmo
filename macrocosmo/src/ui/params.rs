@@ -62,6 +62,10 @@ pub struct MainPanelWorldQueries<'w, 's> {
             Option<&'static ColonyJobRates>,
         ),
     >,
+    /// #270: In-flight remote commands, so the system panel can display an
+    /// "Dispatched → arrives in N hd" list for the selected system while
+    /// the light-speed delay ticks down.
+    pub remote_commands: Query<'w, 's, &'static crate::communication::PendingCommand>,
 }
 
 #[derive(SystemParam)]

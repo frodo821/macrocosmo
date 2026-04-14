@@ -151,6 +151,8 @@ pub fn draw_system_panel(
     system_actions_out: &mut SystemPanelActions,
     // #270: Resource used by planet/system/ship UI to queue remote commands.
     dispatches: &mut crate::communication::PendingColonyDispatches,
+    // #270: Read-only view of in-flight commands, for transit feedback.
+    remote_commands: &Query<&crate::communication::PendingCommand>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -371,6 +373,8 @@ pub fn draw_system_panel(
                                         system_actions_out,
                                         is_local_system,
                                         dispatches,
+                                        remote_commands,
+                                        clock.elapsed,
                                     );
                                 });
                         });
@@ -669,7 +673,15 @@ fn draw_right_panel(
     // #270: Light-speed command routing.
     is_local_system: bool,
     dispatches: &mut crate::communication::PendingColonyDispatches,
+    // #270: In-flight commands for the selected system (transit feedback).
+    remote_commands: &Query<&crate::communication::PendingCommand>,
+    clock_elapsed: i64,
 ) {
+    // #270: In-flight commands for this system (transit feedback). Listed
+    // before the rest of the panel so the player immediately sees feedback
+    // after clicking a build/demolish/upgrade button on a remote system.
+    draw_in_flight_commands_section(ui, sel_entity, remote_commands, clock_elapsed);
+
     // === Docked Ships ===
     ui.label(egui::RichText::new("Docked Ships").strong().color(egui::Color32::from_rgb(180, 180, 220)));
     ui.separator();
@@ -1610,6 +1622,72 @@ fn draw_system_map(
         egui::FontId::proportional(11.0),
         egui::Color32::from_rgb(120, 120, 140),
     );
+}
+
+/// #270: Render the in-flight remote-commands list for a system. Lists
+/// each `PendingCommand` whose `target_system == sel_entity` with the
+/// remaining hexadies until arrival. Silently collapses to a no-op when
+/// there are no in-flight commands for this system.
+fn draw_in_flight_commands_section(
+    ui: &mut egui::Ui,
+    sel_entity: Entity,
+    remote_commands: &Query<&crate::communication::PendingCommand>,
+    clock_elapsed: i64,
+) {
+    use crate::communication::{ColonyCommandKind, RemoteCommand};
+    let mut items: Vec<&crate::communication::PendingCommand> = remote_commands
+        .iter()
+        .filter(|cmd| cmd.target_system == sel_entity)
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    // Sort by arrives_at so the next-to-land entry is at the top.
+    items.sort_by_key(|c| c.arrives_at);
+
+    ui.label(
+        egui::RichText::new("In-flight Commands")
+            .strong()
+            .color(egui::Color32::from_rgb(240, 200, 120)),
+    );
+    ui.separator();
+    for cmd in items {
+        let remaining = (cmd.arrives_at - clock_elapsed).max(0);
+        let verb = match &cmd.command {
+            RemoteCommand::Colony(cc) => match &cc.kind {
+                ColonyCommandKind::QueueBuilding { building_id, target_slot } => {
+                    format!("Build {} → slot {}", building_id, target_slot)
+                }
+                ColonyCommandKind::DemolishBuilding { target_slot } => {
+                    format!("Demolish slot {}", target_slot)
+                }
+                ColonyCommandKind::UpgradeBuilding { slot_index, target_id } => {
+                    format!("Upgrade slot {} → {}", slot_index, target_id)
+                }
+                ColonyCommandKind::CancelBuildingOrder { target_slot } => {
+                    format!("Cancel order @ slot {}", target_slot)
+                }
+                ColonyCommandKind::QueueShipBuild { design_id, .. } => {
+                    format!("Build ship: {}", design_id)
+                }
+                ColonyCommandKind::CancelShipOrder { queue_index, .. } => {
+                    format!("Cancel ship order [{}]", queue_index)
+                }
+            },
+            RemoteCommand::BuildShip { design_id } => format!("Build ship: {}", design_id),
+            RemoteCommand::SetProductionFocus { .. } => "Set production focus".to_string(),
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("• {}", verb)).weak());
+            ui.label(
+                egui::RichText::new(format!("arrives in {} hd", remaining))
+                    .italics()
+                    .color(egui::Color32::from_rgb(180, 180, 180)),
+            );
+        });
+    }
+    ui.add_space(4.0);
+    ui.separator();
 }
 
 /// Format a type id into a display name (e.g. "yellow_dwarf" -> "Yellow Dwarf").

@@ -685,6 +685,7 @@ fn draw_main_panels_system(
         &deliverable_avail,
         &mut system_actions,
         &mut deliverables_res.colony_dispatches,
+        &world.remote_commands,
     );
 
     for action in colonization_actions {
