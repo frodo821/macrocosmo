@@ -2637,7 +2637,8 @@ fn test_move_to_coordinates_command_results_in_loitering_arrival() {
 /// ships in star systems; deep-space combat is intentionally out of scope.
 #[test]
 fn test_loitering_ship_not_engaged_by_resolve_combat() {
-    use macrocosmo::galaxy::{HostilePresence, HostileType};
+    use macrocosmo::galaxy::{
+        AtSystem, Hostile, HostileHitpoints, HostileStats, };
 
     let mut app = test_app();
 
@@ -2651,14 +2652,7 @@ fn test_loitering_ship_not_engaged_by_resolve_combat() {
     );
 
     // Hostile in the system.
-    app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 100.0,
-        hp: 1000.0,
-        max_hp: 1000.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
 
     // Spawn a Loitering ship at the SAME coordinates as the hostile system but with
     // ShipState::Loitering — combat should ignore it because it's not Docked.

@@ -15,9 +15,10 @@ use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
 use super::{
-    Anomalies, GalaxyConfig, HostilePresence, HostileType, ObscuredByGas, Planet,
-    Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes, SystemModifiers,
+    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostileStats, ObscuredByGas,
+    Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes, SystemModifiers,
 };
+use crate::faction::{FactionOwner, HostileFactions};
 use crate::amount::SignedAmt;
 use crate::modifier::Modifier;
 use crate::scripting::galaxy_api::StarTypeModifier;
@@ -419,6 +420,7 @@ pub(crate) fn initialize_systems(
     planet_types: &[PlanetTypeDefinition],
     planet_weights: &[f64],
     overrides: &[SystemInitOverride],
+    hostile_factions: &HostileFactions,
 ) {
     let actual_count = systems.len();
 
@@ -648,30 +650,34 @@ pub(crate) fn initialize_systems(
         let center_dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
         let strength_mult = 1.0 + (center_dist / params.galaxy_radius) * 2.0;
 
-        let hostile_type = if rng.random::<f64>() < 0.7 {
-            HostileType::SpaceCreature
+        // #293: 70/30 split between space_creature and ancient_defense
+        // faction buckets. Values move to Lua FactionTypeDefinition for
+        // the base hp/strength/evasion; galaxy-center distance scales hp
+        // and strength via `strength_mult`. `spawn_hostile_factions` runs
+        // before `generate_galaxy` so `HostileFactions` is populated and
+        // `FactionOwner` can be attached directly at spawn time.
+        let (faction_entity, base_hp, base_strength, evasion) = if rng.random::<f64>() < 0.7 {
+            (hostile_factions.space_creature, 80.0, 10.0, 20.0)
         } else {
-            HostileType::AncientDefense
+            (hostile_factions.ancient_defense, 200.0, 10.0, 10.0)
         };
-        let base_hp = match hostile_type {
-            HostileType::SpaceCreature => 80.0,
-            HostileType::AncientDefense => 200.0,
+        let Some(faction_entity) = faction_entity else {
+            warn!(
+                "Hostile spawn skipped: HostileFactions not populated. \
+                 Ensure spawn_hostile_factions runs before generate_galaxy."
+            );
+            continue;
         };
         let hp = base_hp * strength_mult;
-        let strength = 10.0 * strength_mult;
-        let evasion = match hostile_type {
-            HostileType::SpaceCreature => 20.0,
-            HostileType::AncientDefense => 10.0,
-        };
+        let strength = base_strength * strength_mult;
 
-        commands.spawn(HostilePresence {
-            system: system_entity,
-            strength,
-            hp,
-            max_hp: hp,
-            hostile_type,
-            evasion,
-        });
+        commands.spawn((
+            AtSystem(system_entity),
+            HostileHitpoints { hp, max_hp: hp },
+            HostileStats { strength, evasion },
+            Hostile,
+            FactionOwner(faction_entity),
+        ));
         hostile_count += 1;
     }
 
@@ -689,6 +695,7 @@ pub fn generate_galaxy(
     predefined_registry: Option<Res<PredefinedSystemRegistry>>,
     map_type_registry: Option<Res<MapTypeRegistry>>,
     rng_seed: Option<Res<crate::observer::RngSeed>>,
+    hostile_factions: Res<HostileFactions>,
 ) {
     let mut rng: rand::rngs::StdRng = match rng_seed.as_deref().and_then(|s| s.0) {
         Some(seed) => {
@@ -767,6 +774,7 @@ pub fn generate_galaxy(
         &planet_types,
         &planet_weights,
         &overrides,
+        &hostile_factions,
     );
 }
 

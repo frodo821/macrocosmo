@@ -35,7 +35,8 @@ impl Plugin for GalaxyPlugin {
                 generate_galaxy
                     .after(load_galaxy_types)
                     .after(crate::scripting::load_predefined_system_registry)
-                    .after(crate::scripting::load_map_type_registry),
+                    .after(crate::scripting::load_map_type_registry)
+                    .after(crate::faction::spawn_hostile_factions),
             )
             .add_systems(
                 Startup,
@@ -161,22 +162,45 @@ pub struct Sovereignty {
     pub control_score: f64,
 }
 
-/// A hostile presence at a star system that player ships must fight.
-#[derive(Component)]
-pub struct HostilePresence {
-    pub system: Entity,
-    pub strength: f64,
+// ---------------------------------------------------------------------------
+// #293: Hostile entity components
+// ---------------------------------------------------------------------------
+// Hostile entities carry `(AtSystem, FactionOwner, HostileHitpoints,
+// HostileStats, Hostile)`. Readers use `Query<..., With<Hostile>>` to stay
+// disjoint from ship queries. Combat strength / evasion live on
+// `HostileStats` (populated from `FactionTypeDefinition.strength/evasion`
+// scaled by an environmental multiplier at galaxy generation time).
+
+/// Component declaring which star system this entity occupies. Attached to
+/// hostile entities (space_creature / ancient_defense) so the visibility /
+/// combat / knowledge layers can key their per-system maps.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct AtSystem(pub Entity);
+
+/// Hitpoints for a hostile entity. Separate from [`crate::ship::ShipHitpoints`]
+/// which applies to player ships.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct HostileHitpoints {
     pub hp: f64,
     pub max_hp: f64,
-    pub hostile_type: HostileType,
+}
+
+/// Per-entity combat stats for a hostile. `strength` is derived from
+/// `FactionTypeDefinition.strength` scaled by an environmental modifier
+/// at galaxy generation time (distance-from-center). `evasion` comes
+/// straight from the faction type definition.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct HostileStats {
+    pub strength: f64,
     pub evasion: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostileType {
-    SpaceCreature,
-    AncientDefense,
-}
+/// Zero-sized marker distinguishing hostile entities from other
+/// `FactionOwner`-bearing entities (ships, structures). Hostile-side queries
+/// use `With<Hostile>` to stay disjoint from ship-side queries and avoid
+/// Bevy B0001 conflicts.
+#[derive(Component, Default, Clone, Copy, Debug)]
+pub struct Hostile;
 
 /// Marker for systems obscured by interstellar gas
 #[derive(Component)]

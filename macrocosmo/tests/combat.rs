@@ -3,7 +3,7 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{HostilePresence, HostileType};
+use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
 use macrocosmo::ship::*;
 
 use common::{advance_time, spawn_test_system, test_app};
@@ -22,14 +22,7 @@ fn test_hostile_destroyed_when_hp_zero() {
     );
 
     // Spawn a hostile with low HP so it gets destroyed quickly
-    let hostile_entity = app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 0.0,  // no attack
-        hp: 0.05,       // very low HP
-        max_hp: 10.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    }).id();
+    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
 
     // Register a weapon module in the ModuleRegistry
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
@@ -112,14 +105,7 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
     );
 
     // Spawn a powerful hostile
-    app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 100.0,  // very strong attack (damage per combat turn)
-        hp: 1000.0,
-        max_hp: 1000.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
 
     // Spawn a very weak ship with nearly no hull HP
     let ship_entity = app.world_mut().spawn((
@@ -173,19 +159,12 @@ fn test_no_combat_when_no_ships_present() {
     );
 
     // Spawn hostile - should not be affected without ships present
-    let hostile_entity = app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 5.0,
-        hp: 10.0,
-        max_hp: 10.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    }).id();
+    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10.0, max_hp: 10.0 }, HostileStats { strength: 5.0, evasion: 0.0 }, Hostile)).id();
 
     advance_time(&mut app, 1);
 
     // Hostile should still exist with full HP
-    let hostile = app.world().get::<HostilePresence>(hostile_entity).unwrap();
+    let hostile = app.world().get::<HostileHitpoints>(hostile_entity).unwrap();
     assert!((hostile.hp - 10.0).abs() < f64::EPSILON, "Hostile HP should be unchanged");
 }
 
@@ -203,14 +182,7 @@ fn test_combat_takes_multiple_ticks() {
     );
 
     // Hostile with significant HP
-    let hostile_entity = app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 0.01,  // very low damage
-        hp: 1000.0,
-        max_hp: 1000.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    }).id();
+    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 0.01, evasion: 0.0 }, Hostile)).id();
 
     // Register a weapon module
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
@@ -274,7 +246,7 @@ fn test_combat_takes_multiple_ticks() {
     // => 12 shots * 1.0 damage = 12 damage to 1000 HP hostile
     advance_time(&mut app, 1);
 
-    let hostile = app.world().get::<HostilePresence>(hostile_entity).unwrap();
+    let hostile = app.world().get::<HostileHitpoints>(hostile_entity).unwrap();
     assert!(hostile.hp < 1000.0, "Hostile should have taken some damage");
     assert!(hostile.hp > 0.0, "Hostile should still be alive after one tick");
 }
@@ -437,14 +409,7 @@ fn test_combat_damages_3_layers() {
     );
 
     // Spawn hostile with significant strength
-    app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 10.0,  // 10 damage per combat turn
-        hp: 10000.0,
-        max_hp: 10000.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 10.0, evasion: 0.0 }, Hostile));
 
     // Register armor and shield modules
     {
@@ -534,14 +499,7 @@ fn test_hull_zero_destroys_ship() {
         false,
     );
 
-    app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 100.0,
-        hp: 10000.0,
-        max_hp: 10000.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
 
     let ship_entity = app.world_mut().spawn((
         Ship {
@@ -625,19 +583,11 @@ fn test_weapon_cooldown() {
     });
 
     // Hostile A: attacked by fast gun
-    let hostile_a = app.world_mut().spawn(HostilePresence {
-        system: sys, strength: 0.0,
-        hp: 10000.0, max_hp: 10000.0,
-        hostile_type: HostileType::SpaceCreature, evasion: 0.0,
-    }).id();
+    let hostile_a = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
 
     // Hostile B: attacked by slow gun (separate system)
     let sys_b = spawn_test_system(app.world_mut(), "Cooldown-B", [100.0, 0.0, 0.0], 0.7, true, false);
-    let hostile_b = app.world_mut().spawn(HostilePresence {
-        system: sys_b, strength: 0.0,
-        hp: 10000.0, max_hp: 10000.0,
-        hostile_type: HostileType::SpaceCreature, evasion: 0.0,
-    }).id();
+    let hostile_b = app.world_mut().spawn((AtSystem(sys_b), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
 
     // Ship with fast gun at sys
     app.world_mut().spawn((
@@ -675,8 +625,8 @@ fn test_weapon_cooldown() {
 
     advance_time(&mut app, 1);
 
-    let hp_a = app.world().get::<HostilePresence>(hostile_a).unwrap().hp;
-    let hp_b = app.world().get::<HostilePresence>(hostile_b).unwrap().hp;
+    let hp_a = app.world().get::<HostileHitpoints>(hostile_a).unwrap().hp;
+    let hp_b = app.world().get::<HostileHitpoints>(hostile_b).unwrap().hp;
     // Fast gun (cooldown=1): 12 shots per hexadies. Slow gun (cooldown=6): 2 shots per hexadies.
     let damage_a = 10000.0 - hp_a;
     let damage_b = 10000.0 - hp_b;
@@ -717,11 +667,7 @@ fn test_shield_piercing() {
     );
 
     // Hostile with no attack
-    let hostile = app.world_mut().spawn(HostilePresence {
-        system: sys, strength: 0.0,
-        hp: 10000.0, max_hp: 10000.0,
-        hostile_type: HostileType::SpaceCreature, evasion: 0.0,
-    }).id();
+    let hostile = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
 
     // Ship with full shields, armor, and the piercing weapon
     let _ship_entity = app.world_mut().spawn((
@@ -749,7 +695,7 @@ fn test_shield_piercing() {
 
     // With 100% shield+armor piercing, all damage goes to hull of hostile.
     // 12 combat turns * 5 hull_damage = 60 damage.
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(h.hp < 10000.0, "Hostile should have taken hull damage through piercing");
     let expected_hp = 10000.0 - 60.0;
     assert!((h.hp - expected_hp).abs() < 1.0,
@@ -778,14 +724,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
     );
 
     // Hostile with no attack but trackable HP
-    let hostile_entity = app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 0.0,
-        hp: 100.0,
-        max_hp: 100.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    }).id();
+    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 100.0, max_hp: 100.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
 
     // Register a weapon module
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
@@ -838,7 +777,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
     advance_time(&mut app, 1);
 
     // Hostile should be undamaged because the only ship has Retreat ROE
-    let hostile = app.world().get::<HostilePresence>(hostile_entity).unwrap();
+    let hostile = app.world().get::<HostileHitpoints>(hostile_entity).unwrap();
     assert!(
         (hostile.hp - 100.0).abs() < f64::EPSILON,
         "Hostile HP should be unchanged when only Retreat ships present, got {}",
@@ -860,14 +799,7 @@ fn test_retreat_ships_dont_take_damage() {
     );
 
     // Hostile with strong attack
-    app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 100.0,
-        hp: 10000.0,
-        max_hp: 10000.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
 
     // Ship with Retreat ROE — should not take damage
     let ship_entity = app.world_mut().spawn((
@@ -922,14 +854,7 @@ fn test_aggressive_ships_engage_combat() {
         false,
     );
 
-    let hostile_entity = app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 0.0,
-        hp: 0.05,
-        max_hp: 10.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    }).id();
+    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
 
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
         macrocosmo::ship_design::ModuleDefinition {
@@ -1001,14 +926,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
         false,
     );
 
-    let hostile_entity = app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 0.0,
-        hp: 0.05,
-        max_hp: 10.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    }).id();
+    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
 
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
         macrocosmo::ship_design::ModuleDefinition {
@@ -1080,14 +998,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
     );
 
     // Hostile with moderate HP and strong attack
-    app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 50.0,
-        hp: 0.05,
-        max_hp: 10.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 50.0, evasion: 0.0 }, Hostile));
 
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
         macrocosmo::ship_design::ModuleDefinition {
@@ -1273,13 +1184,33 @@ fn test_galaxy_has_hostiles() {
     });
     app.insert_resource(planet_reg);
 
-    app.add_systems(Startup, macrocosmo::galaxy::generate_galaxy);
+    // #293 follow-up: `generate_galaxy` now requires `HostileFactions` to be
+    // populated (no backfill system). Spawn a PlayerEmpire so
+    // `spawn_hostile_factions` has a target for relation seeding, and wire
+    // both startup systems with the required ordering.
+    app.init_resource::<macrocosmo::faction::FactionRelations>();
+    app.init_resource::<macrocosmo::faction::HostileFactions>();
+    app.world_mut().spawn((
+        macrocosmo::player::PlayerEmpire,
+        macrocosmo::player::Faction {
+            id: "humanity_empire".into(),
+            name: "Terran Federation".into(),
+        },
+    ));
+    app.add_systems(
+        Startup,
+        (
+            macrocosmo::faction::spawn_hostile_factions,
+            macrocosmo::galaxy::generate_galaxy
+                .after(macrocosmo::faction::spawn_hostile_factions),
+        ),
+    );
     app.update();
 
     // Check hostiles exist
     let hostile_count = app
         .world_mut()
-        .query::<&HostilePresence>()
+        .query::<&Hostile>()
         .iter(app.world())
         .count();
     assert!(hostile_count > 0, "Galaxy should have at least some hostile presences");
@@ -1295,13 +1226,17 @@ fn test_galaxy_has_hostiles() {
 
     let capital_pos = *app.world().get::<Position>(capital_entity).unwrap();
 
-    for hostile in app.world_mut().query::<&HostilePresence>().iter(app.world()) {
+    for at_system in app
+        .world_mut()
+        .query_filtered::<&AtSystem, With<Hostile>>()
+        .iter(app.world())
+    {
         assert_ne!(
-            hostile.system, capital_entity,
+            at_system.0, capital_entity,
             "No hostile should be spawned at the capital system"
         );
         // Check capital proximity exclusion (10 ly)
-        let hostile_pos = app.world().get::<Position>(hostile.system).unwrap();
+        let hostile_pos = app.world().get::<Position>(at_system.0).unwrap();
         let dx = hostile_pos.x - capital_pos.x;
         let dy = hostile_pos.y - capital_pos.y;
         let dz = hostile_pos.z - capital_pos.z;
@@ -1329,14 +1264,7 @@ fn test_colonize_blocked_by_hostile() {
     );
 
     // Spawn hostile at this system (low strength so it won't kill the ship via combat)
-    app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 0.0,  // no attack — we only want to test colonization blocking
-        hp: 500.0,
-        max_hp: 500.0,
-        hostile_type: HostileType::AncientDefense,
-        evasion: 0.0,
-    });
+    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 500.0, max_hp: 500.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile));
 
     // Spawn a colony ship that is settling at this system (completes at tick 1)
     let ship_entity = app
@@ -1414,14 +1342,7 @@ fn test_hostile_cleared_allows_colonization() {
     );
 
     // Spawn and immediately despawn a hostile (simulating it was defeated)
-    let hostile_entity = app.world_mut().spawn(HostilePresence {
-        system: sys,
-        strength: 10.0,
-        hp: 10.0,
-        max_hp: 10.0,
-        hostile_type: HostileType::SpaceCreature,
-        evasion: 0.0,
-    }).id();
+    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10.0, max_hp: 10.0 }, HostileStats { strength: 10.0, evasion: 0.0 }, Hostile)).id();
     app.world_mut().despawn(hostile_entity);
 
     // Spawn a colony ship settling at this system
@@ -1487,19 +1408,44 @@ fn test_hostile_cleared_allows_colonization() {
 // rather than by the mere presence of a `HostilePresence` component.
 // ---------------------------------------------------------------------------
 
-/// Spawn a hostile presence with a weak attack and high HP so the test ship
+/// Spawn a hostile entity with a weak attack and high HP so the test ship
 /// always survives the round; combat triggering is detected by HP delta on
-/// the hostile, not by ship destruction.
-fn spawn_test_hostile(world: &mut World, sys: Entity, hostile_type: HostileType) -> Entity {
+/// the hostile, not by ship destruction. `faction_id` selects the
+/// passive-faction bucket: `"space_creature"` or `"ancient_defense"`.
+///
+/// #293 follow-up: auto-invokes `setup_test_hostile_factions` if
+/// `HostileFactions` has not been populated yet, so call order is not
+/// load-bearing.
+fn spawn_test_hostile(world: &mut World, sys: Entity, faction_id: &'static str) -> Entity {
+    use macrocosmo::faction::{FactionOwner, HostileFactions};
+    let hf_empty = {
+        let hf = world.resource::<HostileFactions>();
+        hf.space_creature.is_none() || hf.ancient_defense.is_none()
+    };
+    if hf_empty {
+        let _ = common::setup_test_hostile_factions(world);
+    }
+    let hf = *world.resource::<HostileFactions>();
+    let faction_entity = match faction_id {
+        "space_creature" => hf.space_creature,
+        "ancient_defense" => hf.ancient_defense,
+        other => panic!("unknown hostile faction_id {:?}", other),
+    }
+    .expect("HostileFactions not populated after setup_test_hostile_factions");
     world
-        .spawn(HostilePresence {
-            system: sys,
-            strength: 0.0,
-            hp: 1000.0,
-            max_hp: 1000.0,
-            hostile_type,
-            evasion: 0.0,
-        })
+        .spawn((
+            AtSystem(sys),
+            HostileHitpoints {
+                hp: 1000.0,
+                max_hp: 1000.0,
+            },
+            HostileStats {
+                strength: 0.0,
+                evasion: 0.0,
+            },
+            Hostile,
+            FactionOwner(faction_entity),
+        ))
         .id()
 }
 
@@ -1582,7 +1528,7 @@ fn test_combat_skipped_when_hostile_lacks_faction_owner() {
 
     let sys = spawn_test_system(app.world_mut(), "Unmigrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
 
     // Drive the world directly — bypass the auto-migrating `advance_time`
@@ -1590,7 +1536,7 @@ fn test_combat_skipped_when_hostile_lacks_faction_owner() {
     app.world_mut().resource_mut::<macrocosmo::time_system::GameClock>().elapsed += 1;
     app.update();
 
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(
         (h.hp - 1000.0).abs() < f64::EPSILON,
         "Hostile HP must be untouched when no FactionOwner is attached; got {}",
@@ -1607,13 +1553,13 @@ fn test_combat_triggers_with_default_hostile_relations() {
 
     let sys = spawn_test_system(app.world_mut(), "Migrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
 
     // advance_time auto-migrates the hostile (FactionOwner) and ship (empire owner).
     advance_time(&mut app, 1);
 
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(
         h.hp < 1000.0,
         "Hostile HP must drop when faction migration enables combat; got {}",
@@ -1635,10 +1581,10 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
 
     let sys = spawn_test_system(app.world_mut(), "Peace-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     // #169: pin to Aggressive — Defensive would now retaliate against the
-    // co-located HostilePresence, which is a separate behaviour covered by
+    // co-located which is a separate behaviour covered by
     // its own test.
     app.world_mut()
         .entity_mut(ship)
@@ -1657,7 +1603,7 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
 
     advance_time(&mut app, 1);
 
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(
         (h.hp - 1000.0).abs() < f64::EPSILON,
         "Aggressive ROE must not first-strike at Peace; got {}",
@@ -1675,7 +1621,7 @@ fn test_combat_skipped_when_player_allied_with_hostile_faction() {
 
     let sys = spawn_test_system(app.world_mut(), "Alliance-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::AncientDefense);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "ancient_defense");
 
     // Spawn an Aggressive ROE ship to verify the gate trumps ROE.
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
@@ -1694,7 +1640,7 @@ fn test_combat_skipped_when_player_allied_with_hostile_faction() {
 
     advance_time(&mut app, 1);
 
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(
         (h.hp - 1000.0).abs() < f64::EPSILON,
         "Alliance must forbid attack regardless of ROE; HP changed to {}",
@@ -1713,7 +1659,7 @@ fn test_combat_triggers_when_at_war_even_with_positive_standing() {
 
     let sys = spawn_test_system(app.world_mut(), "War-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
 
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
@@ -1725,7 +1671,7 @@ fn test_combat_triggers_when_at_war_even_with_positive_standing() {
 
     advance_time(&mut app, 1);
 
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(h.hp < 1000.0, "War must permit attack regardless of standing; HP={}", h.hp);
 }
 
@@ -1735,7 +1681,7 @@ fn test_combat_triggers_when_at_war_even_with_positive_standing() {
 
 /// Helper: assert hostile took damage (HP < starting 1000.0).
 fn assert_hostile_engaged(app: &App, hostile: Entity) {
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(
         h.hp < 1000.0,
         "Expected hostile to have taken damage (engagement), got hp={}",
@@ -1745,7 +1691,7 @@ fn assert_hostile_engaged(app: &App, hostile: Entity) {
 
 /// Helper: assert hostile was untouched (HP == starting 1000.0).
 fn assert_hostile_untouched(app: &App, hostile: Entity) {
-    let h = app.world().get::<HostilePresence>(hostile).unwrap();
+    let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
     assert!(
         (h.hp - 1000.0).abs() < f64::EPSILON,
         "Expected hostile HP to be untouched, got hp={}",
@@ -1772,7 +1718,7 @@ fn test_aggressive_engages_neutral_negative_standing() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Aggro-Neg", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Aggressive);
 
@@ -1806,7 +1752,7 @@ fn test_defensive_engages_at_war() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Def-War", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
 
@@ -1829,7 +1775,7 @@ fn test_defensive_retaliates_against_hostile_at_peace() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Def-Peace-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
 
@@ -1850,7 +1796,7 @@ fn test_retreat_skips_combat_at_war() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Retreat-War", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
 
@@ -1870,7 +1816,7 @@ fn test_retreat_skips_combat_with_hostile_present() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Retreat-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
 
@@ -1892,8 +1838,8 @@ fn test_faction_owner_attached_by_hostile_type() {
 
     let sys = spawn_test_system(app.world_mut(), "Tagging", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let creature = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
-    let ancient = spawn_test_hostile(app.world_mut(), sys, HostileType::AncientDefense);
+    let creature = spawn_test_hostile(app.world_mut(), sys, "space_creature");
+    let ancient = spawn_test_hostile(app.world_mut(), sys, "ancient_defense");
 
     let (space_creature, ancient_defense) = common::setup_test_hostile_factions(app.world_mut());
 
@@ -1902,4 +1848,82 @@ fn test_faction_owner_attached_by_hostile_type() {
     assert_eq!(creature_owner, space_creature);
     assert_eq!(ancient_owner, ancient_defense);
     assert_ne!(creature_owner, ancient_owner);
+}
+
+/// #293 regression: a bare `(AtSystem, FactionOwner, HostileHitpoints,
+/// HostileStats, Hostile)` entity — spawned without any legacy
+/// `HostilePresence` component — must be treated as a hostile by the
+/// knowledge-snapshot / combat / settlement layers.
+#[test]
+fn test_hostile_viz_uses_factionowner() {
+    use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
+    use macrocosmo::knowledge::KnowledgeStore;
+
+    let mut app = test_app();
+
+    let sys_capital =
+        spawn_test_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys_remote = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [1.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
+
+    // Spawn player stationed at capital.
+    app.world_mut().spawn((
+        macrocosmo::player::Player,
+        macrocosmo::player::StationedAt {
+            system: sys_capital,
+        },
+    ));
+
+    // Spawn hostile faction + hostile entity with NO HostilePresence.
+    let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
+    app.world_mut().spawn((
+        AtSystem(sys_remote),
+        HostileHitpoints {
+            hp: 500.0,
+            max_hp: 500.0,
+        },
+        HostileStats {
+            strength: 12.5,
+            evasion: 0.0,
+        },
+        Hostile,
+        FactionOwner(space_creature),
+    ));
+
+    // Empire must consider space_creature hostile.
+    let empire = {
+        let mut q = app.world_mut().query_filtered::<Entity, With<macrocosmo::player::PlayerEmpire>>();
+        q.iter(app.world()).next().expect("empire")
+    };
+    {
+        let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+        rel.set(
+            empire,
+            space_creature,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+    }
+
+    // Let light-speed observation catch up (1 ly = 60 hexadies).
+    common::advance_time(&mut app, 61);
+
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let k = store
+        .get(sys_remote)
+        .expect("remote system knowledge should exist");
+    assert!(
+        k.data.has_hostile,
+        "FactionOwner-only hostile entity must register in knowledge snapshot"
+    );
+    assert!(
+        (k.data.hostile_strength - 12.5).abs() < 0.01,
+        "hostile_strength should come from HostileStats, got {}",
+        k.data.hostile_strength
+    );
 }

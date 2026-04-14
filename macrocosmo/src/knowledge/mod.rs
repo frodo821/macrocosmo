@@ -331,8 +331,9 @@ fn initialize_capital_knowledge(
 /// `relay_knowledge_propagate_system` (FTL relay) so that relay-delivered
 /// snapshots carry the same payload fields as direct observations.
 ///
-/// `hostile_map` is an `entity → HostilePresence` lookup the caller builds
-/// once per tick; passing it in lets both call sites share the allocation.
+/// `hostile_map` is a `system_entity → hostile_strength` lookup the caller
+/// builds once per tick; passing it in lets both call sites share the
+/// allocation. (#293: decoupled from legacy `HostilePresence` component.)
 /// #269: The rich colony query used when building a `SystemSnapshot`. Pulled
 /// out as a type alias so `build_system_snapshot` call sites don't repeat
 /// the whole tuple.
@@ -359,7 +360,7 @@ pub fn build_system_snapshot(
     colonies: &ColonySnapshotQuery,
     planets: &Query<&crate::galaxy::Planet>,
     planet_attrs: &Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
-    hostile_map: &HashMap<Entity, &crate::galaxy::HostilePresence>,
+    hostile_map: &HashMap<Entity, f64>,
     building_registry: &crate::colony::BuildingRegistry,
 ) -> SystemSnapshot {
     let is_colonized = colonies
@@ -371,10 +372,11 @@ pub fn build_system_snapshot(
         .map(|s| (s.minerals, s.energy, s.food, s.authority))
         .unwrap_or((Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO));
 
-    // #176: Hostile presence
+    // #176: Hostile presence (#293: value is pre-computed strength from
+    // HostileStats, built once per tick at the call site).
     let hostile = hostile_map.get(&entity);
     let has_hostile = hostile.is_some();
-    let hostile_strength = hostile.map(|h| h.strength).unwrap_or(0.0);
+    let hostile_strength = hostile.copied().unwrap_or(0.0);
 
     // #176: System buildings info (capability-based check via BuildingRegistry)
     let has_port = sys_buildings.map(|sb| sb.has_port(building_registry)).unwrap_or(false);
@@ -528,7 +530,16 @@ pub fn propagate_knowledge(
     colonies: ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
     planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
-    hostiles: Query<&crate::galaxy::HostilePresence>,
+    hostiles: Query<
+        (
+            &crate::galaxy::AtSystem,
+            &crate::galaxy::HostileStats,
+            Option<&crate::faction::FactionOwner>,
+        ),
+        With<crate::galaxy::Hostile>,
+    >,
+    faction_relations: Res<crate::faction::FactionRelations>,
+    empire_entity_q: Query<Entity, With<crate::player::PlayerEmpire>>,
     ships: Query<(Entity, &Ship, &ShipState, &crate::ship::ShipHitpoints)>,
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
@@ -545,11 +556,27 @@ pub fn propagate_knowledge(
         Err(_) => return,
     };
 
-    // Build hostile system lookup
-    let hostile_map: HashMap<Entity, &crate::galaxy::HostilePresence> = hostiles
-        .iter()
-        .map(|h| (h.system, h))
-        .collect();
+    // #293: Build hostile system lookup from (AtSystem, HostileStats,
+    // FactionOwner, Hostile). Filter by FactionRelations so only factions the
+    // viewing empire considers hostile (can_attack_aggressive) count. Falls
+    // back to including every hostile when the empire entity is not yet
+    // spawned (tests without PlayerEmpire).
+    let viewer_empire = empire_entity_q.iter().next();
+    let mut hostile_map: HashMap<Entity, f64> = HashMap::new();
+    for (at_system, stats, owner) in &hostiles {
+        // Hostiles without FactionOwner default to "included" (legacy
+        // behavior) — same fallback used by settlement/scout/viz.
+        let include = match (viewer_empire, owner) {
+            (Some(viewer), Some(o)) => faction_relations
+                .get_or_default(viewer, o.0)
+                .can_attack_aggressive(),
+            _ => true,
+        };
+        if include {
+            // Sum strength if multiple hostiles share a system.
+            *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+        }
+    }
 
     for (entity, star, sys_pos, stockpile, sys_buildings) in &systems {
         let distance = physics::distance_ly(player_pos, sys_pos);

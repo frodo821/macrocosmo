@@ -204,8 +204,11 @@ pub fn process_command_queue(
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
-    // #187: Hostile garrisons + faction ownership keyed by star system.
-    hostiles_q: Query<(&crate::galaxy::HostilePresence, &crate::faction::FactionOwner)>,
+    // #187/#293: Hostile garrisons + faction ownership keyed by star system.
+    hostiles_q: Query<
+        (&crate::galaxy::AtSystem, &crate::faction::FactionOwner),
+        With<crate::galaxy::Hostile>,
+    >,
     relations: Res<crate::faction::FactionRelations>,
     mut pending_count: ResMut<routing::RouteCalculationsPending>,
     design_registry: Res<ShipDesignRegistry>,
@@ -224,10 +227,10 @@ pub fn process_command_queue(
     let survey_range_base = balance.survey_range_ly();
     let survey_duration_base = balance.survey_duration();
     let empire_knowledge = empire_knowledge_q.single().ok();
-    // #187: Build the hostile system → hostile faction map once per tick.
+    // #187/#293: Build the hostile system → hostile faction map once per tick.
     let hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
         .iter()
-        .map(|(h, owner)| (h.system, owner.0))
+        .map(|(at_system, owner)| (at_system.0, owner.0))
         .collect();
     for (entity, ship, mut state, mut queue, ship_pos, roe) in ships.iter_mut() {
         // #187: ROE defaults to Defensive when absent (matches Ship::default spawn).

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{Anomalies, HostilePresence, StarSystem, SystemAttributes};
+use crate::galaxy::{Anomalies, AtSystem, Hostile, StarSystem, SystemAttributes};
 use crate::knowledge::{
  FactSysParam, KnowledgeFact, KnowledgeStore, ObservationSource,
     PlayerVantage, SystemKnowledge, SystemSnapshot,
@@ -100,7 +100,7 @@ pub fn process_surveys(
     clock: Res<GameClock>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut ShipHitpoints, &crate::components::Position, Option<&mut CommandQueue>)>,
     mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>, &crate::components::Position, Option<&mut Anomalies>), Without<Ship>>,
-    hostiles: Query<&HostilePresence>,
+    hostiles: Query<&AtSystem, With<Hostile>>,
     player_q: Query<&StationedAt, With<Player>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
@@ -187,7 +187,7 @@ pub fn process_surveys(
                             fact_sys.record(fact, origin_pos, clock.elapsed, &v);
                         }
 
-                        let has_hostile = hostiles.iter().any(|h| h.system == target_system);
+                        let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
                         if has_hostile {
                             let event_id = fact_sys.allocate_event_id();
                             let desc = format!("Warning: Hostile presence detected at {}!", system_name);
@@ -254,7 +254,7 @@ pub fn process_surveys(
                         ship.name, system_name
                     );
 
-                    let has_hostile = hostiles.iter().any(|h| h.system == target_system);
+                    let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
                     if has_hostile {
                         // #249: Dual-write — hostile visible via light-speed/relay even
                         // though the ship is FTL-returning the survey data itself.
@@ -344,7 +344,7 @@ pub fn process_surveys(
                     }
 
                     // Check for hostile presence at this system
-                    let has_hostile = hostiles.iter().any(|h| h.system == target_system);
+                    let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
                     if has_hostile {
                         let event_id = fact_sys.allocate_event_id();
                         let desc = format!("Warning: Hostile presence detected at {}!", system_name);

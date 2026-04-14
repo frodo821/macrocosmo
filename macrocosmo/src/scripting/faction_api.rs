@@ -21,6 +21,16 @@ pub struct FactionTypeDefinition {
     pub default_standing: f64,
     /// Default RelationState for new relationships.
     pub default_state: RelationState,
+    /// Combat strength for hostile faction entities of this type
+    /// (used at galaxy generation to scale the `HostileStats.strength`
+    /// component, and by combat strength calculations). Default 0.0.
+    pub strength: f64,
+    /// Evasion stat for hostile faction entities (0..=100).
+    pub evasion: f64,
+    /// Default current HP for a newly spawned hostile entity of this type.
+    pub default_hp: f64,
+    /// Default max HP for a newly spawned hostile entity of this type.
+    pub default_max_hp: f64,
 }
 
 /// Registry of all faction-type definitions loaded from Lua.
@@ -67,7 +77,9 @@ pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinitio
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
         let has_on_game_start = matches!(
-            table.get::<mlua::Value>("on_game_start").unwrap_or(mlua::Value::Nil),
+            table
+                .get::<mlua::Value>("on_game_start")
+                .unwrap_or(mlua::Value::Nil),
             mlua::Value::Function(_)
         );
 
@@ -75,7 +87,9 @@ pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinitio
         // ("empire") or a reference table returned by `define_faction_type`.
         // Backwards-compatible alias `type` is also accepted; if both are
         // present `faction_type` wins.
-        let raw_type = table.get::<mlua::Value>("faction_type").unwrap_or(mlua::Value::Nil);
+        let raw_type = table
+            .get::<mlua::Value>("faction_type")
+            .unwrap_or(mlua::Value::Nil);
         let raw_type = match raw_type {
             mlua::Value::Nil => table.get::<mlua::Value>("type").unwrap_or(mlua::Value::Nil),
             v => v,
@@ -115,11 +129,22 @@ pub fn parse_faction_type_definitions(
             .unwrap_or_else(|| "neutral".to_string());
         let default_state = RelationState::from_str(&default_state_str)?;
 
+        let strength: f64 = table.get::<Option<f64>>("strength")?.unwrap_or(0.0);
+        let evasion: f64 = table.get::<Option<f64>>("evasion")?.unwrap_or(0.0);
+        let default_hp: f64 = table.get::<Option<f64>>("default_hp")?.unwrap_or(0.0);
+        let default_max_hp: f64 = table
+            .get::<Option<f64>>("default_max_hp")?
+            .unwrap_or(default_hp);
+
         result.push(FactionTypeDefinition {
             id,
             can_diplomacy,
             default_standing,
             default_state,
+            strength,
+            evasion,
+            default_hp,
+            default_max_hp,
         });
     }
 
@@ -234,8 +259,12 @@ pub fn parse_diplomatic_action_definitions(
         let (_, table) = pair?;
 
         let id: String = table.get("id")?;
-        let name: String = table.get::<Option<String>>("name")?.unwrap_or_else(|| id.clone());
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let name: String = table
+            .get::<Option<String>>("name")?
+            .unwrap_or_else(|| id.clone());
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
         let requires_diplomacy: bool = table
             .get::<Option<bool>>("requires_diplomacy")?
             .unwrap_or(false);
@@ -248,7 +277,9 @@ pub fn parse_diplomatic_action_definitions(
         let min_standing = table.get::<Option<f64>>("min_standing")?;
 
         let has_on_accepted = matches!(
-            table.get::<mlua::Value>("on_accepted").unwrap_or(mlua::Value::Nil),
+            table
+                .get::<mlua::Value>("on_accepted")
+                .unwrap_or(mlua::Value::Nil),
             mlua::Value::Function(_)
         );
 
@@ -393,11 +424,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        lua.load(
-            r#"define_faction { id = "humanity_empire", name = "Terran Federation" }"#,
-        )
-        .exec()
-        .unwrap();
+        lua.load(r#"define_faction { id = "humanity_empire", name = "Terran Federation" }"#)
+            .exec()
+            .unwrap();
 
         let func = lookup_on_game_start(lua, "humanity_empire").unwrap();
         assert!(func.is_none());
@@ -435,8 +464,14 @@ mod tests {
 
     #[test]
     fn test_relation_state_from_str() {
-        assert_eq!(RelationState::from_str("neutral").unwrap(), RelationState::Neutral);
-        assert_eq!(RelationState::from_str("Peace").unwrap(), RelationState::Peace);
+        assert_eq!(
+            RelationState::from_str("neutral").unwrap(),
+            RelationState::Neutral
+        );
+        assert_eq!(
+            RelationState::from_str("Peace").unwrap(),
+            RelationState::Peace
+        );
         assert_eq!(RelationState::from_str("WAR").unwrap(), RelationState::War);
         assert_eq!(
             RelationState::from_str("alliance").unwrap(),
@@ -539,11 +574,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        lua.load(
-            r#"define_faction_type { id = "bad", default_state = "frenemy" }"#,
-        )
-        .exec()
-        .unwrap();
+        lua.load(r#"define_faction_type { id = "bad", default_state = "frenemy" }"#)
+            .exec()
+            .unwrap();
 
         let res = parse_faction_type_definitions(lua);
         assert!(res.is_err(), "unknown default_state must produce an error");
@@ -559,11 +592,57 @@ mod tests {
                 can_diplomacy: true,
                 default_standing: 0.0,
                 default_state: RelationState::Neutral,
+                strength: 0.0,
+                evasion: 0.0,
+                default_hp: 0.0,
+                default_max_hp: 0.0,
             },
         );
 
         assert!(registry.get("empire").is_some());
         assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_parse_faction_type_with_hostile_stats() {
+        // #293: strength/evasion/default_hp/default_max_hp drive hostile
+        // entity spawn at galaxy generation time, replacing hard-coded
+        // per-hostile-type constants.
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction_type {
+                id = "space_creature",
+                strength = 10,
+                evasion = 20,
+                default_hp = 80,
+                default_max_hp = 80,
+            }
+            define_faction_type {
+                id = "ancient_defense",
+                strength = 10,
+                evasion = 10,
+                default_hp = 200,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_type_definitions(lua).unwrap();
+        let creature = defs.iter().find(|d| d.id == "space_creature").unwrap();
+        assert!((creature.strength - 10.0).abs() < 1e-9);
+        assert!((creature.evasion - 20.0).abs() < 1e-9);
+        assert!((creature.default_hp - 80.0).abs() < 1e-9);
+        assert!((creature.default_max_hp - 80.0).abs() < 1e-9);
+
+        let ancient = defs.iter().find(|d| d.id == "ancient_defense").unwrap();
+        assert!((ancient.strength - 10.0).abs() < 1e-9);
+        // default_max_hp falls back to default_hp when absent
+        assert!((ancient.default_hp - 200.0).abs() < 1e-9);
+        assert!((ancient.default_max_hp - 200.0).abs() < 1e-9);
     }
 
     #[test]

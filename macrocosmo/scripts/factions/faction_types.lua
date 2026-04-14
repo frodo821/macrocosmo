@@ -20,6 +20,13 @@ local space_creature = define_faction_type {
     can_diplomacy = false,
     default_standing = -100,
     default_state = "neutral",
+    -- #293: Hostile combat stats moved from hard-coded HostileType::SpaceCreature
+    -- constants in Rust. Environmental strength_mult in generation.rs still scales
+    -- these base values based on stellar distance.
+    strength = 10,
+    evasion = 20,
+    default_hp = 80,
+    default_max_hp = 80,
 }
 
 local ancient_defense = define_faction_type {
@@ -27,6 +34,12 @@ local ancient_defense = define_faction_type {
     can_diplomacy = false,
     default_standing = -100,
     default_state = "neutral",
+    -- #293: Hostile combat stats moved from hard-coded HostileType::AncientDefense
+    -- constants in Rust.
+    strength = 10,
+    evasion = 10,
+    default_hp = 200,
+    default_max_hp = 200,
 }
 
 return {

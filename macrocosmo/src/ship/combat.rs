@@ -4,7 +4,7 @@ use rand::Rng;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
-use crate::galaxy::{HostilePresence, StarSystem};
+use crate::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, StarSystem};
 use crate::knowledge::{
  CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage,
 };
@@ -93,7 +93,7 @@ fn apply_flat_damage_to_ship(hp: &mut ShipHitpoints, damage: f64) {
 ///   non-hostility.
 ///
 /// The "being attacked" signal is currently inferred from the presence of any
-/// `HostilePresence` co-located with the ship. A more granular
+/// hostile entity (`With<Hostile>`) co-located with the ship. A more granular
 /// damage-event-driven counter-attack model is intentionally out of scope
 /// here.
 #[allow(clippy::too_many_arguments)]
@@ -101,8 +101,18 @@ pub fn resolve_combat(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<crate::colony::LastProductionTick>,
-    mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState, Option<&RulesOfEngagement>)>,
-    mut hostiles: Query<(Entity, &mut HostilePresence, Option<&FactionOwner>)>,
+    mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState, Option<&RulesOfEngagement>), Without<Hostile>>,
+    mut hostiles: Query<
+        (
+            Entity,
+            &AtSystem,
+            &mut HostileHitpoints,
+            &HostileStats,
+            Option<&FactionOwner>,
+        ),
+        (With<Hostile>, Without<Ship>),
+    >,
+    factions: Query<&crate::player::Faction>,
     relations: Res<FactionRelations>,
     module_registry: Res<ModuleRegistry>,
     systems: Query<(Entity, &StarSystem, &Position)>,
@@ -117,10 +127,19 @@ pub fn resolve_combat(
     let combat_turns = (delta * 12) as u32;
     let mut rng = rand::rng();
 
-    // Collect hostile systems first to avoid borrow issues
-    let hostile_data: Vec<(Entity, Entity, f64, f64, f64, crate::galaxy::HostileType, f64, Option<Entity>)> = hostiles
+    // Collect hostile systems first to avoid borrow issues.
+    // #293: Replaces hostile_type with faction entity for logging.
+    let hostile_data: Vec<(Entity, Entity, f64, f64, Option<Entity>)> = hostiles
         .iter()
-        .map(|(e, h, owner)| (e, h.system, h.strength, h.hp, h.max_hp, h.hostile_type, h.evasion, owner.map(|o| o.0)))
+        .map(|(e, at_system, _hp, stats, owner)| {
+            (
+                e,
+                at_system.0,
+                stats.strength,
+                stats.evasion,
+                owner.map(|o| o.0),
+            )
+        })
         .collect();
 
     // #249: Snapshot player vantage once — used by CombatVictory / CombatDefeat fact dual-writes.
@@ -141,7 +160,7 @@ pub fn resolve_combat(
         player_aboard,
     });
 
-    for (hostile_entity, system_entity, _hostile_strength, _hostile_hp, _hostile_max_hp, _hostile_type, hostile_evasion, hostile_faction) in &hostile_data {
+    for (hostile_entity, system_entity, hostile_strength, hostile_evasion, hostile_faction) in &hostile_data {
         let (system_name, system_pos_arr): (String, Option<[f64; 3]>) = systems
             .get(*system_entity)
             .map(|(_, s, p)| (s.name.clone(), Some(p.as_array())))
@@ -227,7 +246,9 @@ pub fn resolve_combat(
         }
 
         // Apply weapon damage to hostile
-        let Ok((_he, mut hostile, _owner)) = hostiles.get_mut(*hostile_entity) else {
+        let Ok((_he, _at_system, mut hostile_hp, _stats, _owner)) =
+            hostiles.get_mut(*hostile_entity)
+        else {
             continue;
         };
 
@@ -237,20 +258,27 @@ pub fn resolve_combat(
                 for _ in 0..shots {
                     let chance = hit_chance(weapon, *hostile_evasion);
                     if rng.random::<f64>() < chance {
-                        apply_damage_to_hostile(&mut hostile.hp, weapon, &mut rng);
+                        apply_damage_to_hostile(&mut hostile_hp.hp, weapon, &mut rng);
                     }
                 }
             }
         }
 
         // Check if hostile is destroyed
-        if hostile.hp <= 0.0 {
+        if hostile_hp.hp <= 0.0 {
             commands.entity(*hostile_entity).despawn();
             // #249: Dual-write CombatVictory.
             let event_id = fact_sys.allocate_event_id();
+            // #293: hostile_type is gone — use the faction name for the
+            // victory message. Falls back to "Hostile" if the faction
+            // entity cannot be resolved (FactionOwner missing).
+            let hostile_label = factions
+                .get(hostile_faction)
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|_| "Hostile".to_string());
             let desc = format!(
-                "Victory! Hostile {:?} at {} has been defeated",
-                hostile.hostile_type, system_name
+                "Victory! {} at {} has been defeated",
+                hostile_label, system_name
             );
             events.write(GameEvent {
                 id: event_id,
@@ -271,10 +299,10 @@ pub fn resolve_combat(
             continue;
         }
 
-        let hostile_str = hostile.strength;
-        let hostile_tp = hostile.hostile_type;
-        // Drop the mutable borrow on hostile before accessing ships mutably
-        drop(hostile);
+        // #293: hostile strength is already captured above in `hostile_data`.
+        let hostile_str = *hostile_strength;
+        // Drop the mutable borrow on hostile hp before accessing ships mutably
+        drop(hostile_hp);
 
         // --- Hostile attacks player ships ---
         // Hostile deals strength damage per combat turn, distributed evenly
@@ -343,9 +371,14 @@ pub fn resolve_combat(
                 // #249: Wipe CombatDefeat — same EventId dedupe suppresses the
                 // extra banner when per-ship defeats already surfaced one.
                 let event_id = fact_sys.allocate_event_id();
+                // #293: hostile_type is gone — reuse the faction-derived label.
+                let hostile_label = factions
+                    .get(hostile_faction)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|_| "hostile".to_string());
                 let desc = format!(
-                    "All ships destroyed by hostile {:?} at {}",
-                    hostile_tp,
+                    "All ships destroyed by {} at {}",
+                    hostile_label,
                     system_name
                 );
                 events.write(GameEvent {

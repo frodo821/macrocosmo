@@ -226,17 +226,20 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
         .id()
 }
 
-/// Test helper for #168: spawn passive hostile factions, seed Neutral/-100
-/// relations against the test empire, and attach `FactionOwner` to every
-/// existing `HostilePresence`. Tests that want combat to actually trigger
-/// must call this after spawning their hostiles and ships.
+/// Test helper for #168: spawn passive hostile factions and seed
+/// Neutral/-100 relations against the test empire. **Must be called
+/// before spawning hostile entities** so `spawn_test_hostile` can attach
+/// the correct `FactionOwner` at spawn time (#293 follow-up: no backfill
+/// system exists in production either).
+///
+/// Idempotent: if `HostileFactions` is already populated, reuses the
+/// existing faction entities. Also re-homes every `Owner::Neutral` ship
+/// onto the test empire so they participate in combat under the
+/// Faction-gated logic.
 ///
 /// Returns `(space_creature_faction, ancient_defense_faction)` entities.
 pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
-    use macrocosmo::faction::{
-        FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState,
-    };
-    use macrocosmo::galaxy::{HostilePresence, HostileType};
+    use macrocosmo::faction::{FactionRelations, FactionView, HostileFactions, RelationState};
 
     // Find or create the player empire.
     let empire = {
@@ -292,23 +295,6 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
             empire,
             FactionView::new(RelationState::Neutral, -100.0),
         );
-    }
-
-    // Attach FactionOwner to every existing HostilePresence based on hostile_type.
-    let assignments: Vec<(Entity, Entity)> = {
-        let mut q = world.query::<(Entity, &HostilePresence)>();
-        q.iter(world)
-            .map(|(e, h)| {
-                let owner = match h.hostile_type {
-                    HostileType::SpaceCreature => space_creature,
-                    HostileType::AncientDefense => ancient_defense,
-                };
-                (e, owner)
-            })
-            .collect()
-    };
-    for (entity, owner) in assignments {
-        world.entity_mut(entity).insert(FactionOwner(owner));
     }
 
     // Re-home every Neutral ship onto the test empire so they participate in
@@ -746,9 +732,11 @@ pub fn full_test_app() -> App {
 /// want to verify the un-migrated behavior should run their own `app.update()`
 /// directly instead of using `advance_time`.
 pub fn advance_time(app: &mut App, hexadies: i64) {
+    // #293: detect hostile entities lacking FactionOwner via either the
+    // legacy `HostilePresence` component or the new `Hostile` marker.
     let needs_migration = {
         let mut q = app.world_mut().query_filtered::<Entity, (
-            With<macrocosmo::galaxy::HostilePresence>,
+            With<macrocosmo::galaxy::Hostile>,
             Without<macrocosmo::faction::FactionOwner>,
         )>();
         q.iter(app.world()).next().is_some()

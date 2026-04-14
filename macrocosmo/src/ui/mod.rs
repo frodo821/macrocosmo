@@ -1029,13 +1029,13 @@ fn draw_main_panels_system(
             growth_rate: c.growth_rate,
         })
         .collect();
-    // #176: Build hostile_systems using real-time for local, KnowledgeStore for remote
+    // #176/#293: Build hostile_systems using real-time for local, KnowledgeStore for remote
     let hostile_systems: std::collections::HashSet<Entity> = {
         let mut set: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-        // Local system: real-time HostilePresence
-        for h in world.hostile_presence.iter() {
-            if Some(h.system) == player_system {
-                set.insert(h.system);
+        // Local system: (AtSystem, FactionOwner, With<Hostile>)
+        for (at_system, _owner) in world.hostile_presence.iter() {
+            if Some(at_system.0) == player_system {
+                set.insert(at_system.0);
             }
         }
         // Remote systems: from KnowledgeStore

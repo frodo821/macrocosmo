@@ -38,8 +38,8 @@ use crate::empire::CommsParams;
 use crate::events::EventLog;
 use crate::faction::{FactionOwner, FactionRelations, PendingDiplomaticAction};
 use crate::galaxy::{
-    Anomalies, ForbiddenRegion, GalaxyConfig, HostilePresence, ObscuredByGas, Planet, PortFacility,
-    Sovereignty, StarSystem, SystemAttributes,
+    Anomalies, AtSystem, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints, HostileStats,
+    ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::{KnowledgeStore, PendingFactQueue};
 use crate::notifications::NotificationQueue;
@@ -186,7 +186,7 @@ fn assign_save_ids(world: &mut World) {
                 With<Planet>,
                 With<Colony>,
                 With<Ship>,
-                With<HostilePresence>,
+                With<Hostile>,
                 With<Empire>,
                 With<Faction>,
                 With<Player>,
@@ -316,8 +316,18 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     if let Some(s) = e_ref.get::<Sovereignty>() {
         bag.sovereignty = Some(SavedSovereignty::from_live(s));
     }
-    if let Some(h) = e_ref.get::<HostilePresence>() {
-        bag.hostile_presence = Some(SavedHostilePresence::from_live(h));
+    // #293: hostile entities serialized via decomposed components.
+    if let Some(at) = e_ref.get::<AtSystem>() {
+        bag.at_system = Some(SavedAtSystem::from_live(at));
+    }
+    if let Some(hp) = e_ref.get::<HostileHitpoints>() {
+        bag.hostile_hitpoints = Some(SavedHostileHitpoints::from_live(hp));
+    }
+    if let Some(stats) = e_ref.get::<HostileStats>() {
+        bag.hostile_stats = Some(SavedHostileStats::from_live(stats));
+    }
+    if e_ref.get::<Hostile>().is_some() {
+        bag.hostile_marker = Some(SavedHostileMarker);
     }
     if e_ref.get::<ObscuredByGas>().is_some() {
         bag.obscured_by_gas = Some(SavedObscuredByGas);

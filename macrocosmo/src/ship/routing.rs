@@ -367,7 +367,7 @@ pub fn plan_route_full(
 ///    `can_attack_aggressive()` (so Peace/Alliance factions are *not* avoided).
 ///
 /// `hostile_faction_map` supplies the faction entity of the hostile garrisoning
-/// each system (derived from `HostilePresence` + `FactionOwner`).
+/// each system (derived from `(AtSystem, FactionOwner, With<Hostile>)` — #293).
 pub fn collect_route_snapshots(
     systems: &Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     knowledge: Option<&crate::knowledge::KnowledgeStore>,
