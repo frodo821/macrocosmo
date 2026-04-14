@@ -1037,6 +1037,8 @@ fn install_sensor_buoy_definition(app: &mut App) {
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
+        on_built: None,
+        on_upgraded: None,
     });
 }
 
@@ -1398,6 +1400,7 @@ fn test_sublight_ship_knowledge_uses_light_speed_delay() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::SubLight {
                 origin: [10.0, 0.0, 0.0],
@@ -1489,6 +1492,7 @@ fn test_sublight_ship_nearby_knowledge_negligible_delay() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::SubLight {
                 origin: [0.0, 0.0, 0.0],
@@ -1567,6 +1571,7 @@ fn test_loitering_ship_knowledge_uses_light_speed_delay() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Loitering {
                 position: loiter_pos,
@@ -1646,6 +1651,8 @@ fn install_ftl_comm_relay_definition(app: &mut App, range_ly: f64) {
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
+        on_built: None,
+        on_upgraded: None,
     });
 }
 

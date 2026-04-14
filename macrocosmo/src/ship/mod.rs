@@ -224,6 +224,16 @@ impl Plugin for ShipPlugin {
             scout::process_scout_report
                 .after(scout::tick_scout_observation)
                 .after(process_command_queue),
+            // #287 (γ-1): Reconcile FleetMembers against live Ship entities
+            // and despawn fleets that have lost their last member. Runs
+            // after every system that may despawn a ship this frame
+            // (combat, settlement, refit consumption, command processing)
+            // so the cleanup is visible next tick at the latest.
+            fleet::prune_empty_fleets
+                .after(resolve_combat)
+                .after(process_settling)
+                .after(process_refitting)
+                .after(process_command_queue),
         ).after(crate::time_system::advance_game_time)
          .before(crate::colony::advance_production_tick));
         // #128: Poll route tasks after Commands from process_command_queue are flushed.
@@ -366,6 +376,15 @@ pub struct Ship {
     /// flagged as "needs refit" in the UI and can have the new design
     /// applied via the Apply Refit action.
     pub design_revision: u64,
+    /// #287 (γ-1): The `Fleet` entity this ship belongs to, or `None` if
+    /// detached. This is a back-pointer mirroring `FleetMembers` on the
+    /// fleet entity — mutate only via the helpers in
+    /// [`crate::ship::fleet`] (or within a single Commands batch) to
+    /// preserve the bidirectional invariant. Every ship spawned via
+    /// [`spawn_ship`] starts as the sole member of a freshly-created
+    /// 1-ship Fleet (the same invariant is applied for test-only spawns
+    /// through `tests/common::spawn_test_ship`).
+    pub fleet: Option<Entity>,
 }
 
 #[derive(Component)]
@@ -546,38 +565,55 @@ pub fn spawn_ship(
     // Equip ships from the design's slot assignments so they start out matching
     // the design exactly (no spurious "needs refit" right after construction).
     let modules = design.map(crate::ship_design::design_equipped_modules).unwrap_or_default();
-    commands
-        .spawn((
-            Ship {
-                name,
-                design_id: design_id.to_string(),
-                hull_id,
-                modules,
-                owner,
-                sublight_speed,
-                ftl_range,
-                player_aboard: false,
-                home_port: system,
-                design_revision,
-            },
-            ShipState::Docked { system },
-            initial_position,
-            CommandQueue::default(),
-            Cargo::default(),
-            ShipHitpoints {
-                hull: hull_hp,
-                hull_max: hull_hp,
-                armor: 0.0,
-                armor_max: 0.0,
-                shield: 0.0,
-                shield_max: 0.0,
-                shield_regen: 0.0,
-            },
-            ShipModifiers::default(),
-            ShipStats::default(),
-            RulesOfEngagement::default(),
-        ))
-        .id()
+    // #287 (γ-1): Reserve both entity ids up front so Ship <-> Fleet
+    // can be wired in a single Commands batch (no follow-up backref
+    // system needed). Every `spawn_ship` call produces a matching
+    // single-ship Fleet so downstream γ-2..γ-6 systems can always find
+    // a fleet handle per ship.
+    let ship_entity = commands.spawn_empty().id();
+    let fleet_entity = commands.spawn_empty().id();
+    let ship_name = name.clone();
+    commands.entity(ship_entity).insert((
+        Ship {
+            name,
+            design_id: design_id.to_string(),
+            hull_id,
+            modules,
+            owner,
+            sublight_speed,
+            ftl_range,
+            player_aboard: false,
+            home_port: system,
+            design_revision,
+            fleet: Some(fleet_entity),
+        },
+        ShipState::Docked { system },
+        initial_position,
+        CommandQueue::default(),
+        Cargo::default(),
+        ShipHitpoints {
+            hull: hull_hp,
+            hull_max: hull_hp,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        ShipStats::default(),
+        RulesOfEngagement::default(),
+    ));
+    commands.entity(fleet_entity).insert((
+        fleet::Fleet {
+            // Single-ship fleets inherit the ship's name as a
+            // human-readable label. Player can rename via γ-6 UI.
+            name: ship_name,
+            flagship: Some(ship_entity),
+        },
+        fleet::FleetMembers(vec![ship_entity]),
+    ));
+    ship_entity
 }
 
 #[cfg(test)]
@@ -740,6 +776,7 @@ mod tests {
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         }
     }
 

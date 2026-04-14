@@ -28,7 +28,7 @@ pub use engine::{
     SCRIPTS_DIR_ENV_VAR,
 };
 pub use game_rng::{register_game_rand, GameRng};
-pub use helpers::{extract_id_from_lua_value, extract_ref_id};
+pub use helpers::{extract_id_from_lua_value, extract_ref_id, parse_lua_function_field};
 
 use bevy::prelude::*;
 
@@ -79,6 +79,19 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Startup,
                 load_event_definitions.after(load_all_scripts),
+            )
+            // #281: After the building/structure registries are populated,
+            // walk their `on_built` / `on_upgraded` fields and register
+            // filtered handlers on `_event_handlers` so the dispatcher
+            // treats them like any other `on("macrocosmo:building_built", ...)`
+            // registration. Runs before `run_lifecycle_hooks` so lifecycle
+            // code that fires events at game start observes the hooks.
+            .add_systems(
+                Startup,
+                register_building_built_hooks
+                    .after(crate::colony::load_building_registry)
+                    .after(crate::deep_space::load_structure_definitions)
+                    .before(lifecycle::run_lifecycle_hooks),
             )
             .add_systems(
                 Startup,
@@ -293,6 +306,94 @@ pub fn load_region_spec_queue(mut commands: Commands, engine: Res<ScriptEngine>)
         }
     }
     commands.insert_resource(queue);
+}
+
+/// #281: Walk the loaded BuildingRegistry / StructureRegistry and register
+/// their `on_built` / `on_upgraded` hooks as filtered entries on Lua's
+/// `_event_handlers` table. Each hook becomes equivalent to a user-written
+/// `on("macrocosmo:building_built", { building_id = ..., cause = ... }, fn)`
+/// call, so:
+///
+/// * The dispatcher already knows how to call these (no new code path).
+/// * External `on()` subscriptions and definition hooks coexist — they are
+///   all entries in the same `_event_handlers` table.
+/// * Filtering by `building_id` + `cause` means a hook on one building never
+///   fires for a different building or the wrong completion kind.
+///
+/// Hooks with no real function attached (historical
+/// `LuaFunctionRef::placeholder(i64)` test scaffolding) are skipped so we
+/// don't insert broken entries.
+pub fn register_building_built_hooks(
+    engine: Res<ScriptEngine>,
+    building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
+    structure_registry: Res<crate::deep_space::StructureRegistry>,
+) {
+    let lua = engine.lua();
+    let Ok(handlers) = lua.globals().get::<mlua::Table>("_event_handlers") else {
+        warn!("register_building_built_hooks: _event_handlers table missing; skipping");
+        return;
+    };
+
+    let mut total_registered = 0usize;
+
+    let mut push_entry = |building_id: &str, cause: &str, func: mlua::Function| {
+        let entry = match lua.create_table() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("register_building_built_hooks: create_table failed: {e}");
+                return;
+            }
+        };
+        let filter = match lua.create_table() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("register_building_built_hooks: create_table (filter) failed: {e}");
+                return;
+            }
+        };
+        let _ = filter.set("building_id", building_id);
+        let _ = filter.set("cause", cause);
+        let _ = entry.set("event_id", crate::event_system::BUILDING_BUILT_EVENT);
+        let _ = entry.set("filter", filter);
+        let _ = entry.set("func", func);
+        let next_idx = handlers.len().unwrap_or(0) + 1;
+        if let Err(e) = handlers.set(next_idx, entry) {
+            warn!("register_building_built_hooks: append failed: {e}");
+            return;
+        }
+        total_registered += 1;
+    };
+
+    for def in building_registry.buildings.values() {
+        if let Some(hook_ref) = &def.on_built {
+            if let Ok(Some(func)) = hook_ref.get(lua) {
+                push_entry(&def.id, "construction", func);
+            }
+        }
+        if let Some(hook_ref) = &def.on_upgraded {
+            if let Ok(Some(func)) = hook_ref.get(lua) {
+                push_entry(&def.id, "upgrade", func);
+            }
+        }
+    }
+
+    for def in structure_registry.definitions.values() {
+        if let Some(hook_ref) = &def.on_built {
+            if let Ok(Some(func)) = hook_ref.get(lua) {
+                push_entry(&def.id, "construction", func);
+            }
+        }
+        if let Some(hook_ref) = &def.on_upgraded {
+            if let Ok(Some(func)) = hook_ref.get(lua) {
+                push_entry(&def.id, "upgrade", func);
+            }
+        }
+    }
+
+    info!(
+        "#281: registered {} definition-level building_built hook(s)",
+        total_registered
+    );
 }
 
 /// Startup system that parses Lua event definitions and registers them in EventSystem.

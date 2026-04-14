@@ -451,7 +451,7 @@ pub fn draw_ship_panel(
     player_aboard_ship: Option<Entity>,
     courier_routes: &Query<&CourierRoute>,
     selected_system: Option<Entity>,
-    fleet_memberships: &Query<&crate::ship::FleetMembership>,
+    fleet_members: &Query<&crate::ship::FleetMembers>,
     fleets: &Query<&crate::ship::Fleet>,
     nearby_structures: &[NearbyStructure],
 ) -> ShipPanelActions {
@@ -531,16 +531,17 @@ pub fn draw_ship_panel(
             })
         })();
         // #123: Fleet membership + per-fleet refit summary (if applicable).
-        let fleet_refit_summary: Option<FleetRefitSummary> = fleet_memberships
-            .get(ship_entity)
-            .ok()
-            .and_then(|m| {
-                let fleet = fleets.get(m.fleet).ok()?;
+        // #287 (γ-1): membership is read from `Ship.fleet` and the peer
+        // `FleetMembers` component on the fleet entity.
+        let fleet_refit_summary: Option<FleetRefitSummary> = ship.fleet
+            .and_then(|fleet_entity| {
+                let fleet = fleets.get(fleet_entity).ok()?;
+                let members = fleet_members.get(fleet_entity).ok()?;
                 let mut eligible = 0usize;
                 let mut total_m = Amt::ZERO;
                 let mut total_e = Amt::ZERO;
                 let mut max_time: i64 = 0;
-                for member in &fleet.members {
+                for member in members.iter() {
                     let Ok((_, m_ship, m_state, _, _, _)) = ships_query.get(*member) else {
                         continue;
                     };
@@ -570,7 +571,7 @@ pub fn draw_ship_panel(
                     }
                 }
                 Some(FleetRefitSummary {
-                    fleet_entity: m.fleet,
+                    fleet_entity,
                     fleet_name: fleet.name.clone(),
                     eligible_count: eligible,
                     total_cost_minerals: total_m,

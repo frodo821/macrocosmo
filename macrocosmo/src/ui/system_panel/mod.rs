@@ -1892,6 +1892,8 @@ mod tests_229 {
             },
             upgrade_to: Vec::new(),
             upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         }
     }
 

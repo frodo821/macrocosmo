@@ -47,7 +47,7 @@ use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, Stationed
 use crate::scripting::game_rng::GameRng;
 use crate::ship::scout::ScoutReport;
 use crate::ship::{
-    Cargo, CommandQueue, CourierRoute, DetectedHostiles, Fleet, FleetMembership,
+    Cargo, CommandQueue, CourierRoute, DetectedHostiles, Fleet, FleetMembers,
     PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState,
     SurveyData,
 };
@@ -501,8 +501,8 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     if let Some(f) = e_ref.get::<Fleet>() {
         bag.fleet = Some(SavedFleet::from_live(f));
     }
-    if let Some(m) = e_ref.get::<FleetMembership>() {
-        bag.fleet_membership = Some(SavedFleetMembership::from_live(m));
+    if let Some(m) = e_ref.get::<FleetMembers>() {
+        bag.fleet_members = Some(SavedFleetMembers::from_live(m));
     }
     if let Some(d) = e_ref.get::<DetectedHostiles>() {
         bag.detected_hostiles = Some(SavedDetectedHostiles::from_live(d));
