@@ -9,7 +9,7 @@ use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
 use crate::galaxy::{Anomalies, HostilePresence, Planet, StarSystem, SystemAttributes};
-use crate::ship::{CourierRoute, Fleet, FleetMembership, PendingShipCommand, RulesOfEngagement};
+use crate::ship::{CourierRoute, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement};
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
 
@@ -27,10 +27,12 @@ pub struct MainPanelWorldQueries<'w, 's> {
     pub anomalies: Query<'w, 's, &'static Anomalies>,
     /// #117: Courier route data for ship panel display.
     pub courier_routes: Query<'w, 's, &'static CourierRoute>,
-    /// #123: Fleets and their memberships, used by the design-based refit
-    /// panel to compute fleet-wide refit summaries.
+    /// #123: Fleets and their members, used by the design-based refit
+    /// panel to compute fleet-wide refit summaries. #287 (γ-1):
+    /// membership is now expressed via `Ship.fleet` + the sibling
+    /// `FleetMembers` component.
     pub fleets: Query<'w, 's, &'static Fleet>,
-    pub fleet_memberships: Query<'w, 's, &'static FleetMembership>,
+    pub fleet_members: Query<'w, 's, &'static FleetMembers>,
     /// #229: Deliverable stockpiles live on StarSystem entities. Populated once
     /// the system builds at least one deliverable via a shipyard.
     pub deliverable_stockpiles: Query<'w, 's, &'static DeliverableStockpile, With<StarSystem>>,

@@ -386,6 +386,8 @@ pub fn test_app() -> App {
             resolve_combat,
             tick_ship_repair,
             macrocosmo::ship::pursuit::detect_hostiles_system,
+            // #287 (γ-1): Reconcile FleetMembers after ship despawns.
+            macrocosmo::ship::fleet::prune_empty_fleets,
         )
             .chain()
             .after(macrocosmo::time_system::advance_game_time)
@@ -581,6 +583,8 @@ pub fn full_test_app() -> App {
             resolve_combat,
             tick_ship_repair,
             macrocosmo::ship::pursuit::detect_hostiles_system,
+            // #287 (γ-1): Reconcile FleetMembers after ship despawns.
+            macrocosmo::ship::fleet::prune_empty_fleets,
         ),
     );
     // #128: Poll route tasks after Commands from process_command_queue are flushed.
@@ -1227,6 +1231,10 @@ pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegis
 }
 
 /// Spawn a ship with all standard components at the given system.
+/// #287 (γ-1): Mirrors the `spawn_ship()` invariant — every ship is
+/// attached to a freshly-auto-created 1-ship Fleet (Fleet + FleetMembers
+/// + Ship.fleet back-pointer). Tests that never query the fleet see
+/// no behavioral change.
 pub fn spawn_test_ship(
     world: &mut World,
     name: &str,
@@ -1239,36 +1247,45 @@ pub fn spawn_test_ship(
         .get(design_id)
         .expect(&format!("unknown test design: {}", design_id));
     let hull_hp = design.hp;
-    world
-        .spawn((
-            Ship {
-                name: name.to_string(),
-                design_id: design.id.clone(),
-                hull_id: design.hull_id.clone(),
-                modules: Vec::new(),
-                owner: Owner::Neutral,
-                sublight_speed: design.sublight_speed,
-                ftl_range: design.ftl_range,
-                player_aboard: false,
-                home_port: system,
-                design_revision: 0,
-            },
-            ShipState::Docked { system },
-            Position::from(pos),
-            ShipHitpoints {
-                hull: hull_hp,
-                hull_max: hull_hp,
-                armor: 0.0,
-                armor_max: 0.0,
-                shield: 0.0,
-                shield_max: 0.0,
-                shield_regen: 0.0,
-            },
-            CommandQueue::default(),
-            Cargo::default(),
-            ShipModifiers::default(),
-            macrocosmo::ship::ShipStats::default(),
-            RulesOfEngagement::default(),
-        ))
-        .id()
+    let ship_entity = world.spawn_empty().id();
+    let fleet_entity = world.spawn_empty().id();
+    world.entity_mut(ship_entity).insert((
+        Ship {
+            name: name.to_string(),
+            design_id: design.id.clone(),
+            hull_id: design.hull_id.clone(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: design.sublight_speed,
+            ftl_range: design.ftl_range,
+            player_aboard: false,
+            home_port: system,
+            design_revision: 0,
+            fleet: Some(fleet_entity),
+        },
+        ShipState::Docked { system },
+        Position::from(pos),
+        ShipHitpoints {
+            hull: hull_hp,
+            hull_max: hull_hp,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        CommandQueue::default(),
+        Cargo::default(),
+        ShipModifiers::default(),
+        macrocosmo::ship::ShipStats::default(),
+        RulesOfEngagement::default(),
+    ));
+    world.entity_mut(fleet_entity).insert((
+        Fleet {
+            name: name.to_string(),
+            flagship: Some(ship_entity),
+        },
+        FleetMembers(vec![ship_entity]),
+    ));
+    ship_entity
 }

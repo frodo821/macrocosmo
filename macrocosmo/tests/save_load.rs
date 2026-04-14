@@ -425,6 +425,7 @@ fn seed_world_with_ship() -> (World, Entity, Entity) {
                 player_aboard: false,
                 home_port: sol,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Docked { system: sol },
             macrocosmo::ship::ShipHitpoints {

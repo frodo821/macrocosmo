@@ -595,6 +595,7 @@ mod tests {
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         };
         assert!(!ship_has_scout_module(&ship_no));
 

@@ -63,7 +63,7 @@ use crate::scripting::building_api::BuildingId;
 use crate::ship::scout::ScoutReport;
 use crate::ship::{
     Cargo, CargoItem, CommandQueue, CourierMode, CourierRoute, DetectedHostiles, Fleet,
-    FleetMembership, Owner, PendingShipCommand, QueuedCommand, ReportMode, RulesOfEngagement, Ship,
+    FleetMembers, Owner, PendingShipCommand, QueuedCommand, ReportMode, RulesOfEngagement, Ship,
     ShipCommand, ShipHitpoints, ShipModifiers, ShipState, SurveyData,
 };
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies, JobSlot};
@@ -474,6 +474,11 @@ pub struct SavedShip {
     pub player_aboard: bool,
     pub home_port_bits: u64,
     pub design_revision: u64,
+    /// #287 (γ-1): Fleet back-pointer (raw `Entity` bits). `None` when the
+    /// ship is not attached to any fleet. `#[serde(default)]` so saves from
+    /// before γ-1 round-trip as `None`.
+    #[serde(default)]
+    pub fleet_bits: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,6 +507,7 @@ impl SavedShip {
             player_aboard: v.player_aboard,
             home_port_bits: v.home_port.to_bits(),
             design_revision: v.design_revision,
+            fleet_bits: v.fleet.map(|e| e.to_bits()),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> Ship {
@@ -523,6 +529,7 @@ impl SavedShip {
             player_aboard: self.player_aboard,
             home_port: remap_entity(self.home_port_bits, map),
             design_revision: self.design_revision,
+            fleet: self.fleet_bits.map(|b| remap_entity(b, map)),
         }
     }
 }
@@ -1419,46 +1426,46 @@ impl SavedScoutReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedFleet {
     pub name: String,
-    pub members_bits: Vec<u64>,
-    pub flagship_bits: u64,
+    /// #287 (γ-1): Optional flagship — empty / transient fleets may have
+    /// `None`. Single-ship fleets always set it to the sole member.
+    pub flagship_bits: Option<u64>,
 }
 
 impl SavedFleet {
     pub fn from_live(v: &Fleet) -> Self {
         Self {
             name: v.name.clone(),
-            members_bits: v.members.iter().map(|e| e.to_bits()).collect(),
-            flagship_bits: v.flagship.to_bits(),
+            flagship_bits: v.flagship.map(|e| e.to_bits()),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> Fleet {
         Fleet {
             name: self.name,
-            members: self
-                .members_bits
+            flagship: self.flagship_bits.map(|b| remap_entity(b, map)),
+        }
+    }
+}
+
+/// #287 (γ-1): Members list is persisted as a sibling component on the
+/// Fleet entity rather than a per-ship `FleetMembership` component.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SavedFleetMembers {
+    pub member_bits: Vec<u64>,
+}
+
+impl SavedFleetMembers {
+    pub fn from_live(v: &FleetMembers) -> Self {
+        Self {
+            member_bits: v.0.iter().map(|e| e.to_bits()).collect(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> FleetMembers {
+        FleetMembers(
+            self.member_bits
                 .into_iter()
                 .map(|b| remap_entity(b, map))
                 .collect(),
-            flagship: remap_entity(self.flagship_bits, map),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct SavedFleetMembership {
-    pub fleet_bits: u64,
-}
-
-impl SavedFleetMembership {
-    pub fn from_live(v: &FleetMembership) -> Self {
-        Self {
-            fleet_bits: v.fleet.to_bits(),
-        }
-    }
-    pub fn into_live(self, map: &EntityMap) -> FleetMembership {
-        FleetMembership {
-            fleet: remap_entity(self.fleet_bits, map),
-        }
+        )
     }
 }
 
@@ -4267,7 +4274,9 @@ pub struct SavedComponentBag {
     pub survey_data: Option<SavedSurveyData>,
     pub scout_report: Option<SavedScoutReport>,
     pub fleet: Option<SavedFleet>,
-    pub fleet_membership: Option<SavedFleetMembership>,
+    /// #287 (γ-1): Renamed from `fleet_membership` — the list is now
+    /// stored on the Fleet entity itself as a sibling component.
+    pub fleet_members: Option<SavedFleetMembers>,
     pub detected_hostiles: Option<SavedDetectedHostiles>,
     pub rules_of_engagement: Option<SavedRulesOfEngagement>,
     // Pending command entities (free-standing entities, not attached to a "body")

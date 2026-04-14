@@ -83,6 +83,7 @@ fn spawn_sublight_ship(
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::SubLight {
             origin,
@@ -125,6 +126,7 @@ fn spawn_loitering_ship(
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::Loitering { position },
         Position::from(position),
@@ -319,6 +321,7 @@ fn ftl_ships_are_invisible_to_detector() {
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::InFTL {
             origin_system: sys_a,
@@ -356,6 +359,7 @@ fn ftl_ships_are_invisible_to_detector() {
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::InFTL {
             origin_system: sys_a,
