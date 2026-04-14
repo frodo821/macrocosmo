@@ -140,6 +140,17 @@ tests/                   # 382 tests (275 unit + 107 integration, 11 test files)
 - `click_select_system` excluded from full_test_app (needs EguiContexts)
 - **Always add regression tests with bug fixes**
 
+### Save-file Fixtures (#247)
+- `tests/fixtures/*.bin` — committed postcard-encoded saves that pin the on-disk wire format (currently `minimal_game.bin`, 732 B)
+- `common::fixture::load_fixture(path)` — decode a fixture into a fresh `bevy::App` for assertions
+- `load_minimal_game_fixture_smoke` in `tests/fixtures_smoke.rs` is the format-stability guard — it fails if `SAVE_VERSION` bumps or `SavedComponentBag` gains a non-backwards-compatible field
+- **To regenerate the fixture** after an intentional format bump, run the `#[ignore]` test:
+  ```bash
+  cargo test -p macrocosmo --test fixtures_smoke \
+      regenerate_minimal_game_fixture -- --ignored
+  ```
+  Then commit the updated binary in the same PR as the format change
+
 ### Lua Scripting
 
 **Single entrypoint.** `scripts/init.lua` is the sole entrypoint for all Lua definitions. It uses `require()` to load subsystems in dependency order. Individual plugins no longer call `load_directory()` — they only parse accumulators after `load_all_scripts` runs.
