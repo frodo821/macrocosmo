@@ -905,54 +905,81 @@ fn test_save_load_preserves_ftl_comm_relay_pairing() {
     }
 }
 
+/// Build a lightweight Bevy `App` whose state has been restored from a save
+/// blob. Registers a deterministic clock-advance system (+1 hexady per
+/// tick, no dependency on wall-clock deltas) and a "draw one RNG sample
+/// per tick" system so we can exercise Schedule-driven determinism without
+/// pulling in the full `test_app()` surface (which spawns its own empire
+/// and would conflict with the loaded entities). Returns the App and an
+/// Arc<Mutex<Vec<u64>>> where drawn samples accumulate.
+fn load_into_scheduled_app(bytes: &[u8]) -> (App, std::sync::Arc<std::sync::Mutex<Vec<u64>>>) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    load_game_from_reader(app.world_mut(), bytes).expect("load bytes");
+
+    /// Deterministic tick: advance the clock by exactly one hexady per
+    /// `app.update()`, independent of wall-clock delta. Real production uses
+    /// `advance_game_time` which accumulates `real_time.delta * speed`; that
+    /// path is validated elsewhere but is flaky in tests because
+    /// `MinimalPlugins`' `Time` tracks real wall clock.
+    fn tick_clock(mut clock: ResMut<GameClock>) {
+        clock.elapsed += 1;
+    }
+
+    let samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let writer = samples.clone();
+    app.add_systems(Update, tick_clock);
+    // Draw a single RNG sample per tick, ordered after the clock tick.
+    app.add_systems(
+        Update,
+        (move |rng: Res<GameRng>| {
+            let handle = rng.handle();
+            let mut g = handle.lock().unwrap();
+            writer.lock().unwrap().push(g.random::<u64>());
+        })
+        .after(tick_clock),
+    );
+    (app, samples)
+}
+
 #[test]
 fn test_save_load_deterministic_continuation() {
-    // Build two identical worlds, save one, load into another, advance each
-    // by the same number of hexadies, and verify their GameClock + RNG state
-    // continue in lockstep. This is the Phase B "big" integration marker.
+    // Phase B "big" integration marker: two independent loads of the same
+    // save must advance in lockstep when the real Schedule drives
+    // `advance_game_time` and shared RNG consumers. Stronger than
+    // hand-adjusting `clock.elapsed`: this exercises the actual tick
+    // pipeline so drift from systems that consume `GameRng` post-load would
+    // surface.
     let mut src = build_seed_world();
     let bytes = round_trip_bytes(&mut src);
 
-    let mut dst_a = World::new();
-    load_game_from_reader(&mut dst_a, &bytes[..]).expect("load a");
-    let mut dst_b = World::new();
-    load_game_from_reader(&mut dst_b, &bytes[..]).expect("load b");
+    let (mut app_a, samples_a) = load_into_scheduled_app(&bytes);
+    let (mut app_b, samples_b) = load_into_scheduled_app(&bytes);
 
-    // Simulate a tick advance (hand-advance the clock; the real pipeline
-    // pumps the whole schedule, but the determinism contract for save/load
-    // is that two independent loads advance identically).
-    {
-        let mut c = dst_a.resource_mut::<GameClock>();
-        c.elapsed += 100;
-    }
-    {
-        let mut c = dst_b.resource_mut::<GameClock>();
-        c.elapsed += 100;
+    const TICKS: usize = 16;
+    for _ in 0..TICKS {
+        app_a.update();
+        app_b.update();
     }
 
-    // Draw the same number of RNG samples from each and confirm bit-for-bit.
-    let rng_a = dst_a.resource::<GameRng>().clone();
-    let rng_b = dst_b.resource::<GameRng>().clone();
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    {
-        let ha = rng_a.handle();
-        let hb = rng_b.handle();
-        let mut ga = ha.lock().unwrap();
-        let mut gb = hb.lock().unwrap();
-        for _ in 0..64 {
-            xs.push(ga.random::<u64>());
-            ys.push(gb.random::<u64>());
-        }
-    }
+    let xs = samples_a.lock().unwrap().clone();
+    let ys = samples_b.lock().unwrap().clone();
+    assert_eq!(xs.len(), TICKS, "app_a must draw one RNG sample per tick");
     assert_eq!(
         xs, ys,
-        "deterministic continuation: two loads must yield identical RNG streams post-tick"
+        "RNG stream must stay divergence-free across independent loads"
+    );
+
+    let clock_a = app_a.world().resource::<GameClock>().elapsed;
+    let clock_b = app_b.world().resource::<GameClock>().elapsed;
+    assert_eq!(
+        clock_a, clock_b,
+        "GameClock.elapsed must match after Schedule-driven advance"
     );
     assert_eq!(
-        dst_a.resource::<GameClock>().elapsed,
-        dst_b.resource::<GameClock>().elapsed,
-        "clock must advance identically"
+        clock_a,
+        123 + TICKS as i64,
+        "clock must advance by exactly TICKS hexadies (seed was 123)"
     );
 }
 
