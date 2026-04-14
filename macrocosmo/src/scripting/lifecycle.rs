@@ -225,7 +225,16 @@ pub fn evaluate_fire_conditions(world: &mut World) {
                         continue;
                     }
                 }
-                if now - *last_fired >= *interval_hexadies {
+                if now - *last_fired >= *interval_hexadies && fire_condition.is_some() {
+                    // #320: Only queue suppression checks for periodics that
+                    // actually declare a fire_condition. Without one,
+                    // `evaluate_fire_conditions` would build a gamestate
+                    // snapshot just to answer "yes, fire" for every tick —
+                    // wasted Lua work (and aux-stack pressure) since the
+                    // actual fire is driven by `event_system::tick_events`
+                    // and `evaluate_fire_conditions` only ever *suppresses*
+                    // events that return false. Symmetric with the MTTH
+                    // branch below, which already filters None out.
                     out.push(PendingDecision {
                         kind: DecisionKind::Periodic,
                         event_id: id.clone(),
@@ -316,6 +325,15 @@ pub fn evaluate_fire_conditions(world: &mut World) {
                 fire,
             });
             let _ = pd.kind; // retain the variant for diagnostic purposes; handled below via id
+        }
+
+        // #320: Every per-tick gamestate build leaks ValueRef slots on the
+        // LuaJIT aux thread until Lua GC reclaims the snapshot tables that
+        // fire_conditions captured via `payload.gamestate`. Without an
+        // explicit collection LuaJIT's fixed LUAI_MAXCSTACK (~8000) is
+        // exhausted after ~80 ticks and all further Lua callbacks panic.
+        if let Err(e) = lua.gc_collect() {
+            warn!("evaluate_fire_conditions: lua.gc_collect failed: {e}");
         }
     });
 
@@ -432,6 +450,14 @@ pub fn dispatch_event_handlers(world: &mut World) {
 
             // --- `on_trigger` callback on the event definition ---
             dispatch_on_trigger(lua, &fired.event_id, &payload_table);
+        }
+
+        // #320: Same aux-stack leak as `evaluate_fire_conditions`.
+        // Each fired event builds a fresh gamestate table via
+        // `attach_gamestate`; the snapshot lingers in Lua memory until GC
+        // reclaims it, pinning aux thread slots across ticks.
+        if let Err(e) = lua.gc_collect() {
+            warn!("dispatch_event_handlers: lua.gc_collect failed: {e}");
         }
     });
 }
