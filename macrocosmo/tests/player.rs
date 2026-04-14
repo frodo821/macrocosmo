@@ -339,7 +339,7 @@ fn test_player_respawn_on_ship_destruction() {
         .insert(AboardShip { ship: ship_entity });
 
     // Spawn a powerful hostile
-    app.world_mut().spawn((AtSystem(remote), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), remote, 1000.0, 1000.0, 100.0, 0.0, "space_creature");
 
     // Run combat
     advance_time(&mut app, 1);
@@ -448,7 +448,7 @@ fn test_player_respawn_event_fires() {
         .entity_mut(player_entity)
         .insert(AboardShip { ship: ship_entity });
 
-    app.world_mut().spawn((AtSystem(remote), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), remote, 1000.0, 1000.0, 100.0, 0.0, "space_creature");
 
     advance_time(&mut app, 1);
 

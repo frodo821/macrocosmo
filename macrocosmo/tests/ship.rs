@@ -2652,7 +2652,7 @@ fn test_loitering_ship_not_engaged_by_resolve_combat() {
     );
 
     // Hostile in the system.
-    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 1000.0, 1000.0, 100.0, 0.0, "space_creature");
 
     // Spawn a Loitering ship at the SAME coordinates as the hostile system but with
     // ShipState::Loitering — combat should ignore it because it's not Docked.

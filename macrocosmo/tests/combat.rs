@@ -22,7 +22,7 @@ fn test_hostile_destroyed_when_hp_zero() {
     );
 
     // Spawn a hostile with low HP so it gets destroyed quickly
-    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
 
     // Register a weapon module in the ModuleRegistry
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
@@ -105,7 +105,7 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
     );
 
     // Spawn a powerful hostile
-    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 1000.0, 1000.0, 100.0, 0.0, "space_creature");
 
     // Spawn a very weak ship with nearly no hull HP
     let ship_entity = app.world_mut().spawn((
@@ -159,7 +159,7 @@ fn test_no_combat_when_no_ships_present() {
     );
 
     // Spawn hostile - should not be affected without ships present
-    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10.0, max_hp: 10.0 }, HostileStats { strength: 5.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 10.0, 10.0, 5.0, 0.0, "space_creature");
 
     advance_time(&mut app, 1);
 
@@ -182,7 +182,7 @@ fn test_combat_takes_multiple_ticks() {
     );
 
     // Hostile with significant HP
-    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 1000.0, max_hp: 1000.0 }, HostileStats { strength: 0.01, evasion: 0.0 }, Hostile)).id();
+    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 1000.0, 1000.0, 0.01, 0.0, "space_creature");
 
     // Register a weapon module
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
@@ -409,7 +409,7 @@ fn test_combat_damages_3_layers() {
     );
 
     // Spawn hostile with significant strength
-    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 10.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 10.0, 0.0, "space_creature");
 
     // Register armor and shield modules
     {
@@ -499,7 +499,7 @@ fn test_hull_zero_destroys_ship() {
         false,
     );
 
-    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 100.0, 0.0, "space_creature");
 
     let ship_entity = app.world_mut().spawn((
         Ship {
@@ -583,11 +583,11 @@ fn test_weapon_cooldown() {
     });
 
     // Hostile A: attacked by fast gun
-    let hostile_a = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_a = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 0.0, 0.0, "space_creature");
 
     // Hostile B: attacked by slow gun (separate system)
     let sys_b = spawn_test_system(app.world_mut(), "Cooldown-B", [100.0, 0.0, 0.0], 0.7, true, false);
-    let hostile_b = app.world_mut().spawn((AtSystem(sys_b), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_b = common::spawn_raw_hostile(app.world_mut(), sys_b, 10000.0, 10000.0, 0.0, 0.0, "space_creature");
 
     // Ship with fast gun at sys
     app.world_mut().spawn((
@@ -667,7 +667,7 @@ fn test_shield_piercing() {
     );
 
     // Hostile with no attack
-    let hostile = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
+    let hostile = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 0.0, 0.0, "space_creature");
 
     // Ship with full shields, armor, and the piercing weapon
     let _ship_entity = app.world_mut().spawn((
@@ -724,7 +724,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
     );
 
     // Hostile with no attack but trackable HP
-    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 100.0, max_hp: 100.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 100.0, 100.0, 0.0, 0.0, "space_creature");
 
     // Register a weapon module
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
@@ -799,7 +799,7 @@ fn test_retreat_ships_dont_take_damage() {
     );
 
     // Hostile with strong attack
-    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10000.0, max_hp: 10000.0 }, HostileStats { strength: 100.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 100.0, 0.0, "space_creature");
 
     // Ship with Retreat ROE — should not take damage
     let ship_entity = app.world_mut().spawn((
@@ -854,7 +854,7 @@ fn test_aggressive_ships_engage_combat() {
         false,
     );
 
-    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
 
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
         macrocosmo::ship_design::ModuleDefinition {
@@ -926,7 +926,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
         false,
     );
 
-    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
 
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
         macrocosmo::ship_design::ModuleDefinition {
@@ -998,7 +998,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
     );
 
     // Hostile with moderate HP and strong attack
-    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 0.05, max_hp: 10.0 }, HostileStats { strength: 50.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 50.0, 0.0, "space_creature");
 
     app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
         macrocosmo::ship_design::ModuleDefinition {
@@ -1264,7 +1264,7 @@ fn test_colonize_blocked_by_hostile() {
     );
 
     // Spawn hostile at this system (low strength so it won't kill the ship via combat)
-    app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 500.0, max_hp: 500.0 }, HostileStats { strength: 0.0, evasion: 0.0 }, Hostile));
+    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 500.0, 500.0, 0.0, 0.0, "space_creature");
 
     // Spawn a colony ship that is settling at this system (completes at tick 1)
     let ship_entity = app
@@ -1342,7 +1342,7 @@ fn test_hostile_cleared_allows_colonization() {
     );
 
     // Spawn and immediately despawn a hostile (simulating it was defeated)
-    let hostile_entity = app.world_mut().spawn((AtSystem(sys), HostileHitpoints { hp: 10.0, max_hp: 10.0 }, HostileStats { strength: 10.0, evasion: 0.0 }, Hostile)).id();
+    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 10.0, 10.0, 10.0, 0.0, "space_creature");
     app.world_mut().despawn(hostile_entity);
 
     // Spawn a colony ship settling at this system
