@@ -388,28 +388,31 @@ pub fn dispatch_event_handlers(world: &mut World) {
     world.resource_scope::<ScriptEngine, _>(|world, engine| {
         let lua = engine.lua();
         for fired in &fired_events {
-            let payload = if let Some(ref p) = fired.payload {
-                p.clone()
-            } else {
-                let mut p = HashMap::new();
-                p.insert("event_id".to_string(), fired.event_id.clone());
-                p
+            // #288: Build the Lua payload table via the EventContext trait
+            // when one is attached; otherwise fall back to an empty table
+            // tagged with just `event_id` (the historical no-payload shape).
+            let payload_table = match &fired.payload {
+                Some(ctx) => match ctx.to_lua_table(lua) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "dispatch_event_handlers: ctx.to_lua_table failed for '{}': {e}",
+                            fired.event_id
+                        );
+                        continue;
+                    }
+                },
+                None => match lua.create_table() {
+                    Ok(t) => {
+                        let _ = t.set("event_id", fired.event_id.as_str());
+                        t
+                    }
+                    Err(e) => {
+                        warn!("dispatch_event_handlers: failed to create payload table: {e}");
+                        continue;
+                    }
+                },
             };
-
-            // Build the payload table + attach live gamestate. Any error here
-            // is non-fatal; we log and move on so a malformed gamestate
-            // doesn't block other events from firing.
-            let payload_table = match lua.create_table() {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!("dispatch_event_handlers: failed to create payload table: {e}");
-                    continue;
-                }
-            };
-            for (k, v) in &payload {
-                let _ = payload_table.set(k.as_str(), v.as_str());
-            }
-            let _ = payload_table.set("event_id", fired.event_id.as_str());
 
             match crate::scripting::gamestate_view::attach_gamestate(lua, &payload_table, world) {
                 Ok(()) => {}
@@ -420,7 +423,12 @@ pub fn dispatch_event_handlers(world: &mut World) {
             }
 
             // --- `on(id, filter, fn)` bus handlers ---
-            dispatch_bus_handlers(lua, &fired.event_id, &payload, &payload_table);
+            dispatch_bus_handlers(
+                lua,
+                &fired.event_id,
+                fired.payload.as_deref(),
+                &payload_table,
+            );
 
             // --- `on_trigger` callback on the event definition ---
             dispatch_on_trigger(lua, &fired.event_id, &payload_table);
@@ -431,10 +439,17 @@ pub fn dispatch_event_handlers(world: &mut World) {
 /// Re-implementation of `EventBus::fire` that reuses a caller-built
 /// payload table (so `event.gamestate` is shared across all handlers for
 /// a single fire).
+///
+/// #288: `ctx` replaces the old `&HashMap<String, String>` payload —
+/// structural filters (`on(id, filter, fn)`) are evaluated via
+/// `EventContext::payload_get`, wire-compatible with the pre-#288
+/// HashMap flow for `LuaDefinedEventContext`. When `ctx` is `None` (an
+/// event fired without a payload), every non-empty filter fails, which
+/// matches the prior behaviour of an empty HashMap.
 fn dispatch_bus_handlers(
     lua: &mlua::Lua,
     event_id: &str,
-    payload: &HashMap<String, String>,
+    ctx: Option<&dyn crate::event_system::EventContext>,
     payload_table: &mlua::Table,
 ) {
     let Ok(handlers) = lua.globals().get::<mlua::Table>("_event_handlers") else {
@@ -459,9 +474,13 @@ fn dispatch_bus_handlers(
             let mut matches = true;
             for pair in filter.pairs::<String, String>() {
                 if let Ok((k, v)) = pair {
-                    if payload.get(&k).map(|pv| pv.as_str()) != Some(v.as_str()) {
-                        matches = false;
-                        break;
+                    let got = ctx.and_then(|c| c.payload_get(&k));
+                    match got {
+                        Some(pv) if pv.as_ref() == v.as_str() => {}
+                        _ => {
+                            matches = false;
+                            break;
+                        }
                     }
                 }
             }
@@ -1073,11 +1092,15 @@ mod tests {
             let mut payload = HashMap::new();
             payload.insert("cause".to_string(), "combat".to_string());
             payload.insert("building_id".to_string(), "mine".to_string());
+            let ctx = crate::event_system::LuaDefinedEventContext::new(
+                "macrocosmo:building_lost",
+                payload,
+            );
             es.fired_log.push(FiredEvent {
                 event_id: "macrocosmo:building_lost".to_string(),
                 target: None,
                 fired_at: 1,
-                payload: Some(payload),
+                payload: Some(std::sync::Arc::new(ctx)),
             });
         }
 

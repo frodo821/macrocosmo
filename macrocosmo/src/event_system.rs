@@ -1,10 +1,107 @@
 use bevy::prelude::*;
 use mlua::prelude::*;
 use rand::Rng;
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::time_system::{GameClock, HEXADIES_PER_MONTH, HEXADIES_PER_YEAR};
+
+// =============================================================================
+// #288: EventContext trait
+// =============================================================================
+
+/// Contextual payload carried by a fired event. Implemented by both the
+/// generic `LuaDefinedEventContext` (flat string HashMap, used for Lua-defined
+/// events and existing Rust callsites that want to stay wire-compatible with
+/// the Lua handler API) and — in follow-up issues (#291) — by typed Rust
+/// structs that expose richer information (fleets, systems, etc.) to handlers.
+///
+/// Contract:
+/// - `event_id` identifies the event type; handlers are matched against this
+///   value (`on(event_id, …, fn)`).
+/// - `to_lua_table` materialises the context into a Lua table passed to
+///   handlers. Implementations MUST include an `event_id` key in the returned
+///   table so that `evt.event_id` works on the Lua side.
+/// - `payload_get` exposes flat key/value pairs used by `on(id, filter, fn)`
+///   structural filter matching. Typed ctx implementations may return `None`
+///   when no string-shaped value is available — such ctx can simply not
+///   support structural filters and rely on `event_id` alone.
+///
+/// `Send + Sync` are required because `FiredEvent` is stored in the
+/// `EventSystem` Bevy resource and cloned across threads.
+/// `Debug` keeps the `FiredEvent` derive intact for tests and logs.
+pub trait EventContext: Send + Sync + Debug {
+    /// Event id that this context represents. Used by the dispatcher to
+    /// match `on(event_id, …, fn)` subscribers.
+    fn event_id(&self) -> &str;
+
+    /// Build the Lua-visible payload table for handlers. Must set the
+    /// `event_id` key.
+    fn to_lua_table(&self, lua: &Lua) -> mlua::Result<mlua::Table>;
+
+    /// Look up a single flat payload value by key, for structural filter
+    /// matching in `on(id, filter, fn)`. Returning `None` means the key is
+    /// absent — the filter check will then fail, which is the same behaviour
+    /// as the pre-#288 HashMap-based flow.
+    fn payload_get(&self, key: &str) -> Option<Cow<'_, str>>;
+}
+
+/// Generic `EventContext` backed by the legacy `HashMap<String, String>`
+/// payload shape. Existing Rust callsites wrap their payload in this type
+/// when firing events; the resulting Lua table is key-for-key compatible
+/// with the pre-#288 behaviour so Lua handlers (`evt.cause`,
+/// `evt.building_id`, …) continue to work unchanged.
+#[derive(Clone, Debug)]
+pub struct LuaDefinedEventContext {
+    pub event_id: String,
+    pub details: HashMap<String, String>,
+}
+
+impl LuaDefinedEventContext {
+    /// Build a context from an event id and a pre-built detail HashMap.
+    ///
+    /// This is the mechanical wrapper used by callsites migrated from the
+    /// old `fire_event_with_payload(id, target, now, payload)` API: the
+    /// `payload` HashMap is moved in as-is.
+    pub fn new(event_id: impl Into<String>, details: HashMap<String, String>) -> Self {
+        Self {
+            event_id: event_id.into(),
+            details,
+        }
+    }
+
+    /// Build a context from just an event id — empty payload. Mostly useful
+    /// for tests and for events that have no structured details.
+    pub fn bare(event_id: impl Into<String>) -> Self {
+        Self::new(event_id, HashMap::new())
+    }
+}
+
+impl EventContext for LuaDefinedEventContext {
+    fn event_id(&self) -> &str {
+        &self.event_id
+    }
+
+    fn to_lua_table(&self, lua: &Lua) -> mlua::Result<mlua::Table> {
+        let t = lua.create_table()?;
+        // Order matches the pre-#288 `EventBus::fire` shape: details go in
+        // first, then `event_id` is set last so it always reflects the
+        // context's own id even if `details` contained a stray "event_id"
+        // key. This matches the prior behaviour (which also called
+        // `set("event_id", …)` after the details loop).
+        for (k, v) in &self.details {
+            t.set(k.as_str(), v.as_str())?;
+        }
+        t.set("event_id", self.event_id.as_str())?;
+        Ok(t)
+    }
+
+    fn payload_get(&self, key: &str) -> Option<Cow<'_, str>> {
+        self.details.get(key).map(|s| Cow::Borrowed(s.as_str()))
+    }
+}
 
 /// Reference to a Lua function stored in the `mlua` registry.
 ///
@@ -128,13 +225,25 @@ pub struct PendingEvent {
 }
 
 /// Record of a fired event, for testing and debugging.
+///
+/// `payload` is an `Option<Arc<dyn EventContext>>` so that:
+/// - `FiredEvent` stays `Clone` (needed by tests / helpers that scan the
+///   `fired_log` and keep a copy).
+/// - Typed Rust contexts (#291) and the generic `LuaDefinedEventContext`
+///   can live in the same log entry without being `Clone` themselves.
+/// - Dispatchers can materialise the Lua table lazily via
+///   `EventContext::to_lua_table`.
+///
+/// `EventSystem` is transient (not savebag'd as of #288), so the trait
+/// object does not need `Serialize`.
 #[derive(Clone, Debug)]
 pub struct FiredEvent {
     pub event_id: String,
     pub target: Option<Entity>,
     pub fired_at: i64,
-    /// Optional key-value payload for EventBus dispatch.
-    pub payload: Option<HashMap<String, String>>,
+    /// Optional EventContext payload for EventBus dispatch. Cloning a
+    /// `FiredEvent` shares the context via `Arc` rather than deep-copying.
+    pub payload: Option<Arc<dyn EventContext>>,
 }
 
 /// Resource holding all event definitions and pending events.
@@ -184,26 +293,36 @@ impl EventSystem {
         });
     }
 
-    /// Queue an event with a key-value payload for EventBus dispatch.
+    /// Queue an event with an [`EventContext`] payload for EventBus dispatch.
     /// The event fires immediately (fires_at = now), like `fire_event` for manual events.
+    ///
+    /// The event_id is pulled from `ctx.event_id()`; callers no longer need
+    /// to pass it separately.
+    ///
+    /// #288: `ctx` is a `Box<dyn EventContext>` so callers can pass either
+    /// the generic `LuaDefinedEventContext` (existing HashMap-flavoured
+    /// payload) or a typed Rust context (#291).
     pub fn fire_event_with_payload(
         &mut self,
-        event_id: &str,
         target: Option<Entity>,
         now: i64,
-        payload: HashMap<String, String>,
+        ctx: Box<dyn EventContext>,
     ) {
+        let event_id = ctx.event_id().to_string();
         self.pending.push(PendingEvent {
-            event_id: event_id.to_string(),
+            event_id: event_id.clone(),
             target,
             fires_at: now,
         });
+        // Convert the Box into an Arc so the fired_log entry stays Clone-able
+        // without deep-copying the context.
+        let shared: Arc<dyn EventContext> = Arc::from(ctx);
         // Also log immediately so dispatch_event_handlers picks it up
         self.fired_log.push(FiredEvent {
-            event_id: event_id.to_string(),
+            event_id,
             target,
             fired_at: now,
-            payload: Some(payload),
+            payload: Some(shared),
         });
     }
 
@@ -244,19 +363,28 @@ pub struct EventBus {
 impl EventBus {
     /// Fire an event to all matching Lua handlers in `_event_handlers`.
     ///
+    /// #288: accepts `ctx: &dyn EventContext` instead of a flat event_id +
+    /// HashMap pair. The payload Lua table is produced via
+    /// `ctx.to_lua_table(lua)`; structural filters (`on(id, filter, fn)`) are
+    /// matched against `ctx.payload_get`, which is wire-compatible with the
+    /// pre-#288 HashMap lookup for `LuaDefinedEventContext`.
+    ///
     /// Returns the number of handlers that were called. Handlers whose
     /// `event_id` does not match, or whose structural `filter` does not match
     /// the payload, are skipped. Errors from individual handlers are logged
     /// but do not abort processing of remaining handlers.
-    pub fn fire(lua: &Lua, event_id: &str, payload: &HashMap<String, String>) -> usize {
-        // Build payload table
-        let Ok(payload_table) = lua.create_table() else {
-            return 0;
+    pub fn fire(lua: &Lua, ctx: &dyn EventContext) -> usize {
+        let event_id = ctx.event_id();
+
+        // Build payload table via the trait — includes `event_id` per the
+        // EventContext contract.
+        let payload_table = match ctx.to_lua_table(lua) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("EventBus::fire failed to build payload table for {event_id}: {e}");
+                return 0;
+            }
         };
-        for (k, v) in payload {
-            let _ = payload_table.set(k.as_str(), v.as_str());
-        }
-        let _ = payload_table.set("event_id", event_id);
 
         // Get handlers table
         let Ok(handlers) = lua.globals().get::<LuaTable>("_event_handlers") else {
@@ -279,14 +407,20 @@ impl EventBus {
                 continue;
             }
 
-            // Check structural filter
+            // Check structural filter: each (key, expected_value) pair in the
+            // filter table must match `ctx.payload_get(key)`. Typed contexts
+            // that don't support string-shaped lookup will naturally fail
+            // any non-empty filter — same as a HashMap with missing keys.
             if let Ok(filter) = entry.get::<LuaTable>("filter") {
                 let mut matches = true;
                 for pair in filter.pairs::<String, String>() {
                     if let Ok((k, v)) = pair {
-                        if payload.get(&k).map(|pv| pv.as_str()) != Some(v.as_str()) {
-                            matches = false;
-                            break;
+                        match ctx.payload_get(&k) {
+                            Some(pv) if pv.as_ref() == v.as_str() => {}
+                            _ => {
+                                matches = false;
+                                break;
+                            }
                         }
                     }
                 }
@@ -777,7 +911,8 @@ mod tests {
 
         let mut payload = HashMap::new();
         payload.insert("some_key".to_string(), "some_value".to_string());
-        let count = EventBus::fire(&lua, "macrocosmo:test", &payload);
+        let ctx = LuaDefinedEventContext::new("macrocosmo:test", payload);
+        let count = EventBus::fire(&lua, &ctx);
 
         assert_eq!(count, 1);
         let called: bool = lua.globals().get("_handler_called").unwrap();
@@ -810,7 +945,8 @@ mod tests {
         let mut payload = HashMap::new();
         payload.insert("cause".to_string(), "combat".to_string());
         payload.insert("building_id".to_string(), "mine".to_string());
-        let count = EventBus::fire(&lua, "macrocosmo:building_lost", &payload);
+        let ctx = LuaDefinedEventContext::new("macrocosmo:building_lost", payload);
+        let count = EventBus::fire(&lua, &ctx);
         assert_eq!(count, 1);
         let called: bool = lua.globals().get("_combat_handler_called").unwrap();
         assert!(called);
@@ -821,7 +957,8 @@ mod tests {
             .unwrap();
         let mut payload2 = HashMap::new();
         payload2.insert("cause".to_string(), "recycled".to_string());
-        let count2 = EventBus::fire(&lua, "macrocosmo:building_lost", &payload2);
+        let ctx2 = LuaDefinedEventContext::new("macrocosmo:building_lost", payload2);
+        let count2 = EventBus::fire(&lua, &ctx2);
         assert_eq!(count2, 0);
         let called2: bool = lua.globals().get("_combat_handler_called").unwrap();
         assert!(!called2);
@@ -851,7 +988,8 @@ mod tests {
         let mut payload = HashMap::new();
         payload.insert("cause".to_string(), "anything".to_string());
         payload.insert("extra".to_string(), "data".to_string());
-        let count = EventBus::fire(&lua, "macrocosmo:any_event", &payload);
+        let ctx = LuaDefinedEventContext::new("macrocosmo:any_event", payload);
+        let count = EventBus::fire(&lua, &ctx);
         assert_eq!(count, 1);
         let called: bool = lua.globals().get("_any_handler_called").unwrap();
         assert!(called);
@@ -877,10 +1015,177 @@ mod tests {
         .exec()
         .unwrap();
 
-        let payload = HashMap::new();
-        let count = EventBus::fire(&lua, "macrocosmo:other_event", &payload);
+        let ctx = LuaDefinedEventContext::bare("macrocosmo:other_event");
+        let count = EventBus::fire(&lua, &ctx);
         assert_eq!(count, 0);
         let called: bool = lua.globals().get("_wrong_handler_called").unwrap();
         assert!(!called);
+    }
+
+    // ========================================================================
+    // #288: EventContext trait regression tests
+    // ========================================================================
+
+    /// `LuaDefinedEventContext::to_lua_table` must round-trip the details
+    /// HashMap: every (k, v) pair in `details` must appear as a Lua
+    /// key/value, and the synthetic `event_id` key must carry the ctx id.
+    #[test]
+    fn test_lua_defined_event_context_roundtrip() {
+        let lua = Lua::new();
+        let mut details = HashMap::new();
+        details.insert("cause".to_string(), "combat".to_string());
+        details.insert("building_id".to_string(), "mine".to_string());
+        details.insert("slot".to_string(), "2".to_string());
+        let ctx = LuaDefinedEventContext::new("macrocosmo:building_lost", details.clone());
+
+        let tbl = ctx.to_lua_table(&lua).unwrap();
+
+        // Every detail survives round-trip.
+        for (k, v) in &details {
+            let got: String = tbl.get(k.as_str()).unwrap();
+            assert_eq!(&got, v, "key {k} must round-trip intact");
+        }
+        // The synthetic event_id key is present.
+        let event_id: String = tbl.get("event_id").unwrap();
+        assert_eq!(event_id, "macrocosmo:building_lost");
+
+        // payload_get agrees with the HashMap lookup.
+        for (k, v) in &details {
+            assert_eq!(ctx.payload_get(k).as_deref(), Some(v.as_str()));
+        }
+        assert!(ctx.payload_get("missing").is_none());
+    }
+
+    /// Regression: an existing `on(event_id, filter, fn)` registration must
+    /// still match against a `LuaDefinedEventContext` dispatched through the
+    /// trait-object `EventBus::fire`. This covers the ported
+    /// `macrocosmo:building_lost` shape the migration note in #288 calls
+    /// out as "mechanical change".
+    #[test]
+    fn test_event_bus_fire_lua_defined_handler_compat() {
+        let lua = Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
+
+        lua.load(
+            r#"
+            _combat_seen = false
+            _combat_building = nil
+            _combat_event_id = nil
+            on("macrocosmo:building_lost", { cause = "combat" }, function(evt)
+                _combat_seen = true
+                _combat_building = evt.building_id
+                _combat_event_id = evt.event_id
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let mut details = HashMap::new();
+        details.insert("cause".to_string(), "combat".to_string());
+        details.insert("building_id".to_string(), "mine".to_string());
+        let ctx = LuaDefinedEventContext::new("macrocosmo:building_lost", details);
+
+        let count = EventBus::fire(&lua, &ctx);
+        assert_eq!(count, 1);
+
+        let seen: bool = lua.globals().get("_combat_seen").unwrap();
+        assert!(seen, "filter-matching handler must fire via trait object");
+        let bid: String = lua.globals().get("_combat_building").unwrap();
+        assert_eq!(bid, "mine");
+        let eid: String = lua.globals().get("_combat_event_id").unwrap();
+        assert_eq!(eid, "macrocosmo:building_lost");
+    }
+
+    /// `FiredEvent.payload` must retain the trait-object context after
+    /// being pushed to `fired_log`, and the context must still materialise
+    /// a payload table on replay (the pattern used by
+    /// `dispatch_event_handlers`).
+    #[test]
+    fn test_fired_log_retention_with_ctx() {
+        let lua = Lua::new();
+
+        let mut system = EventSystem::default();
+        let mut details = HashMap::new();
+        details.insert("cause".to_string(), "upgrade".to_string());
+        details.insert("building_id".to_string(), "advanced_mine".to_string());
+        let ctx = LuaDefinedEventContext::new("macrocosmo:building_built", details);
+
+        system.fire_event_with_payload(None, 42, Box::new(ctx));
+
+        assert_eq!(system.fired_log.len(), 1);
+        let fired = &system.fired_log[0];
+        assert_eq!(fired.event_id, "macrocosmo:building_built");
+        assert_eq!(fired.fired_at, 42);
+
+        let ctx = fired.payload.as_ref().expect("payload must be retained");
+        // payload_get must round-trip.
+        assert_eq!(ctx.payload_get("cause").as_deref(), Some("upgrade"));
+        assert_eq!(
+            ctx.payload_get("building_id").as_deref(),
+            Some("advanced_mine")
+        );
+        // to_lua_table must rebuild a matching Lua payload for re-dispatch.
+        let tbl = ctx.to_lua_table(&lua).unwrap();
+        let cause: String = tbl.get("cause").unwrap();
+        assert_eq!(cause, "upgrade");
+        let eid: String = tbl.get("event_id").unwrap();
+        assert_eq!(eid, "macrocosmo:building_built");
+
+        // Clone preservation: the Arc<dyn EventContext> path keeps the ctx
+        // alive in both the original and the clone.
+        let cloned = fired.clone();
+        let cloned_ctx = cloned.payload.as_ref().unwrap();
+        assert_eq!(cloned_ctx.payload_get("cause").as_deref(), Some("upgrade"));
+    }
+
+    /// Regression: an existing `macrocosmo:building_lost` subscriber written
+    /// against the pre-#288 HashMap contract must keep seeing `evt.cause` /
+    /// `evt.building_id` unchanged when the event is dispatched via the new
+    /// trait-object path. Covers the mechanical-migration guarantee in the
+    /// issue.
+    #[test]
+    fn test_existing_building_lost_handler_unchanged() {
+        let lua = Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
+
+        lua.load(
+            r#"
+            _seen_cause = nil
+            _seen_building_id = nil
+            _seen_slot = nil
+            on("macrocosmo:building_lost", function(evt)
+                _seen_cause = evt.cause
+                _seen_building_id = evt.building_id
+                _seen_slot = evt.slot
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let mut details = HashMap::new();
+        details.insert("cause".to_string(), "demolished".to_string());
+        details.insert("building_id".to_string(), "power_plant".to_string());
+        details.insert("slot".to_string(), "1".to_string());
+        let ctx = LuaDefinedEventContext::new("macrocosmo:building_lost", details);
+
+        let count = EventBus::fire(&lua, &ctx);
+        assert_eq!(count, 1);
+
+        let cause: String = lua.globals().get("_seen_cause").unwrap();
+        let bid: String = lua.globals().get("_seen_building_id").unwrap();
+        let slot: String = lua.globals().get("_seen_slot").unwrap();
+        assert_eq!(cause, "demolished");
+        assert_eq!(bid, "power_plant");
+        assert_eq!(slot, "1");
     }
 }

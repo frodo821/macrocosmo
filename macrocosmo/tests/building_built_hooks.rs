@@ -27,7 +27,9 @@ use macrocosmo::colony::{
     BuildingId, BuildingOrder, BuildingQueue, Buildings, SystemBuildingQueue, SystemBuildings,
     UpgradeOrder,
 };
-use macrocosmo::event_system::{BUILDING_BUILT_EVENT, EventSystem, FiredEvent, LuaFunctionRef};
+use macrocosmo::event_system::{
+    BUILDING_BUILT_EVENT, EventSystem, FiredEvent, LuaDefinedEventContext, LuaFunctionRef,
+};
 use macrocosmo::scripting::building_api::{BuildingDefinition, BuildingRegistry, CapabilityParams};
 use std::collections::HashMap;
 
@@ -102,17 +104,24 @@ fn find_building_built(
                 && fe
                     .payload
                     .as_ref()
-                    .and_then(|p| p.get("building_id"))
-                    .map(|s| s.as_str())
+                    .and_then(|p| p.payload_get("building_id"))
+                    .as_deref()
                     == Some(building_id)
                 && fe
                     .payload
                     .as_ref()
-                    .and_then(|p| p.get("cause"))
-                    .map(|s| s.as_str())
+                    .and_then(|p| p.payload_get("cause"))
+                    .as_deref()
                     == Some(cause)
         })
         .cloned()
+}
+
+/// Look up a string-shaped payload value on a fired event's EventContext.
+/// Replaces the pre-#288 `evt.payload.as_ref().unwrap().get(key).map(String::as_str)`
+/// idiom used throughout the payload-carrying assertions below.
+fn payload_str<'a>(evt: &'a FiredEvent, key: &str) -> Option<std::borrow::Cow<'a, str>> {
+    evt.payload.as_ref().and_then(|p| p.payload_get(key))
 }
 
 // ============================================================================
@@ -140,14 +149,7 @@ fn test_building_built_event_fired_on_planet_construction_complete() {
     // Slot 0 completion writes the building into the slot.
     let bldgs = app.world().get::<Buildings>(colony).unwrap();
     assert_eq!(bldgs.slots[0].as_ref().unwrap().as_str(), "mine");
-    assert_eq!(
-        evt.payload
-            .as_ref()
-            .unwrap()
-            .get("slot")
-            .map(String::as_str),
-        Some("0")
-    );
+    assert_eq!(payload_str(&evt, "slot").as_deref(), Some("0"));
 }
 
 #[test]
@@ -168,11 +170,10 @@ fn test_building_built_event_fired_on_system_building_complete() {
     let es = app.world().resource::<EventSystem>();
     let evt = find_building_built(es, "shipyard", "construction")
         .expect("system construction must fire macrocosmo:building_built");
-    let payload = evt.payload.as_ref().unwrap();
-    assert_eq!(payload.get("slot").map(String::as_str), Some("0"));
+    assert_eq!(payload_str(&evt, "slot").as_deref(), Some("0"));
     // System buildings have no `colony` key — the building is attached to the
     // StarSystem entity itself.
-    assert!(payload.get("colony").is_none());
+    assert!(payload_str(&evt, "colony").is_none());
     let sys_bldgs = app.world().get::<SystemBuildings>(sys).unwrap();
     assert_eq!(sys_bldgs.slots[0].as_ref().unwrap().as_str(), "shipyard");
 }
@@ -275,9 +276,8 @@ fn test_building_built_event_fired_on_structure_complete() {
     let es = app.world().resource::<EventSystem>();
     let evt = find_building_built(es, "outpost", "construction")
         .expect("deep-space platform completion must fire macrocosmo:building_built");
-    let payload = evt.payload.as_ref().unwrap();
     assert_eq!(
-        payload.get("previous_id").map(String::as_str),
+        payload_str(&evt, "previous_id").as_deref(),
         Some("kit"),
         "previous_id must carry the platform/kit definition id"
     );
@@ -307,24 +307,20 @@ fn test_building_built_event_carries_correct_payload() {
 
     let es = app.world().resource::<EventSystem>();
     let evt = find_building_built(es, "power_plant", "construction").unwrap();
-    let payload = evt.payload.as_ref().unwrap();
+    assert_eq!(payload_str(&evt, "cause").as_deref(), Some("construction"));
     assert_eq!(
-        payload.get("cause").map(String::as_str),
-        Some("construction")
-    );
-    assert_eq!(
-        payload.get("building_id").map(String::as_str),
+        payload_str(&evt, "building_id").as_deref(),
         Some("power_plant")
     );
-    assert_eq!(payload.get("slot").map(String::as_str), Some("2"));
+    assert_eq!(payload_str(&evt, "slot").as_deref(), Some("2"));
     // System + colony entities are serialised as `Entity::to_bits` decimal
     // strings — round-trip them to confirm they identify the right entities.
-    let system_bits: u64 = payload.get("system").unwrap().parse().unwrap();
-    let colony_bits: u64 = payload.get("colony").unwrap().parse().unwrap();
+    let system_bits: u64 = payload_str(&evt, "system").unwrap().parse().unwrap();
+    let colony_bits: u64 = payload_str(&evt, "colony").unwrap().parse().unwrap();
     assert_eq!(Entity::from_bits(system_bits), sys);
     assert_eq!(Entity::from_bits(colony_bits), colony);
     // `previous_id` is absent on construction.
-    assert!(payload.get("previous_id").is_none());
+    assert!(payload_str(&evt, "previous_id").is_none());
 }
 
 #[test]
@@ -348,8 +344,7 @@ fn test_on_upgraded_carries_previous_id() {
     let es = app.world().resource::<EventSystem>();
     let evt = find_building_built(es, "advanced_mine", "upgrade")
         .expect("upgrade completion must fire cause=upgrade");
-    let payload = evt.payload.as_ref().unwrap();
-    assert_eq!(payload.get("previous_id").map(String::as_str), Some("mine"));
+    assert_eq!(payload_str(&evt, "previous_id").as_deref(), Some("mine"));
     // Planet Buildings slot now holds the upgraded id.
     let bldgs = app.world().get::<Buildings>(colony).unwrap();
     assert_eq!(bldgs.slots[0].as_ref().unwrap().as_str(), "advanced_mine");
@@ -445,12 +440,13 @@ fn push_build_event(world: &mut World, building_id: &str, cause: &str, previous_
     if let Some(p) = previous_id {
         payload.insert("previous_id".to_string(), p.to_string());
     }
+    let ctx = LuaDefinedEventContext::new(BUILDING_BUILT_EVENT, payload);
     let mut es = world.resource_mut::<EventSystem>();
     es.fired_log.push(FiredEvent {
         event_id: BUILDING_BUILT_EVENT.to_string(),
         target: None,
         fired_at: 1,
-        payload: Some(payload),
+        payload: Some(std::sync::Arc::new(ctx)),
     });
 }
 
