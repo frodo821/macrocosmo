@@ -23,12 +23,30 @@ impl Plugin for CommunicationPlugin {
     }
 }
 
+/// Max consecutive frames the dispatcher will retain an un-dispatchable
+/// queue (no `PlayerEmpire` / unresolvable origin) before giving up. At
+/// 60 fps this is ~5 seconds — long enough to paper over load/teardown/
+/// observer-mode transients, short enough that observation sessions do
+/// not accumulate unbounded state. See #276.
+pub const MAX_DISPATCH_RETRY_FRAMES: u32 = 300;
+
 /// UI-to-dispatcher queue for colony build commands. UI code pushes
 /// `PendingColonyDispatch` entries; `dispatch_pending_colony_commands`
 /// drains and turns each into a `PendingCommand` with light-speed delay.
+///
+/// When the dispatcher cannot resolve a `PlayerEmpire` or the player's
+/// origin position (e.g. during load/teardown or observer mode), the
+/// queue is retained instead of cleared so that clicks are not silently
+/// lost. `retry_frames` tracks consecutive unresolved frames; once it
+/// reaches `MAX_DISPATCH_RETRY_FRAMES` the queue is dropped with a
+/// warning to keep observation sessions bounded.
 #[derive(Resource, Default)]
 pub struct PendingColonyDispatches {
     pub queue: Vec<PendingColonyDispatch>,
+    /// Consecutive frames the dispatcher has seen a non-empty queue
+    /// without being able to resolve empire/origin. Reset to 0 on any
+    /// successful dispatch frame or when the queue is empty.
+    pub retry_frames: u32,
 }
 
 pub struct PendingColonyDispatch {
@@ -108,10 +126,7 @@ pub fn process_messages(
                 }
                 MessageContent::Report(report) => {
                     let age = clock.elapsed - report.info_timestamp;
-                    info!(
-                        "Report received (information age: {} sd)",
-                        age
-                    );
+                    info!("Report received (information age: {} sd)", age);
                 }
             }
             commands.entity(entity).despawn();
@@ -162,8 +177,14 @@ pub struct PendingCommand {
 /// the full payload at send time (defs live in `StructureRegistry`).
 #[derive(Clone, Debug)]
 pub enum RemoteCommand {
-    BuildShip { design_id: String },
-    SetProductionFocus { minerals: f64, energy: f64, research: f64 },
+    BuildShip {
+        design_id: String,
+    },
+    SetProductionFocus {
+        minerals: f64,
+        energy: f64,
+        research: f64,
+    },
     Colony(ColonyCommand),
     ShipBuild {
         host_colony: Entity,
@@ -221,13 +242,19 @@ impl RemoteCommand {
             RemoteCommand::BuildShip { design_id } => format!("Build ship: {}", design_id),
             RemoteCommand::SetProductionFocus { .. } => "Set production focus".to_string(),
             RemoteCommand::Colony(cc) => match &cc.kind {
-                BuildingKind::Queue { building_id, target_slot } => {
+                BuildingKind::Queue {
+                    building_id,
+                    target_slot,
+                } => {
                     format!("Build {} → slot {}", building_id, target_slot)
                 }
                 BuildingKind::Demolish { target_slot } => {
                     format!("Demolish slot {}", target_slot)
                 }
-                BuildingKind::Upgrade { slot_index, target_id } => {
+                BuildingKind::Upgrade {
+                    slot_index,
+                    target_id,
+                } => {
                     format!("Upgrade slot {} → {}", slot_index, target_id)
                 }
             },
@@ -259,16 +286,32 @@ pub fn dispatch_pending_colony_commands(
     stars: Query<&crate::components::Position, With<crate::galaxy::StarSystem>>,
     ship_positions: Query<&crate::components::Position, With<crate::ship::Ship>>,
     player_q: Query<
-        (&crate::player::StationedAt, Option<&crate::player::AboardShip>),
+        (
+            &crate::player::StationedAt,
+            Option<&crate::player::AboardShip>,
+        ),
         With<crate::player::Player>,
     >,
     mut empire_q: Query<&mut CommandLog, With<crate::player::PlayerEmpire>>,
 ) {
     if queue.queue.is_empty() {
+        queue.retry_frames = 0;
         return;
     }
     let Ok(mut command_log) = empire_q.single_mut() else {
-        queue.queue.clear();
+        // No PlayerEmpire: load/teardown/observer mode. Retain the queue
+        // for a bounded number of frames so transient unavailability
+        // does not silently eat player clicks (#276).
+        queue.retry_frames = queue.retry_frames.saturating_add(1);
+        if queue.retry_frames >= MAX_DISPATCH_RETRY_FRAMES {
+            warn!(
+                "dispatch_pending_colony_commands: no PlayerEmpire for {} frames, dropping {} queued command(s)",
+                queue.retry_frames,
+                queue.queue.len()
+            );
+            queue.queue.clear();
+            queue.retry_frames = 0;
+        }
         return;
     };
 
@@ -281,11 +324,24 @@ pub fn dispatch_pending_colony_commands(
             None => stars.get(stationed.system).ok().map(|p| p.as_array()),
         });
     let Some(origin) = origin else {
-        warn!("dispatch_pending_colony_commands: cannot resolve player origin, dropping commands");
-        queue.queue.clear();
+        // Empire exists but the player's position is indeterminate
+        // (e.g. stationed-at entity despawned mid-frame). Same bounded
+        // retry policy as the no-empire case above.
+        queue.retry_frames = queue.retry_frames.saturating_add(1);
+        if queue.retry_frames >= MAX_DISPATCH_RETRY_FRAMES {
+            warn!(
+                "dispatch_pending_colony_commands: cannot resolve player origin for {} frames, dropping {} queued command(s)",
+                queue.retry_frames,
+                queue.queue.len()
+            );
+            queue.queue.clear();
+            queue.retry_frames = 0;
+        }
         return;
     };
 
+    // Successful dispatch path — clear the retry counter.
+    queue.retry_frames = 0;
     for dispatch in queue.queue.drain(..) {
         let Ok(target_pos) = stars.get(dispatch.target_system) else {
             warn!(
@@ -394,7 +450,6 @@ pub fn process_pending_commands(
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Existing helpers

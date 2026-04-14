@@ -13,7 +13,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue, BuildingQueue, SystemBuildingQueue};
 use macrocosmo::communication::{
     self, BuildingKind, BuildingScope, ColonyCommand, CommandLog, PendingColonyDispatch,
-    PendingColonyDispatches, PendingCommand, RemoteCommand,
+    PendingColonyDispatches, PendingCommand, RemoteCommand, MAX_DISPATCH_RETRY_FRAMES,
 };
 use macrocosmo::components::Position;
 use macrocosmo::player::{Player, PlayerEmpire, StationedAt};
@@ -29,8 +29,7 @@ fn build_app() -> App {
     let mut app = test_app();
     app.add_systems(
         Update,
-        communication::process_pending_commands
-            .after(macrocosmo::time_system::advance_game_time),
+        communication::process_pending_commands.after(macrocosmo::time_system::advance_game_time),
     );
     app
 }
@@ -73,12 +72,13 @@ fn spawn_pending_remote_command(
     // production where `send_remote_command` records the entry.)
     let empire = empire_entity(app.world_mut());
     if let Some(mut log) = app.world_mut().get_mut::<CommandLog>(empire) {
-        log.entries.push(macrocosmo::communication::CommandLogEntry {
-            description: "test".to_string(),
-            sent_at,
-            arrives_at,
-            arrived: false,
-        });
+        log.entries
+            .push(macrocosmo::communication::CommandLogEntry {
+                description: "test".to_string(),
+                sent_at,
+                arrives_at,
+                arrived: false,
+            });
     }
 }
 
@@ -108,13 +108,8 @@ fn run_until_arrival(app: &mut App, arrives_at: i64) {
 #[test]
 fn queue_building_planet_arrives_and_enqueues() {
     let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -128,10 +123,13 @@ fn queue_building_planet_arrives_and_enqueues() {
         sys,
         0,
         10,
-        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
+        RemoteCommand::Colony(ColonyCommand {
+            scope: BuildingScope::Planet(planet),
+            kind: BuildingKind::Queue {
                 building_id: "mine".to_string(),
                 target_slot: 1,
-            } }),
+            },
+        }),
     );
 
     // Before arrival the queue should be empty.
@@ -149,13 +147,8 @@ fn queue_building_planet_arrives_and_enqueues() {
 #[test]
 fn queue_building_system_arrives_and_enqueues() {
     let mut app = build_app();
-    let (sys, _planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, _planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     // spawn_test_colony also attaches SystemBuildings/SystemBuildingQueue to
     // the system entity.
     let _colony = spawn_test_colony(
@@ -171,10 +164,13 @@ fn queue_building_system_arrives_and_enqueues() {
         sys,
         0,
         10,
-        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::System, kind: BuildingKind::Queue {
+        RemoteCommand::Colony(ColonyCommand {
+            scope: BuildingScope::System,
+            kind: BuildingKind::Queue {
                 building_id: "shipyard".to_string(),
                 target_slot: 0,
-            } }),
+            },
+        }),
     );
 
     run_until_arrival(&mut app, 10);
@@ -192,13 +188,8 @@ fn queue_building_system_arrives_and_enqueues() {
 #[test]
 fn demolish_building_planet_arrives_and_enqueues() {
     let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -212,7 +203,10 @@ fn demolish_building_planet_arrives_and_enqueues() {
         sys,
         0,
         5,
-        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Demolish { target_slot: 0 } }),
+        RemoteCommand::Colony(ColonyCommand {
+            scope: BuildingScope::Planet(planet),
+            kind: BuildingKind::Demolish { target_slot: 0 },
+        }),
     );
 
     run_until_arrival(&mut app, 5);
@@ -237,13 +231,8 @@ fn upgrade_building_planet_without_path_warns_and_noops() {
     // naive upgrade request should warn but not enqueue anything. This
     // verifies the path-lookup branch.
     let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -257,10 +246,13 @@ fn upgrade_building_planet_without_path_warns_and_noops() {
         sys,
         0,
         5,
-        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Upgrade {
+        RemoteCommand::Colony(ColonyCommand {
+            scope: BuildingScope::Planet(planet),
+            kind: BuildingKind::Upgrade {
                 slot_index: 0,
                 target_id: "advanced_mine".to_string(),
-            } }),
+            },
+        }),
     );
 
     run_until_arrival(&mut app, 5);
@@ -279,13 +271,8 @@ fn upgrade_building_planet_without_path_warns_and_noops() {
 #[test]
 fn queue_ship_build_arrives_and_enqueues() {
     let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -299,7 +286,11 @@ fn queue_ship_build_arrives_and_enqueues() {
         sys,
         0,
         20,
-        RemoteCommand::ShipBuild { host_colony: colony, design_id: "explorer_mk1".to_string(), build_kind: BuildKind::Ship },
+        RemoteCommand::ShipBuild {
+            host_colony: colony,
+            design_id: "explorer_mk1".to_string(),
+            build_kind: BuildKind::Ship,
+        },
     );
 
     run_until_arrival(&mut app, 20);
@@ -317,13 +308,8 @@ fn queue_ship_build_arrives_and_enqueues() {
 #[test]
 fn queue_deliverable_build_arrives_and_enqueues() {
     let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -338,14 +324,14 @@ fn queue_deliverable_build_arrives_and_enqueues() {
         0,
         20,
         RemoteCommand::DeliverableBuild {
-                host_colony: colony,
-                def_id: "sensor_buoy".to_string(),
-                display_name: "Sensor Buoy".to_string(),
-                cargo_size: 2,
-                minerals_cost: Amt::units(100),
-                energy_cost: Amt::units(50),
-                build_time: 30,
-            },
+            host_colony: colony,
+            def_id: "sensor_buoy".to_string(),
+            display_name: "Sensor Buoy".to_string(),
+            cargo_size: 2,
+            minerals_cost: Amt::units(100),
+            energy_cost: Amt::units(50),
+            build_time: 30,
+        },
     );
 
     run_until_arrival(&mut app, 20);
@@ -368,13 +354,8 @@ fn queue_deliverable_build_arrives_and_enqueues() {
 #[test]
 fn pending_colony_command_not_applied_before_arrival() {
     let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -388,10 +369,13 @@ fn pending_colony_command_not_applied_before_arrival() {
         sys,
         0,
         100,
-        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
+        RemoteCommand::Colony(ColonyCommand {
+            scope: BuildingScope::Planet(planet),
+            kind: BuildingKind::Queue {
                 building_id: "mine".to_string(),
                 target_slot: 0,
-            } }),
+            },
+        }),
     );
 
     // Advance halfway.
@@ -424,13 +408,8 @@ fn pending_colony_command_not_applied_before_arrival() {
 #[test]
 fn local_dispatch_applies_same_frame() {
     let mut app = build_app_with_dispatch();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Home",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -438,18 +417,20 @@ fn local_dispatch_applies_same_frame() {
         Amt::units(1000),
         vec![None, None, None, None],
     );
-    app.world_mut()
-        .spawn((Player, StationedAt { system: sys }));
+    app.world_mut().spawn((Player, StationedAt { system: sys }));
 
     app.world_mut()
         .resource_mut::<PendingColonyDispatches>()
         .queue
         .push(PendingColonyDispatch {
             target_system: sys,
-            command: RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(planet),
+                kind: BuildingKind::Queue {
                     building_id: "mine".to_string(),
                     target_slot: 0,
-                } }),
+                },
+            }),
         });
 
     // Align LastProductionTick so the build queue tick sees delta=1.
@@ -481,20 +462,10 @@ fn local_dispatch_applies_same_frame() {
 #[test]
 fn remote_dispatch_delayed_by_light_speed() {
     let mut app = build_app_with_dispatch();
-    let (home_sys, _home_planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Home",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
-    let (target_sys, target_planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (home_sys, _home_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
+    let (target_sys, target_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let target_colony = spawn_test_colony(
         app.world_mut(),
         target_planet,
@@ -510,10 +481,13 @@ fn remote_dispatch_delayed_by_light_speed() {
         .queue
         .push(PendingColonyDispatch {
             target_system: target_sys,
-            command: RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(target_planet), kind: BuildingKind::Queue {
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(target_planet),
+                kind: BuildingKind::Queue {
                     building_id: "mine".to_string(),
                     target_slot: 0,
-                } }),
+                },
+            }),
         });
 
     // Run one frame. Dispatch drains and spawns PendingCommand;
@@ -566,20 +540,10 @@ fn remote_dispatch_delayed_by_light_speed() {
 #[test]
 fn remote_system_level_dispatch_delayed() {
     let mut app = build_app_with_dispatch();
-    let (home_sys, _home_planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Home",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
-    let (target_sys, _target_planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (home_sys, _home_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
+    let (target_sys, _target_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     // spawn_test_colony attaches SystemBuildings/SystemBuildingQueue to the
     // star system entity.
     let _target_colony = spawn_test_colony(
@@ -597,18 +561,18 @@ fn remote_system_level_dispatch_delayed() {
         .queue
         .push(PendingColonyDispatch {
             target_system: target_sys,
-            command: RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::System, kind: BuildingKind::Queue {
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::System,
+                kind: BuildingKind::Queue {
                     building_id: "shipyard".to_string(),
                     target_slot: 0,
-                } }),
+                },
+            }),
         });
 
     advance_time(&mut app, 1);
 
-    let sbq = app
-        .world()
-        .get::<SystemBuildingQueue>(target_sys)
-        .unwrap();
+    let sbq = app.world().get::<SystemBuildingQueue>(target_sys).unwrap();
     assert!(
         sbq.queue.is_empty(),
         "remote system queue should be empty before light delay"
@@ -617,20 +581,13 @@ fn remote_system_level_dispatch_delayed() {
     let arrives_at = 1 + macrocosmo::physics::light_delay_hexadies(10.0);
     run_until_arrival(&mut app, arrives_at);
 
-    let sbq = app
-        .world()
-        .get::<SystemBuildingQueue>(target_sys)
-        .unwrap();
+    let sbq = app.world().get::<SystemBuildingQueue>(target_sys).unwrap();
     let sys_bldgs = app
         .world()
         .get::<macrocosmo::colony::SystemBuildings>(target_sys)
         .unwrap();
     let present = sbq.queue.iter().any(|o| o.target_slot == 0)
-        || sys_bldgs
-            .slots
-            .get(0)
-            .and_then(|s| s.as_ref())
-            .is_some();
+        || sys_bldgs.slots.get(0).and_then(|s| s.as_ref()).is_some();
     assert!(
         present,
         "remote system-level command should apply once clock reaches arrives_at"
@@ -642,20 +599,10 @@ fn remote_system_level_dispatch_delayed() {
 #[test]
 fn remote_ship_build_dispatch_delayed() {
     let mut app = build_app_with_dispatch();
-    let (home_sys, _home_planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Home",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
-    let (target_sys, target_planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (home_sys, _home_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
+    let (target_sys, target_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let target_colony = spawn_test_colony(
         app.world_mut(),
         target_planet,
@@ -671,7 +618,11 @@ fn remote_ship_build_dispatch_delayed() {
         .queue
         .push(PendingColonyDispatch {
             target_system: target_sys,
-            command: RemoteCommand::ShipBuild { host_colony: target_colony, design_id: "explorer_mk1".to_string(), build_kind: BuildKind::Ship },
+            command: RemoteCommand::ShipBuild {
+                host_colony: target_colony,
+                design_id: "explorer_mk1".to_string(),
+                build_kind: BuildKind::Ship,
+            },
         });
 
     advance_time(&mut app, 1);
@@ -701,13 +652,8 @@ fn remote_ship_build_dispatch_delayed() {
 #[test]
 fn arrival_marks_command_log_entry() {
     let mut app = build_app();
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let _colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -721,10 +667,13 @@ fn arrival_marks_command_log_entry() {
         sys,
         0,
         10,
-        RemoteCommand::Colony(ColonyCommand { scope: BuildingScope::Planet(planet), kind: BuildingKind::Queue {
+        RemoteCommand::Colony(ColonyCommand {
+            scope: BuildingScope::Planet(planet),
+            kind: BuildingKind::Queue {
                 building_id: "mine".to_string(),
                 target_slot: 0,
-            } }),
+            },
+        }),
     );
 
     run_until_arrival(&mut app, 10);
@@ -738,3 +687,190 @@ fn arrival_marks_command_log_entry() {
     assert!(log.entries[0].arrived, "entry should be marked arrived");
 }
 
+// --------------------------------------------------------------------------
+// #276: Observer mode / transient empire unavailability
+// --------------------------------------------------------------------------
+
+/// Regression for #276: when `PlayerEmpire` is absent (observer mode,
+/// load/teardown), the dispatcher must retain the queue instead of
+/// clearing it, so queued UI clicks are not silently lost.
+#[test]
+fn dispatch_preserves_queue_when_empire_absent() {
+    let mut app = build_app_with_dispatch();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let _colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+
+    // Despawn the empire to simulate observer / teardown mode.
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().entity_mut(empire).despawn();
+
+    // Push a click into the queue.
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: sys,
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(planet),
+                kind: BuildingKind::Queue {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            }),
+        });
+
+    // Run a frame with no empire. The queue must be retained.
+    advance_time(&mut app, 1);
+
+    let q = app.world().resource::<PendingColonyDispatches>();
+    assert_eq!(
+        q.queue.len(),
+        1,
+        "queue must be preserved while PlayerEmpire is absent"
+    );
+    assert!(q.retry_frames >= 1, "retry_frames should have incremented");
+
+    // No PendingCommand should have been spawned (nothing dispatched).
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        pending_count, 0,
+        "no PendingCommand should be spawned while empire is absent"
+    );
+}
+
+/// Regression for #276: once the empire reappears, the retained queue
+/// should be dispatched on the next frame and `retry_frames` reset.
+#[test]
+fn dispatch_resumes_after_empire_reappears() {
+    let mut app = build_app_with_dispatch();
+    let (home_sys, _home_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
+    let (target_sys, target_planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let _target_colony = spawn_test_colony(
+        app.world_mut(),
+        target_planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+
+    // Despawn empire; push click; advance one frame (queue retained).
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().entity_mut(empire).despawn();
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: target_sys,
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(target_planet),
+                kind: BuildingKind::Queue {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            }),
+        });
+    advance_time(&mut app, 1);
+    assert_eq!(
+        app.world()
+            .resource::<PendingColonyDispatches>()
+            .queue
+            .len(),
+        1,
+        "queue retained while empire absent"
+    );
+
+    // Restore the empire + a player stationed somewhere with a resolvable
+    // origin, then run another frame — the retained command should drain
+    // into a PendingCommand and the retry counter should reset.
+    common::spawn_test_empire(app.world_mut());
+    app.world_mut()
+        .spawn((Player, StationedAt { system: home_sys }));
+
+    advance_time(&mut app, 1);
+
+    let q = app.world().resource::<PendingColonyDispatches>();
+    assert!(
+        q.queue.is_empty(),
+        "queue should drain once empire + player origin are available"
+    );
+    assert_eq!(
+        q.retry_frames, 0,
+        "retry_frames should reset after successful dispatch"
+    );
+
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        pending_count, 1,
+        "retained command should have produced a PendingCommand"
+    );
+}
+
+/// Regression for #276: after `MAX_DISPATCH_RETRY_FRAMES` consecutive
+/// failed frames, the queue is dropped so long observation sessions do
+/// not accumulate unbounded state.
+#[test]
+fn dispatch_drops_queue_after_max_retry_frames() {
+    let mut app = build_app_with_dispatch();
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
+    let _colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().entity_mut(empire).despawn();
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: sys,
+            command: RemoteCommand::Colony(ColonyCommand {
+                scope: BuildingScope::Planet(planet),
+                kind: BuildingKind::Queue {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            }),
+        });
+
+    // Pre-seed retry_frames to just below the threshold so we don't need
+    // to pump 300 frames in a test.
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .retry_frames = MAX_DISPATCH_RETRY_FRAMES - 1;
+
+    advance_time(&mut app, 1);
+
+    let q = app.world().resource::<PendingColonyDispatches>();
+    assert!(
+        q.queue.is_empty(),
+        "queue should be dropped once retry window is exhausted"
+    );
+    assert_eq!(
+        q.retry_frames, 0,
+        "retry_frames should reset after dropping the queue"
+    );
+}
