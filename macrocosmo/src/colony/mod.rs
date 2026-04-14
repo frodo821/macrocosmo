@@ -88,7 +88,12 @@ impl Plugin for ColonyPlugin {
                     ).chain(),
                 )
                     .chain()
-                    .after(crate::time_system::advance_game_time),
+                    .after(crate::time_system::advance_game_time)
+                    // #270: Arrived RemoteCommand::Colony payloads must be
+                    // applied to the queue before the queue's tick consumes
+                    // orders, otherwise an arrival on the same frame can be
+                    // swallowed in a single tick_building_queue pass.
+                    .after(crate::communication::process_pending_commands),
             )
             .add_systems(Update, (
                 update_sovereignty,

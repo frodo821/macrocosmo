@@ -62,6 +62,7 @@ pub struct MainPanelWorldQueries<'w, 's> {
             Option<&'static ColonyJobRates>,
         ),
     >,
+    pub remote_commands: Query<'w, 's, &'static crate::communication::PendingCommand>,
 }
 
 #[derive(SystemParam)]
@@ -88,6 +89,7 @@ pub struct MainPanelDeliverableRes<'w, 's> {
         (&'static crate::technology::GameFlags, &'static crate::condition::ScopedFlags),
         With<crate::player::PlayerEmpire>,
     >,
+    pub colony_dispatches: ResMut<'w, crate::communication::PendingColonyDispatches>,
 }
 
 #[derive(SystemParam)]

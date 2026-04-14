@@ -4,7 +4,7 @@ mod planet_window;
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DeliverableStockpile, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue, UpgradeOrder};
+use crate::colony::{BuildOrder, BuildQueue, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DeliverableStockpile, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
 use crate::condition::{EvalContext, ScopeData};
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
@@ -149,6 +149,8 @@ pub fn draw_system_panel(
     structure_registry: &StructureRegistry,
     deliverable_avail: &DeliverableAvailabilityCtx<'_>,
     system_actions_out: &mut SystemPanelActions,
+    dispatches: &mut crate::communication::PendingColonyDispatches,
+    remote_commands: &Query<&crate::communication::PendingCommand>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -367,6 +369,9 @@ pub fn draw_system_panel(
                                         structure_registry,
                                         deliverable_avail,
                                         system_actions_out,
+                                        dispatches,
+                                        remote_commands,
+                                        clock.elapsed,
                                     );
                                 });
                         });
@@ -398,6 +403,7 @@ pub fn draw_system_panel(
         building_registry,
         job_registry,
         colony_panel_tab,
+        dispatches,
     );
 }
 
@@ -660,7 +666,12 @@ fn draw_right_panel(
     structure_registry: &StructureRegistry,
     deliverable_avail: &DeliverableAvailabilityCtx<'_>,
     system_actions_out: &mut SystemPanelActions,
+    dispatches: &mut crate::communication::PendingColonyDispatches,
+    remote_commands: &Query<&crate::communication::PendingCommand>,
+    clock_elapsed: i64,
 ) {
+    draw_in_flight_commands_section(ui, sel_entity, remote_commands, clock_elapsed);
+
     // === Docked Ships ===
     ui.label(egui::RichText::new("Docked Ships").strong().color(egui::Color32::from_rgb(180, 180, 220)));
     ui.separator();
@@ -836,32 +847,28 @@ fn draw_right_panel(
             }
         }
 
-        if let Some((slot_idx, bid)) = sys_demolish_request {
-            if let Some(mut bq) = sys_bldg_queue {
-                let def = building_registry.get(bid.as_str());
-                let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
-                bq.demolition_queue.push(DemolitionOrder {
-                    target_slot: slot_idx,
-                    building_id: bid.clone(),
-                    time_remaining: demo_time,
-                    minerals_refund: m_refund,
-                    energy_refund: e_refund,
-                });
-                info!("System building demolition order added: {} in slot {}", bid, slot_idx);
-            }
+        if let Some((slot_idx, _bid)) = sys_demolish_request {
+            dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                target_system: sel_entity,
+                command: crate::communication::ColonyCommand {
+                    target_planet: None,
+                    kind: crate::communication::ColonyCommandKind::DemolishBuilding {
+                        target_slot: slot_idx,
+                    },
+                },
+            });
         }
-        if let Some((slot_idx, target_id, minerals, energy, time)) = sys_upgrade_request {
-            if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
-                bq.upgrade_queue.push(UpgradeOrder {
-                    slot_index: slot_idx,
-                    target_id: BuildingId::new(&target_id),
-                    minerals_remaining: minerals,
-                    energy_remaining: energy,
-                    build_time_remaining: time,
-                });
-                info!("System building upgrade order added: {} in slot {}", target_id, slot_idx);
-            }
+        if let Some((slot_idx, target_id, _, _, _)) = sys_upgrade_request {
+            dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                target_system: sel_entity,
+                command: crate::communication::ColonyCommand {
+                    target_planet: None,
+                    kind: crate::communication::ColonyCommandKind::UpgradeBuilding {
+                        slot_index: slot_idx,
+                        target_id,
+                    },
+                },
+            });
         }
 
         // Build system building buttons
@@ -893,22 +900,16 @@ fn draw_right_panel(
                     }
                 }
                 if let Some(bid) = build_sys_building_request {
-                    if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
-                        let def = building_registry.get(bid.as_str());
-                        let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                        let base_time = def.map(|d| d.build_time).unwrap_or(10);
-                        let eff_m = base_m.mul_amt(bldg_cost_mod);
-                        let eff_e = base_e.mul_amt(bldg_cost_mod);
-                        let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                        bq.queue.push(BuildingOrder {
-                            building_id: bid.clone(),
-                            target_slot: slot_idx,
-                            minerals_remaining: eff_m,
-                            energy_remaining: eff_e,
-                            build_time_remaining: eff_time,
-                        });
-                        info!("System building order added: {} in slot {}", bid, slot_idx);
-                    }
+                    dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                        target_system: sel_entity,
+                        command: crate::communication::ColonyCommand {
+                            target_planet: None,
+                            kind: crate::communication::ColonyCommandKind::QueueBuilding {
+                                building_id: bid.0,
+                                target_slot: slot_idx,
+                            },
+                        },
+                    });
                 }
             }
         }
@@ -1060,33 +1061,20 @@ fn draw_right_panel(
                     });
                 }
 
-                if let Some((design_id, display_name, minerals_cost, energy_cost, build_time)) =
+                if let Some((design_id, _display_name, _minerals_cost, _energy_cost, _build_time)) =
                     build_request
                 {
-                    // Re-query mutably to push the order onto the host colony's BuildQueue.
-                    let display_name_log = display_name.clone();
-                    for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
-                        colonies.iter_mut()
-                    {
-                        if colony_entity != host {
-                            continue;
-                        }
-                        if let Some(bq) = build_queue.as_mut() {
-                            bq.queue.push(BuildOrder {
-                                kind: crate::colony::BuildKind::default(),
-                                design_id: design_id.clone(),
-                                display_name: display_name.clone(),
-                                minerals_cost,
-                                minerals_invested: Amt::ZERO,
-                                energy_cost,
-                                energy_invested: Amt::ZERO,
-                                build_time_total: build_time,
-                                build_time_remaining: build_time,
-                            });
-                            info!("Build order added: {}", display_name_log);
-                        }
-                        break;
-                    }
+                    dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                        target_system: sel_entity,
+                        command: crate::communication::ColonyCommand {
+                            target_planet: None,
+                            kind: crate::communication::ColonyCommandKind::QueueShipBuild {
+                                host_colony: host,
+                                design_id,
+                                build_kind: crate::colony::BuildKind::Ship,
+                            },
+                        },
+                    });
                 }
 
                 // #229: Deliverables — shipyard-buildable deep-space structures.
@@ -1145,29 +1133,21 @@ fn draw_right_panel(
                     if let Some((def_id, display_name, cargo_size, m_cost, e_cost, build_time)) =
                         deliverable_request
                     {
-                        let display_name_log = display_name.clone();
-                        for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
-                            colonies.iter_mut()
-                        {
-                            if colony_entity != host {
-                                continue;
-                            }
-                            if let Some(bq) = build_queue.as_mut() {
-                                bq.queue.push(BuildOrder {
-                                    kind: crate::colony::BuildKind::Deliverable { cargo_size },
-                                    design_id: def_id.clone(),
-                                    display_name: display_name.clone(),
+                        dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                            target_system: sel_entity,
+                            command: crate::communication::ColonyCommand {
+                                target_planet: None,
+                                kind: crate::communication::ColonyCommandKind::QueueDeliverableBuild {
+                                    host_colony: host,
+                                    def_id,
+                                    display_name,
+                                    cargo_size,
                                     minerals_cost: m_cost,
-                                    minerals_invested: Amt::ZERO,
                                     energy_cost: e_cost,
-                                    energy_invested: Amt::ZERO,
-                                    build_time_total: build_time,
-                                    build_time_remaining: build_time,
-                                });
-                                info!("Deliverable order added: {}", display_name_log);
-                            }
-                            break;
-                        }
+                                    build_time,
+                                },
+                            },
+                        });
                     }
                 }
             }
@@ -1514,6 +1494,42 @@ fn draw_system_map(
         egui::FontId::proportional(11.0),
         egui::Color32::from_rgb(120, 120, 140),
     );
+}
+
+fn draw_in_flight_commands_section(
+    ui: &mut egui::Ui,
+    sel_entity: Entity,
+    remote_commands: &Query<&crate::communication::PendingCommand>,
+    clock_elapsed: i64,
+) {
+    let mut items: Vec<&crate::communication::PendingCommand> = remote_commands
+        .iter()
+        .filter(|cmd| cmd.target_system == sel_entity)
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    items.sort_by_key(|c| c.arrives_at);
+
+    ui.label(
+        egui::RichText::new("In-flight Commands")
+            .strong()
+            .color(egui::Color32::from_rgb(240, 200, 120)),
+    );
+    ui.separator();
+    for cmd in items {
+        let remaining = (cmd.arrives_at - clock_elapsed).max(0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("• {}", cmd.command.describe())).weak());
+            ui.label(
+                egui::RichText::new(format!("arrives in {} hd", remaining))
+                    .italics()
+                    .color(egui::Color32::from_rgb(180, 180, 180)),
+            );
+        });
+    }
+    ui.add_space(4.0);
+    ui.separator();
 }
 
 /// Format a type id into a display name (e.g. "yellow_dwarf" -> "Yellow Dwarf").

@@ -7,11 +7,33 @@ pub struct CommunicationPlugin;
 
 impl Plugin for CommunicationPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<PendingColonyDispatches>();
+        // Dispatcher chained before process_pending_commands so local
+        // (zero-delay) commands apply within the same Update pass.
         app.add_systems(
-                Update,
-                (process_messages, process_courier_ships, process_pending_commands),
-            );
+            Update,
+            (
+                process_messages,
+                process_courier_ships,
+                dispatch_pending_colony_commands,
+                process_pending_commands,
+            )
+                .chain(),
+        );
     }
+}
+
+/// UI-to-dispatcher queue for colony build commands. UI code pushes
+/// `PendingColonyDispatch` entries; `dispatch_pending_colony_commands`
+/// drains and turns each into a `PendingCommand` with light-speed delay.
+#[derive(Resource, Default)]
+pub struct PendingColonyDispatches {
+    pub queue: Vec<PendingColonyDispatch>,
+}
+
+pub struct PendingColonyDispatch {
+    pub target_system: Entity,
+    pub command: ColonyCommand,
 }
 
 /// A message in transit (light-speed or via courier)
@@ -131,10 +153,92 @@ pub struct PendingCommand {
 }
 
 /// The kinds of remote commands a player can issue.
+///
+/// Build-related payloads (`Colony(ColonyCommand)`) are deliberately minimal —
+/// cost/time/refund amounts are re-resolved on arrival from the target's
+/// current `BuildingRegistry` + `ConstructionParams`. `QueueDeliverableBuild`
+/// is the exception (defs live in a separate registry; see variant doc).
 #[derive(Clone, Debug)]
 pub enum RemoteCommand {
     BuildShip { design_id: String },
     SetProductionFocus { minerals: f64, energy: f64, research: f64 },
+    Colony(ColonyCommand),
+}
+
+/// A colony-scoped remote command. `target_planet = Some(p)` addresses a
+/// planet-level `BuildingQueue`/`Buildings`; `None` addresses the
+/// system-level `SystemBuildingQueue`/`SystemBuildings` on `target_system`.
+/// Some variants (`QueueShipBuild`, `QueueDeliverableBuild`) carry their
+/// own `host_colony` and ignore `target_planet`.
+#[derive(Clone, Debug)]
+pub struct ColonyCommand {
+    pub target_planet: Option<Entity>,
+    pub kind: ColonyCommandKind,
+}
+
+impl RemoteCommand {
+    /// Short player-facing label. Used in CommandLog entries and the
+    /// in-flight list so players don't see raw `{:?}` output with entity
+    /// indices.
+    pub fn describe(&self) -> String {
+        match self {
+            RemoteCommand::BuildShip { design_id } => format!("Build ship: {}", design_id),
+            RemoteCommand::SetProductionFocus { .. } => "Set production focus".to_string(),
+            RemoteCommand::Colony(cc) => match &cc.kind {
+                ColonyCommandKind::QueueBuilding { building_id, target_slot } => {
+                    format!("Build {} → slot {}", building_id, target_slot)
+                }
+                ColonyCommandKind::DemolishBuilding { target_slot } => {
+                    format!("Demolish slot {}", target_slot)
+                }
+                ColonyCommandKind::UpgradeBuilding { slot_index, target_id } => {
+                    format!("Upgrade slot {} → {}", slot_index, target_id)
+                }
+                ColonyCommandKind::QueueShipBuild { design_id, .. } => {
+                    format!("Build ship: {}", design_id)
+                }
+                ColonyCommandKind::QueueDeliverableBuild { display_name, .. } => {
+                    format!("Build deliverable: {}", display_name)
+                }
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ColonyCommandKind {
+    /// Enqueue construction of `building_id` into `target_slot`.
+    QueueBuilding {
+        building_id: String,
+        target_slot: usize,
+    },
+    /// Enqueue demolition of whatever occupies `target_slot`.
+    DemolishBuilding { target_slot: usize },
+    /// Enqueue an upgrade of the building in `slot_index` to `target_id`.
+    UpgradeBuilding {
+        slot_index: usize,
+        target_id: String,
+    },
+    /// Enqueue a ship (or deliverable) build on `host_colony`'s `BuildQueue`.
+    QueueShipBuild {
+        host_colony: Entity,
+        design_id: String,
+        build_kind: crate::colony::BuildKind,
+    },
+    /// Enqueue a deliverable build on `host_colony`'s `BuildQueue`. Full
+    /// payload (def_id/display_name/cargo_size/cost/time) is frozen at
+    /// send time because deliverable defs live in `StructureRegistry`,
+    /// not `ShipDesignRegistry`, so arrival-time re-resolution would
+    /// require a second registry lookup path.
+    QueueDeliverableBuild {
+        host_colony: Entity,
+        def_id: String,
+        display_name: String,
+        cargo_size: u32,
+        minerals_cost: crate::amount::Amt,
+        energy_cost: crate::amount::Amt,
+        build_time: i64,
+    },
 }
 
 /// Tracks command status for UI display.
@@ -148,6 +252,61 @@ pub struct CommandLogEntry {
     pub sent_at: i64,
     pub arrives_at: i64,
     pub arrived: bool,
+}
+
+pub fn dispatch_pending_colony_commands(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    mut queue: ResMut<PendingColonyDispatches>,
+    stars: Query<&crate::components::Position, With<crate::galaxy::StarSystem>>,
+    ship_positions: Query<&crate::components::Position, With<crate::ship::Ship>>,
+    player_q: Query<
+        (&crate::player::StationedAt, Option<&crate::player::AboardShip>),
+        With<crate::player::Player>,
+    >,
+    mut empire_q: Query<&mut CommandLog, With<crate::player::PlayerEmpire>>,
+) {
+    if queue.queue.is_empty() {
+        return;
+    }
+    let Ok(mut command_log) = empire_q.single_mut() else {
+        queue.queue.clear();
+        return;
+    };
+
+    // Resolve player origin position.
+    let origin = player_q
+        .iter()
+        .next()
+        .and_then(|(stationed, aboard)| match aboard {
+            Some(ab) => ship_positions.get(ab.ship).ok().map(|p| p.as_array()),
+            None => stars.get(stationed.system).ok().map(|p| p.as_array()),
+        });
+    let Some(origin) = origin else {
+        warn!("dispatch_pending_colony_commands: cannot resolve player origin, dropping commands");
+        queue.queue.clear();
+        return;
+    };
+
+    for dispatch in queue.queue.drain(..) {
+        let Ok(target_pos) = stars.get(dispatch.target_system) else {
+            warn!(
+                "dispatch_pending_colony_commands: target_system {:?} has no Position",
+                dispatch.target_system
+            );
+            continue;
+        };
+        let destination = target_pos.as_array();
+        send_remote_command(
+            &mut commands,
+            origin,
+            destination,
+            clock.elapsed,
+            RemoteCommand::Colony(dispatch.command),
+            dispatch.target_system,
+            &mut command_log,
+        );
+    }
 }
 
 /// Send a remote command from `origin` to `destination`. The command will
@@ -166,7 +325,7 @@ pub fn send_remote_command(
     let arrives_at = sent_at + delay;
 
     command_log.entries.push(CommandLogEntry {
-        description: format!("{:?}", command),
+        description: command.describe(),
         sent_at,
         arrives_at,
         arrived: false,
@@ -186,20 +345,53 @@ pub fn process_pending_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
     pending: Query<(Entity, &PendingCommand)>,
-    mut empire_q: Query<&mut CommandLog, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        (&mut CommandLog, &crate::colony::ConstructionParams),
+        With<crate::player::PlayerEmpire>,
+    >,
+    building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
+    ship_design_registry: Res<crate::ship_design::ShipDesignRegistry>,
+    mut colonies: Query<(
+        &crate::colony::Colony,
+        &crate::colony::Buildings,
+        &mut crate::colony::BuildingQueue,
+        &mut crate::colony::BuildQueue,
+    )>,
+    mut sys_buildings_q: Query<(
+        &crate::colony::SystemBuildings,
+        &mut crate::colony::SystemBuildingQueue,
+    )>,
 ) {
-    let Ok(mut command_log) = empire_q.single_mut() else {
+    let Ok((mut command_log, construction_params)) = empire_q.single_mut() else {
         return;
     };
+    let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
+    let bldg_time_mod = construction_params
+        .building_build_time_modifier
+        .final_value();
+
     for (entity, cmd) in &pending {
         if clock.elapsed >= cmd.arrives_at {
             let delay = cmd.arrives_at - cmd.sent_at;
             info!(
-                "Remote command arrived at target (delay: {} sd): {:?}",
-                delay, cmd.command
+                "Remote command arrived at target (delay: {} sd): {}",
+                delay,
+                cmd.command.describe()
             );
 
-            // Mark the matching log entry as arrived.
+            if let RemoteCommand::Colony(cc) = &cmd.command {
+                apply_colony_command(
+                    cc,
+                    cmd.target_system,
+                    &building_registry,
+                    &ship_design_registry,
+                    bldg_cost_mod,
+                    bldg_time_mod,
+                    &mut colonies,
+                    &mut sys_buildings_q,
+                );
+            }
+
             for entry in command_log.entries.iter_mut() {
                 if entry.sent_at == cmd.sent_at
                     && entry.arrives_at == cmd.arrives_at
@@ -213,6 +405,321 @@ pub fn process_pending_commands(
             commands.entity(entity).despawn();
         }
     }
+}
+
+fn apply_colony_command(
+    cc: &ColonyCommand,
+    target_system: Entity,
+    br: &crate::scripting::building_api::BuildingRegistry,
+    sdr: &crate::ship_design::ShipDesignRegistry,
+    bldg_cost_mod: crate::amount::Amt,
+    bldg_time_mod: crate::amount::Amt,
+    colonies: &mut Query<(
+        &crate::colony::Colony,
+        &crate::colony::Buildings,
+        &mut crate::colony::BuildingQueue,
+        &mut crate::colony::BuildQueue,
+    )>,
+    sys_buildings_q: &mut Query<(
+        &crate::colony::SystemBuildings,
+        &mut crate::colony::SystemBuildingQueue,
+    )>,
+) {
+    use crate::amount::Amt;
+    use crate::colony::{BuildOrder, BuildingOrder, DemolitionOrder, UpgradeOrder};
+    use crate::scripting::building_api::BuildingId;
+
+    match &cc.kind {
+        ColonyCommandKind::QueueBuilding {
+            building_id,
+            target_slot,
+        } => {
+            let Some(def) = br.get(building_id) else {
+                warn!("QueueBuilding: unknown building_id '{}'", building_id);
+                return;
+            };
+            let (base_m, base_e) = def.build_cost();
+            let eff_m = base_m.mul_amt(bldg_cost_mod);
+            let eff_e = base_e.mul_amt(bldg_cost_mod);
+            let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+            let order = BuildingOrder {
+                building_id: BuildingId::new(building_id),
+                target_slot: *target_slot,
+                minerals_remaining: eff_m,
+                energy_remaining: eff_e,
+                build_time_remaining: eff_time,
+            };
+            match cc.target_planet {
+                Some(planet) => {
+                    push_planet_building_order(planet, order, colonies);
+                }
+                None => {
+                    if let Ok((_, mut sbq)) = sys_buildings_q.get_mut(target_system) {
+                        sbq.queue.push(order);
+                    } else {
+                        warn!(
+                            "QueueBuilding (system): target_system {:?} has no SystemBuildingQueue",
+                            target_system
+                        );
+                    }
+                }
+            }
+        }
+        ColonyCommandKind::DemolishBuilding { target_slot } => match cc.target_planet {
+            Some(planet) => {
+                let mut found = false;
+                for (colony, buildings, mut bq, _) in colonies.iter_mut() {
+                    if colony.planet != planet {
+                        continue;
+                    }
+                    found = true;
+                    let Some(Some(bid)) = buildings.slots.get(*target_slot).cloned() else {
+                        warn!(
+                            "DemolishBuilding (planet): slot {} is empty or out of bounds",
+                            target_slot
+                        );
+                        break;
+                    };
+                    let Some(def) = br.get(bid.as_str()) else {
+                        warn!(
+                            "DemolishBuilding (planet): unknown building '{}' in slot {}; dropping order to avoid silent free demolition",
+                            bid, target_slot
+                        );
+                        break;
+                    };
+                    let (m_ref, e_ref) = def.demolition_refund();
+                    bq.demolition_queue.push(DemolitionOrder {
+                        target_slot: *target_slot,
+                        building_id: bid,
+                        time_remaining: def.demolition_time(),
+                        minerals_refund: m_ref,
+                        energy_refund: e_ref,
+                    });
+                    break;
+                }
+                if !found {
+                    warn!(
+                        "DemolishBuilding (planet): no colony found on planet {:?}",
+                        planet
+                    );
+                }
+            }
+            None => {
+                let Ok((sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system) else {
+                    warn!(
+                        "DemolishBuilding (system): target_system {:?} has no SystemBuildings/Queue",
+                        target_system
+                    );
+                    return;
+                };
+                let Some(Some(bid)) = sys_buildings.slots.get(*target_slot).cloned() else {
+                    warn!(
+                        "DemolishBuilding (system): slot {} is empty or out of bounds",
+                        target_slot
+                    );
+                    return;
+                };
+                let Some(def) = br.get(bid.as_str()) else {
+                    warn!(
+                        "DemolishBuilding (system): unknown building '{}' in slot {}; dropping order",
+                        bid, target_slot
+                    );
+                    return;
+                };
+                let (m_ref, e_ref) = def.demolition_refund();
+                sbq.demolition_queue.push(DemolitionOrder {
+                    target_slot: *target_slot,
+                    building_id: bid,
+                    time_remaining: def.demolition_time(),
+                    minerals_refund: m_ref,
+                    energy_refund: e_ref,
+                });
+            }
+        },
+        ColonyCommandKind::UpgradeBuilding {
+            slot_index,
+            target_id,
+        } => {
+            let upgrade_order = |source_def: &crate::scripting::building_api::BuildingDefinition,
+                                 target_id: &str|
+             -> Option<UpgradeOrder> {
+                let up = source_def
+                    .upgrade_to
+                    .iter()
+                    .find(|u| u.target_id == target_id)?;
+                let eff_m = up.cost_minerals.mul_amt(bldg_cost_mod);
+                let eff_e = up.cost_energy.mul_amt(bldg_cost_mod);
+                let base_time = up
+                    .build_time
+                    .unwrap_or_else(|| br.get(target_id).map(|d| d.build_time / 2).unwrap_or(5));
+                let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                Some(UpgradeOrder {
+                    slot_index: *slot_index,
+                    target_id: BuildingId::new(target_id),
+                    minerals_remaining: eff_m,
+                    energy_remaining: eff_e,
+                    build_time_remaining: eff_time,
+                })
+            };
+            match cc.target_planet {
+                Some(planet) => {
+                    let mut handled = false;
+                    for (colony, buildings, mut bq, _) in colonies.iter_mut() {
+                        if colony.planet != planet {
+                            continue;
+                        }
+                        handled = true;
+                        let Some(Some(source_bid)) = buildings.slots.get(*slot_index).cloned()
+                        else {
+                            warn!(
+                                "UpgradeBuilding (planet): slot {} empty or OOB",
+                                slot_index
+                            );
+                            break;
+                        };
+                        let Some(source_def) = br.get(source_bid.as_str()) else {
+                            warn!(
+                                "UpgradeBuilding (planet): unknown source building '{}'",
+                                source_bid
+                            );
+                            break;
+                        };
+                        if let Some(order) = upgrade_order(source_def, target_id) {
+                            bq.upgrade_queue.push(order);
+                        } else {
+                            warn!(
+                                "UpgradeBuilding (planet): no upgrade path '{}' -> '{}'",
+                                source_bid, target_id
+                            );
+                        }
+                        break;
+                    }
+                    if !handled {
+                        warn!("UpgradeBuilding (planet): no colony on planet {:?}", planet);
+                    }
+                }
+                None => {
+                    let Ok((sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system)
+                    else {
+                        warn!(
+                            "UpgradeBuilding (system): target_system {:?} missing components",
+                            target_system
+                        );
+                        return;
+                    };
+                    let Some(Some(source_bid)) = sys_buildings.slots.get(*slot_index).cloned()
+                    else {
+                        warn!(
+                            "UpgradeBuilding (system): slot {} empty or OOB",
+                            slot_index
+                        );
+                        return;
+                    };
+                    let Some(source_def) = br.get(source_bid.as_str()) else {
+                        warn!(
+                            "UpgradeBuilding (system): unknown source building '{}'",
+                            source_bid
+                        );
+                        return;
+                    };
+                    if let Some(order) = upgrade_order(source_def, target_id) {
+                        sbq.upgrade_queue.push(order);
+                    } else {
+                        warn!(
+                            "UpgradeBuilding (system): no upgrade path '{}' -> '{}'",
+                            source_bid, target_id
+                        );
+                    }
+                }
+            }
+        }
+        ColonyCommandKind::QueueShipBuild {
+            host_colony,
+            design_id,
+            build_kind,
+        } => {
+            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
+                warn!(
+                    "QueueShipBuild: host_colony {:?} has no BuildQueue",
+                    host_colony
+                );
+                return;
+            };
+            let Some(design) = sdr.get(design_id) else {
+                warn!("QueueShipBuild: unknown design_id '{}'", design_id);
+                return;
+            };
+            let minerals_cost = design.build_cost_minerals;
+            let energy_cost = design.build_cost_energy;
+            let build_time_total = sdr.build_time(design_id);
+            let display_name = design.name.clone();
+            build_q.queue.push(BuildOrder {
+                kind: build_kind.clone(),
+                design_id: design_id.clone(),
+                display_name,
+                minerals_cost,
+                minerals_invested: Amt::ZERO,
+                energy_cost,
+                energy_invested: Amt::ZERO,
+                build_time_total,
+                build_time_remaining: build_time_total,
+            });
+        }
+        ColonyCommandKind::QueueDeliverableBuild {
+            host_colony,
+            def_id,
+            display_name,
+            cargo_size,
+            minerals_cost,
+            energy_cost,
+            build_time,
+        } => {
+            let Ok((_, _, _, mut build_q)) = colonies.get_mut(*host_colony) else {
+                warn!(
+                    "QueueDeliverableBuild: host_colony {:?} has no BuildQueue",
+                    host_colony
+                );
+                return;
+            };
+            build_q.queue.push(BuildOrder {
+                kind: crate::colony::BuildKind::Deliverable {
+                    cargo_size: *cargo_size,
+                },
+                design_id: def_id.clone(),
+                display_name: display_name.clone(),
+                minerals_cost: *minerals_cost,
+                minerals_invested: Amt::ZERO,
+                energy_cost: *energy_cost,
+                energy_invested: Amt::ZERO,
+                build_time_total: *build_time,
+                build_time_remaining: *build_time,
+            });
+        }
+    }
+}
+
+/// Helper: push a `BuildingOrder` onto the BuildingQueue of the colony whose
+/// `colony.planet == planet`. Warns if no matching colony is found.
+fn push_planet_building_order(
+    planet: Entity,
+    order: crate::colony::BuildingOrder,
+    colonies: &mut Query<(
+        &crate::colony::Colony,
+        &crate::colony::Buildings,
+        &mut crate::colony::BuildingQueue,
+        &mut crate::colony::BuildQueue,
+    )>,
+) {
+    for (colony, _, mut bq, _) in colonies.iter_mut() {
+        if colony.planet == planet {
+            bq.queue.push(order);
+            return;
+        }
+    }
+    warn!(
+        "QueueBuilding (planet): no colony found on planet {:?}",
+        planet
+    );
 }
 
 // ---------------------------------------------------------------------------
