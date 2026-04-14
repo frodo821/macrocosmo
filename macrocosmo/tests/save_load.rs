@@ -1176,6 +1176,111 @@ fn test_save_load_preserves_colony_snapshot() {
     assert_eq!(cs.build_queue[0].build_time_remaining, 7);
 }
 
+/// #247 × #295 interaction regression: after #295, `Sovereignty.owner` is a
+/// cached derived view of Core-ship presence (see `update_sovereignty` in
+/// `colony/authority.rs`). The save path still persists the cached value so
+/// existing savebag readers keep working, but on load we must:
+///
+/// 1. Decode the cached `Sovereignty.owner` verbatim.
+/// 2. Re-derive it from the actual Core ship's `AtSystem + FactionOwner`
+///    when `update_sovereignty` next runs — i.e. the cache must be a
+///    subordinate view, not authoritative.
+///
+/// If either contract breaks, a save written pre-#295 (or any save whose
+/// cached owner drifts from Core-ship presence) would desync after load.
+/// This regression pins both halves: the raw cached value survives the
+/// round-trip *and* the live derive produces the right answer once a
+/// Core ship is present.
+#[test]
+fn test_save_load_sovereignty_derived_cache_regression() {
+    use macrocosmo::colony::authority::update_sovereignty;
+    use macrocosmo::galaxy::AtSystem;
+
+    let mut src = build_seed_world();
+    let sol = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    // Pre-populate the cache to a "stale" None so the load-side assertion
+    // that update_sovereignty rewrites it is meaningful.
+    {
+        let mut sov = src.get_mut::<Sovereignty>(sol).unwrap();
+        sov.owner = None;
+        sov.control_score = 0.0;
+    }
+
+    // Add a Core ship stationed at Sol. `Ship` triggers SaveableMarker, so
+    // the AtSystem + FactionOwner pair rides the save/load path.
+    let core_ship = src
+        .spawn((
+            Ship {
+                name: "TestCore".into(),
+                design_id: "core_mk1".into(),
+                hull_id: "core".into(),
+                modules: Vec::new(),
+                owner: Owner::Empire(empire),
+                sublight_speed: 0.5,
+                ftl_range: 10.0,
+                player_aboard: false,
+                home_port: sol,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::Docked { system: sol },
+            AtSystem(sol),
+            FactionOwner(empire),
+        ))
+        .id();
+    let _ = core_ship;
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Sanity: the stale cached `None` survives the round-trip verbatim.
+    let sol_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    assert_eq!(
+        dst.get::<Sovereignty>(sol_dst).unwrap().owner,
+        None,
+        "cached Sovereignty.owner must round-trip verbatim (even when stale)"
+    );
+
+    // Run the real `update_sovereignty` system on the loaded world and
+    // verify the cache converges to the Core-ship-derived value.
+    let mut schedule = Schedule::default();
+    schedule.add_systems(update_sovereignty);
+    schedule.run(&mut dst);
+
+    let empire_dst = dst
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&dst)
+        .next()
+        .unwrap();
+    let sov = dst.get::<Sovereignty>(sol_dst).unwrap();
+    assert_eq!(
+        sov.owner,
+        Some(Owner::Empire(empire_dst)),
+        "update_sovereignty must re-derive owner from the loaded Core ship"
+    );
+    assert_eq!(
+        sov.control_score, 1.0,
+        "control_score must track owned/unowned (#295 placeholder)"
+    );
+}
+
 /// #247 acceptance: `test_save_load_preserves_pending_commands`.
 ///
 /// Three categories of in-flight commands must all survive the save/load
