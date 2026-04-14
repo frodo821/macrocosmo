@@ -94,6 +94,14 @@ impl Plugin for ScriptingPlugin {
             )
             .add_systems(
                 Update,
+                // Must run before tick_events so suppressed events never hit
+                // the fired_log. #263.
+                lifecycle::evaluate_fire_conditions
+                    .before(crate::event_system::tick_events)
+                    .after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
                 lifecycle::dispatch_event_handlers
                     .after(crate::event_system::tick_events)
                     .after(crate::time_system::advance_game_time),

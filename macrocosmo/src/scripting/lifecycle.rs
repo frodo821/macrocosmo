@@ -139,6 +139,213 @@ pub fn drain_script_events(
     }
 }
 
+/// Exclusive Bevy system that runs immediately before `tick_events` and
+/// filters out periodic / MTTH events whose `fire_condition` Lua callback
+/// returns `false`. This is #263's wiring of the previously-ignored
+/// `fire_condition` field.
+///
+/// Strategy:
+/// * For each periodic event whose interval is due this tick, call its
+///   `fire_condition` with the live `event.gamestate` snapshot. If the
+///   callback returns a falsy value, bump `last_fired` to `now` so
+///   `tick_events` treats it as "just fired" and skips it.
+/// * For each pending MTTH event whose `fires_at <= now`, call its
+///   `fire_condition`. If falsy, drop the entry from the pending queue so
+///   `tick_events` never logs it as fired.
+///
+/// Callback errors are logged and treated as `true` (fire anyway) so that
+/// a broken script can't silently disable an event definition without
+/// leaving a warning in the log.
+pub fn evaluate_fire_conditions(world: &mut World) {
+    // Fast path: nothing to filter.
+    let (has_periodic_or_pending, now) = {
+        let clock = world
+            .get_resource::<crate::time_system::GameClock>()
+            .map(|c| c.elapsed)
+            .unwrap_or(0);
+        let es = world.get_resource::<EventSystem>();
+        let have = es
+            .map(|e| {
+                let has_pending = !e.pending.is_empty();
+                let has_periodic = e.definitions.values().any(|d| {
+                    matches!(
+                        d.trigger,
+                        crate::event_system::EventTrigger::Periodic { .. }
+                    )
+                });
+                has_pending || has_periodic
+            })
+            .unwrap_or(false);
+        (have, clock)
+    };
+    if !has_periodic_or_pending {
+        return;
+    }
+
+    // Collect decisions while ScriptEngine is out of the world.
+    struct Decision {
+        event_id: String,
+        fire: bool,
+    }
+
+    // Snapshot the set of events we need to decide on (avoid borrowing
+    // both EventSystem and &mut World at the same time while calling Lua).
+    struct PendingDecision {
+        kind: DecisionKind,
+        event_id: String,
+        fire_fn: Option<crate::event_system::LuaFunctionRef>,
+    }
+    #[derive(Clone, Copy)]
+    enum DecisionKind {
+        Periodic,
+        PendingMtth(usize), // pending index at snapshot time
+    }
+
+    let pending_decisions: Vec<PendingDecision> = {
+        let Some(es) = world.get_resource::<EventSystem>() else {
+            return;
+        };
+        let mut out = Vec::new();
+
+        // Periodic events due this tick
+        for (id, def) in &es.definitions {
+            if let crate::event_system::EventTrigger::Periodic {
+                interval_hexadies,
+                last_fired,
+                fire_condition,
+                max_times,
+                times_triggered,
+            } = &def.trigger
+            {
+                if let Some(max) = max_times {
+                    if *times_triggered >= *max {
+                        continue;
+                    }
+                }
+                if now - *last_fired >= *interval_hexadies {
+                    out.push(PendingDecision {
+                        kind: DecisionKind::Periodic,
+                        event_id: id.clone(),
+                        fire_fn: fire_condition.clone(),
+                    });
+                }
+            }
+        }
+
+        // Pending MTTH events whose time has come
+        for (idx, pe) in es.pending.iter().enumerate() {
+            if pe.fires_at > now {
+                continue;
+            }
+            // Look up the MTTH fire_condition on the event definition.
+            let fire_fn = es
+                .definitions
+                .get(&pe.event_id)
+                .and_then(|d| match &d.trigger {
+                    crate::event_system::EventTrigger::Mtth { fire_condition, .. } => {
+                        fire_condition.clone()
+                    }
+                    _ => None,
+                });
+            if fire_fn.is_some() {
+                out.push(PendingDecision {
+                    kind: DecisionKind::PendingMtth(idx),
+                    event_id: pe.event_id.clone(),
+                    fire_fn,
+                });
+            }
+        }
+        out
+    };
+
+    if pending_decisions.is_empty() {
+        return;
+    }
+
+    // Invoke each fire_condition with the live gamestate.
+    let mut decisions: Vec<Decision> = Vec::with_capacity(pending_decisions.len());
+    world.resource_scope::<ScriptEngine, _>(|world, engine| {
+        let lua = engine.lua();
+        // Build a fresh gamestate once per tick — fire_conditions observe
+        // the same pre-dispatch view.
+        let gs_result = crate::scripting::gamestate_view::build_gamestate_table(lua, world);
+        let gs_table = match gs_result {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("evaluate_fire_conditions: gamestate build failed: {e}");
+                return;
+            }
+        };
+        let payload = match lua.create_table() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let _ = payload.set("gamestate", gs_table);
+
+        for pd in pending_decisions {
+            let fire = match pd.fire_fn {
+                None => true,
+                Some(fref) => match fref.get(lua) {
+                    Ok(Some(func)) => match func.call::<mlua::Value>(payload.clone()) {
+                        Ok(mlua::Value::Boolean(b)) => b,
+                        Ok(mlua::Value::Nil) => false,
+                        Ok(_) => true, // truthy non-boolean
+                        Err(e) => {
+                            warn!(
+                                "fire_condition for '{}' errored: {e}; firing anyway",
+                                pd.event_id
+                            );
+                            true
+                        }
+                    },
+                    Ok(None) => true, // placeholder ref — no function attached
+                    Err(e) => {
+                        warn!(
+                            "fire_condition lookup for '{}' failed: {e}; firing anyway",
+                            pd.event_id
+                        );
+                        true
+                    }
+                },
+            };
+            decisions.push(Decision {
+                event_id: pd.event_id,
+                fire,
+            });
+            let _ = pd.kind; // retain the variant for diagnostic purposes; handled below via id
+        }
+    });
+
+    // Apply decisions: for suppressed periodic events, bump last_fired; for
+    // suppressed pending MTTH events, remove them from the queue. We re-scan
+    // the EventSystem here because indices may have shifted since the
+    // snapshot.
+    let mut es = world.resource_mut::<EventSystem>();
+    let suppress_ids: std::collections::HashSet<String> = decisions
+        .iter()
+        .filter_map(|d| if !d.fire { Some(d.event_id.clone()) } else { None })
+        .collect();
+    if suppress_ids.is_empty() {
+        return;
+    }
+
+    // Suppress periodics by advancing their timer.
+    for (id, def) in es.definitions.iter_mut() {
+        if !suppress_ids.contains(id) {
+            continue;
+        }
+        if let crate::event_system::EventTrigger::Periodic { last_fired, .. } = &mut def.trigger {
+            *last_fired = now;
+        }
+    }
+
+    // Suppress pending MTTH entries whose event id is in the suppress set
+    // and whose fires_at <= now.
+    es.pending.retain(|pe| {
+        !(pe.fires_at <= now && suppress_ids.contains(&pe.event_id))
+    });
+}
+
 /// Per-tick **exclusive** system that dispatches recently fired events from
 /// `EventSystem.fired_log` to Lua handlers — both:
 /// * the `on(event_id, filter, fn)` bus handlers (stored in `_event_handlers`), and
@@ -686,6 +893,148 @@ mod tests {
         // Sanity: resource still there.
         assert!(world.get_resource::<EventSystem>().is_some());
         assert!(world.get_resource::<ScriptEngine>().is_some());
+    }
+
+    #[test]
+    fn test_fire_condition_suppresses_periodic_event() {
+        use crate::event_system::{EventDefinition, EventTrigger, LuaFunctionRef};
+
+        let mut world = make_world();
+        // Register a periodic event in Lua so the fire_condition function is
+        // real (RegistryKey-backed), then register the same trigger in the
+        // Rust EventSystem.
+        let fref = {
+            let engine = world.resource::<ScriptEngine>();
+            let lua = engine.lua();
+            // Condition returns false: event should be suppressed.
+            let f: mlua::Function = lua
+                .load(r#"return function(evt) return false end"#)
+                .eval()
+                .unwrap();
+            LuaFunctionRef::from_function(lua, f).unwrap()
+        };
+        {
+            let mut es = world.resource_mut::<EventSystem>();
+            es.register(EventDefinition {
+                id: "periodic_censored".to_string(),
+                name: "Periodic Censored".to_string(),
+                description: "Periodic event whose fire_condition returns false.".to_string(),
+                trigger: EventTrigger::Periodic {
+                    interval_hexadies: 10,
+                    last_fired: 0,
+                    fire_condition: Some(fref),
+                    max_times: None,
+                    times_triggered: 0,
+                },
+            });
+        }
+
+        // At clock=42 (from make_world), interval=10 since last_fired=0 is due.
+        // evaluate_fire_conditions must suppress by bumping last_fired to now=42.
+        evaluate_fire_conditions(&mut world);
+
+        let es = world.resource::<EventSystem>();
+        let def = es.definitions.get("periodic_censored").unwrap();
+        match &def.trigger {
+            EventTrigger::Periodic { last_fired, .. } => {
+                assert_eq!(
+                    *last_fired, 42,
+                    "suppressed periodic event should have last_fired bumped to now"
+                );
+            }
+            _ => panic!("expected Periodic trigger"),
+        }
+    }
+
+    #[test]
+    fn test_fire_condition_allows_periodic_event() {
+        use crate::event_system::{EventDefinition, EventTrigger, LuaFunctionRef};
+
+        let mut world = make_world();
+        let fref = {
+            let engine = world.resource::<ScriptEngine>();
+            let lua = engine.lua();
+            let f: mlua::Function = lua
+                .load(r#"return function(evt) return evt.gamestate.player_empire.techs.tech_a end"#)
+                .eval()
+                .unwrap();
+            LuaFunctionRef::from_function(lua, f).unwrap()
+        };
+        {
+            let mut es = world.resource_mut::<EventSystem>();
+            es.register(EventDefinition {
+                id: "periodic_gated".to_string(),
+                name: "Gated".to_string(),
+                description: "Fires when tech_a is researched.".to_string(),
+                trigger: EventTrigger::Periodic {
+                    interval_hexadies: 10,
+                    last_fired: 0,
+                    fire_condition: Some(fref),
+                    max_times: None,
+                    times_triggered: 0,
+                },
+            });
+        }
+
+        evaluate_fire_conditions(&mut world);
+
+        let es = world.resource::<EventSystem>();
+        let def = es.definitions.get("periodic_gated").unwrap();
+        match &def.trigger {
+            EventTrigger::Periodic { last_fired, .. } => {
+                assert_eq!(
+                    *last_fired, 0,
+                    "event should not be suppressed when fire_condition returns truthy"
+                );
+            }
+            _ => panic!("expected Periodic trigger"),
+        }
+    }
+
+    #[test]
+    fn test_fire_condition_suppresses_pending_mtth_event() {
+        use crate::event_system::{
+            EventDefinition, EventTrigger, LuaFunctionRef, PendingEvent,
+        };
+
+        let mut world = make_world();
+        let fref = {
+            let engine = world.resource::<ScriptEngine>();
+            let lua = engine.lua();
+            let f: mlua::Function = lua
+                .load(r#"return function(evt) return false end"#)
+                .eval()
+                .unwrap();
+            LuaFunctionRef::from_function(lua, f).unwrap()
+        };
+        {
+            let mut es = world.resource_mut::<EventSystem>();
+            es.register(EventDefinition {
+                id: "mtth_filtered".to_string(),
+                name: "Filtered MTTH".to_string(),
+                description: "".into(),
+                trigger: EventTrigger::Mtth {
+                    mean_hexadies: 100,
+                    fire_condition: Some(fref),
+                    max_times: None,
+                    times_triggered: 0,
+                },
+            });
+            // Pending entry whose fires_at <= now (42).
+            es.pending.push(PendingEvent {
+                event_id: "mtth_filtered".to_string(),
+                target: None,
+                fires_at: 10,
+            });
+        }
+
+        evaluate_fire_conditions(&mut world);
+
+        let es = world.resource::<EventSystem>();
+        assert!(
+            es.pending.is_empty(),
+            "suppressed MTTH event must be dropped from pending queue"
+        );
     }
 
     #[test]
