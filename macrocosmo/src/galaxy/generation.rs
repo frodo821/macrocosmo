@@ -15,9 +15,9 @@ use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
 use super::{
-    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostilePresence, HostileStats,
-    HostileType, ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet,
-    SystemAttributes, SystemModifiers,
+    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostileStats, HostileType,
+    ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes,
+    SystemModifiers,
 };
 use crate::amount::SignedAmt;
 use crate::modifier::Modifier;
@@ -665,24 +665,19 @@ pub(crate) fn initialize_systems(
             HostileType::AncientDefense => 10.0,
         };
 
-        // #293: Dual-spawn — legacy HostilePresence AND new decomposed
-        // components. Subsequent commits migrate readers onto the new
-        // components and then delete HostilePresence. `FactionOwner` is
-        // backfilled by `attach_hostile_faction_owners` once
-        // `HostileFactions` is populated.
+        // #293: Spawn hostile with decomposed components. `FactionOwner` is
+        // backfilled by `attach_hostile_faction_owners` once `HostileFactions`
+        // is populated. `hostile_type` is retained for the backfill system's
+        // faction-bucket mapping (SpaceCreature / AncientDefense).
         commands.spawn((
-            HostilePresence {
-                system: system_entity,
-                strength,
-                hp,
-                max_hp: hp,
-                hostile_type,
-                evasion,
-            },
             AtSystem(system_entity),
             HostileHitpoints { hp, max_hp: hp },
             HostileStats { strength, evasion },
             Hostile,
+            // Transitional tag used only by `attach_hostile_faction_owners`
+            // to pick the faction bucket. Can be removed once factions are
+            // spawned directly at generation time (future work).
+            super::HostileKind(hostile_type),
         ));
         hostile_count += 1;
     }

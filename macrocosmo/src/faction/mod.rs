@@ -49,7 +49,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 /// Plugin that registers the [`FactionRelations`] resource and seeds the
-/// non-empire "hostile" factions used by `HostilePresence` (#168).
+/// non-empire "hostile" factions used by hostile entities (#168/#293).
 pub struct FactionRelationsPlugin;
 
 impl Plugin for FactionRelationsPlugin {
@@ -67,10 +67,10 @@ impl Plugin for FactionRelationsPlugin {
                 attach_hostile_faction_owners
                     .after(spawn_hostile_factions),
             )
-            // #293: Also run on PreUpdate so integration tests that spawn
-            // legacy `HostilePresence` directly still get the new
-            // component tuple before Update-schedule systems query hostiles.
-            // PreUpdate instead of Update to guarantee command flush ordering.
+            // #293: Also run on PreUpdate so hostiles spawned after galaxy
+            // generation (e.g. in integration tests) get their FactionOwner
+            // before Update-schedule systems query them. PreUpdate instead
+            // of Update to guarantee command flush ordering.
             .add_systems(PreUpdate, attach_hostile_faction_owners)
             .add_systems(
                 Update,
@@ -85,7 +85,7 @@ impl Plugin for FactionRelationsPlugin {
     }
 }
 
-/// Component that links a non-empire entity (e.g. `HostilePresence`, ship,
+/// Component that links a non-empire entity (e.g. hostile, ship,
 /// structure) to the [`Faction`](crate::player::Faction) entity that owns it.
 ///
 /// Combat resolution and ROE checks consult [`FactionRelations`] keyed by the
@@ -155,60 +155,38 @@ pub fn spawn_hostile_factions(
     }
 }
 
-/// Backfills `FactionOwner` on every [`HostilePresence`](crate::galaxy::HostilePresence)
-/// (#168 Step 2) and, for #293, also backfills the decomposed components
-/// (`AtSystem`, `HostileHitpoints`, `HostileStats`, `Hostile`) so readers
-/// migrated to the new component shape see legacy-only spawns (test
-/// fixtures, save-loaded entities) as first-class hostiles.
+/// Backfills `FactionOwner` on every hostile entity that does not yet
+/// have one. Pairs `HostileKind` (transient marker carrying the intended
+/// faction bucket from galaxy generation) with the passive faction
+/// entity from `HostileFactions` and then removes the marker.
 ///
-/// Idempotent: skips entities that already carry each target component.
-/// Runs on Startup AND Update so late-spawned hostiles in integration
-/// tests are caught before the next tick.
+/// Idempotent: skips entities that already have `FactionOwner`.
+/// Runs on Startup AND PreUpdate so late-spawned hostiles in integration
+/// tests are caught before the next tick's Update-schedule queries.
 pub fn attach_hostile_faction_owners(
     mut commands: Commands,
     hostile_factions: Res<HostileFactions>,
-    hostiles: Query<(
-        Entity,
-        &crate::galaxy::HostilePresence,
-        Option<&FactionOwner>,
-        Option<&crate::galaxy::Hostile>,
-    )>,
+    hostiles: Query<
+        (Entity, &crate::galaxy::HostileKind),
+        (With<crate::galaxy::Hostile>, Without<FactionOwner>),
+    >,
 ) {
     let mut count = 0;
-    for (entity, hostile, owner, hostile_marker) in &hostiles {
-        // FactionOwner backfill depends on HostileFactions being populated
-        // (runtime) — skip silently otherwise.
-        if owner.is_none() {
-            let faction = match hostile.hostile_type {
-                crate::galaxy::HostileType::SpaceCreature => hostile_factions.space_creature,
-                crate::galaxy::HostileType::AncientDefense => hostile_factions.ancient_defense,
-            };
-            if let Some(faction_entity) = faction {
-                commands.entity(entity).try_insert(FactionOwner(faction_entity));
-                count += 1;
-            }
-        }
-        // #293: Hostile-component backfill runs regardless of HostileFactions
-        // — migrated readers (viz/knowledge/UI/scout/settlement/survey/
-        // deep_space) need the new tuple even when faction plumbing is
-        // absent (e.g. integration tests that skip setup_test_hostile_factions).
-        if hostile_marker.is_none() {
-            commands.entity(entity).try_insert((
-                crate::galaxy::AtSystem(hostile.system),
-                crate::galaxy::HostileHitpoints {
-                    hp: hostile.hp,
-                    max_hp: hostile.max_hp,
-                },
-                crate::galaxy::HostileStats {
-                    strength: hostile.strength,
-                    evasion: hostile.evasion,
-                },
-                crate::galaxy::Hostile,
-            ));
+    for (entity, kind) in &hostiles {
+        let faction = match kind.0 {
+            crate::galaxy::HostileType::SpaceCreature => hostile_factions.space_creature,
+            crate::galaxy::HostileType::AncientDefense => hostile_factions.ancient_defense,
+        };
+        if let Some(faction_entity) = faction {
+            commands
+                .entity(entity)
+                .try_insert(FactionOwner(faction_entity))
+                .remove::<crate::galaxy::HostileKind>();
+            count += 1;
         }
     }
     if count > 0 {
-        info!("Attached FactionOwner to {} hostile presence(s)", count);
+        info!("Attached FactionOwner to {} hostile entity(ies)", count);
     }
 }
 
@@ -1362,12 +1340,15 @@ mod tests {
         assert_eq!(first.ancient_defense, second.ancient_defense);
     }
 
-    /// `attach_hostile_faction_owners` should pair existing HostilePresence
-    /// components with the matching faction entity and skip ones that already
-    /// have a `FactionOwner`.
+    /// `attach_hostile_faction_owners` should pair each `HostileKind`-tagged
+    /// hostile with the matching faction entity and skip ones that already
+    /// have a `FactionOwner`. #293: tests now use the decomposed component
+    /// shape instead of `HostilePresence`.
     #[test]
     fn attach_hostile_faction_owners_assigns_by_type() {
-        use crate::galaxy::{HostilePresence, HostileType};
+        use crate::galaxy::{
+            AtSystem, Hostile, HostileHitpoints, HostileKind, HostileStats, HostileType,
+        };
 
         let mut app = App::new();
         app.init_resource::<FactionRelations>();
@@ -1380,19 +1361,38 @@ mod tests {
         app.world_mut().resource_mut::<HostileFactions>().ancient_defense = Some(ancient);
 
         let sys = app.world_mut().spawn_empty().id();
-        let creature = app.world_mut().spawn(HostilePresence {
-            system: sys, strength: 1.0, hp: 10.0, max_hp: 10.0,
-            hostile_type: HostileType::SpaceCreature, evasion: 0.0,
-        }).id();
-        let ancient_e = app.world_mut().spawn(HostilePresence {
-            system: sys, strength: 1.0, hp: 10.0, max_hp: 10.0,
-            hostile_type: HostileType::AncientDefense, evasion: 0.0,
-        }).id();
+        let creature = app
+            .world_mut()
+            .spawn((
+                AtSystem(sys),
+                HostileHitpoints { hp: 10.0, max_hp: 10.0 },
+                HostileStats { strength: 1.0, evasion: 0.0 },
+                Hostile,
+                HostileKind(HostileType::SpaceCreature),
+            ))
+            .id();
+        let ancient_e = app
+            .world_mut()
+            .spawn((
+                AtSystem(sys),
+                HostileHitpoints { hp: 10.0, max_hp: 10.0 },
+                HostileStats { strength: 1.0, evasion: 0.0 },
+                Hostile,
+                HostileKind(HostileType::AncientDefense),
+            ))
+            .id();
         // One pre-tagged entity should not be retagged.
-        let preset = app.world_mut().spawn((HostilePresence {
-            system: sys, strength: 1.0, hp: 10.0, max_hp: 10.0,
-            hostile_type: HostileType::SpaceCreature, evasion: 0.0,
-        }, FactionOwner(ancient))).id();
+        let preset = app
+            .world_mut()
+            .spawn((
+                AtSystem(sys),
+                HostileHitpoints { hp: 10.0, max_hp: 10.0 },
+                HostileStats { strength: 1.0, evasion: 0.0 },
+                Hostile,
+                HostileKind(HostileType::SpaceCreature),
+                FactionOwner(ancient),
+            ))
+            .id();
 
         app.add_systems(Update, attach_hostile_faction_owners);
         app.update();
@@ -1401,23 +1401,34 @@ mod tests {
         assert_eq!(app.world().get::<FactionOwner>(ancient_e).unwrap().0, ancient);
         // Pre-existing FactionOwner is untouched.
         assert_eq!(app.world().get::<FactionOwner>(preset).unwrap().0, ancient);
+        // HostileKind is removed from the two entities that needed backfill.
+        assert!(app.world().get::<HostileKind>(creature).is_none());
+        assert!(app.world().get::<HostileKind>(ancient_e).is_none());
     }
 
     /// `attach_hostile_faction_owners` is a no-op if HostileFactions hasn't
     /// been populated yet (defensive — preserves the system order contract).
     #[test]
     fn attach_hostile_faction_owners_noop_when_factions_missing() {
-        use crate::galaxy::{HostilePresence, HostileType};
+        use crate::galaxy::{
+            AtSystem, Hostile, HostileHitpoints, HostileKind, HostileStats, HostileType,
+        };
 
         let mut app = App::new();
         app.init_resource::<FactionRelations>();
         app.init_resource::<HostileFactions>();
 
         let sys = app.world_mut().spawn_empty().id();
-        let h = app.world_mut().spawn(HostilePresence {
-            system: sys, strength: 1.0, hp: 10.0, max_hp: 10.0,
-            hostile_type: HostileType::SpaceCreature, evasion: 0.0,
-        }).id();
+        let h = app
+            .world_mut()
+            .spawn((
+                AtSystem(sys),
+                HostileHitpoints { hp: 10.0, max_hp: 10.0 },
+                HostileStats { strength: 1.0, evasion: 0.0 },
+                Hostile,
+                HostileKind(HostileType::SpaceCreature),
+            ))
+            .id();
 
         app.add_systems(Update, attach_hostile_faction_owners);
         app.update();

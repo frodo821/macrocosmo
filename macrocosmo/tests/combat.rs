@@ -3,7 +3,7 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostilePresence, HostileStats, HostileType};
+use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, HostileType};
 use macrocosmo::ship::*;
 
 use common::{advance_time, spawn_test_system, test_app};
@@ -1530,7 +1530,7 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
     let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     // #169: pin to Aggressive — Defensive would now retaliate against the
-    // co-located HostilePresence, which is a separate behaviour covered by
+    // co-located which is a separate behaviour covered by
     // its own test.
     app.world_mut()
         .entity_mut(ship)

@@ -22,8 +22,8 @@ pub struct FactionTypeDefinition {
     /// Default RelationState for new relationships.
     pub default_state: RelationState,
     /// Combat strength for hostile faction entities of this type
-    /// (used at galaxy generation to scale HostilePresence legacy spawn,
-    /// and by combat strength calculations). Default 0.0.
+    /// (used at galaxy generation to scale the `HostileStats.strength`
+    /// component, and by combat strength calculations). Default 0.0.
     pub strength: f64,
     /// Evasion stat for hostile faction entities (0..=100).
     pub evasion: f64,
@@ -607,7 +607,7 @@ mod tests {
     fn test_parse_faction_type_with_hostile_stats() {
         // #293: strength/evasion/default_hp/default_max_hp drive hostile
         // entity spawn at galaxy generation time, replacing hard-coded
-        // HostileType constants.
+        // per-hostile-type constants.
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 

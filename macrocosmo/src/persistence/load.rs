@@ -205,8 +205,21 @@ fn apply_component_bag(
     if let Some(s) = &bag.sovereignty {
         ec.insert(s.clone().into_live(map));
     }
-    if let Some(h) = &bag.hostile_presence {
-        ec.insert(h.clone().into_live(map));
+    // #293: Hostile entity decomposed components.
+    if let Some(at) = &bag.at_system {
+        ec.insert(at.clone().into_live(map));
+    }
+    if let Some(hp) = &bag.hostile_hitpoints {
+        ec.insert(hp.clone().into_live());
+    }
+    if let Some(stats) = &bag.hostile_stats {
+        ec.insert(stats.clone().into_live());
+    }
+    if let Some(kind) = &bag.hostile_kind {
+        ec.insert(kind.clone().into_live());
+    }
+    if bag.hostile_marker.is_some() {
+        ec.insert(crate::galaxy::Hostile);
     }
     if bag.obscured_by_gas.is_some() {
         ec.insert(crate::galaxy::ObscuredByGas);

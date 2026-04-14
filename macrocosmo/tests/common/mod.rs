@@ -231,7 +231,7 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     use macrocosmo::faction::{
         FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState,
     };
-    use macrocosmo::galaxy::{HostilePresence, HostileType};
+    use macrocosmo::galaxy::HostileType;
 
     // Find or create the player empire.
     let empire = {
@@ -291,19 +291,23 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
 
     // Attach FactionOwner to every existing hostile entity. Preference order
     // for picking the faction bucket (#293):
-    //   1. `TestHostileFactionTag` (new-component-only test spawns).
-    //   2. `HostilePresence.hostile_type` (legacy test spawns).
+    //   1. `TestHostileFactionTag` (test fixtures).
+    //   2. `HostileKind` (generation-side backfill marker).
     //   3. Default to `space_creature`.
     let assignments: Vec<(Entity, Entity)> = {
         let mut q = world.query_filtered::<
-            (Entity, Option<&HostilePresence>, Option<&TestHostileFactionTag>),
+            (
+                Entity,
+                Option<&macrocosmo::galaxy::HostileKind>,
+                Option<&TestHostileFactionTag>,
+            ),
             With<macrocosmo::galaxy::Hostile>,
         >();
         q.iter(world)
-            .map(|(e, hp, tag)| {
+            .map(|(e, kind, tag)| {
                 let chosen_type = tag
                     .map(|t| t.0)
-                    .or_else(|| hp.map(|h| h.hostile_type))
+                    .or_else(|| kind.map(|k| k.0))
                     .unwrap_or(HostileType::SpaceCreature);
                 let owner = match chosen_type {
                     HostileType::SpaceCreature => space_creature,

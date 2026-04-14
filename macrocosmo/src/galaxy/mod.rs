@@ -161,37 +161,36 @@ pub struct Sovereignty {
     pub control_score: f64,
 }
 
-/// A hostile presence at a star system that player ships must fight.
-#[derive(Component)]
-pub struct HostilePresence {
-    pub system: Entity,
-    pub strength: f64,
-    pub hp: f64,
-    pub max_hp: f64,
-    pub hostile_type: HostileType,
-    pub evasion: f64,
-}
+// ---------------------------------------------------------------------------
+// #293: Hostile entity components
+// ---------------------------------------------------------------------------
+// Hostile entities carry `(AtSystem, FactionOwner, HostileHitpoints,
+// HostileStats, Hostile)`. Readers use `Query<..., With<Hostile>>` to stay
+// disjoint from ship queries. Combat strength / evasion live on
+// `HostileStats` (populated from `FactionTypeDefinition.strength/evasion`
+// scaled by an environmental multiplier at galaxy generation time).
 
+/// Marker enum used by integration-test fixtures and (pre-#293) by the
+/// legacy `HostilePresence.hostile_type` field. Kept so tests can tag a
+/// new-component hostile with the intended faction bucket
+/// (`SpaceCreature` / `AncientDefense`) without having to resolve the
+/// passive-faction entities up front.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostileType {
     SpaceCreature,
     AncientDefense,
 }
 
-// ---------------------------------------------------------------------------
-// #293: Hostile-entity component decomposition (replaces HostilePresence)
-// ---------------------------------------------------------------------------
-// New hostile entities carry `(AtSystem, FactionOwner, HostileHitpoints,
-// Hostile)`. Readers use `Query<..., With<Hostile>>` to stay disjoint from
-// ship queries. Combat strength / evasion are read from
-// `FactionTypeDefinition` via the faction's `FactionOwner -> Faction -> type`
-// chain. `HostilePresence` remains for now (dual-spawn) and is removed in a
-// later commit.
+/// Component carrying the `HostileType` bucket of a hostile entity until
+/// `attach_hostile_faction_owners` replaces it with a proper
+/// `FactionOwner`. After the backfill system runs the component can be
+/// removed — it is not used by gameplay systems.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct HostileKind(pub HostileType);
 
 /// Component declaring which star system this entity occupies. Attached to
 /// hostile entities (space_creature / ancient_defense) so the visibility /
-/// combat / knowledge layers can key their per-system maps without touching
-/// the legacy [`HostilePresence`] struct.
+/// combat / knowledge layers can key their per-system maps.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct AtSystem(pub Entity);
 

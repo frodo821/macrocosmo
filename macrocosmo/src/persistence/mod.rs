@@ -28,7 +28,8 @@
 //!   [`GameRng`](crate::scripting::game_rng::GameRng) (deterministic stream
 //!   continuation), and [`FactionRelations`](crate::faction::FactionRelations).
 //! - Components: Position, MovementState, StarSystem, Planet, SystemAttributes,
-//!   Sovereignty, HostilePresence, ObscuredByGas, PortFacility, Colony,
+//!   Sovereignty, Hostile/AtSystem/HostileHitpoints/HostileStats/HostileKind,
+//!   ObscuredByGas, PortFacility, Colony,
 //!   ResourceStockpile, ResourceCapacity, Ship, ShipState, ShipHitpoints, Cargo,
 //!   FactionOwner, Faction, Player, StationedAt, AboardShip, Empire, PlayerEmpire.
 //!

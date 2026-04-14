@@ -4,9 +4,7 @@ use rand::Rng;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
-use crate::galaxy::{
-    AtSystem, Hostile, HostileHitpoints, HostilePresence, HostileStats, StarSystem,
-};
+use crate::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, StarSystem};
 use crate::knowledge::{
  CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage,
 };
@@ -111,10 +109,6 @@ pub fn resolve_combat(
             &mut HostileHitpoints,
             &HostileStats,
             Option<&FactionOwner>,
-            // #293: Transitional — mirror hp writes into legacy HostilePresence
-            // so un-migrated integration tests still observe damage. Deleted
-            // along with HostilePresence in commit 7.
-            Option<&mut HostilePresence>,
         ),
         (With<Hostile>, Without<Ship>),
     >,
@@ -137,7 +131,7 @@ pub fn resolve_combat(
     // #293: Replaces hostile_type with faction entity for logging.
     let hostile_data: Vec<(Entity, Entity, f64, f64, Option<Entity>)> = hostiles
         .iter()
-        .map(|(e, at_system, _hp, stats, owner, _legacy)| {
+        .map(|(e, at_system, _hp, stats, owner)| {
             (
                 e,
                 at_system.0,
@@ -252,7 +246,7 @@ pub fn resolve_combat(
         }
 
         // Apply weapon damage to hostile
-        let Ok((_he, _at_system, mut hostile_hp, _stats, _owner, mut legacy_hp)) =
+        let Ok((_he, _at_system, mut hostile_hp, _stats, _owner)) =
             hostiles.get_mut(*hostile_entity)
         else {
             continue;
@@ -268,12 +262,6 @@ pub fn resolve_combat(
                     }
                 }
             }
-        }
-        // #293: mirror final hp into the legacy component for tests that
-        // still read `HostilePresence.hp`. Removed in commit 7 alongside
-        // the component itself.
-        if let Some(legacy) = legacy_hp.as_mut() {
-            legacy.hp = hostile_hp.hp;
         }
 
         // Check if hostile is destroyed

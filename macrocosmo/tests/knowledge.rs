@@ -746,7 +746,7 @@ fn test_uncolonized_system_no_propagation() {
 
 #[test]
 fn test_knowledge_snapshot_hostile_presence() {
-    use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostilePresence, HostileStats};
+    use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
 
     let mut app = test_app();
 

@@ -48,8 +48,8 @@ use crate::faction::{
     DiplomaticAction, FactionOwner, FactionView, PendingDiplomaticAction, RelationState,
 };
 use crate::galaxy::{
-    Anomalies, Anomaly, ForbiddenRegion, HostilePresence, HostileType, Planet, PortFacility,
-    Sovereignty, StarSystem, SystemAttributes,
+    Anomalies, Anomaly, AtSystem, ForbiddenRegion, Hostile, HostileHitpoints, HostileKind,
+    HostileStats, HostileType, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::facts::CombatVictor;
 use crate::knowledge::{
@@ -322,36 +322,76 @@ impl From<SavedHostileType> for HostileType {
     }
 }
 
+// #293: HostilePresence / SavedHostilePresence deleted. Hostile entities
+// serialize via the decomposed-component saved structs below
+// (`SavedAtSystem`, `SavedHostileHitpoints`, `SavedHostileStats`,
+// `SavedHostileKind`, `SavedHostileMarker`). Pre-#293 save files are no
+// longer compatible (pre-alpha release policy).
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedHostilePresence {
+pub struct SavedAtSystem {
     pub system_bits: u64,
-    pub strength: f64,
+}
+
+impl SavedAtSystem {
+    pub fn from_live(v: &AtSystem) -> Self {
+        Self {
+            system_bits: v.0.to_bits(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> AtSystem {
+        AtSystem(remap_entity(self.system_bits, map))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedHostileHitpoints {
     pub hp: f64,
     pub max_hp: f64,
-    pub hostile_type: SavedHostileType,
+}
+
+impl SavedHostileHitpoints {
+    pub fn from_live(v: &HostileHitpoints) -> Self {
+        Self { hp: v.hp, max_hp: v.max_hp }
+    }
+    pub fn into_live(self) -> HostileHitpoints {
+        HostileHitpoints { hp: self.hp, max_hp: self.max_hp }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedHostileStats {
+    pub strength: f64,
     pub evasion: f64,
 }
 
-impl SavedHostilePresence {
-    pub fn from_live(v: &HostilePresence) -> Self {
-        Self {
-            system_bits: v.system.to_bits(),
-            strength: v.strength,
-            hp: v.hp,
-            max_hp: v.max_hp,
-            hostile_type: (&v.hostile_type).into(),
-            evasion: v.evasion,
-        }
+impl SavedHostileStats {
+    pub fn from_live(v: &HostileStats) -> Self {
+        Self { strength: v.strength, evasion: v.evasion }
     }
-    pub fn into_live(self, map: &EntityMap) -> HostilePresence {
-        HostilePresence {
-            system: remap_entity(self.system_bits, map),
-            strength: self.strength,
-            hp: self.hp,
-            max_hp: self.max_hp,
-            hostile_type: self.hostile_type.into(),
-            evasion: self.evasion,
-        }
+    pub fn into_live(self) -> HostileStats {
+        HostileStats { strength: self.strength, evasion: self.evasion }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedHostileKind(pub SavedHostileType);
+
+impl SavedHostileKind {
+    pub fn from_live(v: &HostileKind) -> Self {
+        Self((&v.0).into())
+    }
+    pub fn into_live(self) -> HostileKind {
+        HostileKind(self.0.into())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedHostileMarker;
+
+impl SavedHostileMarker {
+    pub fn into_live(self) -> Hostile {
+        Hostile
     }
 }
 
@@ -4216,7 +4256,17 @@ pub struct SavedComponentBag {
     pub planet: Option<SavedPlanet>,
     pub system_attributes: Option<SavedSystemAttributes>,
     pub sovereignty: Option<SavedSovereignty>,
-    pub hostile_presence: Option<SavedHostilePresence>,
+    // #293: Hostile entity decomposed components (replaces hostile_presence).
+    #[serde(default)]
+    pub at_system: Option<SavedAtSystem>,
+    #[serde(default)]
+    pub hostile_hitpoints: Option<SavedHostileHitpoints>,
+    #[serde(default)]
+    pub hostile_stats: Option<SavedHostileStats>,
+    #[serde(default)]
+    pub hostile_kind: Option<SavedHostileKind>,
+    #[serde(default)]
+    pub hostile_marker: Option<SavedHostileMarker>,
     pub obscured_by_gas: Option<SavedObscuredByGas>,
     pub port_facility: Option<SavedPortFacility>,
     pub anomalies: Option<SavedAnomalies>,

@@ -2629,7 +2629,7 @@ fn test_move_to_coordinates_command_results_in_loitering_arrival() {
 #[test]
 fn test_loitering_ship_not_engaged_by_resolve_combat() {
     use macrocosmo::galaxy::{
-        AtSystem, Hostile, HostileHitpoints, HostilePresence, HostileStats, HostileType,
+        AtSystem, Hostile, HostileHitpoints, HostileStats, HostileType,
     };
 
     let mut app = test_app();
