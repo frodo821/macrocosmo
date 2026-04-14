@@ -3,7 +3,7 @@ use mlua::Lua;
 use std::collections::HashMap;
 
 use crate::condition::ScopedFlags;
-use crate::event_system::{EventBus, EventSystem};
+use crate::event_system::EventSystem;
 use crate::player::PlayerEmpire;
 use crate::scripting::ScriptEngine;
 use crate::technology::GameFlags;
@@ -139,35 +139,157 @@ pub fn drain_script_events(
     }
 }
 
-/// Per-tick system that dispatches recently fired events from `EventSystem.fired_log`
-/// to Lua handlers registered via the `on()` API (stored in `_event_handlers`).
+/// Per-tick **exclusive** system that dispatches recently fired events from
+/// `EventSystem.fired_log` to Lua handlers — both:
+/// * the `on(event_id, filter, fn)` bus handlers (stored in `_event_handlers`), and
+/// * the `on_trigger` callback on the event definition itself (stored in the
+///   Lua `_event_definitions` table).
 ///
-/// This runs after `tick_events` so that events fired during this tick are
-/// available in `fired_log`. The fired_log is drained after processing to
-/// avoid re-dispatching the same events on subsequent ticks.
-pub fn dispatch_event_handlers(
-    engine: Res<ScriptEngine>,
-    mut event_system: ResMut<EventSystem>,
-    _bus: Res<EventBus>,
-) {
-    if event_system.fired_log.is_empty() {
+/// The system runs with exclusive `&mut World` access so that `event.gamestate`
+/// (a read-only world snapshot, #263) can be built inline and attached to the
+/// payload table before any Lua callback is invoked. `ScriptEngine` is
+/// re-acquired via `world.resource_scope` so we can hold both the Lua engine
+/// and `&mut World` at the same time.
+pub fn dispatch_event_handlers(world: &mut World) {
+    // Fast path: nothing fired, skip world scope dance.
+    let has_events = world
+        .get_resource::<EventSystem>()
+        .map(|es| !es.fired_log.is_empty())
+        .unwrap_or(false);
+    if !has_events {
         return;
     }
 
-    let lua = engine.lua();
+    // Drain fired log (mutable borrow scoped).
+    let fired_events: Vec<crate::event_system::FiredEvent> = {
+        let mut es = world.resource_mut::<EventSystem>();
+        es.fired_log.drain(..).collect()
+    };
 
-    // Collect events to dispatch, then clear the log
-    let fired_events: Vec<_> = event_system.fired_log.drain(..).collect();
+    // Borrow ScriptEngine out of the world so that we can use &mut World to
+    // build the gamestate snapshot for each dispatched event. `resource_scope`
+    // temporarily removes the resource, giving us a &mut World that excludes
+    // it; we restore it when the closure returns.
+    world.resource_scope::<ScriptEngine, _>(|world, engine| {
+        let lua = engine.lua();
+        for fired in &fired_events {
+            let payload = if let Some(ref p) = fired.payload {
+                p.clone()
+            } else {
+                let mut p = HashMap::new();
+                p.insert("event_id".to_string(), fired.event_id.clone());
+                p
+            };
 
-    for fired in &fired_events {
-        let payload = if let Some(ref p) = fired.payload {
-            p.clone()
-        } else {
-            let mut p = HashMap::new();
-            p.insert("event_id".to_string(), fired.event_id.clone());
-            p
+            // Build the payload table + attach live gamestate. Any error here
+            // is non-fatal; we log and move on so a malformed gamestate
+            // doesn't block other events from firing.
+            let payload_table = match lua.create_table() {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!("dispatch_event_handlers: failed to create payload table: {e}");
+                    continue;
+                }
+            };
+            for (k, v) in &payload {
+                let _ = payload_table.set(k.as_str(), v.as_str());
+            }
+            let _ = payload_table.set("event_id", fired.event_id.as_str());
+
+            match crate::scripting::gamestate_view::attach_gamestate(lua, &payload_table, world) {
+                Ok(()) => {}
+                Err(e) => warn!(
+                    "dispatch_event_handlers: failed to attach gamestate to '{}': {e}",
+                    fired.event_id
+                ),
+            }
+
+            // --- `on(id, filter, fn)` bus handlers ---
+            dispatch_bus_handlers(lua, &fired.event_id, &payload, &payload_table);
+
+            // --- `on_trigger` callback on the event definition ---
+            dispatch_on_trigger(lua, &fired.event_id, &payload_table);
+        }
+    });
+}
+
+/// Re-implementation of `EventBus::fire` that reuses a caller-built
+/// payload table (so `event.gamestate` is shared across all handlers for
+/// a single fire).
+fn dispatch_bus_handlers(
+    lua: &mlua::Lua,
+    event_id: &str,
+    payload: &HashMap<String, String>,
+    payload_table: &mlua::Table,
+) {
+    let Ok(handlers) = lua.globals().get::<mlua::Table>("_event_handlers") else {
+        return;
+    };
+    let len = handlers.len().unwrap_or(0);
+    if len == 0 {
+        return;
+    }
+    for i in 1..=len {
+        let Ok(entry) = handlers.get::<mlua::Table>(i) else {
+            continue;
         };
-        EventBus::fire(lua, &fired.event_id, &payload);
+        let Ok(eid) = entry.get::<String>("event_id") else {
+            continue;
+        };
+        if eid != event_id {
+            continue;
+        }
+        // Structural filter
+        if let Ok(filter) = entry.get::<mlua::Table>("filter") {
+            let mut matches = true;
+            for pair in filter.pairs::<String, String>() {
+                if let Ok((k, v)) = pair {
+                    if payload.get(&k).map(|pv| pv.as_str()) != Some(v.as_str()) {
+                        matches = false;
+                        break;
+                    }
+                }
+            }
+            if !matches {
+                continue;
+            }
+        }
+        if let Ok(func) = entry.get::<mlua::Function>("func") {
+            if let Err(e) = func.call::<()>(payload_table.clone()) {
+                warn!("EventBus handler error for {}: {}", event_id, e);
+            }
+        }
+    }
+}
+
+/// Dispatch the `on_trigger` callback declared on an event definition
+/// (`_event_definitions[i].on_trigger`). Unlike bus handlers (`on(id, fn)`),
+/// `on_trigger` is defined at `define_event { ... on_trigger = fn }` time and
+/// is keyed by the event definition's `id`.
+fn dispatch_on_trigger(lua: &mlua::Lua, event_id: &str, payload_table: &mlua::Table) {
+    let Ok(defs) = lua.globals().get::<mlua::Table>("_event_definitions") else {
+        return;
+    };
+    let Ok(len) = defs.len() else { return };
+    for i in 1..=len {
+        let Ok(def) = defs.get::<mlua::Table>(i) else {
+            continue;
+        };
+        let Ok(id) = def.get::<String>("id") else {
+            continue;
+        };
+        if id != event_id {
+            continue;
+        }
+        match def.get::<mlua::Value>("on_trigger") {
+            Ok(mlua::Value::Function(f)) => {
+                if let Err(e) = f.call::<()>(payload_table.clone()) {
+                    warn!("on_trigger error for event '{}': {}", event_id, e);
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {}
+        }
     }
 }
 
@@ -392,5 +514,217 @@ mod tests {
         assert_eq!(e2.get::<String>("event_id").unwrap(), "event_b");
         let e3: mlua::Table = events.get(3).unwrap();
         assert_eq!(e3.get::<String>("event_id").unwrap(), "event_c");
+    }
+
+    // ------------- #263 dispatch + gamestate integration tests -------------
+
+    use crate::event_system::FiredEvent;
+
+    /// Build a minimal world with ScriptEngine + EventSystem + a player empire
+    /// and clock, suitable for exercising `dispatch_event_handlers`.
+    fn make_world() -> World {
+        let mut world = World::new();
+        world.insert_resource(crate::time_system::GameClock::new(42));
+        world.insert_resource(EventSystem::default());
+        world.insert_resource(ScriptEngine::new().unwrap());
+        // Spawn a player empire so gamestate snapshot has something to show.
+        let mut tree = crate::technology::TechTree::default();
+        tree.researched
+            .insert(crate::technology::TechId("tech_a".to_string()));
+        let mut flags = GameFlags::default();
+        flags.set("fa");
+        world.spawn((
+            crate::player::Empire { name: "E".into() },
+            PlayerEmpire,
+            tree,
+            flags,
+            ScopedFlags::default(),
+        ));
+        world
+    }
+
+    #[test]
+    fn test_dispatch_attaches_gamestate_to_bus_handler() {
+        let mut world = make_world();
+
+        // Register a Lua `on` handler that records gamestate.clock.now.
+        {
+            let engine = world.resource::<ScriptEngine>();
+            engine
+                .lua()
+                .load(
+                    r#"
+                    _captured_now = -1
+                    _captured_empire_name = nil
+                    on("macrocosmo:test", function(evt)
+                        _captured_now = evt.gamestate.clock.now
+                        _captured_empire_name = evt.gamestate.player_empire.name
+                    end)
+                    "#,
+                )
+                .exec()
+                .unwrap();
+        }
+
+        // Fire via fired_log directly
+        {
+            let mut es = world.resource_mut::<EventSystem>();
+            es.fired_log.push(FiredEvent {
+                event_id: "macrocosmo:test".to_string(),
+                target: None,
+                fired_at: 42,
+                payload: None,
+            });
+        }
+
+        dispatch_event_handlers(&mut world);
+
+        let engine = world.resource::<ScriptEngine>();
+        let now: i64 = engine.lua().globals().get("_captured_now").unwrap();
+        assert_eq!(now, 42, "event.gamestate.clock.now must match GameClock");
+        let name: String = engine
+            .lua()
+            .globals()
+            .get("_captured_empire_name")
+            .unwrap();
+        assert_eq!(name, "E");
+    }
+
+    #[test]
+    fn test_dispatch_invokes_on_trigger_with_gamestate() {
+        let mut world = make_world();
+        {
+            let engine = world.resource::<ScriptEngine>();
+            engine
+                .lua()
+                .load(
+                    r#"
+                    _trigger_called = false
+                    _trigger_has_tech = false
+                    define_event {
+                        id = "harvest_ended",
+                        name = "Harvest Ended",
+                        on_trigger = function(evt)
+                            _trigger_called = true
+                            _trigger_has_tech = evt.gamestate.player_empire.techs.tech_a
+                        end,
+                    }
+                    "#,
+                )
+                .exec()
+                .unwrap();
+        }
+
+        {
+            let mut es = world.resource_mut::<EventSystem>();
+            es.fired_log.push(FiredEvent {
+                event_id: "harvest_ended".to_string(),
+                target: None,
+                fired_at: 42,
+                payload: None,
+            });
+        }
+
+        dispatch_event_handlers(&mut world);
+
+        let engine = world.resource::<ScriptEngine>();
+        let called: bool = engine.lua().globals().get("_trigger_called").unwrap();
+        assert!(called, "on_trigger must fire when event_id matches");
+        let has_tech: bool = engine.lua().globals().get("_trigger_has_tech").unwrap();
+        assert!(has_tech, "gamestate techs lookup must work inside on_trigger");
+    }
+
+    #[test]
+    fn test_dispatch_gamestate_mutation_inside_handler_fails_gracefully() {
+        let mut world = make_world();
+        {
+            let engine = world.resource::<ScriptEngine>();
+            engine
+                .lua()
+                .load(
+                    r#"
+                    _mutation_error = nil
+                    on("macrocosmo:bad", function(evt)
+                        local ok, err = pcall(function()
+                            evt.gamestate.clock.now = 999
+                        end)
+                        if not ok then
+                            _mutation_error = tostring(err)
+                        end
+                    end)
+                    "#,
+                )
+                .exec()
+                .unwrap();
+        }
+        {
+            let mut es = world.resource_mut::<EventSystem>();
+            es.fired_log.push(FiredEvent {
+                event_id: "macrocosmo:bad".to_string(),
+                target: None,
+                fired_at: 42,
+                payload: None,
+            });
+        }
+
+        dispatch_event_handlers(&mut world);
+
+        let engine = world.resource::<ScriptEngine>();
+        let err: Option<String> = engine.lua().globals().get("_mutation_error").ok();
+        let err = err.unwrap_or_default();
+        assert!(
+            err.contains("read-only"),
+            "mutation must fail with a read-only error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_empty_fired_log_is_noop() {
+        let mut world = make_world();
+        // No events fired. Should not panic, should not touch Lua state.
+        dispatch_event_handlers(&mut world);
+        // Sanity: resource still there.
+        assert!(world.get_resource::<EventSystem>().is_some());
+        assert!(world.get_resource::<ScriptEngine>().is_some());
+    }
+
+    #[test]
+    fn test_existing_event_scripts_still_work() {
+        // Regression: a pre-#263 event script that doesn't touch gamestate
+        // must still receive payload fields as before.
+        let mut world = make_world();
+        {
+            let engine = world.resource::<ScriptEngine>();
+            engine
+                .lua()
+                .load(
+                    r#"
+                    _old_style_cause = nil
+                    on("macrocosmo:building_lost", { cause = "combat" }, function(evt)
+                        _old_style_cause = evt.cause
+                    end)
+                    "#,
+                )
+                .exec()
+                .unwrap();
+        }
+        {
+            let mut es = world.resource_mut::<EventSystem>();
+            let mut payload = HashMap::new();
+            payload.insert("cause".to_string(), "combat".to_string());
+            payload.insert("building_id".to_string(), "mine".to_string());
+            es.fired_log.push(FiredEvent {
+                event_id: "macrocosmo:building_lost".to_string(),
+                target: None,
+                fired_at: 1,
+                payload: Some(payload),
+            });
+        }
+
+        dispatch_event_handlers(&mut world);
+
+        let engine = world.resource::<ScriptEngine>();
+        let cause: String = engine.lua().globals().get("_old_style_cause").unwrap();
+        assert_eq!(cause, "combat");
     }
 }
