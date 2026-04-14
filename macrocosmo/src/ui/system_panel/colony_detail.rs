@@ -2,6 +2,9 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 
 use crate::colony::{BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonyJobRates, ConstructionParams, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceStockpile, UpgradeOrder};
+use crate::communication::{
+    ColonyCommand, ColonyCommandKind, PendingColonyDispatch, PendingColonyDispatches,
+};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::galaxy::SystemAttributes;
 use crate::amount::{Amt, SignedAmt};
@@ -46,6 +49,11 @@ pub(super) fn draw_colony_detail(
     building_registry: &BuildingRegistry,
     job_registry: &JobRegistry,
     colony_panel_tab: &mut ColonyPanelTab,
+    // #270: Light-speed command routing. When `is_local_system` is false,
+    // build/demolish/upgrade pushes go through `dispatches` and are spawned
+    // as `PendingCommand` entities by `dispatch_pending_colony_commands`.
+    is_local_system: bool,
+    dispatches: &mut PendingColonyDispatches,
 ) {
     ui.label(
         egui::RichText::new("Colony")
@@ -83,6 +91,8 @@ pub(super) fn draw_colony_detail(
             planets,
             design_registry,
             building_registry,
+            is_local_system,
+            dispatches,
         ),
         ColonyPanelTab::PopManagement => draw_pop_management_tab(
             ui,
@@ -120,6 +130,9 @@ fn draw_overview_tab(
     planets: &Query<&crate::galaxy::Planet>,
     design_registry: &crate::ship_design::ShipDesignRegistry,
     building_registry: &BuildingRegistry,
+    // #270: Light-speed command routing.
+    is_local_system: bool,
+    dispatches: &mut PendingColonyDispatches,
 ) {
     for (_colony_entity, colony, production, _build_queue, buildings, mut building_queue, maintenance_cost, food_consumption) in
         colonies.iter_mut()
@@ -379,30 +392,59 @@ fn draw_overview_tab(
             }
 
             if let Some((slot_idx, bid)) = demolish_request {
-                if let Some(bq) = building_queue.as_mut() {
-                    let def = building_registry.get(bid.as_str());
-                    let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                    let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
-                    bq.demolition_queue.push(DemolitionOrder {
-                        target_slot: slot_idx,
-                        building_id: bid.clone(),
-                        time_remaining: demo_time,
-                        minerals_refund: m_refund,
-                        energy_refund: e_refund,
+                if is_local_system {
+                    if let Some(bq) = building_queue.as_mut() {
+                        let def = building_registry.get(bid.as_str());
+                        let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                        let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
+                        bq.demolition_queue.push(DemolitionOrder {
+                            target_slot: slot_idx,
+                            building_id: bid.clone(),
+                            time_remaining: demo_time,
+                            minerals_refund: m_refund,
+                            energy_refund: e_refund,
+                        });
+                        info!("Demolition order added: {} in slot {}", bid, slot_idx);
+                    }
+                } else {
+                    dispatches.queue.push(PendingColonyDispatch {
+                        target_system: system_entity,
+                        command: ColonyCommand {
+                            target_planet: Some(planet_entity),
+                            kind: ColonyCommandKind::DemolishBuilding { target_slot: slot_idx },
+                        },
                     });
-                    info!("Demolition order added: {} in slot {}", bid, slot_idx);
+                    info!("Demolition command dispatched to remote colony (slot {}, {})", slot_idx, bid);
                 }
             }
             if let Some((slot_idx, target_id, minerals, energy, time)) = upgrade_request {
-                if let Some(bq) = building_queue.as_mut() {
-                    bq.upgrade_queue.push(UpgradeOrder {
-                        slot_index: slot_idx,
-                        target_id: BuildingId::new(&target_id),
-                        minerals_remaining: minerals,
-                        energy_remaining: energy,
-                        build_time_remaining: time,
+                if is_local_system {
+                    if let Some(bq) = building_queue.as_mut() {
+                        bq.upgrade_queue.push(UpgradeOrder {
+                            slot_index: slot_idx,
+                            target_id: BuildingId::new(&target_id),
+                            minerals_remaining: minerals,
+                            energy_remaining: energy,
+                            build_time_remaining: time,
+                        });
+                        info!("Upgrade order added: {} in slot {}", target_id, slot_idx);
+                    }
+                } else {
+                    // #270: Remote path — arrival will re-resolve cost/time
+                    // from the upgrade_to path, so we discard the UI's
+                    // pre-computed values here.
+                    let _ = (minerals, energy, time);
+                    dispatches.queue.push(PendingColonyDispatch {
+                        target_system: system_entity,
+                        command: ColonyCommand {
+                            target_planet: Some(planet_entity),
+                            kind: ColonyCommandKind::UpgradeBuilding {
+                                slot_index: slot_idx,
+                                target_id: target_id.clone(),
+                            },
+                        },
                     });
-                    info!("Upgrade order added: {} in slot {}", target_id, slot_idx);
+                    info!("Upgrade command dispatched to remote colony (slot {} -> {})", slot_idx, target_id);
                 }
             }
 
@@ -429,21 +471,38 @@ fn draw_overview_tab(
                     }
                 }
                 if let Some(bid) = build_building_request {
-                    if let Some(mut bq) = building_queue {
-                        let def = building_registry.get(bid.as_str());
-                        let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                        let base_time = def.map(|d| d.build_time).unwrap_or(10);
-                        let eff_m = base_m.mul_amt(bldg_cost_mod);
-                        let eff_e = base_e.mul_amt(bldg_cost_mod);
-                        let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                        bq.queue.push(BuildingOrder {
-                            building_id: bid.clone(),
-                            target_slot: slot_idx,
-                            minerals_remaining: eff_m,
-                            energy_remaining: eff_e,
-                            build_time_remaining: eff_time,
+                    if is_local_system {
+                        if let Some(mut bq) = building_queue {
+                            let def = building_registry.get(bid.as_str());
+                            let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
+                            let base_time = def.map(|d| d.build_time).unwrap_or(10);
+                            let eff_m = base_m.mul_amt(bldg_cost_mod);
+                            let eff_e = base_e.mul_amt(bldg_cost_mod);
+                            let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                            bq.queue.push(BuildingOrder {
+                                building_id: bid.clone(),
+                                target_slot: slot_idx,
+                                minerals_remaining: eff_m,
+                                energy_remaining: eff_e,
+                                build_time_remaining: eff_time,
+                            });
+                            info!("Building order added: {} in slot {}", bid, slot_idx);
+                        }
+                    } else {
+                        // #270: Remote path — arrival will re-resolve
+                        // cost/time from the target's ConstructionParams
+                        // and BuildingRegistry.
+                        dispatches.queue.push(PendingColonyDispatch {
+                            target_system: system_entity,
+                            command: ColonyCommand {
+                                target_planet: Some(planet_entity),
+                                kind: ColonyCommandKind::QueueBuilding {
+                                    building_id: bid.0.clone(),
+                                    target_slot: slot_idx,
+                                },
+                            },
                         });
-                        info!("Building order added: {} in slot {}", bid, slot_idx);
+                        info!("Building command dispatched to remote colony (slot {}, {})", slot_idx, bid);
                     }
                 }
             }

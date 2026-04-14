@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile};
+use crate::communication::PendingColonyDispatches;
 use crate::scripting::building_api::BuildingRegistry;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
@@ -46,6 +47,9 @@ pub(super) fn draw_planet_window(
     building_registry: &BuildingRegistry,
     job_registry: &crate::species::JobRegistry,
     colony_panel_tab: &mut crate::ui::ColonyPanelTab,
+    // #270: Light-speed command routing propagated from draw_main_panels_system.
+    is_local_system: bool,
+    dispatches: &mut PendingColonyDispatches,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
         return;
@@ -114,6 +118,8 @@ pub(super) fn draw_planet_window(
                             building_registry,
                             job_registry,
                             colony_panel_tab,
+                            is_local_system,
+                            dispatches,
                         );
                     });
             } else {

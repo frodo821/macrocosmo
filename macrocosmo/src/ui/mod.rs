@@ -684,6 +684,7 @@ fn draw_main_panels_system(
         &deliverables_res.structure_registry,
         &deliverable_avail,
         &mut system_actions,
+        &mut deliverables_res.colony_dispatches,
     );
 
     for action in colonization_actions {

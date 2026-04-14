@@ -88,6 +88,10 @@ pub struct MainPanelDeliverableRes<'w, 's> {
         (&'static crate::technology::GameFlags, &'static crate::condition::ScopedFlags),
         With<crate::player::PlayerEmpire>,
     >,
+    /// #270: Write-queue for remote colony build commands. UI systems push
+    /// entries here; `dispatch_pending_colony_commands` drains them during
+    /// `Update` and turns each into a `PendingCommand` with light-speed delay.
+    pub colony_dispatches: ResMut<'w, crate::communication::PendingColonyDispatches>,
 }
 
 #[derive(SystemParam)]

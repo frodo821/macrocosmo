@@ -12,9 +12,11 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue, BuildingQueue, SystemBuildingQueue};
 use macrocosmo::communication::{
-    self, ColonyCommand, ColonyCommandKind, CommandLog, PendingCommand, RemoteCommand,
+    self, ColonyCommand, ColonyCommandKind, CommandLog, PendingColonyDispatch,
+    PendingColonyDispatches, PendingCommand, RemoteCommand,
 };
-use macrocosmo::player::PlayerEmpire;
+use macrocosmo::components::Position;
+use macrocosmo::player::{Player, PlayerEmpire, StationedAt};
 use macrocosmo::scripting::building_api::BuildingId;
 
 use common::{
@@ -28,6 +30,23 @@ fn build_app() -> App {
     app.add_systems(
         Update,
         communication::process_pending_commands
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+    app
+}
+
+/// Build an app with the full communication dispatch chain wired in. Used
+/// by the tests that exercise the UI-push-to-arrival pipeline (Commit C).
+fn build_app_with_dispatch() -> App {
+    let mut app = test_app();
+    app.init_resource::<PendingColonyDispatches>();
+    app.add_systems(
+        Update,
+        (
+            communication::dispatch_pending_colony_commands,
+            communication::process_pending_commands,
+        )
+            .chain()
             .after(macrocosmo::time_system::advance_game_time),
     );
     app
@@ -417,6 +436,158 @@ fn pending_colony_command_not_applied_before_arrival() {
         .iter(app.world())
         .count();
     assert_eq!(alive, 1);
+}
+
+// --------------------------------------------------------------------------
+// UI dispatch pipeline (Commit C): UI push → send_remote_command → arrival
+// --------------------------------------------------------------------------
+
+/// Local dispatch: player is at the target system, so the light-speed delay
+/// is zero and the command applies the same frame it's pushed.
+#[test]
+fn local_dispatch_applies_same_frame() {
+    let mut app = build_app_with_dispatch();
+    let (sys, planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Home",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    app.world_mut()
+        .spawn((Player, StationedAt { system: sys }));
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: sys,
+            command: ColonyCommand {
+                target_planet: Some(planet),
+                kind: ColonyCommandKind::QueueBuilding {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            },
+        });
+
+    // Align LastProductionTick so the build queue tick sees delta=1.
+    app.world_mut()
+        .resource_mut::<macrocosmo::colony::LastProductionTick>()
+        .0 = 0;
+    advance_time(&mut app, 1);
+
+    let bq = app
+        .world()
+        .get::<macrocosmo::colony::BuildingQueue>(colony)
+        .unwrap();
+    // Either the order is in the queue or already in the slot if cost+time
+    // completed in the single tick. Verify progression.
+    let present_in_queue = bq.queue.iter().any(|o| o.target_slot == 0);
+    let present_in_slot = app
+        .world()
+        .get::<macrocosmo::colony::Buildings>(colony)
+        .map(|b| b.slots.get(0).and_then(|s| s.as_ref()).is_some())
+        .unwrap_or(false);
+    assert!(
+        present_in_queue || present_in_slot,
+        "local dispatch should result in queued (or completed) order by next frame"
+    );
+}
+
+/// Remote dispatch: player is 10 ly away → ~600 hd light delay. Command
+/// should NOT apply until the clock advances past `arrives_at`.
+#[test]
+fn remote_dispatch_delayed_by_light_speed() {
+    let mut app = build_app_with_dispatch();
+    let (home_sys, _home_planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Home",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let (target_sys, target_planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Target",
+        [10.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let target_colony = spawn_test_colony(
+        app.world_mut(),
+        target_planet,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    app.world_mut()
+        .spawn((Player, StationedAt { system: home_sys }));
+
+    app.world_mut()
+        .resource_mut::<PendingColonyDispatches>()
+        .queue
+        .push(PendingColonyDispatch {
+            target_system: target_sys,
+            command: ColonyCommand {
+                target_planet: Some(target_planet),
+                kind: ColonyCommandKind::QueueBuilding {
+                    building_id: "mine".to_string(),
+                    target_slot: 0,
+                },
+            },
+        });
+
+    // Run one frame. Dispatch drains and spawns PendingCommand;
+    // process_pending_commands sees arrives_at > clock.elapsed and skips.
+    advance_time(&mut app, 1);
+
+    let bq = app
+        .world()
+        .get::<macrocosmo::colony::BuildingQueue>(target_colony)
+        .unwrap();
+    assert!(
+        bq.queue.is_empty(),
+        "remote colony queue should be empty before light delay elapses"
+    );
+
+    let pending_count = app
+        .world_mut()
+        .query::<&PendingCommand>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        pending_count, 1,
+        "exactly one in-flight PendingCommand should exist"
+    );
+
+    // Advance past light delay (10 ly => 600 hd). Command was dispatched
+    // during the previous `advance_time(1)` so `sent_at = 1` and
+    // `arrives_at = 1 + 600 = 601`.
+    let arrives_at = 1 + macrocosmo::physics::light_delay_hexadies(10.0);
+    run_until_arrival(&mut app, arrives_at);
+
+    let bq = app
+        .world()
+        .get::<macrocosmo::colony::BuildingQueue>(target_colony)
+        .unwrap();
+    let present_in_queue = bq.queue.iter().any(|o| o.target_slot == 0);
+    let present_in_slot = app
+        .world()
+        .get::<macrocosmo::colony::Buildings>(target_colony)
+        .map(|b| b.slots.get(0).and_then(|s| s.as_ref()).is_some())
+        .unwrap_or(false);
+    assert!(
+        present_in_queue || present_in_slot,
+        "remote command should apply once clock reaches arrives_at"
+    );
 }
 
 // --------------------------------------------------------------------------

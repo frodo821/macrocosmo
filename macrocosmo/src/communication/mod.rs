@@ -7,11 +7,35 @@ pub struct CommunicationPlugin;
 
 impl Plugin for CommunicationPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<PendingColonyDispatches>();
         app.add_systems(
-                Update,
-                (process_messages, process_courier_ships, process_pending_commands),
-            );
+            Update,
+            (
+                process_messages,
+                process_courier_ships,
+                // #270: Must drain BEFORE process_pending_commands so
+                // zero-delay (local) dispatches arrive the same frame.
+                dispatch_pending_colony_commands,
+                process_pending_commands,
+            )
+                .chain(),
+        );
     }
+}
+
+/// #270: UI-to-dispatcher queue for colony build commands. UI code pushes
+/// `PendingColonyDispatch` entries from within egui systems;
+/// `dispatch_pending_colony_commands` drains them during `Update` and turns
+/// each entry into a `PendingCommand` with the appropriate light-speed
+/// delay (zero if the player is at the target system).
+#[derive(Resource, Default)]
+pub struct PendingColonyDispatches {
+    pub queue: Vec<PendingColonyDispatch>,
+}
+
+pub struct PendingColonyDispatch {
+    pub target_system: Entity,
+    pub command: ColonyCommand,
 }
 
 /// A message in transit (light-speed or via courier)
@@ -196,6 +220,65 @@ pub struct CommandLogEntry {
     pub sent_at: i64,
     pub arrives_at: i64,
     pub arrived: bool,
+}
+
+/// #270: Drain `PendingColonyDispatches` and turn each entry into a
+/// `PendingCommand` with the appropriate light-speed delay. Runs in
+/// `Update` before `process_pending_commands` so local (zero-delay)
+/// commands are applied the same frame.
+pub fn dispatch_pending_colony_commands(
+    mut commands: Commands,
+    clock: Res<GameClock>,
+    mut queue: ResMut<PendingColonyDispatches>,
+    stars: Query<&crate::components::Position, With<crate::galaxy::StarSystem>>,
+    ship_positions: Query<&crate::components::Position, With<crate::ship::Ship>>,
+    player_q: Query<
+        (&crate::player::StationedAt, Option<&crate::player::AboardShip>),
+        With<crate::player::Player>,
+    >,
+    mut empire_q: Query<&mut CommandLog, With<crate::player::PlayerEmpire>>,
+) {
+    if queue.queue.is_empty() {
+        return;
+    }
+    let Ok(mut command_log) = empire_q.single_mut() else {
+        queue.queue.clear();
+        return;
+    };
+
+    // Resolve player origin position.
+    let origin = player_q
+        .iter()
+        .next()
+        .and_then(|(stationed, aboard)| match aboard {
+            Some(ab) => ship_positions.get(ab.ship).ok().map(|p| p.as_array()),
+            None => stars.get(stationed.system).ok().map(|p| p.as_array()),
+        });
+    let Some(origin) = origin else {
+        warn!("dispatch_pending_colony_commands: cannot resolve player origin, dropping commands");
+        queue.queue.clear();
+        return;
+    };
+
+    for dispatch in queue.queue.drain(..) {
+        let Ok(target_pos) = stars.get(dispatch.target_system) else {
+            warn!(
+                "dispatch_pending_colony_commands: target_system {:?} has no Position",
+                dispatch.target_system
+            );
+            continue;
+        };
+        let destination = target_pos.as_array();
+        send_remote_command(
+            &mut commands,
+            origin,
+            destination,
+            clock.elapsed,
+            RemoteCommand::Colony(dispatch.command),
+            dispatch.target_system,
+            &mut command_log,
+        );
+    }
 }
 
 /// Send a remote command from `origin` to `destination`. The command will

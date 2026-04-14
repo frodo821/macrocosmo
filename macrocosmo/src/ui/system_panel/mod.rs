@@ -149,6 +149,8 @@ pub fn draw_system_panel(
     structure_registry: &StructureRegistry,
     deliverable_avail: &DeliverableAvailabilityCtx<'_>,
     system_actions_out: &mut SystemPanelActions,
+    // #270: Resource used by planet/system/ship UI to queue remote commands.
+    dispatches: &mut crate::communication::PendingColonyDispatches,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -398,6 +400,8 @@ pub fn draw_system_panel(
         building_registry,
         job_registry,
         colony_panel_tab,
+        is_local_system,
+        dispatches,
     );
 }
 
