@@ -4,7 +4,7 @@ mod planet_window;
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DeliverableStockpile, DemolitionOrder, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue, UpgradeOrder};
+use crate::colony::{BuildOrder, BuildQueue, BuildingQueue, Buildings, Colony, ColonizationQueue, ConstructionParams, DeliverableStockpile, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
 use crate::condition::{EvalContext, ScopeData};
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry};
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
@@ -371,7 +371,6 @@ pub fn draw_system_panel(
                                         structure_registry,
                                         deliverable_avail,
                                         system_actions_out,
-                                        is_local_system,
                                         dispatches,
                                         remote_commands,
                                         clock.elapsed,
@@ -406,7 +405,6 @@ pub fn draw_system_panel(
         building_registry,
         job_registry,
         colony_panel_tab,
-        is_local_system,
         dispatches,
     );
 }
@@ -670,16 +668,10 @@ fn draw_right_panel(
     structure_registry: &StructureRegistry,
     deliverable_avail: &DeliverableAvailabilityCtx<'_>,
     system_actions_out: &mut SystemPanelActions,
-    // #270: Light-speed command routing.
-    is_local_system: bool,
     dispatches: &mut crate::communication::PendingColonyDispatches,
-    // #270: In-flight commands for the selected system (transit feedback).
     remote_commands: &Query<&crate::communication::PendingCommand>,
     clock_elapsed: i64,
 ) {
-    // #270: In-flight commands for this system (transit feedback). Listed
-    // before the rest of the panel so the player immediately sees feedback
-    // after clicking a build/demolish/upgrade button on a remote system.
     draw_in_flight_commands_section(ui, sel_entity, remote_commands, clock_elapsed);
 
     // === Docked Ships ===
@@ -857,62 +849,28 @@ fn draw_right_panel(
             }
         }
 
-        if let Some((slot_idx, bid)) = sys_demolish_request {
-            if is_local_system {
-                if let Some(mut bq) = sys_bldg_queue {
-                    let def = building_registry.get(bid.as_str());
-                    let (m_refund, e_refund) = def.map(|d| d.demolition_refund()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                    let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
-                    bq.demolition_queue.push(DemolitionOrder {
+        if let Some((slot_idx, _bid)) = sys_demolish_request {
+            dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                target_system: sel_entity,
+                command: crate::communication::ColonyCommand {
+                    target_planet: None,
+                    kind: crate::communication::ColonyCommandKind::DemolishBuilding {
                         target_slot: slot_idx,
-                        building_id: bid.clone(),
-                        time_remaining: demo_time,
-                        minerals_refund: m_refund,
-                        energy_refund: e_refund,
-                    });
-                    info!("System building demolition order added: {} in slot {}", bid, slot_idx);
-                }
-            } else {
-                dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                    target_system: sel_entity,
-                    command: crate::communication::ColonyCommand {
-                        target_planet: None,
-                        kind: crate::communication::ColonyCommandKind::DemolishBuilding {
-                            target_slot: slot_idx,
-                        },
                     },
-                });
-                info!("System building demolition dispatched to remote system (slot {}, {})", slot_idx, bid);
-            }
+                },
+            });
         }
-        if let Some((slot_idx, target_id, minerals, energy, time)) = sys_upgrade_request {
-            if is_local_system {
-                if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
-                    bq.upgrade_queue.push(UpgradeOrder {
+        if let Some((slot_idx, target_id, _, _, _)) = sys_upgrade_request {
+            dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                target_system: sel_entity,
+                command: crate::communication::ColonyCommand {
+                    target_planet: None,
+                    kind: crate::communication::ColonyCommandKind::UpgradeBuilding {
                         slot_index: slot_idx,
-                        target_id: BuildingId::new(&target_id),
-                        minerals_remaining: minerals,
-                        energy_remaining: energy,
-                        build_time_remaining: time,
-                    });
-                    info!("System building upgrade order added: {} in slot {}", target_id, slot_idx);
-                }
-            } else {
-                // #270: Remote path discards pre-computed cost/time; arrival
-                // re-resolves them from the UpgradePath at the target.
-                let _ = (minerals, energy, time);
-                dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                    target_system: sel_entity,
-                    command: crate::communication::ColonyCommand {
-                        target_planet: None,
-                        kind: crate::communication::ColonyCommandKind::UpgradeBuilding {
-                            slot_index: slot_idx,
-                            target_id: target_id.clone(),
-                        },
+                        target_id,
                     },
-                });
-                info!("System building upgrade dispatched to remote system (slot {} -> {})", slot_idx, target_id);
-            }
+                },
+            });
         }
 
         // Build system building buttons
@@ -944,36 +902,16 @@ fn draw_right_panel(
                     }
                 }
                 if let Some(bid) = build_sys_building_request {
-                    if is_local_system {
-                        if let Ok((_, Some(mut bq))) = system_buildings_q.get_mut(sel_entity) {
-                            let def = building_registry.get(bid.as_str());
-                            let (base_m, base_e) = def.map(|d| d.build_cost()).unwrap_or((Amt::ZERO, Amt::ZERO));
-                            let base_time = def.map(|d| d.build_time).unwrap_or(10);
-                            let eff_m = base_m.mul_amt(bldg_cost_mod);
-                            let eff_e = base_e.mul_amt(bldg_cost_mod);
-                            let eff_time = (base_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                            bq.queue.push(BuildingOrder {
-                                building_id: bid.clone(),
+                    dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                        target_system: sel_entity,
+                        command: crate::communication::ColonyCommand {
+                            target_planet: None,
+                            kind: crate::communication::ColonyCommandKind::QueueBuilding {
+                                building_id: bid.0,
                                 target_slot: slot_idx,
-                                minerals_remaining: eff_m,
-                                energy_remaining: eff_e,
-                                build_time_remaining: eff_time,
-                            });
-                            info!("System building order added: {} in slot {}", bid, slot_idx);
-                        }
-                    } else {
-                        dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                            target_system: sel_entity,
-                            command: crate::communication::ColonyCommand {
-                                target_planet: None,
-                                kind: crate::communication::ColonyCommandKind::QueueBuilding {
-                                    building_id: bid.0.clone(),
-                                    target_slot: slot_idx,
-                                },
                             },
-                        });
-                        info!("System building dispatched to remote system (slot {}, {})", slot_idx, bid);
-                    }
+                        },
+                    });
                 }
             }
         }
@@ -1125,52 +1063,20 @@ fn draw_right_panel(
                     });
                 }
 
-                if let Some((design_id, display_name, minerals_cost, energy_cost, build_time)) =
+                if let Some((design_id, _display_name, _minerals_cost, _energy_cost, _build_time)) =
                     build_request
                 {
-                    if is_local_system {
-                        // Re-query mutably to push the order onto the host colony's BuildQueue.
-                        let display_name_log = display_name.clone();
-                        for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
-                            colonies.iter_mut()
-                        {
-                            if colony_entity != host {
-                                continue;
-                            }
-                            if let Some(bq) = build_queue.as_mut() {
-                                bq.queue.push(BuildOrder {
-                                    kind: crate::colony::BuildKind::default(),
-                                    design_id: design_id.clone(),
-                                    display_name: display_name.clone(),
-                                    minerals_cost,
-                                    minerals_invested: Amt::ZERO,
-                                    energy_cost,
-                                    energy_invested: Amt::ZERO,
-                                    build_time_total: build_time,
-                                    build_time_remaining: build_time,
-                                });
-                                info!("Build order added: {}", display_name_log);
-                            }
-                            break;
-                        }
-                    } else {
-                        // #270: Remote ship build. Arrival re-resolves cost /
-                        // time from ShipDesignRegistry (modifiers not applied
-                        // — ship builds have no empire modifier yet).
-                        let _ = (minerals_cost, energy_cost, build_time, display_name);
-                        dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                            target_system: sel_entity,
-                            command: crate::communication::ColonyCommand {
-                                target_planet: None,
-                                kind: crate::communication::ColonyCommandKind::QueueShipBuild {
-                                    host_colony: host,
-                                    design_id: design_id.clone(),
-                                    build_kind: crate::colony::BuildKind::Ship,
-                                },
+                    dispatches.queue.push(crate::communication::PendingColonyDispatch {
+                        target_system: sel_entity,
+                        command: crate::communication::ColonyCommand {
+                            target_planet: None,
+                            kind: crate::communication::ColonyCommandKind::QueueShipBuild {
+                                host_colony: host,
+                                design_id,
+                                build_kind: crate::colony::BuildKind::Ship,
                             },
-                        });
-                        info!("Ship build dispatched to remote colony: {}", design_id);
-                    }
+                        },
+                    });
                 }
 
                 // #229: Deliverables — shipyard-buildable deep-space structures.
@@ -1226,55 +1132,32 @@ fn draw_right_panel(
                             });
                         });
 
+                    // #270: Deliverable dispatch wiring lands in Commit H
+                    // (QueueDeliverableBuild payload variant). Until then,
+                    // deliverable pushes go directly to the host BuildQueue.
                     if let Some((def_id, display_name, cargo_size, m_cost, e_cost, build_time)) =
                         deliverable_request
                     {
-                        if is_local_system {
-                            let display_name_log = display_name.clone();
-                            for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
-                                colonies.iter_mut()
-                            {
-                                if colony_entity != host {
-                                    continue;
-                                }
-                                if let Some(bq) = build_queue.as_mut() {
-                                    bq.queue.push(BuildOrder {
-                                        kind: crate::colony::BuildKind::Deliverable { cargo_size },
-                                        design_id: def_id.clone(),
-                                        display_name: display_name.clone(),
-                                        minerals_cost: m_cost,
-                                        minerals_invested: Amt::ZERO,
-                                        energy_cost: e_cost,
-                                        energy_invested: Amt::ZERO,
-                                        build_time_total: build_time,
-                                        build_time_remaining: build_time,
-                                    });
-                                    info!("Deliverable order added: {}", display_name_log);
-                                }
-                                break;
+                        for (colony_entity, _c, _prod, mut build_queue, _b, _bq, _m, _f) in
+                            colonies.iter_mut()
+                        {
+                            if colony_entity != host {
+                                continue;
                             }
-                        } else {
-                            // #270: Remote deliverable build. Note: deliverable
-                            // defs live in StructureRegistry (not ShipDesignRegistry),
-                            // so the current arrival handler can't re-resolve them.
-                            // Work around by sending a minimal dispatch that will
-                            // warn; proper deliverable-registry handling is a
-                            // follow-up. TODO(#270-followup).
-                            let _ = (display_name, m_cost, e_cost, build_time);
-                            dispatches.queue.push(crate::communication::PendingColonyDispatch {
-                                target_system: sel_entity,
-                                command: crate::communication::ColonyCommand {
-                                    target_planet: None,
-                                    kind: crate::communication::ColonyCommandKind::QueueShipBuild {
-                                        host_colony: host,
-                                        design_id: def_id.clone(),
-                                        build_kind: crate::colony::BuildKind::Deliverable {
-                                            cargo_size,
-                                        },
-                                    },
-                                },
-                            });
-                            info!("Deliverable build dispatched to remote colony: {}", def_id);
+                            if let Some(bq) = build_queue.as_mut() {
+                                bq.queue.push(BuildOrder {
+                                    kind: crate::colony::BuildKind::Deliverable { cargo_size },
+                                    design_id: def_id,
+                                    display_name,
+                                    minerals_cost: m_cost,
+                                    minerals_invested: Amt::ZERO,
+                                    energy_cost: e_cost,
+                                    energy_invested: Amt::ZERO,
+                                    build_time_total: build_time,
+                                    build_time_remaining: build_time,
+                                });
+                            }
+                            break;
                         }
                     }
                 }

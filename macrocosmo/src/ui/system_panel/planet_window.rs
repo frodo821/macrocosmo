@@ -47,8 +47,6 @@ pub(super) fn draw_planet_window(
     building_registry: &BuildingRegistry,
     job_registry: &crate::species::JobRegistry,
     colony_panel_tab: &mut crate::ui::ColonyPanelTab,
-    // #270: Light-speed command routing propagated from draw_main_panels_system.
-    is_local_system: bool,
     dispatches: &mut PendingColonyDispatches,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
@@ -118,7 +116,6 @@ pub(super) fn draw_planet_window(
                             building_registry,
                             job_registry,
                             colony_panel_tab,
-                            is_local_system,
                             dispatches,
                         );
                     });
