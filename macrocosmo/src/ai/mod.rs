@@ -31,6 +31,7 @@
 
 pub mod convert;
 pub mod emit;
+pub mod npc_decision;
 pub mod plugin;
 pub mod schema;
 

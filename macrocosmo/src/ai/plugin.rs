@@ -85,6 +85,11 @@ impl Plugin for AiPlugin {
                 Update,
                 declare_foreign_slots_on_awareness.in_set(AiTickSet::MetricProduce),
             )
+            // #173: NPC decision tick — hand-written no-op default policy.
+            .add_systems(
+                Update,
+                super::npc_decision::npc_decision_tick.in_set(AiTickSet::Reason),
+            )
             .configure_sets(
                 Update,
                 (
