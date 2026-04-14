@@ -465,9 +465,14 @@ fn test_empire_owned_ships() {
 
     advance_time(&mut app2, 1);
 
-    // Sovereignty should be set to the empire owner
+    // #295 (S-1): Sovereignty is now derived from Core ship presence, not
+    // colony population. Without a Core ship (S-3 #296 not yet landed), a
+    // system with only colonies has no sovereign owner.
+    // TODO(#296): Restore `Some(Owner::Empire(empire2))` assertion once Core
+    // ships are auto-spawned at empire founding.
+    let _ = empire2;
     let sov = app2.world().get::<Sovereignty>(sys2).unwrap();
-    assert_eq!(sov.owner, Some(Owner::Empire(empire2)));
+    assert_eq!(sov.owner, None);
 }
 
 #[test]

@@ -892,6 +892,31 @@ pub fn faction_can_diplomacy(
         .unwrap_or(false)
 }
 
+/// #295 (S-1): Derive the sovereign owner of a star system from the Core ship
+/// present in that system. Returns `Some(faction_entity)` when a Core ship with
+/// a [`FactionOwner`] sits in `system`, `None` otherwise.
+///
+/// The sovereign owner of a system is defined by the Core ship stationed there
+/// — removing the Core ship removes sovereignty. This replaces the previous
+/// colony-presence-based hardcoded `player_empire` heuristic.
+///
+/// TODO(#296): Filter by a dedicated `CoreShip` marker once S-3 lands. Until
+/// then, this helper filters by `With<AtSystem>` — currently populated only on
+/// hostile entities, so `system_owner` effectively returns `None` for all
+/// player-held systems until S-2 (#297) attaches `FactionOwner` to ships and
+/// S-3 (#296) introduces the `CoreShip` marker.
+pub fn system_owner(
+    system: Entity,
+    at_system: &Query<(&crate::galaxy::AtSystem, &FactionOwner)>,
+) -> Option<Entity> {
+    for (at, owner) in at_system.iter() {
+        if at.0 == system {
+            return Some(owner.0);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

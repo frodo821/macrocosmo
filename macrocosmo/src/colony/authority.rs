@@ -1,14 +1,13 @@
 use bevy::prelude::*;
 
 use crate::amount::Amt;
-use crate::galaxy::{Planet, StarSystem, Sovereignty};
+use crate::faction::{system_owner, FactionOwner};
+use crate::galaxy::{AtSystem, Planet, Sovereignty, StarSystem};
 use crate::modifier::ModifiedValue;
 use crate::ship::Owner;
 use crate::time_system::GameClock;
 
-use super::{
-    Colony, LastProductionTick, ResourceCapacity, ResourceStockpile,
-};
+use super::{Colony, LastProductionTick, ResourceCapacity, ResourceStockpile};
 
 /// Default authority produced per hexady by the capital colony.
 /// #160: canonical value is `GameBalance.base_authority_per_hexadies`.
@@ -117,29 +116,33 @@ pub fn tick_authority(
     }
 }
 
-/// Updates sovereignty of star systems based on colony presence.
+/// #295 (S-1): Derive sovereignty of each star system from Core ship presence.
+///
+/// A system is sovereign to `faction` when (and only when) a Core ship owned by
+/// `faction` is stationed in that system. Removing the Core ship removes
+/// sovereignty — colony presence alone does not confer ownership.
+///
+/// `Sovereignty.owner` is retained here as a cached derived view so that
+/// savebag / existing readers keep working without change. Readers that need
+/// live owner data should call [`system_owner`] directly.
+///
+/// TODO(#298): `control_score` semantics are placeholder (1.0 when owned, 0.0
+/// otherwise). Real control-score dynamics (population, garrison, distance
+/// decay) come in S-4.
 pub fn update_sovereignty(
-    colonies: Query<&Colony>,
     mut sovereignties: Query<(Entity, &mut Sovereignty)>,
-    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
-    planets: Query<&Planet>,
+    at_system: Query<(&AtSystem, &FactionOwner)>,
 ) {
-    let player_empire = empire_q.single().ok();
-
-    let mut colony_pop: std::collections::HashMap<Entity, f64> = std::collections::HashMap::new();
-    for colony in &colonies {
-        if let Some(sys) = colony.system(&planets) {
-            *colony_pop.entry(sys).or_insert(0.0) += colony.population;
-        }
-    }
-
     for (entity, mut sov) in &mut sovereignties {
-        if let Some(&pop) = colony_pop.get(&entity) {
-            sov.owner = player_empire.map(Owner::Empire);
-            sov.control_score = pop;
-        } else {
-            sov.owner = None;
-            sov.control_score = 0.0;
+        match system_owner(entity, &at_system) {
+            Some(faction) => {
+                sov.owner = Some(Owner::Empire(faction));
+                sov.control_score = 1.0;
+            }
+            None => {
+                sov.owner = None;
+                sov.control_score = 0.0;
+            }
         }
     }
 }
