@@ -2703,3 +2703,86 @@ fn test_scout_report_via_return() {
         "ScoutReport must be removed after Return-mode delivery"
     );
 }
+
+/// #266: A `Loitering` ship that receives a `QueuedCommand::MoveTo` should
+/// route out of the deep-space position and eventually transition to
+/// `SubLight` or `InFTL` / `Docked` at the target. This covers the
+/// downstream pipeline regardless of how the command is produced — the UI
+/// context menu fix (which is not itself testable in headless mode) only
+/// guarantees that queueing the command is *possible*.
+#[test]
+fn test_moveto_from_loitering_routes_ship_out() {
+    let mut app = test_app();
+    let sys_home = spawn_test_system(
+        app.world_mut(),
+        "Home",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let sys_target = spawn_test_system(
+        app.world_mut(),
+        "Target",
+        [5.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    let loiter_pos = [2.0, 0.0, 0.0];
+    let ship = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Loiterer".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 20.0,
+                player_aboard: false,
+                home_port: sys_home,
+                design_revision: 0,
+            },
+            ShipState::Loitering { position: loiter_pos },
+            Position::from(loiter_pos),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            CommandQueue::default(),
+            Cargo::default(),
+            ShipModifiers::default(),
+        ))
+        .id();
+
+    // Simulate what the fixed context menu does: enqueue a MoveTo.
+    app.world_mut()
+        .get_mut::<CommandQueue>(ship)
+        .unwrap()
+        .commands
+        .push(QueuedCommand::MoveTo { system: sys_target });
+
+    // Advance until the ship leaves Loitering (should happen on the first
+    // process_command_queue pass).
+    let mut left_loitering = false;
+    for _ in 0..20 {
+        advance_time(&mut app, 1);
+        let state = app.world().get::<ShipState>(ship).unwrap();
+        if !matches!(state, ShipState::Loitering { .. }) {
+            left_loitering = true;
+            break;
+        }
+    }
+    assert!(
+        left_loitering,
+        "Loitering ship must route out of Loitering once MoveTo is queued"
+    );
+}
