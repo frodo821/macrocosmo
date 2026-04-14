@@ -14,6 +14,7 @@ pub mod colonization;
 pub mod maintenance;
 pub mod population;
 pub mod production;
+pub mod remote;
 pub mod system_buildings;
 
 pub use authority::*;
@@ -22,6 +23,7 @@ pub use colonization::*;
 pub use maintenance::*;
 pub use population::*;
 pub use production::*;
+pub use remote::apply_colony_command;
 pub use system_buildings::*;
 
 pub struct ColonyPlugin;
