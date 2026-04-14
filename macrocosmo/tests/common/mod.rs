@@ -214,12 +214,12 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
         .id()
 }
 
-/// #293: Test-only component carrying the intended faction bucket for a
-/// hostile. Needed because the new-component-only spawn path does not
-/// include `HostilePresence.hostile_type` which previously drove the
-/// faction mapping in `setup_test_hostile_factions`.
-#[derive(Component, Copy, Clone, Debug)]
-pub struct TestHostileFactionTag(pub macrocosmo::galaxy::HostileType);
+/// #293: Test-only component carrying the intended faction id bucket for
+/// a hostile entity. Needed so `setup_test_hostile_factions` can pair
+/// hostiles with the correct passive faction entity. Values: `"space_creature"`,
+/// `"ancient_defense"`.
+#[derive(Component, Clone, Debug)]
+pub struct TestHostileFactionTag(pub &'static str);
 
 /// Test helper for #168: spawn passive hostile factions, seed Neutral/-100
 /// relations against the test empire, and attach `FactionOwner` to every
@@ -231,7 +231,6 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     use macrocosmo::faction::{
         FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState,
     };
-    use macrocosmo::galaxy::HostileType;
 
     // Find or create the player empire.
     let empire = {
@@ -292,8 +291,8 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     // Attach FactionOwner to every existing hostile entity. Preference order
     // for picking the faction bucket (#293):
     //   1. `TestHostileFactionTag` (test fixtures).
-    //   2. `HostileKind` (generation-side backfill marker).
-    //   3. Default to `space_creature`.
+    //   2. `HostileKind.faction_id` (generation-side backfill marker).
+    //   3. Default to `"space_creature"`.
     let assignments: Vec<(Entity, Entity)> = {
         let mut q = world.query_filtered::<
             (
@@ -305,13 +304,14 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
         >();
         q.iter(world)
             .map(|(e, kind, tag)| {
-                let chosen_type = tag
+                let faction_id: &str = tag
                     .map(|t| t.0)
-                    .or_else(|| kind.map(|k| k.0))
-                    .unwrap_or(HostileType::SpaceCreature);
-                let owner = match chosen_type {
-                    HostileType::SpaceCreature => space_creature,
-                    HostileType::AncientDefense => ancient_defense,
+                    .or_else(|| kind.map(|k| k.faction_id.as_str()))
+                    .unwrap_or("space_creature");
+                let owner = match faction_id {
+                    "space_creature" => space_creature,
+                    "ancient_defense" => ancient_defense,
+                    _ => space_creature,
                 };
                 (e, owner)
             })

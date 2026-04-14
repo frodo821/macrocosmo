@@ -173,9 +173,16 @@ pub fn attach_hostile_faction_owners(
 ) {
     let mut count = 0;
     for (entity, kind) in &hostiles {
-        let faction = match kind.0 {
-            crate::galaxy::HostileType::SpaceCreature => hostile_factions.space_creature,
-            crate::galaxy::HostileType::AncientDefense => hostile_factions.ancient_defense,
+        let faction = match kind.faction_id.as_str() {
+            "space_creature" => hostile_factions.space_creature,
+            "ancient_defense" => hostile_factions.ancient_defense,
+            other => {
+                warn!(
+                    "HostileKind with unknown faction_id '{}' — no FactionOwner attached",
+                    other
+                );
+                None
+            }
         };
         if let Some(faction_entity) = faction {
             commands
@@ -1347,7 +1354,7 @@ mod tests {
     #[test]
     fn attach_hostile_faction_owners_assigns_by_type() {
         use crate::galaxy::{
-            AtSystem, Hostile, HostileHitpoints, HostileKind, HostileStats, HostileType,
+            AtSystem, Hostile, HostileHitpoints, HostileKind, HostileStats,
         };
 
         let mut app = App::new();
@@ -1368,7 +1375,7 @@ mod tests {
                 HostileHitpoints { hp: 10.0, max_hp: 10.0 },
                 HostileStats { strength: 1.0, evasion: 0.0 },
                 Hostile,
-                HostileKind(HostileType::SpaceCreature),
+                HostileKind::space_creature(),
             ))
             .id();
         let ancient_e = app
@@ -1378,7 +1385,7 @@ mod tests {
                 HostileHitpoints { hp: 10.0, max_hp: 10.0 },
                 HostileStats { strength: 1.0, evasion: 0.0 },
                 Hostile,
-                HostileKind(HostileType::AncientDefense),
+                HostileKind::ancient_defense(),
             ))
             .id();
         // One pre-tagged entity should not be retagged.
@@ -1389,7 +1396,7 @@ mod tests {
                 HostileHitpoints { hp: 10.0, max_hp: 10.0 },
                 HostileStats { strength: 1.0, evasion: 0.0 },
                 Hostile,
-                HostileKind(HostileType::SpaceCreature),
+                HostileKind::space_creature(),
                 FactionOwner(ancient),
             ))
             .id();
@@ -1411,7 +1418,7 @@ mod tests {
     #[test]
     fn attach_hostile_faction_owners_noop_when_factions_missing() {
         use crate::galaxy::{
-            AtSystem, Hostile, HostileHitpoints, HostileKind, HostileStats, HostileType,
+            AtSystem, Hostile, HostileHitpoints, HostileKind, HostileStats,
         };
 
         let mut app = App::new();
@@ -1426,7 +1433,7 @@ mod tests {
                 HostileHitpoints { hp: 10.0, max_hp: 10.0 },
                 HostileStats { strength: 1.0, evasion: 0.0 },
                 Hostile,
-                HostileKind(HostileType::SpaceCreature),
+                HostileKind::space_creature(),
             ))
             .id();
 

@@ -15,7 +15,7 @@ use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
 use super::{
-    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostileStats, HostileType,
+    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostileKind, HostileStats,
     ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes,
     SystemModifiers,
 };
@@ -649,35 +649,32 @@ pub(crate) fn initialize_systems(
         let center_dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
         let strength_mult = 1.0 + (center_dist / params.galaxy_radius) * 2.0;
 
-        let hostile_type = if rng.random::<f64>() < 0.7 {
-            HostileType::SpaceCreature
+        // #293: 70/30 split between space_creature and ancient_defense
+        // faction buckets. Values move to Lua FactionTypeDefinition for
+        // the base hp/strength/evasion; galaxy-center distance scales hp
+        // and strength via `strength_mult`.
+        let kind = if rng.random::<f64>() < 0.7 {
+            HostileKind::space_creature()
         } else {
-            HostileType::AncientDefense
+            HostileKind::ancient_defense()
         };
-        let base_hp = match hostile_type {
-            HostileType::SpaceCreature => 80.0,
-            HostileType::AncientDefense => 200.0,
+        let (base_hp, base_strength, evasion) = if kind.faction_id == "space_creature" {
+            (80.0, 10.0, 20.0)
+        } else {
+            (200.0, 10.0, 10.0)
         };
         let hp = base_hp * strength_mult;
-        let strength = 10.0 * strength_mult;
-        let evasion = match hostile_type {
-            HostileType::SpaceCreature => 20.0,
-            HostileType::AncientDefense => 10.0,
-        };
+        let strength = base_strength * strength_mult;
 
-        // #293: Spawn hostile with decomposed components. `FactionOwner` is
+        // Spawn hostile with decomposed components. `FactionOwner` is
         // backfilled by `attach_hostile_faction_owners` once `HostileFactions`
-        // is populated. `hostile_type` is retained for the backfill system's
-        // faction-bucket mapping (SpaceCreature / AncientDefense).
+        // is populated. `HostileKind` carries the faction bucket id.
         commands.spawn((
             AtSystem(system_entity),
             HostileHitpoints { hp, max_hp: hp },
             HostileStats { strength, evasion },
             Hostile,
-            // Transitional tag used only by `attach_hostile_faction_owners`
-            // to pick the faction bucket. Can be removed once factions are
-            // spawned directly at generation time (future work).
-            super::HostileKind(hostile_type),
+            kind,
         ));
         hostile_count += 1;
     }

@@ -170,23 +170,27 @@ pub struct Sovereignty {
 // `HostileStats` (populated from `FactionTypeDefinition.strength/evasion`
 // scaled by an environmental multiplier at galaxy generation time).
 
-/// Marker enum used by integration-test fixtures and (pre-#293) by the
-/// legacy `HostilePresence.hostile_type` field. Kept so tests can tag a
-/// new-component hostile with the intended faction bucket
-/// (`SpaceCreature` / `AncientDefense`) without having to resolve the
-/// passive-faction entities up front.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostileType {
-    SpaceCreature,
-    AncientDefense,
-}
-
-/// Component carrying the `HostileType` bucket of a hostile entity until
+/// Component carrying the faction id of a hostile entity until
 /// `attach_hostile_faction_owners` replaces it with a proper
 /// `FactionOwner`. After the backfill system runs the component can be
 /// removed — it is not used by gameplay systems.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct HostileKind(pub HostileType);
+///
+/// `faction_id` values currently in use: `"space_creature"`,
+/// `"ancient_defense"`. Future Lua-defined hostile types can register
+/// additional buckets via `HostileFactions::get_by_id`.
+#[derive(Component, Clone, Debug)]
+pub struct HostileKind {
+    pub faction_id: String,
+}
+
+impl HostileKind {
+    pub fn space_creature() -> Self {
+        Self { faction_id: "space_creature".to_string() }
+    }
+    pub fn ancient_defense() -> Self {
+        Self { faction_id: "ancient_defense".to_string() }
+    }
+}
 
 /// Component declaring which star system this entity occupies. Attached to
 /// hostile entities (space_creature / ancient_defense) so the visibility /

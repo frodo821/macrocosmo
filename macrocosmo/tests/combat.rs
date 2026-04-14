@@ -3,7 +3,7 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, HostileType};
+use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
 use macrocosmo::ship::*;
 
 use common::{advance_time, spawn_test_system, test_app};
@@ -1371,11 +1371,9 @@ fn test_hostile_cleared_allows_colonization() {
 
 /// Spawn a hostile entity with a weak attack and high HP so the test ship
 /// always survives the round; combat triggering is detected by HP delta on
-/// the hostile, not by ship destruction. `_hostile_type` is retained for
-/// backwards-compatibility with call sites but is unused — tests pair up
-/// factions via `setup_test_hostile_factions` which tags new-component
-/// hostiles with the `space_creature` faction by default.
-fn spawn_test_hostile(world: &mut World, sys: Entity, hostile_type: HostileType) -> Entity {
+/// the hostile, not by ship destruction. `faction_id` selects the
+/// passive-faction bucket: `"space_creature"` or `"ancient_defense"`.
+fn spawn_test_hostile(world: &mut World, sys: Entity, faction_id: &'static str) -> Entity {
     world
         .spawn((
             AtSystem(sys),
@@ -1390,8 +1388,8 @@ fn spawn_test_hostile(world: &mut World, sys: Entity, hostile_type: HostileType)
             Hostile,
             // #293: `TestHostileFactionTag` carries the intended faction
             // bucket so `setup_test_hostile_factions` can attach the right
-            // FactionOwner without relying on the removed HostilePresence.hostile_type.
-            common::TestHostileFactionTag(hostile_type),
+            // FactionOwner.
+            common::TestHostileFactionTag(faction_id),
         ))
         .id()
 }
@@ -1474,7 +1472,7 @@ fn test_combat_skipped_when_hostile_lacks_faction_owner() {
 
     let sys = spawn_test_system(app.world_mut(), "Unmigrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
 
     // Drive the world directly — bypass the auto-migrating `advance_time`
@@ -1499,7 +1497,7 @@ fn test_combat_triggers_with_default_hostile_relations() {
 
     let sys = spawn_test_system(app.world_mut(), "Migrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
 
     // advance_time auto-migrates the hostile (FactionOwner) and ship (empire owner).
@@ -1527,7 +1525,7 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
 
     let sys = spawn_test_system(app.world_mut(), "Peace-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     // #169: pin to Aggressive — Defensive would now retaliate against the
     // co-located which is a separate behaviour covered by
@@ -1567,7 +1565,7 @@ fn test_combat_skipped_when_player_allied_with_hostile_faction() {
 
     let sys = spawn_test_system(app.world_mut(), "Alliance-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::AncientDefense);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "ancient_defense");
 
     // Spawn an Aggressive ROE ship to verify the gate trumps ROE.
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
@@ -1605,7 +1603,7 @@ fn test_combat_triggers_when_at_war_even_with_positive_standing() {
 
     let sys = spawn_test_system(app.world_mut(), "War-System", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
 
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
@@ -1664,7 +1662,7 @@ fn test_aggressive_engages_neutral_negative_standing() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Aggro-Neg", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Aggressive);
 
@@ -1698,7 +1696,7 @@ fn test_defensive_engages_at_war() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Def-War", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
 
@@ -1721,7 +1719,7 @@ fn test_defensive_retaliates_against_hostile_at_peace() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Def-Peace-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
 
@@ -1742,7 +1740,7 @@ fn test_retreat_skips_combat_at_war() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Retreat-War", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
 
@@ -1762,7 +1760,7 @@ fn test_retreat_skips_combat_with_hostile_present() {
     install_test_weapon_module(&mut app);
 
     let sys = spawn_test_system(app.world_mut(), "Retreat-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
-    let hostile = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
+    let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
     app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
 
@@ -1784,8 +1782,8 @@ fn test_faction_owner_attached_by_hostile_type() {
 
     let sys = spawn_test_system(app.world_mut(), "Tagging", [0.0, 0.0, 0.0], 0.7, true, false);
 
-    let creature = spawn_test_hostile(app.world_mut(), sys, HostileType::SpaceCreature);
-    let ancient = spawn_test_hostile(app.world_mut(), sys, HostileType::AncientDefense);
+    let creature = spawn_test_hostile(app.world_mut(), sys, "space_creature");
+    let ancient = spawn_test_hostile(app.world_mut(), sys, "ancient_defense");
 
     let (space_creature, ancient_defense) = common::setup_test_hostile_factions(app.world_mut());
 

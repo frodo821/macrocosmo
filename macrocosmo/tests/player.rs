@@ -5,8 +5,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEventKind};
 use macrocosmo::galaxy::{
-    AtSystem, Hostile, HostileHitpoints, HostileStats, HostileType,
-};
+    AtSystem, Hostile, HostileHitpoints, HostileStats, };
 use macrocosmo::player::{AboardShip, Player, StationedAt};
 use macrocosmo::ship::*;
 

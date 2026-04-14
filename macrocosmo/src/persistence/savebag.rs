@@ -49,7 +49,7 @@ use crate::faction::{
 };
 use crate::galaxy::{
     Anomalies, Anomaly, AtSystem, ForbiddenRegion, Hostile, HostileHitpoints, HostileKind,
-    HostileStats, HostileType, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
+    HostileStats, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::facts::CombatVictor;
 use crate::knowledge::{
@@ -299,29 +299,6 @@ impl SavedSovereignty {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SavedHostileType {
-    SpaceCreature,
-    AncientDefense,
-}
-
-impl From<&HostileType> for SavedHostileType {
-    fn from(v: &HostileType) -> Self {
-        match v {
-            HostileType::SpaceCreature => Self::SpaceCreature,
-            HostileType::AncientDefense => Self::AncientDefense,
-        }
-    }
-}
-impl From<SavedHostileType> for HostileType {
-    fn from(v: SavedHostileType) -> Self {
-        match v {
-            SavedHostileType::SpaceCreature => Self::SpaceCreature,
-            SavedHostileType::AncientDefense => Self::AncientDefense,
-        }
-    }
-}
-
 // #293: HostilePresence / SavedHostilePresence deleted. Hostile entities
 // serialize via the decomposed-component saved structs below
 // (`SavedAtSystem`, `SavedHostileHitpoints`, `SavedHostileStats`,
@@ -375,14 +352,20 @@ impl SavedHostileStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedHostileKind(pub SavedHostileType);
+pub struct SavedHostileKind {
+    pub faction_id: String,
+}
 
 impl SavedHostileKind {
     pub fn from_live(v: &HostileKind) -> Self {
-        Self((&v.0).into())
+        Self {
+            faction_id: v.faction_id.clone(),
+        }
     }
     pub fn into_live(self) -> HostileKind {
-        HostileKind(self.0.into())
+        HostileKind {
+            faction_id: self.faction_id,
+        }
     }
 }
 
