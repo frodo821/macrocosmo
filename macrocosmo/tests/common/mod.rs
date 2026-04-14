@@ -1137,6 +1137,7 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         cost_energy: Amt::units(50),
         prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     });
     modules.insert(ModuleDefinition {
         id: "afterburner".into(),
@@ -1154,6 +1155,7 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         cost_energy: Amt::units(40),
         prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     });
     modules.insert(ModuleDefinition {
         id: "survey_equipment".into(),
@@ -1171,6 +1173,7 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         cost_energy: Amt::units(40),
         prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     });
     modules.insert(ModuleDefinition {
         id: "colony_module".into(),
@@ -1188,6 +1191,7 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         cost_energy: Amt::units(200),
         prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     });
     modules.insert(ModuleDefinition {
         id: "cargo_bay".into(),
@@ -1205,6 +1209,7 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         cost_energy: Amt::ZERO,
         prerequisites: None,
         upgrade_to: Vec::new(),
+        build_time: 0,
     });
     modules
 }

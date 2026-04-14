@@ -101,6 +101,11 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
         // still sets it will have its value silently dropped.
         let prerequisites = parse_prerequisites_field(&table)?;
 
+        // #239: optional `build_time` field (hexadies). Defaults to 0 when
+        // omitted so a module that's cheap in time authoring-wise stays
+        // invisible to the final sum.
+        let build_time: i64 = table.get::<Option<i64>>("build_time")?.unwrap_or(0);
+
         result.push(ModuleDefinition {
             id,
             name,
@@ -112,6 +117,7 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
             cost_energy,
             prerequisites,
             upgrade_to,
+            build_time,
         });
     }
 
@@ -533,6 +539,46 @@ mod tests {
         assert_eq!(armor.modifiers[1].multiplier, -0.05);
         assert_eq!(armor.cost_minerals, Amt::units(80));
         assert_eq!(armor.cost_energy, Amt::ZERO);
+
+        // #239: build_time defaults to 0 when the Lua table omits the field.
+        assert_eq!(ftl.build_time, 0);
+        assert_eq!(armor.build_time, 0);
+    }
+
+    /// #239: `build_time` on a module is parsed and round-trips through
+    /// `parse_modules`.
+    #[test]
+    fn test_parse_modules_reads_build_time() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_module {
+                id = "heavy_drive",
+                name = "Heavy Drive",
+                slot_type = "ftl",
+                cost = { minerals = 100, energy = 50 },
+                build_time = 15,
+            }
+            define_module {
+                id = "cheap_cargo",
+                name = "Cheap Cargo",
+                slot_type = "utility",
+                cost = { minerals = 30 },
+                build_time = 5,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_modules(lua).unwrap();
+        assert_eq!(defs.len(), 2);
+        let heavy = defs.iter().find(|d| d.id == "heavy_drive").unwrap();
+        let cheap = defs.iter().find(|d| d.id == "cheap_cargo").unwrap();
+        assert_eq!(heavy.build_time, 15);
+        assert_eq!(cheap.build_time, 5);
     }
 
     #[test]

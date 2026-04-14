@@ -947,6 +947,7 @@ mod tests {
             weapon: None,
             prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
         });
         let modules = vec![
             EquippedModule { slot_type: "weapon".into(), module_id: "test_weapon".into() },

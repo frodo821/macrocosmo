@@ -1,6 +1,17 @@
 local slot_types = require("ships.slot_types")
 local tech = require("tech")
 
+-- #239: `build_time` (hexadies) contributes to the design's total build time
+-- (`hull.build_time + Σ module.build_time`). Range is 5-20 hd with a rough
+-- mapping to module weight/complexity:
+--   light utilities (5-8):  cargo_bay, ion_thruster, afterburner,
+--                           survey_equipment, scout_module
+--   mid (10-12):             fusion_reactor, weapon_laser, weapon_missile,
+--                           armor_plating, shield_generator
+--   heavy (15-20):           ftl_drive, weapon_railgun, command_array,
+--                           colony_module
+-- These are deliberately coarse — fine balance is tracked in #61.
+
 -- FTL drive modules (ftl slot)
 local ftl_drive = define_module {
     id = "ftl_drive",
@@ -10,6 +21,7 @@ local ftl_drive = define_module {
         { target = "ship.ftl_range", base_add = 15.0 },
     },
     cost = { minerals = 100, energy = 50 },
+    build_time = 15,
 }
 
 -- Sublight engine modules (sublight slot)
@@ -21,6 +33,7 @@ local afterburner = define_module {
         { target = "ship.speed", multiplier = 0.2 },
     },
     cost = { minerals = 60, energy = 40 },
+    build_time = 8,
 }
 
 local ion_thruster = define_module {
@@ -31,6 +44,7 @@ local ion_thruster = define_module {
         { target = "ship.speed", base_add = 0.1 },
     },
     cost = { minerals = 40, energy = 30 },
+    build_time = 6,
 }
 
 -- Weapon modules (weapon slot)
@@ -46,6 +60,7 @@ local weapon_laser = define_module {
         hull_damage = 3.0, hull_damage_div = 1.0,
     },
     cost = { minerals = 50, energy = 30 },
+    build_time = 10,
 }
 
 local weapon_railgun = define_module {
@@ -60,6 +75,7 @@ local weapon_railgun = define_module {
         hull_damage = 10.0, hull_damage_div = 3.0,
     },
     cost = { minerals = 100, energy = 50 },
+    build_time = 15,
 }
 
 local weapon_missile = define_module {
@@ -74,6 +90,7 @@ local weapon_missile = define_module {
         hull_damage = 8.0, hull_damage_div = 2.0,
     },
     cost = { minerals = 80, energy = 60 },
+    build_time = 12,
 }
 
 -- Defense modules (defense slot)
@@ -86,6 +103,7 @@ local armor_plating = define_module {
         { target = "ship.speed", multiplier = -0.05 },
     },
     cost = { minerals = 80 },
+    build_time = 10,
 }
 
 local shield_generator = define_module {
@@ -98,6 +116,7 @@ local shield_generator = define_module {
         { target = "ship.shield_regen", base_add = 2.0 },
     },
     cost = { minerals = 60, energy = 50 },
+    build_time = 12,
 }
 
 -- Utility modules (utility slot)
@@ -109,6 +128,7 @@ local survey_equipment = define_module {
         { target = "ship.survey_speed", base_add = 1.0 },
     },
     cost = { minerals = 60, energy = 40 },
+    build_time = 8,
 }
 
 local cargo_bay = define_module {
@@ -119,6 +139,7 @@ local cargo_bay = define_module {
         { target = "ship.cargo_capacity", base_add = 500.0 },
     },
     cost = { minerals = 30 },
+    build_time = 5,
 }
 
 local colony_module = define_module {
@@ -129,6 +150,7 @@ local colony_module = define_module {
         { target = "ship.colonize_speed", base_add = 1.0 },
     },
     cost = { minerals = 300, energy = 200 },
+    build_time = 20,
 }
 
 -- #217: Scout module — enables the Scout command and extends passive sensor
@@ -143,6 +165,7 @@ local scout_module = define_module {
         { target = "sensor.range", base_add = 1.0 },
     },
     cost = { minerals = 80, energy = 50 },
+    build_time = 8,
 }
 
 -- Power modules (power slot)
@@ -154,6 +177,7 @@ local fusion_reactor = define_module {
         { target = "ship.shield_regen", base_add = 0.5 },
     },
     cost = { minerals = 80, energy = 0 },
+    build_time = 10,
 }
 
 -- Command modules (command slot)
@@ -166,6 +190,7 @@ local command_array = define_module {
         { target = "fleet.defense", multiplier = 0.05 },
     },
     cost = { minerals = 200, energy = 100 },
+    build_time = 18,
 }
 
 return {
