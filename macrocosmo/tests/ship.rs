@@ -32,6 +32,7 @@ fn spawn_ftl_explorer(world: &mut World, name: &str, system: Entity, pos: [f64; 
                 player_aboard: false,
                 home_port: system,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Docked { system },
             Position::from(pos),
@@ -94,6 +95,7 @@ fn test_sublight_travel_and_arrival() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::SubLight {
                 origin: [0.0, 0.0, 0.0],
@@ -168,6 +170,7 @@ fn test_survey_completes_and_marks_system() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Surveying {
                 target_system: sys_b,
@@ -246,6 +249,7 @@ fn test_ftl_travel_and_arrival() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::InFTL {
                 origin_system: sys_a,
@@ -412,6 +416,7 @@ fn test_empire_owned_ships() {
                 player_aboard: false,
                 home_port: sys,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Docked { system: sys },
             Position::from([0.0, 0.0, 0.0]),
@@ -500,6 +505,7 @@ fn test_ftl_range_bonus_extends_range() {
                 player_aboard: false,
                 home_port: sys_a,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Docked { system: sys_a },
             Position::from([0.0, 0.0, 0.0]),
@@ -1713,6 +1719,7 @@ fn test_hull_modifiers_applied_to_ship() {
                     player_aboard: false,
                     home_port: sys,
                     design_revision: 0,
+                    fleet: None,
                 },
                 ShipState::Docked { system: sys },
                 Position::from([0.0, 0.0, 0.0]),
@@ -2284,6 +2291,7 @@ fn spawn_rev_test_ship(world: &mut World, system: Entity, design_revision: u64) 
                 player_aboard: false,
                 home_port: system,
                 design_revision,
+                fleet: None,
             },
             ShipState::Docked { system },
             Position::from([0.0, 0.0, 0.0]),
@@ -2532,6 +2540,7 @@ fn test_sublight_arrival_with_no_target_system_transitions_to_loitering() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::SubLight {
                 origin: [0.0, 0.0, 0.0],
@@ -2667,6 +2676,7 @@ fn test_loitering_ship_not_engaged_by_resolve_combat() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Loitering {
                 position: [0.0, 0.0, 0.0],
@@ -2725,6 +2735,7 @@ fn test_loitering_ship_can_leave_via_move_to_system() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Loitering {
                 position: [1.0, 0.0, 0.0],
@@ -2788,6 +2799,7 @@ fn spawn_scout_ship(world: &mut World, system: Entity, pos: [f64; 3]) -> Entity 
                 player_aboard: false,
                 home_port: system,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Docked { system },
             Position::from(pos),
@@ -3154,6 +3166,7 @@ fn test_moveto_from_loitering_routes_ship_out() {
                 player_aboard: false,
                 home_port: sys_home,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Loitering {
                 position: loiter_pos,
@@ -3196,4 +3209,220 @@ fn test_moveto_from_loitering_routes_ship_out() {
         left_loitering,
         "Loitering ship must route out of Loitering once MoveTo is queued"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #287 (γ-1): Fleet data model regression tests.
+// ---------------------------------------------------------------------------
+
+/// When a ship is spawned via `spawn_ship`, it must be attached to a
+/// freshly-created 1-ship Fleet with the correct bidirectional link.
+#[test]
+fn ship_spawn_creates_single_ship_fleet() {
+    let mut app = test_app();
+    let sys = spawn_test_system(app.world_mut(), "Sol", [0.0, 0.0, 0.0], 1.0, true, false);
+
+    // Drive `spawn_ship` inside a one-shot system so we can co-borrow
+    // ShipDesignRegistry + Commands from the App without violating Rust
+    // aliasing (the registry is already a Bevy Resource).
+    use bevy::ecs::system::RunSystemOnce;
+    let ship_entity: Entity = app
+        .world_mut()
+        .run_system_once(
+            move |mut commands: Commands,
+                  registry: Res<macrocosmo::ship_design::ShipDesignRegistry>| {
+                spawn_ship(
+                    &mut commands,
+                    "explorer_mk1",
+                    "Spawn-1".to_string(),
+                    sys,
+                    Position::from([0.0, 0.0, 0.0]),
+                    Owner::Neutral,
+                    &registry,
+                )
+            },
+        )
+        .expect("spawn_ship one-shot system must succeed");
+    // Flush Commands so the spawned entities are observable.
+    app.update();
+
+    // Ship has a fleet back-pointer.
+    let ship = app.world().get::<Ship>(ship_entity).expect("ship exists");
+    let fleet_entity = ship.fleet.expect("spawn_ship must create a fleet");
+
+    // Fleet component exists.
+    let fleet = app
+        .world()
+        .get::<Fleet>(fleet_entity)
+        .expect("Fleet component exists on the auto-created fleet entity");
+    assert_eq!(fleet.name, "Spawn-1");
+    assert_eq!(fleet.flagship, Some(ship_entity));
+
+    // FleetMembers exists and contains the ship.
+    let members = app
+        .world()
+        .get::<FleetMembers>(fleet_entity)
+        .expect("FleetMembers must be attached to the fleet");
+    assert_eq!(members.0, vec![ship_entity]);
+}
+
+/// Bidirectional invariant: `Ship.fleet == Some(f)` iff `FleetMembers.0`
+/// of `f` contains the ship, for every live ship.
+#[test]
+fn ship_fleet_backref_matches_fleet_members() {
+    let mut app = test_app();
+    let sys = spawn_test_system(app.world_mut(), "Sol", [0.0, 0.0, 0.0], 1.0, true, false);
+    // spawn_test_ship reproduces the spawn_ship invariant.
+    let ship_a =
+        common::spawn_test_ship(app.world_mut(), "A", "explorer_mk1", sys, [0.0, 0.0, 0.0]);
+    let ship_b = common::spawn_test_ship(
+        app.world_mut(),
+        "B",
+        "colony_ship_mk1",
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+
+    for ship_entity in [ship_a, ship_b] {
+        let fleet_entity = app
+            .world()
+            .get::<Ship>(ship_entity)
+            .unwrap()
+            .fleet
+            .expect("every ship spawned via spawn_test_ship must be attached to a fleet");
+        let members = app
+            .world()
+            .get::<FleetMembers>(fleet_entity)
+            .expect("FleetMembers component on fleet");
+        assert!(
+            members.0.contains(&ship_entity),
+            "ship {:?} must appear in its fleet's FleetMembers",
+            ship_entity
+        );
+    }
+}
+
+/// When the last ship in a fleet is despawned (e.g. combat kill), the
+/// fleet entity is despawned too on the next `prune_empty_fleets` tick.
+#[test]
+fn fleet_members_remove_last_ship_despawns_fleet() {
+    let mut app = test_app();
+    let sys = spawn_test_system(app.world_mut(), "Sol", [0.0, 0.0, 0.0], 1.0, true, false);
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "Solo",
+        "explorer_mk1",
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+    let fleet_entity = app.world().get::<Ship>(ship).unwrap().fleet.unwrap();
+    assert!(app.world().get_entity(fleet_entity).is_ok());
+
+    // Destroy the ship directly.
+    app.world_mut().despawn(ship);
+
+    // Advance time — prune_empty_fleets runs as part of ShipPlugin each tick.
+    advance_time(&mut app, 1);
+
+    assert!(
+        app.world().get_entity(fleet_entity).is_err(),
+        "Fleet with no members must be despawned by prune_empty_fleets"
+    );
+}
+
+/// Ship despawn removes the entity from sibling `FleetMembers` without
+/// taking down a fleet that still has other members.
+#[test]
+fn ship_despawn_removes_from_fleet_members_but_keeps_multi_member_fleet() {
+    // Construct a 2-ship fleet manually (spawn_test_ship auto-creates
+    // one-ship fleets; grouping is γ-6 UI scope).
+    let mut app = test_app();
+    let sys = spawn_test_system(app.world_mut(), "Sol", [0.0, 0.0, 0.0], 1.0, true, false);
+    let ship_a =
+        common::spawn_test_ship(app.world_mut(), "A", "explorer_mk1", sys, [0.0, 0.0, 0.0]);
+    let ship_b = common::spawn_test_ship(
+        app.world_mut(),
+        "B",
+        "colony_ship_mk1",
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+    // Collapse both ships into ship_a's auto-created fleet by editing the
+    // backref + members list directly (this mirrors what a future γ-6
+    // "merge fleets" command will do).
+    let fleet_entity = app.world().get::<Ship>(ship_a).unwrap().fleet.unwrap();
+    let stale_fleet_b = app.world().get::<Ship>(ship_b).unwrap().fleet.unwrap();
+    app.world_mut().get_mut::<Ship>(ship_b).unwrap().fleet = Some(fleet_entity);
+    app.world_mut()
+        .get_mut::<FleetMembers>(fleet_entity)
+        .unwrap()
+        .0
+        .push(ship_b);
+    // Dissolve ship_b's original empty fleet eagerly so it doesn't
+    // interfere with the later assertion.
+    app.world_mut().despawn(stale_fleet_b);
+
+    // Now despawn ship_a.
+    app.world_mut().despawn(ship_a);
+    advance_time(&mut app, 1);
+
+    // The shared fleet must still exist with only ship_b as a member.
+    let fleet = app.world().get_entity(fleet_entity);
+    assert!(
+        fleet.is_ok(),
+        "multi-member fleet must survive one-ship removal"
+    );
+    let members = app.world().get::<FleetMembers>(fleet_entity).unwrap();
+    assert_eq!(members.0, vec![ship_b]);
+}
+
+/// Save/load round-trip preserves Fleet / FleetMembers / Ship.fleet.
+#[test]
+fn fleet_savebag_roundtrip_preserves_bidirectional_link() {
+    use macrocosmo::persistence::remap::EntityMap;
+    use macrocosmo::persistence::savebag::{SavedFleet, SavedFleetMembers, SavedShip};
+
+    // Build in-memory wire structs and round-trip them.
+    let fleet_raw = Entity::from_raw_u32(42).unwrap();
+    let ship_raw = Entity::from_raw_u32(7).unwrap();
+    let mut map = EntityMap::new();
+    map.insert(fleet_raw.to_bits(), fleet_raw);
+    map.insert(ship_raw.to_bits(), ship_raw);
+
+    let fleet = Fleet {
+        name: "Alpha".to_string(),
+        flagship: Some(ship_raw),
+    };
+    let members = FleetMembers(vec![ship_raw]);
+    let ship = Ship {
+        name: "S1".to_string(),
+        design_id: "explorer_mk1".to_string(),
+        hull_id: "corvette".to_string(),
+        modules: Vec::new(),
+        owner: Owner::Neutral,
+        sublight_speed: 0.75,
+        ftl_range: 10.0,
+        player_aboard: false,
+        home_port: ship_raw, // dummy
+        design_revision: 0,
+        fleet: Some(fleet_raw),
+    };
+
+    let sf = SavedFleet::from_live(&fleet);
+    let sm = SavedFleetMembers::from_live(&members);
+    let ss = SavedShip::from_live(&ship);
+
+    let serialized = postcard::to_stdvec(&(sf.clone(), sm.clone(), ss.clone()))
+        .expect("postcard serialize round-trip");
+    let (sf2, sm2, ss2): (SavedFleet, SavedFleetMembers, SavedShip) =
+        postcard::from_bytes(&serialized).expect("postcard deserialize round-trip");
+
+    let fleet2 = sf2.into_live(&map);
+    let members2 = sm2.into_live(&map);
+    let ship2 = ss2.into_live(&map);
+
+    assert_eq!(fleet2.name, "Alpha");
+    assert_eq!(fleet2.flagship, Some(ship_raw));
+    assert_eq!(members2.0, vec![ship_raw]);
+    assert_eq!(ship2.fleet, Some(fleet_raw));
 }

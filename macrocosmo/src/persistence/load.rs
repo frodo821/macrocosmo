@@ -385,8 +385,8 @@ fn apply_component_bag(
     if let Some(f) = &bag.fleet {
         ec.insert(f.clone().into_live(map));
     }
-    if let Some(m) = &bag.fleet_membership {
-        ec.insert(m.into_live(map));
+    if let Some(m) = &bag.fleet_members {
+        ec.insert(m.clone().into_live(map));
     }
     if let Some(d) = &bag.detected_hostiles {
         ec.insert(d.clone().into_live(map));

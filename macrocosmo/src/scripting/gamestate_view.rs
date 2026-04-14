@@ -55,7 +55,7 @@ use crate::colony::{Colony, ResourceStockpile};
 use crate::condition::ScopedFlags;
 use crate::galaxy::{Planet, StarSystem};
 use crate::player::{Empire, PlayerEmpire};
-use crate::ship::fleet::Fleet;
+use crate::ship::fleet::{Fleet, FleetMembers};
 use crate::ship::{Owner, Ship};
 use crate::technology::{GameFlags, TechTree};
 use crate::time_system::GameClock;
@@ -252,18 +252,22 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
     // --- fleets ---
     let fleets_tbl = lua.create_table()?;
     let fleet_ids = lua.create_table()?;
-    let fleet_rows: Vec<(Entity, String, Entity, Vec<Entity>)> = {
-        let mut fleet_q = world.query::<(Entity, &Fleet)>();
+    // #287 (γ-1): Fleet.flagship is `Option<Entity>`, and member lists
+    // live on a sibling `FleetMembers` component.
+    let fleet_rows: Vec<(Entity, String, Option<Entity>, Vec<Entity>)> = {
+        let mut fleet_q = world.query::<(Entity, &Fleet, &FleetMembers)>();
         fleet_q
             .iter(world)
-            .map(|(e, f)| (e, f.name.clone(), f.flagship, f.members.clone()))
+            .map(|(e, f, m)| (e, f.name.clone(), f.flagship, m.0.clone()))
             .collect()
     };
     for (entity, name, flagship, members) in fleet_rows {
         let ftbl = lua.create_table()?;
         ftbl.set("id", entity.to_bits())?;
         ftbl.set("name", name.as_str())?;
-        ftbl.set("flagship", flagship.to_bits())?;
+        // `flagship` is 0 (invalid) when unset — Lua callers should
+        // check `#members > 0` before using it.
+        ftbl.set("flagship", flagship.map(|e| e.to_bits()).unwrap_or(0))?;
         let members_tbl = lua.create_table()?;
         for m in &members {
             members_tbl.push(m.to_bits())?;

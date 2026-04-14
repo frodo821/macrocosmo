@@ -1405,6 +1405,7 @@ fn test_sublight_ship_knowledge_uses_light_speed_delay() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::SubLight {
                 origin: [10.0, 0.0, 0.0],
@@ -1496,6 +1497,7 @@ fn test_sublight_ship_nearby_knowledge_negligible_delay() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::SubLight {
                 origin: [0.0, 0.0, 0.0],
@@ -1574,6 +1576,7 @@ fn test_loitering_ship_knowledge_uses_light_speed_delay() {
                 player_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
+                fleet: None,
             },
             ShipState::Loitering {
                 position: loiter_pos,

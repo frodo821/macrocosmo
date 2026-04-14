@@ -796,7 +796,7 @@ fn draw_main_panels_system(
         player_aboard_ship,
         &world.courier_routes,
         selected_system_for_panel,
-        &world.fleet_memberships,
+        &world.fleet_members,
         &world.fleets,
         &nearby_structures,
     );
@@ -878,10 +878,12 @@ fn draw_main_panels_system(
     // #123: Handle fleet-wide refit — apply to every refit-eligible ship in
     // the fleet that is currently docked at a colony.
     if let Some(fleet_refit) = ship_panel_actions.fleet_refit {
+        // #287 (γ-1): members are stored in the sibling FleetMembers
+        // component now, not inside Fleet itself.
         let member_entities: Vec<Entity> = world
-            .fleets
+            .fleet_members
             .get(fleet_refit.fleet_entity)
-            .map(|fleet| fleet.members.clone())
+            .map(|m| m.0.clone())
             .unwrap_or_default();
         for member in member_entities {
             // Determine if the member is docked at a system that has a colony
