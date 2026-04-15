@@ -1,3 +1,4 @@
+pub mod biome;
 mod generation;
 pub mod region;
 mod types;
@@ -10,11 +11,15 @@ use crate::scripting::map_api::{MapTypeRegistry, PredefinedSystemRegistry};
 use crate::ship::Owner;
 
 // Re-exports for backward compatibility
+pub use biome::{
+    Biome, BiomeDefinition, BiomeRegistry, DEFAULT_BIOME_ID, resolve_biome_id,
+    resolve_default_biome_id,
+};
 pub use generation::{generate_galaxy, place_forbidden_regions, poisson_sample};
 pub use region::{
     effective_radius, ForbiddenRegion, RegionBlockSnapshot, RegionSpecQueue, RegionTypeRegistry,
 };
-pub use types::load_galaxy_types;
+pub use types::{load_biome_registry, load_galaxy_types};
 
 pub struct GalaxyPlugin;
 
@@ -22,6 +27,7 @@ impl Plugin for GalaxyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StarTypeRegistry>()
             .init_resource::<PlanetTypeRegistry>()
+            .init_resource::<BiomeRegistry>()
             .init_resource::<PredefinedSystemRegistry>()
             .init_resource::<MapTypeRegistry>()
             .init_resource::<RegionTypeRegistry>()
@@ -32,8 +38,13 @@ impl Plugin for GalaxyPlugin {
             )
             .add_systems(
                 Startup,
+                load_biome_registry.after(crate::scripting::load_all_scripts),
+            )
+            .add_systems(
+                Startup,
                 generate_galaxy
                     .after(load_galaxy_types)
+                    .after(load_biome_registry)
                     .after(crate::scripting::load_predefined_system_registry)
                     .after(crate::scripting::load_map_type_registry)
                     .after(crate::faction::spawn_hostile_factions),

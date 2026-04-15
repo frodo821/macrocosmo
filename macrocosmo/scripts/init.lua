@@ -14,6 +14,9 @@ require("config.balance")
 
 -- Base definitions (no cross-references)
 require("stars")
+-- #335: Biomes must load before planet_types so planet_type definitions can
+-- reference biomes via `default_biome = biomes.temperate` (or similar).
+require("biomes")
 require("planets")
 require("jobs")
 

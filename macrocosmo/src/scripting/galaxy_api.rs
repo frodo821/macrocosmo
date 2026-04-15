@@ -37,6 +37,24 @@ pub struct PlanetTypeDefinition {
     pub base_slots: usize,
     pub resource_bias: ResourceBias,
     pub weight: f64,
+    /// #335: Optional reference to a `define_biome { id = ... }` id. When
+    /// `None`, the planet falls back to
+    /// [`crate::galaxy::biome::DEFAULT_BIOME_ID`] at spawn time. Accepts
+    /// both string ids and reference tables on the Lua side (resolved via
+    /// `extract_ref_id`).
+    pub default_biome: Option<String>,
+}
+
+/// A biome definition parsed from Lua `define_biome { ... }` calls.
+///
+/// #335: Biome is decoupled from planet_type. Multiple planet_types may share
+/// a biome (e.g. terrestrial + ocean → "temperate"), and future issues can
+/// introduce biome-dependent gates without changing planet_type definitions.
+#[derive(Clone, Debug)]
+pub struct BiomeLuaDefinition {
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
 }
 
 /// Resource generation biases for a planet type.
@@ -148,6 +166,12 @@ pub fn parse_planet_types(lua: &mlua::Lua) -> Result<Vec<PlanetTypeDefinition>, 
         let energy: f64 = bias_table.get::<Option<f64>>("energy")?.unwrap_or(0.0);
         let research: f64 = bias_table.get::<Option<f64>>("research")?.unwrap_or(0.0);
 
+        // #335: Optional `default_biome` — accepts string or define_biome ref table.
+        let default_biome: Option<String> = match table.get::<mlua::Value>("default_biome")? {
+            mlua::Value::Nil => None,
+            other => Some(crate::scripting::extract_ref_id(&other)?),
+        };
+
         result.push(PlanetTypeDefinition {
             id,
             name,
@@ -160,6 +184,38 @@ pub fn parse_planet_types(lua: &mlua::Lua) -> Result<Vec<PlanetTypeDefinition>, 
                 research,
             },
             weight,
+            default_biome,
+        });
+    }
+
+    Ok(result)
+}
+
+/// #335: Parse biome definitions from the Lua `_biome_definitions` global table.
+pub fn parse_biomes(lua: &mlua::Lua) -> Result<Vec<BiomeLuaDefinition>, mlua::Error> {
+    let defs: mlua::Table = match lua.globals().get::<mlua::Value>("_biome_definitions")? {
+        mlua::Value::Table(t) => t,
+        // Absent accumulator is not an error — scripts without `define_biome`
+        // calls should still boot cleanly (we register an implicit "default").
+        _ => return Ok(Vec::new()),
+    };
+    let mut result = Vec::new();
+
+    for pair in defs.pairs::<i64, mlua::Table>() {
+        let (_, table) = pair?;
+
+        let id: String = table.get("id")?;
+        let display_name: String = table
+            .get::<Option<String>>("display_name")?
+            .unwrap_or_else(|| id.clone());
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
+
+        result.push(BiomeLuaDefinition {
+            id,
+            display_name,
+            description,
         });
     }
 
@@ -322,6 +378,15 @@ mod tests {
     fn test_parse_planet_types() {
         let engine = ScriptEngine::new().unwrap();
 
+        // #335: Loading `planets/types.lua` requires `biomes.types` to have
+        // populated the `_biome_definitions` accumulator first, because the
+        // planet_type definitions now call `require("biomes")` so they can
+        // reference `biomes.temperate` etc. Load biomes first so require()
+        // can resolve the module.
+        let biome_script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/biomes/types.lua");
+        engine.load_file(&biome_script).unwrap();
+
         let planet_script =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/planets/types.lua");
         engine.load_file(&planet_script).unwrap();
@@ -338,6 +403,8 @@ mod tests {
         assert!((terr.resource_bias.energy - 0.8).abs() < 1e-10);
         assert!((terr.resource_bias.research - 0.5).abs() < 1e-10);
         assert!((terr.weight - 0.4).abs() < 1e-10);
+        // #335: terrestrial maps to the `temperate` biome.
+        assert_eq!(terr.default_biome.as_deref(), Some("temperate"));
 
         // Verify gas giant
         let gas = types.iter().find(|t| t.id == "gas_giant").unwrap();
@@ -345,11 +412,98 @@ mod tests {
         assert!((gas.base_habitability - 0.0).abs() < 1e-10);
         assert_eq!(gas.base_slots, 0);
         assert!((gas.resource_bias.minerals - 0.0).abs() < 1e-10);
+        assert_eq!(gas.default_biome.as_deref(), Some("gas"));
 
         // Verify ocean world
         let ocean = types.iter().find(|t| t.id == "ocean").unwrap();
         assert_eq!(ocean.name, "Ocean World");
         assert!((ocean.resource_bias.research - 1.2).abs() < 1e-10);
+        assert_eq!(ocean.default_biome.as_deref(), Some("oceanic"));
+    }
+
+    /// #335: `parse_biomes` pulls from `_biome_definitions` populated by
+    /// `define_biome` calls, tolerating absent accumulators (no-op registry
+    /// growth — the Rust side registers an implicit "default" in
+    /// `ensure_default`).
+    #[test]
+    fn test_parse_biomes_from_scripts() {
+        let engine = ScriptEngine::new().unwrap();
+        let biome_script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/biomes/types.lua");
+        engine.load_file(&biome_script).unwrap();
+
+        let biomes = parse_biomes(engine.lua()).unwrap();
+        assert!(biomes.iter().any(|b| b.id == "temperate"));
+        assert!(biomes.iter().any(|b| b.id == "arid"));
+        assert!(biomes.iter().any(|b| b.id == "default"));
+
+        let temperate = biomes.iter().find(|b| b.id == "temperate").unwrap();
+        assert_eq!(temperate.display_name, "Temperate");
+        assert!(!temperate.description.is_empty());
+    }
+
+    /// #335: Missing `_biome_definitions` table must be a tolerated no-op
+    /// (returns empty vec), not an error — a game that never loads biomes
+    /// should still boot with the implicit "default" fallback.
+    #[test]
+    fn test_parse_biomes_missing_accumulator_is_empty() {
+        let lua = mlua::Lua::new();
+        let biomes = parse_biomes(&lua).unwrap();
+        assert!(biomes.is_empty());
+    }
+
+    /// #335: `default_biome` accepts either a string id or a reference table
+    /// (from `define_biome`). Both shapes must parse to the same id.
+    #[test]
+    fn test_default_biome_accepts_ref_and_string() {
+        let lua = mlua::Lua::new();
+        // Mimic the register_define_fn setup enough to produce an accumulator
+        // table and a reference-shaped biome.
+        let biome_defs = lua.create_table().unwrap();
+        lua.globals().set("_biome_definitions", biome_defs).unwrap();
+
+        let planet_defs = lua.create_table().unwrap();
+        // String-form planet.
+        let p_str = lua.create_table().unwrap();
+        p_str.set("id", "p_str").unwrap();
+        p_str.set("name", "P Str").unwrap();
+        p_str.set("base_habitability", 0.5_f64).unwrap();
+        p_str.set("base_slots", 3_i64).unwrap();
+        p_str.set("weight", 1.0_f64).unwrap();
+        let bias = lua.create_table().unwrap();
+        bias.set("minerals", 1.0_f64).unwrap();
+        bias.set("energy", 1.0_f64).unwrap();
+        bias.set("research", 1.0_f64).unwrap();
+        p_str.set("resource_bias", bias).unwrap();
+        p_str.set("default_biome", "temperate").unwrap();
+        planet_defs.set(1, p_str).unwrap();
+
+        // Reference-form planet.
+        let p_ref = lua.create_table().unwrap();
+        p_ref.set("id", "p_ref").unwrap();
+        p_ref.set("name", "P Ref").unwrap();
+        p_ref.set("base_habitability", 0.5_f64).unwrap();
+        p_ref.set("base_slots", 3_i64).unwrap();
+        p_ref.set("weight", 1.0_f64).unwrap();
+        let bias2 = lua.create_table().unwrap();
+        bias2.set("minerals", 1.0_f64).unwrap();
+        bias2.set("energy", 1.0_f64).unwrap();
+        bias2.set("research", 1.0_f64).unwrap();
+        p_ref.set("resource_bias", bias2).unwrap();
+        let ref_tbl = lua.create_table().unwrap();
+        ref_tbl.set("_def_type", "biome").unwrap();
+        ref_tbl.set("id", "temperate").unwrap();
+        p_ref.set("default_biome", ref_tbl).unwrap();
+        planet_defs.set(2, p_ref).unwrap();
+
+        lua.globals()
+            .set("_planet_type_definitions", planet_defs)
+            .unwrap();
+
+        let parsed = parse_planet_types(&lua).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].default_biome.as_deref(), Some("temperate"));
+        assert_eq!(parsed[1].default_biome.as_deref(), Some("temperate"));
     }
 
     #[test]

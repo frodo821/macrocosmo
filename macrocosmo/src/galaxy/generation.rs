@@ -15,9 +15,11 @@ use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
 use super::{
-    Anomalies, AtSystem, GalaxyConfig, Hostile, HostileHitpoints, HostileStats, ObscuredByGas,
-    Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes, SystemModifiers,
+    Anomalies, AtSystem, Biome, BiomeRegistry, GalaxyConfig, Hostile, HostileHitpoints,
+    HostileStats, ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet,
+    SystemAttributes, SystemModifiers,
 };
+use super::biome::resolve_biome_id;
 use crate::faction::{FactionOwner, HostileFactions};
 use crate::amount::SignedAmt;
 use crate::modifier::Modifier;
@@ -421,6 +423,7 @@ pub(crate) fn initialize_systems(
     planet_weights: &[f64],
     overrides: &[SystemInitOverride],
     hostile_factions: HostileFactions,
+    biome_registry: &BiomeRegistry,
 ) {
     let actual_count = systems.len();
 
@@ -608,6 +611,13 @@ pub(crate) fn initialize_systems(
                 .clone()
                 .unwrap_or_else(|| format!("{} {}", name, super::roman_numeral(p + 1)));
             let planet_type = &planet_types[planet_data.type_idx];
+            // #335: Resolve biome from planet_type.default_biome via the
+            // BiomeRegistry. `resolve_biome_id` falls back to
+            // DEFAULT_BIOME_ID when the referenced biome is unknown.
+            let biome_id = resolve_biome_id(
+                planet_type.default_biome.as_deref(),
+                biome_registry,
+            );
 
             commands.spawn((
                 Planet {
@@ -615,6 +625,7 @@ pub(crate) fn initialize_systems(
                     system: star_entity,
                     planet_type: planet_type.id.clone(),
                 },
+                Biome::new(biome_id),
                 planet_data.attrs.clone(),
                 Position::from(sys.position), // same position as star for now
             ));
@@ -693,6 +704,10 @@ pub fn generate_galaxy(
     mut commands: Commands,
     star_registry: Res<StarTypeRegistry>,
     planet_registry: Res<PlanetTypeRegistry>,
+    // #335: BiomeRegistry is `Option<Res<_>>` so tests that don't install
+    // `GalaxyPlugin` (and therefore lack the registry) still run. Absent
+    // registry → all planets resolve to DEFAULT_BIOME_ID.
+    biome_registry: Option<Res<BiomeRegistry>>,
     engine: Option<Res<ScriptEngine>>,
     predefined_registry: Option<Res<PredefinedSystemRegistry>>,
     map_type_registry: Option<Res<MapTypeRegistry>>,
@@ -766,6 +781,12 @@ pub fn generate_galaxy(
     let overrides = run_phase_c_hooks(lua, &systems, &capitals, &star_types);
 
     // Phase C: Initialize all systems (planets, resources, hostiles, ECS entities)
+    // Fall back to a default registry when none was inserted (test-only path).
+    let biome_fallback = BiomeRegistry::default();
+    let biome_ref: &BiomeRegistry = biome_registry
+        .as_deref()
+        .unwrap_or(&biome_fallback);
+
     initialize_systems(
         &mut commands,
         &mut rng,
@@ -777,6 +798,7 @@ pub fn generate_galaxy(
         &planet_weights,
         &overrides,
         hostile_factions.as_deref().copied().unwrap_or_default(),
+        biome_ref,
     );
 }
 

@@ -43,8 +43,8 @@ use crate::empire::CommsParams;
 use crate::events::EventLog;
 use crate::faction::{FactionOwner, FactionRelations, PendingDiplomaticAction};
 use crate::galaxy::{
-    Anomalies, AtSystem, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints, HostileStats,
-    ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
+    Anomalies, AtSystem, Biome, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints,
+    HostileStats, ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::{KnowledgeStore, PendingFactQueue};
 use crate::notifications::NotificationQueue;
@@ -75,7 +75,11 @@ use super::savebag::*;
 // next bytes for the new field, misaligning the rest. Regenerated
 // `tests/fixtures/minimal_game.bin` ships in the same commit as the version
 // bump so `load_minimal_game_fixture_smoke` continues to pass.
-pub const SAVE_VERSION: u32 = 2;
+// #335: Bumped 2 → 3 because `SavedComponentBag` gained a `biome`
+// (`Option<SavedBiome>`) field for the new Biome component on Planet entities.
+// Same postcard-wire-break rationale as #296 — the fixture is regenerated in
+// lockstep.
+pub const SAVE_VERSION: u32 = 3;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -312,6 +316,9 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if let Some(p) = e_ref.get::<Planet>() {
         bag.planet = Some(SavedPlanet::from_live(p));
+    }
+    if let Some(b) = e_ref.get::<Biome>() {
+        bag.biome = Some(SavedBiome::from_live(b));
     }
     if let Some(a) = e_ref.get::<SystemAttributes>() {
         bag.system_attributes = Some(SavedSystemAttributes::from_live(a));

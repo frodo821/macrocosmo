@@ -58,6 +58,7 @@ fn minimal_planet_registry() -> PlanetTypeRegistry {
                 research: 1.0,
             },
             weight: 1.0,
+            default_biome: None,
         });
     }
     planet_reg

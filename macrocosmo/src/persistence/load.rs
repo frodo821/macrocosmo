@@ -208,6 +208,9 @@ fn apply_component_bag(
     if let Some(p) = &bag.planet {
         ec.insert(p.clone().into_live(map));
     }
+    if let Some(b) = &bag.biome {
+        ec.insert(b.clone().into_live());
+    }
     if let Some(a) = &bag.system_attributes {
         ec.insert(a.clone().into_live());
     }

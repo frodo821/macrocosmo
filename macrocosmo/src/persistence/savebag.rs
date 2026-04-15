@@ -48,8 +48,8 @@ use crate::faction::{
     DiplomaticAction, FactionOwner, FactionView, PendingDiplomaticAction, RelationState,
 };
 use crate::galaxy::{
-    Anomalies, Anomaly, AtSystem, ForbiddenRegion, Hostile, HostileHitpoints, HostileStats, Planet,
-    PortFacility, Sovereignty, StarSystem, SystemAttributes,
+    Anomalies, Anomaly, AtSystem, Biome, ForbiddenRegion, Hostile, HostileHitpoints, HostileStats,
+    Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::facts::CombatVictor;
 use crate::knowledge::{
@@ -245,6 +245,24 @@ impl SavedPlanet {
             system: remap_entity(self.system_bits, map),
             planet_type: self.planet_type,
         }
+    }
+}
+
+/// #335: Persisted form of `galaxy::Biome`. Entity-level component, so
+/// `SavedComponentBag` gains a new `biome: Option<SavedBiome>` field. Postcard
+/// encodes fields sequentially — adding a new `Option` is a wire break, hence
+/// the `SAVE_VERSION` bump to 3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedBiome {
+    pub id: String,
+}
+
+impl SavedBiome {
+    pub fn from_live(v: &Biome) -> Self {
+        Self { id: v.id.clone() }
+    }
+    pub fn into_live(self) -> Biome {
+        Biome { id: self.id }
     }
 }
 
@@ -4226,6 +4244,10 @@ pub struct SavedComponentBag {
     // Galaxy
     pub star_system: Option<SavedStarSystem>,
     pub planet: Option<SavedPlanet>,
+    /// #335: Biome component on Planet entities. Optional because legacy
+    /// entities (and non-Planet entities) don't carry it.
+    #[serde(default)]
+    pub biome: Option<SavedBiome>,
     pub system_attributes: Option<SavedSystemAttributes>,
     pub sovereignty: Option<SavedSovereignty>,
     // #293: Hostile entity decomposed components (replaces hostile_presence).
