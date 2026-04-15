@@ -29,7 +29,9 @@ use bevy::prelude::*;
 
 use crate::components::Position;
 use crate::galaxy::{AtSystem, StarSystem};
-use crate::ship::command_events::{CommandExecuted, CommandKind, CommandResult, CoreDeployRequested};
+use crate::ship::command_events::{
+    CommandExecuted, CommandKind, CommandResult, CoreDeployRequested,
+};
 use crate::ship::{Owner, Ship, spawn_ship};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;

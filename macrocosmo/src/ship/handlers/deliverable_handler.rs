@@ -97,12 +97,13 @@ pub fn handle_load_deliverable_requested(
             // because the caller (dispatcher) already popped the original
             // LoadDeliverable; we re-inject it here so the legacy queue
             // sees it again after the ship arrives.
-            queue
-                .commands
-                .insert(0, QueuedCommand::LoadDeliverable {
+            queue.commands.insert(
+                0,
+                QueuedCommand::LoadDeliverable {
                     system: req.system,
                     stockpile_index: req.stockpile_index,
-                });
+                },
+            );
             queue
                 .commands
                 .insert(0, QueuedCommand::MoveTo { system: req.system });
@@ -238,7 +239,14 @@ pub fn handle_deploy_deliverable_requested(
     mut events: MessageWriter<crate::events::GameEvent>,
     mut executed: MessageWriter<CommandExecuted>,
     mut core_out: MessageWriter<CoreDeployRequested>,
-    mut ships: Query<(Entity, &Ship, &ShipState, &Position, &mut CommandQueue, &mut Cargo)>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &ShipState,
+        &Position,
+        &mut CommandQueue,
+        &mut Cargo,
+    )>,
     existing_cores: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
     star_systems: Query<(Entity, &Position), (Without<Ship>, With<crate::galaxy::StarSystem>)>,
     player_q: Query<&StationedAt, Without<Ship>>,
@@ -450,13 +458,8 @@ pub fn handle_deploy_deliverable_requested(
         }
 
         // Structure-spawn branch.
-        let spawned = spawn_deliverable_entity(
-            &mut commands,
-            &def_id,
-            req.position,
-            ship.owner,
-            &registry,
-        );
+        let spawned =
+            spawn_deliverable_entity(&mut commands, &def_id, req.position, ship.owner, &registry);
         if spawned.is_none() {
             warn!("DeployDeliverable: spawn failed for {}", def_id);
             executed.write(CommandExecuted {
@@ -471,7 +474,10 @@ pub fn handle_deploy_deliverable_requested(
             continue;
         }
         cargo.items.remove(req.item_index);
-        info!("Ship {} deployed {} at {:?}", ship.name, def_id, req.position);
+        info!(
+            "Ship {} deployed {} at {:?}",
+            ship.name, def_id, req.position
+        );
 
         // Dual-write Deploy event.
         let event_id = fact_sys.allocate_event_id();
@@ -634,7 +640,13 @@ pub fn handle_load_from_scrapyard_requested(
     registry: Res<StructureRegistry>,
     mut reqs: MessageReader<LoadFromScrapyardRequested>,
     mut executed: MessageWriter<CommandExecuted>,
-    mut ships: Query<(&Ship, &Position, &mut CommandQueue, &mut Cargo, &ShipModifiers)>,
+    mut ships: Query<(
+        &Ship,
+        &Position,
+        &mut CommandQueue,
+        &mut Cargo,
+        &ShipModifiers,
+    )>,
     mut scrapyards: Query<(&Position, &mut Scrapyard), Without<Ship>>,
 ) {
     let mass_per_slot_raw = balance.mass_per_item_slot().0;
@@ -671,9 +683,12 @@ pub fn handle_load_from_scrapyard_requested(
         };
 
         if ship_pos.distance_to(scrap_pos) > DEPLOY_POSITION_EPSILON {
-            queue
-                .commands
-                .insert(0, QueuedCommand::LoadFromScrapyard { structure: req.structure });
+            queue.commands.insert(
+                0,
+                QueuedCommand::LoadFromScrapyard {
+                    structure: req.structure,
+                },
+            );
             queue.commands.insert(
                 0,
                 QueuedCommand::MoveToCoordinates {

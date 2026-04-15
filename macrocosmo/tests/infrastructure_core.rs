@@ -362,10 +362,9 @@ fn pending_core_deploys_preserves_across_different_systems() {
         let mut msgs = app
             .world_mut()
             .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
-        for (i, (deployer, target, pos)) in
-            [(deployer_a, sys_a, pos_a), (deployer_b, sys_b, pos_b)]
-                .into_iter()
-                .enumerate()
+        for (i, (deployer, target, pos)) in [(deployer_a, sys_a, pos_a), (deployer_b, sys_b, pos_b)]
+            .into_iter()
+            .enumerate()
         {
             msgs.write(CoreDeployRequested {
                 command_id: CommandId(300 + i as u64),

@@ -24,10 +24,7 @@ pub const DEPLOY_POSITION_EPSILON: f64 = 0.01;
 /// #223: Dismantle a deep-space structure. Removes any existing
 /// `ConstructionPlatform` (lost investment) and installs a `Scrapyard` whose
 /// `remaining = lifetime_cost * scrap_refund`.
-pub fn dismantle_structure(
-    world: &mut World,
-    structure: Entity,
-) -> Result<(), &'static str> {
+pub fn dismantle_structure(world: &mut World, structure: Entity) -> Result<(), &'static str> {
     // Gather what we need without the registry mutably borrowed.
     let (def_id, lifetime) = {
         let Some(ds) = world.get::<DeepSpaceStructure>(structure) else {

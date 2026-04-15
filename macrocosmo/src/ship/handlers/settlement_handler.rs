@@ -88,12 +88,18 @@ pub fn handle_survey_requested(
 
         // Auto-insert a MoveTo if not at target. Re-queue Survey after it.
         if docked_system != Some(req.target_system) {
-            queue
-                .commands
-                .insert(0, QueuedCommand::Survey { system: req.target_system });
-            queue
-                .commands
-                .insert(0, QueuedCommand::MoveTo { system: req.target_system });
+            queue.commands.insert(
+                0,
+                QueuedCommand::Survey {
+                    system: req.target_system,
+                },
+            );
+            queue.commands.insert(
+                0,
+                QueuedCommand::MoveTo {
+                    system: req.target_system,
+                },
+            );
             info!(
                 "Queue: Ship {} not at target, auto-inserting move before survey of {}",
                 ship.name, target_star.name
@@ -213,9 +219,12 @@ pub fn handle_colonize_requested(
                     planet: req.planet,
                 },
             );
-            queue
-                .commands
-                .insert(0, QueuedCommand::MoveTo { system: req.target_system });
+            queue.commands.insert(
+                0,
+                QueuedCommand::MoveTo {
+                    system: req.target_system,
+                },
+            );
             info!(
                 "Queue: Ship {} not at target, auto-inserting move before colonize of {}",
                 ship.name, target_star.name
