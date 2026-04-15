@@ -316,6 +316,8 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         home_port: Entity,
         ftl_range: f64,
         sublight_speed: f64,
+        fleet: Option<Entity>,
+        modules: Vec<crate::ship::EquippedModule>,
     }
     let ship_rows: Vec<ShipRow> = {
         let mut ship_q = world.query::<(Entity, &Ship)>();
@@ -330,12 +332,15 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
                 home_port: s.home_port,
                 ftl_range: s.ftl_range,
                 sublight_speed: s.sublight_speed,
+                fleet: s.fleet,
+                modules: s.modules.clone(),
             })
             .collect()
     };
     for row in ship_rows {
         let shtbl = lua.create_table()?;
         shtbl.set("id", row.entity.to_bits())?;
+        shtbl.set("entity", row.entity.to_bits())?;
         shtbl.set("name", row.name.as_str())?;
         shtbl.set("design_id", row.design_id.as_str())?;
         shtbl.set("hull_id", row.hull_id.as_str())?;
@@ -351,6 +356,44 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         shtbl.set("home_port", row.home_port.to_bits())?;
         shtbl.set("ftl_range", row.ftl_range)?;
         shtbl.set("sublight_speed", row.sublight_speed)?;
+        // #289 β: fleet_id — optional back-pointer to the Fleet entity
+        // (γ-1 invariant: every spawned ship is assigned to a 1-ship
+        // fleet at minimum, but tests occasionally hold detached ships).
+        if let Some(fleet_entity) = row.fleet {
+            shtbl.set("fleet_id", fleet_entity.to_bits())?;
+        }
+        // #289 β: hp — present only when ShipHitpoints is attached
+        // (plan §10 R7; unwrap forbidden).
+        if let Some(hp) = world.get::<crate::ship::ShipHitpoints>(row.entity) {
+            let hp_tbl = lua.create_table()?;
+            hp_tbl.set("hull", hp.hull)?;
+            hp_tbl.set("hull_max", hp.hull_max)?;
+            hp_tbl.set("armor", hp.armor)?;
+            hp_tbl.set("armor_max", hp.armor_max)?;
+            hp_tbl.set("shield", hp.shield)?;
+            hp_tbl.set("shield_max", hp.shield_max)?;
+            hp_tbl.set("shield_regen", hp.shield_regen)?;
+            seal_table(lua, &hp_tbl)?;
+            shtbl.set("hp", hp_tbl)?;
+        }
+        // #289 β: modules — unsealed array of sealed
+        // `{slot_type, module_id}` tables (order matches the ship's
+        // equipped slot order).
+        let modules_tbl = lua.create_table()?;
+        for (i, em) in row.modules.iter().enumerate() {
+            let entry = lua.create_table()?;
+            entry.set("slot_type", em.slot_type.as_str())?;
+            entry.set("module_id", em.module_id.as_str())?;
+            seal_table(lua, &entry)?;
+            modules_tbl.set((i + 1) as i64, entry)?;
+        }
+        shtbl.set("modules", modules_tbl)?;
+        // #289 β: state — tag-union snapshot of ShipState (8 variants;
+        // plan §10 R1). Missing ShipState -> no `state` field.
+        if let Some(state) = world.get::<crate::ship::ShipState>(row.entity) {
+            let state_tbl = build_ship_state_table(lua, state)?;
+            shtbl.set("state", state_tbl)?;
+        }
         seal_table(lua, &shtbl)?;
         ships_tbl.set(row.entity.to_bits(), shtbl)?;
         ship_ids.push(row.entity.to_bits())?;
@@ -501,6 +544,132 @@ struct ResourceStockpileSnapshot {
     research: Amt,
     food: Amt,
     authority: Amt,
+}
+
+/// #289 β: Flatten a `ShipState` variant into a sealed Lua tag-union
+/// table. The shape is `{kind = "<variant_snake_case>", ...}` with
+/// variant-specific payload fields. A wildcard match warns (once per
+/// unseen variant type is not enforced — we rely on the compiler to
+/// flag future variants via the `#[non_exhaustive]` lint when/if it is
+/// added; for now the wildcard keeps the snapshot builder total).
+fn build_ship_state_table(lua: &Lua, state: &crate::ship::ShipState) -> mlua::Result<Table> {
+    use crate::ship::ShipState as S;
+    let t = lua.create_table()?;
+    match state {
+        S::Docked { system } => {
+            t.set("kind", "docked")?;
+            t.set("system", system.to_bits())?;
+        }
+        S::SubLight {
+            origin,
+            destination,
+            target_system,
+            departed_at,
+            arrival_at,
+        } => {
+            t.set("kind", "sublight")?;
+            let o = lua.create_table()?;
+            o.set("x", origin[0])?;
+            o.set("y", origin[1])?;
+            o.set("z", origin[2])?;
+            seal_table(lua, &o)?;
+            t.set("origin", o)?;
+            let d = lua.create_table()?;
+            d.set("x", destination[0])?;
+            d.set("y", destination[1])?;
+            d.set("z", destination[2])?;
+            seal_table(lua, &d)?;
+            t.set("destination", d)?;
+            if let Some(ts) = target_system {
+                t.set("target_system", ts.to_bits())?;
+            }
+            t.set("departed_at", *departed_at)?;
+            t.set("arrival_at", *arrival_at)?;
+        }
+        S::InFTL {
+            origin_system,
+            destination_system,
+            departed_at,
+            arrival_at,
+        } => {
+            t.set("kind", "in_ftl")?;
+            t.set("origin_system", origin_system.to_bits())?;
+            t.set("destination_system", destination_system.to_bits())?;
+            t.set("departed_at", *departed_at)?;
+            t.set("arrival_at", *arrival_at)?;
+        }
+        S::Surveying {
+            target_system,
+            started_at,
+            completes_at,
+        } => {
+            t.set("kind", "surveying")?;
+            t.set("target_system", target_system.to_bits())?;
+            t.set("started_at", *started_at)?;
+            t.set("completes_at", *completes_at)?;
+        }
+        S::Settling {
+            system,
+            planet,
+            started_at,
+            completes_at,
+        } => {
+            t.set("kind", "settling")?;
+            t.set("system", system.to_bits())?;
+            if let Some(p) = planet {
+                t.set("planet", p.to_bits())?;
+            }
+            t.set("started_at", *started_at)?;
+            t.set("completes_at", *completes_at)?;
+        }
+        S::Refitting {
+            system,
+            started_at,
+            completes_at,
+            target_revision,
+            ..
+        } => {
+            t.set("kind", "refitting")?;
+            t.set("system", system.to_bits())?;
+            t.set("started_at", *started_at)?;
+            t.set("completes_at", *completes_at)?;
+            t.set("target_revision", *target_revision)?;
+        }
+        S::Loitering { position } => {
+            t.set("kind", "loitering")?;
+            let p = lua.create_table()?;
+            p.set("x", position[0])?;
+            p.set("y", position[1])?;
+            p.set("z", position[2])?;
+            seal_table(lua, &p)?;
+            t.set("position", p)?;
+        }
+        S::Scouting {
+            target_system,
+            origin_system,
+            started_at,
+            completes_at,
+            ..
+        } => {
+            t.set("kind", "scouting")?;
+            t.set("target_system", target_system.to_bits())?;
+            t.set("origin_system", origin_system.to_bits())?;
+            t.set("started_at", *started_at)?;
+            t.set("completes_at", *completes_at)?;
+        }
+        #[allow(unreachable_patterns)]
+        other => {
+            // Plan §10 R1: wildcard + warn to keep snapshot builder
+            // total when/if new ShipState variants are added.
+            bevy::log::warn!(
+                "gamestate_view: unknown ShipState variant, exposing as {{kind='unknown'}}: {:?}",
+                std::mem::discriminant(other)
+            );
+            t.set("kind", "unknown")?;
+        }
+    }
+    seal_table(lua, &t)?;
+    Ok(t)
 }
 
 fn build_empire_table(
@@ -1122,6 +1291,200 @@ mod tests {
         let col: Table = colonies.get(colony_entity.to_bits()).unwrap();
         let owner: mlua::Value = col.get("owner_empire_id").unwrap();
         assert!(matches!(owner, mlua::Value::Nil));
+    }
+
+    #[test]
+    fn test_shipview_hp_modules_state_docked() {
+        // #289 β: Ship with hitpoints, two modules, Docked state
+        use crate::ship::{EquippedModule, Ship, ShipHitpoints, ShipState};
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = World::new();
+        world.insert_resource(GameClock::new(0));
+        let system_entity = world
+            .spawn(StarSystem {
+                name: "Sol".into(),
+                surveyed: true,
+                is_capital: true,
+                star_type: "yellow_dwarf".into(),
+            })
+            .id();
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "Pioneer".into(),
+                    design_id: "explorer_mk1".into(),
+                    hull_id: "corvette".into(),
+                    modules: vec![
+                        EquippedModule {
+                            slot_type: "weapon".into(),
+                            module_id: "laser_mk1".into(),
+                        },
+                        EquippedModule {
+                            slot_type: "aux".into(),
+                            module_id: "scanner".into(),
+                        },
+                    ],
+                    owner: crate::ship::Owner::Neutral,
+                    sublight_speed: 1.0,
+                    ftl_range: 5.0,
+                    player_aboard: false,
+                    home_port: system_entity,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipHitpoints {
+                    hull: 80.0,
+                    hull_max: 100.0,
+                    armor: 20.0,
+                    armor_max: 40.0,
+                    shield: 5.0,
+                    shield_max: 10.0,
+                    shield_regen: 0.5,
+                },
+                ShipState::Docked {
+                    system: system_entity,
+                },
+            ))
+            .id();
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+        let ships: Table = gs.get("ships").unwrap();
+        let s: Table = ships.get(ship_entity.to_bits()).unwrap();
+        let hp: Table = s.get("hp").unwrap();
+        assert!((hp.get::<f64>("hull").unwrap() - 80.0).abs() < 1e-9);
+        assert!((hp.get::<f64>("shield_regen").unwrap() - 0.5).abs() < 1e-9);
+        let mods: Table = s.get("modules").unwrap();
+        assert_eq!(mods.len().unwrap(), 2);
+        let m1: Table = mods.get(1).unwrap();
+        assert_eq!(m1.get::<String>("slot_type").unwrap(), "weapon");
+        assert_eq!(m1.get::<String>("module_id").unwrap(), "laser_mk1");
+        let state: Table = s.get("state").unwrap();
+        assert_eq!(state.get::<String>("kind").unwrap(), "docked");
+        assert_eq!(
+            state.get::<u64>("system").unwrap(),
+            system_entity.to_bits()
+        );
+    }
+
+    #[test]
+    fn test_shipview_state_variants_tag_union() {
+        // #289 β R1: All 8 ShipState variants produce the expected kind string.
+        use crate::ship::{Ship, ShipState};
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = World::new();
+        world.insert_resource(GameClock::new(0));
+        let sys_a = world
+            .spawn(StarSystem {
+                name: "A".into(),
+                surveyed: true,
+                is_capital: false,
+                star_type: "x".into(),
+            })
+            .id();
+        let sys_b = world
+            .spawn(StarSystem {
+                name: "B".into(),
+                surveyed: true,
+                is_capital: false,
+                star_type: "x".into(),
+            })
+            .id();
+        let make_ship = |name: &str| Ship {
+            name: name.into(),
+            design_id: "d".into(),
+            hull_id: "h".into(),
+            modules: vec![],
+            owner: crate::ship::Owner::Neutral,
+            sublight_speed: 1.0,
+            ftl_range: 1.0,
+            player_aboard: false,
+            home_port: sys_a,
+            design_revision: 0,
+            fleet: None,
+        };
+        let cases: Vec<(&str, ShipState)> = vec![
+            (
+                "docked",
+                ShipState::Docked { system: sys_a },
+            ),
+            (
+                "sublight",
+                ShipState::SubLight {
+                    origin: [0.0, 0.0, 0.0],
+                    destination: [1.0, 2.0, 3.0],
+                    target_system: Some(sys_b),
+                    departed_at: 10,
+                    arrival_at: 20,
+                },
+            ),
+            (
+                "in_ftl",
+                ShipState::InFTL {
+                    origin_system: sys_a,
+                    destination_system: sys_b,
+                    departed_at: 5,
+                    arrival_at: 50,
+                },
+            ),
+            (
+                "surveying",
+                ShipState::Surveying {
+                    target_system: sys_a,
+                    started_at: 0,
+                    completes_at: 30,
+                },
+            ),
+            (
+                "settling",
+                ShipState::Settling {
+                    system: sys_a,
+                    planet: None,
+                    started_at: 0,
+                    completes_at: 90,
+                },
+            ),
+            (
+                "refitting",
+                ShipState::Refitting {
+                    system: sys_a,
+                    started_at: 0,
+                    completes_at: 20,
+                    new_modules: vec![],
+                    target_revision: 3,
+                },
+            ),
+            (
+                "loitering",
+                ShipState::Loitering {
+                    position: [4.0, 5.0, 6.0],
+                },
+            ),
+            (
+                "scouting",
+                ShipState::Scouting {
+                    target_system: sys_a,
+                    origin_system: sys_b,
+                    started_at: 0,
+                    completes_at: 100,
+                    report_mode: crate::ship::ReportMode::FtlComm,
+                },
+            ),
+        ];
+        let entities: Vec<Entity> = cases
+            .into_iter()
+            .map(|(name, st)| world.spawn((make_ship(name), st)).id())
+            .collect();
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+        let ships: Table = gs.get("ships").unwrap();
+        let expected: Vec<&str> = vec![
+            "docked", "sublight", "in_ftl", "surveying", "settling", "refitting", "loitering",
+            "scouting",
+        ];
+        for (e, expected_kind) in entities.iter().zip(expected.iter()) {
+            let s: Table = ships.get(e.to_bits()).unwrap();
+            let st: Table = s.get("state").unwrap();
+            let k: String = st.get("kind").unwrap();
+            assert_eq!(&k, expected_kind, "kind mismatch for {:?}", e);
+        }
     }
 
     #[test]
