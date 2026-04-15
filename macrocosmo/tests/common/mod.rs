@@ -405,7 +405,13 @@ pub fn test_app() -> App {
     // resolve_core_deploys can run without a Resource-missing panic.
     app.init_resource::<macrocosmo::ship::PendingCoreDeploys>();
     app.init_resource::<macrocosmo::scripting::GameRng>();
+    // #334 Phase 1: command-dispatch message types + allocator.
+    app.add_plugins(macrocosmo::ship::command_events::CommandEventsPlugin);
     app.add_systems(Update, macrocosmo::time_system::advance_game_time);
+    // #334 Phase 1: primary ship pipeline, split into two `add_systems`
+    // calls so we stay under the 20-arm IntoScheduleConfigs limit. The
+    // second call `.after(process_command_queue)` preserves the original
+    // ordering of scout / combat / repair / pursuit / fleet cleanup.
     app.add_systems(
         Update,
         (
@@ -426,10 +432,25 @@ pub fn test_app() -> App {
             // #296 (S-3): Drain Core deploy tickets enqueued by the
             // deliverable processor. Mirrors ShipPlugin ordering.
             macrocosmo::ship::resolve_core_deploys,
+            // #334 Phase 1: dispatcher + MoveTo/MoveToCoordinates handlers
+            // run before process_command_queue so the PendingRoute filter
+            // on the legacy system excludes ships whose MoveTo was just
+            // dispatched this tick.
+            macrocosmo::ship::dispatcher::dispatch_queued_commands,
+            macrocosmo::ship::handlers::handle_move_requested,
+            macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
             process_command_queue,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    app.add_systems(
+        Update,
+        (
             // #217: Scout observation + report. Chained after
-            // process_command_queue so a Scout that began transitioning to
-            // Scouting this tick doesn't get double-processed.
+            // process_command_queue so a Scout that began transitioning
+            // to Scouting this tick doesn't get double-processed.
             macrocosmo::ship::scout::tick_scout_observation,
             macrocosmo::ship::scout::process_scout_report,
             resolve_combat,
@@ -439,6 +460,7 @@ pub fn test_app() -> App {
             macrocosmo::ship::fleet::prune_empty_fleets,
         )
             .chain()
+            .after(process_command_queue)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
@@ -451,6 +473,16 @@ pub fn test_app() -> App {
         )
             .chain()
             .after(process_command_queue)
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    // #334 Phase 1: CommandExecuted → CommandLog bridge.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::bridges::bridge_command_executed_to_log
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
@@ -494,7 +526,21 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time)
             .after(tick_timed_effects),
     );
-    app.add_systems(Update, propagate_knowledge);
+    // #334 Phase 1: pin propagate_knowledge to run BEFORE the colony tick
+    // chain (tick_building_queue / tick_population_growth / …) so
+    // knowledge snapshots capture the pre-tick state — tests in
+    // `tests/knowledge.rs` assert on queued-but-not-yet-completed build
+    // orders and on the pristine population count. Before the dispatcher
+    // refactor this was a lucky side-effect of the ship schedule's
+    // topological order.
+    app.add_systems(
+        Update,
+        propagate_knowledge
+            .before(tick_building_queue)
+            .before(tick_population_growth)
+            .before(tick_production)
+            .before(tick_maintenance),
+    );
     app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
     // #118: Sensor Buoy detection
     app.init_resource::<macrocosmo::deep_space::StructureRegistry>();
@@ -602,6 +648,8 @@ pub fn full_test_app() -> App {
     // #296 (S-3): Core deploy queue + RNG (mirrors ShipPlugin / ScriptingPlugin).
     app.init_resource::<macrocosmo::ship::PendingCoreDeploys>();
     app.init_resource::<macrocosmo::scripting::GameRng>();
+    // #334 Phase 1: command-dispatch message types + allocator.
+    app.add_plugins(macrocosmo::ship::command_events::CommandEventsPlugin);
 
     // --- #233 Notification pipeline resources ---
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
@@ -613,6 +661,7 @@ pub fn full_test_app() -> App {
     app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
 
     // --- Ship systems (from ShipPlugin) ---
+    // #334 Phase 1: split into two calls to stay under the 20-arm limit.
     app.add_systems(
         Update,
         (
@@ -630,7 +679,16 @@ pub fn full_test_app() -> App {
             macrocosmo::ship::deliverable_ops::process_deliverable_commands,
             // #296 (S-3): Drain Core deploy tickets enqueued above.
             macrocosmo::ship::resolve_core_deploys,
+            // #334 Phase 1: event-driven MoveTo path alongside legacy queue.
+            macrocosmo::ship::dispatcher::dispatch_queued_commands,
+            macrocosmo::ship::handlers::handle_move_requested,
+            macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
             process_command_queue,
+        ),
+    );
+    app.add_systems(
+        Update,
+        (
             // #217: Scout observation + delivery.
             macrocosmo::ship::scout::tick_scout_observation,
             macrocosmo::ship::scout::process_scout_report,
@@ -650,6 +708,14 @@ pub fn full_test_app() -> App {
         )
             .chain()
             .after(process_command_queue),
+    );
+    // #334 Phase 1: CommandExecuted → CommandLog bridge.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::bridges::bridge_command_executed_to_log
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested),
     );
 
     // --- Colony systems (from ColonyPlugin) ---

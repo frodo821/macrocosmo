@@ -1,31 +1,42 @@
-pub mod routing;
-pub mod fleet;
+pub mod combat;
+pub mod command;
+pub mod core_deliverable;
+pub mod courier_route;
+pub mod deliverable_ops;
 pub mod exploration;
+pub mod fleet;
 pub mod hitpoints;
 pub mod modifiers;
+pub mod movement;
+pub mod pursuit;
+pub mod routing;
+pub mod scout;
 pub mod settlement;
 pub mod survey;
-pub mod combat;
-pub mod movement;
-pub mod command;
-pub mod courier_route;
-pub mod pursuit;
-pub mod deliverable_ops;
-pub mod scout;
-pub mod core_deliverable;
+// #334 Phase 1: event-driven command dispatch — message types and allocator.
+pub mod command_events;
+// #334 Phase 1: queue dispatcher — validates + emits CommandRequested messages.
+pub mod dispatcher;
+// #334 Phase 1: per-variant handlers (MoveTo + MoveToCoordinates this phase).
+pub mod handlers;
+// #334 Phase 1: CommandExecuted → CommandLog / gamestate bridge systems.
+pub mod bridges;
 
-pub use fleet::*;
+pub use combat::*;
+pub use command::*;
+pub use core_deliverable::{
+    CoreDeployTicket, CoreShip, PendingCoreDeploys, resolve_core_deploys,
+    spawn_core_ship_from_deliverable,
+};
+pub use courier_route::*;
 pub use exploration::*;
+pub use fleet::*;
 pub use hitpoints::*;
 pub use modifiers::*;
+pub use movement::*;
+pub use pursuit::*;
 pub use settlement::*;
 pub use survey::*;
-pub use combat::*;
-pub use movement::*;
-pub use command::*;
-pub use courier_route::*;
-pub use pursuit::*;
-pub use core_deliverable::{CoreShip, PendingCoreDeploys, CoreDeployTicket, resolve_core_deploys, spawn_core_ship_from_deliverable};
 
 use bevy::prelude::*;
 
@@ -47,7 +58,11 @@ pub struct CommandQueue {
 
 impl CommandQueue {
     /// Push a command and update predicted position
-    pub fn push(&mut self, cmd: QueuedCommand, system_positions: &impl Fn(Entity) -> Option<[f64; 3]>) {
+    pub fn push(
+        &mut self,
+        cmd: QueuedCommand,
+        system_positions: &impl Fn(Entity) -> Option<[f64; 3]>,
+    ) {
         match &cmd {
             QueuedCommand::MoveTo { system }
             | QueuedCommand::Survey { system }
@@ -79,8 +94,8 @@ impl CommandQueue {
                 self.predicted_system = None;
             }
             // #223: In-place resource actions — no predicted movement change.
-            QueuedCommand::TransferToStructure { .. }
-            | QueuedCommand::LoadFromScrapyard { .. } => {}
+            QueuedCommand::TransferToStructure { .. } | QueuedCommand::LoadFromScrapyard { .. } => {
+            }
         }
         self.commands.push(cmd);
     }
@@ -115,11 +130,20 @@ pub enum ReportMode {
 
 #[derive(Clone, Debug)]
 pub enum QueuedCommand {
-    MoveTo { system: Entity },
-    Survey { system: Entity },
-    Colonize { system: Entity, planet: Option<Entity> },
+    MoveTo {
+        system: Entity,
+    },
+    Survey {
+        system: Entity,
+    },
+    Colonize {
+        system: Entity,
+        planet: Option<Entity>,
+    },
     /// #185: Travel sublight to an arbitrary point in deep space and loiter there.
-    MoveToCoordinates { target: [f64; 3] },
+    MoveToCoordinates {
+        target: [f64; 3],
+    },
     /// #217: Dispatch the ship to `target_system`, observe the area within
     /// the scout's sensor range for `observation_duration` hexadies, then
     /// report back via `report_mode`. The ship MUST have a scout module
@@ -162,7 +186,9 @@ pub enum QueuedCommand {
     },
     /// #223: Drain a co-located `Scrapyard`'s remaining resources into the
     /// ship's Cargo (clamped by cargo capacity).
-    LoadFromScrapyard { structure: Entity },
+    LoadFromScrapyard {
+        structure: Entity,
+    },
 }
 
 /// Initial FTL speed as a multiple of light speed
@@ -175,86 +201,132 @@ impl Plugin for ShipPlugin {
         app.init_resource::<routing::RouteCalculationsPending>();
         // #296 (S-3): Per-tick queue for Infrastructure Core deploy tickets.
         app.init_resource::<core_deliverable::PendingCoreDeploys>();
-        app.add_systems(Update, (
-            sync_ship_module_modifiers,
-            sync_ship_hitpoints.after(sync_ship_module_modifiers),
-            tick_shield_regen,
-            sublight_movement_system,
-            process_ftl_travel,
-            deliver_survey_results.after(process_ftl_travel),
-            process_surveys,
-            process_settling,
-            process_refitting,
-            process_pending_ship_commands,
-            // #223: Deliverable ops run BEFORE the FTL router so any
-            // injected MoveTo/MoveToCoordinates is dispatched this tick.
-            deliverable_ops::process_deliverable_commands
-                .after(sublight_movement_system)
-                .after(process_ftl_travel)
-                .after(process_surveys),
-            // #296 (S-3): Resolve Core deploy tickets into actual CoreShip
-            // entities, grouping same-tick duplicates and tie-breaking via
-            // GameRng. Runs after the deliverable command processor (which
-            // enqueues tickets) and before the command queue, so newly
-            // spawned Cores are visible on the next frame.
-            core_deliverable::resolve_core_deploys
-                .after(deliverable_ops::process_deliverable_commands),
-            process_command_queue
+        // #334 Phase 1: register command-dispatch message types + allocator
+        // before any dispatcher/handler system that references them.
+        app.add_plugins(command_events::CommandEventsPlugin);
+        app.add_systems(
+            Update,
+            (
+                sync_ship_module_modifiers,
+                sync_ship_hitpoints.after(sync_ship_module_modifiers),
+                tick_shield_regen,
+                sublight_movement_system,
+                process_ftl_travel,
+                deliver_survey_results.after(process_ftl_travel),
+                process_surveys,
+                process_settling,
+                process_refitting,
+                process_pending_ship_commands,
+                // #223: Deliverable ops run BEFORE the FTL router so any
+                // injected MoveTo/MoveToCoordinates is dispatched this tick.
+                deliverable_ops::process_deliverable_commands
+                    .after(sublight_movement_system)
+                    .after(process_ftl_travel)
+                    .after(process_surveys),
+                // #296 (S-3): Resolve Core deploy tickets into actual CoreShip
+                // entities, grouping same-tick duplicates and tie-breaking via
+                // GameRng. Runs after the deliverable command processor (which
+                // enqueues tickets) and before the command queue, so newly
+                // spawned Cores are visible on the next frame.
+                core_deliverable::resolve_core_deploys
+                    .after(deliverable_ops::process_deliverable_commands),
+                process_command_queue
+                    .after(sublight_movement_system)
+                    .after(process_ftl_travel)
+                    .after(process_surveys)
+                    .after(deliverable_ops::process_deliverable_commands),
+                resolve_combat,
+                tick_ship_repair,
+                // #117: Courier automation — runs before process_command_queue
+                // so that any MoveTo it queues this frame is dispatched in the
+                // same frame.
+                tick_courier_routes
+                    .before(process_command_queue)
+                    .after(sublight_movement_system)
+                    .after(process_ftl_travel),
+                // #186 Phase 1: Aggressive ROE detection of hostile deep-space
+                // contacts. Runs after movement so ship positions are current.
+                pursuit::detect_hostiles_system
+                    .after(sublight_movement_system)
+                    .after(process_ftl_travel)
+                    .after(process_command_queue),
+                // #217: Scout observation ticker — transitions a Scouting ship
+                // into Docked + attaches a ScoutReport when the timer expires.
+                // Runs after FTL/sublight movement so a ship that finished
+                // travel and transitioned into Scouting this tick doesn't
+                // double-process.
+                scout::tick_scout_observation
+                    .after(process_ftl_travel)
+                    .after(sublight_movement_system)
+                    .after(process_command_queue),
+                // #217: Scout report delivery — writes to KnowledgeStore on
+                // FTL comm success, or auto-queues return home. Runs after the
+                // observation ticker so a ship that completed observation this
+                // frame can still have its report routed this frame.
+                scout::process_scout_report
+                    .after(scout::tick_scout_observation)
+                    .after(process_command_queue),
+                // #287 (γ-1): Reconcile FleetMembers against live Ship entities
+                // and despawn fleets that have lost their last member. Runs
+                // after every system that may despawn a ship this frame
+                // (combat, settlement, refit consumption, command processing)
+                // so the cleanup is visible next tick at the latest.
+                fleet::prune_empty_fleets
+                    .after(resolve_combat)
+                    .after(process_settling)
+                    .after(process_refitting)
+                    .after(process_command_queue),
+            )
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        // #334 Phase 1: dispatcher + MoveTo/MoveToCoordinates handlers.
+        // Kept in their own `add_systems` call (instead of joining the
+        // main Ship tuple above) to stay under Bevy 0.18's 20-arm
+        // `IntoScheduleConfigs` limit without resorting to a nested tuple
+        // (which for this schedule was observed to elide the systems
+        // from the scheduler entirely).
+        app.add_systems(
+            Update,
+            (
+                dispatcher::dispatch_queued_commands,
+                handlers::handle_move_requested,
+                handlers::handle_move_to_coordinates_requested,
+            )
+                .chain()
+                .after(deliverable_ops::process_deliverable_commands)
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys)
-                .after(deliverable_ops::process_deliverable_commands),
-            resolve_combat,
-            tick_ship_repair,
-            // #117: Courier automation — runs before process_command_queue
-            // so that any MoveTo it queues this frame is dispatched in the
-            // same frame.
-            tick_courier_routes
                 .before(process_command_queue)
-                .after(sublight_movement_system)
-                .after(process_ftl_travel),
-            // #186 Phase 1: Aggressive ROE detection of hostile deep-space
-            // contacts. Runs after movement so ship positions are current.
-            pursuit::detect_hostiles_system
-                .after(sublight_movement_system)
-                .after(process_ftl_travel)
-                .after(process_command_queue),
-            // #217: Scout observation ticker — transitions a Scouting ship
-            // into Docked + attaches a ScoutReport when the timer expires.
-            // Runs after FTL/sublight movement so a ship that finished
-            // travel and transitioned into Scouting this tick doesn't
-            // double-process.
-            scout::tick_scout_observation
-                .after(process_ftl_travel)
-                .after(sublight_movement_system)
-                .after(process_command_queue),
-            // #217: Scout report delivery — writes to KnowledgeStore on
-            // FTL comm success, or auto-queues return home. Runs after the
-            // observation ticker so a ship that completed observation this
-            // frame can still have its report routed this frame.
-            scout::process_scout_report
-                .after(scout::tick_scout_observation)
-                .after(process_command_queue),
-            // #287 (γ-1): Reconcile FleetMembers against live Ship entities
-            // and despawn fleets that have lost their last member. Runs
-            // after every system that may despawn a ship this frame
-            // (combat, settlement, refit consumption, command processing)
-            // so the cleanup is visible next tick at the latest.
-            fleet::prune_empty_fleets
-                .after(resolve_combat)
-                .after(process_settling)
-                .after(process_refitting)
-                .after(process_command_queue),
-        ).after(crate::time_system::advance_game_time)
-         .before(crate::colony::advance_production_tick));
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        // #334 Phase 1: CommandExecuted → CommandLog bridge. Runs after the
+        // route poller (which emits terminal CommandExecuted for deferred
+        // MoveTo) and after process_command_queue so synchronous handler
+        // emissions are visible in the same frame.
+        app.add_systems(
+            Update,
+            bridges::bridge_command_executed_to_log
+                .after(routing::poll_pending_routes)
+                .after(handlers::handle_move_requested)
+                .after(handlers::handle_move_to_coordinates_requested)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
         // #128: Poll route tasks after Commands from process_command_queue are flushed.
-        app.add_systems(Update, (
-            bevy::ecs::schedule::ApplyDeferred,
-            routing::poll_pending_routes,
-        ).chain()
-         .after(process_command_queue)
-         .after(crate::time_system::advance_game_time)
-         .before(crate::colony::advance_production_tick));
+        app.add_systems(
+            Update,
+            (
+                bevy::ecs::schedule::ApplyDeferred,
+                routing::poll_pending_routes,
+            )
+                .chain()
+                .after(process_command_queue)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
     }
 }
 
@@ -301,10 +373,16 @@ pub struct PendingShipCommand {
 /// The kinds of commands that can be issued to a ship.
 #[derive(Clone, Debug)]
 pub enum ShipCommand {
-    MoveTo { destination: Entity },
-    Survey { target: Entity },
+    MoveTo {
+        destination: Entity,
+    },
+    Survey {
+        target: Entity,
+    },
     Colonize,
-    SetROE { roe: RulesOfEngagement },
+    SetROE {
+        roe: RulesOfEngagement,
+    },
     /// Enqueue a command into the ship's CommandQueue (for in-transit ships).
     EnqueueCommand(QueuedCommand),
 }
@@ -420,7 +498,9 @@ impl Ship {
 
 #[derive(Component)]
 pub enum ShipState {
-    Docked { system: Entity },
+    Docked {
+        system: Entity,
+    },
     SubLight {
         origin: [f64; 3],
         destination: [f64; 3],
@@ -532,12 +612,7 @@ impl Cargo {
     /// Check if the cargo can accept another item with `cargo_size` against
     /// the ship's effective capacity `cap`. Uses the same mass accounting as
     /// `total_mass_with`.
-    pub fn can_accept_item_size(
-        &self,
-        added_size: u32,
-        cap: Amt,
-        mass_per_slot_raw: u64,
-    ) -> bool {
+    pub fn can_accept_item_size(&self, added_size: u32, cap: Amt, mass_per_slot_raw: u64) -> bool {
         // Without a registry lookup we can't compute item mass for existing
         // items, so callers must provide it via `total_mass_with` externally.
         // This helper only checks the additive delta; callers sum the existing
@@ -588,14 +663,19 @@ pub fn spawn_ship(
 ) -> Entity {
     let design = design_registry.get(design_id);
     let hull_hp = design.map(|d| d.hp).unwrap_or(50.0);
-    let hull_id = design.map(|d| d.hull_id.as_str()).unwrap_or("corvette").to_string();
+    let hull_id = design
+        .map(|d| d.hull_id.as_str())
+        .unwrap_or("corvette")
+        .to_string();
     let sublight_speed = design.map(|d| d.sublight_speed).unwrap_or(0.75);
     let ftl_range = design.map(|d| d.ftl_range).unwrap_or(10.0);
     // #123: Newly built ships are spawned in sync with the current design revision.
     let design_revision = design.map(|d| d.revision).unwrap_or(0);
     // Equip ships from the design's slot assignments so they start out matching
     // the design exactly (no spurious "needs refit" right after construction).
-    let modules = design.map(crate::ship_design::design_equipped_modules).unwrap_or_default();
+    let modules = design
+        .map(crate::ship_design::design_equipped_modules)
+        .unwrap_or_default();
     // #287 (γ-1): Reserve both entity ids up front so Ship <-> Fleet
     // can be wired in a single Commands batch (no follow-up backref
     // system needed). Every `spawn_ship` call produces a matching
@@ -659,8 +739,8 @@ pub fn spawn_ship(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::ecs::world::World;
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+    use bevy::ecs::world::World;
 
     // --- #223: Cargo item mass accounting ---
 
@@ -670,8 +750,12 @@ mod tests {
             minerals: Amt::units(50),
             energy: Amt::units(30),
             items: vec![
-                CargoItem::Deliverable { definition_id: "sensor_buoy".into() },
-                CargoItem::Deliverable { definition_id: "interdictor".into() },
+                CargoItem::Deliverable {
+                    definition_id: "sensor_buoy".into(),
+                },
+                CargoItem::Deliverable {
+                    definition_id: "interdictor".into(),
+                },
             ],
         };
         // sensor_buoy size=1, interdictor size=3 → 4 slots total.
@@ -693,7 +777,9 @@ mod tests {
         let cargo = Cargo {
             minerals: Amt::ZERO,
             energy: Amt::ZERO,
-            items: vec![CargoItem::Deliverable { definition_id: "big".into() }],
+            items: vec![CargoItem::Deliverable {
+                definition_id: "big".into(),
+            }],
         };
         let lookup = |id: &str| -> Option<u32> {
             match id {
@@ -828,8 +914,16 @@ mod tests {
         let mut ship = make_ship("colony_ship_mk1");
         ship.sublight_speed = 0.0;
         ship.ftl_range = 0.0;
-        let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest = Position { x: 1.0, y: 0.0, z: 0.0 };
+        let origin = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let dest = Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let mut state = ShipState::Docked { system };
         let result = start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 0);
         assert_eq!(result, Err("ship is immobile"));
@@ -842,13 +936,25 @@ mod tests {
         let mut world = World::new();
         let system = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1"); // 0.5c
-        let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest = Position { x: 1.0, y: 0.0, z: 0.0 }; // 1 LY away
+        let origin = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let dest = Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        }; // 1 LY away
         let mut state = ShipState::Docked { system };
         start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100)
             .expect("mobile ship should travel");
         match state {
-            ShipState::SubLight { arrival_at, departed_at, .. } => {
+            ShipState::SubLight {
+                arrival_at,
+                departed_at,
+                ..
+            } => {
                 assert_eq!(departed_at, 100);
                 assert_eq!(arrival_at, 220);
             }
@@ -866,8 +972,16 @@ mod tests {
         let mut ship = make_ship("courier_mk1");
         ship.ftl_range = 0.0;
         let mut state = ShipState::Docked { system: origin };
-        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest_pos = Position { x: 1.0, y: 0.0, z: 0.0 };
+        let origin_pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let dest_pos = Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
         assert_eq!(result, Err("Ship has no FTL capability"));
     }
@@ -879,8 +993,16 @@ mod tests {
         let dest = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1");
         let mut state = ShipState::Docked { system: origin };
-        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest_pos = Position { x: 50.0, y: 0.0, z: 0.0 };
+        let origin_pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let dest_pos = Position {
+            x: 50.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
         assert_eq!(result, Err("Destination is beyond FTL range"));
     }
@@ -892,8 +1014,16 @@ mod tests {
         let dest = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1");
         let mut state = ShipState::Docked { system: origin };
-        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
+        let origin_pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let dest_pos = Position {
+            x: 10.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let result = start_ftl_travel(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0);
         assert!(result.is_ok());
         match state {
@@ -910,12 +1040,31 @@ mod tests {
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1");
-        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
+        let origin_pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let dest_pos = Position {
+            x: 10.0,
+            y: 0.0,
+            z: 0.0,
+        };
 
         // Without port
         let mut state_no_port = ShipState::Docked { system: origin };
-        let _ = start_ftl_travel_with_bonus(&mut state_no_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, PortParams::NONE);
+        let _ = start_ftl_travel_with_bonus(
+            &mut state_no_port,
+            &ship,
+            origin,
+            dest,
+            &origin_pos,
+            &dest_pos,
+            0,
+            0.0,
+            1.0,
+            PortParams::NONE,
+        );
         let time_no_port = match state_no_port {
             ShipState::InFTL { arrival_at, .. } => arrival_at,
             _ => panic!("Expected InFTL state"),
@@ -923,15 +1072,33 @@ mod tests {
 
         // With port (using Lua-defined values)
         let mut state_port = ShipState::Docked { system: origin };
-        let port_params = PortParams { has_port: true, ftl_range_bonus: 10.0, travel_time_factor: 0.8 };
-        let _ = start_ftl_travel_with_bonus(&mut state_port, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, port_params);
+        let port_params = PortParams {
+            has_port: true,
+            ftl_range_bonus: 10.0,
+            travel_time_factor: 0.8,
+        };
+        let _ = start_ftl_travel_with_bonus(
+            &mut state_port,
+            &ship,
+            origin,
+            dest,
+            &origin_pos,
+            &dest_pos,
+            0,
+            0.0,
+            1.0,
+            port_params,
+        );
         let time_port = match state_port {
             ShipState::InFTL { arrival_at, .. } => arrival_at,
             _ => panic!("Expected InFTL state"),
         };
 
         // Port should reduce travel time by 20%
-        assert!(time_port < time_no_port, "Port should reduce FTL travel time");
+        assert!(
+            time_port < time_no_port,
+            "Port should reduce FTL travel time"
+        );
         let expected = (time_no_port as f64 * 0.8).ceil() as i64;
         assert_eq!(time_port, expected);
     }
@@ -943,18 +1110,52 @@ mod tests {
         let dest = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1"); // ftl_range = 15.0
 
-        let origin_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let dest_pos = Position { x: 20.0, y: 0.0, z: 0.0 }; // 20 ly, beyond base 15 ly range
+        let origin_pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let dest_pos = Position {
+            x: 20.0,
+            y: 0.0,
+            z: 0.0,
+        }; // 20 ly, beyond base 15 ly range
 
         // Without port: should fail
         let mut state = ShipState::Docked { system: origin };
-        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, PortParams::NONE);
+        let result = start_ftl_travel_with_bonus(
+            &mut state,
+            &ship,
+            origin,
+            dest,
+            &origin_pos,
+            &dest_pos,
+            0,
+            0.0,
+            1.0,
+            PortParams::NONE,
+        );
         assert_eq!(result, Err("Destination is beyond FTL range"));
 
         // With port: +10 ly range, so 25 ly total, should succeed
         let mut state = ShipState::Docked { system: origin };
-        let port_params = PortParams { has_port: true, ftl_range_bonus: 10.0, travel_time_factor: 0.8 };
-        let result = start_ftl_travel_with_bonus(&mut state, &ship, origin, dest, &origin_pos, &dest_pos, 0, 0.0, 1.0, port_params);
+        let port_params = PortParams {
+            has_port: true,
+            ftl_range_bonus: 10.0,
+            travel_time_factor: 0.8,
+        };
+        let result = start_ftl_travel_with_bonus(
+            &mut state,
+            &ship,
+            origin,
+            dest,
+            &origin_pos,
+            &dest_pos,
+            0,
+            0.0,
+            1.0,
+            port_params,
+        );
         assert!(result.is_ok(), "Port should extend FTL range by 10 ly");
     }
 
@@ -973,9 +1174,18 @@ mod tests {
     fn build_cost_returns_expected_values() {
         // #236: derived build cost = hull + Σ module costs
         let registry = test_design_registry();
-        assert_eq!(registry.build_cost("explorer_mk1"), (Amt::units(360), Amt::units(190)));
-        assert_eq!(registry.build_cost("colony_ship_mk1"), (Amt::units(800), Amt::units(450)));
-        assert_eq!(registry.build_cost("courier_mk1"), (Amt::units(290), Amt::units(140)));
+        assert_eq!(
+            registry.build_cost("explorer_mk1"),
+            (Amt::units(360), Amt::units(190))
+        );
+        assert_eq!(
+            registry.build_cost("colony_ship_mk1"),
+            (Amt::units(800), Amt::units(450))
+        );
+        assert_eq!(
+            registry.build_cost("courier_mk1"),
+            (Amt::units(290), Amt::units(140))
+        );
     }
 
     #[test]
@@ -1007,9 +1217,10 @@ mod tests {
             upgrade_to: Vec::new(),
             build_time: 0,
         });
-        let modules = vec![
-            EquippedModule { slot_type: "weapon".into(), module_id: "test_weapon".into() },
-        ];
+        let modules = vec![EquippedModule {
+            slot_type: "weapon".into(),
+            module_id: "test_weapon".into(),
+        }];
         let (bm, be) = design_reg.build_cost("explorer_mk1");
         let (rm, re) = design_reg.scrap_refund("explorer_mk1", &modules, &module_registry);
         // Refund = 50% of (hull cost + module cost)
@@ -1028,9 +1239,7 @@ mod tests {
         let system_b = world.spawn_empty().id();
         // Ship is docked at system_a, survey targets system_b
         let mut queue = CommandQueue {
-            commands: vec![QueuedCommand::Survey {
-                system: system_b,
-            }],
+            commands: vec![QueuedCommand::Survey { system: system_b }],
             ..Default::default()
         };
         let state = ShipState::Docked { system: system_a };
@@ -1046,8 +1255,12 @@ mod tests {
             QueuedCommand::Survey { system: target } => {
                 assert_ne!(docked_system, target);
                 // Auto-insert: move to target, then re-queue survey
-                queue.commands.insert(0, QueuedCommand::Survey { system: target });
-                queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
+                queue
+                    .commands
+                    .insert(0, QueuedCommand::Survey { system: target });
+                queue
+                    .commands
+                    .insert(0, QueuedCommand::MoveTo { system: target });
             }
             _ => panic!("Expected Survey command"),
         }
@@ -1078,11 +1291,22 @@ mod tests {
         };
         let next = queue.commands.remove(0);
         match next {
-            QueuedCommand::Colonize { system: target, planet } => {
+            QueuedCommand::Colonize {
+                system: target,
+                planet,
+            } => {
                 assert_ne!(docked_system, target);
                 // Auto-insert: move to target, then re-queue colonize
-                queue.commands.insert(0, QueuedCommand::Colonize { system: target, planet });
-                queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
+                queue.commands.insert(
+                    0,
+                    QueuedCommand::Colonize {
+                        system: target,
+                        planet,
+                    },
+                );
+                queue
+                    .commands
+                    .insert(0, QueuedCommand::MoveTo { system: target });
             }
             _ => panic!("Expected Colonize command"),
         }

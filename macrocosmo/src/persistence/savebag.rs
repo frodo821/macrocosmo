@@ -347,10 +347,16 @@ pub struct SavedHostileHitpoints {
 
 impl SavedHostileHitpoints {
     pub fn from_live(v: &HostileHitpoints) -> Self {
-        Self { hp: v.hp, max_hp: v.max_hp }
+        Self {
+            hp: v.hp,
+            max_hp: v.max_hp,
+        }
     }
     pub fn into_live(self) -> HostileHitpoints {
-        HostileHitpoints { hp: self.hp, max_hp: self.max_hp }
+        HostileHitpoints {
+            hp: self.hp,
+            max_hp: self.max_hp,
+        }
     }
 }
 
@@ -362,10 +368,16 @@ pub struct SavedHostileStats {
 
 impl SavedHostileStats {
     pub fn from_live(v: &HostileStats) -> Self {
-        Self { strength: v.strength, evasion: v.evasion }
+        Self {
+            strength: v.strength,
+            evasion: v.evasion,
+        }
     }
     pub fn into_live(self) -> HostileStats {
-        HostileStats { strength: self.strength, evasion: self.evasion }
+        HostileStats {
+            strength: self.strength,
+            evasion: self.evasion,
+        }
     }
 }
 
@@ -3688,6 +3700,14 @@ pub struct SavedCommandLogEntry {
 }
 impl SavedCommandLogEntry {
     pub fn from_live(v: &CommandLogEntry) -> Self {
+        // #334 Phase 1: the new `command_id` / `status` / `executed_at`
+        // fields on `CommandLogEntry` are deliberately NOT persisted —
+        // they're frame-transient dispatcher bookkeeping. Saving and
+        // reloading a mid-dispatch entry in those new states would be
+        // misleading, and adding them here would bump SAVE_VERSION.
+        // Keeping only the four legacy fields preserves
+        // `tests/fixtures_smoke.rs` without regenerating
+        // `minimal_game.bin`.
         Self {
             description: v.description.clone(),
             sent_at: v.sent_at,
@@ -3696,11 +3716,18 @@ impl SavedCommandLogEntry {
         }
     }
     pub fn into_live(self) -> CommandLogEntry {
+        // #334: Reloaded entries default the new fields
+        // (`command_id = None`, `status = Pending`, `executed_at = None`)
+        // so every consumer that hasn't adopted the new lifecycle yet
+        // sees behavior identical to pre-refactor.
         CommandLogEntry {
             description: self.description,
             sent_at: self.sent_at,
             arrives_at: self.arrives_at,
             arrived: self.arrived,
+            command_id: None,
+            status: crate::communication::CommandLogStatus::Pending,
+            executed_at: None,
         }
     }
 }
