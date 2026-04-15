@@ -389,6 +389,184 @@ fn pending_core_deploys_preserves_across_different_systems() {
     assert_eq!(systems, expected);
 }
 
+/// End-to-end: a ship in deep space at a system's inner-orbit position with
+/// an `infrastructure_core` cargo item executes `DeployDeliverable` → the
+/// deliverable_ops processor enqueues a CoreDeployTicket → resolve_core_deploys
+/// spawns a CoreShip in the target system at the canonical inner-orbit
+/// coordinate.
+#[test]
+fn end_to_end_deploy_spawns_core_at_inner_orbit() {
+    use macrocosmo::deep_space::{
+        CapabilityParams, DeliverableMetadata, ResourceCost, StructureDefinition,
+        StructureRegistry,
+    };
+    use macrocosmo::ship::{Cargo, CargoItem, CommandQueue, QueuedCommand, ShipState};
+
+    let mut app = full_test_app();
+    let sys =
+        spawn_test_system(app.world_mut(), "DeployHere", [3.0, 0.0, 0.0], 1.0, true, false);
+    let empire = empire_entity(app.world_mut());
+
+    // Register the immobile ship design.
+    {
+        let mut reg = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        reg.insert(macrocosmo::ship_design::ShipDesignDefinition {
+            id: "infrastructure_core_v1".to_string(),
+            name: "Infrastructure Core".to_string(),
+            description: String::new(),
+            hull_id: "infrastructure_core_hull".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::units(2),
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 400.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+        });
+    }
+    // Register the deliverable with `spawns_as_ship`.
+    {
+        let mut reg = app.world_mut().resource_mut::<StructureRegistry>();
+        reg.insert(StructureDefinition {
+            id: "infrastructure_core".to_string(),
+            name: "Infrastructure Core".to_string(),
+            description: String::new(),
+            max_hp: 400.0,
+            energy_drain: Amt::milli(200),
+            capabilities: std::collections::HashMap::<String, CapabilityParams>::new(),
+            prerequisites: None,
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(600),
+                    energy: Amt::units(400),
+                },
+                build_time: 120,
+                cargo_size: 5,
+                scrap_refund: 0.25,
+                spawns_as_ship: Some("infrastructure_core_v1".to_string()),
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
+        });
+    }
+
+    // Spawn a courier ship loitering at the system's inner-orbit position
+    // with the Core in cargo and a `DeployDeliverable` queued.
+    let inner_orbit = system_inner_orbit_position(sys, app.world());
+    let ship_design_id = "courier".to_string();
+    {
+        let mut reg = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        if reg.get(&ship_design_id).is_none() {
+            reg.insert(macrocosmo::ship_design::ShipDesignDefinition {
+                id: ship_design_id.clone(),
+                name: "Courier".to_string(),
+                description: String::new(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                can_survey: false,
+                can_colonize: false,
+                maintenance: Amt::ZERO,
+                build_cost_minerals: Amt::ZERO,
+                build_cost_energy: Amt::ZERO,
+                build_time: 0,
+                hp: 50.0,
+                sublight_speed: 0.5,
+                ftl_range: 10.0,
+                revision: 0,
+            });
+        }
+    }
+
+    let courier = {
+        let cargo = Cargo {
+            minerals: Amt::ZERO,
+            energy: Amt::ZERO,
+            items: vec![CargoItem::Deliverable {
+                definition_id: "infrastructure_core".to_string(),
+            }],
+        };
+        let queue = CommandQueue {
+            commands: vec![QueuedCommand::DeployDeliverable {
+                position: inner_orbit,
+                item_index: 0,
+            }],
+            ..Default::default()
+        };
+        // Loitering at inner_orbit, owned by `empire`.
+        app.world_mut()
+            .spawn((
+                macrocosmo::ship::Ship {
+                    name: "Test Courier".to_string(),
+                    design_id: ship_design_id.clone(),
+                    hull_id: "corvette".to_string(),
+                    modules: Vec::new(),
+                    owner: Owner::Empire(empire),
+                    sublight_speed: 0.5,
+                    ftl_range: 10.0,
+                    player_aboard: false,
+                    home_port: sys,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::Loitering {
+                    position: inner_orbit,
+                },
+                Position::from(inner_orbit),
+                queue,
+                cargo,
+                macrocosmo::ship::ShipHitpoints {
+                    hull: 50.0,
+                    hull_max: 50.0,
+                    armor: 0.0,
+                    armor_max: 0.0,
+                    shield: 0.0,
+                    shield_max: 0.0,
+                    shield_regen: 0.0,
+                },
+                macrocosmo::ship::ShipModifiers::default(),
+                macrocosmo::ship::ShipStats::default(),
+                macrocosmo::ship::RulesOfEngagement::default(),
+                FactionOwner(empire),
+            ))
+            .id()
+    };
+
+    // Pump one tick — process_deliverable_commands enqueues the ticket;
+    // the ShipPlugin would then run resolve_core_deploys. In test_app, both
+    // are registered on Update, so a single update should suffice.
+    advance_time(&mut app, 1);
+
+    // Tick again so commands from both stages are flushed.
+    advance_time(&mut app, 1);
+
+    // Find the Core ship.
+    let mut q = app
+        .world_mut()
+        .query::<(Entity, &CoreShip, &AtSystem, &Position)>();
+    let cores: Vec<_> = q.iter(app.world()).filter(|(_, _, at, _)| at.0 == sys).collect();
+    assert_eq!(cores.len(), 1, "exactly one Core spawned");
+    let (_, _, _, pos) = cores[0];
+    let expected = inner_orbit;
+    assert!(
+        (pos.x - expected[0]).abs() < 1e-9
+            && (pos.y - expected[1]).abs() < 1e-9
+            && (pos.z - expected[2]).abs() < 1e-9,
+        "Core position must match system_inner_orbit_position"
+    );
+    // Cargo on the deployer is consumed.
+    let cargo = app
+        .world()
+        .get::<Cargo>(courier)
+        .expect("deployer keeps Cargo component");
+    assert!(cargo.items.is_empty(), "deployer cargo consumed");
+}
+
 #[test]
 fn core_deploy_sets_system_sovereignty() {
     // End-to-end: deploy a Core → update_sovereignty writes Some(Empire).
