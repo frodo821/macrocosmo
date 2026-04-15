@@ -347,6 +347,22 @@ impl EventSystem {
 /// (upgrade only).
 pub const BUILDING_BUILT_EVENT: &str = "macrocosmo:building_built";
 
+/// #334 Phase 4: Event id fired when a `CommandExecuted` message reaches
+/// terminal disposition (`Ok` / `Rejected`). `Deferred` results are NOT
+/// bridged — they represent an in-flight handoff (async route planner,
+/// auto-prefix queueing) and a follow-up `CommandExecuted` will fire the
+/// hook when the work actually finishes. Payload keys: `command_id`
+/// (decimal string), `kind` (`"move"`, `"survey"`, etc. — lowercase), `ship`
+/// (entity bits as decimal string), `result` (`"ok"` | `"rejected"`),
+/// `reason` (only when rejected), `completed_at` (hexadies, decimal string).
+///
+/// Dispatched by `ship::bridges::bridge_command_executed_to_gamestate` via
+/// `EventSystem::fire_event_with_payload`, so Lua handlers registered with
+/// `on("macrocosmo:command_completed", ...)` observe the event on the next
+/// `dispatch_event_handlers` run — the queue-only invariant from
+/// `memory/feedback_rust_no_lua_callback.md` is preserved.
+pub const COMMAND_COMPLETED_EVENT: &str = "macrocosmo:command_completed";
+
 /// Central event bus for dispatching events to Lua handlers.
 ///
 /// Handlers are stored in the Lua global `_event_handlers` table to avoid
