@@ -563,8 +563,7 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
                     // #297 (S-2): Pass the resolved faction entity so the
                     // new Colony carries a `FactionOwner`. `None` skips
                     // attachment with a warning (see helper doc).
-                    let _ =
-                        spawn_colony_on_planet(world, planet_entity, num_slots, faction_entity);
+                    let _ = spawn_colony_on_planet(world, planet_entity, num_slots, faction_entity);
                     // Ensure the system also has resource stockpile / system buildings if
                     // they were not created (shouldn't happen normally but be defensive).
                     if world.get::<ResourceStockpile>(capital_entity).is_none() {

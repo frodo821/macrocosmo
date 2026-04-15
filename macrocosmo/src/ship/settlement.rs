@@ -171,12 +171,13 @@ pub fn process_settling(
             // so pre-S-2 test ships still produce an owned colony. Neutral
             // ships spawn an un-owned colony (matches "no diplomatic
             // identity" semantics on the ship side).
-            let new_owner: Option<Entity> = ship_faction_owner
-                .map(|fo| fo.0)
-                .or_else(|| match ship.owner {
-                    crate::ship::Owner::Empire(e) => Some(e),
-                    crate::ship::Owner::Neutral => None,
-                });
+            let new_owner: Option<Entity> =
+                ship_faction_owner
+                    .map(|fo| fo.0)
+                    .or_else(|| match ship.owner {
+                        crate::ship::Owner::Empire(e) => Some(e),
+                        crate::ship::Owner::Neutral => None,
+                    });
 
             let new_colony = commands
                 .spawn((

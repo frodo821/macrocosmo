@@ -103,29 +103,29 @@ pub fn spawn_capital_colony(
                 population: 100.0,
                 growth_rate: 0.01,
             },
-        // #250: Production starts at zero; all output comes from buildings
-        // (automation modifiers) + pop-driven job contributions, never from
-        // a hidden base rate. Legacy code seeded this with +5 everywhere,
-        // causing empty colonies to "self-produce" and masking the real
-        // job-system pipeline.
-        Production {
-            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
-        },
-        BuildQueue::default(),
-        Buildings { slots },
-        BuildingQueue::default(),
-        ProductionFocus::default(),
-        MaintenanceCost::default(),
-        FoodConsumption::default(),
-        ColonyPopulation {
-            species: vec![ColonySpecies {
-                species_id: "human".to_string(),
-                population: 100,
-            }],
-        },
+            // #250: Production starts at zero; all output comes from buildings
+            // (automation modifiers) + pop-driven job contributions, never from
+            // a hidden base rate. Legacy code seeded this with +5 everywhere,
+            // causing empty colonies to "self-produce" and masking the real
+            // job-system pipeline.
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue::default(),
+            Buildings { slots },
+            BuildingQueue::default(),
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+            ColonyPopulation {
+                species: vec![ColonySpecies {
+                    species_id: "human".to_string(),
+                    population: 100,
+                }],
+            },
             ColonyJobs::default(),
             ColonyJobRates::default(),
         ))
@@ -152,9 +152,7 @@ pub fn spawn_capital_colony(
     // when an enemy Core ship enters the system — that's intentional.
     if let Some(empire) = faction_entity {
         commands.entity(colony_entity).insert(FactionOwner(empire));
-        commands
-            .entity(capital_entity)
-            .insert(FactionOwner(empire));
+        commands.entity(capital_entity).insert(FactionOwner(empire));
     }
     info!("Capital colony scaffold created on {}", capital_star.name);
 }
