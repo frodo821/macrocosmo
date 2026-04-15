@@ -886,4 +886,39 @@ mlua の呼出順序: `push_empire_modifier` (write closure 入る) → opts 評
 
 ---
 
+## Phase B landing note (2026-04-15)
+
+Phase B land 完了、以下 5 commit:
+
+| commit | ハンドル | 主要変更 |
+|---|---|---|
+| B1 | `[332-B1]` | 旧 `gamestate_view.rs` (1660 行) 削除、`scripting/mod.rs` から `pub mod` export を drop、`gamestate_scope.rs` module doc を過去形に訂正 |
+| B2 | `[332-B2]` | `run_lifecycle_hooks` を exclusive `&mut World` system に昇格。`run_on_game_start_with_gamestate(lua, world)` / `run_on_game_load_with_gamestate(lua, world)` 新設。`on_scripts_loaded` は静的検証 hook のため no-arg 維持。Integration test `tests/lifecycle_hook_mutations.rs` 追加 (5 test) |
+| B3 | `[332-B3]` | `_pending_flags` / `_pending_global_mods` の drain 撤去: `lifecycle::run_lifecycle_hooks`, `technology::effects::build_tech_effects_preview`, `technology::effects::apply_tech_effects`, `faction::mod::apply_diplomatic_action` の 4 箇所 |
+| B4 | `[332-B4]` | global `set_flag(name)` / `modify_global(param, v)` 削除、`_pending_*` table seeding + `drain_pending_*` / `apply_global_mod` pub helper 削除。関連 unit test 5 本撤去、`test_check_flag_lua` は `_flag_store` 直接 seed に書き換え |
+| B5 | `[332-B5]` | docs update (本 file + `architecture-decisions.md` §10) |
+
+### Phase B の実務差分 vs. 元計画
+
+1. **EffectScope path 維持** (plan §5.3 と整合): tech `on_researched` / faction `on_accepted` callback は descriptor を emit する `EffectScope` pattern のまま据え置き。live mutation への統合は行わない (preview と common path を共有する設計が壊れる)。
+2. **`_pending_*` 廃止は実務上 no-op migration**: production Lua で global `set_flag(name)` / `modify_global(...)` を呼ぶ箇所ゼロ (`scripts/**/*.lua` を全 scan 済)。Rust unit test 2 本 (`test_drain_pending_global_mods`、`preview_does_not_leak_pending_global_mods`) のみ実質的 migration が必要だった。
+3. **`check_flag` + `_flag_store` は残置**: plan scope が明示的に 2 関数 (`set_flag` / `modify_global`) のみを対象としているため、`check_flag` は保持。ただし populate 側が無くなったので `_flag_store` は実質 inert (forward-compat の stub)。
+4. **Bevy 0.18 exclusive system 昇格**: `run_lifecycle_hooks` signature は `world: &mut World` に変更、register 時の `.after(...)` chain はそのまま。`all_systems_no_query_conflict` test で B0001 regression なし。
+5. **test count**: Phase A landing 時点 2058 pass + B2 の integration test 5 本追加 - B3/B4 の legacy test 7 本削除 = 2021 pass (観測値、workspace)。
+6. **Cargo.toml は触らず**: 作業開始時に worktree の `macrocosmo/Cargo.toml` が `dynamic_linking` feature を持っていたが、これは worktree 固有の local change と判断し `git checkout` で revert。Cargo.lock も合わせて revert。
+
+### rustfmt scope
+
+touched file のみを手で fmt。`faction/mod.rs` / `scripting/mod.rs` / `scripting/globals.rs` / `scripting/lifecycle.rs` / `technology/effects.rs` は pre-existing に unformatted な箇所が多く、touched ブロックだけを最小 diff で書き換える方針とした (workspace-wide `cargo fmt` 禁止)。新規 `tests/lifecycle_hook_mutations.rs` は `rustfmt --edition 2024` clean。
+
+### 測定値
+
+- `cargo test --workspace`: 2021 passed, 0 failed, 3 ignored (handle_reserved regen + 2 ai tests)
+- `cargo test -p macrocosmo --test spike_mlua_scope`: 4 / 4 (regression guard 継続)
+- `cargo test -p macrocosmo --test stress_lua_scheduling`: 1 / 1 (`LUA_MEMORY_CEILING_BYTES = 32MiB`、`gc_collect` なし)
+- `cargo test -p macrocosmo --test lifecycle_hook_mutations`: 5 / 5 (Phase B2 新規)
+- `cargo test -p macrocosmo --test smoke all_systems_no_query_conflict`: 1 / 1
+
+---
+
 _End of plan._
