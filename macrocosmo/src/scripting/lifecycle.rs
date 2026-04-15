@@ -128,11 +128,9 @@ pub fn drain_pending_flags(lua: &Lua) -> Vec<String> {
 /// world state directly). `on_scripts_loaded` keeps the legacy
 /// no-argument call because it's a static-validation hook (plan §5.3).
 ///
-/// Any residual `_pending_flags` entries left behind by legacy global
-/// `set_flag(name)` calls are still drained into `GameFlags` /
-/// `ScopedFlags` on the empire entity. Once the global helper is
-/// removed in B4 this drain becomes a no-op but stays in place as a
-/// defensive fallback.
+/// Phase B3 removed the `_pending_flags` drain that used to run here;
+/// lifecycle flag mutation now goes through the gamestate setter,
+/// which updates `GameFlags` / `ScopedFlags` synchronously.
 pub fn run_lifecycle_hooks(world: &mut World) {
     crate::prof_span!("run_lifecycle_hooks");
 
@@ -149,33 +147,6 @@ pub fn run_lifecycle_hooks(world: &mut World) {
         match run_on_game_start_with_gamestate(lua, world) {
             Ok(()) => info!("on_game_start hooks executed"),
             Err(e) => warn!("on_game_start hook error: {e}"),
-        }
-
-        // Drain pending flags left behind by legacy global `set_flag(name)`
-        // (scheduled for removal in #332 Phase B4). We do this here, still
-        // holding `&mut World`, so the PlayerEmpire lookup matches the
-        // previous signature's semantics.
-        let pending = drain_pending_flags(lua);
-        if !pending.is_empty() {
-            let mut q = world.query_filtered::<
-                (&mut GameFlags, &mut ScopedFlags),
-                With<PlayerEmpire>,
-            >();
-            if let Ok((mut game_flags, mut scoped_flags)) = q.single_mut(world) {
-                for flag in &pending {
-                    game_flags.set(flag);
-                    scoped_flags.set(flag);
-                }
-                info!(
-                    "Drained {} pending flags into empire entity",
-                    pending.len()
-                );
-            } else {
-                warn!(
-                    "Could not find PlayerEmpire entity to drain {} pending flags",
-                    pending.len()
-                );
-            }
         }
     });
 }

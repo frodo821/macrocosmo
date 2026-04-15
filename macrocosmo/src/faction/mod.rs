@@ -819,20 +819,11 @@ pub fn tick_custom_diplomatic_actions(
                 );
             }
 
-            // Drain any pending flags/global_mods that the callback set via
-            // the global helpers, for consistency with tech effect handling.
-            let pending_flags =
-                crate::scripting::lifecycle::drain_pending_flags(lua);
-            if !pending_flags.is_empty()
-                && let Ok((_, mut game_flags, mut scoped_flags, _)) =
-                    empire_q.single_mut()
-            {
-                for flag in &pending_flags {
-                    game_flags.set(flag);
-                    scoped_flags.set(flag);
-                }
-            }
-            let _ = crate::technology::effects::drain_pending_global_mods(lua);
+            // #332-B3: removed `_pending_flags` / `_pending_global_mods`
+            // drain — faction action callbacks emit `EffectScope`
+            // descriptors only, which are collected above. The legacy
+            // global `set_flag(name)` / `modify_global(...)` helpers are
+            // retired in Phase B4.
         }
 
         commands.entity(entity).despawn();

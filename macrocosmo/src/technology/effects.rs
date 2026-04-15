@@ -135,12 +135,13 @@ pub fn build_tech_effects_preview(
                 continue;
             }
         };
-        // Drain side-effect tables that the callback may have populated, so
-        // they don't leak into real research later. (Real research re-runs
-        // the callback through `apply_tech_effects`, which both collects and
-        // applies; the preview pass must leave game state untouched.)
-        let _ = drain_pending_global_mods(lua);
-        let _ = crate::scripting::lifecycle::drain_pending_flags(lua);
+        // #332-B3: the legacy `_pending_*` queues used to be populated by
+        // the deprecated global `modify_global(...)` / `set_flag(name)`
+        // helpers. The tech `on_researched` callback tree now only emits
+        // `EffectScope` descriptors (preview-safe by construction — they
+        // are collected, not applied), so no side-effect drain is needed.
+        // The global helpers are removed in B4; leaving the drain here
+        // would be defensive noise that mistracks the invariant.
 
         if !effects.is_empty() {
             preview.effects.insert(tech_id, effects);
@@ -327,18 +328,11 @@ pub fn apply_tech_effects(
         // Log for UI display
         effects_log.effects.insert(tech_id.clone(), effects);
 
-        // Drain any pending global mods that the callback may have set via modify_global()
-        let pending_mods = drain_pending_global_mods(lua);
-        for (param, value) in pending_mods {
-            apply_global_mod(&mut global_params, &param, value);
-        }
-
-        // Drain any pending flags set via set_flag()
-        let pending_flags = crate::scripting::lifecycle::drain_pending_flags(lua);
-        for flag in &pending_flags {
-            game_flags.set(flag);
-            scoped_flags.set(flag);
-        }
+        // #332-B3: dropped the `_pending_global_mods` / `_pending_flags`
+        // drain. The legacy global `modify_global` / `set_flag` helpers
+        // have no production Lua callers (tech callbacks use
+        // `EffectScope` descriptors exclusively, which are already
+        // applied above); B4 removes the globals outright.
     }
 
     if !scratch_pending.entries.is_empty() {
@@ -1104,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_does_not_leak_pending_global_mods() {
+    fn preview_captures_scope_effect_without_applying() {
         use crate::technology::tree::{TechCost, Technology};
         let tree = crate::technology::TechTree::from_vec(vec![Technology {
             id: TechId("speedy".into()),
@@ -1116,9 +1110,11 @@ mod tests {
             dangerous: false,
         }]);
 
-        // The callback uses both scope methods (which the preview *should*
-        // capture) and modify_global / set_flag (which the preview must
-        // drain so they don't leak into the next real research event).
+        // The callback uses scope methods (which the preview *should*
+        // capture). #332-B3 removed the preview drain of the legacy
+        // `_pending_*` queues because `EffectScope` is the sole callback
+        // path; the `modify_global` / `set_flag` globals are retired in
+        // B4.
         let engine = ScriptEngine::new().unwrap();
         engine
             .lua()
@@ -1129,8 +1125,6 @@ mod tests {
                 name = "Speedy",
                 on_researched = function(scope)
                     scope:push_modifier("ship.sublight_speed", { add = 0.5, description = "Speed +0.5" })
-                    modify_global("sublight_speed_bonus", 0.5)
-                    set_flag("speedy_unlocked")
                 end,
             }
             "#,
@@ -1145,15 +1139,7 @@ mod tests {
         app.add_systems(Update, build_tech_effects_preview);
         app.update();
 
-        // Side-effect tables must be empty after the preview pass.
-        let engine = app.world().resource::<ScriptEngine>();
-        let lua = engine.lua();
-        let pending_mods: mlua::Table = lua.globals().get("_pending_global_mods").unwrap();
-        assert_eq!(pending_mods.len().unwrap(), 0);
-        let pending_flags: mlua::Table = lua.globals().get("_pending_flags").unwrap();
-        assert_eq!(pending_flags.len().unwrap(), 0);
-
-        // But the preview captured the scope effect.
+        // The preview captured the scope effect.
         let preview = app.world().resource::<TechEffectsPreview>();
         let effects = preview.for_tech(&TechId("speedy".into()));
         assert_eq!(effects.len(), 1);
