@@ -142,6 +142,7 @@ pub fn update_star_colors(
     camera_q: Query<&Projection, With<Camera2d>>,
     player_q: Query<&StationedAt, With<Player>>,
 ) {
+    crate::prof_span!("update_star_colors");
     let Ok(knowledge) = empire_q.single() else {
         return;
     };

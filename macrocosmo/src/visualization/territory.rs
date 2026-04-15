@@ -236,6 +236,7 @@ fn sync_territory_material(
     mut materials: ResMut<Assets<TerritoryMaterial>>,
     material_handles: Query<&MeshMaterial2d<TerritoryMaterial>>,
 ) {
+    crate::prof_span!("sync_territory_material");
     // For now only the player empire owns colonies. If this changes, expand
     // into a (empire_entity -> empire_id) mapping below.
     let Ok((player_entity, knowledge)) = empire_q.single() else {

@@ -19,6 +19,7 @@ pub mod observer;
 pub mod persistence;
 pub mod physics;
 pub mod player;
+pub mod profiling;
 pub mod scripting;
 pub mod setup;
 pub mod species;

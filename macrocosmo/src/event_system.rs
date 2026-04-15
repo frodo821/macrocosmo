@@ -375,6 +375,7 @@ impl EventBus {
     /// but do not abort processing of remaining handlers.
     pub fn fire(lua: &Lua, ctx: &dyn EventContext) -> usize {
         let event_id = ctx.event_id();
+        crate::prof_span!("EventBus::fire");
 
         // Build payload table via the trait — includes `event_id` per the
         // EventContext contract.
