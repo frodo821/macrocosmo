@@ -1,11 +1,12 @@
 //! #332: pure scoped-closure gamestate accessor (Option B).
 //!
-//! Replaces the snapshot-per-event `build_gamestate_table` path
-//! (`gamestate_view.rs`) with a `Lua::scope` + `create_function` /
-//! `create_function_mut` bundle that exposes `ctx.gamestate` as a method
-//! surface sharing a `RefCell<&mut World>` across read and write
-//! closures. Scope closures are automatically invalidated when the scope
-//! exits, so mlua cleans up without a manual `gc_collect` (#320).
+//! Replaces the snapshot-per-event `build_gamestate_table` path (the
+//! former `gamestate_view.rs`, deleted in Phase B) with a `Lua::scope`
+//! + `create_function` / `create_function_mut` bundle that exposes
+//! `ctx.gamestate` as a method surface sharing a `RefCell<&mut World>`
+//! across read and write closures. Scope closures are automatically
+//! invalidated when the scope exits, so mlua cleans up without a manual
+//! `gc_collect` (#320).
 //!
 //! # Invariants
 //!
