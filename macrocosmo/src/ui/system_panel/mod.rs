@@ -1886,6 +1886,7 @@ mod tests_229 {
                     build_time: 10,
                     cargo_size: 1,
                     scrap_refund: 0.5,
+                    spawns_as_ship: None,
                 })
             } else {
                 None

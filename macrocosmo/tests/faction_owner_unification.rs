@@ -442,6 +442,7 @@ fn make_single_structure_registry() -> StructureRegistry {
             build_time: 1,
             cargo_size: 1,
             scrap_refund: 0.0,
+            spawns_as_ship: None,
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
