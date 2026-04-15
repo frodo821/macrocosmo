@@ -407,12 +407,76 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
     for (entity, population, growth_rate, planet_entity) in colony_rows {
         let ctbl = lua.create_table()?;
         ctbl.set("id", entity.to_bits())?;
+        ctbl.set("entity", entity.to_bits())?;
         ctbl.set("population", population)?;
         ctbl.set("growth_rate", growth_rate)?;
         ctbl.set("planet_id", planet_entity.to_bits())?;
+        let mut colony_system: Option<Entity> = None;
         if let Some(planet) = world.get::<Planet>(planet_entity) {
+            colony_system = Some(planet.system);
             ctbl.set("system_id", planet.system.to_bits())?;
             ctbl.set("planet_name", planet.name.as_str())?;
+        }
+        // #289 β: owner_empire_id — Colony has no direct Owner component,
+        // so chain via planet.system -> Sovereignty. `nil` when the
+        // system lacks sovereignty or the owner is Neutral (plan §10 R4).
+        if let Some(sys_entity) = colony_system {
+            if let Some(sov) = world.get::<Sovereignty>(sys_entity) {
+                if let Some(Owner::Empire(e)) = sov.owner {
+                    ctbl.set("owner_empire_id", e.to_bits())?;
+                }
+            }
+        }
+        // #289 β: building_slots — unsealed array matching the Buildings
+        // slot layout. Empty slots are `nil` (Lua); filled slots are
+        // sealed `{id = "<building_id>"}` tables. We also expose the
+        // string ids directly in `building_ids` for simple has-building
+        // checks without nested dereference.
+        if let Some(buildings) = world.get::<crate::colony::Buildings>(entity) {
+            let slots_tbl = lua.create_table()?;
+            let building_ids_tbl = lua.create_table()?;
+            for (i, slot) in buildings.slots.iter().enumerate() {
+                let idx = (i + 1) as i64;
+                if let Some(bid) = slot {
+                    let entry = lua.create_table()?;
+                    entry.set("id", bid.0.as_str())?;
+                    seal_table(lua, &entry)?;
+                    slots_tbl.set(idx, entry)?;
+                    building_ids_tbl.set(idx, bid.0.as_str())?;
+                } else {
+                    // Leave index unset so `#slots` reflects trailing
+                    // empty slots correctly for the Lua side; scripts
+                    // can use `slots[i]` and nil-check.
+                    slots_tbl.set(idx, mlua::Value::Nil)?;
+                    building_ids_tbl.set(idx, mlua::Value::Nil)?;
+                }
+            }
+            ctbl.set("building_slots", slots_tbl)?;
+            ctbl.set("building_ids", building_ids_tbl)?;
+        }
+        // #289 β: production — sealed map of per-hexady resource rates
+        // (final_value in f64). Missing Production component -> no
+        // `production` field on the ColonyView.
+        if let Some(prod) = world.get::<crate::colony::Production>(entity) {
+            let ptbl = lua.create_table()?;
+            ptbl.set(
+                "minerals_per_hexadies",
+                prod.minerals_per_hexadies.final_value().to_f64(),
+            )?;
+            ptbl.set(
+                "energy_per_hexadies",
+                prod.energy_per_hexadies.final_value().to_f64(),
+            )?;
+            ptbl.set(
+                "research_per_hexadies",
+                prod.research_per_hexadies.final_value().to_f64(),
+            )?;
+            ptbl.set(
+                "food_per_hexadies",
+                prod.food_per_hexadies.final_value().to_f64(),
+            )?;
+            seal_table(lua, &ptbl)?;
+            ctbl.set("production", ptbl)?;
         }
         seal_table(lua, &ctbl)?;
         colonies_tbl.set(entity.to_bits(), ctbl)?;
@@ -944,6 +1008,119 @@ mod tests {
         let systems: Table = gs.get("systems").unwrap();
         let sys: Table = systems.get(sid).unwrap();
         let owner: mlua::Value = sys.get("owner_empire_id").unwrap();
+        assert!(matches!(owner, mlua::Value::Nil));
+    }
+
+    #[test]
+    fn test_colonyview_owner_buildings_and_production() {
+        // #289 β: A colony under a planet in a PlayerEmpire-owned
+        // system. Expose buildings slots and Production.
+        use crate::colony::{Buildings, Production};
+        use crate::galaxy::Sovereignty;
+        use crate::modifier::ModifiedValue;
+        use crate::scripting::building_api::BuildingId;
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = World::new();
+        world.insert_resource(GameClock::new(0));
+        let empire_entity = world.spawn((Empire { name: "Emp".into() }, PlayerEmpire)).id();
+        let system_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Sol".into(),
+                    surveyed: true,
+                    is_capital: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Sovereignty {
+                    owner: Some(crate::ship::Owner::Empire(empire_entity)),
+                    control_score: 1.0,
+                },
+            ))
+            .id();
+        let planet_entity = world
+            .spawn(Planet {
+                name: "Terra".into(),
+                system: system_entity,
+                planet_type: "terrestrial".into(),
+            })
+            .id();
+        let colony_entity = world
+            .spawn((
+                Colony {
+                    planet: planet_entity,
+                    population: 42.0,
+                    growth_rate: 0.01,
+                },
+                Buildings {
+                    slots: vec![Some(BuildingId("mine".into())), None, Some(BuildingId("farm".into()))],
+                },
+                Production {
+                    minerals_per_hexadies: ModifiedValue::new(Amt::units(7)),
+                    energy_per_hexadies: ModifiedValue::new(Amt::units(3)),
+                    research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                    food_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                },
+            ))
+            .id();
+
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+        let colonies: Table = gs.get("colonies").unwrap();
+        let col: Table = colonies.get(colony_entity.to_bits()).unwrap();
+        assert_eq!(
+            col.get::<u64>("owner_empire_id").unwrap(),
+            empire_entity.to_bits()
+        );
+        // building_slots & building_ids
+        let slots: Table = col.get("building_slots").unwrap();
+        let s1: Table = slots.get(1).unwrap();
+        assert_eq!(s1.get::<String>("id").unwrap(), "mine");
+        let s2: mlua::Value = slots.get(2).unwrap();
+        assert!(matches!(s2, mlua::Value::Nil));
+        let s3: Table = slots.get(3).unwrap();
+        assert_eq!(s3.get::<String>("id").unwrap(), "farm");
+        let bids: Table = col.get("building_ids").unwrap();
+        assert_eq!(bids.get::<String>(1).unwrap(), "mine");
+        assert_eq!(bids.get::<String>(3).unwrap(), "farm");
+        // production
+        let prod: Table = col.get("production").unwrap();
+        assert!((prod.get::<f64>("minerals_per_hexadies").unwrap() - 7.0).abs() < 1e-9);
+        assert!((prod.get::<f64>("energy_per_hexadies").unwrap() - 3.0).abs() < 1e-9);
+        assert!((prod.get::<f64>("research_per_hexadies").unwrap() - 0.0).abs() < 1e-9);
+        assert!((prod.get::<f64>("food_per_hexadies").unwrap() - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_colonyview_owner_nil_when_system_unowned() {
+        // #289 β R4: Colony in a system without Sovereignty -> nil owner
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = World::new();
+        world.insert_resource(GameClock::new(0));
+        let system_entity = world
+            .spawn(StarSystem {
+                name: "Sol".into(),
+                surveyed: false,
+                is_capital: false,
+                star_type: "yellow_dwarf".into(),
+            })
+            .id();
+        let planet_entity = world
+            .spawn(Planet {
+                name: "Terra".into(),
+                system: system_entity,
+                planet_type: "terrestrial".into(),
+            })
+            .id();
+        let colony_entity = world
+            .spawn(Colony {
+                planet: planet_entity,
+                population: 1.0,
+                growth_rate: 0.0,
+            })
+            .id();
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+        let colonies: Table = gs.get("colonies").unwrap();
+        let col: Table = colonies.get(colony_entity.to_bits()).unwrap();
+        let owner: mlua::Value = col.get("owner_empire_id").unwrap();
         assert!(matches!(owner, mlua::Value::Nil));
     }
 
