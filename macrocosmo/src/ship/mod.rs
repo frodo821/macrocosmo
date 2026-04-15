@@ -295,6 +295,9 @@ impl Plugin for ShipPlugin {
                 // handlers.
                 handlers::handle_transfer_to_structure_requested,
                 handlers::handle_load_from_scrapyard_requested,
+                // #334 Phase 2 (Commit 4): Survey / Colonize handlers.
+                handlers::handle_survey_requested,
+                handlers::handle_colonize_requested,
             )
                 .chain()
                 .after(sublight_movement_system)
@@ -321,6 +324,8 @@ impl Plugin for ShipPlugin {
                 .after(handlers::handle_deploy_deliverable_requested)
                 .after(handlers::handle_transfer_to_structure_requested)
                 .after(handlers::handle_load_from_scrapyard_requested)
+                .after(handlers::handle_survey_requested)
+                .after(handlers::handle_colonize_requested)
                 .after(core_deliverable::handle_core_deploy_requested)
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),

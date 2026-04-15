@@ -425,11 +425,18 @@ pub fn test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
-            // #334 Phase 1: dispatcher + MoveTo/MoveToCoordinates handlers
-            // run before process_command_queue so the PendingRoute filter
-            // on the legacy system excludes ships whose MoveTo was just
-            // dispatched this tick.
+            // #334 Phase 1/2: dispatcher runs first in this chain so its
+            // messages are visible to handlers that run immediately after
+            // via the second add_systems block below.
             macrocosmo::ship::dispatcher::dispatch_queued_commands,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    app.add_systems(
+        Update,
+        (
             macrocosmo::ship::handlers::handle_move_requested,
             macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
             // #334 Phase 2 (Commit 1): deliverable handlers.
@@ -438,12 +445,16 @@ pub fn test_app() -> App {
             // #334 Phase 2 (Commit 3): transfer / scrapyard handlers.
             macrocosmo::ship::handlers::handle_transfer_to_structure_requested,
             macrocosmo::ship::handlers::handle_load_from_scrapyard_requested,
+            // #334 Phase 2 (Commit 4): survey / colonize handlers.
+            macrocosmo::ship::handlers::handle_survey_requested,
+            macrocosmo::ship::handlers::handle_colonize_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
             process_command_queue,
         )
             .chain()
+            .after(macrocosmo::ship::dispatcher::dispatch_queued_commands)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
@@ -679,8 +690,14 @@ pub fn full_test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
-            // #334 Phase 1: event-driven MoveTo path alongside legacy queue.
+            // #334 Phase 1/2: dispatcher runs first; handlers are registered
+            // separately below to stay under the 20-arm IntoScheduleConfigs limit.
             macrocosmo::ship::dispatcher::dispatch_queued_commands,
+        ),
+    );
+    app.add_systems(
+        Update,
+        (
             macrocosmo::ship::handlers::handle_move_requested,
             macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
             // #334 Phase 2 (Commit 1): deliverable handlers.
@@ -689,11 +706,16 @@ pub fn full_test_app() -> App {
             // #334 Phase 2 (Commit 3): transfer / scrapyard handlers.
             macrocosmo::ship::handlers::handle_transfer_to_structure_requested,
             macrocosmo::ship::handlers::handle_load_from_scrapyard_requested,
+            // #334 Phase 2 (Commit 4): survey / colonize handlers.
+            macrocosmo::ship::handlers::handle_survey_requested,
+            macrocosmo::ship::handlers::handle_colonize_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
             process_command_queue,
-        ),
+        )
+            .chain()
+            .after(macrocosmo::ship::dispatcher::dispatch_queued_commands),
     );
     app.add_systems(
         Update,

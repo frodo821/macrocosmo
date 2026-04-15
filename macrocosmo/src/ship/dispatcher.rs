@@ -21,8 +21,9 @@
 use bevy::prelude::*;
 
 use super::command_events::{
-    CommandId, DeployDeliverableRequested, LoadDeliverableRequested, LoadFromScrapyardRequested,
-    MoveRequested, MoveToCoordinatesRequested, NextCommandId, TransferToStructureRequested,
+    ColonizeRequested, CommandId, DeployDeliverableRequested, LoadDeliverableRequested,
+    LoadFromScrapyardRequested, MoveRequested, MoveToCoordinatesRequested, NextCommandId,
+    SurveyRequested, TransferToStructureRequested,
 };
 use super::routing::PendingRoute;
 use super::{CommandQueue, QueuedCommand, Ship, ShipState};
@@ -58,6 +59,8 @@ pub fn dispatch_queued_commands(
     mut deploy_req: MessageWriter<DeployDeliverableRequested>,
     mut transfer_req: MessageWriter<TransferToStructureRequested>,
     mut scrap_req: MessageWriter<LoadFromScrapyardRequested>,
+    mut survey_req: MessageWriter<SurveyRequested>,
+    mut colonize_req: MessageWriter<ColonizeRequested>,
     // #334 Phase 1: append a `Dispatched` entry to the player empire's
     // CommandLog on each successful validation. The bridge system
     // `bridge_command_executed_to_log` finalizes via `CommandId` match.
@@ -289,13 +292,60 @@ pub fn dispatch_queued_commands(
                     ship.name, structure, command_id.0
                 );
             }
+            QueuedCommand::Survey { system: target } => {
+                let target = *target;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                survey_req.write(SurveyRequested {
+                    command_id,
+                    ship: ship_entity,
+                    target_system: target,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → Survey {:?}", ship.name, target),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} SurveyRequested -> {:?} (cmd {})",
+                    ship.name, target, command_id.0
+                );
+            }
+            QueuedCommand::Colonize {
+                system: target,
+                planet,
+            } => {
+                let target = *target;
+                let planet = *planet;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                colonize_req.write(ColonizeRequested {
+                    command_id,
+                    ship: ship_entity,
+                    target_system: target,
+                    planet,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → Colonize {:?}", ship.name, target),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} ColonizeRequested -> {:?} (cmd {})",
+                    ship.name, target, command_id.0
+                );
+            }
             // Non-migrated variants: leave the head untouched so the legacy
             // `process_command_queue` system consumes them this same tick.
-            QueuedCommand::Survey { .. }
-            | QueuedCommand::Colonize { .. }
-            | QueuedCommand::Scout { .. } => {
-                // Commit 4 (Survey/Colonize) / Phase 3 (Scout) will migrate
-                // these. For now, do nothing — the legacy systems pick them up.
+            QueuedCommand::Scout { .. } => {
+                // Phase 3 will migrate Scout. For now the legacy system
+                // picks it up.
             }
         }
     }
@@ -496,28 +546,31 @@ mod tests {
 
     #[test]
     fn dispatcher_leaves_non_migrated_variants_untouched() {
+        // #334 Phase 2 (Commit 4): Survey/Colonize are now migrated. Scout
+        // remains the only non-migrated variant — verify the dispatcher
+        // doesn't consume it.
+        use crate::ship::ReportMode;
         let mut app = make_app();
         let target = spawn_test_system(app.world_mut(), [5.0, 0.0, 0.0]);
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
         let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
-            q.commands.push(QueuedCommand::Survey { system: target });
-            q.commands.push(QueuedCommand::TransferToStructure {
-                structure: target,
-                minerals: Amt(0),
-                energy: Amt(0),
+            q.commands.push(QueuedCommand::Scout {
+                target_system: target,
+                observation_duration: 10,
+                report_mode: ReportMode::Return,
             });
         }
         app.update();
 
-        // No MoveRequested emitted, queue head is still Survey.
+        // No MoveRequested emitted, queue head is still Scout.
         let messages = app.world().resource::<Messages<MoveRequested>>();
         let mut cursor = messages.get_cursor();
         assert_eq!(cursor.read(messages).count(), 0);
         let q = app.world().get::<CommandQueue>(ship).unwrap();
-        assert_eq!(q.commands.len(), 2);
-        assert!(matches!(q.commands[0], QueuedCommand::Survey { .. }));
+        assert_eq!(q.commands.len(), 1);
+        assert!(matches!(q.commands[0], QueuedCommand::Scout { .. }));
     }
 
     #[test]
