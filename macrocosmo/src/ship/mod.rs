@@ -13,6 +13,8 @@ pub mod pursuit;
 pub mod deliverable_ops;
 pub mod scout;
 pub mod core_deliverable;
+// #334 Phase 1: event-driven command dispatch — message types and allocator.
+pub mod command_events;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -175,6 +177,9 @@ impl Plugin for ShipPlugin {
         app.init_resource::<routing::RouteCalculationsPending>();
         // #296 (S-3): Per-tick queue for Infrastructure Core deploy tickets.
         app.init_resource::<core_deliverable::PendingCoreDeploys>();
+        // #334 Phase 1: register command-dispatch message types + allocator
+        // before any dispatcher/handler system that references them.
+        app.add_plugins(command_events::CommandEventsPlugin);
         app.add_systems(Update, (
             sync_ship_module_modifiers,
             sync_ship_hitpoints.after(sync_ship_module_modifiers),
