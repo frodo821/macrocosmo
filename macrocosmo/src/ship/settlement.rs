@@ -28,7 +28,16 @@ pub const SETTLING_DURATION_HEXADIES: i64 = 60;
 pub fn process_settling(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut ships: Query<(Entity, &Ship, &mut ShipState)>,
+    // #297 (S-2): Ships now optionally carry `FactionOwner` in addition
+    // to the legacy `Ship.owner: Owner` enum. Prefer the component; fall
+    // back to `Ship.owner = Owner::Empire(e)` for test-spawned or
+    // legacy-save ships.
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &mut ShipState,
+        Option<&crate::faction::FactionOwner>,
+    )>,
     systems: Query<(&StarSystem, &Position)>,
     planet_query: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
     existing_colonies: Query<&Colony>,
@@ -51,7 +60,7 @@ pub fn process_settling(
         player_pos: pos,
         player_aboard,
     });
-    for (ship_entity, ship, mut state) in &mut ships {
+    for (ship_entity, ship, mut state, ship_faction_owner) in &mut ships {
         let (system_entity, target_planet_entity, completes_at) = match *state {
             ShipState::Settling {
                 system,
@@ -156,38 +165,58 @@ pub fn process_settling(
             let system_name = star_system.name.clone();
             let num_slots = attrs.max_building_slots as usize;
 
-            commands.spawn((
-                Colony {
-                    planet: planet_entity,
-                    population: 10.0,
-                    growth_rate: 0.005,
-                },
-                // #250: zero-base production; all output comes from building/
-                // job modifiers. Planet attributes (mineral_richness etc.) are
-                // still available for future building/job modifiers to consume.
-                Production {
-                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                    energy_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                    research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                    food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                },
-                BuildQueue::default(),
-                Buildings {
-                    slots: vec![None; num_slots],
-                },
-                BuildingQueue::default(),
-                ProductionFocus::default(),
-                MaintenanceCost::default(),
-                FoodConsumption::default(),
-                ColonyPopulation {
-                    species: vec![ColonySpecies {
-                        species_id: "human".to_string(),
-                        population: 10,
-                    }],
-                },
-                ColonyJobs::default(),
-                ColonyJobRates::default(),
-            ));
+            // #297 (S-2): Resolve administrative owner for the new colony /
+            // SystemBuildings. Prefer the `FactionOwner` component on the
+            // settling ship; fall back to `Ship.owner = Owner::Empire(e)`
+            // so pre-S-2 test ships still produce an owned colony. Neutral
+            // ships spawn an un-owned colony (matches "no diplomatic
+            // identity" semantics on the ship side).
+            let new_owner: Option<Entity> = ship_faction_owner
+                .map(|fo| fo.0)
+                .or_else(|| match ship.owner {
+                    crate::ship::Owner::Empire(e) => Some(e),
+                    crate::ship::Owner::Neutral => None,
+                });
+
+            let new_colony = commands
+                .spawn((
+                    Colony {
+                        planet: planet_entity,
+                        population: 10.0,
+                        growth_rate: 0.005,
+                    },
+                    // #250: zero-base production; all output comes from building/
+                    // job modifiers. Planet attributes (mineral_richness etc.) are
+                    // still available for future building/job modifiers to consume.
+                    Production {
+                        minerals_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                        energy_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                        research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                        food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                    },
+                    BuildQueue::default(),
+                    Buildings {
+                        slots: vec![None; num_slots],
+                    },
+                    BuildingQueue::default(),
+                    ProductionFocus::default(),
+                    MaintenanceCost::default(),
+                    FoodConsumption::default(),
+                    ColonyPopulation {
+                        species: vec![ColonySpecies {
+                            species_id: "human".to_string(),
+                            population: 10,
+                        }],
+                    },
+                    ColonyJobs::default(),
+                    ColonyJobRates::default(),
+                ))
+                .id();
+            if let Some(e) = new_owner {
+                commands
+                    .entity(new_colony)
+                    .insert(crate::faction::FactionOwner(e));
+            }
 
             // Add ResourceStockpile and ResourceCapacity to the StarSystem if not already present
             if existing_stockpiles.get(system_entity).is_err() {
@@ -211,6 +240,15 @@ pub fn process_settling(
                     },
                     SystemBuildingQueue::default(),
                 ));
+                // #297 (S-2): When this settling created SystemBuildings on a
+                // previously-unowned StarSystem, also tag it with
+                // `FactionOwner` so the "administrative owner" of the system
+                // matches the colony we just spawned (plan §2C).
+                if let Some(e) = new_owner {
+                    commands
+                        .entity(system_entity)
+                        .insert(crate::faction::FactionOwner(e));
+                }
             }
 
             // #249: Dual-write ColonyEstablished.

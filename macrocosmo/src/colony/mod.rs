@@ -40,7 +40,13 @@ impl Plugin for ColonyPlugin {
                 Startup,
                 (
                     load_building_registry.after(crate::scripting::load_all_scripts),
-                    spawn_capital_colony.after(crate::galaxy::generate_galaxy),
+                    // #297 (S-2): `spawn_capital_colony` now consults
+                    // `PlayerEmpire` so the capital Colony + StarSystem get
+                    // `FactionOwner` tagged at spawn. Explicit ordering
+                    // guarantees the empire entity exists first.
+                    spawn_capital_colony
+                        .after(crate::galaxy::generate_galaxy)
+                        .after(crate::player::spawn_player_empire),
                 ),
             )
             // #250: Prime the colony sync pipeline at the end of Startup so
