@@ -276,6 +276,20 @@ pub fn process_command_queue(
                     continue;
                 }
 
+                // #296 (S-3): Immobile ships (Cores) can never satisfy a
+                // MoveTo. Drop the command with an info-level log; the UI
+                // guard should already prevent these from being queued, but
+                // belt-and-braces.
+                if ship.is_immobile() {
+                    info!(
+                        "Queue: dropping MoveTo on immobile ship {} (no propulsion)",
+                        ship.name
+                    );
+                    queue.commands.remove(0);
+                    queue.sync_prediction(ship_pos.as_array(), docked_system);
+                    continue;
+                }
+
                 // For loitering ships, fall back to a direct sublight move (no FTL chain
                 // planning from deep space).
                 if docked_system.is_none() {

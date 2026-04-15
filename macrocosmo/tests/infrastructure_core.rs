@@ -394,6 +394,91 @@ fn pending_core_deploys_preserves_across_different_systems() {
 /// deliverable_ops processor enqueues a CoreDeployTicket → resolve_core_deploys
 /// spawns a CoreShip in the target system at the canonical inner-orbit
 /// coordinate.
+/// #296: Once an Infrastructure Core ship is spawned, queueing a `MoveTo`
+/// against it must be a no-op — the immobile-gate in process_command_queue
+/// drops the command without attempting routing. The Core's state stays
+/// `Docked`.
+#[test]
+fn process_command_queue_drops_movetto_on_immobile_ship() {
+    use macrocosmo::ship::{CommandQueue, QueuedCommand};
+
+    let mut app = full_test_app();
+    let sys_a = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, false);
+    let sys_b = spawn_test_system(app.world_mut(), "Far", [3.0, 0.0, 0.0], 1.0, true, false);
+    let empire = empire_entity(app.world_mut());
+
+    {
+        let mut reg = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        reg.insert(macrocosmo::ship_design::ShipDesignDefinition {
+            id: "infrastructure_core_v1".to_string(),
+            name: "Infrastructure Core".to_string(),
+            description: String::new(),
+            hull_id: "infrastructure_core_hull".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::units(2),
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 400.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+        });
+    }
+
+    let entity_holder: std::sync::Arc<std::sync::Mutex<Option<Entity>>> = Default::default();
+    let entity_out = entity_holder.clone();
+    let owner = Owner::Empire(empire);
+    let sys_captured = sys_a;
+    app.world_mut()
+        .run_system_once(move |mut cmds: Commands, reg: Res<ShipDesignRegistry>| {
+            let e = macrocosmo::ship::spawn_core_ship_from_deliverable(
+                &mut cmds,
+                "infrastructure_core_v1",
+                "Core".to_string(),
+                sys_captured,
+                Position::from([INNER_ORBIT_OFFSET_LY, 0.0, 0.0]),
+                owner,
+                &reg,
+            );
+            *entity_out.lock().unwrap() = Some(e);
+        })
+        .expect("run helper");
+    app.update();
+    let core = entity_holder.lock().unwrap().expect("core spawned");
+
+    // Queue a MoveTo to sys_b on the Core's CommandQueue.
+    {
+        let mut q = app
+            .world_mut()
+            .get_mut::<CommandQueue>(core)
+            .expect("Core has CommandQueue");
+        q.commands.push(QueuedCommand::MoveTo { system: sys_b });
+    }
+
+    // Pump the schedule.
+    advance_time(&mut app, 1);
+    advance_time(&mut app, 1);
+
+    // The command must be dropped — queue back to empty.
+    let q = app
+        .world()
+        .get::<CommandQueue>(core)
+        .expect("Core still has CommandQueue");
+    assert!(q.commands.is_empty(), "MoveTo dropped on immobile ship");
+    // State remains Docked at sys_a.
+    let st = app
+        .world()
+        .get::<macrocosmo::ship::ShipState>(core)
+        .expect("ShipState");
+    assert!(
+        matches!(st, macrocosmo::ship::ShipState::Docked { system } if *system == sys_a),
+        "Core must remain Docked at home system"
+    );
+}
+
 #[test]
 fn end_to_end_deploy_spawns_core_at_inner_orbit() {
     use macrocosmo::deep_space::{

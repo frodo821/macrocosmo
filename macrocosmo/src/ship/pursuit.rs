@@ -238,6 +238,15 @@ pub fn detect_hostiles_system(
         if !is_deep_space(state) {
             continue;
         }
+        // #296 (S-3): Immobile ships (Infrastructure Cores) can never
+        // intercept a hostile target, so they are excluded from the
+        // detector loop entirely. Defence-in-depth: a Core always sits in
+        // ShipState::Docked and would already be filtered by is_deep_space,
+        // but if a future feature ever loiters one in deep space the
+        // pursuit pipeline must remain coherent.
+        if ship.is_immobile() {
+            continue;
+        }
         let Some(detector_faction) = resolve_ship_faction(&ship.owner, fowner) else {
             continue;
         };

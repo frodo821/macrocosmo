@@ -84,6 +84,9 @@ pub fn draw_context_menu(
             docked_system,
             current_destination_system,
             loitering_pos,
+            // #296: cache immobility so the MoveTo guard below stays a
+            // simple boolean.
+            ship.is_immobile(),
         )
     };
 
@@ -95,6 +98,7 @@ pub fn draw_context_menu(
         docked_system,
         current_destination_system,
         loitering_pos,
+        ship_immobile,
     ) = ship_data;
 
     let is_docked = docked_system.is_some();
@@ -180,8 +184,10 @@ pub fn draw_context_menu(
             && !colonized_planets.contains(&pe)
     });
 
-    // #108: Unified move — auto-route picks FTL vs sublight
-    let can_move = !same_system;
+    // #108: Unified move — auto-route picks FTL vs sublight.
+    // #296 (S-3): Immobile ships (Infrastructure Cores) cannot be commanded
+    // to move, so suppress the MoveTo button entirely.
+    let can_move = !same_system && !ship_immobile;
     // Survey: can survey unsurveyed system (docked: immediate/delayed, non-docked: queued)
     let can_survey = design_registry.can_survey(&design_id) && !target_surveyed;
     // #52/#56: Check for hostile presence at target system
