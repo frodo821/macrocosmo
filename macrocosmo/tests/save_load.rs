@@ -1451,3 +1451,140 @@ fn test_save_load_preserves_pending_commands() {
         .unwrap();
     let _ = (sol, sol_dst);
 }
+
+// ---------------------------------------------------------------------------
+// #297 (S-2): FactionOwner round-trips on Colony / SystemBuildings /
+// DeepSpaceStructure. `SavedComponentBag.faction_owner` already existed
+// for hostiles, so no SAVE_VERSION bump is required — these tests assert
+// the wire format carries the new attachments correctly.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn save_load_round_trips_colony_faction_owner() {
+    let mut src = build_seed_world();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    // Find the seed Earth colony (spawned in build_seed_world without a
+    // FactionOwner) and tag it — mirrors post-Commit-2 behavior.
+    let colony_e = src
+        .query::<(Entity, &Colony)>()
+        .iter(&src)
+        .next()
+        .map(|(e, _)| e)
+        .expect("seed world has a colony");
+    src.entity_mut(colony_e).insert(FactionOwner(empire));
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Find the reloaded colony and its FactionOwner. Remapping means the
+    // loaded entity ids differ from src ids, but the relationship is
+    // preserved through the EntityMap.
+    let (dst_colony, dst_owner) = dst
+        .query::<(&Colony, &FactionOwner)>()
+        .iter(&dst)
+        .next()
+        .expect("loaded world must have a colony carrying FactionOwner");
+    // Verify the owner entity still carries the PlayerEmpire marker (i.e.
+    // round-trip preserved both sides of the pointer).
+    assert!(
+        dst.get::<PlayerEmpire>(dst_owner.0).is_some(),
+        "FactionOwner must point at the reloaded PlayerEmpire entity"
+    );
+    assert_eq!(dst_colony.population, 1_000.0);
+}
+
+#[test]
+fn save_load_round_trips_system_buildings_faction_owner() {
+    let mut src = build_seed_world();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+    // Find Sol (has StarSystem + ResourceStockpile + already
+    // FactionOwner(empire) from build_seed_world) — assert the existing
+    // tag still round-trips. Also add SystemBuildings so the assertion
+    // mirrors post-Commit-2 production state.
+    let sol = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+    src.entity_mut(sol)
+        .insert(macrocosmo::colony::SystemBuildings {
+            slots: vec![None; 4],
+        });
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let (_dst_sys, _sb, owner) = dst
+        .query::<(Entity, &macrocosmo::colony::SystemBuildings, &FactionOwner)>()
+        .iter(&dst)
+        .next()
+        .expect("loaded world must have a StarSystem with SystemBuildings + FactionOwner");
+    assert!(
+        dst.get::<PlayerEmpire>(owner.0).is_some(),
+        "StarSystem FactionOwner must point at reloaded PlayerEmpire"
+    );
+    let _ = empire;
+}
+
+#[test]
+fn save_load_round_trips_deep_space_structure_faction_owner() {
+    let mut src = build_seed_world();
+    let empire = src
+        .query_filtered::<Entity, With<PlayerEmpire>>()
+        .iter(&src)
+        .next()
+        .unwrap();
+
+    let structure = src
+        .spawn((
+            DeepSpaceStructure {
+                definition_id: "outpost".into(),
+                name: "Outpost I".into(),
+                owner: Owner::Empire(empire),
+            },
+            FactionOwner(empire),
+            Position {
+                x: 12.5,
+                y: 0.0,
+                z: 0.0,
+            },
+            StructureHitpoints {
+                current: 80.0,
+                max: 100.0,
+            },
+        ))
+        .id();
+    let _ = structure;
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let loaded: Vec<(Entity, Entity)> = dst
+        .query::<(Entity, &DeepSpaceStructure, &FactionOwner)>()
+        .iter(&dst)
+        .map(|(e, _, fo)| (e, fo.0))
+        .collect();
+    assert_eq!(
+        loaded.len(),
+        1,
+        "expected exactly one DeepSpaceStructure post-load; got {}",
+        loaded.len()
+    );
+    assert!(
+        dst.get::<PlayerEmpire>(loaded[0].1).is_some(),
+        "DeepSpaceStructure FactionOwner must point at reloaded PlayerEmpire"
+    );
+}
