@@ -15,9 +15,9 @@ use macrocosmo::condition::ScopedFlags;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemModifiers};
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::{Empire, PlayerEmpire};
-use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::scripting::gamestate_view::build_gamestate_table;
+use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::ship::fleet::{Fleet, FleetMembers};
 use macrocosmo::ship::{EquippedModule, Owner, Ship, ShipHitpoints, ShipState};
 use macrocosmo::technology::{GameFlags, TechId, TechTree};
@@ -269,11 +269,7 @@ fn test_view_mutation_blocked_all_nested() {
     ];
     for script in scripts {
         let r: mlua::Result<()> = engine.lua().load(*script).exec();
-        assert!(
-            r.is_err(),
-            "expected read-only error running: {}",
-            script
-        );
+        assert!(r.is_err(), "expected read-only error running: {}", script);
         let msg = r.err().unwrap().to_string();
         assert!(
             msg.contains("read-only"),

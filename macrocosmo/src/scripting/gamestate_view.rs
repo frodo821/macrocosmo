@@ -167,10 +167,7 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
     let mut planets_by_system: std::collections::HashMap<Entity, Vec<Entity>> =
         std::collections::HashMap::new();
     for (entity, name, system, planet_type) in &planet_rows {
-        planets_by_system
-            .entry(*system)
-            .or_default()
-            .push(*entity);
+        planets_by_system.entry(*system).or_default().push(*entity);
         let ptbl = lua.create_table()?;
         ptbl.set("id", entity.to_bits())?;
         ptbl.set("entity", entity.to_bits())?;
@@ -1146,7 +1143,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let mut world = World::new();
         world.insert_resource(GameClock::new(0));
-        let empire_entity = world.spawn((Empire { name: "Emp".into() }, PlayerEmpire)).id();
+        let empire_entity = world
+            .spawn((Empire { name: "Emp".into() }, PlayerEmpire))
+            .id();
         let system_entity = world
             .spawn((
                 StarSystem {
@@ -1264,7 +1263,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let mut world = World::new();
         world.insert_resource(GameClock::new(0));
-        let empire_entity = world.spawn((Empire { name: "Emp".into() }, PlayerEmpire)).id();
+        let empire_entity = world
+            .spawn((Empire { name: "Emp".into() }, PlayerEmpire))
+            .id();
         let system_entity = world
             .spawn((
                 StarSystem {
@@ -1294,7 +1295,11 @@ mod tests {
                     growth_rate: 0.01,
                 },
                 Buildings {
-                    slots: vec![Some(BuildingId("mine".into())), None, Some(BuildingId("farm".into()))],
+                    slots: vec![
+                        Some(BuildingId("mine".into())),
+                        None,
+                        Some(BuildingId("farm".into())),
+                    ],
                 },
                 Production {
                     minerals_per_hexadies: ModifiedValue::new(Amt::units(7)),
@@ -1432,10 +1437,7 @@ mod tests {
         assert_eq!(m1.get::<String>("module_id").unwrap(), "laser_mk1");
         let state: Table = s.get("state").unwrap();
         assert_eq!(state.get::<String>("kind").unwrap(), "docked");
-        assert_eq!(
-            state.get::<u64>("system").unwrap(),
-            system_entity.to_bits()
-        );
+        assert_eq!(state.get::<u64>("system").unwrap(), system_entity.to_bits());
     }
 
     #[test]
@@ -1475,10 +1477,7 @@ mod tests {
             fleet: None,
         };
         let cases: Vec<(&str, ShipState)> = vec![
-            (
-                "docked",
-                ShipState::Docked { system: sys_a },
-            ),
+            ("docked", ShipState::Docked { system: sys_a }),
             (
                 "sublight",
                 ShipState::SubLight {
@@ -1549,7 +1548,13 @@ mod tests {
         let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
         let ships: Table = gs.get("ships").unwrap();
         let expected: Vec<&str> = vec![
-            "docked", "sublight", "in_ftl", "surveying", "settling", "refitting", "loitering",
+            "docked",
+            "sublight",
+            "in_ftl",
+            "surveying",
+            "settling",
+            "refitting",
+            "loitering",
             "scouting",
         ];
         for (e, expected_kind) in entities.iter().zip(expected.iter()) {
@@ -1569,7 +1574,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let mut world = World::new();
         world.insert_resource(GameClock::new(0));
-        let empire_entity = world.spawn((Empire { name: "Emp".into() }, PlayerEmpire)).id();
+        let empire_entity = world
+            .spawn((Empire { name: "Emp".into() }, PlayerEmpire))
+            .id();
         let sys_a = world
             .spawn(StarSystem {
                 name: "A".into(),
@@ -1610,7 +1617,9 @@ mod tests {
                 },
             ))
             .id();
-        let wingmate = world.spawn((make_ship(), ShipState::Docked { system: sys_a })).id();
+        let wingmate = world
+            .spawn((make_ship(), ShipState::Docked { system: sys_a }))
+            .id();
         let fleet_entity = world
             .spawn((
                 Fleet {
@@ -1631,10 +1640,7 @@ mod tests {
         let state: Table = f.get("state").unwrap();
         assert_eq!(state.get::<String>("kind").unwrap(), "in_ftl");
         assert_eq!(f.get::<u64>("origin_system").unwrap(), sys_a.to_bits());
-        assert_eq!(
-            f.get::<u64>("destination_system").unwrap(),
-            sys_b.to_bits()
-        );
+        assert_eq!(f.get::<u64>("destination_system").unwrap(), sys_b.to_bits());
         let sids: Table = f.get("ship_ids").unwrap();
         assert_eq!(sids.len().unwrap(), 2);
     }
