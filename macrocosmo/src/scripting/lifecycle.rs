@@ -9,19 +9,54 @@ use crate::scripting::ScriptEngine;
 use crate::technology::GameFlags;
 use crate::time_system::GameClock;
 
-/// Execute all registered on_game_start handlers.
+/// Execute all registered on_game_start handlers **without** a gamestate
+/// payload. Retained for unit tests that drive the hook directly without
+/// spinning up a Bevy `World`. Production startup now goes through
+/// [`run_on_game_start_with_gamestate`].
 pub fn run_on_game_start(lua: &Lua) -> Result<(), mlua::Error> {
     run_handlers(lua, "_on_game_start_handlers")
 }
 
-/// Execute all registered on_game_load handlers.
+/// Execute all registered on_game_load handlers **without** a gamestate
+/// payload. Retained for unit tests (see [`run_on_game_start`] for the
+/// same rationale). Production load paths should use
+/// [`run_on_game_load_with_gamestate`].
 pub fn run_on_game_load(lua: &Lua) -> Result<(), mlua::Error> {
     run_handlers(lua, "_on_game_load_handlers")
 }
 
 /// Execute all registered on_scripts_loaded handlers.
+///
+/// This hook runs with `()` as the argument — per plan §5.3, static
+/// validation hooks do not receive a live gamestate (no world mutation
+/// is expected; effect declaration stays in the scope-outer context via
+/// `EffectScope`).
 pub fn run_on_scripts_loaded(lua: &Lua) -> Result<(), mlua::Error> {
     run_handlers(lua, "_on_scripts_loaded_handlers")
+}
+
+/// Execute all `_on_game_start_handlers` with a live `ReadWrite`
+/// `gamestate` attached to the payload. Each handler receives a Lua
+/// table (`payload`) whose `gamestate` field exposes the
+/// `gs:push_*_modifier` / `gs:set_flag` setter surface — see
+/// `scripting::gamestate_scope::dispatch_with_gamestate`.
+///
+/// The gamestate is rebuilt per-handler so each callback sees a fresh
+/// borrow; mutations performed by handler N are live for handler N+1.
+pub fn run_on_game_start_with_gamestate(
+    lua: &Lua,
+    world: &mut World,
+) -> Result<(), mlua::Error> {
+    run_handlers_with_gamestate(lua, world, "_on_game_start_handlers")
+}
+
+/// Execute all `_on_game_load_handlers` with a live `ReadWrite`
+/// gamestate attached to the payload. See [`run_on_game_start_with_gamestate`].
+pub fn run_on_game_load_with_gamestate(
+    lua: &Lua,
+    world: &mut World,
+) -> Result<(), mlua::Error> {
+    run_handlers_with_gamestate(lua, world, "_on_game_load_handlers")
 }
 
 fn run_handlers(lua: &Lua, table_name: &str) -> Result<(), mlua::Error> {
@@ -29,6 +64,28 @@ fn run_handlers(lua: &Lua, table_name: &str) -> Result<(), mlua::Error> {
     for i in 1..=handlers.len()? {
         let func: mlua::Function = handlers.get(i)?;
         func.call::<()>(())?;
+    }
+    Ok(())
+}
+
+fn run_handlers_with_gamestate(
+    lua: &Lua,
+    world: &mut World,
+    table_name: &str,
+) -> Result<(), mlua::Error> {
+    use crate::scripting::gamestate_scope::{GamestateMode, dispatch_with_gamestate};
+    let handlers: mlua::Table = lua.globals().get(table_name)?;
+    let len = handlers.len()?;
+    for i in 1..=len {
+        let func: mlua::Function = handlers.get(i)?;
+        let payload = lua.create_table()?;
+        dispatch_with_gamestate(
+            lua,
+            world,
+            &payload,
+            GamestateMode::ReadWrite,
+            |_lua, p| func.call::<()>(p.clone()),
+        )?;
     }
     Ok(())
 }
@@ -64,43 +121,63 @@ pub fn drain_pending_flags(lua: &Lua) -> Vec<String> {
 /// Scripts are loaded by `load_all_scripts`; this system only executes callbacks.
 /// Runs on_scripts_loaded and on_game_start hooks (on_game_load is reserved for
 /// save/load which is not yet implemented).
-/// After hooks execute, drains `_pending_flags` into `GameFlags` and `ScopedFlags`
-/// on the empire entity.
-pub fn run_lifecycle_hooks(
-    engine: Res<ScriptEngine>,
-    mut empire_query: Query<(&mut GameFlags, &mut ScopedFlags), With<PlayerEmpire>>,
-) {
+///
+/// #332 Phase B: promoted to an exclusive `&mut World` system so
+/// `on_game_start` handlers receive a live `ReadWrite` gamestate (they
+/// may call `gs:push_empire_modifier`, `gs:set_flag`, etc. to mutate
+/// world state directly). `on_scripts_loaded` keeps the legacy
+/// no-argument call because it's a static-validation hook (plan §5.3).
+///
+/// Any residual `_pending_flags` entries left behind by legacy global
+/// `set_flag(name)` calls are still drained into `GameFlags` /
+/// `ScopedFlags` on the empire entity. Once the global helper is
+/// removed in B4 this drain becomes a no-op but stays in place as a
+/// defensive fallback.
+pub fn run_lifecycle_hooks(world: &mut World) {
     crate::prof_span!("run_lifecycle_hooks");
-    let lua = engine.lua();
 
-    // Run on_scripts_loaded hooks
-    match run_on_scripts_loaded(lua) {
-        Ok(()) => info!("on_scripts_loaded hooks executed"),
-        Err(e) => warn!("on_scripts_loaded hook error: {e}"),
-    }
+    world.resource_scope::<ScriptEngine, _>(|world, engine| {
+        let lua = engine.lua();
 
-    // Run on_game_start hooks (for now always — save/load not implemented)
-    match run_on_game_start(lua) {
-        Ok(()) => info!("on_game_start hooks executed"),
-        Err(e) => warn!("on_game_start hook error: {e}"),
-    }
-
-    // Drain pending flags into GameFlags and ScopedFlags on the empire entity
-    let pending = drain_pending_flags(lua);
-    if !pending.is_empty() {
-        if let Ok((mut game_flags, mut scoped_flags)) = empire_query.single_mut() {
-            for flag in &pending {
-                game_flags.set(flag);
-                scoped_flags.set(flag);
-            }
-            info!("Drained {} pending flags into empire entity", pending.len());
-        } else {
-            warn!(
-                "Could not find PlayerEmpire entity to drain {} pending flags",
-                pending.len()
-            );
+        // Run on_scripts_loaded hooks (no gamestate — static validation only)
+        match run_on_scripts_loaded(lua) {
+            Ok(()) => info!("on_scripts_loaded hooks executed"),
+            Err(e) => warn!("on_scripts_loaded hook error: {e}"),
         }
-    }
+
+        // Run on_game_start hooks with ReadWrite gamestate.
+        match run_on_game_start_with_gamestate(lua, world) {
+            Ok(()) => info!("on_game_start hooks executed"),
+            Err(e) => warn!("on_game_start hook error: {e}"),
+        }
+
+        // Drain pending flags left behind by legacy global `set_flag(name)`
+        // (scheduled for removal in #332 Phase B4). We do this here, still
+        // holding `&mut World`, so the PlayerEmpire lookup matches the
+        // previous signature's semantics.
+        let pending = drain_pending_flags(lua);
+        if !pending.is_empty() {
+            let mut q = world.query_filtered::<
+                (&mut GameFlags, &mut ScopedFlags),
+                With<PlayerEmpire>,
+            >();
+            if let Ok((mut game_flags, mut scoped_flags)) = q.single_mut(world) {
+                for flag in &pending {
+                    game_flags.set(flag);
+                    scoped_flags.set(flag);
+                }
+                info!(
+                    "Drained {} pending flags into empire entity",
+                    pending.len()
+                );
+            } else {
+                warn!(
+                    "Could not find PlayerEmpire entity to drain {} pending flags",
+                    pending.len()
+                );
+            }
+        }
+    });
 }
 
 /// Per-tick system that drains `_pending_script_events` from Lua and
