@@ -113,6 +113,39 @@ pub struct SystemAttributes {
 
 /// Maximum population that a colony can support at hab_score 1.0.
 pub const BASE_CARRYING_CAPACITY: f64 = 200.0;
+
+/// #296 (S-3): Offset from a star system's center at which Infrastructure Core
+/// ships are placed on deploy (in light-years). Chosen to sit strictly inside
+/// [`SYSTEM_RADIUS_LY`] so the Core is inside the system's gravity well for
+/// visualization purposes, yet clear of the origin to keep separate from other
+/// entities that might also snap to the system coordinate.
+pub const INNER_ORBIT_OFFSET_LY: f64 = 0.05;
+
+/// #296 (S-3): Nominal radius of a star system in light-years. Used by
+/// position helpers (Core deploy) and by higher-level "is position inside
+/// system?" checks. NOT currently enforced as a hard physics boundary.
+pub const SYSTEM_RADIUS_LY: f64 = 0.1;
+
+/// #296 (S-3): Deterministic inner-orbit position for entities that must spawn
+/// near a star system's center without stomping on the system's own
+/// coordinate.
+///
+/// Currently returns `system_center + (INNER_ORBIT_OFFSET_LY, 0, 0)` — a pure
+/// +X offset — so repeated calls always produce the same coordinate for the
+/// same system. If an entity later needs angular distribution around the star
+/// (multiple cores on different axes), this can be extended with a
+/// per-entity angle parameter without breaking callers that rely on the
+/// deterministic default.
+///
+/// Returns `[0.0, 0.0, 0.0]` when `system` has no `Position` component (e.g.
+/// the entity is not a star system); callers should validate beforehand.
+pub fn system_inner_orbit_position(system: Entity, world: &bevy::ecs::world::World) -> [f64; 3] {
+    use crate::components::Position;
+    let Some(pos) = world.get::<Position>(system) else {
+        return [0.0, 0.0, 0.0];
+    };
+    [pos.x + INNER_ORBIT_OFFSET_LY, pos.y, pos.z]
+}
 /// Food consumed per population per hexadies (as Amt: 0.100).
 pub const FOOD_PER_POP_PER_HEXADIES: crate::amount::Amt = crate::amount::Amt::new(0, 100);
 
@@ -244,4 +277,50 @@ pub struct SystemModifiers {
 #[derive(Component, Default, Clone, Debug)]
 pub struct StarTypeModifierSet {
     pub entries: Vec<crate::scripting::galaxy_api::StarTypeModifier>,
+}
+
+#[cfg(test)]
+mod inner_orbit_tests {
+    use super::*;
+    use crate::components::Position;
+    use bevy::ecs::world::World;
+
+    #[test]
+    fn inner_orbit_position_is_deterministic_and_offset() {
+        let mut world = World::new();
+        let sys = world
+            .spawn(Position {
+                x: 10.0,
+                y: -3.0,
+                z: 7.5,
+            })
+            .id();
+        let pos = system_inner_orbit_position(sys, &world);
+        // Deterministic: repeated calls return the same coord.
+        let pos2 = system_inner_orbit_position(sys, &world);
+        assert_eq!(pos, pos2);
+        // Exact offset vs the system's own Position.
+        let eps = 1e-12;
+        assert!((pos[0] - (10.0 + INNER_ORBIT_OFFSET_LY)).abs() < eps);
+        assert!((pos[1] - (-3.0)).abs() < eps);
+        assert!((pos[2] - 7.5).abs() < eps);
+    }
+
+    #[test]
+    fn inner_orbit_offset_is_inside_system_radius() {
+        // Offset must be strictly inside the nominal system radius; otherwise
+        // the Core would visually sit outside its own system.
+        assert!(INNER_ORBIT_OFFSET_LY < SYSTEM_RADIUS_LY);
+        assert!(INNER_ORBIT_OFFSET_LY > 0.0);
+    }
+
+    #[test]
+    fn inner_orbit_position_returns_zero_for_missing_system() {
+        let mut world = World::new();
+        let sys = world.spawn_empty().id();
+        assert_eq!(
+            system_inner_orbit_position(sys, &world),
+            [0.0, 0.0, 0.0]
+        );
+    }
 }
