@@ -516,6 +516,13 @@ pub fn spawn_deliverable_entity(
         LifetimeCost(initial_cost),
     ));
 
+    // #297 (S-2): Empire-owned structures carry `FactionOwner` alongside
+    // the legacy `DeepSpaceStructure.owner` field. Neutral structures
+    // (pre-deliverable scaffolds, tests) stay unaffiliated.
+    if let Owner::Empire(e) = owner {
+        ent.insert(crate::faction::FactionOwner(e));
+    }
+
     if def.is_construction_platform() {
         let target_id = if def.upgrade_to.len() == 1 {
             Some(def.upgrade_to[0].target_id.clone())
