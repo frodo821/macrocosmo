@@ -973,6 +973,52 @@ pub fn system_owner(
     None
 }
 
+/// #297 (S-2): Resolve the faction entity owning `entity`.
+///
+/// Consults, in order:
+/// 1. A [`FactionOwner`] component (canonical — applies to colony, ship,
+///    SystemBuildings-bearing StarSystem, DeepSpaceStructure, Hostile).
+/// 2. [`crate::ship::Ship::owner`] = [`crate::ship::Owner::Empire`] if the
+///    entity is a Ship (transitional until the `Owner` enum is removed in a
+///    follow-up; see plan `docs/plan-297-faction-owner-unification.md` §2D).
+///
+/// Returns `None` for wholly unaffiliated entities (e.g.
+/// [`crate::ship::Owner::Neutral`] ships with no `FactionOwner`, or entities
+/// that never received one).
+pub fn entity_owner(world: &World, entity: Entity) -> Option<Entity> {
+    let e = world.get_entity(entity).ok()?;
+    if let Some(fo) = e.get::<FactionOwner>() {
+        return Some(fo.0);
+    }
+    if let Some(ship) = e.get::<crate::ship::Ship>() {
+        if let crate::ship::Owner::Empire(f) = ship.owner {
+            return Some(f);
+        }
+    }
+    None
+}
+
+/// #297 (S-2): System-facing variant of [`entity_owner`] for hot paths inside
+/// Bevy systems where a `&World` is unavailable. Uses the same precedence.
+///
+/// Callers must provide read-only `FactionOwner` and `Ship` queries. This
+/// helper is query-coherent (both queries are `&` — no `&mut` overlap risk).
+pub fn entity_owner_from_query(
+    entity: Entity,
+    faction_owners: &Query<&FactionOwner>,
+    ships: &Query<&crate::ship::Ship>,
+) -> Option<Entity> {
+    if let Ok(fo) = faction_owners.get(entity) {
+        return Some(fo.0);
+    }
+    if let Ok(ship) = ships.get(entity) {
+        if let crate::ship::Owner::Empire(f) = ship.owner {
+            return Some(f);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1752,5 +1798,78 @@ mod tests {
         );
         app.update();
         assert_eq!(*result.lock().unwrap(), Some(true));
+    }
+
+    // ---- #297 (S-2): entity_owner helper ----
+
+    /// Build a minimal `Ship` for owner-resolution tests. Most fields are
+    /// filler — only `owner` is meaningful for the helper under test.
+    fn make_ship(owner: crate::ship::Owner, home_port: Entity) -> crate::ship::Ship {
+        crate::ship::Ship {
+            name: "test".into(),
+            design_id: "scout".into(),
+            hull_id: "corvette".into(),
+            modules: Vec::new(),
+            owner,
+            sublight_speed: 0.5,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port,
+            design_revision: 0,
+            fleet: None,
+        }
+    }
+
+    #[test]
+    fn entity_owner_returns_none_for_bare_entity() {
+        let mut world = World::new();
+        let e = world.spawn_empty().id();
+        assert_eq!(entity_owner(&world, e), None);
+    }
+
+    #[test]
+    fn entity_owner_resolves_faction_owner_component() {
+        let mut world = World::new();
+        let empire = world.spawn_empty().id();
+        let colony_like = world.spawn(FactionOwner(empire)).id();
+        assert_eq!(entity_owner(&world, colony_like), Some(empire));
+    }
+
+    #[test]
+    fn entity_owner_resolves_ship_owner_empire_only() {
+        let mut world = World::new();
+        let empire = world.spawn_empty().id();
+        let system = world.spawn_empty().id();
+        let ship = world
+            .spawn(make_ship(crate::ship::Owner::Empire(empire), system))
+            .id();
+        // No FactionOwner component — falls through to Ship.owner.
+        assert_eq!(entity_owner(&world, ship), Some(empire));
+    }
+
+    #[test]
+    fn entity_owner_prefers_faction_owner_over_ship_owner() {
+        let mut world = World::new();
+        let empire_a = world.spawn_empty().id();
+        let empire_b = world.spawn_empty().id();
+        let system = world.spawn_empty().id();
+        // Ship has both — pathological but tests precedence.
+        let ship = world
+            .spawn((
+                make_ship(crate::ship::Owner::Empire(empire_a), system),
+                FactionOwner(empire_b),
+            ))
+            .id();
+        assert_eq!(entity_owner(&world, ship), Some(empire_b));
+    }
+
+    #[test]
+    fn entity_owner_returns_none_for_neutral_ship_without_component() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let ship = world
+            .spawn(make_ship(crate::ship::Owner::Neutral, system))
+            .id();
+        assert_eq!(entity_owner(&world, ship), None);
     }
 }

@@ -613,6 +613,15 @@ pub fn spawn_ship(
         },
         fleet::FleetMembers(vec![ship_entity]),
     ));
+    // #297 (S-2): Empire-owned ships carry `FactionOwner` alongside the
+    // legacy `Ship.owner` enum so all owned entity classes share one
+    // diplomatic-identity component. `Owner::Neutral` intentionally gets
+    // no component — combat/ROE treats such ships as unaffiliated.
+    if let Owner::Empire(e) = owner {
+        commands
+            .entity(ship_entity)
+            .insert(crate::faction::FactionOwner(e));
+    }
     ship_entity
 }
 

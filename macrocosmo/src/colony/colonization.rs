@@ -4,10 +4,11 @@ use crate::amount::Amt;
 use crate::colony::ColonyJobRates;
 use crate::components::Position;
 use crate::events::GameEvent;
+use crate::faction::FactionOwner;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::modifier::ModifiedValue;
-use crate::player::{AboardShip, Player, StationedAt};
+use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
@@ -59,6 +60,12 @@ pub fn spawn_capital_colony(
     mut commands: Commands,
     systems: Query<(Entity, &StarSystem)>,
     planets: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
+    // #297 (S-2): Resolve the player faction so Colony + StarSystem can be
+    // tagged with `FactionOwner` at spawn time. `PlayerEmpire` carries the
+    // canonical diplomatic identity for the human player in single-faction
+    // mode; multi-faction expansion will rewrite this lookup without
+    // changing the spawn-site shape.
+    empire_q: Query<Entity, With<PlayerEmpire>>,
 ) {
     // Find the capital star system
     let capital_system = systems.iter().find(|(_, s)| s.is_capital);
@@ -74,42 +81,55 @@ pub fn spawn_capital_colony(
         return;
     };
 
+    // #297 (S-2): Resolve faction entity; warn + skip attachment if missing
+    // (same defensive pattern used by `tick_build_queue` ship_owner).
+    let faction_entity: Option<Entity> = empire_q.iter().next();
+    if faction_entity.is_none() {
+        warn!(
+            "No PlayerEmpire found when spawning capital colony at {} — \
+             Colony and StarSystem will not carry FactionOwner",
+            capital_star.name
+        );
+    }
+
     let num_slots = attributes.max_building_slots as usize;
     let slots = vec![None; num_slots];
     let system_slots = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
 
-    commands.spawn((
-        Colony {
-            planet: planet_entity,
-            population: 100.0,
-            growth_rate: 0.01,
-        },
-        // #250: Production starts at zero; all output comes from buildings
-        // (automation modifiers) + pop-driven job contributions, never from
-        // a hidden base rate. Legacy code seeded this with +5 everywhere,
-        // causing empty colonies to "self-produce" and masking the real
-        // job-system pipeline.
-        Production {
-            minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            research_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
-        },
-        BuildQueue::default(),
-        Buildings { slots },
-        BuildingQueue::default(),
-        ProductionFocus::default(),
-        MaintenanceCost::default(),
-        FoodConsumption::default(),
-        ColonyPopulation {
-            species: vec![ColonySpecies {
-                species_id: "human".to_string(),
-                population: 100,
-            }],
-        },
-        ColonyJobs::default(),
-        ColonyJobRates::default(),
-    ));
+    let colony_entity = commands
+        .spawn((
+            Colony {
+                planet: planet_entity,
+                population: 100.0,
+                growth_rate: 0.01,
+            },
+            // #250: Production starts at zero; all output comes from buildings
+            // (automation modifiers) + pop-driven job contributions, never from
+            // a hidden base rate. Legacy code seeded this with +5 everywhere,
+            // causing empty colonies to "self-produce" and masking the real
+            // job-system pipeline.
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue::default(),
+            Buildings { slots },
+            BuildingQueue::default(),
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+            ColonyPopulation {
+                species: vec![ColonySpecies {
+                    species_id: "human".to_string(),
+                    population: 100,
+                }],
+            },
+            ColonyJobs::default(),
+            ColonyJobRates::default(),
+        ))
+        .id();
     // Add ResourceStockpile, ResourceCapacity, and SystemBuildings to the StarSystem entity
     commands.entity(capital_entity).insert((
         ResourceStockpile {
@@ -125,6 +145,15 @@ pub fn spawn_capital_colony(
         },
         SystemBuildingQueue::default(),
     ));
+    // #297 (S-2): Tag Colony and StarSystem with their administrative
+    // owner. StarSystem receives FactionOwner because `SystemBuildings` is
+    // attached to the same entity (plan §2C). `Sovereignty.owner` is
+    // derived separately from Core-ship presence (#295) and may disagree
+    // when an enemy Core ship enters the system — that's intentional.
+    if let Some(empire) = faction_entity {
+        commands.entity(colony_entity).insert(FactionOwner(empire));
+        commands.entity(capital_entity).insert(FactionOwner(empire));
+    }
     info!("Capital colony scaffold created on {}", capital_star.name);
 }
 
@@ -137,6 +166,10 @@ pub fn tick_colonization_queue(
     last_tick: Res<LastProductionTick>,
     mut systems_with_queue: Query<(Entity, &mut ColonizationQueue, &mut ResourceStockpile)>,
     mut colonies: Query<&mut Colony>,
+    // #297 (S-2): Read FactionOwner off the source colony so the new
+    // colony inherits administrative ownership. Separate read-only query
+    // to avoid a mutable-vs-immutable conflict with `colonies`.
+    source_owners: Query<&FactionOwner>,
     planet_query: Query<(Entity, &Planet, &SystemAttributes)>,
     positions: Query<&Position>,
     player_q: Query<&StationedAt, With<Player>>,
@@ -205,36 +238,54 @@ pub fn tick_colonization_queue(
 
             // Spawn the new colony
             let pop_count = order.initial_population.round().max(0.0) as u32;
-            commands.spawn((
-                Colony {
-                    planet: order.target_planet,
-                    population: order.initial_population,
-                    growth_rate: 0.005,
-                },
-                // #250: see comment in spawn_capital_colony above.
-                Production {
-                    minerals_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                    energy_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                    research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                    food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
-                },
-                BuildQueue::default(),
-                Buildings {
-                    slots: vec![None; num_slots],
-                },
-                BuildingQueue::default(),
-                ProductionFocus::default(),
-                MaintenanceCost::default(),
-                FoodConsumption::default(),
-                ColonyPopulation {
-                    species: vec![ColonySpecies {
-                        species_id: "human".to_string(),
-                        population: pop_count,
-                    }],
-                },
-                ColonyJobs::default(),
-                ColonyJobRates::default(),
-            ));
+            // #297 (S-2): Inherit administrative ownership from the source
+            // colony that funded this expansion. If the source lacks a
+            // FactionOwner (legacy save, test spawn, etc.) the new colony
+            // also goes un-tagged — warn-and-skip rather than guess.
+            let inherited_owner: Option<FactionOwner> =
+                source_owners.get(order.source_colony).ok().copied();
+            if inherited_owner.is_none() {
+                warn!(
+                    "Colonization order from source {:?} has no FactionOwner; \
+                     new colony will not carry one either",
+                    order.source_colony
+                );
+            }
+            let new_colony = commands
+                .spawn((
+                    Colony {
+                        planet: order.target_planet,
+                        population: order.initial_population,
+                        growth_rate: 0.005,
+                    },
+                    // #250: see comment in spawn_capital_colony above.
+                    Production {
+                        minerals_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                        energy_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                        research_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                        food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
+                    },
+                    BuildQueue::default(),
+                    Buildings {
+                        slots: vec![None; num_slots],
+                    },
+                    BuildingQueue::default(),
+                    ProductionFocus::default(),
+                    MaintenanceCost::default(),
+                    FoodConsumption::default(),
+                    ColonyPopulation {
+                        species: vec![ColonySpecies {
+                            species_id: "human".to_string(),
+                            population: pop_count,
+                        }],
+                    },
+                    ColonyJobs::default(),
+                    ColonyJobRates::default(),
+                ))
+                .id();
+            if let Some(owner) = inherited_owner {
+                commands.entity(new_colony).insert(owner);
+            }
 
             // #249: Dual-write ColonyEstablished.
             let event_id = fact_sys.allocate_event_id();

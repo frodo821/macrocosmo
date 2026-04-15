@@ -348,8 +348,18 @@ fn spawn_planet_entity(
 
 /// Spawn a fresh capital colony scaffold on the given planet. Mirrors the body of
 /// `spawn_capital_colony` but without the capital-search logic.
-fn spawn_colony_on_planet(world: &mut World, planet_entity: Entity, num_slots: usize) -> Entity {
-    world
+///
+/// #297 (S-2): `faction_entity` is the administrative owner attached as a
+/// [`crate::faction::FactionOwner`] component. `None` skips attachment
+/// (warn-and-skip defensive pattern), matching `spawn_capital_colony` when
+/// no `PlayerEmpire` / matching `Faction` exists.
+fn spawn_colony_on_planet(
+    world: &mut World,
+    planet_entity: Entity,
+    num_slots: usize,
+    faction_entity: Option<Entity>,
+) -> Entity {
+    let colony = world
         .spawn((
             Colony {
                 planet: planet_entity,
@@ -381,7 +391,13 @@ fn spawn_colony_on_planet(world: &mut World, planet_entity: Entity, num_slots: u
             ColonyJobs::default(),
             crate::colony::ColonyJobRates::default(),
         ))
-        .id()
+        .id();
+    if let Some(empire) = faction_entity {
+        world
+            .entity_mut(colony)
+            .insert(crate::faction::FactionOwner(empire));
+    }
+    colony
 }
 
 /// Apply the actions recorded by a faction's `on_game_start` callback to the ECS.
@@ -412,6 +428,25 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
         planets.sort_by(|a, b| a.1.cmp(&b.1));
         let entities: Vec<Entity> = planets.into_iter().map(|(e, _)| e).collect();
         (entity, pos, name, entities)
+    };
+
+    // #297 (S-2): Resolve the faction entity for this `faction_id` so
+    // colonies / SystemBuildings / ships spawned by this on_game_start
+    // callback all carry the same `FactionOwner`. Precedence matches the
+    // existing ship-owner lookup below (L619-641): prefer an Empire whose
+    // Faction id matches, fall back to PlayerEmpire, otherwise None.
+    let faction_entity: Option<Entity> = {
+        let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+        let by_faction = q
+            .iter(world)
+            .find(|(_, f)| f.id == faction_id)
+            .map(|(e, _)| e);
+        if by_faction.is_some() {
+            by_faction
+        } else {
+            let mut pe_q = world.query_filtered::<Entity, With<PlayerEmpire>>();
+            pe_q.iter(world).next()
+        }
     };
 
     // Apply system-level attributes from set_attributes(...)
@@ -525,7 +560,10 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
                         .get::<SystemAttributes>(planet_entity)
                         .map(|a| a.max_building_slots as usize)
                         .unwrap_or(4);
-                    let _ = spawn_colony_on_planet(world, planet_entity, num_slots);
+                    // #297 (S-2): Pass the resolved faction entity so the
+                    // new Colony carries a `FactionOwner`. `None` skips
+                    // attachment with a warning (see helper doc).
+                    let _ = spawn_colony_on_planet(world, planet_entity, num_slots, faction_entity);
                     // Ensure the system also has resource stockpile / system buildings if
                     // they were not created (shouldn't happen normally but be defensive).
                     if world.get::<ResourceStockpile>(capital_entity).is_none() {
@@ -543,6 +581,14 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
                             },
                             SystemBuildingQueue::default(),
                         ));
+                        // #297 (S-2): SystemBuildings on the StarSystem entity
+                        // implies administrative ownership — attach
+                        // FactionOwner on the same entity (plan §2C).
+                        if let Some(empire) = faction_entity {
+                            world
+                                .entity_mut(capital_entity)
+                                .insert(crate::faction::FactionOwner(empire));
+                        }
                     }
                 }
             }
