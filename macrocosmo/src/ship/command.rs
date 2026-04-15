@@ -209,12 +209,11 @@ pub fn process_pending_ship_commands(
 /// #128: Async A* mixed route planning (FTL/sublight)
 #[allow(clippy::too_many_arguments)]
 pub fn process_command_queue(
-    // #334 Phase 1: `Commands` / KnowledgeStore / FactionRelations /
-    // port-params / FTL blocker params are preserved at the SystemParam
-    // surface for Phase 2/3 migrations (Survey / Colonize / Scout handlers
-    // continue to need some of them) even though this tick the MoveTo
-    // path no longer consults them. Underscored locals silence the
-    // "unused" warnings without touching the signature.
+    // #334 Phase 2 (Commits 1–4): most variants migrated to the
+    // dispatcher + handler pipeline. Only `Scout` is still handled here
+    // pending Phase 3. The bulk of the SystemParam surface is therefore
+    // underscored — the shape is preserved to minimise diff noise when
+    // Scout migrates; the final shape lands under Phase 3.
     mut _commands: Commands,
     clock: Res<GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
@@ -358,17 +357,13 @@ pub fn process_command_queue(
                 );
                 queue.sync_prediction(ship_pos.as_array(), Some(target_system));
             }
-            // #334 Phase 2 (Commit 4): Survey / Colonize migrated to
-            // `handlers::settlement_handler`. Exhaustive match requires the
-            // arms stay listed; they're unreachable under Phase 2 schedule
-            // but we silently skip (same guard as MoveTo/MoveToCoordinates
-            // above) to let any handler-injected retry survive the tick.
-            QueuedCommand::Survey { .. }
-            | QueuedCommand::Colonize { .. }
-            | QueuedCommand::LoadDeliverable { .. }
-            | QueuedCommand::DeployDeliverable { .. }
-            | QueuedCommand::TransferToStructure { .. }
-            | QueuedCommand::LoadFromScrapyard { .. } => {
+            // #334 Phase 2 (Commits 1–4): Survey / Colonize / LoadDeliverable
+            // / DeployDeliverable / TransferToStructure / LoadFromScrapyard
+            // are handled by the dispatcher + handler pipeline. Phase 3 will
+            // migrate the remaining `Scout` variant. Everything else is a
+            // no-op here so any handler-injected retry survives the tick
+            // (same guard as MoveTo / MoveToCoordinates above).
+            _ => {
                 // no-op; handled by dispatcher + handler pipeline. Leave
                 // at the queue head so the next-tick dispatcher picks up
                 // any retry re-injected by a handler this tick.
