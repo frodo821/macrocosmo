@@ -482,14 +482,19 @@ fn process_command_queue_drops_movetto_on_immobile_ship() {
 #[test]
 fn end_to_end_deploy_spawns_core_at_inner_orbit() {
     use macrocosmo::deep_space::{
-        CapabilityParams, DeliverableMetadata, ResourceCost, StructureDefinition,
-        StructureRegistry,
+        CapabilityParams, DeliverableMetadata, ResourceCost, StructureDefinition, StructureRegistry,
     };
     use macrocosmo::ship::{Cargo, CargoItem, CommandQueue, QueuedCommand, ShipState};
 
     let mut app = full_test_app();
-    let sys =
-        spawn_test_system(app.world_mut(), "DeployHere", [3.0, 0.0, 0.0], 1.0, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "DeployHere",
+        [3.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
     let empire = empire_entity(app.world_mut());
 
     // Register the immobile ship design.
@@ -634,7 +639,10 @@ fn end_to_end_deploy_spawns_core_at_inner_orbit() {
     let mut q = app
         .world_mut()
         .query::<(Entity, &CoreShip, &AtSystem, &Position)>();
-    let cores: Vec<_> = q.iter(app.world()).filter(|(_, _, at, _)| at.0 == sys).collect();
+    let cores: Vec<_> = q
+        .iter(app.world())
+        .filter(|(_, _, at, _)| at.0 == sys)
+        .collect();
     assert_eq!(cores.len(), 1, "exactly one Core spawned");
     let (_, _, _, pos) = cores[0];
     let expected = inner_orbit;
