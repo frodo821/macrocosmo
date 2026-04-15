@@ -223,6 +223,115 @@ pub struct CommandExecuted {
 }
 
 // ---------------------------------------------------------------------------
+// CommandCompletedContext — Phase 4: EventContext carrying a CommandExecuted
+// payload for the Lua `on("macrocosmo:command_completed", ...)` hook.
+// ---------------------------------------------------------------------------
+
+/// Typed `EventContext` payload built by
+/// [`crate::ship::bridges::bridge_command_executed_to_gamestate`] from a
+/// terminal [`CommandExecuted`] message. Exposes the command identity /
+/// result as a flat Lua table so user scripts can read
+/// `evt.command_id`, `evt.kind`, `evt.ship`, `evt.result`, `evt.reason`,
+/// `evt.completed_at` from the standard `on(event_id, ...)` callback.
+///
+/// # Invariants
+///
+/// * Only constructed for **terminal** results (`Ok` / `Rejected`).
+///   `Deferred` pairs do not produce a context — the follow-up
+///   `CommandExecuted` is the one that fires the hook. See plan §10 R8.
+/// * Values are serialised as `String` to match the
+///   [`crate::event_system::EventContext::payload_get`] contract used by
+///   `on(id, filter, fn)` structural filters — that filter path flattens
+///   everything to strings and we mirror the existing `LuaDefinedEventContext`
+///   shape rather than inventing a new serialisation.
+/// * Never calls Lua code; only `lua.create_table()` + `table.set(...)`.
+#[derive(Clone, Debug)]
+pub struct CommandCompletedContext {
+    pub command_id: CommandId,
+    pub kind: CommandKind,
+    pub ship: Entity,
+    pub result_tag: &'static str,
+    pub reason: Option<String>,
+    pub completed_at: i64,
+}
+
+impl CommandCompletedContext {
+    /// Map `CommandKind` to the string Lua scripts use to compare `evt.kind`.
+    /// Lowercase snake-case matches what `request_command(kind, args)`
+    /// accepts on the setter side (Phase 4 Commit 2) so a modder can write
+    /// `if evt.kind == "move" then ... end` after calling
+    /// `gs:request_command("move", ...)`.
+    pub fn kind_str(kind: CommandKind) -> &'static str {
+        match kind {
+            CommandKind::Move => "move",
+            CommandKind::MoveToCoordinates => "move_to_coordinates",
+            CommandKind::Survey => "survey",
+            CommandKind::Colonize => "colonize",
+            CommandKind::Scout => "scout",
+            CommandKind::LoadDeliverable => "load_deliverable",
+            CommandKind::DeployDeliverable => "deploy_deliverable",
+            CommandKind::CoreDeploy => "core_deploy",
+            CommandKind::TransferToStructure => "transfer_to_structure",
+            CommandKind::LoadFromScrapyard => "load_from_scrapyard",
+            CommandKind::Attack => "attack",
+        }
+    }
+
+    /// Build from a terminal `CommandExecuted`. Returns `None` when the
+    /// result is `Deferred` — plan §10 R8 bans double-fires.
+    pub fn from_executed(ev: &CommandExecuted) -> Option<Self> {
+        let (tag, reason) = match &ev.result {
+            CommandResult::Ok => ("ok", None),
+            CommandResult::Rejected { reason } => ("rejected", Some(reason.clone())),
+            CommandResult::Deferred => return None,
+        };
+        Some(Self {
+            command_id: ev.command_id,
+            kind: ev.kind,
+            ship: ev.ship,
+            result_tag: tag,
+            reason,
+            completed_at: ev.completed_at,
+        })
+    }
+}
+
+impl crate::event_system::EventContext for CommandCompletedContext {
+    fn event_id(&self) -> &str {
+        crate::event_system::COMMAND_COMPLETED_EVENT
+    }
+
+    fn to_lua_table(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Table> {
+        let t = lua.create_table()?;
+        t.set("event_id", crate::event_system::COMMAND_COMPLETED_EVENT)?;
+        // Command id as decimal string — mirror the `LuaDefinedEventContext`
+        // discipline (everything is strings, filter-compatible).
+        t.set("command_id", self.command_id.0.to_string())?;
+        t.set("kind", Self::kind_str(self.kind))?;
+        t.set("ship", self.ship.to_bits().to_string())?;
+        t.set("result", self.result_tag)?;
+        if let Some(r) = &self.reason {
+            t.set("reason", r.as_str())?;
+        }
+        t.set("completed_at", self.completed_at.to_string())?;
+        Ok(t)
+    }
+
+    fn payload_get(&self, key: &str) -> Option<std::borrow::Cow<'_, str>> {
+        use std::borrow::Cow;
+        match key {
+            "kind" => Some(Cow::Borrowed(Self::kind_str(self.kind))),
+            "result" => Some(Cow::Borrowed(self.result_tag)),
+            "reason" => self.reason.as_deref().map(Cow::Borrowed),
+            "command_id" => Some(Cow::Owned(self.command_id.0.to_string())),
+            "ship" => Some(Cow::Owned(self.ship.to_bits().to_string())),
+            "completed_at" => Some(Cow::Owned(self.completed_at.to_string())),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
 

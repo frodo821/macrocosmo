@@ -298,6 +298,27 @@ fn build_scoped_gamestate<'scope, 'env>(
             },
         )?;
         gs.set("clear_flag", clear_flag)?;
+
+        // :request_command(kind, args) -> u64 (new CommandId)
+        //
+        // #334 Phase 4 Commit 2: Lua-side counterpart to the dispatcher.
+        // Parses `args` into a plain Rust `apply::ParsedRequest` inside the
+        // closure body (no Lua call-back; only table reads + primitive
+        // extraction), then hands `&mut World` + the parsed struct to
+        // `apply::request_command` which emits the appropriate
+        // `CommandRequested` message via `World::resource_mut::<Messages<_>>`.
+        //
+        // Invariant (plan §9.2 / feedback_rust_no_lua_callback.md): the
+        // apply helper takes no `&Lua` and never invokes Lua code. Message
+        // emit is a pure Rust event-bus push; the downstream handler runs
+        // in a separate Bevy system on the next tick, breaking reentrancy.
+        let request_command =
+            s.create_function_mut(move |_lua, (_this, kind, args): (Table, String, Table)| {
+                let parsed = apply::parse_request(&kind, &args)?;
+                let mut borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
+                apply::request_command(&mut **borrow, parsed)
+            })?;
+        gs.set("request_command", request_command)?;
     }
 
     Ok(gs)
@@ -1257,6 +1278,375 @@ pub(crate) mod apply {
     ) -> mlua::Result<()> {
         set_flag(world, scope_kind, entity, name, false)
     }
+
+    // ==================================================================
+    // #334 Phase 4 Commit 2: `ctx.gamestate:request_command(kind, args)`
+    //
+    // Lua calls the scope closure, which calls `parse_request` with the
+    // (kind, args) table (Lua-side read) and then `request_command` with
+    // `&mut World` + the parsed struct (Rust-only mutation / event emit).
+    //
+    // * `parse_request` receives `&Table` purely as a data source —
+    //   primitives are extracted eagerly; no Lua callback / Function is
+    //   invoked, no `RegistryKey` is stored.
+    // * `request_command` takes `&mut World` **and no `&Lua`**; it
+    //   allocates a `CommandId` from `NextCommandId`, pushes the
+    //   appropriate `CommandRequested` message onto the Bevy message
+    //   queue (`World::resource_mut::<Messages<_>>`), and returns the
+    //   fresh id as `u64` so the Lua caller can track it (e.g. to match
+    //   against the `evt.command_id` field delivered by the Phase 4
+    //   Commit 1 bridge).
+    // * Unknown `kind` / missing required fields surface as
+    //   `mlua::Error::RuntimeError` so a modder's typo is diagnosed at
+    //   the call site instead of silently dropping the command.
+    // ==================================================================
+
+    use crate::amount::Amt;
+    use crate::ship::ReportMode;
+    use crate::ship::command_events::{
+        ColonizeRequested, CommandId, DeployDeliverableRequested, LoadDeliverableRequested,
+        LoadFromScrapyardRequested, MoveRequested, MoveToCoordinatesRequested, NextCommandId,
+        ScoutRequested, SurveyRequested, TransferToStructureRequested,
+    };
+    use crate::time_system::GameClock;
+    use bevy::ecs::message::Messages;
+
+    /// Parsed, Lua-free command request. Every variant carries everything
+    /// the corresponding Bevy `CommandRequested` message needs — the
+    /// downstream `request_command` helper never touches `&Lua`.
+    #[derive(Debug, Clone)]
+    pub enum ParsedRequest {
+        Move {
+            ship: Entity,
+            target: Entity,
+        },
+        MoveToCoordinates {
+            ship: Entity,
+            target: [f64; 3],
+        },
+        Scout {
+            ship: Entity,
+            target_system: Entity,
+            observation_duration: i64,
+            report_mode: ReportMode,
+        },
+        LoadDeliverable {
+            ship: Entity,
+            system: Entity,
+            stockpile_index: usize,
+        },
+        DeployDeliverable {
+            ship: Entity,
+            position: [f64; 3],
+            item_index: usize,
+        },
+        TransferToStructure {
+            ship: Entity,
+            structure: Entity,
+            minerals: Amt,
+            energy: Amt,
+        },
+        LoadFromScrapyard {
+            ship: Entity,
+            structure: Entity,
+        },
+        Colonize {
+            ship: Entity,
+            target_system: Entity,
+            planet: Option<Entity>,
+        },
+        Survey {
+            ship: Entity,
+            target_system: Entity,
+        },
+        // NOTE: CoreDeploy + Attack are listed by plan but intentionally
+        // not exposed yet:
+        // * CoreDeploy is produced by handle_deploy_deliverable_requested
+        //   in the deliverable pipeline; letting Lua short-circuit that
+        //   path would invert the dependency.
+        // * Attack handler is a skeleton (#219 / #220); exposing a Lua
+        //   setter before the handler works would create dead messages.
+        // Both can be added when their Rust sides land.
+    }
+
+    /// Error helper: a required field was missing or of the wrong type.
+    fn missing(kind: &str, field: &str) -> mlua::Error {
+        mlua::Error::RuntimeError(format!(
+            "request_command(\"{kind}\"): missing or invalid field '{field}'"
+        ))
+    }
+
+    /// Extract an `Entity` from a u64 bits field.
+    fn get_entity(args: &Table, key: &str, kind: &str) -> mlua::Result<Entity> {
+        let bits: u64 = args.get(key).map_err(|_| missing(kind, key))?;
+        Ok(Entity::from_bits(bits))
+    }
+
+    /// Extract an optional `Entity`.
+    fn get_opt_entity(args: &Table, key: &str) -> Option<Entity> {
+        args.get::<u64>(key).ok().map(Entity::from_bits)
+    }
+
+    /// Extract a `[f64; 3]` coordinate from {x=, y=, z=} or {[1]=,[2]=,[3]=}.
+    fn get_coords(args: &Table, key: &str, kind: &str) -> mlua::Result<[f64; 3]> {
+        let t: Table = args.get(key).map_err(|_| missing(kind, key))?;
+        // Prefer named keys x/y/z; fall back to array indices.
+        let x: f64 = t
+            .get("x")
+            .or_else(|_| t.get::<f64>(1))
+            .map_err(|_| missing(kind, &format!("{key}.x")))?;
+        let y: f64 = t
+            .get("y")
+            .or_else(|_| t.get::<f64>(2))
+            .map_err(|_| missing(kind, &format!("{key}.y")))?;
+        let z: f64 = t
+            .get("z")
+            .or_else(|_| t.get::<f64>(3))
+            .map_err(|_| missing(kind, &format!("{key}.z")))?;
+        Ok([x, y, z])
+    }
+
+    /// Extract an `Amt` from a numeric (interpreted as units).
+    fn get_amt(args: &Table, key: &str, kind: &str) -> mlua::Result<Amt> {
+        let v: f64 = args.get(key).map_err(|_| missing(kind, key))?;
+        Ok(Amt::from_f64(v))
+    }
+
+    /// Extract a ReportMode from a string ("return" | "ftl_comm"), default Return.
+    fn parse_report_mode(args: &Table) -> ReportMode {
+        let s: Option<String> = args.get("report_mode").ok();
+        match s.as_deref() {
+            Some("ftl_comm") | Some("ftl") => ReportMode::FtlComm,
+            _ => ReportMode::Return,
+        }
+    }
+
+    /// Parse `(kind, args)` into a `ParsedRequest`. Invoked from the Lua
+    /// scope closure — no mutation, no `&Lua`. Returns a `RuntimeError`
+    /// for unknown kinds or missing fields.
+    pub fn parse_request(kind: &str, args: &Table) -> mlua::Result<ParsedRequest> {
+        match kind {
+            "move" => Ok(ParsedRequest::Move {
+                ship: get_entity(args, "ship", kind)?,
+                target: get_entity(args, "target", kind)?,
+            }),
+            "move_to_coordinates" => Ok(ParsedRequest::MoveToCoordinates {
+                ship: get_entity(args, "ship", kind)?,
+                target: get_coords(args, "target", kind)?,
+            }),
+            "scout" => Ok(ParsedRequest::Scout {
+                ship: get_entity(args, "ship", kind)?,
+                target_system: get_entity(args, "target_system", kind)?,
+                observation_duration: args.get::<i64>("observation_duration").unwrap_or(10),
+                report_mode: parse_report_mode(args),
+            }),
+            "load_deliverable" => Ok(ParsedRequest::LoadDeliverable {
+                ship: get_entity(args, "ship", kind)?,
+                system: get_entity(args, "system", kind)?,
+                stockpile_index: args
+                    .get::<i64>("stockpile_index")
+                    .map_err(|_| missing(kind, "stockpile_index"))?
+                    .max(0) as usize,
+            }),
+            "deploy_deliverable" => Ok(ParsedRequest::DeployDeliverable {
+                ship: get_entity(args, "ship", kind)?,
+                position: get_coords(args, "position", kind)?,
+                item_index: args
+                    .get::<i64>("item_index")
+                    .map_err(|_| missing(kind, "item_index"))?
+                    .max(0) as usize,
+            }),
+            "transfer_to_structure" => Ok(ParsedRequest::TransferToStructure {
+                ship: get_entity(args, "ship", kind)?,
+                structure: get_entity(args, "structure", kind)?,
+                minerals: get_amt(args, "minerals", kind)?,
+                energy: get_amt(args, "energy", kind)?,
+            }),
+            "load_from_scrapyard" => Ok(ParsedRequest::LoadFromScrapyard {
+                ship: get_entity(args, "ship", kind)?,
+                structure: get_entity(args, "structure", kind)?,
+            }),
+            "colonize" => Ok(ParsedRequest::Colonize {
+                ship: get_entity(args, "ship", kind)?,
+                target_system: get_entity(args, "target_system", kind)?,
+                planet: get_opt_entity(args, "planet"),
+            }),
+            "survey" => Ok(ParsedRequest::Survey {
+                ship: get_entity(args, "ship", kind)?,
+                target_system: get_entity(args, "target_system", kind)?,
+            }),
+            // Plan-listed but not yet wired (see ParsedRequest docstring).
+            "core_deploy" | "attack" => Err(mlua::Error::RuntimeError(format!(
+                "request_command: kind '{kind}' is not yet supported via the \
+                 Lua bridge; see plan-334 §7 Phase 4 + #219/#220 for the \
+                 handler side"
+            ))),
+            other => Err(mlua::Error::RuntimeError(format!(
+                "request_command: unknown kind '{other}'; supported kinds: \
+                 move, move_to_coordinates, scout, load_deliverable, \
+                 deploy_deliverable, transfer_to_structure, \
+                 load_from_scrapyard, colonize, survey"
+            ))),
+        }
+    }
+
+    /// Allocate a fresh `CommandId` and emit the appropriate
+    /// `CommandRequested` message. **Never touches Lua.**
+    ///
+    /// Returns the new `CommandId` as `u64` so Lua can correlate the
+    /// subsequent `macrocosmo:command_completed` hook payload
+    /// (`evt.command_id` — stored as decimal string in the payload, so
+    /// callers do `tonumber(evt.command_id) == returned_id`).
+    pub fn request_command(world: &mut World, req: ParsedRequest) -> mlua::Result<u64> {
+        // Allocate command id.
+        let command_id: CommandId = {
+            // `NextCommandId` is installed by `CommandEventsPlugin`; if
+            // it's missing (test-only app without the plugin), surface a
+            // diagnostic rather than panicking.
+            let Some(mut counter) = world.get_resource_mut::<NextCommandId>() else {
+                return Err(mlua::Error::RuntimeError(
+                    "request_command: NextCommandId resource missing; \
+                     CommandEventsPlugin must be installed"
+                        .into(),
+                ));
+            };
+            counter.allocate()
+        };
+        let issued_at = world
+            .get_resource::<GameClock>()
+            .map(|c| c.elapsed)
+            .unwrap_or(0);
+
+        // Emit the request on the matching Bevy message queue. Using
+        // `resource_mut::<Messages<_>>()` + `write` mirrors what Bevy's
+        // `MessageWriter` param does internally, without needing a full
+        // SystemParam context.
+        match req {
+            ParsedRequest::Move { ship, target } => {
+                world
+                    .resource_mut::<Messages<MoveRequested>>()
+                    .write(MoveRequested {
+                        command_id,
+                        ship,
+                        target,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::MoveToCoordinates { ship, target } => {
+                world
+                    .resource_mut::<Messages<MoveToCoordinatesRequested>>()
+                    .write(MoveToCoordinatesRequested {
+                        command_id,
+                        ship,
+                        target,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::Scout {
+                ship,
+                target_system,
+                observation_duration,
+                report_mode,
+            } => {
+                world
+                    .resource_mut::<Messages<ScoutRequested>>()
+                    .write(ScoutRequested {
+                        command_id,
+                        ship,
+                        target_system,
+                        observation_duration,
+                        report_mode,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::LoadDeliverable {
+                ship,
+                system,
+                stockpile_index,
+            } => {
+                world
+                    .resource_mut::<Messages<LoadDeliverableRequested>>()
+                    .write(LoadDeliverableRequested {
+                        command_id,
+                        ship,
+                        system,
+                        stockpile_index,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::DeployDeliverable {
+                ship,
+                position,
+                item_index,
+            } => {
+                world
+                    .resource_mut::<Messages<DeployDeliverableRequested>>()
+                    .write(DeployDeliverableRequested {
+                        command_id,
+                        ship,
+                        position,
+                        item_index,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::TransferToStructure {
+                ship,
+                structure,
+                minerals,
+                energy,
+            } => {
+                world
+                    .resource_mut::<Messages<TransferToStructureRequested>>()
+                    .write(TransferToStructureRequested {
+                        command_id,
+                        ship,
+                        structure,
+                        minerals,
+                        energy,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::LoadFromScrapyard { ship, structure } => {
+                world
+                    .resource_mut::<Messages<LoadFromScrapyardRequested>>()
+                    .write(LoadFromScrapyardRequested {
+                        command_id,
+                        ship,
+                        structure,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::Colonize {
+                ship,
+                target_system,
+                planet,
+            } => {
+                world
+                    .resource_mut::<Messages<ColonizeRequested>>()
+                    .write(ColonizeRequested {
+                        command_id,
+                        ship,
+                        target_system,
+                        planet,
+                        issued_at,
+                    });
+            }
+            ParsedRequest::Survey {
+                ship,
+                target_system,
+            } => {
+                world
+                    .resource_mut::<Messages<SurveyRequested>>()
+                    .write(SurveyRequested {
+                        command_id,
+                        ship,
+                        target_system,
+                        issued_at,
+                    });
+            }
+        }
+        Ok(command_id.0)
+    }
 }
 
 #[cfg(test)]
@@ -1412,5 +1802,172 @@ mod tests {
             })
             .unwrap();
         });
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 4 Commit 2: request_command parse / apply unit tests
+    // ------------------------------------------------------------------
+    // Integration-level tests that exercise the full Lua → message →
+    // handler → Lua-hook round-trip live in
+    // `tests/lua_request_command.rs`.
+    // ------------------------------------------------------------------
+
+    use crate::ship::command_events::{
+        CommandEventsPlugin, MoveRequested, NextCommandId, ScoutRequested, SurveyRequested,
+    };
+    use bevy::ecs::message::Messages;
+
+    fn make_command_world() -> World {
+        // Minimal world with just the CommandEventsPlugin's resources +
+        // message types manually seeded. `App::new()` pulls in scheduler
+        // plumbing we don't need for unit-level apply_* tests, so we
+        // register what's required by hand.
+        let mut world = World::new();
+        world.insert_resource(crate::time_system::GameClock::new(7));
+        world.insert_resource(NextCommandId::default());
+        // Seed Messages<T> directly — we don't run the plugin so we add
+        // each queue manually. This mirrors what `app.add_message::<T>()`
+        // does internally.
+        world.insert_resource(Messages::<MoveRequested>::default());
+        world.insert_resource(Messages::<SurveyRequested>::default());
+        world.insert_resource(Messages::<ScoutRequested>::default());
+        world
+    }
+
+    #[test]
+    fn parse_request_unknown_kind_returns_runtime_error() {
+        let lua = mlua::Lua::new();
+        let args = lua.create_table().unwrap();
+        let err = apply::parse_request("not_a_real_kind", &args).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown kind"),
+            "expected unknown-kind diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_request_move_missing_target_returns_runtime_error() {
+        let lua = mlua::Lua::new();
+        let args = lua.create_table().unwrap();
+        let ship = Entity::from_raw_u32(1).unwrap();
+        args.set("ship", ship.to_bits()).unwrap();
+        let err = apply::parse_request("move", &args).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing") && msg.contains("target"),
+            "expected missing-target diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn request_command_move_emits_message_and_returns_monotonic_id() {
+        let mut world = make_command_world();
+        let ship = Entity::from_raw_u32(10).unwrap();
+        let target = Entity::from_raw_u32(20).unwrap();
+        let id_a = apply::request_command(&mut world, apply::ParsedRequest::Move { ship, target })
+            .unwrap();
+        let id_b = apply::request_command(&mut world, apply::ParsedRequest::Move { ship, target })
+            .unwrap();
+        assert!(id_b > id_a, "command ids must be strictly monotonic");
+
+        let msgs = world.resource::<Messages<MoveRequested>>();
+        let mut cursor = msgs.get_cursor();
+        let all: Vec<&MoveRequested> = cursor.read(msgs).collect();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].ship, ship);
+        assert_eq!(all[0].target, target);
+        assert_eq!(all[0].command_id.0, id_a);
+        assert_eq!(all[1].command_id.0, id_b);
+    }
+
+    #[test]
+    fn request_command_scout_parses_report_mode_and_emits() {
+        let lua = mlua::Lua::new();
+        let args = lua.create_table().unwrap();
+        let ship = Entity::from_raw_u32(10).unwrap();
+        let target = Entity::from_raw_u32(20).unwrap();
+        args.set("ship", ship.to_bits()).unwrap();
+        args.set("target_system", target.to_bits()).unwrap();
+        args.set("observation_duration", 5i64).unwrap();
+        args.set("report_mode", "ftl_comm").unwrap();
+        let parsed = apply::parse_request("scout", &args).unwrap();
+        match &parsed {
+            apply::ParsedRequest::Scout {
+                report_mode,
+                observation_duration,
+                ..
+            } => {
+                assert_eq!(*observation_duration, 5);
+                assert!(matches!(report_mode, crate::ship::ReportMode::FtlComm));
+            }
+            other => panic!("expected Scout, got {other:?}"),
+        }
+        let mut world = make_command_world();
+        let _ = apply::request_command(&mut world, parsed).unwrap();
+        let msgs = world.resource::<Messages<ScoutRequested>>();
+        let mut cursor = msgs.get_cursor();
+        let all: Vec<&ScoutRequested> = cursor.read(msgs).collect();
+        assert_eq!(all.len(), 1);
+        assert!(matches!(
+            all[0].report_mode,
+            crate::ship::ReportMode::FtlComm
+        ));
+    }
+
+    #[test]
+    fn request_command_rejects_core_deploy_and_attack() {
+        // Plan §7 Phase 4 intentionally defers these kinds until the
+        // corresponding Rust-side handlers land.
+        let lua = mlua::Lua::new();
+        let args = lua.create_table().unwrap();
+        for kind in ["core_deploy", "attack"] {
+            let err = apply::parse_request(kind, &args).unwrap_err();
+            assert!(
+                err.to_string().contains("not yet supported"),
+                "expected 'not yet supported' for '{kind}'"
+            );
+        }
+    }
+
+    #[test]
+    fn request_command_exposed_in_readwrite_only() {
+        // Smoke: ReadOnly mode must NOT expose `request_command` (the
+        // write-closure block is gated on `GamestateMode::ReadWrite`).
+        let mut world = {
+            let mut w = World::new();
+            w.insert_resource(crate::time_system::GameClock::new(0));
+            w.insert_resource(ScriptEngine::new().unwrap());
+            w
+        };
+        let mut saw_ro_nil = false;
+        let mut saw_rw_fn = false;
+        world.resource_scope::<ScriptEngine, _>(|world, engine| {
+            let lua = engine.lua();
+            // ReadOnly: request_command must be nil.
+            {
+                let payload = lua.create_table().unwrap();
+                dispatch_with_gamestate(lua, world, &payload, GamestateMode::ReadOnly, |_l, p| {
+                    let gs: Table = p.get("gamestate")?;
+                    let rc: mlua::Value = gs.get("request_command")?;
+                    saw_ro_nil = matches!(rc, mlua::Value::Nil);
+                    Ok(())
+                })
+                .unwrap();
+            }
+            // ReadWrite: request_command must be a Function.
+            {
+                let payload = lua.create_table().unwrap();
+                dispatch_with_gamestate(lua, world, &payload, GamestateMode::ReadWrite, |_l, p| {
+                    let gs: Table = p.get("gamestate")?;
+                    let rc: mlua::Value = gs.get("request_command")?;
+                    saw_rw_fn = matches!(rc, mlua::Value::Function(_));
+                    Ok(())
+                })
+                .unwrap();
+            }
+        });
+        assert!(saw_ro_nil, "ReadOnly mode must not expose request_command");
+        assert!(saw_rw_fn, "ReadWrite mode must expose request_command");
     }
 }

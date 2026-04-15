@@ -335,6 +335,32 @@ impl Plugin for ShipPlugin {
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
+        // #334 Phase 4: CommandExecuted → Lua `on_command_completed` hook.
+        // Runs alongside the CommandLog bridge — both read the same
+        // `CommandExecuted` messages independently (different `MessageReader`
+        // cursors), so the two subscribers never race. Queue-only: this
+        // bridge enqueues a `COMMAND_COMPLETED_EVENT` on `EventSystem`;
+        // `dispatch_event_handlers` in the scripting plugin drains the
+        // fired_log on its own tick. See plan §7 Phase 4 +
+        // `memory/feedback_rust_no_lua_callback.md`.
+        app.add_systems(
+            Update,
+            bridges::bridge_command_executed_to_gamestate
+                .after(routing::poll_pending_routes)
+                .after(handlers::handle_move_requested)
+                .after(handlers::handle_move_to_coordinates_requested)
+                .after(handlers::handle_load_deliverable_requested)
+                .after(handlers::handle_deploy_deliverable_requested)
+                .after(handlers::handle_transfer_to_structure_requested)
+                .after(handlers::handle_load_from_scrapyard_requested)
+                .after(handlers::handle_survey_requested)
+                .after(handlers::handle_colonize_requested)
+                .after(handlers::handle_scout_requested)
+                .after(handlers::handle_attack_requested)
+                .after(core_deliverable::handle_core_deploy_requested)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
         // #128: Poll route tasks after Commands emitted by handlers are flushed.
         app.add_systems(
             Update,
