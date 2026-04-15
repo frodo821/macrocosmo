@@ -401,6 +401,10 @@ pub fn test_app() -> App {
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+    // #296 (S-3): Test apps must initialise these so deliverable_ops /
+    // resolve_core_deploys can run without a Resource-missing panic.
+    app.init_resource::<macrocosmo::ship::PendingCoreDeploys>();
+    app.init_resource::<macrocosmo::scripting::GameRng>();
     app.add_systems(Update, macrocosmo::time_system::advance_game_time);
     app.add_systems(
         Update,
@@ -419,6 +423,9 @@ pub fn test_app() -> App {
             // #223: Deliverable ops run before process_command_queue so any
             // injected MoveTo reaches the router in the same frame.
             macrocosmo::ship::deliverable_ops::process_deliverable_commands,
+            // #296 (S-3): Drain Core deploy tickets enqueued by the
+            // deliverable processor. Mirrors ShipPlugin ordering.
+            macrocosmo::ship::resolve_core_deploys,
             process_command_queue,
             // #217: Scout observation + report. Chained after
             // process_command_queue so a Scout that began transitioning to
@@ -592,6 +599,9 @@ pub fn full_test_app() -> App {
 
     // --- Routing resource ---
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+    // #296 (S-3): Core deploy queue + RNG (mirrors ShipPlugin / ScriptingPlugin).
+    app.init_resource::<macrocosmo::ship::PendingCoreDeploys>();
+    app.init_resource::<macrocosmo::scripting::GameRng>();
 
     // --- #233 Notification pipeline resources ---
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
@@ -618,6 +628,8 @@ pub fn full_test_app() -> App {
             process_pending_ship_commands,
             tick_courier_routes,
             macrocosmo::ship::deliverable_ops::process_deliverable_commands,
+            // #296 (S-3): Drain Core deploy tickets enqueued above.
+            macrocosmo::ship::resolve_core_deploys,
             process_command_queue,
             // #217: Scout observation + delivery.
             macrocosmo::ship::scout::tick_scout_observation,
@@ -986,16 +998,19 @@ pub fn empire_entity(world: &mut World) -> Entity {
         .expect("No player empire found in test world")
 }
 
-/// #295 (S-1): Spawn a mock "Core ship" bearing `(AtSystem, FactionOwner)` so
-/// `update_sovereignty` sees the system as owned by `faction`.
+/// #295 (S-1) / #296 (S-3): Spawn a mock "Core ship" bearing
+/// `(CoreShip, AtSystem, FactionOwner)` so `update_sovereignty` /
+/// `system_owner` see the system as owned by `faction`.
 ///
-/// This is a placeholder for the real Core ship that S-3 (#296) will define.
-/// Tests targeting sovereignty behaviour call this helper instead of waiting
-/// for the S-3 marker and auto-spawn systems.
+/// As of #296 the `CoreShip` marker is REQUIRED — without it the
+/// `system_owner` query (now `With<CoreShip>`) would skip the entity.
 pub fn spawn_mock_core_ship(world: &mut World, system: Entity, faction: Entity) -> Entity {
     use macrocosmo::faction::FactionOwner;
     use macrocosmo::galaxy::AtSystem;
-    world.spawn((AtSystem(system), FactionOwner(faction))).id()
+    use macrocosmo::ship::CoreShip;
+    world
+        .spawn((CoreShip, AtSystem(system), FactionOwner(faction)))
+        .id()
 }
 
 /// #236: Test fixture builders for hull + module registries that mirror the

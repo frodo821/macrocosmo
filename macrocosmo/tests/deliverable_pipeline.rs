@@ -58,6 +58,7 @@ fn install_test_deliverables(app: &mut App) {
             build_time: 15,
             cargo_size: 1,
             scrap_refund: 0.5,
+            spawns_as_ship: None,
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
@@ -84,6 +85,7 @@ fn install_test_deliverables(app: &mut App) {
             build_time: 20,
             cargo_size: 3,
             scrap_refund: 0.3,
+            spawns_as_ship: None,
         }),
         upgrade_to: vec![UpgradeEdge {
             target_id: "defense_platform".into(),

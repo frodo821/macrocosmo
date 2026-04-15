@@ -131,7 +131,7 @@ pub fn tick_authority(
 /// decay) come in S-4.
 pub fn update_sovereignty(
     mut sovereignties: Query<(Entity, &mut Sovereignty)>,
-    at_system: Query<(&AtSystem, &FactionOwner)>,
+    at_system: Query<(&AtSystem, &FactionOwner), With<crate::ship::CoreShip>>,
 ) {
     for (entity, mut sov) in &mut sovereignties {
         match system_owner(entity, &at_system) {

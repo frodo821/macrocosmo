@@ -162,13 +162,19 @@ pub struct UpgradeEdge {
 /// declared via `define_deliverable` (i.e. can be built directly at a shipyard
 /// and transported in a ship's Cargo). World-only structures declared via
 /// `define_structure` leave this as `None`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct DeliverableMetadata {
     pub cost: ResourceCost,
     pub build_time: i64,
     pub cargo_size: u32,
     /// 0.0..=1.0 — fraction of lifetime_cost returned as Scrapyard resources on dismantle.
     pub scrap_refund: f32,
+    /// #296 (S-3): When `Some(design_id)`, deploying this deliverable spawns
+    /// an immobile [`crate::ship::Ship`] (the "Core ship") instead of a
+    /// [`DeepSpaceStructure`]. The referenced design must resolve to
+    /// `sublight_speed = 0` / `ftl_range = 0`. `None` retains the legacy
+    /// structure-spawn behaviour.
+    pub spawns_as_ship: Option<String>,
 }
 
 /// #223: Unified definition covering both world-side structures and
@@ -351,6 +357,7 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
                 build_time: 15,
                 cargo_size: 1,
                 scrap_refund: 0.5,
+                spawns_as_ship: None,
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
@@ -378,6 +385,7 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
                 build_time: 30,
                 cargo_size: 2,
                 scrap_refund: 0.4,
+                spawns_as_ship: None,
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
@@ -405,6 +413,7 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
                 build_time: 45,
                 cargo_size: 3,
                 scrap_refund: 0.3,
+                spawns_as_ship: None,
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
@@ -1362,6 +1371,7 @@ mod tests {
                 build_time: 20,
                 cargo_size: 1,
                 scrap_refund: 0.5,
+                spawns_as_ship: None,
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
@@ -1526,6 +1536,7 @@ mod tests {
             build_time: 10,
             cargo_size: 1,
             scrap_refund: 0.5,
+            spawns_as_ship: None,
         });
         def
     }

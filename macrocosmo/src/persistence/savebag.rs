@@ -4292,6 +4292,15 @@ pub struct SavedComponentBag {
     pub fleet_members: Option<SavedFleetMembers>,
     pub detected_hostiles: Option<SavedDetectedHostiles>,
     pub rules_of_engagement: Option<SavedRulesOfEngagement>,
+    /// #296 (S-3): Marker present on Infrastructure Core ships. Persisted as
+    /// a unit option so the entity reattaches the `CoreShip` component on
+    /// load. SAVE_VERSION bumps to 2 in lockstep — postcard's sequential
+    /// field encoding means that even an additive `Option<()>` field is a
+    /// wire-format break for already-committed fixtures. The
+    /// `regenerate_minimal_game_fixture` ignored test was used to refresh
+    /// `tests/fixtures/minimal_game.bin` in the same commit as this field.
+    #[serde(default)]
+    pub core_ship: Option<()>,
     // Pending command entities (free-standing entities, not attached to a "body")
     pub pending_ship_command: Option<SavedPendingShipCommand>,
     pub pending_diplomatic_action: Option<SavedPendingDiplomaticAction>,

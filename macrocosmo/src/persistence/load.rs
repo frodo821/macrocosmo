@@ -413,6 +413,10 @@ fn apply_component_bag(
     if let Some(roe) = &bag.rules_of_engagement {
         ec.insert(crate::ship::RulesOfEngagement::from(*roe));
     }
+    // #296 (S-3): Restore the CoreShip marker on Infrastructure Core ships.
+    if bag.core_ship.is_some() {
+        ec.insert(crate::ship::CoreShip);
+    }
 
     // Pending command entities
     if let Some(p) = &bag.pending_ship_command {

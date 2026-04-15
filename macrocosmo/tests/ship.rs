@@ -2941,6 +2941,7 @@ fn test_scout_report_via_ftl_comm() {
                 build_time: 20,
                 cargo_size: 2,
                 scrap_refund: 0.4,
+                spawns_as_ship: None,
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,

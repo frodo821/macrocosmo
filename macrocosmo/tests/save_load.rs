@@ -1218,7 +1218,8 @@ fn test_save_load_sovereignty_derived_cache_regression() {
     }
 
     // Add a Core ship stationed at Sol. `Ship` triggers SaveableMarker, so
-    // the AtSystem + FactionOwner pair rides the save/load path.
+    // the AtSystem + FactionOwner + CoreShip triple rides the save/load
+    // path. #296 adds the CoreShip marker requirement.
     let core_ship = src
         .spawn((
             Ship {
@@ -1227,8 +1228,8 @@ fn test_save_load_sovereignty_derived_cache_regression() {
                 hull_id: "core".into(),
                 modules: Vec::new(),
                 owner: Owner::Empire(empire),
-                sublight_speed: 0.5,
-                ftl_range: 10.0,
+                sublight_speed: 0.0,
+                ftl_range: 0.0,
                 player_aboard: false,
                 home_port: sol,
                 design_revision: 0,
@@ -1237,6 +1238,7 @@ fn test_save_load_sovereignty_derived_cache_regression() {
             ShipState::Docked { system: sol },
             AtSystem(sol),
             FactionOwner(empire),
+            macrocosmo::ship::CoreShip,
         ))
         .id();
     let _ = core_ship;

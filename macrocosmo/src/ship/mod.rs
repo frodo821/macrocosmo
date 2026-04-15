@@ -12,6 +12,7 @@ pub mod courier_route;
 pub mod pursuit;
 pub mod deliverable_ops;
 pub mod scout;
+pub mod core_deliverable;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -24,6 +25,7 @@ pub use movement::*;
 pub use command::*;
 pub use courier_route::*;
 pub use pursuit::*;
+pub use core_deliverable::{CoreShip, PendingCoreDeploys, CoreDeployTicket, resolve_core_deploys, spawn_core_ship_from_deliverable};
 
 use bevy::prelude::*;
 
@@ -171,6 +173,8 @@ pub struct ShipPlugin;
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<routing::RouteCalculationsPending>();
+        // #296 (S-3): Per-tick queue for Infrastructure Core deploy tickets.
+        app.init_resource::<core_deliverable::PendingCoreDeploys>();
         app.add_systems(Update, (
             sync_ship_module_modifiers,
             sync_ship_hitpoints.after(sync_ship_module_modifiers),
@@ -188,6 +192,13 @@ impl Plugin for ShipPlugin {
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys),
+            // #296 (S-3): Resolve Core deploy tickets into actual CoreShip
+            // entities, grouping same-tick duplicates and tie-breaking via
+            // GameRng. Runs after the deliverable command processor (which
+            // enqueues tickets) and before the command queue, so newly
+            // spawned Cores are visible on the next frame.
+            core_deliverable::resolve_core_deploys
+                .after(deliverable_ops::process_deliverable_commands),
             process_command_queue
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
@@ -385,6 +396,26 @@ pub struct Ship {
     /// 1-ship Fleet (the same invariant is applied for test-only spawns
     /// through `tests/common::spawn_test_ship`).
     pub fleet: Option<Entity>,
+}
+
+impl Ship {
+    /// #296 (S-3): A ship is *immobile* when its design confers neither
+    /// sublight nor FTL propulsion. Infrastructure Core ships are the
+    /// canonical example: their hull has `base_speed = 0` and they carry no
+    /// FTL module, so both stats are zero.
+    ///
+    /// This predicate is consulted by:
+    /// * `start_sublight_travel` — returns `Err` instead of transitioning
+    ///   such a ship into `ShipState::SubLight`.
+    /// * `routing::plan_ftl_route` / `process_command_queue` — skip route
+    ///   planning entirely when the source ship is immobile (otherwise a
+    ///   queued MoveTo would stall forever).
+    /// * UI MoveTo guards in `context_menu` — suppress the Move button.
+    /// * `pursuit::detect_hostiles_system` — early-returns for immobile
+    ///   self-detectors (they can never intercept).
+    pub fn is_immobile(&self) -> bool {
+        self.sublight_speed <= 0.0 && self.ftl_range <= 0.0
+    }
 }
 
 #[derive(Component)]
@@ -789,6 +820,23 @@ mod tests {
         }
     }
 
+    // #296: Result API — immobile ships reject start_sublight_travel.
+    #[test]
+    fn test_start_sublight_travel_rejects_immobile() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let mut ship = make_ship("colony_ship_mk1");
+        ship.sublight_speed = 0.0;
+        ship.ftl_range = 0.0;
+        let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest = Position { x: 1.0, y: 0.0, z: 0.0 };
+        let mut state = ShipState::Docked { system };
+        let result = start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 0);
+        assert_eq!(result, Err("ship is immobile"));
+        // State must remain Docked.
+        assert!(matches!(state, ShipState::Docked { .. }));
+    }
+
     #[test]
     fn start_sublight_sets_correct_arrival_time() {
         let mut world = World::new();
@@ -797,7 +845,8 @@ mod tests {
         let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest = Position { x: 1.0, y: 0.0, z: 0.0 }; // 1 LY away
         let mut state = ShipState::Docked { system };
-        start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100);
+        start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100)
+            .expect("mobile ship should travel");
         match state {
             ShipState::SubLight { arrival_at, departed_at, .. } => {
                 assert_eq!(departed_at, 100);
