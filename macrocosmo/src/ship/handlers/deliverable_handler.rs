@@ -6,10 +6,9 @@
 //! emits [`LoadDeliverableRequested`] / [`DeployDeliverableRequested`]
 //! instead of the legacy loop pulling the queue head.
 //!
-//! Core-branch of `DeployDeliverable` continues to push a
-//! [`CoreDeployTicket`] into [`PendingCoreDeploys`] for Commit 1; Commit 2
-//! switches this to emit a [`CoreDeployRequested`] message and drops the
-//! intermediate resource entirely.
+//! Core-branch of `DeployDeliverable` emits a [`CoreDeployRequested`]
+//! message (Commit 2) — the legacy `PendingCoreDeploys` + `CoreDeployTicket`
+//! intermediate resource is retired.
 
 use bevy::prelude::*;
 
@@ -19,10 +18,9 @@ use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, Str
 use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::command_events::{
-    CommandExecuted, CommandKind, CommandResult, DeployDeliverableRequested,
+    CommandExecuted, CommandKind, CommandResult, CoreDeployRequested, DeployDeliverableRequested,
     LoadDeliverableRequested,
 };
-use crate::ship::core_deliverable::{CoreDeployTicket, PendingCoreDeploys};
 use crate::ship::deliverable_ops::DEPLOY_POSITION_EPSILON;
 use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipModifiers, ShipState};
 use crate::time_system::GameClock;
@@ -221,11 +219,11 @@ pub fn handle_load_deliverable_requested(
 /// Handles `DeployDeliverableRequested`. Preserves both branches:
 /// - Non-Core: spawns the deep-space structure via
 ///   [`spawn_deliverable_entity`] and dual-writes the Deploy event.
-/// - Core (`spawns_as_ship = Some(_)`): pushes a [`CoreDeployTicket`] onto
-///   [`PendingCoreDeploys`]; actual spawn resolution still runs in
-///   `resolve_core_deploys` for Commit 1. Commit 2 of #334 Phase 2 switches
-///   this path to emit a [`CoreDeployRequested`] message and deletes the
-///   intermediate resource.
+/// - Core (`spawns_as_ship = Some(_)`): emits a [`CoreDeployRequested`]
+///   message consumed by `handle_core_deploy_requested` (tie-break + spawn).
+///   The Deploy handler emits a `Deferred` `CommandExecuted` so the
+///   two-phase CommandLog status lands; the Core handler emits the terminal
+///   `Ok` / `Rejected` keyed by the original `command_id`.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_deploy_deliverable_requested(
     mut commands: Commands,
@@ -234,12 +232,12 @@ pub fn handle_deploy_deliverable_requested(
     mut reqs: MessageReader<DeployDeliverableRequested>,
     mut events: MessageWriter<crate::events::GameEvent>,
     mut executed: MessageWriter<CommandExecuted>,
+    mut core_out: MessageWriter<CoreDeployRequested>,
     mut ships: Query<(Entity, &Ship, &ShipState, &Position, &mut CommandQueue, &mut Cargo)>,
     existing_cores: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
     star_systems: Query<(Entity, &Position), (Without<Ship>, With<crate::galaxy::StarSystem>)>,
     player_q: Query<&StationedAt, Without<Ship>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
-    mut pending_cores: ResMut<PendingCoreDeploys>,
     mut fact_sys: FactSysParam,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
@@ -416,26 +414,26 @@ pub fn handle_deploy_deliverable_requested(
                 sys_pos.y,
                 sys_pos.z,
             ];
-            pending_cores.tickets.push(CoreDeployTicket {
+            core_out.write(CoreDeployRequested {
+                command_id: req.command_id,
                 deployer: ship_entity,
                 target_system,
                 deploy_pos,
                 faction_owner,
                 owner: ship.owner,
                 design_id: design_id.clone(),
-                cargo_item_index: req.item_index,
                 submitted_at: clock.elapsed,
             });
             cargo.items.remove(req.item_index);
             info!(
-                "Ship {} enqueued Core deploy in system {:?} (definition={})",
-                ship.name, target_system, def_id
+                "Ship {} emitted CoreDeployRequested for system {:?} (definition={}, cmd {})",
+                ship.name, target_system, def_id, req.command_id.0
             );
-            // Core deploys finalize in `resolve_core_deploys`; this handler
-            // only enqueues the ticket. Mark as Deferred so CommandLog
-            // reflects the in-flight resolution. Commit 2 will flip this to
-            // a terminal result emitted by the (renamed)
-            // `handle_core_deploy_requested`.
+            // `handle_core_deploy_requested` emits the terminal
+            // `CommandExecuted` (Ok / Rejected) this same tick via the
+            // `.after(handle_deploy_deliverable_requested)` edge. We emit
+            // `Deferred` here so CommandLog acquires an intermediate state
+            // — the bridge then overwrites it when the core handler fires.
             executed.write(CommandExecuted {
                 command_id: req.command_id,
                 kind: CommandKind::DeployDeliverable,

@@ -11,20 +11,28 @@
 //!   fleet entities. `faction::system_owner` filters on this marker so that
 //!   transient ships (colony ships, couriers, cruisers) never confer
 //!   sovereignty.
-//! * [`PendingCoreDeploys`] — per-tick queue of deploy tickets produced by
-//!   `deliverable_ops::process_deliverable_commands`. Tickets are resolved in
-//!   [`resolve_core_deploys`] with deterministic tie-breaking when multiple
-//!   deploys target the same system on the same tick.
+//! * [`handle_core_deploy_requested`] — consumes
+//!   [`CoreDeployRequested`](crate::ship::command_events::CoreDeployRequested)
+//!   messages emitted by `handle_deploy_deliverable_requested`. Tickets are
+//!   resolved with deterministic tie-breaking when multiple deploys target
+//!   the same system on the same tick.
 //! * [`spawn_core_ship_from_deliverable`] — helper that wraps the normal
 //!   `spawn_ship` path, additionally attaching [`CoreShip`] and
 //!   [`AtSystem`](crate::galaxy::AtSystem) so sovereignty follows the ship.
+//!
+//! #334 Phase 2 (Commit 2): the intermediate `PendingCoreDeploys` resource +
+//! `CoreDeployTicket` struct were retired in favour of the per-frame
+//! `MessageReader<CoreDeployRequested>` stream. Tie-break + already-has-core
+//! semantics are unchanged.
 
 use bevy::prelude::*;
 
 use crate::components::Position;
 use crate::galaxy::{AtSystem, StarSystem};
+use crate::ship::command_events::{CommandExecuted, CommandKind, CommandResult, CoreDeployRequested};
 use crate::ship::{Owner, Ship, spawn_ship};
 use crate::ship_design::ShipDesignRegistry;
+use crate::time_system::GameClock;
 
 /// Zero-sized marker distinguishing Core ships (infrastructure_core
 /// deployments) from ordinary fleet ships.
@@ -35,46 +43,6 @@ use crate::ship_design::ShipDesignRegistry;
 /// sovereignty is bound to a persistent, non-moving presence.
 #[derive(Component, Default, Clone, Copy, Debug)]
 pub struct CoreShip;
-
-/// One pending Core deploy request, produced when a ship processes a
-/// `DeployDeliverable` command whose target definition carries
-/// `spawns_as_ship = Some(_)`.
-///
-/// The `submitted_at` field is captured from `GameClock.elapsed` at the moment
-/// the ticket was created; `resolve_core_deploys` uses it only for logging.
-#[derive(Debug, Clone)]
-pub struct CoreDeployTicket {
-    /// The ship entity that executed the deploy command.
-    pub deployer: Entity,
-    /// The target star system the Core should be spawned into.
-    pub target_system: Entity,
-    /// The deploy position in galactic coordinates (inner-orbit offset from
-    /// the target system's position).
-    pub deploy_pos: [f64; 3],
-    /// Faction owning the Core ship. `None` for `Owner::Neutral` — such
-    /// deploys self-destruct in `resolve_core_deploys` to preserve the
-    /// invariant that every Core ship has a diplomatic identity.
-    pub faction_owner: Option<Entity>,
-    /// The `Owner` value to plumb through `spawn_ship`.
-    pub owner: Owner,
-    /// The `ShipDesignDefinition.id` used to spawn the Core ship. Must point
-    /// at a design with `sublight_speed = 0` and `ftl_range = 0`.
-    pub design_id: String,
-    /// Index in the deployer's `Cargo.items` of the consumed deliverable.
-    /// Retained for traceability / future logging — cargo removal happens in
-    /// `process_deliverable_commands` when the ticket is pushed, not here.
-    pub cargo_item_index: usize,
-    /// `GameClock.elapsed` hexadies when the ticket was enqueued.
-    pub submitted_at: i64,
-}
-
-/// Per-tick queue of Core deploy tickets. Drained by [`resolve_core_deploys`]
-/// each tick; grouping by `target_system` yields the tie-break set when
-/// multiple deploys land on the same system in the same frame.
-#[derive(Resource, Default, Debug)]
-pub struct PendingCoreDeploys {
-    pub tickets: Vec<CoreDeployTicket>,
-}
 
 /// Spawn a Core ship at `position` in `system`, attaching [`CoreShip`] and
 /// [`AtSystem`] alongside the standard ship components.
@@ -107,24 +75,32 @@ pub fn spawn_core_ship_from_deliverable(
     entity
 }
 
-/// Resolve `PendingCoreDeploys.tickets` into actual Core ships.
+/// Resolve incoming [`CoreDeployRequested`] messages into actual Core ships.
 ///
 /// Ordering:
-/// 1. Group tickets by `target_system`.
-/// 2. If any existing `CoreShip` is already present in that system, DROP all
-///    tickets for that system (the deliverable self-destructs, matching the
-///    "already has a Core" validation in the plan).
-/// 3. If multiple tickets target the same system in the same tick, pick a
-///    winner deterministically via `GameRng` and discard the rest.
-/// 4. Tickets with `Owner::Neutral` / no `faction_owner` are dropped (Core
-///    ships require a diplomatic identity — see [`CoreDeployTicket::owner`]).
-/// 5. Spawn the winner via [`spawn_core_ship_from_deliverable`].
+/// 1. Group requests by `target_system`.
+/// 2. If any existing `CoreShip` is already present in that system, REJECT
+///    all requests for that system (the deliverable self-destructs, matching
+///    the "already has a Core" validation in the plan). A terminal
+///    `CommandExecuted { result: Rejected }` is emitted for each.
+/// 3. If multiple requests target the same system in the same tick, pick a
+///    winner deterministically via `GameRng`; the losers receive
+///    `CommandExecuted { result: Rejected { reason: "lost tie-break" } }`.
+/// 4. Requests with `Owner::Neutral` / no `faction_owner` are rejected (Core
+///    ships require a diplomatic identity).
+/// 5. Spawn the winner via [`spawn_core_ship_from_deliverable`] and emit a
+///    terminal `CommandExecuted { result: Ok }` keyed by `command_id`.
 ///
-/// Runs `.after(process_deliverable_commands)` so tickets enqueued this tick
-/// resolve in the same frame.
-pub fn resolve_core_deploys(
+/// Runs `.after(handle_deploy_deliverable_requested)` so messages enqueued
+/// this tick resolve in the same frame. Replaces the legacy
+/// `resolve_core_deploys` + `PendingCoreDeploys` intermediate resource
+/// (#334 Phase 2 Commit 2).
+#[allow(clippy::too_many_arguments)]
+pub fn handle_core_deploy_requested(
     mut commands: Commands,
-    mut pending: ResMut<PendingCoreDeploys>,
+    clock: Res<GameClock>,
+    mut reqs: MessageReader<CoreDeployRequested>,
+    mut executed: MessageWriter<CommandExecuted>,
     rng: Res<crate::scripting::GameRng>,
     design_registry: Res<ShipDesignRegistry>,
     existing_cores: Query<&AtSystem, With<CoreShip>>,
@@ -133,7 +109,10 @@ pub fn resolve_core_deploys(
     use rand::Rng;
     use std::collections::HashMap;
 
-    if pending.tickets.is_empty() {
+    // Drain incoming messages into an owned vec so we can group / mutate
+    // freely without fighting the reader borrow.
+    let incoming: Vec<CoreDeployRequested> = reqs.read().cloned().collect();
+    if incoming.is_empty() {
         return;
     }
 
@@ -145,45 +124,102 @@ pub fn resolve_core_deploys(
     }
 
     // Group tickets by target_system.
-    let mut by_system: HashMap<Entity, Vec<CoreDeployTicket>> = HashMap::new();
-    for t in pending.tickets.drain(..) {
-        by_system.entry(t.target_system).or_default().push(t);
+    let mut by_system: HashMap<Entity, Vec<CoreDeployRequested>> = HashMap::new();
+    for r in incoming {
+        by_system.entry(r.target_system).or_default().push(r);
     }
 
     for (system, mut group) in by_system.into_iter() {
         // System must still exist.
         if star_systems.get(system).is_err() {
-            for t in &group {
+            for r in &group {
                 warn!(
-                    "Core deploy discarded: target system {:?} no longer exists (ticket from {:?})",
-                    system, t.deployer
+                    "Core deploy discarded: target system {:?} no longer exists (deployer {:?})",
+                    system, r.deployer
                 );
+                executed.write(CommandExecuted {
+                    command_id: r.command_id,
+                    kind: CommandKind::CoreDeploy,
+                    ship: r.deployer,
+                    result: CommandResult::Rejected {
+                        reason: "target system despawned".to_string(),
+                    },
+                    completed_at: clock.elapsed,
+                });
             }
             continue;
         }
         if owned.contains(&system) {
-            for t in &group {
+            for r in &group {
                 info!(
-                    "Core deploy discarded: system {:?} already has a Core ship (ticket from {:?})",
-                    system, t.deployer
+                    "Core deploy discarded: system {:?} already has a Core ship (deployer {:?})",
+                    system, r.deployer
                 );
+                executed.write(CommandExecuted {
+                    command_id: r.command_id,
+                    kind: CommandKind::CoreDeploy,
+                    ship: r.deployer,
+                    result: CommandResult::Rejected {
+                        reason: "system already has Core".to_string(),
+                    },
+                    completed_at: clock.elapsed,
+                });
             }
             continue;
         }
-        // Filter out neutral / owner-less tickets.
-        group.retain(|t| t.faction_owner.is_some() && matches!(t.owner, Owner::Empire(_)));
-        if group.is_empty() {
+        // Separate neutral / owner-less requests from empire-owned ones and
+        // emit terminal rejections for the neutrals (Core ships require a
+        // diplomatic identity — legacy dropped these silently; we now log
+        // Rejected explicitly so CommandLog reflects the outcome).
+        let mut retained: Vec<CoreDeployRequested> = Vec::with_capacity(group.len());
+        for r in group.drain(..) {
+            if r.faction_owner.is_some() && matches!(r.owner, Owner::Empire(_)) {
+                retained.push(r);
+            } else {
+                executed.write(CommandExecuted {
+                    command_id: r.command_id,
+                    kind: CommandKind::CoreDeploy,
+                    ship: r.deployer,
+                    result: CommandResult::Rejected {
+                        reason: "neutral owner".to_string(),
+                    },
+                    completed_at: clock.elapsed,
+                });
+            }
+        }
+        if retained.is_empty() {
             continue;
         }
-        let winner = if group.len() == 1 {
-            group.remove(0)
+        // Tie-break via GameRng when multiple empire-owned requests collide.
+        let winner_idx = if retained.len() == 1 {
+            0
         } else {
             let handle = rng.handle();
             let mut guard = handle.lock().unwrap();
-            let idx = guard.random_range(0..group.len());
+            let idx = guard.random_range(0..retained.len());
             drop(guard);
-            group.swap_remove(idx)
+            idx
         };
+        // Emit Rejected for losers before consuming the winner.
+        for (i, r) in retained.iter().enumerate() {
+            if i == winner_idx {
+                continue;
+            }
+            info!(
+                "Core deploy lost tie-break in system {:?} (deployer {:?})",
+                system, r.deployer
+            );
+            executed.write(CommandExecuted {
+                command_id: r.command_id,
+                kind: CommandKind::CoreDeploy,
+                ship: r.deployer,
+                result: CommandResult::Rejected {
+                    reason: "lost tie-break".to_string(),
+                },
+                completed_at: clock.elapsed,
+            });
+        }
+        let winner = retained.swap_remove(winner_idx);
         let name = format!(
             "Infrastructure Core ({:?})",
             winner.faction_owner.unwrap_or(Entity::PLACEHOLDER)
@@ -202,6 +238,13 @@ pub fn resolve_core_deploys(
             "Spawned Core ship {:?} in system {:?} (deployer {:?}, submitted at {} hd)",
             entity, system, winner.deployer, winner.submitted_at
         );
+        executed.write(CommandExecuted {
+            command_id: winner.command_id,
+            kind: CommandKind::CoreDeploy,
+            ship: winner.deployer,
+            result: CommandResult::Ok,
+            completed_at: clock.elapsed,
+        });
     }
 }
 
