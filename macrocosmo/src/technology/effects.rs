@@ -135,12 +135,13 @@ pub fn build_tech_effects_preview(
                 continue;
             }
         };
-        // Drain side-effect tables that the callback may have populated, so
-        // they don't leak into real research later. (Real research re-runs
-        // the callback through `apply_tech_effects`, which both collects and
-        // applies; the preview pass must leave game state untouched.)
-        let _ = drain_pending_global_mods(lua);
-        let _ = crate::scripting::lifecycle::drain_pending_flags(lua);
+        // #332-B3: the legacy `_pending_*` queues used to be populated by
+        // the deprecated global `modify_global(...)` / `set_flag(name)`
+        // helpers. The tech `on_researched` callback tree now only emits
+        // `EffectScope` descriptors (preview-safe by construction — they
+        // are collected, not applied), so no side-effect drain is needed.
+        // The global helpers are removed in B4; leaving the drain here
+        // would be defensive noise that mistracks the invariant.
 
         if !effects.is_empty() {
             preview.effects.insert(tech_id, effects);
@@ -153,51 +154,11 @@ pub fn build_tech_effects_preview(
     );
 }
 
-/// Drain `_pending_global_mods` from Lua and return (param_name, value) pairs.
-pub fn drain_pending_global_mods(lua: &Lua) -> Vec<(String, f64)> {
-    let Ok(mods) = lua.globals().get::<mlua::Table>("_pending_global_mods") else {
-        return Vec::new();
-    };
-    let Ok(len) = mods.len() else {
-        return Vec::new();
-    };
-    if len == 0 {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    for i in 1..=len {
-        if let Ok(entry) = mods.get::<mlua::Table>(i) {
-            if let (Ok(param), Ok(value)) = (
-                entry.get::<String>("param"),
-                entry.get::<f64>("value"),
-            ) {
-                result.push((param, value));
-            }
-        }
-    }
-
-    // Clear the table
-    if let Ok(new_table) = lua.create_table() {
-        let _ = lua.globals().set("_pending_global_mods", new_table);
-    }
-
-    result
-}
-
-/// Apply a global param modification to GlobalParams.
-fn apply_global_mod(params: &mut GlobalParams, param_name: &str, value: f64) {
-    match param_name {
-        "sublight_speed_bonus" => params.sublight_speed_bonus += value,
-        "ftl_speed_multiplier" => params.ftl_speed_multiplier += value,
-        "ftl_range_bonus" => params.ftl_range_bonus += value,
-        "survey_range_bonus" => params.survey_range_bonus += value,
-        "build_speed_multiplier" => params.build_speed_multiplier *= 1.0 + value,
-        _ => {
-            warn!("Unknown global param: {param_name}");
-        }
-    }
-}
+// #332-B4: removed `drain_pending_global_mods` and `apply_global_mod`.
+// The legacy `modify_global(param, value)` global helper that
+// populated `_pending_global_mods` is retired in favour of the
+// gamestate setter path and `EffectScope` descriptors; there are no
+// remaining production callers.
 
 /// System that executes `on_researched` Lua callbacks for recently completed techs.
 ///
@@ -327,18 +288,11 @@ pub fn apply_tech_effects(
         // Log for UI display
         effects_log.effects.insert(tech_id.clone(), effects);
 
-        // Drain any pending global mods that the callback may have set via modify_global()
-        let pending_mods = drain_pending_global_mods(lua);
-        for (param, value) in pending_mods {
-            apply_global_mod(&mut global_params, &param, value);
-        }
-
-        // Drain any pending flags set via set_flag()
-        let pending_flags = crate::scripting::lifecycle::drain_pending_flags(lua);
-        for flag in &pending_flags {
-            game_flags.set(flag);
-            scoped_flags.set(flag);
-        }
+        // #332-B3: dropped the `_pending_global_mods` / `_pending_flags`
+        // drain. The legacy global `modify_global` / `set_flag` helpers
+        // have no production Lua callers (tech callbacks use
+        // `EffectScope` descriptors exclusively, which are already
+        // applied above); B4 removes the globals outright.
     }
 
     if !scratch_pending.entries.is_empty() {
@@ -741,50 +695,11 @@ mod tests {
     use super::*;
     use crate::scripting::ScriptEngine;
 
-    #[test]
-    fn test_drain_pending_global_mods() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(
-            r#"
-            modify_global("sublight_speed_bonus", 0.5)
-            modify_global("ftl_range_bonus", 2.0)
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let mods = drain_pending_global_mods(lua);
-        assert_eq!(mods.len(), 2);
-        assert_eq!(mods[0].0, "sublight_speed_bonus");
-        assert!((mods[0].1 - 0.5).abs() < 1e-10);
-        assert_eq!(mods[1].0, "ftl_range_bonus");
-        assert!((mods[1].1 - 2.0).abs() < 1e-10);
-
-        // After draining, should be empty
-        let mods_after = drain_pending_global_mods(lua);
-        assert!(mods_after.is_empty());
-    }
-
-    #[test]
-    fn test_drain_pending_global_mods_empty() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        let mods = drain_pending_global_mods(lua);
-        assert!(mods.is_empty());
-    }
-
-    #[test]
-    fn test_apply_global_mod() {
-        let mut params = GlobalParams::default();
-        apply_global_mod(&mut params, "sublight_speed_bonus", 0.5);
-        assert!((params.sublight_speed_bonus - 0.5).abs() < 1e-10);
-
-        apply_global_mod(&mut params, "ftl_range_bonus", 3.0);
-        assert!((params.ftl_range_bonus - 3.0).abs() < 1e-10);
-    }
+    // #332-B4: removed `test_drain_pending_global_mods` /
+    // `test_drain_pending_global_mods_empty` / `test_apply_global_mod`
+    // — the helpers they exercised (`drain_pending_global_mods`,
+    // `apply_global_mod`) are gone along with the `modify_global`
+    // global that populated the queue.
 
     #[test]
     fn test_find_on_researched() {
@@ -1104,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_does_not_leak_pending_global_mods() {
+    fn preview_captures_scope_effect_without_applying() {
         use crate::technology::tree::{TechCost, Technology};
         let tree = crate::technology::TechTree::from_vec(vec![Technology {
             id: TechId("speedy".into()),
@@ -1116,9 +1031,11 @@ mod tests {
             dangerous: false,
         }]);
 
-        // The callback uses both scope methods (which the preview *should*
-        // capture) and modify_global / set_flag (which the preview must
-        // drain so they don't leak into the next real research event).
+        // The callback uses scope methods (which the preview *should*
+        // capture). #332-B3 removed the preview drain of the legacy
+        // `_pending_*` queues because `EffectScope` is the sole callback
+        // path; the `modify_global` / `set_flag` globals are retired in
+        // B4.
         let engine = ScriptEngine::new().unwrap();
         engine
             .lua()
@@ -1129,8 +1046,6 @@ mod tests {
                 name = "Speedy",
                 on_researched = function(scope)
                     scope:push_modifier("ship.sublight_speed", { add = 0.5, description = "Speed +0.5" })
-                    modify_global("sublight_speed_bonus", 0.5)
-                    set_flag("speedy_unlocked")
                 end,
             }
             "#,
@@ -1145,15 +1060,7 @@ mod tests {
         app.add_systems(Update, build_tech_effects_preview);
         app.update();
 
-        // Side-effect tables must be empty after the preview pass.
-        let engine = app.world().resource::<ScriptEngine>();
-        let lua = engine.lua();
-        let pending_mods: mlua::Table = lua.globals().get("_pending_global_mods").unwrap();
-        assert_eq!(pending_mods.len().unwrap(), 0);
-        let pending_flags: mlua::Table = lua.globals().get("_pending_flags").unwrap();
-        assert_eq!(pending_flags.len().unwrap(), 0);
-
-        // But the preview captured the scope effect.
+        // The preview captured the scope effect.
         let preview = app.world().resource::<TechEffectsPreview>();
         let effects = preview.for_tech(&TechId("speedy".into()));
         assert_eq!(effects.len(), 1);

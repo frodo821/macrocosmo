@@ -185,10 +185,26 @@ Phase A は event callback 経路 (`on(...)` bus handler / `on_trigger` / fire_c
 - `dispatch_event_handlers` → `GamestateMode::ReadWrite` (setter 経由で World を live mutate)
 - 旧 `build_gamestate_table` / `attach_gamestate` 関連の `gc_collect()` (#320) は両 path から削除済、`stress_lua_scheduling` で 1000 tick 経過時の `final_memory` は ~95KB (ceiling 32MiB に対して 0.3%)
 
-### Phase B 以降で live 化する hook (#332 残タスク)
+### 実装状態 (Phase B、#332 で land)
 
-- `on_game_start` / `on_game_load`: 初期データ seeding で World を直接いじる用途
-- **effect declaration が目的の hook** (tech `on_researched` / faction action callbacks) は scope 外 context、引き続き `EffectScope` + `_pending_*` queue 経由
+Phase B で lifecycle hook 拡張 + legacy 廃止が完了:
+
+- **B1**: 旧 `gamestate_view.rs` (snapshot-per-event builder) を削除。Phase A land 時点で production caller は無く、gamestate_scope 単体のみに一本化。
+- **B2**: `run_lifecycle_hooks` を exclusive `&mut World` system に昇格。`on_game_start` / `on_game_load` は `run_on_*_with_gamestate(lua, world)` 経由で live `ReadWrite` gamestate を受け取る。lifecycle スクリプトは `gs:set_flag(scope, id, name, value)` / `gs:push_empire_modifier(...)` で直接 World 変更可能。`on_scripts_loaded` は静的検証 hook のため no-arg のまま (plan §5.3)。
+- **B3**: tech effect / faction hook / lifecycle の `_pending_flags` / `_pending_global_mods` drain を撤去。tech `on_researched` / faction action callback は `EffectScope` descriptor のみを emit するようになっている (production Lua 全 scan 済、legacy global helper への呼出箇所なし)。
+- **B4**: global `set_flag(name)` / `modify_global(param, v)` helper を削除。`_pending_flags` / `_pending_global_mods` table seeding、`drain_pending_flags` / `drain_pending_global_mods` / `apply_global_mod` pub helper、及び関連 unit test (7 本) も撤去。`check_flag` + `_flag_store` は plan scope 外として保持。
+- 既存 Lua script (`scripts/**/*.lua`) で removed global へ直呼び箇所ゼロ、fleet-level 以外の tech callback も全 `scope:*` 経由。migration は Rust 側の unit test 2 本 (preview leak test + check_flag test) のみ。
+
+### mutation path (Phase B 後の正準)
+
+| context | 方式 | 備考 |
+|---|---|---|
+| event callback (`on(...)` / `on_trigger`) | `ctx.gamestate:push_*_modifier(...)` / `gs:set_flag(...)` | `GamestateMode::ReadWrite`、live within tick |
+| fire_condition (`Periodic` / `MTTH`) | `ctx.gamestate:*` (read only) | `GamestateMode::ReadOnly`、setter 非 expose |
+| `on_game_start` / `on_game_load` | `evt.gamestate:*` (read + write) | Phase B2 で live 化、exclusive system |
+| `on_scripts_loaded` | `()` 引数 | 静的検証 hook、gamestate 非注入 |
+| tech `on_researched` | `scope:push_modifier(...)` / `scope:set_flag(...)` | `EffectScope` descriptor、`collect_effects` → `apply_effect` |
+| faction action callback (`on_accepted`) | 同上 | 同上 |
 
 ### 今後の拡張
 
@@ -198,9 +214,11 @@ Phase A は event callback 経路 (`on(...)` bus handler / `on_trigger` / fire_c
 ### Visibility contract (invariant)
 
 - **event callback 内 mutation は live within tick**: 同 callback 内で setter 呼出後に read 呼出すると即反映 (scope 閉路内で `&mut World` を同期 borrow)
-- **mutation 路線の一元化**: 新規 event callback では `ctx.gamestate:push_*_modifier(...)` / `:set_flag(...)` を使う。旧 global `set_flag` / `modify_global` は **廃止予定** (Phase A では残置、Phase B で `EffectScope` 向け以外を削除)
+- **lifecycle hook mutation も live within hook**: handler N の mutation は handler N+1 の read に反映 (`run_handlers_with_gamestate` は handler ごとに新 scope を開くため、borrow は最小で解放される)
+- **mutation 路線の一元化**: 新規 event / lifecycle callback は必ず `ctx.gamestate:push_*_modifier(...)` / `:set_flag(...)` を使う。旧 global `set_flag(name)` / `modify_global(param, v)` は Phase B4 で削除済
 - **fire_condition は読み取り専用**: 副作用を持つと評価順序依存で debugging 困難 → `GamestateMode::ReadOnly` で setter を expose しない
 - **reentrancy 保護**: scope closure body は Lua 不接触の pure Rust。write helper (`apply::*`) は `&mut World` のみ受け、`mlua::Value` / `Function` / `RegistryKey` を persist しない (`memory/feedback_rust_no_lua_callback.md`)
+- **effect declaration は EffectScope 経由**: tech / faction callback は descriptor を emit (collect → apply の 2 段構造)、live mutation は呼ばない。理由は preview (`build_tech_effects_preview`) との共通化: preview は副作用を起こせないため
 
 memory: `project_lua_gamestate_api.md`、issue: **#332**
 

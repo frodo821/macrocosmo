@@ -150,43 +150,24 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     globals.set("define_balance", define_balance)?;
 
     // --- #45: Global param / flag Lua bindings ---
-
-    // Pending modifications table: scripts call modify_global/set_flag/check_flag
-    // and these are buffered for the Rust side to apply.
-    let pending_mods = lua.create_table()?;
-    globals.set("_pending_global_mods", pending_mods)?;
-
-    let pending_flags = lua.create_table()?;
-    globals.set("_pending_flags", pending_flags)?;
+    //
+    // #332-B4: retired the `set_flag(name)` / `modify_global(param, v)`
+    // global helpers and their backing `_pending_flags` /
+    // `_pending_global_mods` queues. Event / lifecycle callbacks mutate
+    // world state through the `gs:*` setter surface
+    // (`gs:set_flag(scope_kind, id, name, value)` /
+    // `gs:push_empire_modifier(...)`); tech and faction callbacks use
+    // `EffectScope` descriptors. The `check_flag` global is retained
+    // as a convenience read-path for ad-hoc scripts, but its backing
+    // `_flag_store` table is kept as a stub for forward-compat; it is
+    // populated exclusively by this local `check_flag` path now, not
+    // by the removed `set_flag` helper.
 
     let flag_store = lua.create_table()?;
     globals.set("_flag_store", flag_store)?;
 
-    // modify_global(param_name, value) -- buffers a global param modification
-    let modify_global = lua.create_function(|lua, (param_name, value): (String, f64)| {
-        let mods: mlua::Table = lua.globals().get("_pending_global_mods")?;
-        let len = mods.len()?;
-        let entry = lua.create_table()?;
-        entry.set("param", param_name)?;
-        entry.set("value", value)?;
-        mods.set(len + 1, entry)?;
-        Ok(())
-    })?;
-    globals.set("modify_global", modify_global)?;
-
-    // set_flag(name) -- sets a game flag
-    let set_flag = lua.create_function(|lua, name: String| {
-        let flags: mlua::Table = lua.globals().get("_pending_flags")?;
-        let len = flags.len()?;
-        flags.set(len + 1, name.clone())?;
-        // Also store in _flag_store so check_flag works immediately
-        let store: mlua::Table = lua.globals().get("_flag_store")?;
-        store.set(name, true)?;
-        Ok(())
-    })?;
-    globals.set("set_flag", set_flag)?;
-
-    // check_flag(name) -- returns true if the flag is set
+    // check_flag(name) -- returns true if the flag was stored in
+    // `_flag_store` (e.g. via a test fixture priming it directly).
     let check_flag = lua.create_function(|lua, name: String| {
         let store: mlua::Table = lua.globals().get("_flag_store")?;
         let result: bool = store.get::<Option<bool>>(name)?.unwrap_or(false);
