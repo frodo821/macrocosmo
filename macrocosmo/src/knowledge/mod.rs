@@ -363,6 +363,7 @@ pub fn build_system_snapshot(
     hostile_map: &HashMap<Entity, f64>,
     building_registry: &crate::colony::BuildingRegistry,
 ) -> SystemSnapshot {
+    crate::prof_span!("build_system_snapshot");
     let is_colonized = colonies
         .iter()
         .any(|(_, c, _, _, _, _, _)| c.system(planets) == Some(entity));
@@ -543,6 +544,7 @@ pub fn propagate_knowledge(
     ships: Query<(Entity, &Ship, &ShipState, &crate::ship::ShipHitpoints)>,
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
+    crate::prof_span!("propagate_knowledge");
     let Ok(mut store) = empire_q.single_mut() else {
         return;
     };

@@ -905,6 +905,7 @@ pub fn relay_knowledge_propagate_system(
     faction_relations: Res<crate::faction::FactionRelations>,
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
+    crate::prof_span!("relay_knowledge_propagate_system");
     // Build region blockers (pairs segment check); only regions carrying the
     // `blocks_ftl_comm` capability matter here.
     let comm_blockers: Vec<crate::galaxy::RegionBlockSnapshot> = ftl_comm_blocking_regions

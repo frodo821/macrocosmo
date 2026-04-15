@@ -200,6 +200,7 @@ fn compute_ui_state(
     empire_q: Query<(&KnowledgeStore, &AuthorityParams), With<PlayerEmpire>>,
     planets: Query<&Planet>,
 ) {
+    crate::prof_span!("compute_ui_state");
     let player_info = player_q
         .iter()
         .next()
@@ -323,6 +324,7 @@ fn draw_top_bar_system(
     mut observer_view: ResMut<crate::observer::ObserverView>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
 ) {
+    crate::prof_span!("draw_top_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -518,6 +520,7 @@ fn draw_outline_and_tooltips_system(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
 ) {
+    crate::prof_span!("draw_outline_and_tooltips");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -605,6 +608,7 @@ fn draw_main_panels_system(
     mut deliverables_res: MainPanelDeliverableRes,
     mut game_events: MessageWriter<GameEvent>,
 ) {
+    crate::prof_span!("draw_main_panels");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -1099,6 +1103,7 @@ fn draw_overlays_system(
     effects_preview: Res<crate::technology::TechEffectsPreview>,
     unlock_index: Res<crate::technology::TechUnlockIndex>,
 ) {
+    crate::prof_span!("draw_overlays");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -1188,6 +1193,7 @@ fn draw_bottom_bar_system(
     clock: Res<GameClock>,
     empire_q: Query<&CommandLog, With<PlayerEmpire>>,
 ) {
+    crate::prof_span!("draw_bottom_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };

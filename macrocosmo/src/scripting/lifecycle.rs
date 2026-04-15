@@ -70,6 +70,7 @@ pub fn run_lifecycle_hooks(
     engine: Res<ScriptEngine>,
     mut empire_query: Query<(&mut GameFlags, &mut ScopedFlags), With<PlayerEmpire>>,
 ) {
+    crate::prof_span!("run_lifecycle_hooks");
     let lua = engine.lua();
 
     // Run on_scripts_loaded hooks
@@ -119,6 +120,7 @@ pub fn drain_script_events(
     if len == 0 {
         return;
     }
+    crate::prof_span!("drain_script_events");
 
     for i in 1..=len {
         let Ok(entry) = events.get::<mlua::Table>(i) else {

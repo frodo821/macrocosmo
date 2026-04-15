@@ -18,6 +18,7 @@ mod notifications;
 mod observer;
 mod physics;
 mod player;
+mod profiling;
 mod scripting;
 mod setup;
 mod species;

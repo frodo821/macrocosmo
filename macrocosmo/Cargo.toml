@@ -14,6 +14,20 @@ serde.workspace = true
 postcard.workspace = true
 macrocosmo-ai = { path = "../macrocosmo-ai", features = ["playthrough"] }
 
+[features]
+# Default build carries no profiling overhead.
+default = []
+
+# #284: development-only profiling feature. Enables:
+#   - `bevy/trace_tracy` — Tracy profiler integration (CPU spans + GPU
+#     `RenderQueue` row). The `prof_span!` macro expands to
+#     `info_span!(...).entered()` only when this feature is on; otherwise
+#     it is a no-op so default builds carry zero overhead.
+#   - `bevy/debug` — human-readable system names in Tracy for Bevy's
+#     built-in schedules (`Update`, `EguiPrimaryContextPass`, etc.).
+# See `docs/profiling.md` for the workflow.
+profile = ["bevy/trace_tracy", "bevy/debug"]
+
 [dev-dependencies]
 # #173: activate `mock` + `playthrough` features on the AI crate for
 # integration tests only. The production binary never sees the `mock`
