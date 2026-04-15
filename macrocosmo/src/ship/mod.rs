@@ -19,6 +19,8 @@ pub mod command_events;
 pub mod dispatcher;
 // #334 Phase 1: per-variant handlers (MoveTo + MoveToCoordinates this phase).
 pub mod handlers;
+// #334 Phase 1: CommandExecuted → CommandLog / gamestate bridge systems.
+pub mod bridges;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -275,6 +277,19 @@ impl Plugin for ShipPlugin {
                 .after(process_ftl_travel)
                 .after(process_surveys)
                 .before(process_command_queue)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        // #334 Phase 1: CommandExecuted → CommandLog bridge. Runs after the
+        // route poller (which emits terminal CommandExecuted for deferred
+        // MoveTo) and after process_command_queue so synchronous handler
+        // emissions are visible in the same frame.
+        app.add_systems(
+            Update,
+            bridges::bridge_command_executed_to_log
+                .after(routing::poll_pending_routes)
+                .after(handlers::handle_move_requested)
+                .after(handlers::handle_move_to_coordinates_requested)
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );

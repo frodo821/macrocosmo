@@ -25,8 +25,10 @@ use super::command_events::{
 };
 use super::routing::PendingRoute;
 use super::{CommandQueue, QueuedCommand, Ship, ShipState};
+use crate::communication::{CommandLog, CommandLogEntry};
 use crate::components::Position;
 use crate::galaxy::StarSystem;
+use crate::player::PlayerEmpire;
 use crate::time_system::GameClock;
 
 /// Lightweight dispatcher: validates + emits `CommandRequested` messages.
@@ -51,7 +53,13 @@ pub fn dispatch_queued_commands(
     // Typed message writers — one per Phase-1 request variant.
     mut move_req: MessageWriter<MoveRequested>,
     mut move_xy_req: MessageWriter<MoveToCoordinatesRequested>,
+    // #334 Phase 1: append a `Dispatched` entry to the player empire's
+    // CommandLog on each successful validation. The bridge system
+    // `bridge_command_executed_to_log` finalizes via `CommandId` match.
+    // Optional — observer-mode apps without a `PlayerEmpire` skip logging.
+    mut command_log_q: Query<&mut CommandLog, With<PlayerEmpire>>,
 ) {
+    let mut command_log = command_log_q.single_mut().ok();
     for (ship_entity, ship, state, ship_pos, mut queue) in ships.iter_mut() {
         // Only ships in a state that can accept a new command get dispatched.
         // The legacy code consumed queue items for ships that were Docked or
@@ -113,6 +121,13 @@ pub fn dispatch_queued_commands(
                     target,
                     issued_at: clock.elapsed,
                 });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → MoveTo {:?}", ship.name, target),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
                 info!(
                     "dispatch: ship {} MoveRequested -> {:?} (cmd {})",
                     ship.name, target, command_id.0
@@ -139,6 +154,16 @@ pub fn dispatch_queued_commands(
                     target: target_arr,
                     issued_at: clock.elapsed,
                 });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!(
+                            "{} → MoveToCoordinates ({:.2},{:.2},{:.2})",
+                            ship.name, target_arr[0], target_arr[1], target_arr[2]
+                        ),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
                 info!(
                     "dispatch: ship {} MoveToCoordinatesRequested -> ({:.2},{:.2},{:.2}) (cmd {})",
                     ship.name,

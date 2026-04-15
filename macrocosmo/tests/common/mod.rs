@@ -476,6 +476,16 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
+    // #334 Phase 1: CommandExecuted → CommandLog bridge.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::bridges::bridge_command_executed_to_log
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested)
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
     app.add_systems(
         Update,
         (
@@ -698,6 +708,14 @@ pub fn full_test_app() -> App {
         )
             .chain()
             .after(process_command_queue),
+    );
+    // #334 Phase 1: CommandExecuted → CommandLog bridge.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::bridges::bridge_command_executed_to_log
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested),
     );
 
     // --- Colony systems (from ColonyPlugin) ---

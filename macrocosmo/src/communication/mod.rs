@@ -294,11 +294,81 @@ pub struct CommandLog {
     pub entries: Vec<CommandLogEntry>,
 }
 
+/// Terminal disposition of a locally-dispatched command (#334). The legacy
+/// `arrived` boolean is preserved for remote (`PendingCommand`) entries;
+/// `status` carries richer information for dispatcher/handler-driven
+/// commands. Defaults to `Pending` so save fixtures that predate this
+/// field decode unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CommandLogStatus {
+    /// Legacy remote command awaiting light-speed arrival (kept as the
+    /// default so existing entries continue to display unchanged).
+    #[default]
+    Pending,
+    /// Dispatcher emitted a `CommandRequested`; handler has not yet
+    /// produced a terminal `CommandExecuted`.
+    Dispatched,
+    /// Handler emitted `CommandExecuted { result: Ok }`.
+    Executed,
+    /// Handler (or dispatcher-side validation) rejected the command.
+    Rejected { reason: String },
+    /// Handler emitted `CommandExecuted { result: Deferred }` — an async
+    /// follow-up will finalize via another `CommandExecuted`.
+    Deferred,
+}
+
 pub struct CommandLogEntry {
     pub description: String,
     pub sent_at: i64,
     pub arrives_at: i64,
+    /// Legacy UI flag — flipped to `true` when a remote `PendingCommand`
+    /// arrives at its target. For dispatcher/handler-driven commands
+    /// (#334) this is also set to `true` whenever `status` becomes
+    /// `Executed` / `Rejected` so bottom-bar rendering stays consistent
+    /// with the pre-refactor UX.
     pub arrived: bool,
+    /// #334: Stable identifier for dispatcher-allocated commands. `None`
+    /// for legacy remote-pending entries (pre-dispatcher code path).
+    pub command_id: Option<crate::ship::command_events::CommandId>,
+    /// #334: Per-entry lifecycle state.
+    pub status: CommandLogStatus,
+    /// #334: Timestamp the handler emitted its terminal `CommandExecuted`.
+    /// `None` for entries still in flight / legacy remote entries.
+    pub executed_at: Option<i64>,
+}
+
+impl CommandLogEntry {
+    /// Convenience constructor for legacy remote-pending entries.
+    pub fn new_pending(description: String, sent_at: i64, arrives_at: i64) -> Self {
+        Self {
+            description,
+            sent_at,
+            arrives_at,
+            arrived: false,
+            command_id: None,
+            status: CommandLogStatus::Pending,
+            executed_at: None,
+        }
+    }
+
+    /// #334: Dispatcher-side constructor (local command, zero light-speed
+    /// delay). `arrives_at == sent_at` so the UI "eta" renders as arrived
+    /// immediately while `status` tracks the true lifecycle.
+    pub fn new_dispatched(
+        description: String,
+        sent_at: i64,
+        command_id: crate::ship::command_events::CommandId,
+    ) -> Self {
+        Self {
+            description,
+            sent_at,
+            arrives_at: sent_at,
+            arrived: false,
+            command_id: Some(command_id),
+            status: CommandLogStatus::Dispatched,
+            executed_at: None,
+        }
+    }
 }
 
 pub fn dispatch_pending_colony_commands(
@@ -400,12 +470,11 @@ pub fn send_remote_command(
     let delay = physics::light_delay_hexadies(distance);
     let arrives_at = sent_at + delay;
 
-    command_log.entries.push(CommandLogEntry {
-        description: command.describe(),
+    command_log.entries.push(CommandLogEntry::new_pending(
+        command.describe(),
         sent_at,
         arrives_at,
-        arrived: false,
-    });
+    ));
 
     commands.spawn(PendingCommand {
         target_system,

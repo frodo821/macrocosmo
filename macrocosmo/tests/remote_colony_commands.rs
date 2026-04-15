@@ -73,12 +73,11 @@ fn spawn_pending_remote_command(
     let empire = empire_entity(app.world_mut());
     if let Some(mut log) = app.world_mut().get_mut::<CommandLog>(empire) {
         log.entries
-            .push(macrocosmo::communication::CommandLogEntry {
-                description: "test".to_string(),
+            .push(macrocosmo::communication::CommandLogEntry::new_pending(
+                "test".to_string(),
                 sent_at,
                 arrives_at,
-                arrived: false,
-            });
+            ));
     }
 }
 
