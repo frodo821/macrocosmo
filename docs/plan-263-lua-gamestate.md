@@ -3,9 +3,9 @@
 **Status**: 実装完了 (PR #294 merged、**設計 pivot あり**)
 **Original plan date**: 2026-04-14
 
-> **⚠ 2026-04-15 更新: 本 issue の snapshot-per-event 実装は `#332` で pivot 予定**
+> **⚠ 2026-04-15 更新: 本 issue の snapshot-per-event 実装は `#332` で pivot 済**
 >
-> Option B (UserData を廃止して `Lua::scope` + `create_function` のみで gamestate を構築) が mlua 0.11 で完全 safe に実現可能と判明。本 issue の snapshot-per-event は #332 に置換され、関連する #320 (`gc_collect` leak fix) と #328 (per-tick cache、close 済) は obsolete に。
+> Option B (UserData を廃止して `Lua::scope` + `create_function` / `create_function_mut` のみで gamestate を構築) が mlua 0.11 で完全 safe に実現可能と判明、#332 で実装完了。本 issue の snapshot-per-event は `macrocosmo/src/scripting/gamestate_scope.rs` に置換され、関連する #320 (`gc_collect` leak fix) と #328 (per-tick cache、close 済) は obsolete に。live read + live write が両方実現され、従来の "mutation は次 tick で反映" という visibility contract は "live within tick" に更新。
 >
 > 詳細は `docs/architecture-decisions.md` §10 と **#332** を参照。
 

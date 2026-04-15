@@ -3,9 +3,9 @@
 **Status**: 実装完了 (PR #327 merged 2026-04-15)
 **Original plan date**: 2026-04-14
 
-> **⚠ 2026-04-15 更新: 本 fix は `#332` で obsolete 予定**
+> **⚠ 2026-04-15 更新: 本 fix は `#332` で obsolete、撤回済**
 >
-> snapshot-per-event (#263) が leak 源だったが、同日に Option B (UserData 廃止の scope closure 路線) へ pivot 決定。#332 実装後は snapshot build 自体が消え、本 PR で挿入した `lua.gc_collect()` も撤回される。本 fix は release blocker 対応として妥当だったが、長期的な解は #332。
+> snapshot-per-event (#263) が leak 源だったが、同日に Option B (UserData 廃止の scope closure 路線) へ pivot 決定し、#332 で実装完了。`build_gamestate_table` / `attach_gamestate` の snapshot build は Option B ではそもそも発生せず、`lua.gc_collect()` は `evaluate_fire_conditions` / `dispatch_event_handlers` 両方から削除済。`stress_lua_scheduling` は 1000 tick 経過時の `final_memory` が ~95KB (32MiB ceiling に対して 0.3%) で pass、`gc_collect` なしでも leak しないことを実測で確認。
 >
 > 詳細は `docs/architecture-decisions.md` §10 と **#332** を参照。
 

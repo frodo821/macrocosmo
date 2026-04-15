@@ -133,7 +133,7 @@
 
 ## 10. Event / Lua gamestate (#263 → #332 pivot)
 
-**現役設計: pure scoped closures (Option B)、#332 で実装予定**。旧 snapshot + cache 路線 (#263 初期実装 / #320 leak fix / #328 cache) は本 pivot で obsolete。
+**現役設計: pure scoped closures (Option B)、#332 で実装済**。旧 snapshot + cache 路線 (#263 初期実装 / #320 leak fix / #328 cache) は本 pivot で obsolete。実装は `macrocosmo/src/scripting/gamestate_scope.rs`、`views` / `apply` submodule で read / write を分離。
 
 ### 最終決定 (2026-04-15)
 
@@ -177,11 +177,30 @@ Option B で一気に解決:
 - **setter の namespace hygiene**: grouped method 形 (`ctx.gamestate:push_empire_modifier(...)`) で global 関数爆発を回避
 - **reentrancy**: `_pending_script_events` queue 経由の event dispatch 規律で `RefCell` borrow 衝突を構造的に防ぐ
 
+### 実装状態 (Phase A、#332 で land)
+
+Phase A は event callback 経路 (`on(...)` bus handler / `on_trigger` / fire_condition) を live 化:
+
+- `evaluate_fire_conditions` → `GamestateMode::ReadOnly` (setter は expose されない、spec 上 pure)
+- `dispatch_event_handlers` → `GamestateMode::ReadWrite` (setter 経由で World を live mutate)
+- 旧 `build_gamestate_table` / `attach_gamestate` 関連の `gc_collect()` (#320) は両 path から削除済、`stress_lua_scheduling` で 1000 tick 経過時の `final_memory` は ~95KB (ceiling 32MiB に対して 0.3%)
+
+### Phase B 以降で live 化する hook (#332 残タスク)
+
+- `on_game_start` / `on_game_load`: 初期データ seeding で World を直接いじる用途
+- **effect declaration が目的の hook** (tech `on_researched` / faction action callbacks) は scope 外 context、引き続き `EffectScope` + `_pending_*` queue 経由
+
 ### 今後の拡張
 
-- **lifecycle hook / tech effect / faction callback**: 引き続き `EffectScope` + `_pending_*` queue 経由 (scope 外 context、declarative effect 宣言のため)
 - **光速遅延レンズ (`node:perspective(viewer)`)**: #215 PerceivedInfo を Lua に expose、ground truth との並走。Phase 2 で別 issue
 - **unsafe raw pointer (app_data) 路線** は Option B が成立した時点で却下、Lua capture 耐性 + unsafe 審査コストのトレードオフで Option B が優位
+
+### Visibility contract (invariant)
+
+- **event callback 内 mutation は live within tick**: 同 callback 内で setter 呼出後に read 呼出すると即反映 (scope 閉路内で `&mut World` を同期 borrow)
+- **mutation 路線の一元化**: 新規 event callback では `ctx.gamestate:push_*_modifier(...)` / `:set_flag(...)` を使う。旧 global `set_flag` / `modify_global` は **廃止予定** (Phase A では残置、Phase B で `EffectScope` 向け以外を削除)
+- **fire_condition は読み取り専用**: 副作用を持つと評価順序依存で debugging 困難 → `GamestateMode::ReadOnly` で setter を expose しない
+- **reentrancy 保護**: scope closure body は Lua 不接触の pure Rust。write helper (`apply::*`) は `&mut World` のみ受け、`mlua::Value` / `Function` / `RegistryKey` を persist しない (`memory/feedback_rust_no_lua_callback.md`)
 
 memory: `project_lua_gamestate_api.md`、issue: **#332**
 
