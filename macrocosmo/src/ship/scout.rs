@@ -4,9 +4,9 @@
 //!
 //! 1. [`QueuedCommand::Scout`](super::QueuedCommand::Scout) is queued on a
 //!    ship that has a Scout module equipped and FTL capability.
-//! 2. `process_command_queue` routes the ship to the target (auto-inserting
-//!    `MoveTo`) and, once docked at the target, transitions the ship into
-//!    [`ShipState::Scouting`](super::ShipState::Scouting).
+//! 2. `handlers::handle_scout_requested` routes the ship to the target
+//!    (auto-inserting `MoveTo`) and, once docked at the target, transitions
+//!    the ship into [`ShipState::Scouting`](super::ShipState::Scouting).
 //! 3. [`tick_scout_observation`] polls Scouting ships each tick. When
 //!    `completes_at` is reached, it collects a sensor-range snapshot of the
 //!    surrounding hostile ships and deep-space structures, attaches a

@@ -224,17 +224,13 @@ impl Plugin for ShipPlugin {
                 // messages) is declared in the dispatcher `add_systems` call
                 // below.
                 core_deliverable::handle_core_deploy_requested,
-                process_command_queue
-                    .after(sublight_movement_system)
-                    .after(process_ftl_travel)
-                    .after(process_surveys),
                 resolve_combat,
                 tick_ship_repair,
-                // #117: Courier automation — runs before process_command_queue
-                // so that any MoveTo it queues this frame is dispatched in the
+                // #117: Courier automation — runs before the dispatcher so
+                // any MoveTo it queues this frame is dispatched in the
                 // same frame.
                 tick_courier_routes
-                    .before(process_command_queue)
+                    .before(dispatcher::dispatch_queued_commands)
                     .after(sublight_movement_system)
                     .after(process_ftl_travel),
                 // #186 Phase 1: Aggressive ROE detection of hostile deep-space
@@ -242,7 +238,7 @@ impl Plugin for ShipPlugin {
                 pursuit::detect_hostiles_system
                     .after(sublight_movement_system)
                     .after(process_ftl_travel)
-                    .after(process_command_queue),
+                    .after(handlers::handle_attack_requested),
                 // #217: Scout observation ticker — transitions a Scouting ship
                 // into Docked + attaches a ScoutReport when the timer expires.
                 // Runs after FTL/sublight movement so a ship that finished
@@ -251,34 +247,36 @@ impl Plugin for ShipPlugin {
                 scout::tick_scout_observation
                     .after(process_ftl_travel)
                     .after(sublight_movement_system)
-                    .after(process_command_queue),
+                    .after(handlers::handle_scout_requested),
                 // #217: Scout report delivery — writes to KnowledgeStore on
                 // FTL comm success, or auto-queues return home. Runs after the
                 // observation ticker so a ship that completed observation this
                 // frame can still have its report routed this frame.
                 scout::process_scout_report
                     .after(scout::tick_scout_observation)
-                    .after(process_command_queue),
+                    .after(handlers::handle_scout_requested),
                 // #287 (γ-1): Reconcile FleetMembers against live Ship entities
                 // and despawn fleets that have lost their last member. Runs
                 // after every system that may despawn a ship this frame
-                // (combat, settlement, refit consumption, command processing)
+                // (combat, settlement, refit consumption, command handling)
                 // so the cleanup is visible next tick at the latest.
                 fleet::prune_empty_fleets
                     .after(resolve_combat)
                     .after(process_settling)
                     .after(process_refitting)
-                    .after(process_command_queue),
+                    .after(handlers::handle_attack_requested),
             )
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
-        // #334 Phase 1: dispatcher + MoveTo/MoveToCoordinates handlers.
-        // Kept in their own `add_systems` call (instead of joining the
-        // main Ship tuple above) to stay under Bevy 0.18's 20-arm
+        // #334 Phase 1–3: dispatcher + per-variant handlers. Kept in its
+        // own `add_systems` call so we stay under Bevy 0.18's 20-arm
         // `IntoScheduleConfigs` limit without resorting to a nested tuple
-        // (which for this schedule was observed to elide the systems
-        // from the scheduler entirely).
+        // (which was observed to elide systems from the scheduler).
+        //
+        // #334 Phase 3 (Commit 3): legacy per-variant dispatch loops
+        // deleted — the handler chain below is the sole consumer of
+        // `QueuedCommand` now.
         app.add_systems(
             Update,
             (
@@ -309,7 +307,6 @@ impl Plugin for ShipPlugin {
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys)
-                .before(process_command_queue)
                 // Core deploy resolution must run after the deploy handler
                 // that emits `CoreDeployRequested` this tick.
                 .before(core_deliverable::handle_core_deploy_requested)
@@ -318,8 +315,8 @@ impl Plugin for ShipPlugin {
         );
         // #334 Phase 1: CommandExecuted → CommandLog bridge. Runs after the
         // route poller (which emits terminal CommandExecuted for deferred
-        // MoveTo) and after process_command_queue so synchronous handler
-        // emissions are visible in the same frame.
+        // MoveTo) and after every handler so synchronous emissions are
+        // visible in the same frame.
         app.add_systems(
             Update,
             bridges::bridge_command_executed_to_log
@@ -338,7 +335,7 @@ impl Plugin for ShipPlugin {
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
-        // #128: Poll route tasks after Commands from process_command_queue are flushed.
+        // #128: Poll route tasks after Commands emitted by handlers are flushed.
         app.add_systems(
             Update,
             (
@@ -346,7 +343,7 @@ impl Plugin for ShipPlugin {
                 routing::poll_pending_routes,
             )
                 .chain()
-                .after(process_command_queue)
+                .after(handlers::handle_attack_requested)
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
@@ -508,9 +505,9 @@ impl Ship {
     /// This predicate is consulted by:
     /// * `start_sublight_travel` — returns `Err` instead of transitioning
     ///   such a ship into `ShipState::SubLight`.
-    /// * `routing::plan_ftl_route` / `process_command_queue` — skip route
-    ///   planning entirely when the source ship is immobile (otherwise a
-    ///   queued MoveTo would stall forever).
+    /// * `routing::plan_ftl_route` / `dispatcher::dispatch_queued_commands`
+    ///   — skip route planning entirely when the source ship is immobile
+    ///   (otherwise a queued MoveTo would stall forever).
     /// * UI MoveTo guards in `context_menu` — suppress the Move button.
     /// * `pursuit::detect_hostiles_system` — early-returns for immobile
     ///   self-detectors (they can never intercept).
@@ -1267,7 +1264,7 @@ mod tests {
         };
         let state = ShipState::Docked { system: system_a };
 
-        // Simulate what process_command_queue does:
+        // Simulate what `handlers::handle_survey_requested` does:
         // It checks if docked_system != target, and if so, inserts move + re-queues survey
         let docked_system = match &state {
             ShipState::Docked { system } => *system,
@@ -1334,7 +1331,7 @@ mod tests {
             _ => panic!("Expected Colonize command"),
         }
 
-        // Should be [MoveTo, Colonize] — route planning (FTL vs sublight) is handled by process_command_queue
+        // Should be [MoveTo, Colonize] — route planning (FTL vs sublight) is handled by `handlers::handle_move_requested`.
         assert_eq!(queue.commands.len(), 2);
         assert!(matches!(queue.commands[0], QueuedCommand::MoveTo { .. }));
         assert!(matches!(queue.commands[1], QueuedCommand::Colonize { .. }));

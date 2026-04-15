@@ -1,15 +1,12 @@
-//! #334 Phase 1: command-queue dispatcher.
+//! #334: command-queue dispatcher.
 //!
 //! Iterates every ship's `CommandQueue`, peeks the head command, performs
 //! **lightweight validation only** (ship is Docked/Loitering, target exists,
-//! ship not immobile), and for the Phase-1 migrated variants
-//! (`MoveTo` / `MoveToCoordinates`) emits the corresponding
-//! [`CommandRequested`](super::command_events) message and pops the queue.
-//!
-//! Non-migrated variants are left at the head of the queue untouched so the
-//! legacy `process_command_queue` / `process_deliverable_commands` systems
-//! can consume them via their original path. As Phase 2/3 land, variants
-//! move out of those legacy paths and into this dispatcher's emit arms.
+//! ship not immobile), emits the corresponding
+//! [`CommandRequested`](super::command_events) message, and pops the
+//! queue. Phase 3 completes the migration — every `QueuedCommand`
+//! variant now has a matching request arm here and a handler under
+//! `super::handlers`. There are no legacy fallthroughs.
 //!
 //! **No state mutation beyond `CommandQueue::commands.remove(0)` and
 //! message emit** — all semantic effects (starting FTL travel, spawning
@@ -35,16 +32,15 @@ use crate::time_system::GameClock;
 
 /// Lightweight dispatcher: validates + emits `CommandRequested` messages.
 ///
-/// Phase 1 scope: `MoveTo` and `MoveToCoordinates`. Other variants fall
-/// through untouched; the legacy `process_command_queue` consumes them.
+/// As of #334 Phase 3 every `QueuedCommand` variant is handled here and
+/// consumed by a focused handler under `super::handlers`.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_queued_commands(
     clock: Res<GameClock>,
     mut next_id: ResMut<NextCommandId>,
     // Ships not already mid-route. `PendingRoute` means a MoveTo is already
     // being resolved asynchronously; skip those to preserve the 1-in-flight
-    // invariant from the legacy code (`Without<PendingRoute>` in
-    // process_command_queue).
+    // invariant from the legacy code.
     mut ships: Query<
         (Entity, &Ship, &ShipState, &Position, &mut CommandQueue),
         Without<PendingRoute>,

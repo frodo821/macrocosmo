@@ -6,12 +6,8 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
 use super::movement::{PortParams, start_ftl_travel_full, start_sublight_travel_with_bonus};
-use super::routing;
 use super::survey::start_survey_with_bonus;
-use super::{
-    CommandQueue, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship, ShipCommand,
-    ShipState,
-};
+use super::{CommandQueue, PendingShipCommand, Ship, ShipCommand, ShipState};
 
 // --- Pending ship command processing (#33) ---
 
@@ -202,53 +198,10 @@ pub fn process_pending_ship_commands(
 }
 
 // --- Command queue processing (#34) ---
-
-/// #45: Uses GlobalParams for tech bonuses
-/// #46: Checks for port facility at origin system
-/// #108: Unified MoveTo with auto-route planning (FTL chain > FTL direct > SubLight)
-/// #128: Async A* mixed route planning (FTL/sublight)
-///
-/// #334 Phase 3 (Commit 1): all variants are now handled by the
-/// dispatcher + handler pipeline. This system is retained as a pure
-/// no-op for one phase so the `ShipPlugin` / `test_app` scheduler
-/// ordering hooks (`.after(process_command_queue)`) keep working until
-/// Phase 3 Commit 3 deletes both the system and those hooks in the
-/// same change.
-#[allow(clippy::too_many_arguments)]
-pub fn process_command_queue(
-    _commands: Commands,
-    _clock: Res<GameClock>,
-    _empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
-    _balance: Res<crate::technology::GameBalance>,
-    _empire_knowledge_q: Query<
-        &crate::knowledge::KnowledgeStore,
-        With<crate::player::PlayerEmpire>,
-    >,
-    _ships: Query<
-        (
-            Entity,
-            &Ship,
-            &mut ShipState,
-            &mut CommandQueue,
-            &Position,
-            Option<&RulesOfEngagement>,
-        ),
-        Without<routing::PendingRoute>,
-    >,
-    _systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-    _system_buildings: Query<&crate::colony::SystemBuildings>,
-    _planets: Query<&crate::galaxy::Planet>,
-    _hostiles_q: Query<
-        (&crate::galaxy::AtSystem, &crate::faction::FactionOwner),
-        With<crate::galaxy::Hostile>,
-    >,
-    _relations: Res<crate::faction::FactionRelations>,
-    _pending_count: ResMut<routing::RouteCalculationsPending>,
-    _design_registry: Res<ShipDesignRegistry>,
-    _building_registry: Res<crate::colony::BuildingRegistry>,
-    _regions: Query<&crate::galaxy::ForbiddenRegion>,
-) {
-    // Every QueuedCommand variant is emitted by the dispatcher and consumed
-    // by a handler in `super::handlers`. This system intentionally does
-    // nothing — see the doc-comment above for why it still exists.
-}
+//
+// #334 Phase 3 (Commit 3): the legacy dispatch loop in this module has
+// been **deleted**. Every `QueuedCommand` variant is now emitted by
+// `super::dispatcher::dispatch_queued_commands` and consumed by a
+// focused handler under `super::handlers`. The corresponding scheduler
+// hooks in `ShipPlugin` / `test_app` / `full_test_app` were retargeted
+// to anchor on the last handler in the dispatcher chain.

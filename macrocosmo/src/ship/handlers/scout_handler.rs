@@ -18,9 +18,7 @@ use bevy::prelude::*;
 use crate::components::Position;
 use crate::time_system::GameClock;
 
-use crate::ship::command_events::{
-    CommandExecuted, CommandKind, CommandResult, ScoutRequested,
-};
+use crate::ship::command_events::{CommandExecuted, CommandKind, CommandResult, ScoutRequested};
 use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
 
 #[allow(clippy::too_many_arguments)]
