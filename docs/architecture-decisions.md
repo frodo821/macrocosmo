@@ -222,6 +222,84 @@ Phase B で lifecycle hook 拡張 + legacy 廃止が完了:
 
 memory: `project_lua_gamestate_api.md`、issue: **#332**
 
+## 10bis. Command dispatch pipeline (#334)
+
+Event-driven command dispatch, landed across Phase 1 (PR #341), Phase 2
+(PR #342), Phase 3 (PR #343), and Phase 4 (this PR):
+
+```
+UI / Lua / AI
+  ↓ enqueues QueuedCommand on ship.CommandQueue
+  OR  evt.gamestate:request_command(kind, args)  -- #334 Phase 4 Lua setter
+  ↓
+ship::dispatcher::dispatch_queued_commands      -- validates + allocates CommandId
+  ↓                                              -- emits CommandRequested<T>
+ship::handlers::handle_*_requested              -- per-variant handler system
+  ↓                                              -- writes CommandExecuted { result }
+ship::bridges::bridge_command_executed_to_log   -- flips CommandLog UI entry
+ship::bridges::bridge_command_executed_to_gamestate
+  ↓                                              -- enqueues COMMAND_COMPLETED_EVENT
+  ↓                                              -- on EventSystem (queue-only)
+scripting::lifecycle::dispatch_event_handlers   -- next tick
+  ↓
+Lua `on("macrocosmo:command_completed", fn)`    -- hook observer (may re-issue)
+```
+
+**Invariants** (`memory/feedback_rust_no_lua_callback.md`):
+
+- `apply::request_command(&mut World, ParsedRequest) -> mlua::Result<u64>`
+  takes **no `&Lua`**; it allocates a `CommandId`, writes one
+  `CommandRequested<T>` via `World::resource_mut::<Messages<_>>`, and
+  returns the fresh id. Lua callback / Function / RegistryKey is never
+  invoked from the write path.
+- `bridge_command_executed_to_gamestate` is a normal Bevy reader; it
+  calls `EventSystem::fire_event_with_payload`, which pushes to
+  `fired_log`. `dispatch_event_handlers` on a later tick delivers the
+  payload to Lua. No synchronous callback is permitted from inside a
+  handler system.
+- `CommandResult::Deferred` (async route, auto-prefixed MoveTo) is
+  **skipped** by the gamestate bridge so the hook fires exactly once
+  per terminal result (plan §10 R8).
+
+**Supported Lua kinds (Phase 4)**: `"move"`, `"move_to_coordinates"`,
+`"scout"`, `"load_deliverable"`, `"deploy_deliverable"`,
+`"transfer_to_structure"`, `"load_from_scrapyard"`, `"colonize"`,
+`"survey"`. `"core_deploy"` / `"attack"` raise `RuntimeError`
+("not yet supported") — their Rust sides land with the
+diplomacy-v2 (#302/#321) / combat (#219/#220) work.
+
+**Lua API example**:
+
+```lua
+on("macrocosmo:some_trigger", function(evt)
+    local ship_id    = _some_ship_bits
+    local target_id  = _some_system_bits
+    local cmd_id = evt.gamestate:request_command("move", {
+        ship   = ship_id,
+        target = target_id,
+    })
+    -- cmd_id is returned as a Lua number; match against the hook's
+    -- string-ified `evt.command_id` via `tonumber`.
+    _pending_cmd = cmd_id
+end)
+
+on("macrocosmo:command_completed", function(evt)
+    -- evt.kind        : "move" | "survey" | ...
+    -- evt.result      : "ok" | "rejected"
+    -- evt.reason      : string (only when rejected)
+    -- evt.command_id  : decimal string
+    -- evt.ship        : entity bits as decimal string
+    -- evt.completed_at: hexadies as decimal string
+    if evt.result == "rejected" then
+        log("command " .. evt.command_id .. " failed: " .. (evt.reason or ""))
+    end
+end)
+```
+
+Full lifecycle / invariant walkthrough: `docs/plan-334-command-dispatch-event-driven.md`.
+Example script stub: `scripts/examples/on_command_completed.lua` (docs
+only — not loaded by `init.lua`).
+
 ## 11. Scripting 設計原則
 
 - **単一エントリポイント**: `scripts/init.lua` → require() で依存順に読み込み。
