@@ -439,6 +439,9 @@ pub fn test_app() -> App {
             macrocosmo::ship::dispatcher::dispatch_queued_commands,
             macrocosmo::ship::handlers::handle_move_requested,
             macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
+            // #334 Phase 2 (Commit 1): deliverable handlers.
+            macrocosmo::ship::handlers::handle_load_deliverable_requested,
+            macrocosmo::ship::handlers::handle_deploy_deliverable_requested,
             process_command_queue,
         )
             .chain()
@@ -683,6 +686,9 @@ pub fn full_test_app() -> App {
             macrocosmo::ship::dispatcher::dispatch_queued_commands,
             macrocosmo::ship::handlers::handle_move_requested,
             macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
+            // #334 Phase 2 (Commit 1): deliverable handlers.
+            macrocosmo::ship::handlers::handle_load_deliverable_requested,
+            macrocosmo::ship::handlers::handle_deploy_deliverable_requested,
             process_command_queue,
         ),
     );

@@ -276,18 +276,14 @@ pub fn process_command_queue(
             // #334 Phase 1: MoveTo / MoveToCoordinates are handled by
             // `super::dispatcher::dispatch_queued_commands` +
             // `super::handlers::move_handler::{handle_move_requested,
-            // handle_move_to_coordinates_requested}`. The dispatcher pops
-            // these variants before this system runs so they should never
-            // reach here; the arms are kept exhaustive for the compiler.
+            // handle_move_to_coordinates_requested}`. The dispatcher
+            // normally pops these before we run, but Phase 2 handlers
+            // (e.g. `handle_deploy_deliverable_requested`) can auto-inject
+            // a MoveTo/MoveToCoordinates at the queue head in the SAME
+            // tick as the dispatcher runs. Leave it untouched here so the
+            // next-tick dispatcher picks it up.
             QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
-                // Unreachable under the Phase 1 schedule (dispatcher runs
-                // `.before(process_command_queue)`). If we ever observe
-                // this in practice, drop the head to avoid a stall.
-                warn!(
-                    "Queue: MoveTo/MoveToCoordinates reached legacy path (dispatcher ordering bug?) — dropping head"
-                );
-                queue.commands.remove(0);
-                queue.sync_prediction(ship_pos.as_array(), docked_system);
+                // Skip — dispatcher will process next tick.
             }
             QueuedCommand::Scout { .. } => {
                 // #217: Consume and dispatch synchronously. If not at the

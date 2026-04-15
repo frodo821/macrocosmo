@@ -225,9 +225,12 @@ impl Plugin for ShipPlugin {
                     .after(process_surveys),
                 // #296 (S-3): Resolve Core deploy tickets into actual CoreShip
                 // entities, grouping same-tick duplicates and tie-breaking via
-                // GameRng. Runs after the deliverable command processor (which
-                // enqueues tickets) and before the command queue, so newly
-                // spawned Cores are visible on the next frame.
+                // GameRng. #334 Phase 2: tickets are now pushed by
+                // `handlers::handle_deploy_deliverable_requested`, so this
+                // system is ordered with `.after(handle_deploy_deliverable_requested)`
+                // in the separate dispatcher `add_systems` call below — here
+                // we only keep the legacy `.after(process_deliverable_commands)`
+                // edge as an additional guard.
                 core_deliverable::resolve_core_deploys
                     .after(deliverable_ops::process_deliverable_commands),
                 process_command_queue
@@ -292,6 +295,13 @@ impl Plugin for ShipPlugin {
                 dispatcher::dispatch_queued_commands,
                 handlers::handle_move_requested,
                 handlers::handle_move_to_coordinates_requested,
+                // #334 Phase 2 (Commit 1): LoadDeliverable / DeployDeliverable
+                // handlers run after the dispatcher so same-tick messages are
+                // picked up. Core-branch of Deploy continues to push into
+                // PendingCoreDeploys; `resolve_core_deploys` still drains the
+                // resource below (Commit 2 switches to a message-driven flow).
+                handlers::handle_load_deliverable_requested,
+                handlers::handle_deploy_deliverable_requested,
             )
                 .chain()
                 .after(deliverable_ops::process_deliverable_commands)
@@ -299,6 +309,9 @@ impl Plugin for ShipPlugin {
                 .after(process_ftl_travel)
                 .after(process_surveys)
                 .before(process_command_queue)
+                // Core deploy ticket resolution must run after the deploy
+                // handler that populates the queue this tick.
+                .before(core_deliverable::resolve_core_deploys)
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );

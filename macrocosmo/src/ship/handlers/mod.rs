@@ -9,6 +9,10 @@
 //! Phase 1 scope: `handle_move_requested` + `handle_move_to_coordinates_requested`.
 //! Phases 2/3/4 migrate the remaining variants into this module.
 
+pub mod deliverable_handler;
 pub mod move_handler;
 
+pub use deliverable_handler::{
+    handle_deploy_deliverable_requested, handle_load_deliverable_requested,
+};
 pub use move_handler::{handle_move_requested, handle_move_to_coordinates_requested};
