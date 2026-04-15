@@ -68,7 +68,14 @@ use super::rng_serde::SavedGameRng;
 use super::savebag::*;
 
 /// Save format wire version. Bump on breaking changes.
-pub const SAVE_VERSION: u32 = 1;
+// #296 (S-3): Bumped from 1 → 2 because `SavedComponentBag` gained a new
+// field (`core_ship`). Postcard encodes struct fields sequentially without
+// per-field tags, so adding a field is a wire-format break even when the
+// field is `Option<()>` with `#[serde(default)]` — the decoder reads the
+// next bytes for the new field, misaligning the rest. Regenerated
+// `tests/fixtures/minimal_game.bin` ships in the same commit as the version
+// bump so `load_minimal_game_fixture_smoke` continues to pass.
+pub const SAVE_VERSION: u32 = 2;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -505,6 +512,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if let Some(roe) = e_ref.get::<RulesOfEngagement>() {
         bag.rules_of_engagement = Some(roe.into());
+    }
+    // #296 (S-3): CoreShip is a zero-sized marker; encode presence as Some(()).
+    if e_ref.get::<crate::ship::CoreShip>().is_some() {
+        bag.core_ship = Some(());
     }
 
     // Pending command entities

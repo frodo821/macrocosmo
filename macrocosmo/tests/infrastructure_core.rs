@@ -652,6 +652,23 @@ fn end_to_end_deploy_spawns_core_at_inner_orbit() {
     assert!(cargo.items.is_empty(), "deployer cargo consumed");
 }
 
+/// #296: CoreShip marker survives save/load. Without this the `system_owner`
+/// query (`With<CoreShip>`) would silently drop sovereignty after a load.
+///
+/// The deeper round-trip + `update_sovereignty` re-derive coverage lives in
+/// `tests/save_load.rs::test_save_load_sovereignty_derived_cache_regression`
+/// (which now spawns its Core ship with the CoreShip marker too).
+#[test]
+fn savebag_default_omits_core_ship_marker() {
+    use macrocosmo::persistence::savebag::SavedComponentBag;
+    let bag = SavedComponentBag::default();
+    assert!(
+        bag.core_ship.is_none(),
+        "default bag MUST decode core_ship as None to keep legacy save \
+         compatibility (no SAVE_VERSION bump)"
+    );
+}
+
 #[test]
 fn core_deploy_sets_system_sovereignty() {
     // End-to-end: deploy a Core → update_sovereignty writes Some(Empire).
