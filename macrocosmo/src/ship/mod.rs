@@ -12,6 +12,7 @@ pub mod courier_route;
 pub mod pursuit;
 pub mod deliverable_ops;
 pub mod scout;
+pub mod core_deliverable;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -24,6 +25,7 @@ pub use movement::*;
 pub use command::*;
 pub use courier_route::*;
 pub use pursuit::*;
+pub use core_deliverable::{CoreShip, PendingCoreDeploys, CoreDeployTicket, resolve_core_deploys, spawn_core_ship_from_deliverable};
 
 use bevy::prelude::*;
 
@@ -385,6 +387,26 @@ pub struct Ship {
     /// 1-ship Fleet (the same invariant is applied for test-only spawns
     /// through `tests/common::spawn_test_ship`).
     pub fleet: Option<Entity>,
+}
+
+impl Ship {
+    /// #296 (S-3): A ship is *immobile* when its design confers neither
+    /// sublight nor FTL propulsion. Infrastructure Core ships are the
+    /// canonical example: their hull has `base_speed = 0` and they carry no
+    /// FTL module, so both stats are zero.
+    ///
+    /// This predicate is consulted by:
+    /// * `start_sublight_travel` — returns `Err` instead of transitioning
+    ///   such a ship into `ShipState::SubLight`.
+    /// * `routing::plan_ftl_route` / `process_command_queue` — skip route
+    ///   planning entirely when the source ship is immobile (otherwise a
+    ///   queued MoveTo would stall forever).
+    /// * UI MoveTo guards in `context_menu` — suppress the Move button.
+    /// * `pursuit::detect_hostiles_system` — early-returns for immobile
+    ///   self-detectors (they can never intercept).
+    pub fn is_immobile(&self) -> bool {
+        self.sublight_speed <= 0.0 && self.ftl_range <= 0.0
+    }
 }
 
 #[derive(Component)]
