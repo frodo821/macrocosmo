@@ -20,7 +20,11 @@
 
 use bevy::prelude::*;
 
-use super::command_events::{CommandId, MoveRequested, MoveToCoordinatesRequested, NextCommandId};
+use super::command_events::{
+    ColonizeRequested, CommandId, DeployDeliverableRequested, LoadDeliverableRequested,
+    LoadFromScrapyardRequested, MoveRequested, MoveToCoordinatesRequested, NextCommandId,
+    SurveyRequested, TransferToStructureRequested,
+};
 use super::routing::PendingRoute;
 use super::{CommandQueue, QueuedCommand, Ship, ShipState};
 use crate::communication::{CommandLog, CommandLogEntry};
@@ -48,9 +52,15 @@ pub fn dispatch_queued_commands(
     // Read-only target lookup. Name not used here but the filter ensures we
     // only match star-system entities.
     systems: Query<Entity, With<StarSystem>>,
-    // Typed message writers — one per Phase-1 request variant.
+    // Typed message writers — one per Phase-1/2 request variant.
     mut move_req: MessageWriter<MoveRequested>,
     mut move_xy_req: MessageWriter<MoveToCoordinatesRequested>,
+    mut load_req: MessageWriter<LoadDeliverableRequested>,
+    mut deploy_req: MessageWriter<DeployDeliverableRequested>,
+    mut transfer_req: MessageWriter<TransferToStructureRequested>,
+    mut scrap_req: MessageWriter<LoadFromScrapyardRequested>,
+    mut survey_req: MessageWriter<SurveyRequested>,
+    mut colonize_req: MessageWriter<ColonizeRequested>,
     // #334 Phase 1: append a `Dispatched` entry to the player empire's
     // CommandLog on each successful validation. The bridge system
     // `bridge_command_executed_to_log` finalizes via `CommandId` match.
@@ -167,18 +177,175 @@ pub fn dispatch_queued_commands(
                     ship.name, target_arr[0], target_arr[1], target_arr[2], command_id.0
                 );
             }
+            QueuedCommand::LoadDeliverable {
+                system,
+                stockpile_index,
+            } => {
+                let system = *system;
+                let stockpile_index = *stockpile_index;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                load_req.write(LoadDeliverableRequested {
+                    command_id,
+                    ship: ship_entity,
+                    system,
+                    stockpile_index,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → LoadDeliverable [{}]", ship.name, stockpile_index),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} LoadDeliverableRequested system={:?} idx={} (cmd {})",
+                    ship.name, system, stockpile_index, command_id.0
+                );
+            }
+            QueuedCommand::DeployDeliverable {
+                position,
+                item_index,
+            } => {
+                let position = *position;
+                let item_index = *item_index;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                deploy_req.write(DeployDeliverableRequested {
+                    command_id,
+                    ship: ship_entity,
+                    position,
+                    item_index,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!(
+                            "{} → DeployDeliverable [{}] at ({:.2},{:.2},{:.2})",
+                            ship.name, item_index, position[0], position[1], position[2]
+                        ),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} DeployDeliverableRequested idx={} (cmd {})",
+                    ship.name, item_index, command_id.0
+                );
+            }
+            QueuedCommand::TransferToStructure {
+                structure,
+                minerals,
+                energy,
+            } => {
+                let structure = *structure;
+                let minerals = *minerals;
+                let energy = *energy;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                transfer_req.write(TransferToStructureRequested {
+                    command_id,
+                    ship: ship_entity,
+                    structure,
+                    minerals,
+                    energy,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!(
+                            "{} → TransferToStructure {:?} ({}m/{}e)",
+                            ship.name,
+                            structure,
+                            minerals.to_f64(),
+                            energy.to_f64()
+                        ),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} TransferToStructureRequested -> {:?} (cmd {})",
+                    ship.name, structure, command_id.0
+                );
+            }
+            QueuedCommand::LoadFromScrapyard { structure } => {
+                let structure = *structure;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                scrap_req.write(LoadFromScrapyardRequested {
+                    command_id,
+                    ship: ship_entity,
+                    structure,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → LoadFromScrapyard {:?}", ship.name, structure),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} LoadFromScrapyardRequested -> {:?} (cmd {})",
+                    ship.name, structure, command_id.0
+                );
+            }
+            QueuedCommand::Survey { system: target } => {
+                let target = *target;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                survey_req.write(SurveyRequested {
+                    command_id,
+                    ship: ship_entity,
+                    target_system: target,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → Survey {:?}", ship.name, target),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} SurveyRequested -> {:?} (cmd {})",
+                    ship.name, target, command_id.0
+                );
+            }
+            QueuedCommand::Colonize {
+                system: target,
+                planet,
+            } => {
+                let target = *target;
+                let planet = *planet;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                colonize_req.write(ColonizeRequested {
+                    command_id,
+                    ship: ship_entity,
+                    target_system: target,
+                    planet,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → Colonize {:?}", ship.name, target),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} ColonizeRequested -> {:?} (cmd {})",
+                    ship.name, target, command_id.0
+                );
+            }
             // Non-migrated variants: leave the head untouched so the legacy
-            // `process_command_queue` / `process_deliverable_commands`
-            // systems consume them this same tick (they run .after(dispatcher)).
-            QueuedCommand::Survey { .. }
-            | QueuedCommand::Colonize { .. }
-            | QueuedCommand::Scout { .. }
-            | QueuedCommand::LoadDeliverable { .. }
-            | QueuedCommand::DeployDeliverable { .. }
-            | QueuedCommand::TransferToStructure { .. }
-            | QueuedCommand::LoadFromScrapyard { .. } => {
-                // Phase 2/3 will migrate these. For now, do nothing — the
-                // legacy systems pick them up.
+            // `process_command_queue` system consumes them this same tick.
+            QueuedCommand::Scout { .. } => {
+                // Phase 3 will migrate Scout. For now the legacy system
+                // picks it up.
             }
         }
     }
@@ -379,28 +546,31 @@ mod tests {
 
     #[test]
     fn dispatcher_leaves_non_migrated_variants_untouched() {
+        // #334 Phase 2 (Commit 4): Survey/Colonize are now migrated. Scout
+        // remains the only non-migrated variant — verify the dispatcher
+        // doesn't consume it.
+        use crate::ship::ReportMode;
         let mut app = make_app();
         let target = spawn_test_system(app.world_mut(), [5.0, 0.0, 0.0]);
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
         let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
-            q.commands.push(QueuedCommand::Survey { system: target });
-            q.commands.push(QueuedCommand::TransferToStructure {
-                structure: target,
-                minerals: Amt(0),
-                energy: Amt(0),
+            q.commands.push(QueuedCommand::Scout {
+                target_system: target,
+                observation_duration: 10,
+                report_mode: ReportMode::Return,
             });
         }
         app.update();
 
-        // No MoveRequested emitted, queue head is still Survey.
+        // No MoveRequested emitted, queue head is still Scout.
         let messages = app.world().resource::<Messages<MoveRequested>>();
         let mut cursor = messages.get_cursor();
         assert_eq!(cursor.read(messages).count(), 0);
         let q = app.world().get::<CommandQueue>(ship).unwrap();
-        assert_eq!(q.commands.len(), 2);
-        assert!(matches!(q.commands[0], QueuedCommand::Survey { .. }));
+        assert_eq!(q.commands.len(), 1);
+        assert!(matches!(q.commands[0], QueuedCommand::Scout { .. }));
     }
 
     #[test]

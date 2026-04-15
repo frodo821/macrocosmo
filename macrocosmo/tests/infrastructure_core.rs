@@ -15,9 +15,8 @@ use macrocosmo::faction::FactionOwner;
 use macrocosmo::galaxy::{
     AtSystem, INNER_ORBIT_OFFSET_LY, Sovereignty, system_inner_orbit_position,
 };
-use macrocosmo::ship::core_deliverable::{
-    CoreDeployTicket, PendingCoreDeploys, resolve_core_deploys,
-};
+use macrocosmo::ship::command_events::{CommandId, CoreDeployRequested};
+use macrocosmo::ship::core_deliverable::handle_core_deploy_requested;
 use macrocosmo::ship::{CoreShip, Owner};
 use macrocosmo::ship_design::ShipDesignRegistry;
 
@@ -145,31 +144,32 @@ fn pending_core_deploys_resolves_single_ticket() {
         });
     }
 
-    // Enqueue a ticket directly.
+    // Enqueue a CoreDeployRequested message directly.
     let deployer = app.world_mut().spawn_empty().id();
     let pos = system_inner_orbit_position(sys, app.world());
     assert!((pos[0] - (5.0 + INNER_ORBIT_OFFSET_LY)).abs() < 1e-9);
     {
-        app.world_mut().init_resource::<PendingCoreDeploys>();
         app.world_mut()
             .init_resource::<macrocosmo::scripting::GameRng>();
-        let mut pending = app.world_mut().resource_mut::<PendingCoreDeploys>();
-        pending.tickets.push(CoreDeployTicket {
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(101),
             deployer,
             target_system: sys,
             deploy_pos: pos,
             faction_owner: Some(empire),
             owner: Owner::Empire(empire),
             design_id: "infrastructure_core_v1".to_string(),
-            cargo_item_index: 0,
             submitted_at: 0,
         });
     }
 
-    // Run the resolver and apply commands.
+    // Run the handler and apply commands.
     app.world_mut()
-        .run_system_once(resolve_core_deploys)
-        .expect("run resolver");
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
     app.update();
 
     // Exactly one CoreShip should now exist in sys.
@@ -177,10 +177,6 @@ fn pending_core_deploys_resolves_single_ticket() {
     let cores: Vec<_> = q.iter(app.world()).collect();
     assert_eq!(cores.len(), 1);
     assert_eq!(cores[0].1.0, sys);
-
-    // Pending queue should be empty.
-    let pending = app.world().resource::<PendingCoreDeploys>();
-    assert!(pending.tickets.is_empty());
 }
 
 #[test]
@@ -219,25 +215,26 @@ fn pending_core_deploys_discards_duplicate_on_owned_system() {
     let deployer = app.world_mut().spawn_empty().id();
     let pos = [INNER_ORBIT_OFFSET_LY, 0.0, 0.0];
     {
-        app.world_mut().init_resource::<PendingCoreDeploys>();
         app.world_mut()
             .init_resource::<macrocosmo::scripting::GameRng>();
-        let mut pending = app.world_mut().resource_mut::<PendingCoreDeploys>();
-        pending.tickets.push(CoreDeployTicket {
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(102),
             deployer,
             target_system: sys,
             deploy_pos: pos,
             faction_owner: Some(empire),
             owner: Owner::Empire(empire),
             design_id: "infrastructure_core_v1".to_string(),
-            cargo_item_index: 0,
             submitted_at: 0,
         });
     }
 
     app.world_mut()
-        .run_system_once(resolve_core_deploys)
-        .expect("run resolver");
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
     app.update();
 
     // Still only one Core in sys (the pre-existing).
@@ -289,27 +286,31 @@ fn pending_core_deploys_same_tick_tie_break_picks_one() {
     let deployer_b = app.world_mut().spawn_empty().id();
     let pos = [INNER_ORBIT_OFFSET_LY, 0.0, 0.0];
     {
-        app.world_mut().init_resource::<PendingCoreDeploys>();
         app.world_mut()
             .init_resource::<macrocosmo::scripting::GameRng>();
-        let mut pending = app.world_mut().resource_mut::<PendingCoreDeploys>();
-        for (deployer, faction) in [(deployer_a, empire_a), (deployer_b, empire_b)] {
-            pending.tickets.push(CoreDeployTicket {
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        for (i, (deployer, faction)) in [(deployer_a, empire_a), (deployer_b, empire_b)]
+            .into_iter()
+            .enumerate()
+        {
+            msgs.write(CoreDeployRequested {
+                command_id: CommandId(200 + i as u64),
                 deployer,
                 target_system: sys,
                 deploy_pos: pos,
                 faction_owner: Some(faction),
                 owner: Owner::Empire(faction),
                 design_id: "infrastructure_core_v1".to_string(),
-                cargo_item_index: 0,
                 submitted_at: 0,
             });
         }
     }
 
     app.world_mut()
-        .run_system_once(resolve_core_deploys)
-        .expect("run resolver");
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
     app.update();
 
     // Exactly one Core in sys, regardless of which ticket won.
@@ -352,31 +353,35 @@ fn pending_core_deploys_preserves_across_different_systems() {
     let deployer_a = app.world_mut().spawn_empty().id();
     let deployer_b = app.world_mut().spawn_empty().id();
     {
-        app.world_mut().init_resource::<PendingCoreDeploys>();
         app.world_mut()
             .init_resource::<macrocosmo::scripting::GameRng>();
-        // Collect positions before taking `&mut` on the resource, since
-        // `system_inner_orbit_position` borrows `&World`.
+        // Collect positions before taking `&mut` on the Messages resource,
+        // since `system_inner_orbit_position` borrows `&World`.
         let pos_a = system_inner_orbit_position(sys_a, app.world());
         let pos_b = system_inner_orbit_position(sys_b, app.world());
-        let mut pending = app.world_mut().resource_mut::<PendingCoreDeploys>();
-        for (deployer, target, pos) in [(deployer_a, sys_a, pos_a), (deployer_b, sys_b, pos_b)] {
-            pending.tickets.push(CoreDeployTicket {
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        for (i, (deployer, target, pos)) in [(deployer_a, sys_a, pos_a), (deployer_b, sys_b, pos_b)]
+            .into_iter()
+            .enumerate()
+        {
+            msgs.write(CoreDeployRequested {
+                command_id: CommandId(300 + i as u64),
                 deployer,
                 target_system: target,
                 deploy_pos: pos,
                 faction_owner: Some(empire),
                 owner: Owner::Empire(empire),
                 design_id: "infrastructure_core_v1".to_string(),
-                cargo_item_index: 0,
                 submitted_at: 0,
             });
         }
     }
 
     app.world_mut()
-        .run_system_once(resolve_core_deploys)
-        .expect("run resolver");
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
     app.update();
 
     let mut q = app.world_mut().query::<(Entity, &AtSystem, &CoreShip)>();
@@ -715,25 +720,26 @@ fn core_deploy_sets_system_sovereignty() {
     let deployer = app.world_mut().spawn_empty().id();
     let pos = system_inner_orbit_position(sys, app.world());
     {
-        app.world_mut().init_resource::<PendingCoreDeploys>();
         app.world_mut()
             .init_resource::<macrocosmo::scripting::GameRng>();
-        let mut pending = app.world_mut().resource_mut::<PendingCoreDeploys>();
-        pending.tickets.push(CoreDeployTicket {
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(400),
             deployer,
             target_system: sys,
             deploy_pos: pos,
             faction_owner: Some(empire),
             owner: Owner::Empire(empire),
             design_id: "infrastructure_core_v1".to_string(),
-            cargo_item_index: 0,
             submitted_at: 0,
         });
     }
 
     app.world_mut()
-        .run_system_once(resolve_core_deploys)
-        .expect("run resolver");
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
     app.update();
     // Let update_sovereignty run.
     advance_time(&mut app, 1);

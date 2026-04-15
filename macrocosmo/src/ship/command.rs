@@ -209,12 +209,11 @@ pub fn process_pending_ship_commands(
 /// #128: Async A* mixed route planning (FTL/sublight)
 #[allow(clippy::too_many_arguments)]
 pub fn process_command_queue(
-    // #334 Phase 1: `Commands` / KnowledgeStore / FactionRelations /
-    // port-params / FTL blocker params are preserved at the SystemParam
-    // surface for Phase 2/3 migrations (Survey / Colonize / Scout handlers
-    // continue to need some of them) even though this tick the MoveTo
-    // path no longer consults them. Underscored locals silence the
-    // "unused" warnings without touching the signature.
+    // #334 Phase 2 (Commits 1–4): most variants migrated to the
+    // dispatcher + handler pipeline. Only `Scout` is still handled here
+    // pending Phase 3. The bulk of the SystemParam surface is therefore
+    // underscored — the shape is preserved to minimise diff noise when
+    // Scout migrates; the final shape lands under Phase 3.
     mut _commands: Commands,
     clock: Res<GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
@@ -244,19 +243,20 @@ pub fn process_command_queue(
     _building_registry: Res<crate::colony::BuildingRegistry>,
     regions: Query<&crate::galaxy::ForbiddenRegion>,
 ) {
-    let Ok(global_params) = empire_params_q.single() else {
+    let Ok(_global_params) = empire_params_q.single() else {
         return;
     };
     let _base_ftl_speed = balance.initial_ftl_speed_c();
     let _ftl_blockers = routing::collect_ftl_blockers(&regions);
-    let settling_duration = balance.settling_duration();
-    let survey_range_base = balance.survey_range_ly();
-    let survey_duration_base = balance.survey_duration();
+    let _settling_duration = balance.settling_duration();
+    let _survey_range_base = balance.survey_range_ly();
+    let _survey_duration_base = balance.survey_duration();
     let _empire_knowledge = empire_knowledge_q.single().ok();
     let _hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
         .iter()
         .map(|(at_system, owner)| (at_system.0, owner.0))
         .collect();
+    let _ = &design_registry;
     for (_entity, ship, mut state, mut queue, ship_pos, _roe) in ships.iter_mut() {
         // #185: Process queue when ship is Docked OR Loitering (current command finished).
         let docked_system: Option<Entity> = match *state {
@@ -276,18 +276,14 @@ pub fn process_command_queue(
             // #334 Phase 1: MoveTo / MoveToCoordinates are handled by
             // `super::dispatcher::dispatch_queued_commands` +
             // `super::handlers::move_handler::{handle_move_requested,
-            // handle_move_to_coordinates_requested}`. The dispatcher pops
-            // these variants before this system runs so they should never
-            // reach here; the arms are kept exhaustive for the compiler.
+            // handle_move_to_coordinates_requested}`. The dispatcher
+            // normally pops these before we run, but Phase 2 handlers
+            // (e.g. `handle_deploy_deliverable_requested`) can auto-inject
+            // a MoveTo/MoveToCoordinates at the queue head in the SAME
+            // tick as the dispatcher runs. Leave it untouched here so the
+            // next-tick dispatcher picks it up.
             QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
-                // Unreachable under the Phase 1 schedule (dispatcher runs
-                // `.before(process_command_queue)`). If we ever observe
-                // this in practice, drop the head to avoid a stall.
-                warn!(
-                    "Queue: MoveTo/MoveToCoordinates reached legacy path (dispatcher ordering bug?) — dropping head"
-                );
-                queue.commands.remove(0);
-                queue.sync_prediction(ship_pos.as_array(), docked_system);
+                // Skip — dispatcher will process next tick.
             }
             QueuedCommand::Scout { .. } => {
                 // #217: Consume and dispatch synchronously. If not at the
@@ -361,124 +357,16 @@ pub fn process_command_queue(
                 );
                 queue.sync_prediction(ship_pos.as_array(), Some(target_system));
             }
-            QueuedCommand::Survey { .. } | QueuedCommand::Colonize { .. } => {
-                // Consume the command and process synchronously.
-                let next = queue.commands.remove(0);
-                match next {
-                    QueuedCommand::Survey { system: target } => {
-                        let Ok((_target_entity, target_star, target_pos)) = systems.get(target)
-                        else {
-                            warn!("Queued Survey target no longer exists");
-                            queue.sync_prediction(ship_pos.as_array(), docked_system);
-                            continue;
-                        };
-                        // #101: If not docked at the target system, auto-insert a move command.
-                        // #185: Loitering ships also need to move first.
-                        if docked_system != Some(target) {
-                            queue
-                                .commands
-                                .insert(0, QueuedCommand::Survey { system: target });
-                            queue
-                                .commands
-                                .insert(0, QueuedCommand::MoveTo { system: target });
-                            info!(
-                                "Queue: Ship {} not at target, auto-inserting move before survey of {}",
-                                ship.name, target_star.name
-                            );
-                            continue;
-                        }
-                        let origin = Position::from(ship_pos.as_array());
-                        match start_survey_with_bonus(
-                            &mut state,
-                            ship,
-                            target,
-                            &origin,
-                            target_pos,
-                            clock.elapsed,
-                            global_params.survey_range_bonus,
-                            &design_registry,
-                            survey_range_base,
-                            survey_duration_base,
-                        ) {
-                            Ok(()) => {
-                                info!("Queue: Ship {} surveying {}", ship.name, target_star.name);
-                            }
-                            Err(e) => {
-                                warn!("Queue: Survey failed for {}: {}", ship.name, e);
-                            }
-                        }
-                        queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    }
-                    QueuedCommand::Colonize {
-                        system: target,
-                        planet,
-                    } => {
-                        let Ok((_target_entity, target_star, _target_pos)) = systems.get(target)
-                        else {
-                            warn!("Queued Colonize target no longer exists");
-                            queue.sync_prediction(ship_pos.as_array(), docked_system);
-                            continue;
-                        };
-                        if docked_system != Some(target) {
-                            queue.commands.insert(
-                                0,
-                                QueuedCommand::Colonize {
-                                    system: target,
-                                    planet,
-                                },
-                            );
-                            queue
-                                .commands
-                                .insert(0, QueuedCommand::MoveTo { system: target });
-                            info!(
-                                "Queue: Ship {} not at target, auto-inserting move before colonize of {}",
-                                ship.name, target_star.name
-                            );
-                            continue;
-                        }
-                        if !design_registry.can_colonize(&ship.design_id) {
-                            warn!(
-                                "Queue: Ship {} cannot colonize (not a colony ship)",
-                                ship.name
-                            );
-                            queue.sync_prediction(ship_pos.as_array(), docked_system);
-                            continue;
-                        }
-                        let docked_sys =
-                            docked_system.expect("survey/colonize already required docked");
-                        *state = ShipState::Settling {
-                            system: docked_sys,
-                            planet,
-                            started_at: clock.elapsed,
-                            completes_at: clock.elapsed + settling_duration,
-                        };
-                        info!("Queue: Ship {} colonizing {}", ship.name, target_star.name);
-                        queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    }
-                    QueuedCommand::MoveToCoordinates { .. } | QueuedCommand::MoveTo { .. } => {} // handled above
-                    // #217: Scout is handled by its own outer arm.
-                    QueuedCommand::Scout { .. } => {}
-                    // #223: Deliverable-side commands are handled by
-                    // `super::deliverable_ops::process_deliverable_commands`.
-                    // This arm is unreachable via the outer match, but the
-                    // exhaustive compiler still needs the variants enumerated.
-                    QueuedCommand::LoadDeliverable { .. }
-                    | QueuedCommand::DeployDeliverable { .. }
-                    | QueuedCommand::TransferToStructure { .. }
-                    | QueuedCommand::LoadFromScrapyard { .. } => {
-                        // handled by deliverable_ops
-                    }
-                }
-            }
-            // #223: Deliverable-side commands are processed by
-            // `super::deliverable_ops::process_deliverable_commands`, which
-            // runs as its own system. We skip them here and leave them at
-            // the head of the queue.
-            QueuedCommand::LoadDeliverable { .. }
-            | QueuedCommand::DeployDeliverable { .. }
-            | QueuedCommand::TransferToStructure { .. }
-            | QueuedCommand::LoadFromScrapyard { .. } => {
-                // no-op; the deliverable ops system consumes these.
+            // #334 Phase 2 (Commits 1–4): Survey / Colonize / LoadDeliverable
+            // / DeployDeliverable / TransferToStructure / LoadFromScrapyard
+            // are handled by the dispatcher + handler pipeline. Phase 3 will
+            // migrate the remaining `Scout` variant. Everything else is a
+            // no-op here so any handler-injected retry survives the tick
+            // (same guard as MoveTo / MoveToCoordinates above).
+            _ => {
+                // no-op; handled by dispatcher + handler pipeline. Leave
+                // at the queue head so the next-tick dispatcher picks up
+                // any retry re-injected by a handler this tick.
             }
         }
     }
