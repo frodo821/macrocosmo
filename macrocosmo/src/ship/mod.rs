@@ -173,6 +173,8 @@ pub struct ShipPlugin;
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<routing::RouteCalculationsPending>();
+        // #296 (S-3): Per-tick queue for Infrastructure Core deploy tickets.
+        app.init_resource::<core_deliverable::PendingCoreDeploys>();
         app.add_systems(Update, (
             sync_ship_module_modifiers,
             sync_ship_hitpoints.after(sync_ship_module_modifiers),
@@ -190,6 +192,13 @@ impl Plugin for ShipPlugin {
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys),
+            // #296 (S-3): Resolve Core deploy tickets into actual CoreShip
+            // entities, grouping same-tick duplicates and tie-breaking via
+            // GameRng. Runs after the deliverable command processor (which
+            // enqueues tickets) and before the command queue, so newly
+            // spawned Cores are visible on the next frame.
+            core_deliverable::resolve_core_deploys
+                .after(deliverable_ops::process_deliverable_commands),
             process_command_queue
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
