@@ -448,6 +448,8 @@ pub fn test_app() -> App {
             // #334 Phase 2 (Commit 4): survey / colonize handlers.
             macrocosmo::ship::handlers::handle_survey_requested,
             macrocosmo::ship::handlers::handle_colonize_requested,
+            // #334 Phase 3 (Commit 1): Scout handler.
+            macrocosmo::ship::handlers::handle_scout_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
@@ -474,6 +476,7 @@ pub fn test_app() -> App {
         )
             .chain()
             .after(process_command_queue)
+            .after(macrocosmo::ship::handlers::handle_scout_requested)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
@@ -709,6 +712,8 @@ pub fn full_test_app() -> App {
             // #334 Phase 2 (Commit 4): survey / colonize handlers.
             macrocosmo::ship::handlers::handle_survey_requested,
             macrocosmo::ship::handlers::handle_colonize_requested,
+            // #334 Phase 3 (Commit 1): Scout handler.
+            macrocosmo::ship::handlers::handle_scout_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
