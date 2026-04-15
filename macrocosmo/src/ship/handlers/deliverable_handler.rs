@@ -1,25 +1,30 @@
-//! #334 Phase 2: `LoadDeliverable` / `DeployDeliverable` handlers.
+//! #334 Phase 2: deliverable command handlers.
 //!
 //! Extracted verbatim from `deliverable_ops::process_deliverable_commands`
 //! — same validation, same mutation, same `FactSysParam` dual-writes. The
 //! only change is that these systems are **message-driven**: the dispatcher
-//! emits [`LoadDeliverableRequested`] / [`DeployDeliverableRequested`]
-//! instead of the legacy loop pulling the queue head.
+//! emits per-variant `*Requested` messages instead of the legacy loop
+//! pulling the queue head.
 //!
-//! Core-branch of `DeployDeliverable` emits a [`CoreDeployRequested`]
-//! message (Commit 2) — the legacy `PendingCoreDeploys` + `CoreDeployTicket`
-//! intermediate resource is retired.
+//! Commit 1: `handle_load_deliverable_requested`, `handle_deploy_deliverable_requested`.
+//! Commit 2: Core-branch of Deploy emits a [`CoreDeployRequested`] message
+//! consumed by `core_deliverable::handle_core_deploy_requested`.
+//! Commit 3: `handle_transfer_to_structure_requested`, `handle_load_from_scrapyard_requested`.
 
 use bevy::prelude::*;
 
+use crate::amount::Amt;
 use crate::colony::DeliverableStockpile;
 use crate::components::Position;
-use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry, spawn_deliverable_entity};
+use crate::deep_space::{
+    ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry,
+    spawn_deliverable_entity,
+};
 use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::command_events::{
     CommandExecuted, CommandKind, CommandResult, CoreDeployRequested, DeployDeliverableRequested,
-    LoadDeliverableRequested,
+    LoadDeliverableRequested, LoadFromScrapyardRequested, TransferToStructureRequested,
 };
 use crate::ship::deliverable_ops::DEPLOY_POSITION_EPSILON;
 use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipModifiers, ShipState};
@@ -499,14 +504,238 @@ pub fn handle_deploy_deliverable_requested(
             completed_at: clock.elapsed,
         });
 
-        // Silence unused imports warnings in case `DeepSpaceStructure` /
-        // `ConstructionPlatform` / `Scrapyard` aren't referenced by a
-        // specific build path — they're retained to match the legacy query
-        // graph for future reads.
-        let _ = (
-            std::marker::PhantomData::<DeepSpaceStructure>,
-            std::marker::PhantomData::<ConstructionPlatform>,
-            std::marker::PhantomData::<Scrapyard>,
+        // Silence unused imports warnings in case `DeepSpaceStructure`
+        // isn't referenced by a specific build path — it's retained to
+        // match the legacy query graph for future reads. (ConstructionPlatform
+        // and Scrapyard are used by the transfer / scrapyard handlers below.)
+        let _ = std::marker::PhantomData::<DeepSpaceStructure>;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TransferToStructure
+// ---------------------------------------------------------------------------
+
+/// Handles `TransferToStructureRequested`. Auto-injects a MoveToCoordinates
+/// when the ship isn't at the platform's position (plan §3.3), then drains
+/// the ship's minerals/energy into the platform's accumulated pool clamped
+/// by what the ship actually carries.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_transfer_to_structure_requested(
+    clock: Res<GameClock>,
+    mut reqs: MessageReader<TransferToStructureRequested>,
+    mut executed: MessageWriter<CommandExecuted>,
+    mut ships: Query<(&Ship, &Position, &mut CommandQueue, &mut Cargo)>,
+    mut platforms: Query<(&Position, &mut ConstructionPlatform), Without<Ship>>,
+) {
+    for req in reqs.read() {
+        let Ok((ship, ship_pos, mut queue, mut cargo)) = ships.get_mut(req.ship) else {
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::TransferToStructure,
+                ship: req.ship,
+                result: CommandResult::Rejected {
+                    reason: "ship unavailable".to_string(),
+                },
+                completed_at: clock.elapsed,
+            });
+            continue;
+        };
+
+        let Ok((struct_pos, mut platform)) = platforms.get_mut(req.structure) else {
+            warn!(
+                "TransferToStructure: target {:?} is not a ConstructionPlatform",
+                req.structure
+            );
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::TransferToStructure,
+                ship: req.ship,
+                result: CommandResult::Rejected {
+                    reason: "target not a platform".to_string(),
+                },
+                completed_at: clock.elapsed,
+            });
+            continue;
+        };
+
+        if ship_pos.distance_to(struct_pos) > DEPLOY_POSITION_EPSILON {
+            queue.commands.insert(
+                0,
+                QueuedCommand::TransferToStructure {
+                    structure: req.structure,
+                    minerals: req.minerals,
+                    energy: req.energy,
+                },
+            );
+            queue.commands.insert(
+                0,
+                QueuedCommand::MoveToCoordinates {
+                    target: struct_pos.as_array(),
+                },
+            );
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::TransferToStructure,
+                ship: req.ship,
+                result: CommandResult::Deferred,
+                completed_at: clock.elapsed,
+            });
+            continue;
+        }
+
+        let m = cargo.minerals.min(req.minerals);
+        let e = cargo.energy.min(req.energy);
+        if m == Amt::ZERO && e == Amt::ZERO {
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::TransferToStructure,
+                ship: req.ship,
+                result: CommandResult::Rejected {
+                    reason: "nothing to transfer".to_string(),
+                },
+                completed_at: clock.elapsed,
+            });
+            continue;
+        }
+        cargo.minerals = cargo.minerals.sub(m);
+        cargo.energy = cargo.energy.sub(e);
+        platform.accumulated.minerals = platform.accumulated.minerals.add(m);
+        platform.accumulated.energy = platform.accumulated.energy.add(e);
+        info!(
+            "Ship {} transferred {}m/{}e to platform {:?}",
+            ship.name,
+            m.to_f64(),
+            e.to_f64(),
+            req.structure
         );
+        executed.write(CommandExecuted {
+            command_id: req.command_id,
+            kind: CommandKind::TransferToStructure,
+            ship: req.ship,
+            result: CommandResult::Ok,
+            completed_at: clock.elapsed,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LoadFromScrapyard
+// ---------------------------------------------------------------------------
+
+/// Handles `LoadFromScrapyardRequested`. Auto-injects MoveToCoordinates
+/// when not co-located. Drains as much as the ship can hold; minerals are
+/// taken first, then energy fills remaining headroom (same algorithm as
+/// the legacy code).
+#[allow(clippy::too_many_arguments)]
+pub fn handle_load_from_scrapyard_requested(
+    clock: Res<GameClock>,
+    balance: Res<crate::technology::GameBalance>,
+    registry: Res<StructureRegistry>,
+    mut reqs: MessageReader<LoadFromScrapyardRequested>,
+    mut executed: MessageWriter<CommandExecuted>,
+    mut ships: Query<(&Ship, &Position, &mut CommandQueue, &mut Cargo, &ShipModifiers)>,
+    mut scrapyards: Query<(&Position, &mut Scrapyard), Without<Ship>>,
+) {
+    let mass_per_slot_raw = balance.mass_per_item_slot().0;
+
+    for req in reqs.read() {
+        let Ok((ship, ship_pos, mut queue, mut cargo, ship_mods)) = ships.get_mut(req.ship) else {
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::LoadFromScrapyard,
+                ship: req.ship,
+                result: CommandResult::Rejected {
+                    reason: "ship unavailable".to_string(),
+                },
+                completed_at: clock.elapsed,
+            });
+            continue;
+        };
+
+        let Ok((scrap_pos, mut scrap)) = scrapyards.get_mut(req.structure) else {
+            warn!(
+                "LoadFromScrapyard: target {:?} has no Scrapyard",
+                req.structure
+            );
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::LoadFromScrapyard,
+                ship: req.ship,
+                result: CommandResult::Rejected {
+                    reason: "target not a scrapyard".to_string(),
+                },
+                completed_at: clock.elapsed,
+            });
+            continue;
+        };
+
+        if ship_pos.distance_to(scrap_pos) > DEPLOY_POSITION_EPSILON {
+            queue
+                .commands
+                .insert(0, QueuedCommand::LoadFromScrapyard { structure: req.structure });
+            queue.commands.insert(
+                0,
+                QueuedCommand::MoveToCoordinates {
+                    target: scrap_pos.as_array(),
+                },
+            );
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::LoadFromScrapyard,
+                ship: req.ship,
+                result: CommandResult::Deferred,
+                completed_at: clock.elapsed,
+            });
+            continue;
+        }
+
+        let cap = ship_mods.cargo_capacity.final_value();
+        let lookup = |id: &str| -> Option<u32> {
+            registry
+                .get(id)
+                .and_then(|d| d.deliverable.as_ref().map(|m| m.cargo_size))
+        };
+        let current_mass = cargo.total_mass_with(&lookup, mass_per_slot_raw);
+        let headroom = if current_mass >= cap {
+            Amt::ZERO
+        } else {
+            Amt(cap.0 - current_mass.0)
+        };
+        let to_take_m = scrap.remaining.minerals.min(headroom);
+        let headroom_after_m = Amt(headroom.0.saturating_sub(to_take_m.0));
+        let to_take_e = scrap.remaining.energy.min(headroom_after_m);
+
+        if to_take_m == Amt::ZERO && to_take_e == Amt::ZERO {
+            executed.write(CommandExecuted {
+                command_id: req.command_id,
+                kind: CommandKind::LoadFromScrapyard,
+                ship: req.ship,
+                result: CommandResult::Rejected {
+                    reason: "no cargo space".to_string(),
+                },
+                completed_at: clock.elapsed,
+            });
+            continue;
+        }
+
+        cargo.minerals = cargo.minerals.add(to_take_m);
+        cargo.energy = cargo.energy.add(to_take_e);
+        scrap.remaining.minerals = scrap.remaining.minerals.sub(to_take_m);
+        scrap.remaining.energy = scrap.remaining.energy.sub(to_take_e);
+        info!(
+            "Ship {} salvaged {}m/{}e from scrapyard {:?}",
+            ship.name,
+            to_take_m.to_f64(),
+            to_take_e.to_f64(),
+            req.structure
+        );
+        executed.write(CommandExecuted {
+            command_id: req.command_id,
+            kind: CommandKind::LoadFromScrapyard,
+            ship: req.ship,
+            result: CommandResult::Ok,
+            completed_at: clock.elapsed,
+        });
     }
 }

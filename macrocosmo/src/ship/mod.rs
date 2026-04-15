@@ -217,26 +217,17 @@ impl Plugin for ShipPlugin {
                 process_settling,
                 process_refitting,
                 process_pending_ship_commands,
-                // #223: Deliverable ops run BEFORE the FTL router so any
-                // injected MoveTo/MoveToCoordinates is dispatched this tick.
-                deliverable_ops::process_deliverable_commands
-                    .after(sublight_movement_system)
-                    .after(process_ftl_travel)
-                    .after(process_surveys),
-                // #296 (S-3): Resolve Core deploy requests into actual CoreShip
-                // entities, grouping same-tick duplicates and tie-breaking via
-                // GameRng. #334 Phase 2 (Commit 2): renamed from
-                // `resolve_core_deploys` and migrated to `MessageReader<CoreDeployRequested>`.
-                // The per-tick ordering with `handle_deploy_deliverable_requested`
-                // (which emits the messages) is declared in the separate
-                // dispatcher `add_systems` call below.
-                core_deliverable::handle_core_deploy_requested
-                    .after(deliverable_ops::process_deliverable_commands),
+                // #296 (S-3) / #334 Phase 2 Commit 2: Resolve Core deploy
+                // requests into actual CoreShip entities, grouping same-tick
+                // duplicates and tie-breaking via GameRng. Per-tick ordering
+                // with `handle_deploy_deliverable_requested` (which emits the
+                // messages) is declared in the dispatcher `add_systems` call
+                // below.
+                core_deliverable::handle_core_deploy_requested,
                 process_command_queue
                     .after(sublight_movement_system)
                     .after(process_ftl_travel)
-                    .after(process_surveys)
-                    .after(deliverable_ops::process_deliverable_commands),
+                    .after(process_surveys),
                 resolve_combat,
                 tick_ship_repair,
                 // #117: Courier automation — runs before process_command_queue
@@ -300,9 +291,12 @@ impl Plugin for ShipPlugin {
                 // message that `handle_core_deploy_requested` drains.
                 handlers::handle_load_deliverable_requested,
                 handlers::handle_deploy_deliverable_requested,
+                // #334 Phase 2 (Commit 3): Transfer / LoadFromScrapyard
+                // handlers.
+                handlers::handle_transfer_to_structure_requested,
+                handlers::handle_load_from_scrapyard_requested,
             )
                 .chain()
-                .after(deliverable_ops::process_deliverable_commands)
                 .after(sublight_movement_system)
                 .after(process_ftl_travel)
                 .after(process_surveys)
@@ -325,6 +319,8 @@ impl Plugin for ShipPlugin {
                 .after(handlers::handle_move_to_coordinates_requested)
                 .after(handlers::handle_load_deliverable_requested)
                 .after(handlers::handle_deploy_deliverable_requested)
+                .after(handlers::handle_transfer_to_structure_requested)
+                .after(handlers::handle_load_from_scrapyard_requested)
                 .after(core_deliverable::handle_core_deploy_requested)
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),

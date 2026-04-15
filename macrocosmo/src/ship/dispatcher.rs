@@ -21,8 +21,8 @@
 use bevy::prelude::*;
 
 use super::command_events::{
-    CommandId, DeployDeliverableRequested, LoadDeliverableRequested, MoveRequested,
-    MoveToCoordinatesRequested, NextCommandId,
+    CommandId, DeployDeliverableRequested, LoadDeliverableRequested, LoadFromScrapyardRequested,
+    MoveRequested, MoveToCoordinatesRequested, NextCommandId, TransferToStructureRequested,
 };
 use super::routing::PendingRoute;
 use super::{CommandQueue, QueuedCommand, Ship, ShipState};
@@ -56,6 +56,8 @@ pub fn dispatch_queued_commands(
     mut move_xy_req: MessageWriter<MoveToCoordinatesRequested>,
     mut load_req: MessageWriter<LoadDeliverableRequested>,
     mut deploy_req: MessageWriter<DeployDeliverableRequested>,
+    mut transfer_req: MessageWriter<TransferToStructureRequested>,
+    mut scrap_req: MessageWriter<LoadFromScrapyardRequested>,
     // #334 Phase 1: append a `Dispatched` entry to the player empire's
     // CommandLog on each successful validation. The bridge system
     // `bridge_command_executed_to_log` finalizes via `CommandId` match.
@@ -229,16 +231,71 @@ pub fn dispatch_queued_commands(
                     ship.name, item_index, command_id.0
                 );
             }
+            QueuedCommand::TransferToStructure {
+                structure,
+                minerals,
+                energy,
+            } => {
+                let structure = *structure;
+                let minerals = *minerals;
+                let energy = *energy;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                transfer_req.write(TransferToStructureRequested {
+                    command_id,
+                    ship: ship_entity,
+                    structure,
+                    minerals,
+                    energy,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!(
+                            "{} → TransferToStructure {:?} ({}m/{}e)",
+                            ship.name,
+                            structure,
+                            minerals.to_f64(),
+                            energy.to_f64()
+                        ),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} TransferToStructureRequested -> {:?} (cmd {})",
+                    ship.name, structure, command_id.0
+                );
+            }
+            QueuedCommand::LoadFromScrapyard { structure } => {
+                let structure = *structure;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                scrap_req.write(LoadFromScrapyardRequested {
+                    command_id,
+                    ship: ship_entity,
+                    structure,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → LoadFromScrapyard {:?}", ship.name, structure),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} LoadFromScrapyardRequested -> {:?} (cmd {})",
+                    ship.name, structure, command_id.0
+                );
+            }
             // Non-migrated variants: leave the head untouched so the legacy
-            // `process_command_queue` / `process_deliverable_commands`
-            // systems consume them this same tick (they run .after(dispatcher)).
+            // `process_command_queue` system consumes them this same tick.
             QueuedCommand::Survey { .. }
             | QueuedCommand::Colonize { .. }
-            | QueuedCommand::Scout { .. }
-            | QueuedCommand::TransferToStructure { .. }
-            | QueuedCommand::LoadFromScrapyard { .. } => {
-                // Phase 2 (later commits) / 3 will migrate these. For now,
-                // do nothing — the legacy systems pick them up.
+            | QueuedCommand::Scout { .. } => {
+                // Commit 4 (Survey/Colonize) / Phase 3 (Scout) will migrate
+                // these. For now, do nothing — the legacy systems pick them up.
             }
         }
     }

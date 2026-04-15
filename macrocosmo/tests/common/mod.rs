@@ -425,9 +425,6 @@ pub fn test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
-            // #223: Deliverable ops run before process_command_queue so any
-            // injected MoveTo reaches the router in the same frame.
-            macrocosmo::ship::deliverable_ops::process_deliverable_commands,
             // #334 Phase 1: dispatcher + MoveTo/MoveToCoordinates handlers
             // run before process_command_queue so the PendingRoute filter
             // on the legacy system excludes ships whose MoveTo was just
@@ -438,6 +435,9 @@ pub fn test_app() -> App {
             // #334 Phase 2 (Commit 1): deliverable handlers.
             macrocosmo::ship::handlers::handle_load_deliverable_requested,
             macrocosmo::ship::handlers::handle_deploy_deliverable_requested,
+            // #334 Phase 2 (Commit 3): transfer / scrapyard handlers.
+            macrocosmo::ship::handlers::handle_transfer_to_structure_requested,
+            macrocosmo::ship::handlers::handle_load_from_scrapyard_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
@@ -679,7 +679,6 @@ pub fn full_test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
-            macrocosmo::ship::deliverable_ops::process_deliverable_commands,
             // #334 Phase 1: event-driven MoveTo path alongside legacy queue.
             macrocosmo::ship::dispatcher::dispatch_queued_commands,
             macrocosmo::ship::handlers::handle_move_requested,
@@ -687,6 +686,9 @@ pub fn full_test_app() -> App {
             // #334 Phase 2 (Commit 1): deliverable handlers.
             macrocosmo::ship::handlers::handle_load_deliverable_requested,
             macrocosmo::ship::handlers::handle_deploy_deliverable_requested,
+            // #334 Phase 2 (Commit 3): transfer / scrapyard handlers.
+            macrocosmo::ship::handlers::handle_transfer_to_structure_requested,
+            macrocosmo::ship::handlers::handle_load_from_scrapyard_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
