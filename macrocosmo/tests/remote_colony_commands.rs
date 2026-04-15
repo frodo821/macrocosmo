@@ -12,8 +12,8 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue, BuildingQueue, SystemBuildingQueue};
 use macrocosmo::communication::{
-    self, BuildingKind, BuildingScope, ColonyCommand, CommandLog, PendingColonyDispatch,
-    PendingColonyDispatches, PendingCommand, RemoteCommand, MAX_DISPATCH_RETRY_FRAMES,
+    self, BuildingKind, BuildingScope, ColonyCommand, CommandLog, MAX_DISPATCH_RETRY_FRAMES,
+    PendingColonyDispatch, PendingColonyDispatches, PendingCommand, RemoteCommand,
 };
 use macrocosmo::components::Position;
 use macrocosmo::player::{Player, PlayerEmpire, StationedAt};

@@ -5,15 +5,13 @@ use crate::galaxy::StarSystem;
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
-use super::movement::{
-    start_ftl_travel_full, start_sublight_travel_with_bonus, PortParams,
-};
+use super::movement::{PortParams, start_ftl_travel_full, start_sublight_travel_with_bonus};
+use super::routing;
 use super::survey::start_survey_with_bonus;
 use super::{
-    CommandQueue, QueuedCommand, PendingShipCommand, ShipCommand, RulesOfEngagement,
-    Ship, ShipState,
+    CommandQueue, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship, ShipCommand,
+    ShipState,
 };
-use super::routing;
 
 // --- Pending ship command processing (#33) ---
 
@@ -91,7 +89,8 @@ pub fn process_pending_ship_commands(
                     continue;
                 };
                 // Try FTL first, fall back to sublight
-                let port_params = system_buildings.get(docked_system)
+                let port_params = system_buildings
+                    .get(docked_system)
                     .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
                     .unwrap_or(PortParams::NONE);
                 match start_ftl_travel_full(
@@ -132,10 +131,7 @@ pub fn process_pending_ship_commands(
                                 );
                             }
                             Err(e) => {
-                                info!(
-                                    "Remote move command rejected for {}: {}",
-                                    ship.name, e,
-                                );
+                                info!("Remote move command rejected for {}: {}", ship.name, e,);
                             }
                         }
                     }
@@ -147,7 +143,18 @@ pub fn process_pending_ship_commands(
                     commands.entity(cmd_entity).despawn();
                     continue;
                 };
-                match start_survey_with_bonus(&mut state, &ship, tgt, ship_pos, tgt_pos, clock.elapsed, global_params.survey_range_bonus, &design_registry, survey_range, survey_duration) {
+                match start_survey_with_bonus(
+                    &mut state,
+                    &ship,
+                    tgt,
+                    ship_pos,
+                    tgt_pos,
+                    clock.elapsed,
+                    global_params.survey_range_bonus,
+                    &design_registry,
+                    survey_range,
+                    survey_duration,
+                ) {
                     Ok(()) => {
                         info!(
                             "Remote survey command executed: {} surveying {}",
@@ -155,10 +162,7 @@ pub fn process_pending_ship_commands(
                         );
                     }
                     Err(e) => {
-                        info!(
-                            "Remote survey command for {} failed: {}",
-                            ship.name, e,
-                        );
+                        info!("Remote survey command for {} failed: {}", ship.name, e,);
                     }
                 }
             }
@@ -216,7 +220,17 @@ pub fn process_command_queue(
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
     balance: Res<crate::technology::GameBalance>,
     empire_knowledge_q: Query<&crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
-    mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position, Option<&RulesOfEngagement>), Without<routing::PendingRoute>>,
+    mut ships: Query<
+        (
+            Entity,
+            &Ship,
+            &mut ShipState,
+            &mut CommandQueue,
+            &Position,
+            Option<&RulesOfEngagement>,
+        ),
+        Without<routing::PendingRoute>,
+    >,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     _system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
@@ -288,8 +302,7 @@ pub fn process_command_queue(
                 else {
                     unreachable!("outer match guarantees Scout variant");
                 };
-                let Ok((_target_entity, _target_star, _target_pos)) =
-                    systems.get(target_system)
+                let Ok((_target_entity, _target_star, _target_pos)) = systems.get(target_system)
                 else {
                     warn!("Queued Scout target no longer exists");
                     queue.sync_prediction(ship_pos.as_array(), docked_system);
@@ -298,19 +311,13 @@ pub fn process_command_queue(
                 // Non-FTL ships are disallowed from Scout — scouts must
                 // leap to the target. Reject early with a warning.
                 if ship.ftl_range <= 0.0 {
-                    warn!(
-                        "Scout rejected: ship {} has no FTL capability",
-                        ship.name
-                    );
+                    warn!("Scout rejected: ship {} has no FTL capability", ship.name);
                     queue.sync_prediction(ship_pos.as_array(), docked_system);
                     continue;
                 }
                 // Must carry the scout module.
                 if !super::scout::ship_has_scout_module(ship) {
-                    warn!(
-                        "Scout rejected: ship {} lacks a scout module",
-                        ship.name
-                    );
+                    warn!("Scout rejected: ship {} lacks a scout module", ship.name);
                     queue.sync_prediction(ship_pos.as_array(), docked_system);
                     continue;
                 }
@@ -359,7 +366,8 @@ pub fn process_command_queue(
                 let next = queue.commands.remove(0);
                 match next {
                     QueuedCommand::Survey { system: target } => {
-                        let Ok((_target_entity, target_star, target_pos)) = systems.get(target) else {
+                        let Ok((_target_entity, target_star, target_pos)) = systems.get(target)
+                        else {
                             warn!("Queued Survey target no longer exists");
                             queue.sync_prediction(ship_pos.as_array(), docked_system);
                             continue;
@@ -367,9 +375,16 @@ pub fn process_command_queue(
                         // #101: If not docked at the target system, auto-insert a move command.
                         // #185: Loitering ships also need to move first.
                         if docked_system != Some(target) {
-                            queue.commands.insert(0, QueuedCommand::Survey { system: target });
-                            queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
-                            info!("Queue: Ship {} not at target, auto-inserting move before survey of {}", ship.name, target_star.name);
+                            queue
+                                .commands
+                                .insert(0, QueuedCommand::Survey { system: target });
+                            queue
+                                .commands
+                                .insert(0, QueuedCommand::MoveTo { system: target });
+                            info!(
+                                "Queue: Ship {} not at target, auto-inserting move before survey of {}",
+                                ship.name, target_star.name
+                            );
                             continue;
                         }
                         let origin = Position::from(ship_pos.as_array());
@@ -386,10 +401,7 @@ pub fn process_command_queue(
                             survey_duration_base,
                         ) {
                             Ok(()) => {
-                                info!(
-                                    "Queue: Ship {} surveying {}",
-                                    ship.name, target_star.name
-                                );
+                                info!("Queue: Ship {} surveying {}", ship.name, target_star.name);
                             }
                             Err(e) => {
                                 warn!("Queue: Survey failed for {}: {}", ship.name, e);
@@ -397,34 +409,50 @@ pub fn process_command_queue(
                         }
                         queue.sync_prediction(ship_pos.as_array(), docked_system);
                     }
-                    QueuedCommand::Colonize { system: target, planet } => {
-                        let Ok((_target_entity, target_star, _target_pos)) = systems.get(target) else {
+                    QueuedCommand::Colonize {
+                        system: target,
+                        planet,
+                    } => {
+                        let Ok((_target_entity, target_star, _target_pos)) = systems.get(target)
+                        else {
                             warn!("Queued Colonize target no longer exists");
                             queue.sync_prediction(ship_pos.as_array(), docked_system);
                             continue;
                         };
                         if docked_system != Some(target) {
-                            queue.commands.insert(0, QueuedCommand::Colonize { system: target, planet });
-                            queue.commands.insert(0, QueuedCommand::MoveTo { system: target });
-                            info!("Queue: Ship {} not at target, auto-inserting move before colonize of {}", ship.name, target_star.name);
+                            queue.commands.insert(
+                                0,
+                                QueuedCommand::Colonize {
+                                    system: target,
+                                    planet,
+                                },
+                            );
+                            queue
+                                .commands
+                                .insert(0, QueuedCommand::MoveTo { system: target });
+                            info!(
+                                "Queue: Ship {} not at target, auto-inserting move before colonize of {}",
+                                ship.name, target_star.name
+                            );
                             continue;
                         }
                         if !design_registry.can_colonize(&ship.design_id) {
-                            warn!("Queue: Ship {} cannot colonize (not a colony ship)", ship.name);
+                            warn!(
+                                "Queue: Ship {} cannot colonize (not a colony ship)",
+                                ship.name
+                            );
                             queue.sync_prediction(ship_pos.as_array(), docked_system);
                             continue;
                         }
-                        let docked_sys = docked_system.expect("survey/colonize already required docked");
+                        let docked_sys =
+                            docked_system.expect("survey/colonize already required docked");
                         *state = ShipState::Settling {
                             system: docked_sys,
                             planet,
                             started_at: clock.elapsed,
                             completes_at: clock.elapsed + settling_duration,
                         };
-                        info!(
-                            "Queue: Ship {} colonizing {}",
-                            ship.name, target_star.name
-                        );
+                        info!("Queue: Ship {} colonizing {}", ship.name, target_star.name);
                         queue.sync_prediction(ship_pos.as_array(), docked_system);
                     }
                     QueuedCommand::MoveToCoordinates { .. } | QueuedCommand::MoveTo { .. } => {} // handled above

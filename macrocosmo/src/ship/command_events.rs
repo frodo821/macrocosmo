@@ -294,9 +294,7 @@ mod tests {
 
         // Write 100 distinct MoveRequested messages in ascending id order.
         {
-            let mut messages = app
-                .world_mut()
-                .resource_mut::<Messages<MoveRequested>>();
+            let mut messages = app.world_mut().resource_mut::<Messages<MoveRequested>>();
             for i in 1..=100u64 {
                 messages.write(MoveRequested {
                     command_id: CommandId(i),

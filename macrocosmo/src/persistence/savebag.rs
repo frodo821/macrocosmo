@@ -329,10 +329,16 @@ pub struct SavedHostileHitpoints {
 
 impl SavedHostileHitpoints {
     pub fn from_live(v: &HostileHitpoints) -> Self {
-        Self { hp: v.hp, max_hp: v.max_hp }
+        Self {
+            hp: v.hp,
+            max_hp: v.max_hp,
+        }
     }
     pub fn into_live(self) -> HostileHitpoints {
-        HostileHitpoints { hp: self.hp, max_hp: self.max_hp }
+        HostileHitpoints {
+            hp: self.hp,
+            max_hp: self.max_hp,
+        }
     }
 }
 
@@ -344,10 +350,16 @@ pub struct SavedHostileStats {
 
 impl SavedHostileStats {
     pub fn from_live(v: &HostileStats) -> Self {
-        Self { strength: v.strength, evasion: v.evasion }
+        Self {
+            strength: v.strength,
+            evasion: v.evasion,
+        }
     }
     pub fn into_live(self) -> HostileStats {
-        HostileStats { strength: self.strength, evasion: self.evasion }
+        HostileStats {
+            strength: self.strength,
+            evasion: self.evasion,
+        }
     }
 }
 

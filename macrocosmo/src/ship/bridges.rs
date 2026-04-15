@@ -71,9 +71,7 @@ mod tests {
     }
 
     fn spawn_empire_with_log(world: &mut World, entries: Vec<CommandLogEntry>) -> Entity {
-        world
-            .spawn((PlayerEmpire, CommandLog { entries }))
-            .id()
+        world.spawn((PlayerEmpire, CommandLog { entries })).id()
     }
 
     #[test]
@@ -97,7 +95,9 @@ mod tests {
         app.update();
 
         let log = {
-            let mut q = app.world_mut().query_filtered::<&CommandLog, With<PlayerEmpire>>();
+            let mut q = app
+                .world_mut()
+                .query_filtered::<&CommandLog, With<PlayerEmpire>>();
             q.single(app.world()).unwrap().clone_entries()
         };
         assert_eq!(log[0].status, CommandLogStatus::Executed);
@@ -148,7 +148,9 @@ mod tests {
         }
         app.update();
         let log = {
-            let mut q = app.world_mut().query_filtered::<&CommandLog, With<PlayerEmpire>>();
+            let mut q = app
+                .world_mut()
+                .query_filtered::<&CommandLog, With<PlayerEmpire>>();
             q.single(app.world()).unwrap().clone_entries()
         };
         assert_eq!(
@@ -180,7 +182,9 @@ mod tests {
         }
         app.update();
         let log = {
-            let mut q = app.world_mut().query_filtered::<&CommandLog, With<PlayerEmpire>>();
+            let mut q = app
+                .world_mut()
+                .query_filtered::<&CommandLog, With<PlayerEmpire>>();
             q.single(app.world()).unwrap().clone_entries()
         };
         assert_eq!(log[0].status, CommandLogStatus::Deferred);
@@ -208,7 +212,9 @@ mod tests {
         }
         app.update();
         let log = {
-            let mut q = app.world_mut().query_filtered::<&CommandLog, With<PlayerEmpire>>();
+            let mut q = app
+                .world_mut()
+                .query_filtered::<&CommandLog, With<PlayerEmpire>>();
             q.single(app.world()).unwrap().clone_entries()
         };
         // The kept entry stays Dispatched.

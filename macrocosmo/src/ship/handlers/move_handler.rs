@@ -19,10 +19,9 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
 use crate::ship::command_events::{
-    CommandExecuted, CommandKind, CommandResult,
-    MoveRequested, MoveToCoordinatesRequested,
+    CommandExecuted, CommandKind, CommandResult, MoveRequested, MoveToCoordinatesRequested,
 };
-use crate::ship::movement::{start_sublight_travel_with_bonus, PortParams};
+use crate::ship::movement::{PortParams, start_sublight_travel_with_bonus};
 use crate::ship::routing;
 use crate::ship::{CommandQueue, RulesOfEngagement, Ship, ShipState};
 

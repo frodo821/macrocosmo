@@ -20,9 +20,7 @@
 
 use bevy::prelude::*;
 
-use super::command_events::{
-    CommandId, MoveRequested, MoveToCoordinatesRequested, NextCommandId,
-};
+use super::command_events::{CommandId, MoveRequested, MoveToCoordinatesRequested, NextCommandId};
 use super::routing::PendingRoute;
 use super::{CommandQueue, QueuedCommand, Ship, ShipState};
 use crate::communication::{CommandLog, CommandLogEntry};
@@ -166,11 +164,7 @@ pub fn dispatch_queued_commands(
                 }
                 info!(
                     "dispatch: ship {} MoveToCoordinatesRequested -> ({:.2},{:.2},{:.2}) (cmd {})",
-                    ship.name,
-                    target_arr[0],
-                    target_arr[1],
-                    target_arr[2],
-                    command_id.0
+                    ship.name, target_arr[0], target_arr[1], target_arr[2], command_id.0
                 );
             }
             // Non-migrated variants: leave the head untouched so the legacy
@@ -279,13 +273,7 @@ mod tests {
         let mut app = make_app();
         let target = spawn_test_system(app.world_mut(), [5.0, 0.0, 0.0]);
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
-        let ship = spawn_test_ship(
-            app.world_mut(),
-            [0.0, 0.0, 0.0],
-            Some(origin),
-            0.5,
-            10.0,
-        );
+        let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
             q.commands.push(QueuedCommand::MoveTo { system: target });
@@ -312,13 +300,7 @@ mod tests {
         let target = spawn_test_system(app.world_mut(), [5.0, 0.0, 0.0]);
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
         // Immobile: 0 sublight, 0 ftl_range.
-        let ship = spawn_test_ship(
-            app.world_mut(),
-            [0.0, 0.0, 0.0],
-            Some(origin),
-            0.0,
-            0.0,
-        );
+        let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.0, 0.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
             q.commands.push(QueuedCommand::MoveTo { system: target });
@@ -337,8 +319,7 @@ mod tests {
     fn dispatcher_drops_already_at_target() {
         let mut app = make_app();
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
-        let ship =
-            spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
+        let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
             q.commands.push(QueuedCommand::MoveTo { system: origin });
@@ -358,8 +339,7 @@ mod tests {
         let mut app = make_app();
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
         let phantom = Entity::from_raw_u32(9999).unwrap();
-        let ship =
-            spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
+        let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
             q.commands.push(QueuedCommand::MoveTo { system: phantom });
@@ -377,12 +357,12 @@ mod tests {
     fn dispatches_move_to_coordinates_and_pops() {
         let mut app = make_app();
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
-        let ship =
-            spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
+        let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
-            q.commands
-                .push(QueuedCommand::MoveToCoordinates { target: [3.0, 4.0, 0.0] });
+            q.commands.push(QueuedCommand::MoveToCoordinates {
+                target: [3.0, 4.0, 0.0],
+            });
         }
         app.update();
 
@@ -402,17 +382,15 @@ mod tests {
         let mut app = make_app();
         let target = spawn_test_system(app.world_mut(), [5.0, 0.0, 0.0]);
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
-        let ship =
-            spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
+        let ship = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
             q.commands.push(QueuedCommand::Survey { system: target });
-            q.commands
-                .push(QueuedCommand::TransferToStructure {
-                    structure: target,
-                    minerals: Amt(0),
-                    energy: Amt(0),
-                });
+            q.commands.push(QueuedCommand::TransferToStructure {
+                structure: target,
+                minerals: Amt(0),
+                energy: Amt(0),
+            });
         }
         app.update();
 
@@ -432,10 +410,8 @@ mod tests {
         let origin = spawn_test_system(app.world_mut(), [0.0, 0.0, 0.0]);
         let t1 = spawn_test_system(app.world_mut(), [5.0, 0.0, 0.0]);
         let t2 = spawn_test_system(app.world_mut(), [6.0, 0.0, 0.0]);
-        let ship_a =
-            spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
-        let ship_b =
-            spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
+        let ship_a = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
+        let ship_b = spawn_test_ship(app.world_mut(), [0.0, 0.0, 0.0], Some(origin), 0.5, 10.0);
         {
             let mut q = app.world_mut().get_mut::<CommandQueue>(ship_a).unwrap();
             q.commands.push(QueuedCommand::MoveTo { system: t1 });
