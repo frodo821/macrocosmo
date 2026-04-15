@@ -15,7 +15,9 @@ use crate::scripting::helpers::extract_id_from_lua_value;
 ///     script supplies `cost` (legacy backwards-compat path).
 ///   - `_deliverable_definitions` — populated by `define_deliverable { ... }`;
 ///     produces `DeliverableDefinition` with `deliverable = Some(_)`.
-pub fn parse_structure_definitions(lua: &mlua::Lua) -> Result<Vec<StructureDefinition>, mlua::Error> {
+pub fn parse_structure_definitions(
+    lua: &mlua::Lua,
+) -> Result<Vec<StructureDefinition>, mlua::Error> {
     let mut result = Vec::new();
 
     // Pass 1: `define_structure` — world-side structures.
@@ -46,10 +48,18 @@ pub fn parse_structure_definitions(lua: &mlua::Lua) -> Result<Vec<StructureDefin
 ///
 /// `deliverable_api = false` means `define_structure` (world-side only). `cost`
 /// is honoured for legacy scripts but no DeliverableMetadata is synthesised.
-fn parse_one(lua: &mlua::Lua, table: &mlua::Table, deliverable_api: bool) -> Result<StructureDefinition, mlua::Error> {
+fn parse_one(
+    lua: &mlua::Lua,
+    table: &mlua::Table,
+    deliverable_api: bool,
+) -> Result<StructureDefinition, mlua::Error> {
     let id: String = table.get("id")?;
-    let name: String = table.get::<Option<String>>("name")?.unwrap_or_else(|| id.clone());
-    let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+    let name: String = table
+        .get::<Option<String>>("name")?
+        .unwrap_or_else(|| id.clone());
+    let description: String = table
+        .get::<Option<String>>("description")?
+        .unwrap_or_default();
     let max_hp: f64 = table.get::<Option<f64>>("max_hp")?.unwrap_or(100.0);
 
     let energy_drain_raw: f64 = table.get::<Option<f64>>("energy_drain")?.unwrap_or(0.0);
@@ -60,6 +70,15 @@ fn parse_one(lua: &mlua::Lua, table: &mlua::Table, deliverable_api: bool) -> Res
 
     // `cost` may be Nil (upgrade-only target), a table (minerals/energy), or missing.
     let cost_opt = parse_cost_opt(table)?;
+
+    // #296 (S-3): Optional `spawns_as_ship = "<design_id>"` marks a
+    // deliverable as one that materialises into an immobile Ship on deploy
+    // (currently Infrastructure Cores). Accepts either a string or a
+    // reference table produced by `define_ship_design { id = ... }`.
+    let spawns_as_ship: Option<String> = match table.get::<mlua::Value>("spawns_as_ship")? {
+        mlua::Value::Nil => None,
+        other => Some(crate::scripting::extract_ref_id(&other)?),
+    };
 
     // Deliverable metadata (only populated when API-level or legacy cost present).
     let deliverable = if deliverable_api {
@@ -77,6 +96,7 @@ fn parse_one(lua: &mlua::Lua, table: &mlua::Table, deliverable_api: bool) -> Res
                     build_time,
                     cargo_size,
                     scrap_refund: scrap_refund.clamp(0.0, 1.0),
+                    spawns_as_ship: spawns_as_ship.clone(),
                 })
             }
             None => None,
@@ -96,6 +116,7 @@ fn parse_one(lua: &mlua::Lua, table: &mlua::Table, deliverable_api: bool) -> Res
                     build_time,
                     cargo_size,
                     scrap_refund: scrap_refund.clamp(0.0, 1.0),
+                    spawns_as_ship: spawns_as_ship.clone(),
                 })
             }
             None => None,
@@ -145,7 +166,9 @@ fn parse_cost_opt(table: &mlua::Table) -> Result<Option<ResourceCost>, mlua::Err
 }
 
 /// Parse `capabilities = { cap_name = { range = N }, ... }` as a HashMap.
-fn parse_capabilities_map(table: &mlua::Table) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
+fn parse_capabilities_map(
+    table: &mlua::Table,
+) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
     let caps_value: mlua::Value = table.get("capabilities")?;
     match caps_value {
         mlua::Value::Table(caps_table) => {
@@ -273,7 +296,10 @@ mod tests {
         assert_eq!(defs[0].name, "Sensor Buoy");
         assert_eq!(defs[0].description, "Detects sublight vessel movements.");
         assert_eq!(defs[0].max_hp, 20.0);
-        let meta = defs[0].deliverable.as_ref().expect("legacy cost should synthesise metadata");
+        let meta = defs[0]
+            .deliverable
+            .as_ref()
+            .expect("legacy cost should synthesise metadata");
         assert_eq!(meta.cost.minerals, Amt::units(50));
         assert_eq!(meta.cost.energy, Amt::units(30));
         assert_eq!(meta.build_time, 15);
@@ -403,8 +429,8 @@ mod tests {
     fn test_parse_structure_from_lua_file() {
         let engine = ScriptEngine::new().unwrap();
 
-        let structure_script =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/structures/definitions.lua");
+        let structure_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts/structures/definitions.lua");
         if !structure_script.exists() {
             // Skip if file doesn't exist yet (it may not be created yet during development)
             return;
@@ -427,7 +453,9 @@ mod tests {
         assert_eq!(buoy.name, "Sensor Buoy");
         assert!(buoy.capabilities.contains_key("detect_sublight"));
 
-        let relay = map.get("ftl_comm_relay").expect("ftl_comm_relay should exist");
+        let relay = map
+            .get("ftl_comm_relay")
+            .expect("ftl_comm_relay should exist");
         assert!(relay.capabilities.contains_key("ftl_comm_relay"));
 
         let interdictor = map.get("interdictor").expect("interdictor should exist");
@@ -526,7 +554,10 @@ mod tests {
         .unwrap();
 
         let defs = parse_structure_definitions(lua).unwrap();
-        let kit = defs.iter().find(|d| d.id == "defense_platform_kit").unwrap();
+        let kit = defs
+            .iter()
+            .find(|d| d.id == "defense_platform_kit")
+            .unwrap();
         assert_eq!(kit.upgrade_to.len(), 1);
         assert_eq!(kit.upgrade_to[0].target_id, "defense_platform");
         assert_eq!(kit.upgrade_to[0].cost.minerals, Amt::units(1800));
@@ -559,10 +590,7 @@ mod tests {
 
         let defs = parse_structure_definitions(lua).unwrap();
         let ns = defs.iter().find(|d| d.id == "new_structure").unwrap();
-        let uf = ns
-            .upgrade_from
-            .as_ref()
-            .expect("upgrade_from should parse");
+        let uf = ns.upgrade_from.as_ref().expect("upgrade_from should parse");
         assert_eq!(uf.target_id, "universal_platform");
         assert_eq!(uf.cost.minerals, Amt::units(500));
         assert_eq!(uf.cost.energy, Amt::units(300));

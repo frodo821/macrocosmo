@@ -28,6 +28,7 @@ use crate::knowledge::{
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
     Cargo, CargoItem, CommandQueue, QueuedCommand, Ship, ShipModifiers, ShipState,
+    core_deliverable::{CoreDeployTicket, PendingCoreDeploys},
 };
 
 /// Maximum position delta (in light-years) for a ship to be considered
@@ -61,15 +62,26 @@ pub fn process_deliverable_commands(
     structures: Query<(&DeepSpaceStructure, &Position), Without<Ship>>,
     player_q: Query<&StationedAt, Without<Ship>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
-    system_positions: Query<&Position, (Without<Ship>, With<crate::galaxy::StarSystem>)>,
+    // #296 (S-3): (entity, position) for all star systems — used both by the
+    // existing player-vantage lookup and by the new Core-deploy proximity
+    // match. A single tuple-style Query keeps the total param count under
+    // Bevy's 16-arg limit.
+    star_systems: Query<(Entity, &Position), (Without<Ship>, With<crate::galaxy::StarSystem>)>,
+    // #296 (S-3): Existing Core ships keyed by AtSystem for the
+    // "already-has-core" validation branch. Query is `With<CoreShip>` so it
+    // stays disjoint from any writable Ship query.
+    existing_cores: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
+    // #296 (S-3): Pending ticket queue — resolved downstream by
+    // `resolve_core_deploys` with tie-break + Core-ship spawn.
+    mut pending_cores: ResMut<PendingCoreDeploys>,
     mut fact_sys: FactSysParam,
 ) {
     let mass_per_slot_raw = balance.mass_per_item_slot().0;
     // #249: Snapshot player vantage once per tick.
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| system_positions.get(s).ok())
-        .map(|p| p.as_array());
+        .and_then(|s| star_systems.get(s).ok())
+        .map(|(_, p)| p.as_array());
     let player_aboard = player_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
@@ -152,7 +164,7 @@ pub fn process_deliverable_commands(
                     related_system: Some(system),
                 });
                 let origin_pos: Option<[f64; 3]> =
-                    system_positions.get(system).ok().map(|p| p.as_array());
+                    star_systems.get(system).ok().map(|(_, p)| p.as_array());
                 if let (Some(v), Some(op)) = (vantage, origin_pos) {
                     let fact = KnowledgeFact::StructureBuilt {
                         event_id: Some(event_id),
@@ -193,9 +205,83 @@ pub fn process_deliverable_commands(
                     continue;
                 };
                 let def_id = item.definition_id().to_string();
-                if registry.get(&def_id).is_none() {
+                let Some(def) = registry.get(&def_id) else {
                     warn!("DeployDeliverable: unknown definition {}", def_id);
                     queue.commands.remove(0);
+                    continue;
+                };
+                // #296 (S-3): Deliverables whose metadata carries
+                // `spawns_as_ship = Some(_)` are Core ships. Route them
+                // through PendingCoreDeploys instead of the deep-space
+                // structure spawn path. The ticket queue enforces validation
+                // (existing Core, tie-break) in a dedicated resolver.
+                if let Some(design_id) = def
+                    .deliverable
+                    .as_ref()
+                    .and_then(|m| m.spawns_as_ship.as_ref())
+                {
+                    // Identify target system by proximity. Deploy must be
+                    // inside a known system; a deep-space deploy makes the
+                    // ticket self-destruct (consume cargo + remove command).
+                    let mut target: Option<(Entity, Position)> = None;
+                    let mut best_d: f64 = f64::INFINITY;
+                    for (sys_entity, sys_pos) in star_systems.iter() {
+                        let dx = position[0] - sys_pos.x;
+                        let dy = position[1] - sys_pos.y;
+                        let dz = position[2] - sys_pos.z;
+                        let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                        if d <= crate::galaxy::SYSTEM_RADIUS_LY && d < best_d {
+                            best_d = d;
+                            target = Some((sys_entity, *sys_pos));
+                        }
+                    }
+                    let Some((target_system, sys_pos)) = target else {
+                        warn!(
+                            "Core deploy self-destruct: ship {} deployed {} in deep space",
+                            ship.name, def_id
+                        );
+                        cargo.items.remove(item_index);
+                        queue.commands.remove(0);
+                        continue;
+                    };
+                    // Early validation: already owned → self-destruct.
+                    let has_core = existing_cores
+                        .iter()
+                        .any(|at| at.0 == target_system);
+                    if has_core {
+                        info!(
+                            "Core deploy self-destruct: system {:?} already has a Core (ship {})",
+                            target_system, ship.name
+                        );
+                        cargo.items.remove(item_index);
+                        queue.commands.remove(0);
+                        continue;
+                    }
+                    let faction_owner = match ship.owner {
+                        crate::ship::Owner::Empire(f) => Some(f),
+                        crate::ship::Owner::Neutral => None,
+                    };
+                    let deploy_pos = [
+                        sys_pos.x + crate::galaxy::INNER_ORBIT_OFFSET_LY,
+                        sys_pos.y,
+                        sys_pos.z,
+                    ];
+                    pending_cores.tickets.push(CoreDeployTicket {
+                        deployer: _ship_entity,
+                        target_system,
+                        deploy_pos,
+                        faction_owner,
+                        owner: ship.owner,
+                        design_id: design_id.clone(),
+                        cargo_item_index: item_index,
+                        submitted_at: clock.elapsed,
+                    });
+                    cargo.items.remove(item_index);
+                    queue.commands.remove(0);
+                    info!(
+                        "Ship {} enqueued Core deploy in system {:?} (definition={})",
+                        ship.name, target_system, def_id
+                    );
                     continue;
                 }
                 let spawned = spawn_deliverable_entity(

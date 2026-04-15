@@ -222,6 +222,7 @@ fn test_building_built_event_fired_on_structure_complete() {
             build_time: 1,
             cargo_size: 1,
             scrap_refund: 0.0,
+            spawns_as_ship: None,
         }),
         upgrade_to: vec![UpgradeEdge {
             target_id: "outpost".into(),

@@ -3,14 +3,12 @@ use bevy::prelude::*;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::StarSystem;
-use crate::knowledge::{
- FactSysParam, KnowledgeFact, PlayerVantage,
-};
+use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
-use super::{Ship, ShipState, INITIAL_FTL_SPEED_C};
+use super::{INITIAL_FTL_SPEED_C, Ship, ShipState};
 
 /// Default port FTL range bonus in light-years (#46).
 /// Used as fallback when BuildingRegistry is unavailable; canonical values live in Lua.
@@ -24,7 +22,12 @@ pub const DEFAULT_PORT_TRAVEL_TIME_FACTOR: f64 = 0.8;
 
 // --- Sub-light travel ---
 
-/// #45: Accepts optional sublight_speed_bonus from GlobalParams
+/// #45: Accepts optional sublight_speed_bonus from GlobalParams.
+///
+/// #296: Returns `Err("ship is immobile")` when the ship's design confers no
+/// propulsion (both `sublight_speed` and `ftl_range` non-positive — see
+/// [`Ship::is_immobile`]). On success the ship transitions to
+/// [`ShipState::SubLight`]; on error `ship_state` is left unchanged.
 pub fn start_sublight_travel(
     ship_state: &mut ShipState,
     ship_pos: &Position,
@@ -32,8 +35,16 @@ pub fn start_sublight_travel(
     destination: Position,
     target_system: Option<Entity>,
     current_time: i64,
-) {
-    start_sublight_travel_with_bonus(ship_state, ship_pos, ship, destination, target_system, current_time, 0.0);
+) -> Result<(), &'static str> {
+    start_sublight_travel_with_bonus(
+        ship_state,
+        ship_pos,
+        ship,
+        destination,
+        target_system,
+        current_time,
+        0.0,
+    )
 }
 
 pub fn start_sublight_travel_with_bonus(
@@ -44,7 +55,14 @@ pub fn start_sublight_travel_with_bonus(
     target_system: Option<Entity>,
     current_time: i64,
     sublight_speed_bonus: f64,
-) {
+) -> Result<(), &'static str> {
+    // #296 (S-3): Gate immobile ships BEFORE writing SubLight state — otherwise
+    // sublight_travel_hexadies(dist, 0.0) would divide by zero and stall the
+    // ship mid-transit with no way to recover. Bonuses from global params
+    // cannot rescue a hull that has no propulsion at all.
+    if ship.is_immobile() {
+        return Err("ship is immobile");
+    }
     let origin = ship_pos.as_array();
     let dest = destination.as_array();
     let dist = distance_ly_arr(origin, dest);
@@ -57,6 +75,7 @@ pub fn start_sublight_travel_with_bonus(
         departed_at: current_time,
         arrival_at: current_time + travel_time,
     };
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -81,7 +100,11 @@ pub fn sublight_movement_system(
     for (mut state, mut pos, ship) in query.iter_mut() {
         let (origin, destination, target_system, departed_at, arrival_at) = match *state {
             ShipState::SubLight {
-                origin, destination, target_system, departed_at, arrival_at,
+                origin,
+                destination,
+                target_system,
+                departed_at,
+                arrival_at,
             } => (origin, destination, target_system, departed_at, arrival_at),
             _ => continue,
         };
@@ -104,7 +127,9 @@ pub fn sublight_movement_system(
             if let Some(system) = target_system {
                 *state = ShipState::Docked { system };
             } else {
-                *state = ShipState::Loitering { position: destination };
+                *state = ShipState::Loitering {
+                    position: destination,
+                };
             }
             continue;
         }
@@ -128,7 +153,9 @@ pub fn sublight_movement_system(
             if let Some(system) = target_system {
                 *state = ShipState::Docked { system };
             } else {
-                *state = ShipState::Loitering { position: destination };
+                *state = ShipState::Loitering {
+                    position: destination,
+                };
             }
         } else {
             pos.x = origin[0] + (destination[0] - origin[0]) * progress;
@@ -150,7 +177,18 @@ pub fn start_ftl_travel(
     dest_pos: &Position,
     current_time: i64,
 ) -> Result<(), &'static str> {
-    start_ftl_travel_with_bonus(ship_state, ship, origin_system, destination_system, origin_pos, dest_pos, current_time, 0.0, 1.0, PortParams::NONE)
+    start_ftl_travel_with_bonus(
+        ship_state,
+        ship,
+        origin_system,
+        destination_system,
+        origin_pos,
+        dest_pos,
+        current_time,
+        0.0,
+        1.0,
+        PortParams::NONE,
+    )
 }
 
 pub fn start_ftl_travel_with_bonus(
@@ -166,8 +204,16 @@ pub fn start_ftl_travel_with_bonus(
     port_params: PortParams,
 ) -> Result<(), &'static str> {
     start_ftl_travel_full(
-        ship_state, ship, origin_system, destination_system, origin_pos, dest_pos,
-        current_time, ftl_range_bonus, ftl_speed_multiplier, port_params,
+        ship_state,
+        ship,
+        origin_system,
+        destination_system,
+        origin_pos,
+        dest_pos,
+        current_time,
+        ftl_range_bonus,
+        ftl_speed_multiplier,
+        port_params,
         INITIAL_FTL_SPEED_C,
     )
 }
@@ -283,16 +329,20 @@ pub fn process_ftl_travel(
 
     for (ship, mut state, mut ship_pos) in ships.iter_mut() {
         let (destination_system, arrival_at) = match *state {
-            ShipState::InFTL { destination_system, arrival_at, .. } => {
-                (destination_system, arrival_at)
-            }
+            ShipState::InFTL {
+                destination_system,
+                arrival_at,
+                ..
+            } => (destination_system, arrival_at),
             _ => continue,
         };
 
         if clock.elapsed >= arrival_at {
             if let Ok((star, dest_pos)) = systems.get(destination_system) {
                 *ship_pos = *dest_pos;
-                *state = ShipState::Docked { system: destination_system };
+                *state = ShipState::Docked {
+                    system: destination_system,
+                };
                 // #249: Dual-write FTL arrival.
                 let event_id = fact_sys.allocate_event_id();
                 let desc = format!("{} arrived at {} via FTL", ship.name, star.name);

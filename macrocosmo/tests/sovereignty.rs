@@ -14,7 +14,7 @@ use common::{
 use macrocosmo::amount::Amt;
 use macrocosmo::faction::{FactionOwner, system_owner};
 use macrocosmo::galaxy::{AtSystem, Sovereignty};
-use macrocosmo::ship::Owner;
+use macrocosmo::ship::{CoreShip, Owner};
 
 /// With no Core ship stationed in a system, `system_owner` returns None.
 #[test]
@@ -25,7 +25,7 @@ fn system_owner_returns_none_when_no_core_ship() {
     // No Core ship spawned — query should yield nothing for this system.
     let mut q = app
         .world_mut()
-        .query::<(&AtSystem, &FactionOwner)>();
+        .query_filtered::<(&AtSystem, &FactionOwner), With<CoreShip>>();
     let query: Vec<_> = q.iter(app.world()).collect();
     // The query type mirrors the helper; run the helper directly through an
     // adapter system to exercise the exact signature.
@@ -37,7 +37,7 @@ fn system_owner_returns_none_when_no_core_ship() {
     let sys_target = sys;
     app.add_systems(
         Update,
-        move |at_system: Query<(&AtSystem, &FactionOwner)>| {
+        move |at_system: Query<(&AtSystem, &FactionOwner), With<CoreShip>>| {
             *result_w.lock().unwrap() = system_owner(sys_target, &at_system);
         },
     );
@@ -57,7 +57,7 @@ fn system_owner_returns_faction_when_core_ship_present() {
     let result_w = result.clone();
     app.add_systems(
         Update,
-        move |at_system: Query<(&AtSystem, &FactionOwner)>| {
+        move |at_system: Query<(&AtSystem, &FactionOwner), With<CoreShip>>| {
             *result_w.lock().unwrap() = system_owner(sys, &at_system);
         },
     );
