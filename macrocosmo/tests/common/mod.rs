@@ -450,6 +450,9 @@ pub fn test_app() -> App {
             macrocosmo::ship::handlers::handle_colonize_requested,
             // #334 Phase 3 (Commit 1): Scout handler.
             macrocosmo::ship::handlers::handle_scout_requested,
+            // #334 Phase 3 (Commit 2): AttackRequested skeleton (no-op
+            // foundation for #219 / #220).
+            macrocosmo::ship::handlers::handle_attack_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
@@ -714,6 +717,9 @@ pub fn full_test_app() -> App {
             macrocosmo::ship::handlers::handle_colonize_requested,
             // #334 Phase 3 (Commit 1): Scout handler.
             macrocosmo::ship::handlers::handle_scout_requested,
+            // #334 Phase 3 (Commit 2): AttackRequested skeleton (no-op
+            // foundation for #219 / #220).
+            macrocosmo::ship::handlers::handle_attack_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,

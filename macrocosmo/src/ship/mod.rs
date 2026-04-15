@@ -300,6 +300,10 @@ impl Plugin for ShipPlugin {
                 handlers::handle_colonize_requested,
                 // #334 Phase 3 (Commit 1): Scout handler.
                 handlers::handle_scout_requested,
+                // #334 Phase 3 (Commit 2): AttackRequested skeleton (no-op
+                // foundation for #219 / #220 — receives no messages today
+                // because no code path emits `AttackRequested` yet).
+                handlers::handle_attack_requested,
             )
                 .chain()
                 .after(sublight_movement_system)
@@ -329,6 +333,7 @@ impl Plugin for ShipPlugin {
                 .after(handlers::handle_survey_requested)
                 .after(handlers::handle_colonize_requested)
                 .after(handlers::handle_scout_requested)
+                .after(handlers::handle_attack_requested)
                 .after(core_deliverable::handle_core_deploy_requested)
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
