@@ -16,7 +16,7 @@ use macrocosmo::amount::Amt;
 use macrocosmo::colony::{Buildings, Colony, Production, ResourceStockpile};
 use macrocosmo::components::Position;
 use macrocosmo::condition::ScopedFlags;
-use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemModifiers};
+use macrocosmo::galaxy::{Biome, Planet, Sovereignty, StarSystem, SystemModifiers};
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::scripting::ScriptEngine;
@@ -85,19 +85,28 @@ fn scenario_world() -> World {
         ))
         .id();
 
+    // #335: Planet entities now carry a separate `Biome` component. The
+    // PlanetView.biome surface reads this component (no longer aliased to
+    // planet_type). Tests spawn both components explicitly here.
     let planet_earth = world
-        .spawn(Planet {
-            name: "Earth".into(),
-            system,
-            planet_type: "terrestrial".into(),
-        })
+        .spawn((
+            Planet {
+                name: "Earth".into(),
+                system,
+                planet_type: "terrestrial".into(),
+            },
+            Biome::new("temperate"),
+        ))
         .id();
     let _planet_mars = world
-        .spawn(Planet {
-            name: "Mars".into(),
-            system,
-            planet_type: "barren".into(),
-        })
+        .spawn((
+            Planet {
+                name: "Mars".into(),
+                system,
+                planet_type: "barren".into(),
+            },
+            Biome::new("arid"),
+        ))
         .id();
     world.spawn((
         Colony {
@@ -225,11 +234,13 @@ fn test_gamestate_view_hierarchical_navigation() {
         .unwrap()
     });
     assert!(summary.contains("Sol"), "Sol missing: {summary}");
+    // #335: PlanetView.biome is now the real Biome component id, not the
+    // planet_type placeholder. Earth's Biome is "temperate", Mars's is "arid".
     assert!(
-        summary.contains("Earth:terrestrial"),
+        summary.contains("Earth:temperate"),
         "Earth biome: {summary}"
     );
-    assert!(summary.contains("Mars:barren"), "Mars biome: {summary}");
+    assert!(summary.contains("Mars:arid"), "Mars biome: {summary}");
     assert!(summary.contains("pop=100"), "colony pop: {summary}");
     assert!(summary.contains("bld1=mine"), "building id: {summary}");
     assert!(summary.contains("m/hx=10"), "production: {summary}");

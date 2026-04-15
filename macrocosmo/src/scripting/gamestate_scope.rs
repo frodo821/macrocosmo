@@ -311,7 +311,9 @@ pub(crate) mod views {
     use crate::colony::{Colony, ResourceStockpile};
     use crate::components::Position;
     use crate::condition::ScopedFlags;
-    use crate::galaxy::{Planet, Sovereignty, StarSystem, SystemModifiers};
+    use crate::galaxy::{
+        Biome, DEFAULT_BIOME_ID, Planet, Sovereignty, StarSystem, SystemModifiers,
+    };
     use crate::player::{Empire, PlayerEmpire};
     use crate::ship::fleet::{Fleet, FleetMembers};
     use crate::ship::{Owner, Ship};
@@ -627,7 +629,15 @@ pub(crate) mod views {
         t.set("entity", entity.to_bits())?;
         t.set("name", planet.name.as_str())?;
         t.set("planet_type", planet.planet_type.as_str())?;
-        t.set("biome", planet.planet_type.as_str())?;
+        // #335: Real biome id from the Biome component, with a DEFAULT_BIOME_ID
+        // fallback for entities that somehow lack the component (e.g. legacy
+        // saves loaded before this issue shipped, or tests that spawn Planet
+        // directly without going through `generate_galaxy`).
+        let biome_id = eref
+            .get::<Biome>()
+            .map(|b| b.id.clone())
+            .unwrap_or_else(|| DEFAULT_BIOME_ID.to_string());
+        t.set("biome", biome_id)?;
         t.set("system_id", planet.system.to_bits())?;
         Ok(t)
     }

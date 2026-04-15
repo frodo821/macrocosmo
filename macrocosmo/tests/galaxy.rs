@@ -41,6 +41,7 @@ fn test_galaxy_generation_uses_types() {
             research: 1.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
     app.insert_resource(planet_reg);
 
@@ -116,6 +117,7 @@ fn test_system_modifiers_on_star_systems() {
             research: 1.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
     app.insert_resource(planet_reg);
 

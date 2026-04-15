@@ -40,6 +40,9 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "building", "_building_definitions")?;
     register_define_fn(lua, "star_type", "_star_type_definitions")?;
     register_define_fn(lua, "planet_type", "_planet_type_definitions")?;
+    // #335: Biome definitions (decoupled from planet_type so multiple
+    // planet_types can share a biome and future features gate on biome id).
+    register_define_fn(lua, "biome", "_biome_definitions")?;
 
     // --- #182: Predefined systems + map types ---
     register_define_fn(lua, "predefined_system", "_predefined_system_definitions")?;

@@ -1194,6 +1194,7 @@ fn test_galaxy_has_hostiles() {
         base_slots: 4,
         resource_bias: ResourceBias { minerals: 1.0, energy: 1.0, research: 1.0 },
         weight: 1.0,
+        default_biome: None,
     });
     app.insert_resource(planet_reg);
 

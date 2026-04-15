@@ -57,6 +57,7 @@ fn test_registries() -> (StarTypeRegistry, PlanetTypeRegistry) {
             research: 1.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
     planet_reg.types.push(PlanetTypeDefinition {
         id: "gas_giant".into(),
@@ -70,6 +71,7 @@ fn test_registries() -> (StarTypeRegistry, PlanetTypeRegistry) {
             research: 0.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
 
     (star_reg, planet_reg)

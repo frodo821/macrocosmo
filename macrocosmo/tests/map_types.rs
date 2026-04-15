@@ -40,6 +40,7 @@ fn test_registries() -> (StarTypeRegistry, PlanetTypeRegistry) {
                 research: 1.0,
             },
             weight: 1.0,
+            default_biome: None,
         });
     }
 
