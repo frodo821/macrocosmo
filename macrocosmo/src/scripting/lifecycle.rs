@@ -1,12 +1,8 @@
 use bevy::prelude::*;
 use mlua::Lua;
-use std::collections::HashMap;
 
-use crate::condition::ScopedFlags;
 use crate::event_system::EventSystem;
-use crate::player::PlayerEmpire;
 use crate::scripting::ScriptEngine;
-use crate::technology::GameFlags;
 use crate::time_system::GameClock;
 
 /// Execute all registered on_game_start handlers **without** a gamestate
@@ -90,32 +86,6 @@ fn run_handlers_with_gamestate(
     Ok(())
 }
 
-/// Drain `_pending_flags` from Lua and return the flag names.
-pub fn drain_pending_flags(lua: &Lua) -> Vec<String> {
-    let Ok(flags) = lua.globals().get::<mlua::Table>("_pending_flags") else {
-        return Vec::new();
-    };
-    let Ok(len) = flags.len() else {
-        return Vec::new();
-    };
-    if len == 0 {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    for i in 1..=len {
-        if let Ok(flag) = flags.get::<String>(i) {
-            result.push(flag);
-        }
-    }
-
-    // Clear the table by replacing it with a fresh one
-    if let Ok(new_table) = lua.create_table() {
-        let _ = lua.globals().set("_pending_flags", new_table);
-    }
-
-    result
-}
 
 /// Startup system that runs lifecycle hooks after all scripts have been loaded.
 /// Scripts are loaded by `load_all_scripts`; this system only executes callbacks.
@@ -607,7 +577,11 @@ fn dispatch_on_trigger(lua: &mlua::Lua, event_id: &str, payload_table: &mlua::Ta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::condition::ScopedFlags;
+    use crate::player::PlayerEmpire;
     use crate::scripting::ScriptEngine;
+    use crate::technology::GameFlags;
+    use std::collections::HashMap;
 
     #[test]
     fn test_on_game_start_handler_called() {
@@ -737,38 +711,10 @@ mod tests {
         run_on_scripts_loaded(lua).unwrap();
     }
 
-    #[test]
-    fn test_drain_pending_flags() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(
-            r#"
-            set_flag("flag_a")
-            set_flag("flag_b")
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let flags = drain_pending_flags(lua);
-        assert_eq!(flags.len(), 2);
-        assert!(flags.contains(&"flag_a".to_string()));
-        assert!(flags.contains(&"flag_b".to_string()));
-
-        // After draining, the table should be empty
-        let flags_after = drain_pending_flags(lua);
-        assert!(flags_after.is_empty());
-    }
-
-    #[test]
-    fn test_drain_pending_flags_empty() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        let flags = drain_pending_flags(lua);
-        assert!(flags.is_empty());
-    }
+    // #332-B4: removed `test_drain_pending_flags` /
+    // `test_drain_pending_flags_empty` — the `drain_pending_flags`
+    // helper and its companion `set_flag(name)` global are gone, so
+    // the tests have nothing to exercise.
 
     /// CRITICAL #2: Verify fire_event from Lua queues into _pending_script_events.
     #[test]

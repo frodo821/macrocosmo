@@ -464,53 +464,35 @@ mod tests {
             .unwrap();
     }
 
-    // --- #45: Lua binding tests ---
-
-    #[test]
-    fn test_modify_global_lua() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(r#"modify_global("sublight_speed_bonus", 0.5)"#)
-            .exec()
-            .unwrap();
-
-        let mods: mlua::Table = lua.globals().get("_pending_global_mods").unwrap();
-        assert_eq!(mods.len().unwrap(), 1);
-        let entry: mlua::Table = mods.get(1).unwrap();
-        let param: String = entry.get("param").unwrap();
-        let value: f64 = entry.get("value").unwrap();
-        assert_eq!(param, "sublight_speed_bonus");
-        assert!((value - 0.5).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_set_flag_lua() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(r#"set_flag("building_Starbase")"#)
-            .exec()
-            .unwrap();
-
-        let flags: mlua::Table = lua.globals().get("_pending_flags").unwrap();
-        assert_eq!(flags.len().unwrap(), 1);
-        let flag: String = flags.get(1).unwrap();
-        assert_eq!(flag, "building_Starbase");
-    }
+    // --- #45 → #332-B4: Lua binding tests ---
+    //
+    // `test_modify_global_lua` and `test_set_flag_lua` were removed
+    // along with the `modify_global(param, v)` / `set_flag(name)`
+    // global helpers they exercised (plan §9 / B4). Flag writes are
+    // now performed via `gs:set_flag(scope_kind, id, name, value)` on
+    // the event / lifecycle gamestate surface, and tested in
+    // `tests/lua_gamestate_mutations.rs` +
+    // `tests/lifecycle_hook_mutations.rs`. Global param changes go
+    // through `EffectScope` descriptors (see `effect_scope.rs` and
+    // `technology::effects`).
 
     #[test]
     fn test_check_flag_lua() {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
+        // `check_flag` looks up the name in `_flag_store`; unseen keys
+        // return false.
         let result: bool = lua
             .load(r#"return check_flag("nonexistent")"#)
             .eval()
             .unwrap();
         assert!(!result);
 
-        lua.load(r#"set_flag("my_flag")"#).exec().unwrap();
+        // Prime `_flag_store` directly (the `set_flag(name)` helper
+        // that used to do this is retired in Phase B4).
+        let store: mlua::Table = lua.globals().get("_flag_store").unwrap();
+        store.set("my_flag", true).unwrap();
 
         let result: bool = lua
             .load(r#"return check_flag("my_flag")"#)

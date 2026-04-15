@@ -154,51 +154,11 @@ pub fn build_tech_effects_preview(
     );
 }
 
-/// Drain `_pending_global_mods` from Lua and return (param_name, value) pairs.
-pub fn drain_pending_global_mods(lua: &Lua) -> Vec<(String, f64)> {
-    let Ok(mods) = lua.globals().get::<mlua::Table>("_pending_global_mods") else {
-        return Vec::new();
-    };
-    let Ok(len) = mods.len() else {
-        return Vec::new();
-    };
-    if len == 0 {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    for i in 1..=len {
-        if let Ok(entry) = mods.get::<mlua::Table>(i) {
-            if let (Ok(param), Ok(value)) = (
-                entry.get::<String>("param"),
-                entry.get::<f64>("value"),
-            ) {
-                result.push((param, value));
-            }
-        }
-    }
-
-    // Clear the table
-    if let Ok(new_table) = lua.create_table() {
-        let _ = lua.globals().set("_pending_global_mods", new_table);
-    }
-
-    result
-}
-
-/// Apply a global param modification to GlobalParams.
-fn apply_global_mod(params: &mut GlobalParams, param_name: &str, value: f64) {
-    match param_name {
-        "sublight_speed_bonus" => params.sublight_speed_bonus += value,
-        "ftl_speed_multiplier" => params.ftl_speed_multiplier += value,
-        "ftl_range_bonus" => params.ftl_range_bonus += value,
-        "survey_range_bonus" => params.survey_range_bonus += value,
-        "build_speed_multiplier" => params.build_speed_multiplier *= 1.0 + value,
-        _ => {
-            warn!("Unknown global param: {param_name}");
-        }
-    }
-}
+// #332-B4: removed `drain_pending_global_mods` and `apply_global_mod`.
+// The legacy `modify_global(param, value)` global helper that
+// populated `_pending_global_mods` is retired in favour of the
+// gamestate setter path and `EffectScope` descriptors; there are no
+// remaining production callers.
 
 /// System that executes `on_researched` Lua callbacks for recently completed techs.
 ///
@@ -735,50 +695,11 @@ mod tests {
     use super::*;
     use crate::scripting::ScriptEngine;
 
-    #[test]
-    fn test_drain_pending_global_mods() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(
-            r#"
-            modify_global("sublight_speed_bonus", 0.5)
-            modify_global("ftl_range_bonus", 2.0)
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let mods = drain_pending_global_mods(lua);
-        assert_eq!(mods.len(), 2);
-        assert_eq!(mods[0].0, "sublight_speed_bonus");
-        assert!((mods[0].1 - 0.5).abs() < 1e-10);
-        assert_eq!(mods[1].0, "ftl_range_bonus");
-        assert!((mods[1].1 - 2.0).abs() < 1e-10);
-
-        // After draining, should be empty
-        let mods_after = drain_pending_global_mods(lua);
-        assert!(mods_after.is_empty());
-    }
-
-    #[test]
-    fn test_drain_pending_global_mods_empty() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        let mods = drain_pending_global_mods(lua);
-        assert!(mods.is_empty());
-    }
-
-    #[test]
-    fn test_apply_global_mod() {
-        let mut params = GlobalParams::default();
-        apply_global_mod(&mut params, "sublight_speed_bonus", 0.5);
-        assert!((params.sublight_speed_bonus - 0.5).abs() < 1e-10);
-
-        apply_global_mod(&mut params, "ftl_range_bonus", 3.0);
-        assert!((params.ftl_range_bonus - 3.0).abs() < 1e-10);
-    }
+    // #332-B4: removed `test_drain_pending_global_mods` /
+    // `test_drain_pending_global_mods_empty` / `test_apply_global_mod`
+    // — the helpers they exercised (`drain_pending_global_mods`,
+    // `apply_global_mod`) are gone along with the `modify_global`
+    // global that populated the queue.
 
     #[test]
     fn test_find_on_researched() {
