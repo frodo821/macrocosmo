@@ -203,48 +203,47 @@ pub fn process_pending_ship_commands(
 /// #46: Checks for port facility at origin system
 /// #108: Unified MoveTo with auto-route planning (FTL chain > FTL direct > SubLight)
 /// #128: Async A* mixed route planning (FTL/sublight)
+#[allow(clippy::too_many_arguments)]
 pub fn process_command_queue(
-    mut commands: Commands,
+    // #334 Phase 1: `Commands` / KnowledgeStore / FactionRelations /
+    // port-params / FTL blocker params are preserved at the SystemParam
+    // surface for Phase 2/3 migrations (Survey / Colonize / Scout handlers
+    // continue to need some of them) even though this tick the MoveTo
+    // path no longer consults them. Underscored locals silence the
+    // "unused" warnings without touching the signature.
+    mut _commands: Commands,
     clock: Res<GameClock>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
     balance: Res<crate::technology::GameBalance>,
-    // #187: Player empire's KnowledgeStore used for Retreat-route avoidance.
     empire_knowledge_q: Query<&crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
     mut ships: Query<(Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position, Option<&RulesOfEngagement>), Without<routing::PendingRoute>>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-    system_buildings: Query<&crate::colony::SystemBuildings>,
+    _system_buildings: Query<&crate::colony::SystemBuildings>,
     _planets: Query<&crate::galaxy::Planet>,
-    // #187/#293: Hostile garrisons + faction ownership keyed by star system.
     hostiles_q: Query<
         (&crate::galaxy::AtSystem, &crate::faction::FactionOwner),
         With<crate::galaxy::Hostile>,
     >,
-    relations: Res<crate::faction::FactionRelations>,
-    mut pending_count: ResMut<routing::RouteCalculationsPending>,
+    _relations: Res<crate::faction::FactionRelations>,
+    mut _pending_count: ResMut<routing::RouteCalculationsPending>,
     design_registry: Res<ShipDesignRegistry>,
-    building_registry: Res<crate::colony::BuildingRegistry>,
-    // #145: Forbidden regions that block FTL travel.
+    _building_registry: Res<crate::colony::BuildingRegistry>,
     regions: Query<&crate::galaxy::ForbiddenRegion>,
 ) {
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
-    let base_ftl_speed = balance.initial_ftl_speed_c();
-    // #145: snapshot FTL-blocking regions once per tick; cheap since the
-    // region set is small (single-digit count) at MVP scope.
-    let ftl_blockers = routing::collect_ftl_blockers(&regions);
+    let _base_ftl_speed = balance.initial_ftl_speed_c();
+    let _ftl_blockers = routing::collect_ftl_blockers(&regions);
     let settling_duration = balance.settling_duration();
     let survey_range_base = balance.survey_range_ly();
     let survey_duration_base = balance.survey_duration();
-    let empire_knowledge = empire_knowledge_q.single().ok();
-    // #187/#293: Build the hostile system → hostile faction map once per tick.
-    let hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
+    let _empire_knowledge = empire_knowledge_q.single().ok();
+    let _hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
         .iter()
         .map(|(at_system, owner)| (at_system.0, owner.0))
         .collect();
-    for (entity, ship, mut state, mut queue, ship_pos, roe) in ships.iter_mut() {
-        // #187: ROE defaults to Defensive when absent (matches Ship::default spawn).
-        let roe = roe.copied().unwrap_or_default();
+    for (_entity, ship, mut state, mut queue, ship_pos, _roe) in ships.iter_mut() {
         // #185: Process queue when ship is Docked OR Loitering (current command finished).
         let docked_system: Option<Entity> = match *state {
             ShipState::Docked { system } => Some(system),
@@ -260,145 +259,21 @@ pub fn process_command_queue(
         let next = &queue.commands[0];
 
         match next {
-            QueuedCommand::MoveTo { system: target } => {
-                let target = *target;
-                let Ok((_target_entity, _target_star, target_pos)) = systems.get(target) else {
-                    warn!("Queued MoveTo target no longer exists");
-                    queue.commands.remove(0);
-                    queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    continue;
-                };
-
-                // Already at target (only possible when docked)?
-                if docked_system == Some(target) {
-                    queue.commands.remove(0);
-                    queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    continue;
-                }
-
-                // #296 (S-3): Immobile ships (Cores) can never satisfy a
-                // MoveTo. Drop the command with an info-level log; the UI
-                // guard should already prevent these from being queued, but
-                // belt-and-braces.
-                if ship.is_immobile() {
-                    info!(
-                        "Queue: dropping MoveTo on immobile ship {} (no propulsion)",
-                        ship.name
-                    );
-                    queue.commands.remove(0);
-                    queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    continue;
-                }
-
-                // For loitering ships, fall back to a direct sublight move (no FTL chain
-                // planning from deep space).
-                if docked_system.is_none() {
-                    queue.commands.remove(0);
-                    // #296: immobile ships can't move sublight either —
-                    // consume the command with a warning.
-                    if let Err(e) = start_sublight_travel_with_bonus(
-                        &mut state,
-                        ship_pos,
-                        ship,
-                        Position::from(target_pos.as_array()),
-                        Some(target),
-                        clock.elapsed,
-                        global_params.sublight_speed_bonus,
-                    ) {
-                        warn!(
-                            "Queue: Loitering ship {} cannot sublight to target: {}",
-                            ship.name, e
-                        );
-                    } else {
-                        queue.sync_prediction(target_pos.as_array(), Some(target));
-                        info!("Queue: Loitering ship {} sublight to target", ship.name);
-                    }
-                    continue;
-                }
-
-                // Docked: use the system's position as origin for FTL route planning.
-                let docked_sys_for_origin = docked_system.expect("docked branch");
-                let Ok((_, _, origin_pos)) = systems.get(docked_sys_for_origin) else {
-                    warn!("Queue: Origin system no longer exists");
-                    queue.commands.remove(0);
-                    queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    continue;
-                };
-                let origin_pos_arr = origin_pos.as_array();
-
-                // From here we know docked_system.is_some(); only docked ships use the
-                // FTL route planner.
-                let docked_sys = docked_system.expect("loitering branch handled above");
-                let port_params = system_buildings.get(docked_sys)
-                    .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
-                    .unwrap_or(PortParams::NONE);
-                let effective_ftl_range = if ship.ftl_range > 0.0 {
-                    ship.ftl_range + global_params.ftl_range_bonus + port_params.ftl_range_bonus
-                } else {
-                    0.0
-                };
-                let effective_ftl_speed = base_ftl_speed * global_params.ftl_speed_multiplier;
-                let effective_sublight_speed = ship.sublight_speed + global_params.sublight_speed_bonus;
-
-                // Spawn async route computation task.
-                // #187: Feed per-ship ROE + KnowledgeStore-derived hostile info.
-                let ship_faction = match ship.owner {
-                    super::Owner::Empire(f) => Some(f),
-                    super::Owner::Neutral => None,
-                };
-                let snapshots = routing::collect_route_snapshots(
-                    &systems,
-                    empire_knowledge,
-                    &relations,
-                    ship_faction,
-                    &hostile_faction_map,
+            // #334 Phase 1: MoveTo / MoveToCoordinates are handled by
+            // `super::dispatcher::dispatch_queued_commands` +
+            // `super::handlers::move_handler::{handle_move_requested,
+            // handle_move_to_coordinates_requested}`. The dispatcher pops
+            // these variants before this system runs so they should never
+            // reach here; the arms are kept exhaustive for the compiler.
+            QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
+                // Unreachable under the Phase 1 schedule (dispatcher runs
+                // `.before(process_command_queue)`). If we ever observe
+                // this in practice, drop the head to avoid a stall.
+                warn!(
+                    "Queue: MoveTo/MoveToCoordinates reached legacy path (dispatcher ordering bug?) — dropping head"
                 );
-                let task = routing::spawn_route_task_full(
-                    origin_pos_arr,
-                    target,
-                    effective_ftl_range,
-                    effective_sublight_speed,
-                    effective_ftl_speed,
-                    snapshots,
-                    roe,
-                    ftl_blockers.clone(),
-                );
-                commands.entity(entity).insert(routing::PendingRoute {
-                    task,
-                    target_system: target,
-                });
-                pending_count.count += 1;
-                info!("Queue: Ship {} spawned async route to target", ship.name);
-                // Do NOT consume the MoveTo — poll_pending_routes will handle it.
-            }
-            QueuedCommand::MoveToCoordinates { target } => {
-                // #185: Move sublight to deep-space coordinates and loiter on arrival.
-                let target_arr = *target;
                 queue.commands.remove(0);
-                // #296: immobile ships cannot leave their docking system.
-                match start_sublight_travel_with_bonus(
-                    &mut state,
-                    ship_pos,
-                    ship,
-                    Position::from(target_arr),
-                    None, // no target system → arrival transitions to Loitering
-                    clock.elapsed,
-                    global_params.sublight_speed_bonus,
-                ) {
-                    Ok(()) => {
-                        queue.sync_prediction(target_arr, None);
-                        info!(
-                            "Queue: Ship {} sublight to deep-space coordinates ({:.2},{:.2},{:.2})",
-                            ship.name, target_arr[0], target_arr[1], target_arr[2]
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Queue: Ship {} cannot MoveToCoordinates: {}",
-                            ship.name, e
-                        );
-                    }
-                }
+                queue.sync_prediction(ship_pos.as_array(), docked_system);
             }
             QueuedCommand::Scout { .. } => {
                 // #217: Consume and dispatch synchronously. If not at the

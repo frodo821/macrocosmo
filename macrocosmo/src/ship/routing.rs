@@ -72,6 +72,14 @@ pub struct PlannedRoute {
 pub struct PendingRoute {
     pub task: Task<Option<PlannedRoute>>,
     pub target_system: Entity,
+    /// #334: `CommandId` of the dispatched `MoveRequested` that spawned
+    /// this async route. Threaded here so that when `poll_pending_routes`
+    /// reaches a terminal state (Ok / Rejected) it can emit the matching
+    /// [`crate::ship::command_events::CommandExecuted`] for `CommandLog`
+    /// and future gamestate bridges to key by. `None` only for legacy
+    /// in-flight ships that predate the dispatcher refactor (should
+    /// never occur post-Phase 1, but kept optional for safety).
+    pub command_id: Option<super::command_events::CommandId>,
 }
 
 /// Resource: count of pending route computations. When > 0, game time is paused.
@@ -520,7 +528,13 @@ pub fn poll_pending_routes(
     system_buildings: Query<&crate::colony::SystemBuildings>,
     mut pending_count: ResMut<RouteCalculationsPending>,
     building_registry: Res<crate::colony::BuildingRegistry>,
+    // #334 Phase 1: emit the terminal CommandExecuted for the MoveRequested
+    // that spawned this async route. `CommandId` is threaded via
+    // `PendingRoute.command_id`; `None` is tolerated for in-flight ships
+    // that predate the refactor (emission is skipped in that case).
+    mut executed: MessageWriter<super::command_events::CommandExecuted>,
 ) {
+    use super::command_events::{CommandExecuted, CommandKind, CommandResult};
     let Ok(global_params) = empire_params_q.single() else {
         return;
     };
@@ -542,12 +556,26 @@ pub fn poll_pending_routes(
         };
 
         let target_system = pending.target_system;
+        // #334: preserve the CommandId for terminal `CommandExecuted` below.
+        let maybe_cmd_id = pending.command_id;
 
         // Remove PendingRoute component and decrement counter.
         commands.entity(ship_entity).remove::<PendingRoute>();
         pending_count.count = pending_count.count.saturating_sub(1);
 
         let Ok((_, ship, mut state, mut queue, ship_pos)) = ships.get_mut(ship_entity) else {
+            // Ship despawned while waiting — emit Rejected.
+            if let Some(cid) = maybe_cmd_id {
+                executed.write(CommandExecuted {
+                    command_id: cid,
+                    kind: CommandKind::Move,
+                    ship: ship_entity,
+                    result: CommandResult::Rejected {
+                        reason: "ship despawned".to_string(),
+                    },
+                    completed_at: clock.elapsed,
+                });
+            }
             continue;
         };
 
@@ -558,6 +586,17 @@ pub fn poll_pending_routes(
                 queue.commands.remove(0);
             }
             queue.sync_prediction(ship_pos.as_array(), None);
+            if let Some(cid) = maybe_cmd_id {
+                executed.write(CommandExecuted {
+                    command_id: cid,
+                    kind: CommandKind::Move,
+                    ship: ship_entity,
+                    result: CommandResult::Rejected {
+                        reason: "ship no longer docked".to_string(),
+                    },
+                    completed_at: clock.elapsed,
+                });
+            }
             continue;
         };
 
@@ -568,38 +607,65 @@ pub fn poll_pending_routes(
 
         let Some(route) = route_option else {
             // No route found — fall back to direct sublight.
+            let mut fallback_ok = false;
             if let Ok((_, _target_star, target_pos)) = systems.get(target_system) {
-                let Ok((_, _, origin_pos)) = systems.get(docked_system) else {
-                    queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
-                    continue;
-                };
-                if let Err(e) = start_sublight_travel_with_bonus(
-                    &mut state,
-                    origin_pos,
-                    ship,
-                    *target_pos,
-                    Some(target_system),
-                    clock.elapsed,
-                    global_params.sublight_speed_bonus,
-                ) {
-                    // #296: immobile ships never reach the planner (UI guard
-                    // + command_queue), but defend-in-depth keeps the system
-                    // tolerant.
-                    warn!(
-                        "Route planner: sublight fallback failed for {}: {}",
-                        ship.name, e
-                    );
-                } else {
-                    info!("Route planner: no route found for {}, falling back to sublight", ship.name);
+                if let Ok((_, _, origin_pos)) = systems.get(docked_system) {
+                    if let Err(e) = start_sublight_travel_with_bonus(
+                        &mut state,
+                        origin_pos,
+                        ship,
+                        *target_pos,
+                        Some(target_system),
+                        clock.elapsed,
+                        global_params.sublight_speed_bonus,
+                    ) {
+                        // #296: immobile ships never reach the planner (UI guard
+                        // + command_queue), but defend-in-depth keeps the system
+                        // tolerant.
+                        warn!(
+                            "Route planner: sublight fallback failed for {}: {}",
+                            ship.name, e
+                        );
+                    } else {
+                        info!(
+                            "Route planner: no route found for {}, falling back to sublight",
+                            ship.name
+                        );
+                        fallback_ok = true;
+                    }
                 }
             }
             queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+            if let Some(cid) = maybe_cmd_id {
+                executed.write(CommandExecuted {
+                    command_id: cid,
+                    kind: CommandKind::Move,
+                    ship: ship_entity,
+                    result: if fallback_ok {
+                        CommandResult::Ok
+                    } else {
+                        CommandResult::Rejected {
+                            reason: "no route + sublight fallback failed".to_string(),
+                        }
+                    },
+                    completed_at: clock.elapsed,
+                });
+            }
             continue;
         };
 
         if route.segments.is_empty() {
             // Already at destination.
             queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+            if let Some(cid) = maybe_cmd_id {
+                executed.write(CommandExecuted {
+                    command_id: cid,
+                    kind: CommandKind::Move,
+                    ship: ship_entity,
+                    result: CommandResult::Ok,
+                    completed_at: clock.elapsed,
+                });
+            }
             continue;
         }
 
@@ -624,16 +690,42 @@ pub fn poll_pending_routes(
             }
         }
 
-        // Execute the first segment.
+        // Execute the first segment. On success emit `Ok`; on failure
+        // (both FTL and sublight-fallback fail, or sublight segment fails)
+        // emit `Rejected`.
+        let mut segment_ok = false;
+        let mut segment_reason = String::new();
         match first {
             RouteSegment::FTL { to } => {
                 let Ok((_, first_star, first_pos)) = systems.get(*to) else {
                     warn!("Route planner: FTL target no longer exists for {}", ship.name);
                     queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    if let Some(cid) = maybe_cmd_id {
+                        executed.write(CommandExecuted {
+                            command_id: cid,
+                            kind: CommandKind::Move,
+                            ship: ship_entity,
+                            result: CommandResult::Rejected {
+                                reason: "FTL target despawned".to_string(),
+                            },
+                            completed_at: clock.elapsed,
+                        });
+                    }
                     continue;
                 };
                 let Ok((_, _, origin_pos)) = systems.get(docked_system) else {
                     queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    if let Some(cid) = maybe_cmd_id {
+                        executed.write(CommandExecuted {
+                            command_id: cid,
+                            kind: CommandKind::Move,
+                            ship: ship_entity,
+                            result: CommandResult::Rejected {
+                                reason: "origin system lost".to_string(),
+                            },
+                            completed_at: clock.elapsed,
+                        });
+                    }
                     continue;
                 };
                 let port_params = system_buildings.get(docked_system)
@@ -657,6 +749,7 @@ pub fn poll_pending_routes(
                             "Route planner: {} FTL jumping to {} ({} segments remaining)",
                             ship.name, first_star.name, remaining.len()
                         );
+                        segment_ok = true;
                     }
                     Err(e) => {
                         warn!("Route planner: FTL hop failed for {}: {}, falling back to sublight", ship.name, e);
@@ -674,6 +767,9 @@ pub fn poll_pending_routes(
                                 "Route planner: sublight fallback also failed for {}: {}",
                                 ship.name, e2
                             );
+                            segment_reason = format!("FTL + sublight both failed: {}", e2);
+                        } else {
+                            segment_ok = true;
                         }
                     }
                 }
@@ -681,6 +777,17 @@ pub fn poll_pending_routes(
             RouteSegment::SubLight { to_pos, to_system } => {
                 let Ok((_, _, origin_pos)) = systems.get(docked_system) else {
                     queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
+                    if let Some(cid) = maybe_cmd_id {
+                        executed.write(CommandExecuted {
+                            command_id: cid,
+                            kind: CommandKind::Move,
+                            ship: ship_entity,
+                            result: CommandResult::Rejected {
+                                reason: "origin system lost".to_string(),
+                            },
+                            completed_at: clock.elapsed,
+                        });
+                    }
                     continue;
                 };
                 let dest_pos = Position::from(*to_pos);
@@ -697,13 +804,30 @@ pub fn poll_pending_routes(
                         "Route planner: sublight segment rejected for {}: {}",
                         ship.name, e
                     );
+                    segment_reason = format!("sublight segment rejected: {}", e);
                 } else {
                     info!(
                         "Route planner: {} sublight to {:?} ({} segments remaining)",
                         ship.name, to_system, remaining.len()
                     );
+                    segment_ok = true;
                 }
             }
+        }
+
+        // Emit terminal CommandExecuted keyed by the original MoveRequested.
+        if let Some(cid) = maybe_cmd_id {
+            executed.write(CommandExecuted {
+                command_id: cid,
+                kind: CommandKind::Move,
+                ship: ship_entity,
+                result: if segment_ok {
+                    CommandResult::Ok
+                } else {
+                    CommandResult::Rejected { reason: segment_reason }
+                },
+                completed_at: clock.elapsed,
+            });
         }
     }
 }

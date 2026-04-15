@@ -17,6 +17,8 @@ pub mod core_deliverable;
 pub mod command_events;
 // #334 Phase 1: queue dispatcher — validates + emits CommandRequested messages.
 pub mod dispatcher;
+// #334 Phase 1: per-variant handlers (MoveTo + MoveToCoordinates this phase).
+pub mod handlers;
 
 pub use fleet::*;
 pub use exploration::*;
@@ -254,6 +256,28 @@ impl Plugin for ShipPlugin {
                 .after(process_command_queue),
         ).after(crate::time_system::advance_game_time)
          .before(crate::colony::advance_production_tick));
+        // #334 Phase 1: dispatcher + MoveTo/MoveToCoordinates handlers.
+        // Kept in their own `add_systems` call (instead of joining the
+        // main Ship tuple above) to stay under Bevy 0.18's 20-arm
+        // `IntoScheduleConfigs` limit without resorting to a nested tuple
+        // (which for this schedule was observed to elide the systems
+        // from the scheduler entirely).
+        app.add_systems(
+            Update,
+            (
+                dispatcher::dispatch_queued_commands,
+                handlers::handle_move_requested,
+                handlers::handle_move_to_coordinates_requested,
+            )
+                .chain()
+                .after(deliverable_ops::process_deliverable_commands)
+                .after(sublight_movement_system)
+                .after(process_ftl_travel)
+                .after(process_surveys)
+                .before(process_command_queue)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
         // #128: Poll route tasks after Commands from process_command_queue are flushed.
         app.add_systems(Update, (
             bevy::ecs::schedule::ApplyDeferred,
