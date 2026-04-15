@@ -293,7 +293,7 @@ pub fn evaluate_fire_conditions(world: &mut World) {
             Ok(t) => t,
             Err(_) => return,
         };
-        use crate::scripting::gamestate_scope::{dispatch_with_gamestate, GamestateMode};
+        use crate::scripting::gamestate_scope::{GamestateMode, dispatch_with_gamestate};
         let dispatch_result = dispatch_with_gamestate(
             lua,
             world,
@@ -441,7 +441,7 @@ pub fn dispatch_event_handlers(world: &mut World) {
             // closure invocation. There is no snapshot residue, so the
             // old `lua.gc_collect()` aux-stack fix from #320 is no
             // longer needed.
-            use crate::scripting::gamestate_scope::{dispatch_with_gamestate, GamestateMode};
+            use crate::scripting::gamestate_scope::{GamestateMode, dispatch_with_gamestate};
             let event_id = fired.event_id.clone();
             let payload_clone = fired.payload.clone();
             let dispatch_result = dispatch_with_gamestate(
@@ -450,12 +450,7 @@ pub fn dispatch_event_handlers(world: &mut World) {
                 &payload_table,
                 GamestateMode::ReadWrite,
                 |lua_inner, pt| {
-                    dispatch_bus_handlers(
-                        lua_inner,
-                        &event_id,
-                        payload_clone.as_deref(),
-                        pt,
-                    );
+                    dispatch_bus_handlers(lua_inner, &event_id, payload_clone.as_deref(), pt);
                     dispatch_on_trigger(lua_inner, &event_id, pt);
                     Ok(())
                 },

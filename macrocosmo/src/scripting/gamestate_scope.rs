@@ -215,8 +215,7 @@ fn build_scoped_gamestate<'scope, 'env>(
     if matches!(mode, GamestateMode::ReadWrite) {
         // :push_empire_modifier(empire_id, target, opts) -> nil
         let push_empire = s.create_function_mut(
-            move |_lua,
-                  (_this, id, target, opts): (Table, u64, String, Table)| {
+            move |_lua, (_this, id, target, opts): (Table, u64, String, Table)| {
                 let parsed = apply::parse_modifier_opts(&opts)?;
                 let mut borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
                 apply::push_empire_modifier(&mut **borrow, Entity::from_bits(id), &target, parsed)
@@ -279,7 +278,13 @@ fn build_scoped_gamestate<'scope, 'env>(
             )| {
                 let val = value.unwrap_or(true);
                 let mut borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
-                apply::set_flag(&mut **borrow, &scope_kind, Entity::from_bits(id), &name, val)
+                apply::set_flag(
+                    &mut **borrow,
+                    &scope_kind,
+                    Entity::from_bits(id),
+                    &name,
+                    val,
+                )
             },
         )?;
         gs.set("set_flag", set_flag)?;
@@ -381,7 +386,9 @@ pub(crate) mod views {
             Some(e) => {
                 let er = world.get_entity(e).ok();
                 (
-                    er.as_ref().map(|r| r.contains::<StarSystem>()).unwrap_or(false),
+                    er.as_ref()
+                        .map(|r| r.contains::<StarSystem>())
+                        .unwrap_or(false),
                     er.as_ref().map(|r| r.contains::<Empire>()).unwrap_or(false),
                 )
             }
@@ -401,9 +408,8 @@ pub(crate) mod views {
                         continue;
                     }
                 } else if filter_is_empire {
-                    let owner = sys_entity.and_then(|s| {
-                        world.get::<Sovereignty>(s).and_then(|sov| sov.owner)
-                    });
+                    let owner = sys_entity
+                        .and_then(|s| world.get::<Sovereignty>(s).and_then(|sov| sov.owner));
                     match owner {
                         Some(Owner::Empire(e)) if e == f => {}
                         _ => continue,
@@ -461,11 +467,7 @@ pub(crate) mod views {
         Ok(t)
     }
 
-    pub fn build_empire_view(
-        lua: &Lua,
-        world: &mut World,
-        entity: Entity,
-    ) -> mlua::Result<Table> {
+    pub fn build_empire_view(lua: &Lua, world: &mut World, entity: Entity) -> mlua::Result<Table> {
         let etbl = lua.create_table()?;
         // Pull the empire fields first so we can release the entity ref
         // before taking the resource_stockpile query borrow below.
@@ -547,9 +549,7 @@ pub(crate) mod views {
         // capital_system_id: first system with is_capital (Phase 1).
         let capital: Option<Entity> = {
             let mut q = world.query::<(Entity, &StarSystem)>();
-            q.iter(world)
-                .find(|(_, s)| s.is_capital)
-                .map(|(e, _)| e)
+            q.iter(world).find(|(_, s)| s.is_capital).map(|(e, _)| e)
         };
         if let Some(e) = capital {
             etbl.set("capital_system_id", e.to_bits())?;
@@ -985,10 +985,17 @@ pub(crate) mod apply {
     /// table is read but not persisted.
     pub fn parse_modifier_opts(opts: &Table) -> mlua::Result<ModifierOpts> {
         let id: Option<String> = opts.get("id").ok();
-        let label: Option<String> = opts.get("description").ok().or_else(|| opts.get("label").ok());
+        let label: Option<String> = opts
+            .get("description")
+            .ok()
+            .or_else(|| opts.get("label").ok());
         let base_add: f64 = opts.get("base_add").ok().unwrap_or(0.0);
         let multiplier: f64 = opts.get("multiplier").ok().unwrap_or(0.0);
-        let add: f64 = opts.get("add").ok().or_else(|| opts.get("offset").ok()).unwrap_or(0.0);
+        let add: f64 = opts
+            .get("add")
+            .ok()
+            .or_else(|| opts.get("offset").ok())
+            .unwrap_or(0.0);
         let expires_at: Option<i64> = opts.get("expires_at").ok();
         Ok(ModifierOpts {
             id,
@@ -1075,7 +1082,7 @@ pub(crate) mod apply {
             _ => {
                 return Err(mlua::Error::RuntimeError(format!(
                     "push_system_modifier: unknown target '{target}'"
-                )))
+                )));
             }
         }
         Ok(())
@@ -1119,7 +1126,7 @@ pub(crate) mod apply {
             _ => {
                 return Err(mlua::Error::RuntimeError(format!(
                     "push_colony_modifier: unknown target '{target}'"
-                )))
+                )));
             }
         }
         Ok(())
@@ -1162,7 +1169,7 @@ pub(crate) mod apply {
             _ => {
                 return Err(mlua::Error::RuntimeError(format!(
                     "push_ship_modifier: unknown target '{target}'"
-                )))
+                )));
             }
         }
         Ok(())
@@ -1274,10 +1281,7 @@ mod tests {
             let payload = lua.create_table().unwrap();
             dispatch_with_gamestate(lua, world, &payload, GamestateMode::ReadOnly, |lua, p| {
                 lua.globals().set("_evt", p.clone())?;
-                let now: i64 = lua
-                    .load("return _evt.gamestate.clock.now")
-                    .eval()
-                    .unwrap();
+                let now: i64 = lua.load("return _evt.gamestate.clock.now").eval().unwrap();
                 assert_eq!(now, 42);
                 let name: String = lua
                     .load("return _evt.gamestate:player_empire().name")
@@ -1378,7 +1382,9 @@ mod tests {
     fn test_list_empires_returns_all() {
         let mut world = make_world();
         // Add a second empire.
-        world.spawn((Empire { name: "Alien".into() },));
+        world.spawn((Empire {
+            name: "Alien".into(),
+        },));
         world.resource_scope::<ScriptEngine, _>(|world, engine| {
             let lua = engine.lua();
             let payload = lua.create_table().unwrap();

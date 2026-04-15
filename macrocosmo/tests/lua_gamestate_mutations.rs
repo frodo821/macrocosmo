@@ -15,9 +15,9 @@ use macrocosmo::event_system::{EventSystem, FiredEvent};
 use macrocosmo::galaxy::{StarSystem, SystemModifiers};
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::{Empire, PlayerEmpire};
-use macrocosmo::scripting::gamestate_scope::{dispatch_with_gamestate, GamestateMode};
-use macrocosmo::scripting::lifecycle::dispatch_event_handlers;
 use macrocosmo::scripting::ScriptEngine;
+use macrocosmo::scripting::gamestate_scope::{GamestateMode, dispatch_with_gamestate};
+use macrocosmo::scripting::lifecycle::dispatch_event_handlers;
 use macrocosmo::technology::{EmpireModifiers, GameFlags, TechTree};
 use macrocosmo::time_system::GameClock;
 
@@ -360,10 +360,7 @@ fn test_fire_event_stays_queued() {
         .get::<Option<bool>>("_inner_fired")
         .unwrap()
         .unwrap_or(false);
-    assert!(
-        !inner_fired,
-        "fire_event must queue, not sync-dispatch"
-    );
+    assert!(!inner_fired, "fire_event must queue, not sync-dispatch");
     // Confirm it IS in the queue.
     let pending: mlua::Table = engine
         .lua()
@@ -401,10 +398,7 @@ fn test_readonly_mode_rejects_setters() {
                         "#,
                     )
                     .exec();
-                assert!(
-                    r.is_err(),
-                    "ReadOnly mode must not expose set_flag"
-                );
+                assert!(r.is_err(), "ReadOnly mode must not expose set_flag");
                 Ok(())
             },
         );
