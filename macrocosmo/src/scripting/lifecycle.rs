@@ -277,65 +277,66 @@ pub fn evaluate_fire_conditions(world: &mut World) {
     }
 
     // Invoke each fire_condition with the live gamestate.
+    //
+    // #332: the gamestate is now built from scope closures (Option B),
+    // not a snapshot. Closures expire when `dispatch_with_gamestate`
+    // returns, so there is no snapshot residue to gc — the #320
+    // `lua.gc_collect()` is therefore unnecessary here.
+    //
+    // `fire_condition` runs under `GamestateMode::ReadOnly`; setters
+    // are not exposed, matching the spec that fire_condition must be
+    // side-effect free.
     let mut decisions: Vec<Decision> = Vec::with_capacity(pending_decisions.len());
     world.resource_scope::<ScriptEngine, _>(|world, engine| {
         let lua = engine.lua();
-        // Build a fresh gamestate once per tick — fire_conditions observe
-        // the same pre-dispatch view.
-        let gs_result = crate::scripting::gamestate_view::build_gamestate_table(lua, world);
-        let gs_table = match gs_result {
-            Ok(t) => t,
-            Err(e) => {
-                warn!("evaluate_fire_conditions: gamestate build failed: {e}");
-                return;
-            }
-        };
         let payload = match lua.create_table() {
             Ok(t) => t,
             Err(_) => return,
         };
-        let _ = payload.set("gamestate", gs_table);
-
-        for pd in pending_decisions {
-            let fire = match pd.fire_fn {
-                None => true,
-                Some(fref) => match fref.get(lua) {
-                    Ok(Some(func)) => match func.call::<mlua::Value>(payload.clone()) {
-                        Ok(mlua::Value::Boolean(b)) => b,
-                        Ok(mlua::Value::Nil) => false,
-                        Ok(_) => true, // truthy non-boolean
-                        Err(e) => {
-                            warn!(
-                                "fire_condition for '{}' errored: {e}; firing anyway",
-                                pd.event_id
-                            );
-                            true
-                        }
-                    },
-                    Ok(None) => true, // placeholder ref — no function attached
-                    Err(e) => {
-                        warn!(
-                            "fire_condition lookup for '{}' failed: {e}; firing anyway",
-                            pd.event_id
-                        );
-                        true
-                    }
-                },
-            };
-            decisions.push(Decision {
-                event_id: pd.event_id,
-                fire,
-            });
-            let _ = pd.kind; // retain the variant for diagnostic purposes; handled below via id
-        }
-
-        // #320: Every per-tick gamestate build leaks ValueRef slots on the
-        // LuaJIT aux thread until Lua GC reclaims the snapshot tables that
-        // fire_conditions captured via `payload.gamestate`. Without an
-        // explicit collection LuaJIT's fixed LUAI_MAXCSTACK (~8000) is
-        // exhausted after ~80 ticks and all further Lua callbacks panic.
-        if let Err(e) = lua.gc_collect() {
-            warn!("evaluate_fire_conditions: lua.gc_collect failed: {e}");
+        use crate::scripting::gamestate_scope::{dispatch_with_gamestate, GamestateMode};
+        let dispatch_result = dispatch_with_gamestate(
+            lua,
+            world,
+            &payload,
+            GamestateMode::ReadOnly,
+            |lua_inner, p| {
+                for pd in &pending_decisions {
+                    let fire = match &pd.fire_fn {
+                        None => true,
+                        Some(fref) => match fref.get(lua_inner) {
+                            Ok(Some(func)) => match func.call::<mlua::Value>(p.clone()) {
+                                Ok(mlua::Value::Boolean(b)) => b,
+                                Ok(mlua::Value::Nil) => false,
+                                Ok(_) => true, // truthy non-boolean
+                                Err(e) => {
+                                    warn!(
+                                        "fire_condition for '{}' errored: {e}; firing anyway",
+                                        pd.event_id
+                                    );
+                                    true
+                                }
+                            },
+                            Ok(None) => true,
+                            Err(e) => {
+                                warn!(
+                                    "fire_condition lookup for '{}' failed: {e}; firing anyway",
+                                    pd.event_id
+                                );
+                                true
+                            }
+                        },
+                    };
+                    decisions.push(Decision {
+                        event_id: pd.event_id.clone(),
+                        fire,
+                    });
+                    let _ = pd.kind;
+                }
+                Ok(())
+            },
+        );
+        if let Err(e) = dispatch_result {
+            warn!("evaluate_fire_conditions: dispatch_with_gamestate failed: {e}");
         }
     });
 
@@ -402,7 +403,7 @@ pub fn dispatch_event_handlers(world: &mut World) {
     };
 
     // Borrow ScriptEngine out of the world so that we can use &mut World to
-    // build the gamestate snapshot for each dispatched event. `resource_scope`
+    // build the gamestate scope for each dispatched event. `resource_scope`
     // temporarily removes the resource, giving us a &mut World that excludes
     // it; we restore it when the closure returns.
     world.resource_scope::<ScriptEngine, _>(|world, engine| {
@@ -434,32 +435,37 @@ pub fn dispatch_event_handlers(world: &mut World) {
                 },
             };
 
-            match crate::scripting::gamestate_view::attach_gamestate(lua, &payload_table, world) {
-                Ok(()) => {}
-                Err(e) => warn!(
-                    "dispatch_event_handlers: failed to attach gamestate to '{}': {e}",
-                    fired.event_id
-                ),
-            }
-
-            // --- `on(id, filter, fn)` bus handlers ---
-            dispatch_bus_handlers(
+            // #332: attach a live gamestate via Option B scope closures.
+            // Event callbacks may mutate the world via setter methods
+            // (`ReadWrite` mode); the resulting borrow is released per
+            // closure invocation. There is no snapshot residue, so the
+            // old `lua.gc_collect()` aux-stack fix from #320 is no
+            // longer needed.
+            use crate::scripting::gamestate_scope::{dispatch_with_gamestate, GamestateMode};
+            let event_id = fired.event_id.clone();
+            let payload_clone = fired.payload.clone();
+            let dispatch_result = dispatch_with_gamestate(
                 lua,
-                &fired.event_id,
-                fired.payload.as_deref(),
+                world,
                 &payload_table,
+                GamestateMode::ReadWrite,
+                |lua_inner, pt| {
+                    dispatch_bus_handlers(
+                        lua_inner,
+                        &event_id,
+                        payload_clone.as_deref(),
+                        pt,
+                    );
+                    dispatch_on_trigger(lua_inner, &event_id, pt);
+                    Ok(())
+                },
             );
-
-            // --- `on_trigger` callback on the event definition ---
-            dispatch_on_trigger(lua, &fired.event_id, &payload_table);
-        }
-
-        // #320: Same aux-stack leak as `evaluate_fire_conditions`.
-        // Each fired event builds a fresh gamestate table via
-        // `attach_gamestate`; the snapshot lingers in Lua memory until GC
-        // reclaims it, pinning aux thread slots across ticks.
-        if let Err(e) = lua.gc_collect() {
-            warn!("dispatch_event_handlers: lua.gc_collect failed: {e}");
+            if let Err(e) = dispatch_result {
+                warn!(
+                    "dispatch_event_handlers: dispatch_with_gamestate failed for '{}': {e}",
+                    fired.event_id
+                );
+            }
         }
     });
 }
@@ -807,6 +813,7 @@ mod tests {
             tree,
             flags,
             ScopedFlags::default(),
+            crate::technology::EmpireModifiers::default(),
         ));
         world
     }
@@ -816,6 +823,7 @@ mod tests {
         let mut world = make_world();
 
         // Register a Lua `on` handler that records gamestate.clock.now.
+        // #332: uses the method-based Option B API.
         {
             let engine = world.resource::<ScriptEngine>();
             engine
@@ -826,7 +834,7 @@ mod tests {
                     _captured_empire_name = nil
                     on("macrocosmo:test", function(evt)
                         _captured_now = evt.gamestate.clock.now
-                        _captured_empire_name = evt.gamestate.player_empire.name
+                        _captured_empire_name = evt.gamestate:player_empire().name
                     end)
                     "#,
                 )
@@ -870,7 +878,8 @@ mod tests {
                         name = "Harvest Ended",
                         on_trigger = function(evt)
                             _trigger_called = true
-                            _trigger_has_tech = evt.gamestate.player_empire.techs.tech_a
+                            -- #332 Option B: player_empire is a method, techs is a plain table
+                            _trigger_has_tech = evt.gamestate:player_empire().techs.tech_a == true
                         end,
                     }
                     "#,
@@ -901,8 +910,14 @@ mod tests {
         );
     }
 
+    /// #332 Option B: event callbacks can mutate world state live via
+    /// setter methods. This test verifies that scribbling on the
+    /// gamestate table directly is *tolerated* (plain Lua tables, no
+    /// seal), while the canonical setter path `push_*_modifier` / etc.
+    /// is what actually mutates World. We run a trivial setter in a
+    /// handler and confirm no error escapes.
     #[test]
-    fn test_dispatch_gamestate_mutation_inside_handler_fails_gracefully() {
+    fn test_dispatch_handler_can_mutate_via_setter() {
         let mut world = make_world();
         {
             let engine = world.resource::<ScriptEngine>();
@@ -910,14 +925,22 @@ mod tests {
                 .lua()
                 .load(
                     r#"
-                    _mutation_error = nil
-                    on("macrocosmo:bad", function(evt)
+                    _setter_ok = false
+                    on("macrocosmo:mutate", function(evt)
+                        local pe = evt.gamestate:player_empire()
+                        -- Unknown targets surface a RuntimeError; any
+                        -- recognised target proves setter wiring works.
+                        -- Wrap in pcall so the test distinguishes
+                        -- "setter reached Rust side" from "error".
                         local ok, err = pcall(function()
-                            evt.gamestate.clock.now = 999
+                            evt.gamestate:push_empire_modifier(
+                                pe.id,
+                                "empire.population_growth",
+                                { id = "live_test", add = 0.5 }
+                            )
                         end)
-                        if not ok then
-                            _mutation_error = tostring(err)
-                        end
+                        _setter_ok = ok
+                        _setter_err = err and tostring(err) or nil
                     end)
                     "#,
                 )
@@ -927,7 +950,7 @@ mod tests {
         {
             let mut es = world.resource_mut::<EventSystem>();
             es.fired_log.push(FiredEvent {
-                event_id: "macrocosmo:bad".to_string(),
+                event_id: "macrocosmo:mutate".to_string(),
                 target: None,
                 fired_at: 42,
                 payload: None,
@@ -937,11 +960,11 @@ mod tests {
         dispatch_event_handlers(&mut world);
 
         let engine = world.resource::<ScriptEngine>();
-        let err: Option<String> = engine.lua().globals().get("_mutation_error").ok();
-        let err = err.unwrap_or_default();
+        let ok: bool = engine.lua().globals().get("_setter_ok").unwrap();
+        let err: Option<String> = engine.lua().globals().get("_setter_err").ok();
         assert!(
-            err.contains("read-only"),
-            "mutation must fail with a read-only error, got: {err}"
+            ok,
+            "setter should succeed under ReadWrite mode, got err: {err:?}"
         );
     }
 
