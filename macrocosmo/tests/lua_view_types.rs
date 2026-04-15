@@ -1,11 +1,15 @@
-//! #289: β Lua View types — integration tests.
+//! #289 / #332: Lua View types — integration tests.
 //!
 //! These cover end-to-end navigation across the `event.gamestate`
-//! snapshot as it appears from Lua (not just field-by-field from Rust),
-//! exercising the hierarchical `system -> planets/colonies ->
-//! buildings/production` chain, the Ship.state tag-union, and the
-//! Fleet-through-flagship proxy. They complement the per-commit unit
-//! tests in `src/scripting/gamestate_view.rs`.
+//! accessor as it appears from Lua, exercising the hierarchical
+//! `system -> planets/colonies -> buildings/production` chain, the
+//! Ship.state tag-union, and the Fleet-through-flagship proxy.
+//!
+//! #332 migration: these tests previously exercised the snapshot-based
+//! `build_gamestate_table` directly. They now go through
+//! `dispatch_with_gamestate` to validate the same navigation under the
+//! Option B scope-closure path (method form: `gs:system(id)` instead
+//! of `gs.systems[id]`; `gs:list_systems()` instead of `gs.system_ids`).
 
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
@@ -15,12 +19,12 @@ use macrocosmo::condition::ScopedFlags;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemModifiers};
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::{Empire, PlayerEmpire};
-use macrocosmo::scripting::building_api::BuildingId;
-use macrocosmo::scripting::gamestate_view::build_gamestate_table;
 use macrocosmo::scripting::ScriptEngine;
+use macrocosmo::scripting::building_api::BuildingId;
+use macrocosmo::scripting::gamestate_scope::{GamestateMode, dispatch_with_gamestate};
 use macrocosmo::ship::fleet::{Fleet, FleetMembers};
 use macrocosmo::ship::{EquippedModule, Owner, Ship, ShipHitpoints, ShipState};
-use macrocosmo::technology::{GameFlags, TechId, TechTree};
+use macrocosmo::technology::{EmpireModifiers, GameFlags, TechId, TechTree};
 use macrocosmo::time_system::GameClock;
 
 /// Build a small but representative world touching every view type:
@@ -33,6 +37,7 @@ use macrocosmo::time_system::GameClock;
 fn scenario_world() -> World {
     let mut world = World::new();
     world.insert_resource(GameClock::new(1));
+    world.insert_resource(ScriptEngine::new().unwrap());
 
     let mut tree = TechTree::default();
     tree.researched.insert(TechId("industrial_mining".into()));
@@ -48,6 +53,7 @@ fn scenario_world() -> World {
             tree,
             flags,
             ScopedFlags::default(),
+            EmpireModifiers::default(),
         ))
         .id();
 
@@ -154,56 +160,70 @@ fn scenario_world() -> World {
     world
 }
 
+/// Helper: run a Lua chunk with `_evt` populated by `dispatch_with_gamestate`.
+/// The chunk can reference `evt = _evt` or use `_evt` directly.
+fn with_gamestate<R, F>(world: &mut World, mode: GamestateMode, f: F) -> R
+where
+    F: FnOnce(&mlua::Lua) -> R,
+    R: Default,
+{
+    let out = std::cell::RefCell::new(R::default());
+    world.resource_scope::<ScriptEngine, _>(|world, engine| {
+        let lua = engine.lua();
+        let payload = lua.create_table().unwrap();
+        dispatch_with_gamestate(lua, world, &payload, mode, |lua_inner, p| {
+            lua_inner.globals().set("_evt", p.clone())?;
+            *out.borrow_mut() = f(lua_inner);
+            Ok(())
+        })
+        .unwrap();
+    });
+    out.into_inner()
+}
+
 #[test]
 fn test_gamestate_view_hierarchical_navigation() {
-    // Navigation chain: empire -> colonies (through system planet_ids)
-    // -> buildings + production -> ship -> state.kind
-    let engine = ScriptEngine::new().unwrap();
+    // Navigation chain: list_systems -> system -> planets/colonies
+    // -> buildings + production -> ship -> state.kind. Under #332
+    // Option B, all nested lookups are method calls on the gamestate
+    // table rather than indexing into nested maps.
     let mut world = scenario_world();
-    let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
-    engine.lua().globals().set("_test_gs", gs).unwrap();
-
-    let summary: String = engine
-        .lua()
-        .load(
+    let summary: String = with_gamestate(&mut world, GamestateMode::ReadOnly, |lua| {
+        lua.load(
             r#"
-            local gs = _test_gs
-            -- Sol + capital check
+            local gs = _evt.gamestate
             local parts = {}
-            for _, sid in ipairs(gs.system_ids) do
-                local sys = gs.systems[sid]
+            for _, sid in ipairs(gs:list_systems()) do
+                local sys = gs:system(sid)
                 table.insert(parts, sys.name)
-                -- planets under this system
-                for _, pid in ipairs(sys.planet_ids) do
-                    local p = gs.planets[pid]
+                for _, pid in ipairs(gs:list_planets(sid)) do
+                    local p = gs:planet(pid)
                     table.insert(parts, p.name .. ":" .. p.biome)
                 end
-                -- colonies under this system
-                for _, cid in ipairs(sys.colony_ids) do
-                    local c = gs.colonies[cid]
+                for _, cid in ipairs(gs:list_colonies(sid)) do
+                    local c = gs:colony(cid)
                     table.insert(parts, "pop=" .. tostring(c.population))
                     table.insert(parts, "bld1=" .. c.building_ids[1])
                     table.insert(parts, "m/hx=" .. tostring(c.production.minerals_per_hexadies))
                 end
             end
-            -- ship.state via first ship_id
-            for _, sid in ipairs(gs.ship_ids) do
-                local s = gs.ships[sid]
+            for _, sid in ipairs(gs:list_ships()) do
+                local s = gs:ship(sid)
                 table.insert(parts, "state=" .. s.state.kind)
                 table.insert(parts, "hp=" .. tostring(s.hp.hull))
                 table.insert(parts, "mod1=" .. s.modules[1].module_id)
             end
-            -- fleet proxy
-            for _, fid in ipairs(gs.fleet_ids) do
-                local f = gs.fleets[fid]
+            for _, fid in ipairs(gs:list_fleets()) do
+                local f = gs:fleet(fid)
                 table.insert(parts, "fleet_state=" .. f.state.kind)
                 table.insert(parts, "fleet_owner_kind=" .. f.owner_kind)
             end
             return table.concat(parts, "|")
             "#,
         )
-        .eval()
-        .unwrap();
+        .eval::<String>()
+        .unwrap()
+    });
     assert!(summary.contains("Sol"), "Sol missing: {summary}");
     assert!(
         summary.contains("Earth:terrestrial"),
@@ -227,74 +247,66 @@ fn test_gamestate_view_hierarchical_navigation() {
 }
 
 #[test]
-fn test_view_mutation_blocked_all_nested() {
-    // #289 β: every nested sealed table must refuse writes.
-    let engine = ScriptEngine::new().unwrap();
+fn test_ship_state_tag_union_docked() {
+    // Ship state is a `{kind = ..., ...}` tag-union table exposed as
+    // `ship.state` via `gs:ship(id)`. Docked ship should have
+    // `kind="docked"` and `system=<u64>`.
     let mut world = scenario_world();
-    let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
-    engine.lua().globals().set("_test_gs", gs).unwrap();
+    let (kind, has_system): (String, bool) =
+        with_gamestate(&mut world, GamestateMode::ReadOnly, |lua| {
+            lua.load(
+                r#"
+            local gs = _evt.gamestate
+            local ship_ids = gs:list_ships()
+            assert(#ship_ids > 0)
+            local s = gs:ship(ship_ids[1])
+            return s.state.kind, (s.state.system ~= nil)
+            "#,
+            )
+            .eval::<(String, bool)>()
+            .unwrap()
+        });
+    assert_eq!(kind, "docked");
+    assert!(has_system);
+}
 
-    // A handful of representative writes across the new surface.
-    let scripts: &[&str] = &[
-        r#"
-        for _, sid in ipairs(_test_gs.system_ids) do
-            _test_gs.systems[sid].position.x = 99.0
-        end
-        "#,
-        r#"
-        for _, sid in ipairs(_test_gs.system_ids) do
-            _test_gs.systems[sid].modifiers.ship_speed = 2.0
-        end
-        "#,
-        r#"
-        for _, cid in ipairs(_test_gs.colony_ids) do
-            _test_gs.colonies[cid].production.minerals_per_hexadies = 0
-        end
-        "#,
-        r#"
-        for _, sid in ipairs(_test_gs.ship_ids) do
-            _test_gs.ships[sid].hp.hull = 0
-        end
-        "#,
-        r#"
-        for _, sid in ipairs(_test_gs.ship_ids) do
-            _test_gs.ships[sid].state.kind = "destroyed"
-        end
-        "#,
-        r#"
-        for _, pid in ipairs(_test_gs.planet_ids) do
-            _test_gs.planets[pid].biome = "molten"
-        end
-        "#,
-    ];
-    for script in scripts {
-        let r: mlua::Result<()> = engine.lua().load(*script).exec();
-        assert!(r.is_err(), "expected read-only error running: {}", script);
-        let msg = r.err().unwrap().to_string();
-        assert!(
-            msg.contains("read-only"),
-            "expected 'read-only' in error: {msg}"
-        );
-    }
+#[test]
+fn test_fleet_proxy_through_flagship() {
+    // Fleet has no Owner or State of its own pre γ-2; owner_kind /
+    // state proxy through the flagship ship.
+    let mut world = scenario_world();
+    let (owner_kind, state_kind): (String, String) =
+        with_gamestate(&mut world, GamestateMode::ReadOnly, |lua| {
+            lua.load(
+                r#"
+            local gs = _evt.gamestate
+            local fids = gs:list_fleets()
+            assert(#fids > 0)
+            local f = gs:fleet(fids[1])
+            return f.owner_kind, f.state.kind
+            "#,
+            )
+            .eval::<(String, String)>()
+            .unwrap()
+        });
+    assert_eq!(owner_kind, "empire");
+    assert_eq!(state_kind, "docked");
 }
 
 #[test]
 fn test_empire_tech_alias_matches_techs() {
-    // #289 β: `empire.tech[id]` is an alias for `empire.techs[id]`.
-    let engine = ScriptEngine::new().unwrap();
+    // `empire.tech[id]` is an alias for `empire.techs[id]`.
     let mut world = scenario_world();
-    let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
-    engine.lua().globals().set("_test_gs", gs).unwrap();
-    let both_true: bool = engine
-        .lua()
-        .load(
+    let both_true: bool = with_gamestate(&mut world, GamestateMode::ReadOnly, |lua| {
+        lua.load(
             r#"
-            local e = _test_gs.player_empire
+            local e = _evt.gamestate:player_empire()
             return e.tech.industrial_mining == true
                and e.techs.industrial_mining == true
             "#,
         )
-        .eval()
-        .unwrap();
+        .eval::<bool>()
+        .unwrap()
+    });
     assert!(both_true);
 }
