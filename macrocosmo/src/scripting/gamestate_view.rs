@@ -786,7 +786,10 @@ fn build_empire_table(
     }
     // `__index` returns false for missing techs (script ergonomics: no nil check).
     seal_set_like_table(lua, &techs_tbl)?;
-    etbl.set("techs", techs_tbl)?;
+    etbl.set("techs", techs_tbl.clone())?;
+    // #289 β: `tech` alias matches the issue's docs-side naming. Points
+    // at the same sealed table as `techs`.
+    etbl.set("tech", techs_tbl)?;
 
     // flags: union of GameFlags + ScopedFlags on this empire.
     let flags_tbl = lua.create_table()?;
