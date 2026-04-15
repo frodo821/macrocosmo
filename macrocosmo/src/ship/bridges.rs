@@ -299,10 +299,7 @@ mod tests {
             "terminal Ok result should enqueue exactly one event"
         );
         let fired = &es.fired_log[0];
-        assert_eq!(
-            fired.event_id,
-            crate::event_system::COMMAND_COMPLETED_EVENT
-        );
+        assert_eq!(fired.event_id, crate::event_system::COMMAND_COMPLETED_EVENT);
         let ctx = fired.payload.as_ref().expect("payload attached");
         // Filter-compatible accessors match what `on(id, filter, fn)` sees.
         assert_eq!(ctx.payload_get("kind").as_deref(), Some("move"));
@@ -332,10 +329,7 @@ mod tests {
         assert_eq!(es.fired_log.len(), 1);
         let ctx = es.fired_log[0].payload.as_ref().unwrap();
         assert_eq!(ctx.payload_get("result").as_deref(), Some("rejected"));
-        assert_eq!(
-            ctx.payload_get("reason").as_deref(),
-            Some("ship despawned")
-        );
+        assert_eq!(ctx.payload_get("reason").as_deref(), Some("ship despawned"));
         assert_eq!(ctx.payload_get("kind").as_deref(), Some("survey"));
     }
 
