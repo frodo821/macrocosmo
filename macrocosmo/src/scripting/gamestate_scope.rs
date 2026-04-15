@@ -646,18 +646,20 @@ pub(crate) mod views {
         t.set("growth_rate", colony.growth_rate)?;
         t.set("planet_id", colony.planet.to_bits())?;
 
-        let mut colony_system: Option<Entity> = None;
+        // planet -> system resolution is still needed to expose `system_id`
+        // / `planet_name` on the view. Owner resolution, however, is now a
+        // direct `FactionOwner` read (#336 / #297 S-2): every colony spawn
+        // path (`spawn_capital_colony`, `tick_colonization_queue`,
+        // `spawn_colony_on_planet`, settling) attaches `FactionOwner`, so
+        // the old `colony -> planet -> system -> Sovereignty` chain is
+        // unnecessary and semantically wrong once system `Sovereignty` can
+        // diverge from administrative ownership (Core-ship presence / #292).
         if let Some(planet) = world.get::<Planet>(colony.planet) {
-            colony_system = Some(planet.system);
             t.set("system_id", planet.system.to_bits())?;
             t.set("planet_name", planet.name.as_str())?;
         }
-        if let Some(sys_entity) = colony_system {
-            if let Some(sov) = world.get::<Sovereignty>(sys_entity) {
-                if let Some(Owner::Empire(e)) = sov.owner {
-                    t.set("owner_empire_id", e.to_bits())?;
-                }
-            }
+        if let Some(fo) = eref.get::<crate::faction::FactionOwner>() {
+            t.set("owner_empire_id", fo.0.to_bits())?;
         }
         if let Some(buildings) = eref.get::<crate::colony::Buildings>() {
             let slots_tbl = lua.create_table()?;
