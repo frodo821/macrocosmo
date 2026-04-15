@@ -15,6 +15,8 @@ pub mod scout;
 pub mod core_deliverable;
 // #334 Phase 1: event-driven command dispatch — message types and allocator.
 pub mod command_events;
+// #334 Phase 1: queue dispatcher — validates + emits CommandRequested messages.
+pub mod dispatcher;
 
 pub use fleet::*;
 pub use exploration::*;
