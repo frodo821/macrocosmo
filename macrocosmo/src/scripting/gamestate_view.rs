@@ -52,8 +52,9 @@ use std::collections::HashSet;
 
 use crate::amount::Amt;
 use crate::colony::{Colony, ResourceStockpile};
+use crate::components::Position;
 use crate::condition::ScopedFlags;
-use crate::galaxy::{Planet, StarSystem};
+use crate::galaxy::{Planet, Sovereignty, StarSystem, SystemModifiers};
 use crate::player::{Empire, PlayerEmpire};
 use crate::ship::fleet::{Fleet, FleetMembers};
 use crate::ship::{Owner, Ship};
@@ -149,6 +150,67 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
         gs.set("player_empire", pe)?;
     }
 
+    // --- planets (map: entity_id -> planet snapshot) ---
+    // #289 β: Expose a top-level `planets` map plus per-system
+    // `planet_ids` arrays so Lua can navigate `system.planets[i]`. Built
+    // here (before systems) so we can populate `planets_by_system` and
+    // `colonies_by_system` lookups once and reuse them when walking
+    // systems and colonies below.
+    let planets_tbl = lua.create_table()?;
+    let planet_ids_tbl = lua.create_table()?;
+    let planet_rows: Vec<(Entity, String, Entity, String)> = {
+        let mut q = world.query::<(Entity, &Planet)>();
+        q.iter(world)
+            .map(|(e, p)| (e, p.name.clone(), p.system, p.planet_type.clone()))
+            .collect()
+    };
+    let mut planets_by_system: std::collections::HashMap<Entity, Vec<Entity>> =
+        std::collections::HashMap::new();
+    for (entity, name, system, planet_type) in &planet_rows {
+        planets_by_system
+            .entry(*system)
+            .or_default()
+            .push(*entity);
+        let ptbl = lua.create_table()?;
+        ptbl.set("id", entity.to_bits())?;
+        ptbl.set("entity", entity.to_bits())?;
+        ptbl.set("name", name.as_str())?;
+        ptbl.set("planet_type", planet_type.as_str())?;
+        // Biome component is not yet implemented (#289 plan §10 R2). Use
+        // `planet_type` as a placeholder so scripts can key off a single
+        // field even before a true Biome taxonomy lands.
+        ptbl.set("biome", planet_type.as_str())?;
+        ptbl.set("system_id", system.to_bits())?;
+        seal_table(lua, &ptbl)?;
+        planets_tbl.set(entity.to_bits(), ptbl)?;
+        planet_ids_tbl.push(entity.to_bits())?;
+    }
+    seal_table(lua, &planets_tbl)?;
+    gs.set("planets", planets_tbl)?;
+    // planet_ids: array — unsealed so `ipairs` works from Lua.
+    gs.set("planet_ids", planet_ids_tbl)?;
+
+    // Build a `colonies_by_system` map by joining Colony -> Planet.system.
+    // We only need entity ids here; full colony data is built later in the
+    // colony section. Doing it upfront avoids re-querying Planet twice.
+    let mut colonies_by_system: std::collections::HashMap<Entity, Vec<Entity>> =
+        std::collections::HashMap::new();
+    {
+        let planet_to_system: std::collections::HashMap<Entity, Entity> = planet_rows
+            .iter()
+            .map(|(e, _name, sys, _pt)| (*e, *sys))
+            .collect();
+        let mut colony_q = world.query::<(Entity, &Colony)>();
+        for (colony_entity, colony) in colony_q.iter(world) {
+            if let Some(sys) = planet_to_system.get(&colony.planet) {
+                colonies_by_system
+                    .entry(*sys)
+                    .or_default()
+                    .push(colony_entity);
+            }
+        }
+    }
+
     // --- systems (map: entity_id -> system snapshot) ---
     let systems_tbl = lua.create_table()?;
     let system_ids = lua.create_table()?;
@@ -170,10 +232,22 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
     for (entity, name, surveyed, is_capital, star_type) in system_rows {
         let stbl = lua.create_table()?;
         stbl.set("id", entity.to_bits())?;
+        stbl.set("entity", entity.to_bits())?;
         stbl.set("name", name.as_str())?;
         stbl.set("surveyed", surveyed)?;
         stbl.set("is_capital", is_capital)?;
         stbl.set("star_type", star_type.as_str())?;
+        // #289 β: position — 3D coordinates if a Position component is
+        // attached to the star system (galaxy::generate_galaxy always
+        // attaches one; absence is only expected in minimal test harness).
+        if let Some(pos) = world.get::<Position>(entity) {
+            let ptbl = lua.create_table()?;
+            ptbl.set("x", pos.x)?;
+            ptbl.set("y", pos.y)?;
+            ptbl.set("z", pos.z)?;
+            seal_table(lua, &ptbl)?;
+            stbl.set("position", ptbl)?;
+        }
         if let Some(stockpile) = world.get::<ResourceStockpile>(entity) {
             let rtbl = lua.create_table()?;
             rtbl.set("minerals", stockpile.minerals.to_f64())?;
@@ -183,6 +257,43 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
             rtbl.set("authority", stockpile.authority.to_f64())?;
             seal_table(lua, &rtbl)?;
             stbl.set("resources", rtbl)?;
+        }
+        // #289 β: planet_ids — unsealed array of planet entity ids in
+        // this system (for ipairs). Lookup the full PlanetView via
+        // `gs.planets[id]`.
+        let pids = lua.create_table()?;
+        if let Some(ids) = planets_by_system.get(&entity) {
+            for pid in ids {
+                pids.push(pid.to_bits())?;
+            }
+        }
+        stbl.set("planet_ids", pids)?;
+        // #289 β: colony_ids — unsealed array of colony entity ids in
+        // this system (for ipairs). Lookup the full ColonyView via
+        // `gs.colonies[id]`.
+        let cids = lua.create_table()?;
+        if let Some(ids) = colonies_by_system.get(&entity) {
+            for cid in ids {
+                cids.push(cid.to_bits())?;
+            }
+        }
+        stbl.set("colony_ids", cids)?;
+        // #289 β: owner_empire_id from Sovereignty — `nil` if unowned
+        // or the sovereignty owner is not an empire (e.g. Neutral).
+        if let Some(sov) = world.get::<Sovereignty>(entity) {
+            if let Some(Owner::Empire(empire_entity)) = sov.owner {
+                stbl.set("owner_empire_id", empire_entity.to_bits())?;
+            }
+        }
+        // #289 β: system-level modifiers (speed / attack / defense).
+        // Absent SystemModifiers -> no `modifiers` field (Lua sees nil).
+        if let Some(mods) = world.get::<SystemModifiers>(entity) {
+            let mtbl = lua.create_table()?;
+            mtbl.set("ship_speed", mods.ship_speed.final_value().to_f64())?;
+            mtbl.set("ship_attack", mods.ship_attack.final_value().to_f64())?;
+            mtbl.set("ship_defense", mods.ship_defense.final_value().to_f64())?;
+            seal_table(lua, &mtbl)?;
+            stbl.set("modifiers", mtbl)?;
         }
         seal_table(lua, &stbl)?;
         systems_tbl.set(entity.to_bits(), stbl)?;
@@ -718,6 +829,122 @@ mod tests {
             .load(r#"_test_gs.player_empire.techs.forged = true"#)
             .exec();
         assert!(r3.is_err(), "mutating tech set must fail");
+    }
+
+    #[test]
+    fn test_systemview_position_planets_colonies_owner() {
+        // #289 β: A world with one system, two planets (one colonized),
+        // Sovereignty -> PlayerEmpire, Position and SystemModifiers.
+        use crate::components::Position;
+        use crate::galaxy::{Sovereignty, SystemModifiers};
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = World::new();
+        world.insert_resource(GameClock::new(0));
+        let empire_entity = world.spawn((Empire { name: "Emp".into() }, PlayerEmpire)).id();
+        let system_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Sol".into(),
+                    surveyed: true,
+                    is_capital: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                },
+                Sovereignty {
+                    owner: Some(crate::ship::Owner::Empire(empire_entity)),
+                    control_score: 0.5,
+                },
+                SystemModifiers::default(),
+            ))
+            .id();
+        let planet_a = world
+            .spawn(Planet {
+                name: "Terra".into(),
+                system: system_entity,
+                planet_type: "terrestrial".into(),
+            })
+            .id();
+        let planet_b = world
+            .spawn(Planet {
+                name: "Mars".into(),
+                system: system_entity,
+                planet_type: "barren".into(),
+            })
+            .id();
+        // One colony on planet_a.
+        world.spawn(Colony {
+            planet: planet_a,
+            population: 10.0,
+            growth_rate: 0.01,
+        });
+
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+
+        // planets map
+        let planets: Table = gs.get("planets").unwrap();
+        let p_a: Table = planets.get(planet_a.to_bits()).unwrap();
+        assert_eq!(p_a.get::<String>("name").unwrap(), "Terra");
+        assert_eq!(p_a.get::<String>("planet_type").unwrap(), "terrestrial");
+        // biome placeholder equals planet_type until #289 R2 follow-up.
+        assert_eq!(p_a.get::<String>("biome").unwrap(), "terrestrial");
+        assert_eq!(
+            p_a.get::<u64>("system_id").unwrap(),
+            system_entity.to_bits()
+        );
+        let pids: Table = gs.get("planet_ids").unwrap();
+        assert_eq!(pids.len().unwrap(), 2);
+
+        // system.position
+        let systems: Table = gs.get("systems").unwrap();
+        let sys: Table = systems.get(system_entity.to_bits()).unwrap();
+        let pos: Table = sys.get("position").unwrap();
+        assert!((pos.get::<f64>("x").unwrap() - 1.0).abs() < 1e-9);
+        assert!((pos.get::<f64>("y").unwrap() - 2.0).abs() < 1e-9);
+        assert!((pos.get::<f64>("z").unwrap() - 3.0).abs() < 1e-9);
+
+        // system.planet_ids -> 2 planets in this system
+        let s_pids: Table = sys.get("planet_ids").unwrap();
+        assert_eq!(s_pids.len().unwrap(), 2);
+        let seen: Vec<u64> = (1..=2).map(|i| s_pids.get::<u64>(i).unwrap()).collect();
+        assert!(seen.contains(&planet_a.to_bits()));
+        assert!(seen.contains(&planet_b.to_bits()));
+
+        // system.colony_ids -> 1 colony in this system
+        let s_cids: Table = sys.get("colony_ids").unwrap();
+        assert_eq!(s_cids.len().unwrap(), 1);
+
+        // system.owner_empire_id points at the PlayerEmpire
+        assert_eq!(
+            sys.get::<u64>("owner_empire_id").unwrap(),
+            empire_entity.to_bits()
+        );
+
+        // system.modifiers exposes the three expected final-values.
+        // Defaults are zero here (empty ModifiedValue has base=0 and no
+        // modifiers); production code seeds a base via StarTypeModifierSet.
+        let modifiers: Table = sys.get("modifiers").unwrap();
+        assert!(modifiers.get::<f64>("ship_speed").is_ok());
+        assert!(modifiers.get::<f64>("ship_attack").is_ok());
+        assert!(modifiers.get::<f64>("ship_defense").is_ok());
+    }
+
+    #[test]
+    fn test_systemview_owner_nil_when_no_sovereignty() {
+        // #289 β R8: systems without a Sovereignty component must
+        // omit `owner_empire_id` (nil from Lua).
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = mini_world();
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+        let sids: Table = gs.get("system_ids").unwrap();
+        let sid: u64 = sids.get(1).unwrap();
+        let systems: Table = gs.get("systems").unwrap();
+        let sys: Table = systems.get(sid).unwrap();
+        let owner: mlua::Value = sys.get("owner_empire_id").unwrap();
+        assert!(matches!(owner, mlua::Value::Nil));
     }
 
     #[test]
