@@ -409,8 +409,12 @@ pub fn test_app() -> App {
     app.add_systems(Update, macrocosmo::time_system::advance_game_time);
     // #334 Phase 1: primary ship pipeline, split into two `add_systems`
     // calls so we stay under the 20-arm IntoScheduleConfigs limit. The
-    // second call `.after(process_command_queue)` preserves the original
-    // ordering of scout / combat / repair / pursuit / fleet cleanup.
+    // second call runs the per-variant handlers; the third call sequences
+    // scout / combat / repair / pursuit / fleet cleanup after them.
+    //
+    // #334 Phase 3 (Commit 3): legacy `process_command_queue` deleted;
+    // ordering hooks retargeted to `handlers::handle_attack_requested`
+    // (the last handler in the `.chain()` above).
     app.add_systems(
         Update,
         (
@@ -425,9 +429,8 @@ pub fn test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
-            // #334 Phase 1/2: dispatcher runs first in this chain so its
-            // messages are visible to handlers that run immediately after
-            // via the second add_systems block below.
+            // #334: dispatcher runs first in this chain so its messages
+            // are visible to handlers registered immediately below.
             macrocosmo::ship::dispatcher::dispatch_queued_commands,
         )
             .chain()
@@ -448,10 +451,14 @@ pub fn test_app() -> App {
             // #334 Phase 2 (Commit 4): survey / colonize handlers.
             macrocosmo::ship::handlers::handle_survey_requested,
             macrocosmo::ship::handlers::handle_colonize_requested,
+            // #334 Phase 3 (Commit 1): Scout handler.
+            macrocosmo::ship::handlers::handle_scout_requested,
+            // #334 Phase 3 (Commit 2): AttackRequested skeleton (no-op
+            // foundation for #219 / #220).
+            macrocosmo::ship::handlers::handle_attack_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
-            process_command_queue,
         )
             .chain()
             .after(macrocosmo::ship::dispatcher::dispatch_queued_commands)
@@ -461,9 +468,9 @@ pub fn test_app() -> App {
     app.add_systems(
         Update,
         (
-            // #217: Scout observation + report. Chained after
-            // process_command_queue so a Scout that began transitioning
-            // to Scouting this tick doesn't get double-processed.
+            // #217: Scout observation + report. Chained after the Scout
+            // handler so a Scout that began transitioning to Scouting
+            // this tick doesn't get double-processed.
             macrocosmo::ship::scout::tick_scout_observation,
             macrocosmo::ship::scout::process_scout_report,
             resolve_combat,
@@ -473,11 +480,12 @@ pub fn test_app() -> App {
             macrocosmo::ship::fleet::prune_empty_fleets,
         )
             .chain()
-            .after(process_command_queue)
+            .after(macrocosmo::ship::handlers::handle_attack_requested)
+            .after(macrocosmo::ship::handlers::handle_scout_requested)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
-    // #128: Poll route tasks after Commands from process_command_queue are flushed.
+    // #128: Poll route tasks after Commands emitted by handlers are flushed.
     app.add_systems(
         Update,
         (
@@ -485,7 +493,7 @@ pub fn test_app() -> App {
             macrocosmo::ship::routing::poll_pending_routes,
         )
             .chain()
-            .after(process_command_queue)
+            .after(macrocosmo::ship::handlers::handle_attack_requested)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
@@ -709,10 +717,14 @@ pub fn full_test_app() -> App {
             // #334 Phase 2 (Commit 4): survey / colonize handlers.
             macrocosmo::ship::handlers::handle_survey_requested,
             macrocosmo::ship::handlers::handle_colonize_requested,
+            // #334 Phase 3 (Commit 1): Scout handler.
+            macrocosmo::ship::handlers::handle_scout_requested,
+            // #334 Phase 3 (Commit 2): AttackRequested skeleton (no-op
+            // foundation for #219 / #220).
+            macrocosmo::ship::handlers::handle_attack_requested,
             // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
             // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
             macrocosmo::ship::handle_core_deploy_requested,
-            process_command_queue,
         )
             .chain()
             .after(macrocosmo::ship::dispatcher::dispatch_queued_commands),
@@ -728,9 +740,10 @@ pub fn full_test_app() -> App {
             macrocosmo::ship::pursuit::detect_hostiles_system,
             // #287 (γ-1): Reconcile FleetMembers after ship despawns.
             macrocosmo::ship::fleet::prune_empty_fleets,
-        ),
+        )
+            .after(macrocosmo::ship::handlers::handle_attack_requested),
     );
-    // #128: Poll route tasks after Commands from process_command_queue are flushed.
+    // #128: Poll route tasks after Commands emitted by handlers are flushed.
     app.add_systems(
         Update,
         (
@@ -738,7 +751,7 @@ pub fn full_test_app() -> App {
             macrocosmo::ship::routing::poll_pending_routes,
         )
             .chain()
-            .after(process_command_queue),
+            .after(macrocosmo::ship::handlers::handle_attack_requested),
     );
     // #334 Phase 1: CommandExecuted → CommandLog bridge.
     app.add_systems(

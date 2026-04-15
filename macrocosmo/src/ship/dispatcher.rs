@@ -1,15 +1,12 @@
-//! #334 Phase 1: command-queue dispatcher.
+//! #334: command-queue dispatcher.
 //!
 //! Iterates every ship's `CommandQueue`, peeks the head command, performs
 //! **lightweight validation only** (ship is Docked/Loitering, target exists,
-//! ship not immobile), and for the Phase-1 migrated variants
-//! (`MoveTo` / `MoveToCoordinates`) emits the corresponding
-//! [`CommandRequested`](super::command_events) message and pops the queue.
-//!
-//! Non-migrated variants are left at the head of the queue untouched so the
-//! legacy `process_command_queue` / `process_deliverable_commands` systems
-//! can consume them via their original path. As Phase 2/3 land, variants
-//! move out of those legacy paths and into this dispatcher's emit arms.
+//! ship not immobile), emits the corresponding
+//! [`CommandRequested`](super::command_events) message, and pops the
+//! queue. Phase 3 completes the migration — every `QueuedCommand`
+//! variant now has a matching request arm here and a handler under
+//! `super::handlers`. There are no legacy fallthroughs.
 //!
 //! **No state mutation beyond `CommandQueue::commands.remove(0)` and
 //! message emit** — all semantic effects (starting FTL travel, spawning
@@ -23,7 +20,7 @@ use bevy::prelude::*;
 use super::command_events::{
     ColonizeRequested, CommandId, DeployDeliverableRequested, LoadDeliverableRequested,
     LoadFromScrapyardRequested, MoveRequested, MoveToCoordinatesRequested, NextCommandId,
-    SurveyRequested, TransferToStructureRequested,
+    ScoutRequested, SurveyRequested, TransferToStructureRequested,
 };
 use super::routing::PendingRoute;
 use super::{CommandQueue, QueuedCommand, Ship, ShipState};
@@ -35,16 +32,15 @@ use crate::time_system::GameClock;
 
 /// Lightweight dispatcher: validates + emits `CommandRequested` messages.
 ///
-/// Phase 1 scope: `MoveTo` and `MoveToCoordinates`. Other variants fall
-/// through untouched; the legacy `process_command_queue` consumes them.
+/// As of #334 Phase 3 every `QueuedCommand` variant is handled here and
+/// consumed by a focused handler under `super::handlers`.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_queued_commands(
     clock: Res<GameClock>,
     mut next_id: ResMut<NextCommandId>,
     // Ships not already mid-route. `PendingRoute` means a MoveTo is already
     // being resolved asynchronously; skip those to preserve the 1-in-flight
-    // invariant from the legacy code (`Without<PendingRoute>` in
-    // process_command_queue).
+    // invariant from the legacy code.
     mut ships: Query<
         (Entity, &Ship, &ShipState, &Position, &mut CommandQueue),
         Without<PendingRoute>,
@@ -61,6 +57,7 @@ pub fn dispatch_queued_commands(
     mut scrap_req: MessageWriter<LoadFromScrapyardRequested>,
     mut survey_req: MessageWriter<SurveyRequested>,
     mut colonize_req: MessageWriter<ColonizeRequested>,
+    mut scout_req: MessageWriter<ScoutRequested>,
     // #334 Phase 1: append a `Dispatched` entry to the player empire's
     // CommandLog on each successful validation. The bridge system
     // `bridge_command_executed_to_log` finalizes via `CommandId` match.
@@ -341,11 +338,35 @@ pub fn dispatch_queued_commands(
                     ship.name, target, command_id.0
                 );
             }
-            // Non-migrated variants: leave the head untouched so the legacy
-            // `process_command_queue` system consumes them this same tick.
-            QueuedCommand::Scout { .. } => {
-                // Phase 3 will migrate Scout. For now the legacy system
-                // picks it up.
+            QueuedCommand::Scout {
+                target_system,
+                observation_duration,
+                report_mode,
+            } => {
+                let target_system = *target_system;
+                let observation_duration = *observation_duration;
+                let report_mode = *report_mode;
+                let command_id = next_id.allocate();
+                queue.commands.remove(0);
+                scout_req.write(ScoutRequested {
+                    command_id,
+                    ship: ship_entity,
+                    target_system,
+                    observation_duration,
+                    report_mode,
+                    issued_at: clock.elapsed,
+                });
+                if let Some(log) = command_log.as_mut() {
+                    log.entries.push(CommandLogEntry::new_dispatched(
+                        format!("{} → Scout {:?}", ship.name, target_system),
+                        clock.elapsed,
+                        command_id,
+                    ));
+                }
+                info!(
+                    "dispatch: ship {} ScoutRequested -> {:?} (cmd {})",
+                    ship.name, target_system, command_id.0
+                );
             }
         }
     }
@@ -545,10 +566,10 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_leaves_non_migrated_variants_untouched() {
-        // #334 Phase 2 (Commit 4): Survey/Colonize are now migrated. Scout
-        // remains the only non-migrated variant — verify the dispatcher
-        // doesn't consume it.
+    fn dispatches_scout_emits_request_and_pops_queue() {
+        // #334 Phase 3 (Commit 1): Scout migrated to the handler pipeline.
+        // The dispatcher now emits `ScoutRequested` and pops the queue —
+        // there are no remaining non-migrated variants.
         use crate::ship::ReportMode;
         let mut app = make_app();
         let target = spawn_test_system(app.world_mut(), [5.0, 0.0, 0.0]);
@@ -564,13 +585,19 @@ mod tests {
         }
         app.update();
 
-        // No MoveRequested emitted, queue head is still Scout.
-        let messages = app.world().resource::<Messages<MoveRequested>>();
+        let messages = app.world().resource::<Messages<ScoutRequested>>();
         let mut cursor = messages.get_cursor();
-        assert_eq!(cursor.read(messages).count(), 0);
+        let all: Vec<&ScoutRequested> = cursor.read(messages).collect();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].ship, ship);
+        assert_eq!(all[0].target_system, target);
+        assert_eq!(all[0].observation_duration, 10);
+        assert!(matches!(all[0].report_mode, ReportMode::Return));
+        assert_ne!(all[0].command_id, CommandId::ZERO);
+
+        // Queue is now empty — command popped.
         let q = app.world().get::<CommandQueue>(ship).unwrap();
-        assert_eq!(q.commands.len(), 1);
-        assert!(matches!(q.commands[0], QueuedCommand::Scout { .. }));
+        assert!(q.commands.is_empty());
     }
 
     #[test]

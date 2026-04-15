@@ -6,12 +6,8 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
 use super::movement::{PortParams, start_ftl_travel_full, start_sublight_travel_with_bonus};
-use super::routing;
 use super::survey::start_survey_with_bonus;
-use super::{
-    CommandQueue, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship, ShipCommand,
-    ShipState,
-};
+use super::{CommandQueue, PendingShipCommand, Ship, ShipCommand, ShipState};
 
 // --- Pending ship command processing (#33) ---
 
@@ -202,172 +198,10 @@ pub fn process_pending_ship_commands(
 }
 
 // --- Command queue processing (#34) ---
-
-/// #45: Uses GlobalParams for tech bonuses
-/// #46: Checks for port facility at origin system
-/// #108: Unified MoveTo with auto-route planning (FTL chain > FTL direct > SubLight)
-/// #128: Async A* mixed route planning (FTL/sublight)
-#[allow(clippy::too_many_arguments)]
-pub fn process_command_queue(
-    // #334 Phase 2 (Commits 1–4): most variants migrated to the
-    // dispatcher + handler pipeline. Only `Scout` is still handled here
-    // pending Phase 3. The bulk of the SystemParam surface is therefore
-    // underscored — the shape is preserved to minimise diff noise when
-    // Scout migrates; the final shape lands under Phase 3.
-    mut _commands: Commands,
-    clock: Res<GameClock>,
-    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
-    balance: Res<crate::technology::GameBalance>,
-    empire_knowledge_q: Query<&crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
-    mut ships: Query<
-        (
-            Entity,
-            &Ship,
-            &mut ShipState,
-            &mut CommandQueue,
-            &Position,
-            Option<&RulesOfEngagement>,
-        ),
-        Without<routing::PendingRoute>,
-    >,
-    systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-    _system_buildings: Query<&crate::colony::SystemBuildings>,
-    _planets: Query<&crate::galaxy::Planet>,
-    hostiles_q: Query<
-        (&crate::galaxy::AtSystem, &crate::faction::FactionOwner),
-        With<crate::galaxy::Hostile>,
-    >,
-    _relations: Res<crate::faction::FactionRelations>,
-    mut _pending_count: ResMut<routing::RouteCalculationsPending>,
-    design_registry: Res<ShipDesignRegistry>,
-    _building_registry: Res<crate::colony::BuildingRegistry>,
-    regions: Query<&crate::galaxy::ForbiddenRegion>,
-) {
-    let Ok(_global_params) = empire_params_q.single() else {
-        return;
-    };
-    let _base_ftl_speed = balance.initial_ftl_speed_c();
-    let _ftl_blockers = routing::collect_ftl_blockers(&regions);
-    let _settling_duration = balance.settling_duration();
-    let _survey_range_base = balance.survey_range_ly();
-    let _survey_duration_base = balance.survey_duration();
-    let _empire_knowledge = empire_knowledge_q.single().ok();
-    let _hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
-        .iter()
-        .map(|(at_system, owner)| (at_system.0, owner.0))
-        .collect();
-    let _ = &design_registry;
-    for (_entity, ship, mut state, mut queue, ship_pos, _roe) in ships.iter_mut() {
-        // #185: Process queue when ship is Docked OR Loitering (current command finished).
-        let docked_system: Option<Entity> = match *state {
-            ShipState::Docked { system } => Some(system),
-            ShipState::Loitering { .. } => None,
-            _ => continue,
-        };
-
-        if queue.commands.is_empty() {
-            continue;
-        }
-
-        // Peek at the next command without consuming it yet.
-        let next = &queue.commands[0];
-
-        match next {
-            // #334 Phase 1: MoveTo / MoveToCoordinates are handled by
-            // `super::dispatcher::dispatch_queued_commands` +
-            // `super::handlers::move_handler::{handle_move_requested,
-            // handle_move_to_coordinates_requested}`. The dispatcher
-            // normally pops these before we run, but Phase 2 handlers
-            // (e.g. `handle_deploy_deliverable_requested`) can auto-inject
-            // a MoveTo/MoveToCoordinates at the queue head in the SAME
-            // tick as the dispatcher runs. Leave it untouched here so the
-            // next-tick dispatcher picks it up.
-            QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
-                // Skip — dispatcher will process next tick.
-            }
-            QueuedCommand::Scout { .. } => {
-                // #217: Consume and dispatch synchronously. If not at the
-                // target yet, auto-insert a MoveTo and retry; else transition
-                // into ShipState::Scouting.
-                let next = queue.commands.remove(0);
-                let QueuedCommand::Scout {
-                    target_system,
-                    observation_duration,
-                    report_mode,
-                } = next
-                else {
-                    unreachable!("outer match guarantees Scout variant");
-                };
-                let Ok((_target_entity, _target_star, _target_pos)) = systems.get(target_system)
-                else {
-                    warn!("Queued Scout target no longer exists");
-                    queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    continue;
-                };
-                // Non-FTL ships are disallowed from Scout — scouts must
-                // leap to the target. Reject early with a warning.
-                if ship.ftl_range <= 0.0 {
-                    warn!("Scout rejected: ship {} has no FTL capability", ship.name);
-                    queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    continue;
-                }
-                // Must carry the scout module.
-                if !super::scout::ship_has_scout_module(ship) {
-                    warn!("Scout rejected: ship {} lacks a scout module", ship.name);
-                    queue.sync_prediction(ship_pos.as_array(), docked_system);
-                    continue;
-                }
-                // If not at target, prepend a MoveTo and re-queue Scout.
-                if docked_system != Some(target_system) {
-                    queue.commands.insert(
-                        0,
-                        QueuedCommand::Scout {
-                            target_system,
-                            observation_duration,
-                            report_mode,
-                        },
-                    );
-                    queue.commands.insert(
-                        0,
-                        QueuedCommand::MoveTo {
-                            system: target_system,
-                        },
-                    );
-                    info!(
-                        "Queue: Ship {} not at Scout target — auto-inserting MoveTo",
-                        ship.name
-                    );
-                    continue;
-                }
-                // #217: origin_system for reporting is the ship's home port
-                // — not the current dock. Otherwise a ship that auto-moved
-                // to target and started scouting would be "home" already
-                // when the report is delivered (bug).
-                let origin_system = ship.home_port;
-                *state = ShipState::Scouting {
-                    target_system,
-                    origin_system,
-                    started_at: clock.elapsed,
-                    completes_at: clock.elapsed + observation_duration,
-                    report_mode,
-                };
-                info!(
-                    "Queue: Ship {} began scouting target (duration {} hexadies, mode {:?})",
-                    ship.name, observation_duration, report_mode
-                );
-                queue.sync_prediction(ship_pos.as_array(), Some(target_system));
-            }
-            // #334 Phase 2 (Commits 1–4): Survey / Colonize / LoadDeliverable
-            // / DeployDeliverable / TransferToStructure / LoadFromScrapyard
-            // are handled by the dispatcher + handler pipeline. Phase 3 will
-            // migrate the remaining `Scout` variant. Everything else is a
-            // no-op here so any handler-injected retry survives the tick
-            // (same guard as MoveTo / MoveToCoordinates above).
-            _ => {
-                // no-op; handled by dispatcher + handler pipeline. Leave
-                // at the queue head so the next-tick dispatcher picks up
-                // any retry re-injected by a handler this tick.
-            }
-        }
-    }
-}
+//
+// #334 Phase 3 (Commit 3): the legacy dispatch loop in this module has
+// been **deleted**. Every `QueuedCommand` variant is now emitted by
+// `super::dispatcher::dispatch_queued_commands` and consumed by a
+// focused handler under `super::handlers`. The corresponding scheduler
+// hooks in `ShipPlugin` / `test_app` / `full_test_app` were retargeted
+// to anchor on the last handler in the dispatcher chain.

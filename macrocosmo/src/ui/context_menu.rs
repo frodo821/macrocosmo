@@ -253,7 +253,7 @@ pub fn draw_context_menu(
         } else if is_docked {
             // #108: Unified move — command queue or pending command handles FTL vs sublight
             if command_delay == 0 {
-                // Queue the move; process_command_queue will auto-route
+                // Queue the move; the dispatcher + move handler will auto-route
                 queued_command = Some(QueuedCommand::MoveTo {
                     system: target_entity,
                 });
