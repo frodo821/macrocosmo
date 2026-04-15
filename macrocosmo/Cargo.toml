@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bevy = "0.18.1"
+bevy = { version = "0.18.1", features = ["dynamic_linking"] }
 bevy_egui = "0.39.1"
 mlua = { version = "0.11", features = ["luajit", "vendored", "send"] }
 rand = "0.9"
