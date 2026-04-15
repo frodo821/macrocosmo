@@ -573,7 +573,7 @@ pub fn poll_pending_routes(
                     queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
                     continue;
                 };
-                start_sublight_travel_with_bonus(
+                if let Err(e) = start_sublight_travel_with_bonus(
                     &mut state,
                     origin_pos,
                     ship,
@@ -581,8 +581,17 @@ pub fn poll_pending_routes(
                     Some(target_system),
                     clock.elapsed,
                     global_params.sublight_speed_bonus,
-                );
-                info!("Route planner: no route found for {}, falling back to sublight", ship.name);
+                ) {
+                    // #296: immobile ships never reach the planner (UI guard
+                    // + command_queue), but defend-in-depth keeps the system
+                    // tolerant.
+                    warn!(
+                        "Route planner: sublight fallback failed for {}: {}",
+                        ship.name, e
+                    );
+                } else {
+                    info!("Route planner: no route found for {}, falling back to sublight", ship.name);
+                }
             }
             queue.sync_prediction(ship_pos.as_array(), Some(docked_system));
             continue;
@@ -652,7 +661,7 @@ pub fn poll_pending_routes(
                     Err(e) => {
                         warn!("Route planner: FTL hop failed for {}: {}, falling back to sublight", ship.name, e);
                         // Fall back to sublight for this segment.
-                        start_sublight_travel_with_bonus(
+                        if let Err(e2) = start_sublight_travel_with_bonus(
                             &mut state,
                             origin_pos,
                             ship,
@@ -660,7 +669,12 @@ pub fn poll_pending_routes(
                             Some(*to),
                             clock.elapsed,
                             global_params.sublight_speed_bonus,
-                        );
+                        ) {
+                            warn!(
+                                "Route planner: sublight fallback also failed for {}: {}",
+                                ship.name, e2
+                            );
+                        }
                     }
                 }
             }
@@ -670,7 +684,7 @@ pub fn poll_pending_routes(
                     continue;
                 };
                 let dest_pos = Position::from(*to_pos);
-                start_sublight_travel_with_bonus(
+                if let Err(e) = start_sublight_travel_with_bonus(
                     &mut state,
                     origin_pos,
                     ship,
@@ -678,11 +692,17 @@ pub fn poll_pending_routes(
                     *to_system,
                     clock.elapsed,
                     global_params.sublight_speed_bonus,
-                );
-                info!(
-                    "Route planner: {} sublight to {:?} ({} segments remaining)",
-                    ship.name, to_system, remaining.len()
-                );
+                ) {
+                    warn!(
+                        "Route planner: sublight segment rejected for {}: {}",
+                        ship.name, e
+                    );
+                } else {
+                    info!(
+                        "Route planner: {} sublight to {:?} ({} segments remaining)",
+                        ship.name, to_system, remaining.len()
+                    );
+                }
             }
         }
     }

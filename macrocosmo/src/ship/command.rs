@@ -114,8 +114,9 @@ pub fn process_pending_ship_commands(
                         );
                     }
                     Err(_) => {
-                        // Fall back to sublight
-                        start_sublight_travel_with_bonus(
+                        // Fall back to sublight. #296: silently drop immobile
+                        // ships — the remote MoveTo cannot be fulfilled.
+                        match start_sublight_travel_with_bonus(
                             &mut state,
                             ship_pos,
                             &ship,
@@ -123,11 +124,20 @@ pub fn process_pending_ship_commands(
                             Some(dest),
                             clock.elapsed,
                             global_params.sublight_speed_bonus,
-                        );
-                        info!(
-                            "Remote move command executed: {} sub-light to {}",
-                            ship.name, dest_star.name,
-                        );
+                        ) {
+                            Ok(()) => {
+                                info!(
+                                    "Remote move command executed: {} sub-light to {}",
+                                    ship.name, dest_star.name,
+                                );
+                            }
+                            Err(e) => {
+                                info!(
+                                    "Remote move command rejected for {}: {}",
+                                    ship.name, e,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -270,7 +280,9 @@ pub fn process_command_queue(
                 // planning from deep space).
                 if docked_system.is_none() {
                     queue.commands.remove(0);
-                    start_sublight_travel_with_bonus(
+                    // #296: immobile ships can't move sublight either —
+                    // consume the command with a warning.
+                    if let Err(e) = start_sublight_travel_with_bonus(
                         &mut state,
                         ship_pos,
                         ship,
@@ -278,9 +290,15 @@ pub fn process_command_queue(
                         Some(target),
                         clock.elapsed,
                         global_params.sublight_speed_bonus,
-                    );
-                    queue.sync_prediction(target_pos.as_array(), Some(target));
-                    info!("Queue: Loitering ship {} sublight to target", ship.name);
+                    ) {
+                        warn!(
+                            "Queue: Loitering ship {} cannot sublight to target: {}",
+                            ship.name, e
+                        );
+                    } else {
+                        queue.sync_prediction(target_pos.as_array(), Some(target));
+                        info!("Queue: Loitering ship {} sublight to target", ship.name);
+                    }
                     continue;
                 }
 
@@ -343,7 +361,8 @@ pub fn process_command_queue(
                 // #185: Move sublight to deep-space coordinates and loiter on arrival.
                 let target_arr = *target;
                 queue.commands.remove(0);
-                start_sublight_travel_with_bonus(
+                // #296: immobile ships cannot leave their docking system.
+                match start_sublight_travel_with_bonus(
                     &mut state,
                     ship_pos,
                     ship,
@@ -351,12 +370,21 @@ pub fn process_command_queue(
                     None, // no target system → arrival transitions to Loitering
                     clock.elapsed,
                     global_params.sublight_speed_bonus,
-                );
-                queue.sync_prediction(target_arr, None);
-                info!(
-                    "Queue: Ship {} sublight to deep-space coordinates ({:.2},{:.2},{:.2})",
-                    ship.name, target_arr[0], target_arr[1], target_arr[2]
-                );
+                ) {
+                    Ok(()) => {
+                        queue.sync_prediction(target_arr, None);
+                        info!(
+                            "Queue: Ship {} sublight to deep-space coordinates ({:.2},{:.2},{:.2})",
+                            ship.name, target_arr[0], target_arr[1], target_arr[2]
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Queue: Ship {} cannot MoveToCoordinates: {}",
+                            ship.name, e
+                        );
+                    }
+                }
             }
             QueuedCommand::Scout { .. } => {
                 // #217: Consume and dispatch synchronously. If not at the

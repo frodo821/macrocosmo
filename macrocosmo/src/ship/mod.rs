@@ -811,6 +811,23 @@ mod tests {
         }
     }
 
+    // #296: Result API — immobile ships reject start_sublight_travel.
+    #[test]
+    fn test_start_sublight_travel_rejects_immobile() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let mut ship = make_ship("colony_ship_mk1");
+        ship.sublight_speed = 0.0;
+        ship.ftl_range = 0.0;
+        let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let dest = Position { x: 1.0, y: 0.0, z: 0.0 };
+        let mut state = ShipState::Docked { system };
+        let result = start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 0);
+        assert_eq!(result, Err("ship is immobile"));
+        // State must remain Docked.
+        assert!(matches!(state, ShipState::Docked { .. }));
+    }
+
     #[test]
     fn start_sublight_sets_correct_arrival_time() {
         let mut world = World::new();
@@ -819,7 +836,8 @@ mod tests {
         let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
         let dest = Position { x: 1.0, y: 0.0, z: 0.0 }; // 1 LY away
         let mut state = ShipState::Docked { system };
-        start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100);
+        start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100)
+            .expect("mobile ship should travel");
         match state {
             ShipState::SubLight { arrival_at, departed_at, .. } => {
                 assert_eq!(departed_at, 100);
