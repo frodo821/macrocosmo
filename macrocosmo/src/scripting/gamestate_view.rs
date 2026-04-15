@@ -418,6 +418,7 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
     for (entity, name, flagship, members) in fleet_rows {
         let ftbl = lua.create_table()?;
         ftbl.set("id", entity.to_bits())?;
+        ftbl.set("entity", entity.to_bits())?;
         ftbl.set("name", name.as_str())?;
         // `flagship` is 0 (invalid) when unset — Lua callers should
         // check `#members > 0` before using it.
@@ -427,7 +428,76 @@ pub fn build_gamestate_table(lua: &Lua, world: &mut World) -> mlua::Result<Table
             members_tbl.push(m.to_bits())?;
         }
         // members: array — unsealed so `ipairs` works from Lua.
+        // Also expose `ship_ids` as an alias for the #289 docs naming.
         ftbl.set("members", members_tbl)?;
+        let ship_ids_tbl = lua.create_table()?;
+        for m in &members {
+            ship_ids_tbl.push(m.to_bits())?;
+        }
+        ftbl.set("ship_ids", ship_ids_tbl)?;
+        // #289 β: owner proxy — Fleet has no Owner component of its own
+        // (plan §10 R3). Use the flagship ship's `Ship.owner` as the
+        // authoritative owner. Falls back to the first member if
+        // flagship is unset. Empty fleets produce no owner_* fields.
+        let proxy_ship: Option<Entity> = flagship.or_else(|| members.first().copied());
+        if let Some(ps) = proxy_ship {
+            if let Some(ship) = world.get::<Ship>(ps) {
+                match ship.owner {
+                    Owner::Empire(e) => {
+                        ftbl.set("owner_empire_id", e.to_bits())?;
+                        ftbl.set("owner_kind", "empire")?;
+                    }
+                    Owner::Neutral => {
+                        ftbl.set("owner_kind", "neutral")?;
+                    }
+                }
+            }
+            // #289 β: state / origin / destination — flagship ShipState
+            // proxy until FleetState lands in γ-2 (#287, plan §10 R3).
+            if let Some(ss) = world.get::<crate::ship::ShipState>(ps) {
+                let state_tbl = build_ship_state_table(lua, ss)?;
+                ftbl.set("state", state_tbl)?;
+                // Convenience top-level origin / destination fields,
+                // extracted from the proxy ShipState when available.
+                use crate::ship::ShipState as S;
+                match ss {
+                    S::SubLight {
+                        origin,
+                        destination,
+                        target_system,
+                        ..
+                    } => {
+                        let o = lua.create_table()?;
+                        o.set("x", origin[0])?;
+                        o.set("y", origin[1])?;
+                        o.set("z", origin[2])?;
+                        seal_table(lua, &o)?;
+                        ftbl.set("origin", o)?;
+                        let d = lua.create_table()?;
+                        d.set("x", destination[0])?;
+                        d.set("y", destination[1])?;
+                        d.set("z", destination[2])?;
+                        seal_table(lua, &d)?;
+                        ftbl.set("destination", d)?;
+                        if let Some(ts) = target_system {
+                            ftbl.set("destination_system", ts.to_bits())?;
+                        }
+                    }
+                    S::InFTL {
+                        origin_system,
+                        destination_system,
+                        ..
+                    } => {
+                        ftbl.set("origin_system", origin_system.to_bits())?;
+                        ftbl.set("destination_system", destination_system.to_bits())?;
+                    }
+                    S::Docked { system } => {
+                        ftbl.set("origin_system", system.to_bits())?;
+                    }
+                    _ => {}
+                }
+            }
+        }
         seal_table(lua, &ftbl)?;
         fleets_tbl.set(entity.to_bits(), ftbl)?;
         fleet_ids.push(entity.to_bits())?;
@@ -1485,6 +1555,85 @@ mod tests {
             let k: String = st.get("kind").unwrap();
             assert_eq!(&k, expected_kind, "kind mismatch for {:?}", e);
         }
+    }
+
+    #[test]
+    fn test_fleetview_owner_state_origin_destination_via_flagship() {
+        // #289 β R3: Fleet owner/state/origin/destination proxy through
+        // its flagship's Ship.owner and ShipState.
+        use crate::ship::fleet::{Fleet, FleetMembers};
+        use crate::ship::{Ship, ShipState};
+        let engine = ScriptEngine::new().unwrap();
+        let mut world = World::new();
+        world.insert_resource(GameClock::new(0));
+        let empire_entity = world.spawn((Empire { name: "Emp".into() }, PlayerEmpire)).id();
+        let sys_a = world
+            .spawn(StarSystem {
+                name: "A".into(),
+                surveyed: true,
+                is_capital: true,
+                star_type: "x".into(),
+            })
+            .id();
+        let sys_b = world
+            .spawn(StarSystem {
+                name: "B".into(),
+                surveyed: true,
+                is_capital: false,
+                star_type: "x".into(),
+            })
+            .id();
+        let make_ship = || Ship {
+            name: "S".into(),
+            design_id: "d".into(),
+            hull_id: "h".into(),
+            modules: vec![],
+            owner: crate::ship::Owner::Empire(empire_entity),
+            sublight_speed: 1.0,
+            ftl_range: 1.0,
+            player_aboard: false,
+            home_port: sys_a,
+            design_revision: 0,
+            fleet: None,
+        };
+        let flagship = world
+            .spawn((
+                make_ship(),
+                ShipState::InFTL {
+                    origin_system: sys_a,
+                    destination_system: sys_b,
+                    departed_at: 0,
+                    arrival_at: 100,
+                },
+            ))
+            .id();
+        let wingmate = world.spawn((make_ship(), ShipState::Docked { system: sys_a })).id();
+        let fleet_entity = world
+            .spawn((
+                Fleet {
+                    name: "Alpha".into(),
+                    flagship: Some(flagship),
+                },
+                FleetMembers(vec![flagship, wingmate]),
+            ))
+            .id();
+        let gs = build_gamestate_table(engine.lua(), &mut world).unwrap();
+        let fleets: Table = gs.get("fleets").unwrap();
+        let f: Table = fleets.get(fleet_entity.to_bits()).unwrap();
+        assert_eq!(
+            f.get::<u64>("owner_empire_id").unwrap(),
+            empire_entity.to_bits()
+        );
+        assert_eq!(f.get::<String>("owner_kind").unwrap(), "empire");
+        let state: Table = f.get("state").unwrap();
+        assert_eq!(state.get::<String>("kind").unwrap(), "in_ftl");
+        assert_eq!(f.get::<u64>("origin_system").unwrap(), sys_a.to_bits());
+        assert_eq!(
+            f.get::<u64>("destination_system").unwrap(),
+            sys_b.to_bits()
+        );
+        let sids: Table = f.get("ship_ids").unwrap();
+        assert_eq!(sids.len().unwrap(), 2);
     }
 
     #[test]
