@@ -16,6 +16,7 @@
 //! Lua API future-proof argument (why the traits here are stable under
 //! the upcoming `define_situation_tab` API).
 
+pub mod construction_tab;
 pub mod lua_adapter;
 pub mod notifications_tab;
 pub mod panel;
@@ -26,6 +27,7 @@ pub mod types;
 
 use bevy::prelude::*;
 
+pub use construction_tab::ConstructionOverviewTab;
 pub use lua_adapter::{LuaOngoingTabAdapter, LuaTabRegistration};
 pub use notifications_tab::{
     EscNotificationQueue, NotificationsTab, PendingAck, PushOutcome, apply_pending_acks_system,
@@ -76,6 +78,13 @@ impl Plugin for SituationCenterPlugin {
         // swaps the stub queue for the real pipeline but keeps this
         // registration intact.
         app.register_situation_tab(NotificationsTab);
+
+        // ESC-3 (#346): register the four ongoing tabs. `order` keys
+        // 100..400 place them left of the notifications tab (900).
+        // Badge counts are cheap (aggregate over `World::query` with no
+        // allocations beyond per-system buckets), so running them every
+        // frame is fine.
+        app.register_ongoing_situation_tab(ConstructionOverviewTab);
     }
 }
 
