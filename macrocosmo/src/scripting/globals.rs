@@ -193,29 +193,19 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     let event_handlers = lua.create_table()?;
     globals.set("_event_handlers", event_handlers)?;
 
-    // --- #350: Knowledge subscription registry (K-1 foundation) ---
-    //
-    // Parallel to `_event_handlers`, the knowledge-specific subscription
-    // accumulator. `on("vesk:famine@recorded", fn)` / `on("*@observed", fn)`
-    // are routed here by K-3 (#352); K-1 only reserves the table so that
-    // (a) the `define_knowledge` startup system can record the auto-registered
-    // `<id>@recorded` / `<id>@observed` event ids in a way subsequent code
-    // can inspect, and (b) K-3's `on()` router has a stable surface to write
-    // into without ordering games between the two parallel slices.
-    //
-    // Shape (K-1 reserves only; K-3 extends with actual handler entries):
-    // ```
-    // _knowledge_subscribers = {}                     -- array-style
-    // _knowledge_reserved_events = {                  -- lookup table
-    //     ["vesk:famine_outbreak@recorded"] = true,
-    //     ["vesk:famine_outbreak@observed"] = true,
-    //     ...
-    // }
-    // ```
-    //
-    // See `scripting/knowledge_api::register_auto_lifecycle_events`.
+    // #350 K-1: Knowledge reserved events table (auto-registered lifecycle
+    // event ids from define_knowledge). K-3 on() router checks this.
     globals.set("_knowledge_subscribers", lua.create_table()?)?;
     globals.set("_knowledge_reserved_events", lua.create_table()?)?;
+
+    // #352 K-3: Knowledge subscription accumulator. on(event_id, fn) routes
+    // knowledge-lifecycle event ids here; load_knowledge_subscriptions
+    // drains into bucketed KnowledgeSubscriptionRegistry at startup.
+    let knowledge_subscriptions = lua.create_table()?;
+    globals.set(
+        super::knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS,
+        knowledge_subscriptions,
+    )?;
 
     // on(event_id, [filter,] handler) -- registers an event handler with optional structural filter
     let on_fn = lua.create_function(|lua, args: mlua::MultiValue| {

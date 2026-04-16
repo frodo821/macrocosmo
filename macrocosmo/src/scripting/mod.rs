@@ -15,6 +15,7 @@ pub mod globals;
 pub mod helpers;
 pub mod knowledge_api;
 pub mod knowledge_dispatch;
+pub mod knowledge_registry;
 pub mod lifecycle;
 pub mod map_api;
 pub mod modifier_api;
@@ -83,13 +84,20 @@ impl Plugin for ScriptingPlugin {
                 load_event_definitions.after(load_all_scripts),
             )
             // #350 K-1: build KindRegistry + reserve <id>@recorded /
-            // <id>@observed entries. Must run after load_all_scripts (for
-            // accumulator population) and before run_lifecycle_hooks (so
-            // on_game_start can observe the finished registry).
+            // <id>@observed entries.
             .add_systems(
                 Startup,
                 load_knowledge_kinds
                     .after(load_all_scripts)
+                    .before(lifecycle::run_lifecycle_hooks),
+            )
+            // #352 (K-3): drain Lua-side knowledge subscription accumulator
+            // into the bucketed KnowledgeSubscriptionRegistry.
+            .add_systems(
+                Startup,
+                knowledge_registry::load_knowledge_subscriptions
+                    .after(load_all_scripts)
+                    .after(load_knowledge_kinds)
                     .before(lifecycle::run_lifecycle_hooks),
             )
             // #281: After the building/structure registries are populated,
