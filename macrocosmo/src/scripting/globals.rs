@@ -1,8 +1,8 @@
 use mlua::prelude::*;
 use std::path::Path;
 
-use super::helpers::extract_id_from_lua_value;
 use super::effect_scope;
+use super::helpers::extract_id_from_lua_value;
 
 /// Configure global tables and functions available to all Lua scripts.
 pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
@@ -134,11 +134,7 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
 
     register_define_fn(lua, "faction", "_faction_definitions")?;
     register_define_fn(lua, "faction_type", "_faction_type_definitions")?;
-    register_define_fn(
-        lua,
-        "diplomatic_action",
-        "_diplomatic_action_definitions",
-    )?;
+    register_define_fn(lua, "diplomatic_action", "_diplomatic_action_definitions")?;
 
     // --- #160: Balance constants Lua binding ---
     // `define_balance { ... }` is expected to be called AT MOST ONCE from
@@ -442,6 +438,51 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     })?;
     globals.set("show_notification", show_notification_fn)?;
 
+    // --- #345 ESC-2: ESC (Empire Situation Center) notification push API ---
+    //
+    // `push_notification { title, message, severity, source, event_id,
+    //                      timestamp, children? }` enqueues a *post-hoc*
+    // ack-able notification into `EscNotificationQueue` (see
+    // `crate::ui::situation_center::notifications_tab`).
+    //
+    // Distinct from `show_notification` — that API drives the top-banner
+    // stack (#151), which is a live TTL-based popup. `push_notification`
+    // targets the ESC Notifications tab: history + ack, not banners.
+    //
+    // Shape:
+    //   - title / message: strings (at least one should be non-empty;
+    //     the renderer uses `message` as the body, falling back to
+    //     `title` if `message` is absent).
+    //   - severity: "info" | "warn" | "critical" (default "info").
+    //   - source: optional table `{ kind = ..., id = <u64 Entity bits> }`
+    //     where `kind` is one of "none" | "empire" | "system" | "colony" |
+    //     "ship" | "fleet" | "faction" | "build_order". Unknown kinds
+    //     fall back to "none". Missing `source` is equivalent to `none`.
+    //   - event_id: optional string OR numeric. When supplied it is
+    //     routed through `#249 NotifiedEventIds::try_notify` by the Rust
+    //     drain so duplicate pushes for the same id are silently
+    //     suppressed (same mechanism the banner queue uses).
+    //   - timestamp: optional i64 game-hexadies. When absent the drain
+    //     reads the current `GameClock`.
+    //   - children: optional array of tables shaped like the outer push
+    //     (recursive; depth capped by Rust-side parser).
+    //
+    // The entry is appended to the global `_pending_esc_notifications`
+    // Lua table; the Rust-side `drain_pending_esc_notifications` system
+    // drains it every frame and applies the push to
+    // `EscNotificationQueue`.
+    globals.set("_pending_esc_notifications", lua.create_table()?)?;
+    let push_notification_fn = lua.create_function(|lua, params: mlua::Table| {
+        let pending: mlua::Table = lua.globals().get("_pending_esc_notifications")?;
+        let len = pending.len()?;
+        // We deliberately store the raw Lua table — the Rust side knows
+        // the shape and can surface clear errors for each malformed
+        // field instead of having Lua's `.get::<T>(...)` coerce silently.
+        pending.set(len + 1, params)?;
+        Ok(())
+    })?;
+    globals.set("push_notification", push_notification_fn)?;
+
     // --- #152: Player choice dialog API ---
 
     // Pending choice queue — drained by `drain_pending_choices`
@@ -464,10 +505,7 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         // Derive a stable-ish id: prefer explicit `id`, else title slug, else
         // "choice". Always append a monotonically increasing counter to make
         // it unique even if the same title is shown repeatedly.
-        let next_counter: u64 = lua
-            .globals()
-            .get("_show_choice_counter")
-            .unwrap_or(0_u64);
+        let next_counter: u64 = lua.globals().get("_show_choice_counter").unwrap_or(0_u64);
         lua.globals()
             .set("_show_choice_counter", next_counter + 1)?;
 
@@ -476,7 +514,13 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         } else if let Ok(title) = params.get::<String>("title") {
             let slug: String = title
                 .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             format!("{slug}_{next_counter}")
         } else {
@@ -624,7 +668,11 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
 /// 1. Creates an accumulator table `_xxx_definitions`
 /// 2. Registers `define_xxx(table)` which appends to the accumulator and
 ///    tags the table with `_def_type = def_type`, then returns it as a reference.
-fn register_define_fn(lua: &Lua, def_type: &str, accumulator_name: &str) -> Result<(), mlua::Error> {
+fn register_define_fn(
+    lua: &Lua,
+    def_type: &str,
+    accumulator_name: &str,
+) -> Result<(), mlua::Error> {
     let globals = lua.globals();
 
     let acc = lua.create_table()?;
