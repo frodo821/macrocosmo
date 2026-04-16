@@ -22,6 +22,7 @@ pub mod lua_adapter;
 pub mod notifications_tab;
 pub mod panel;
 pub mod registry;
+pub mod resource_trends_tab;
 pub mod ship_ops_tab;
 pub mod state;
 pub mod tab;
@@ -40,6 +41,7 @@ pub use notifications_tab::{
 };
 pub use panel::{TOGGLE_KEY, draw_situation_center_system, toggle_situation_center};
 pub use registry::{AppSituationExt, SituationTabRegistry};
+pub use resource_trends_tab::{ResourceTrendHistory, ResourceTrendsTab, record_resource_trends};
 pub use ship_ops_tab::ShipOperationsTab;
 pub use state::{SituationCenterState, TabState};
 pub use tab::{
@@ -74,7 +76,17 @@ impl Plugin for SituationCenterPlugin {
             // ESC-3 Commit 3 (#346): snapshot of previous-tick standing
             // values, refreshed every frame by `record_diplomatic_history`.
             .init_resource::<DiplomaticStandingHistory>()
-            .add_systems(Update, (toggle_situation_center, record_diplomatic_history))
+            // ESC-3 Commit 4 (#346): rolling ring buffer of empire-wide
+            // resource totals, refreshed by `record_resource_trends`.
+            .init_resource::<ResourceTrendHistory>()
+            .add_systems(
+                Update,
+                (
+                    toggle_situation_center,
+                    record_diplomatic_history,
+                    record_resource_trends,
+                ),
+            )
             // #345 ESC-2: drain ack intents emitted by the tab renderer
             // each frame and apply them to the queue.
             .add_systems(Update, apply_pending_acks_system);
@@ -92,6 +104,10 @@ impl Plugin for SituationCenterPlugin {
         app.register_ongoing_situation_tab(ConstructionOverviewTab);
         app.register_ongoing_situation_tab(ShipOperationsTab);
         app.register_ongoing_situation_tab(DiplomaticStandingTab);
+        // Resource Trends draws per-resource sparklines that the
+        // default Event-tree renderer can't express, so it implements
+        // `SituationTab` directly (not `OngoingTab`).
+        app.register_situation_tab(ResourceTrendsTab);
     }
 }
 
