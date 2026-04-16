@@ -29,7 +29,10 @@
 //!   have been released before calling, because subscribers may re-enter
 //!   via `gs:*` setters (spike 10.4, K-2).
 
+use bevy::prelude::warn;
 use mlua::prelude::*;
+
+use super::knowledge_registry::KnowledgeSubscriptionRegistry;
 
 /// Lifecycle suffix for a knowledge event id (`<kind>@<lifecycle>` or
 /// `*@<lifecycle>`). v1 supports only `recorded` and `observed`.
@@ -230,6 +233,76 @@ pub fn seal_immutable_keys(
     mt.set("__mc_values", values)?;
     payload.set_metatable(Some(mt))?;
     Ok(())
+}
+
+/// Dispatch a knowledge event to all matching subscribers.
+///
+/// Walks the exact bucket for `"<kind_id>@<lifecycle>"` first, then the
+/// wildcard bucket for `lifecycle`, invoking each subscriber in its
+/// registration order. The `payload` table is shared across subscribers:
+/// they observe any mutations previous subscribers applied, as required
+/// for the payload-mutation chain (plan-349 §2.4 `@recorded` flow). For
+/// `@observed`, callers build a fresh per-observer copy before dispatch
+/// (K-4).
+///
+/// Subscriber errors are logged via `warn!` and the chain continues to
+/// the next subscriber (plan-349 §6 item 4). This mirrors the pattern in
+/// `lifecycle::dispatch_bus_handlers`. Any error returned by *this*
+/// function is a dispatcher-internal failure (e.g. registry lookup,
+/// registry_value resolution), not a subscriber error.
+///
+/// # Reentrancy
+///
+/// Subscribers are permitted to call back into other `gs:*` setters or
+/// even re-enter `gs:record_knowledge` itself. Callers must ensure any
+/// `&mut World` borrow tied to `gs:*` has been released before invoking
+/// this function — the K-2 `record_knowledge` setter releases its
+/// `world_cell.try_borrow_mut()` guard before calling `dispatch_knowledge`
+/// specifically to support this (spike 10.4, validated in K-2).
+///
+/// Until K-2 and K-4 land, this function is exercised only from tests
+/// (`tests/knowledge_subscription_dispatch.rs`).
+pub fn dispatch_knowledge(
+    lua: &Lua,
+    registry: &KnowledgeSubscriptionRegistry,
+    kind_id: &str,
+    lifecycle: KnowledgeLifecycle,
+    payload: &mlua::Table,
+) -> mlua::Result<()> {
+    let exact_key = format!("{kind_id}@{}", lifecycle.as_str());
+
+    // Exact bucket first.
+    if let Some(bucket) = registry.exact.get(&exact_key) {
+        for key in bucket {
+            call_subscriber(lua, key, payload, &exact_key);
+        }
+    }
+
+    // Wildcard bucket next.
+    if let Some(bucket) = registry.wildcard.get(&lifecycle) {
+        for key in bucket {
+            call_subscriber(lua, key, payload, &exact_key);
+        }
+    }
+
+    Ok(())
+}
+
+/// Internal helper: look up the Lua function behind a `RegistryKey` and
+/// call it with the payload. Errors in either lookup or subscriber body
+/// are `warn!`-logged and swallowed — the dispatch chain must always
+/// continue (plan-349 §6 item 4).
+fn call_subscriber(lua: &Lua, key: &mlua::RegistryKey, payload: &mlua::Table, event_id: &str) {
+    match lua.registry_value::<mlua::Function>(key) {
+        Ok(func) => {
+            if let Err(e) = func.call::<()>(payload.clone()) {
+                warn!("knowledge subscriber error for '{event_id}': {e}");
+            }
+        }
+        Err(e) => {
+            warn!("knowledge subscriber registry_value lookup failed for '{event_id}': {e}");
+        }
+    }
 }
 
 #[cfg(test)]
