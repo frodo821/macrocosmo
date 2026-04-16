@@ -100,6 +100,15 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
 
     register_define_fn(lua, "event", "_event_definitions")?;
 
+    // --- #350: Knowledge kind definition (Lua-extensible knowledge kinds) ---
+    //
+    // `define_knowledge { id, payload_schema }` appends to
+    // `_knowledge_kind_definitions`, which is parsed by
+    // `scripting::knowledge_api::parse_knowledge_definitions` at startup
+    // (see `load_knowledge_kinds` system). The accumulator name must match
+    // `knowledge_api::KNOWLEDGE_DEF_ACCUMULATOR`.
+    register_define_fn(lua, "knowledge", "_knowledge_kind_definitions")?;
+
     // --- Ship design Lua bindings ---
 
     register_define_fn(lua, "slot_type", "_slot_type_definitions")?;
