@@ -260,6 +260,16 @@ pub enum KnowledgeFact {
         name: String,
         detail: String,
     },
+    /// #351 (K-2): Lua-defined knowledge kind. The payload is captured as a
+    /// [`PayloadSnapshot`](super::payload::PayloadSnapshot) so the fact
+    /// survives being queued without keeping Lua references alive.
+    Scripted {
+        event_id: Option<EventId>,
+        kind_id: String,
+        origin_system: Option<Entity>,
+        payload_snapshot: super::payload::PayloadSnapshot,
+        recorded_at: i64,
+    },
 }
 
 impl KnowledgeFact {
@@ -275,11 +285,16 @@ impl KnowledgeFact {
             KnowledgeFact::AnomalyDiscovered { .. } => "Anomaly Discovered",
             KnowledgeFact::SurveyDiscovery { .. } => "Discovery",
             KnowledgeFact::StructureBuilt { destroyed, .. } => {
-                if *destroyed { "Structure Destroyed" } else { "Structure Built" }
+                if *destroyed {
+                    "Structure Destroyed"
+                } else {
+                    "Structure Built"
+                }
             }
             KnowledgeFact::ColonyEstablished { .. } => "Colony Established",
             KnowledgeFact::ColonyFailed { .. } => "Colony Failed",
             KnowledgeFact::ShipArrived { .. } => "Ship Arrived",
+            KnowledgeFact::Scripted { .. } => "Knowledge",
         }
     }
 
@@ -297,6 +312,18 @@ impl KnowledgeFact {
                 format!("Colony '{}' failed: {}", name, reason)
             }
             KnowledgeFact::ShipArrived { detail, .. } => detail.clone(),
+            KnowledgeFact::Scripted {
+                kind_id,
+                payload_snapshot,
+                ..
+            } => payload_snapshot
+                .fields
+                .get("detail")
+                .and_then(|v| match v {
+                    super::payload::PayloadValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| kind_id.clone()),
         }
     }
 
@@ -313,6 +340,7 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { .. } => High,
             KnowledgeFact::ColonyFailed { .. } => High,
             KnowledgeFact::ShipArrived { .. } => Low,
+            KnowledgeFact::Scripted { .. } => Medium,
         }
     }
 
@@ -328,6 +356,7 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { system, .. } => Some(*system),
             KnowledgeFact::ColonyFailed { system, .. } => Some(*system),
             KnowledgeFact::ShipArrived { system, .. } => *system,
+            KnowledgeFact::Scripted { origin_system, .. } => *origin_system,
         }
     }
 
@@ -343,7 +372,8 @@ impl KnowledgeFact {
             | KnowledgeFact::StructureBuilt { event_id, .. }
             | KnowledgeFact::ColonyEstablished { event_id, .. }
             | KnowledgeFact::ColonyFailed { event_id, .. }
-            | KnowledgeFact::ShipArrived { event_id, .. } => *event_id,
+            | KnowledgeFact::ShipArrived { event_id, .. }
+            | KnowledgeFact::Scripted { event_id, .. } => *event_id,
         }
     }
 }
@@ -554,13 +584,11 @@ pub fn compute_fact_arrival(
     };
 
     // Try relay path.
-    let Some((o_idx, relay_o_pos, origin_to_relay_dist)) =
-        nearest_covering_relay(origin, relays)
+    let Some((o_idx, relay_o_pos, origin_to_relay_dist)) = nearest_covering_relay(origin, relays)
     else {
         return direct;
     };
-    let Some((p_idx, relay_p_pos, player_to_relay_dist)) =
-        nearest_covering_relay(player, relays)
+    let Some((p_idx, relay_p_pos, player_to_relay_dist)) = nearest_covering_relay(player, relays)
     else {
         return direct;
     };
@@ -671,12 +699,7 @@ pub struct FactSysParam<'w, 's> {
     pub notified_ids: ResMut<'w, NotifiedEventIds>,
     pub next_event_id: ResMut<'w, NextEventId>,
     pub relay_network: Res<'w, RelayNetwork>,
-    pub empire_comms: Query<
-        'w,
-        's,
-        &'static CommsParams,
-        With<crate::player::PlayerEmpire>,
-    >,
+    pub empire_comms: Query<'w, 's, &'static CommsParams, With<crate::player::PlayerEmpire>>,
 }
 
 impl<'w, 's> FactSysParam<'w, 's> {

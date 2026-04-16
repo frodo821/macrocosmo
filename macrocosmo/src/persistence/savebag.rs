@@ -3152,6 +3152,11 @@ impl SavedKnowledgeFact {
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
+            // #351: Scripted facts are not persisted in v1. The queue
+            // serializer filters them out before calling from_live.
+            KnowledgeFact::Scripted { .. } => {
+                unreachable!("Scripted facts must be filtered out before serialization")
+            }
         }
     }
     pub fn into_live(self, map: &EntityMap) -> KnowledgeFact {
@@ -3307,7 +3312,14 @@ pub struct SavedPendingFactQueue {
 impl SavedPendingFactQueue {
     pub fn from_live(v: &PendingFactQueue) -> Self {
         Self {
-            facts: v.facts.iter().map(SavedPerceivedFact::from_live).collect(),
+            // #351: Scripted facts are not persisted in v1 — filter
+            // them out so SavedKnowledgeFact::from_live never sees them.
+            facts: v
+                .facts
+                .iter()
+                .filter(|f| !matches!(f.fact, KnowledgeFact::Scripted { .. }))
+                .map(SavedPerceivedFact::from_live)
+                .collect(),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> PendingFactQueue {
