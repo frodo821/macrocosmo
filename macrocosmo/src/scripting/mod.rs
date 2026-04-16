@@ -466,10 +466,24 @@ pub fn load_knowledge_kinds(mut commands: Commands, engine: Res<ScriptEngine>) {
     use crate::knowledge::kind_registry::KindRegistry;
 
     let lua = engine.lua();
-    let mut registry = KindRegistry::default();
+    // #354 K-5: preload `core:*` kinds before draining the Lua
+    // accumulator so subsequent Lua definitions of the same id trip
+    // either `CoreNamespaceReserved` (Lua origin) or `DuplicateKind`
+    // (both caught by the warn-log below). plan §0.5 9.6 / §3.5.
+    let mut registry = KindRegistry::preload_core();
+    info!(
+        "Preloaded {} core:* knowledge kind definition(s)",
+        registry.len()
+    );
 
-    // K-5 will preload `core:*` kinds here before Lua-side parsing so that
-    // duplicate detection catches Lua re-definitions of built-ins.
+    // #354 K-5: Reserve `<core:*>@recorded` / `<core:*>@observed` event
+    // ids in the Lua-side `_knowledge_reserved_events` table so K-3's
+    // subscription tooling (`is_reserved_knowledge_event` + future
+    // modder diagnostics) sees core:* alongside Lua-defined kinds.
+    let core_defs: Vec<_> = registry.kinds.values().cloned().collect();
+    if let Err(e) = knowledge_api::register_auto_lifecycle_events(lua, &core_defs) {
+        warn!("Failed to reserve core:* knowledge lifecycle events: {e}");
+    }
 
     match knowledge_api::parse_knowledge_definitions(lua) {
         Ok(defs) => {

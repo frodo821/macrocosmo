@@ -297,6 +297,156 @@ impl KindRegistry {
         self.kinds.insert(def.id.as_str().to_string(), def);
         Ok(())
     }
+
+    /// #354 (K-5): Pre-populate the registry with the Rust-side built-in
+    /// kinds (`core:*`). Each kind mirrors one of the `KnowledgeFact`
+    /// variants listed in plan-349 §1.1 with a payload schema that
+    /// matches the field set emitted by the core→scripted converter in
+    /// [`crate::knowledge::facts`].
+    ///
+    /// The registry returned here is inserted into the world **before**
+    /// Lua `define_knowledge { id = "core:..." }` can run — the
+    /// subsequent Lua drain will find each `core:*` id already present
+    /// and raise `KindRegistryError::DuplicateKind` (which the loader
+    /// surfaces as a `warn!`; plan §0.5 9.6 "`core:` 上書きは常に error").
+    ///
+    /// The set of kinds and their field mapping **must** stay in sync
+    /// with the core→payload converter. [`CORE_KIND_IDS`] and
+    /// [`core_kind_catalog`] enumerate the id constants in one place so
+    /// callers can iterate without duplicating the string list.
+    pub fn preload_core() -> Self {
+        let mut r = Self::default();
+        for (id, fields) in core_kind_catalog() {
+            let schema = PayloadSchema {
+                fields: fields
+                    .iter()
+                    .map(|(k, ty)| ((*k).to_string(), *ty))
+                    .collect(),
+            };
+            let parsed = KnowledgeKindId::parse(id)
+                .expect("core kind ids must parse (unit-tested in registry tests)");
+            r.insert(KnowledgeKindDef {
+                id: parsed,
+                payload_schema: schema,
+                origin: KindOrigin::Core,
+            })
+            .expect("core kind catalog has no duplicates (unit-tested in registry tests)");
+        }
+        r
+    }
+}
+
+/// `core:*` kind ids (plan-349 §3.5). Exposed so callers that need a
+/// stable list (tests, notification bridges) don't have to re-derive it.
+pub const CORE_KIND_IDS: &[&str] = &[
+    "core:hostile_detected",
+    "core:combat_outcome",
+    "core:survey_complete",
+    "core:anomaly_discovered",
+    "core:survey_discovery",
+    "core:structure_built",
+    "core:colony_established",
+    "core:colony_failed",
+    "core:ship_arrived",
+];
+
+/// Full payload schema catalog for `core:*` kinds. The schema mirrors the
+/// field set that the core→payload converter emits for each variant —
+/// keep them synchronised.
+///
+/// Field type rationale:
+/// * `event_id`: **not** included — it is a Rust-internal dedup handle
+///   (see `NotifiedEventIds`), not part of the observable payload.
+/// * `Entity` values are exposed as `entity` (serialised as `u64`).
+/// * `[f64; 3]` positions are flattened into `target_pos_{x,y,z}`.
+/// * `CombatVictor` is flattened into `victor: string` ("player" /
+///   "hostile") to keep payloads purely scalar/string/entity typed.
+/// * `destroyed: bool` is exposed as `boolean`.
+pub fn core_kind_catalog() -> &'static [(&'static str, &'static [(&'static str, PayloadFieldType)])]
+{
+    &[
+        (
+            "core:hostile_detected",
+            &[
+                ("target", PayloadFieldType::Entity),
+                ("detector", PayloadFieldType::Entity),
+                ("target_pos_x", PayloadFieldType::Number),
+                ("target_pos_y", PayloadFieldType::Number),
+                ("target_pos_z", PayloadFieldType::Number),
+                ("description", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:combat_outcome",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("victor", PayloadFieldType::String),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:survey_complete",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("system_name", PayloadFieldType::String),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:anomaly_discovered",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("anomaly_id", PayloadFieldType::String),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:survey_discovery",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:structure_built",
+            &[
+                // `system` is Option<Entity>: the converter only inserts
+                // the field when the original variant had Some(_), so the
+                // schema marks it as Entity without imposing required-ness.
+                ("system", PayloadFieldType::Entity),
+                ("kind", PayloadFieldType::String),
+                ("name", PayloadFieldType::String),
+                ("destroyed", PayloadFieldType::Boolean),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:colony_established",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("planet", PayloadFieldType::Entity),
+                ("name", PayloadFieldType::String),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:colony_failed",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("name", PayloadFieldType::String),
+                ("reason", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:ship_arrived",
+            &[
+                // Same Option<Entity> note as `core:structure_built`.
+                ("system", PayloadFieldType::Entity),
+                ("name", PayloadFieldType::String),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -529,5 +679,83 @@ mod tests {
             reg.insert(make_def("mod:test", KindOrigin::Lua)),
             Err(KindRegistryError::DuplicateKind(_))
         ));
+    }
+
+    // --- #354 K-5: preload_core ---
+
+    #[test]
+    fn preload_core_registers_all_expected_ids() {
+        let reg = KindRegistry::preload_core();
+        // The catalog must match CORE_KIND_IDS exactly.
+        for id in CORE_KIND_IDS {
+            assert!(
+                reg.contains(id),
+                "preload_core() missing core kind id '{id}'"
+            );
+        }
+        assert_eq!(
+            reg.len(),
+            CORE_KIND_IDS.len(),
+            "preload_core() len mismatch — CORE_KIND_IDS and core_kind_catalog() drifted apart"
+        );
+    }
+
+    #[test]
+    fn preload_core_marks_every_kind_as_core_origin() {
+        let reg = KindRegistry::preload_core();
+        for id in CORE_KIND_IDS {
+            let def = reg.get(id).expect("core id preloaded");
+            assert_eq!(
+                def.origin,
+                KindOrigin::Core,
+                "core:* kind '{id}' must carry KindOrigin::Core"
+            );
+        }
+    }
+
+    #[test]
+    fn preload_core_then_lua_redefinition_is_duplicate_error() {
+        // plan §0.5 9.6 / §2.3: Lua cannot redefine core:* kinds. The
+        // first guard (`CoreNamespaceReserved`) also triggers, so we
+        // assert both protections are in effect.
+        let mut reg = KindRegistry::preload_core();
+        let err = reg
+            .insert(make_def("core:hostile_detected", KindOrigin::Lua))
+            .unwrap_err();
+        // Lua-origin hitting core namespace trips the CoreNamespaceReserved
+        // error *before* the duplicate check.
+        assert!(matches!(err, KindRegistryError::CoreNamespaceReserved(_)));
+
+        // Even if somehow we got past namespace (Rust Core inserting
+        // duplicate), duplicate check still holds.
+        let err2 = reg
+            .insert(make_def("core:hostile_detected", KindOrigin::Core))
+            .unwrap_err();
+        assert!(matches!(err2, KindRegistryError::DuplicateKind(_)));
+    }
+
+    #[test]
+    fn core_kind_catalog_matches_core_kind_ids_list() {
+        let catalog_ids: std::collections::HashSet<&str> =
+            core_kind_catalog().iter().map(|(id, _)| *id).collect();
+        let list_ids: std::collections::HashSet<&str> = CORE_KIND_IDS.iter().copied().collect();
+        assert_eq!(
+            catalog_ids, list_ids,
+            "CORE_KIND_IDS and core_kind_catalog() must enumerate the same set"
+        );
+    }
+
+    #[test]
+    fn preload_core_schemas_are_non_empty() {
+        // Every core kind should ship at least one schema field so
+        // record-time validation has something to check against.
+        let reg = KindRegistry::preload_core();
+        for id in CORE_KIND_IDS {
+            let def = reg.get(id).expect("core id preloaded");
+            assert!(
+                !def.payload_schema.fields.is_empty(),
+                "core:* kind '{id}' must ship a payload schema"
+            );
+        }
     }
 }
