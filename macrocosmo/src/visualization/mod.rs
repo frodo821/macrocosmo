@@ -471,4 +471,16 @@ mod tests {
         let target = resolve_deploy_target(None, cursor, 0.0);
         assert_eq!(target, [3.0, 4.0, 0.0]);
     }
+
+    /// #364 regression guard: `bevy_gizmos` enables only the `Gizmos`
+    /// SystemParam / API surface; the actual GPU rendering pipeline lives in
+    /// `bevy_gizmos_render::GizmoRenderPlugin`. If the `bevy_gizmos_render`
+    /// feature is dropped from `Cargo.toml`, gizmo draw calls (ships, deploy
+    /// preview, system overlays, etc.) become silent no-ops and the galaxy
+    /// map appears blank. Referencing the type here makes the build fail
+    /// instead of silently producing an invisible ship layer.
+    #[test]
+    fn bevy_gizmos_render_feature_is_enabled() {
+        let _: bevy::gizmos_render::GizmoRenderPlugin = bevy::gizmos_render::GizmoRenderPlugin;
+    }
 }
