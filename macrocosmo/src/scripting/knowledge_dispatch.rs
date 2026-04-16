@@ -305,6 +305,54 @@ fn call_subscriber(lua: &Lua, key: &mlua::RegistryKey, payload: &mlua::Table, ev
     }
 }
 
+/// Maximum nesting depth for `deep_copy_table`. Exceeding this triggers
+/// `mlua::Error::RuntimeError` (plan-349 §0.5 9.3).
+pub const KNOWLEDGE_PAYLOAD_DEPTH_LIMIT: usize = 16;
+
+/// Deep-copy a Lua table, recursing into nested tables up to `depth_limit`.
+///
+/// Returns `mlua::Error::RuntimeError` if:
+/// - nesting exceeds `depth_limit`
+/// - a `Function` or `UserData` value is encountered (schema violation,
+///   spike 10.3)
+///
+/// Metatables are **not** copied — the result is a plain table. Callers
+/// that need sealed metadata should call `seal_immutable_keys` on the
+/// copy separately.
+pub fn deep_copy_table(
+    lua: &Lua,
+    src: &mlua::Table,
+    depth_limit: usize,
+) -> mlua::Result<mlua::Table> {
+    if depth_limit == 0 {
+        return Err(mlua::Error::RuntimeError(
+            "deep_copy_table: depth limit exceeded".into(),
+        ));
+    }
+    let dst = lua.create_table()?;
+    for pair in src.pairs::<mlua::Value, mlua::Value>() {
+        let (k, v) = pair?;
+        let copied_v = match v {
+            mlua::Value::Table(ref t) => {
+                mlua::Value::Table(deep_copy_table(lua, t, depth_limit - 1)?)
+            }
+            mlua::Value::Function(_) => {
+                return Err(mlua::Error::RuntimeError(
+                    "deep_copy_table: Function values are not allowed in knowledge payloads".into(),
+                ));
+            }
+            mlua::Value::UserData(_) => {
+                return Err(mlua::Error::RuntimeError(
+                    "deep_copy_table: UserData values are not allowed in knowledge payloads".into(),
+                ));
+            }
+            other => other,
+        };
+        dst.set(k, copied_v)?;
+    }
+    Ok(dst)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +448,148 @@ mod tests {
             "foo:bar",
             KnowledgeLifecycle::Recorded
         ));
+    }
+
+    // --- deep_copy_table ---
+
+    #[test]
+    fn deep_copy_flat_table() {
+        let lua = Lua::new();
+        let src = lua.create_table().unwrap();
+        src.set("a", 1).unwrap();
+        src.set("b", "hello").unwrap();
+        let dst = deep_copy_table(&lua, &src, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT).unwrap();
+        assert_eq!(dst.get::<i64>("a").unwrap(), 1);
+        assert_eq!(dst.get::<String>("b").unwrap(), "hello");
+        // Mutation isolation: mutating dst should not affect src.
+        dst.set("a", 99).unwrap();
+        assert_eq!(src.get::<i64>("a").unwrap(), 1);
+    }
+
+    #[test]
+    fn deep_copy_nested_table() {
+        let lua = Lua::new();
+        let inner = lua.create_table().unwrap();
+        inner.set("x", 42).unwrap();
+        let src = lua.create_table().unwrap();
+        src.set("inner", inner).unwrap();
+        let dst = deep_copy_table(&lua, &src, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT).unwrap();
+        let dst_inner: mlua::Table = dst.get("inner").unwrap();
+        dst_inner.set("x", 99).unwrap();
+        // Original should be untouched.
+        let src_inner: mlua::Table = src.get("inner").unwrap();
+        assert_eq!(src_inner.get::<i64>("x").unwrap(), 42);
+    }
+
+    // Spike 10.3: Function value in table triggers error.
+    #[test]
+    fn spike_deep_copy_rejects_function() {
+        let lua = Lua::new();
+        let src = lua.create_table().unwrap();
+        let f: mlua::Function = lua.load("function() end").eval().unwrap();
+        src.set("callback", f).unwrap();
+        let err = deep_copy_table(&lua, &src, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Function"), "got: {msg}");
+    }
+
+    #[test]
+    fn deep_copy_depth_limit_exceeded() {
+        let lua = Lua::new();
+        // Build a chain 3 levels deep, then copy with limit=2 -> should error.
+        let t1 = lua.create_table().unwrap();
+        let t2 = lua.create_table().unwrap();
+        let t3 = lua.create_table().unwrap();
+        t3.set("leaf", true).unwrap();
+        t2.set("child", t3).unwrap();
+        t1.set("child", t2).unwrap();
+        let err = deep_copy_table(&lua, &t1, 2).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("depth limit"), "got: {msg}");
+    }
+
+    // Spike 10.4: borrow_mut release -> dispatch -> re-borrow is safe.
+    // This tests the pattern used by gs:record_knowledge (K-2 Commit 3).
+    #[test]
+    fn spike_reentrancy_release_before_dispatch() {
+        use std::cell::RefCell;
+
+        let lua = Lua::new();
+        let counter = RefCell::new(0i32);
+
+        // Simulate: borrow_mut -> release -> dispatch (lua call) -> re-borrow.
+        {
+            let mut borrow = counter.borrow_mut();
+            *borrow += 1;
+            // release borrow
+        }
+
+        // Now call a Lua function that in turn would "re-borrow" (simulated).
+        let f: mlua::Function = lua.load("function() end").eval().unwrap();
+        f.call::<()>(()).unwrap();
+
+        // re-borrow succeeds
+        {
+            let mut borrow = counter.borrow_mut();
+            *borrow += 1;
+        }
+        assert_eq!(*counter.borrow(), 2);
+    }
+
+    // Spike 10.4: verify that a scope closure can release its world
+    // borrow, call dispatch_knowledge (which invokes subscribers), and
+    // re-borrow without conflict.
+    #[test]
+    fn spike_scope_closure_borrow_release_dispatch_reborrow() {
+        use super::*;
+        use crate::scripting::knowledge_registry::{
+            KnowledgeSubscriptionRegistry, drain_pending_subscriptions,
+        };
+        use std::cell::RefCell;
+
+        let lua = Lua::new();
+        // Set up the on() global + accumulator.
+        let engine = crate::scripting::ScriptEngine::new().unwrap();
+        engine
+            .lua()
+            .load(
+                r#"
+            _side_effect = 0
+            on("test:kind@recorded", function(e)
+                _side_effect = _side_effect + 1
+            end)
+        "#,
+            )
+            .exec()
+            .unwrap();
+        let mut registry = KnowledgeSubscriptionRegistry::default();
+        drain_pending_subscriptions(engine.lua(), &mut registry).unwrap();
+
+        // Simulate the RefCell<&mut World> pattern.
+        let mut world_data: i32 = 0;
+        let world_cell = RefCell::new(&mut world_data);
+
+        // Step 1: borrow, do work, release.
+        {
+            let mut borrow = world_cell.try_borrow_mut().unwrap();
+            **borrow = 42;
+        }
+        // Step 2: dispatch (Lua executes, could re-enter world via gs:*).
+        let payload = engine.lua().create_table().unwrap();
+        dispatch_knowledge(
+            engine.lua(),
+            &registry,
+            "test:kind",
+            KnowledgeLifecycle::Recorded,
+            &payload,
+        )
+        .unwrap();
+        // Step 3: re-borrow succeeds.
+        {
+            let borrow = world_cell.try_borrow_mut().unwrap();
+            assert_eq!(**borrow, 42);
+        }
+        let se: i64 = engine.lua().globals().get("_side_effect").unwrap();
+        assert_eq!(se, 1);
     }
 }
