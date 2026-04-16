@@ -17,6 +17,7 @@
 //! the upcoming `define_situation_tab` API).
 
 pub mod construction_tab;
+pub mod diplomatic_tab;
 pub mod lua_adapter;
 pub mod notifications_tab;
 pub mod panel;
@@ -29,6 +30,9 @@ pub mod types;
 use bevy::prelude::*;
 
 pub use construction_tab::ConstructionOverviewTab;
+pub use diplomatic_tab::{
+    DiplomaticStandingHistory, DiplomaticStandingTab, record_diplomatic_history,
+};
 pub use lua_adapter::{LuaOngoingTabAdapter, LuaTabRegistration};
 pub use notifications_tab::{
     EscNotificationQueue, NotificationsTab, PendingAck, PushOutcome, apply_pending_acks_system,
@@ -67,13 +71,12 @@ impl Plugin for SituationCenterPlugin {
         app.init_resource::<SituationCenterState>()
             .init_resource::<SituationTabRegistry>()
             .init_resource::<EscNotificationQueue>()
-            .add_systems(Update, toggle_situation_center)
+            // ESC-3 Commit 3 (#346): snapshot of previous-tick standing
+            // values, refreshed every frame by `record_diplomatic_history`.
+            .init_resource::<DiplomaticStandingHistory>()
+            .add_systems(Update, (toggle_situation_center, record_diplomatic_history))
             // #345 ESC-2: drain ack intents emitted by the tab renderer
-            // each frame and apply them to the queue. Registered in
-            // `Update` rather than `EguiPrimaryContextPass` so the
-            // render path can fire ack buttons in frame N and the
-            // queue reflects them at the start of frame N+1's game
-            // systems (ordering mirrors `toggle_situation_center`).
+            // each frame and apply them to the queue.
             .add_systems(Update, apply_pending_acks_system);
 
         // Register the framework-bundled Notifications tab. ESC-2
@@ -88,6 +91,7 @@ impl Plugin for SituationCenterPlugin {
         // frame is fine.
         app.register_ongoing_situation_tab(ConstructionOverviewTab);
         app.register_ongoing_situation_tab(ShipOperationsTab);
+        app.register_ongoing_situation_tab(DiplomaticStandingTab);
     }
 }
 
