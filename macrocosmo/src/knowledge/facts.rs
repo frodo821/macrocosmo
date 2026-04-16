@@ -431,6 +431,33 @@ impl PendingFactQueue {
         ready
     }
 
+    /// #353 (K-4): Drain **only** `KnowledgeFact::Scripted` facts whose
+    /// `arrives_at <= now`, leaving core variants in place for the legacy
+    /// `notify_from_knowledge_facts` path (banner drain). This is the
+    /// per-plan-349 §3.4 split: `dispatch_knowledge_observed` consumes the
+    /// Scripted subset, `notify_from_knowledge_facts` consumes the rest.
+    ///
+    /// Ordering invariant: insertion order is preserved across both drains,
+    /// so the two systems can run in any order without double-processing
+    /// (the wrapper does not peek at the other subset).
+    ///
+    /// K-5 (#354) will unify this: core variants will also flow through
+    /// `dispatch_knowledge_observed` and `notify_from_knowledge_facts` will
+    /// become a thin bridge that reads the dispatched banner queue.
+    pub fn drain_ready_scripted(&mut self, now: i64) -> Vec<PerceivedFact> {
+        let mut ready = Vec::new();
+        let mut i = 0;
+        while i < self.facts.len() {
+            let pf = &self.facts[i];
+            if matches!(pf.fact, KnowledgeFact::Scripted { .. }) && pf.arrives_at <= now {
+                ready.push(self.facts.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        ready
+    }
+
     /// How many facts are currently pending (not yet arrived).
     pub fn pending_len(&self) -> usize {
         self.facts.len()
@@ -1030,6 +1057,74 @@ mod tests {
             &comms,
         );
         assert_eq!(notifs.items.len(), 1, "dedupe must suppress second banner");
+    }
+
+    // #353 K-4: `drain_ready_scripted` splits Scripted vs non-Scripted
+    // facts so `dispatch_knowledge_observed` consumes the Scripted subset
+    // and `notify_from_knowledge_facts` handles the remainder.
+    #[test]
+    fn drain_ready_scripted_separates_scripted_from_core() {
+        let mut q = PendingFactQueue::default();
+        // Core variant (SurveyComplete) arriving at t=100.
+        q.record(PerceivedFact {
+            fact: KnowledgeFact::SurveyComplete {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                system_name: "A".into(),
+                detail: "A".into(),
+            },
+            observed_at: 0,
+            arrives_at: 100,
+            source: ObservationSource::Direct,
+            origin_pos: [0.0; 3],
+            related_system: None,
+        });
+        // Scripted variant arriving at t=100.
+        q.record(PerceivedFact {
+            fact: KnowledgeFact::Scripted {
+                event_id: None,
+                kind_id: "test:kind".into(),
+                origin_system: None,
+                payload_snapshot: super::super::payload::PayloadSnapshot::default(),
+                recorded_at: 0,
+            },
+            observed_at: 0,
+            arrives_at: 100,
+            source: ObservationSource::Direct,
+            origin_pos: [0.0; 3],
+            related_system: None,
+        });
+        // Scripted variant arriving at t=200 (not yet ready).
+        q.record(PerceivedFact {
+            fact: KnowledgeFact::Scripted {
+                event_id: None,
+                kind_id: "test:kind".into(),
+                origin_system: None,
+                payload_snapshot: super::super::payload::PayloadSnapshot::default(),
+                recorded_at: 0,
+            },
+            observed_at: 0,
+            arrives_at: 200,
+            source: ObservationSource::Direct,
+            origin_pos: [0.0; 3],
+            related_system: None,
+        });
+
+        // At t=150, drain_ready_scripted should return exactly 1 Scripted
+        // fact (the one with arrives_at=100) and leave the core + future
+        // Scripted in place.
+        let ready = q.drain_ready_scripted(150);
+        assert_eq!(ready.len(), 1);
+        assert!(matches!(ready[0].fact, KnowledgeFact::Scripted { .. }));
+        assert_eq!(q.pending_len(), 2);
+
+        // drain_ready (legacy) now picks up only the core variant at t=150.
+        let core = q.drain_ready(150);
+        assert_eq!(core.len(), 1);
+        assert!(matches!(core[0].fact, KnowledgeFact::SurveyComplete { .. }));
+
+        // One future Scripted fact remains.
+        assert_eq!(q.pending_len(), 1);
     }
 
     #[test]

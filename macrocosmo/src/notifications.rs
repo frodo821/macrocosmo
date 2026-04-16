@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 
 use crate::events::{GameEvent, GameEventKind};
-use crate::knowledge::{EventId, NotifiedEventIds, PendingFactQueue, PerceivedFact};
+use crate::knowledge::{EventId, KnowledgeFact, NotifiedEventIds, PendingFactQueue, PerceivedFact};
 use crate::scripting::ScriptEngine;
 use crate::time_system::{GameClock, GameSpeed};
 
@@ -35,7 +35,10 @@ impl NotificationPriority {
     /// Returns `true` if this priority should be displayed as a banner
     /// (Medium and High). Low priority is log-only.
     pub fn shows_banner(&self) -> bool {
-        matches!(self, NotificationPriority::Medium | NotificationPriority::High)
+        matches!(
+            self,
+            NotificationPriority::Medium | NotificationPriority::High
+        )
     }
 
     /// Real-time TTL for the banner, or `None` if the banner is sticky and
@@ -287,6 +290,19 @@ pub fn auto_notify_from_events(
 /// This is the systems-1 counterpart of `auto_notify_from_events`. Together
 /// the two cover the full notification surface area while keeping the
 /// light-speed contract intact for remote observations.
+///
+/// #353 K-4: `KnowledgeFact::Scripted` variants are skipped here — they flow
+/// through `scripting::knowledge_dispatch::dispatch_knowledge_observed`,
+/// which drains them with `drain_ready_scripted` and fires `<kind>@observed`
+/// subscribers instead of pushing a banner. Without this skip, arriving
+/// Scripted facts would both surface a generic "Knowledge" banner *and*
+/// fire their subscriber chain — a double-notification bug.
+///
+/// K-5 (#354) will unify the drain: all fact variants (Scripted + core)
+/// will route through `dispatch_knowledge_observed`, and
+/// `notify_from_knowledge_facts` will become a thin bridge that consumes
+/// the post-dispatch banner queue. Until then, this system and
+/// `dispatch_knowledge_observed` drain disjoint subsets of the same queue.
 pub fn notify_from_knowledge_facts(
     clock: Res<GameClock>,
     mut queue: ResMut<PendingFactQueue>,
@@ -296,6 +312,14 @@ pub fn notify_from_knowledge_facts(
 ) {
     let ready = queue.drain_ready(clock.elapsed);
     for PerceivedFact { fact, .. } in ready {
+        // #353 K-4: Scripted facts are handled by
+        // dispatch_knowledge_observed. If one ended up here (e.g. tests
+        // that bypass drain_ready_scripted), drop the banner push without
+        // touching NotifiedEventIds so the scripted dispatcher can still
+        // process the id cleanly.
+        if matches!(fact, KnowledgeFact::Scripted { .. }) {
+            continue;
+        }
         // #249: Dedupe by EventId. If a banner already fired for this id
         // (either from `auto_notify_from_events` or a sibling fact with the
         // same id), drop this push silently. The fact is still drained — we

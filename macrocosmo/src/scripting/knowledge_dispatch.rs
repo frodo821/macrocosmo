@@ -538,6 +538,207 @@ fn build_recorded_event_table(
     Ok(event)
 }
 
+// ======================================================================
+// #353 K-4: @observed dispatch (per-observer drain)
+//
+// `dispatch_knowledge_observed` drains Scripted facts out of
+// `PendingFactQueue` when their `arrives_at <= clock.elapsed`, then for
+// each observer empire builds a sealed event table with lag metadata and
+// dispatches `<kind>@observed` subscribers.
+//
+// Ordering / isolation invariants (plan-349 §2.5, §3.4):
+//   - observer iteration order is deterministic: empires are sorted by
+//     `Entity::to_bits()` ascending.
+//   - each observer receives an independent Lua payload table
+//     reconstructed from the frozen `PayloadSnapshot`, so subscriber
+//     mutation on observer A does NOT leak to observer B.
+//   - sealed metadata keys — `kind`, `origin_system`, `recorded_at`,
+//     `observed_at`, `observer_empire`, `lag_hexadies` — raise
+//     `RuntimeError` on write (plan-349 §2.6). `payload` is mutable.
+//   - subscriber errors warn + chain continues (plan-349 §6 item 4).
+//
+// K-5 drain-unification (plan §0.5 9.5 / §5.4): this system currently
+// drains only Scripted variants via `drain_ready_scripted`. Core variants
+// stay on the legacy `notify_from_knowledge_facts` path for now. K-5
+// migrates core variants through the same @observed dispatch path.
+// ======================================================================
+
+/// Metadata keys injected into an `@observed` event table that must NOT
+/// be writable by subscribers. Matches plan-349 §2.6 exactly.
+pub const OBSERVED_SEALED_KEYS: &[&str] = &[
+    "kind",
+    "origin_system",
+    "recorded_at",
+    "observed_at",
+    "observer_empire",
+    "lag_hexadies",
+];
+
+/// Build a Lua event table for `@observed` dispatch. Each observer gets
+/// its own copy of the payload (via `snapshot_to_lua`) plus the observer
+/// / lag metadata fields. Callers must seal the returned table with
+/// [`seal_immutable_keys`] before handing it to subscribers.
+fn build_observed_event_table(
+    lua: &Lua,
+    kind_id: &str,
+    origin_system: Option<Entity>,
+    recorded_at: i64,
+    observed_at: i64,
+    observer_empire: Entity,
+    payload_snapshot: &crate::knowledge::payload::PayloadSnapshot,
+) -> mlua::Result<mlua::Table> {
+    let event = lua.create_table()?;
+    event.set("kind", kind_id)?;
+    if let Some(origin) = origin_system {
+        event.set("origin_system", origin.to_bits())?;
+    }
+    event.set("recorded_at", recorded_at)?;
+    event.set("observed_at", observed_at)?;
+    event.set("observer_empire", observer_empire.to_bits())?;
+    // lag_hexadies = observed_at - recorded_at; both are i64 hexadies so
+    // plain subtraction preserves sign + precision without casting.
+    event.set("lag_hexadies", observed_at.saturating_sub(recorded_at))?;
+    // Build a fresh payload table per observer — mutations on this table
+    // by one observer's subscriber chain will not affect the next
+    // observer's copy (per-observer isolation, plan-349 §2.5).
+    let payload = crate::knowledge::payload::snapshot_to_lua(lua, payload_snapshot)?;
+    event.set("payload", payload)?;
+    Ok(event)
+}
+
+/// Exclusive system that drains Scripted facts whose `arrives_at` has
+/// elapsed and dispatches `<kind>@observed` subscribers for each
+/// observer empire.
+///
+/// Schedule: `Update`, ordered `.after(advance_game_time)` and
+/// `.after(notify_from_knowledge_facts)`. The ordering against
+/// `notify_from_knowledge_facts` is defensive — Scripted variants are
+/// invisible to that system (§3 Commit 3) so the only coupling is the
+/// shared `PendingFactQueue` resource which Bevy serialises on
+/// `ResMut<PendingFactQueue>`.
+///
+/// Uses `&mut World` exclusive access because dispatch_knowledge may
+/// trigger subscribers that call back into `gs:*` setters. Takes the
+/// subscription registry out of the world for the duration of dispatch
+/// (same pattern as `dispatch_knowledge_recorded`).
+pub fn dispatch_knowledge_observed(world: &mut World) {
+    // Fast-path: nothing to drain.
+    let now = world
+        .get_resource::<crate::time_system::GameClock>()
+        .map(|c| c.elapsed)
+        .unwrap_or(0);
+    let has_ready = world
+        .get_resource::<crate::knowledge::facts::PendingFactQueue>()
+        .map(|q| {
+            q.facts.iter().any(|pf| {
+                matches!(
+                    pf.fact,
+                    crate::knowledge::facts::KnowledgeFact::Scripted { .. }
+                ) && pf.arrives_at <= now
+            })
+        })
+        .unwrap_or(false);
+    if !has_ready {
+        return;
+    }
+
+    // Drain ready Scripted facts out of the queue. Core variants remain
+    // for notify_from_knowledge_facts (banner path).
+    let ready: Vec<crate::knowledge::facts::PerceivedFact> = {
+        let mut queue = world.resource_mut::<crate::knowledge::facts::PendingFactQueue>();
+        queue.drain_ready_scripted(now)
+    };
+    if ready.is_empty() {
+        return;
+    }
+
+    // Collect observer empire entities in a deterministic order
+    // (Entity::to_bits ascending). v1 spec only exposes the player
+    // empire, but we iterate any `PlayerEmpire`-tagged entity so future
+    // NPC observer rollouts (post-v1, plan §7) can drop in without
+    // touching this system.
+    let observer_empires: Vec<Entity> = {
+        let mut q = world.query_filtered::<Entity, With<crate::player::PlayerEmpire>>();
+        let mut v: Vec<Entity> = q.iter(world).collect();
+        v.sort_by_key(|e| e.to_bits());
+        v
+    };
+
+    // Remove the subscription registry so dispatch_knowledge can borrow
+    // it without holding a world borrow (subscribers re-enter via gs:*).
+    let registry_opt = world.remove_resource::<KnowledgeSubscriptionRegistry>();
+
+    world.resource_scope::<super::ScriptEngine, _>(|_world, engine| {
+        let lua = engine.lua();
+        for pf in &ready {
+            let (kind_id, recorded_at, origin_system, payload_snapshot) = match &pf.fact {
+                crate::knowledge::facts::KnowledgeFact::Scripted {
+                    kind_id,
+                    recorded_at,
+                    origin_system,
+                    payload_snapshot,
+                    ..
+                } => (
+                    kind_id.clone(),
+                    *recorded_at,
+                    *origin_system,
+                    payload_snapshot.clone(),
+                ),
+                // drain_ready_scripted filtered these out already — this
+                // arm is unreachable but kept as a defensive skip.
+                _ => continue,
+            };
+            let observed_at = pf.arrives_at;
+
+            for &observer in &observer_empires {
+                // Build per-observer event table (fresh payload copy).
+                let event = match build_observed_event_table(
+                    lua,
+                    &kind_id,
+                    origin_system,
+                    recorded_at,
+                    observed_at,
+                    observer,
+                    &payload_snapshot,
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "dispatch_knowledge_observed: build event error for '{kind_id}': {e}"
+                        );
+                        continue;
+                    }
+                };
+
+                // Seal metadata keys AFTER building the table so the
+                // internal `__mc_values` sub-table holds the correct
+                // snapshot. Payload remains mutable.
+                if let Err(e) = seal_immutable_keys(lua, &event, OBSERVED_SEALED_KEYS) {
+                    warn!("dispatch_knowledge_observed: seal error for '{kind_id}': {e}");
+                    continue;
+                }
+
+                if let Some(ref registry) = registry_opt {
+                    if let Err(e) = dispatch_knowledge(
+                        lua,
+                        registry,
+                        &kind_id,
+                        KnowledgeLifecycle::Observed,
+                        &event,
+                    ) {
+                        warn!("dispatch_knowledge_observed: dispatch error for '{kind_id}': {e}");
+                    }
+                }
+            }
+        }
+    });
+
+    // Put the subscription registry back.
+    if let Some(registry) = registry_opt {
+        world.insert_resource(registry);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,6 +877,68 @@ mod tests {
         let err = deep_copy_table(&lua, &src, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("Function"), "got: {msg}");
+    }
+
+    // #353 K-4 Commit 1: per-observer isolation. Each call to
+    // `snapshot_to_lua` must produce an independent Lua table so mutations
+    // made by one observer's subscriber chain do not leak to the next
+    // observer's copy (plan-349 §2.5, §3.4 test matrix).
+    #[test]
+    fn snapshot_to_lua_produces_independent_tables() {
+        use crate::knowledge::payload::{PayloadSnapshot, PayloadValue, snapshot_to_lua};
+
+        let lua = Lua::new();
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("severity".to_string(), PayloadValue::Number(0.7));
+        let snapshot = PayloadSnapshot { fields };
+
+        // Reconstruct the Lua table twice — one per simulated observer.
+        let observer_a = snapshot_to_lua(&lua, &snapshot).unwrap();
+        let observer_b = snapshot_to_lua(&lua, &snapshot).unwrap();
+
+        // Mutate observer A's copy; observer B must remain unchanged.
+        observer_a.set("severity", 1.0_f64).unwrap();
+
+        let a_val: f64 = observer_a.get("severity").unwrap();
+        let b_val: f64 = observer_b.get("severity").unwrap();
+        assert!((a_val - 1.0).abs() < f64::EPSILON);
+        assert!(
+            (b_val - 0.7).abs() < f64::EPSILON,
+            "observer B payload must not be affected by observer A mutation, got {b_val}"
+        );
+    }
+
+    // Per-observer isolation also holds for nested tables.
+    #[test]
+    fn snapshot_to_lua_nested_tables_are_independent() {
+        use crate::knowledge::payload::{PayloadSnapshot, PayloadValue, snapshot_to_lua};
+
+        let mut inner_fields = std::collections::HashMap::new();
+        inner_fields.insert("count".to_string(), PayloadValue::Int(5));
+        let mut outer_fields = std::collections::HashMap::new();
+        outer_fields.insert(
+            "stats".to_string(),
+            PayloadValue::Table(PayloadSnapshot {
+                fields: inner_fields,
+            }),
+        );
+        let snapshot = PayloadSnapshot {
+            fields: outer_fields,
+        };
+
+        let lua = Lua::new();
+        let a = snapshot_to_lua(&lua, &snapshot).unwrap();
+        let b = snapshot_to_lua(&lua, &snapshot).unwrap();
+
+        let a_stats: mlua::Table = a.get("stats").unwrap();
+        a_stats.set("count", 99).unwrap();
+
+        let b_stats: mlua::Table = b.get("stats").unwrap();
+        assert_eq!(
+            b_stats.get::<i64>("count").unwrap(),
+            5,
+            "observer B nested table must be independent of observer A"
+        );
     }
 
     #[test]
