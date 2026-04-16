@@ -14,6 +14,8 @@ pub mod game_start_ctx;
 pub mod globals;
 pub mod helpers;
 pub mod knowledge_api;
+pub mod knowledge_dispatch;
+pub mod knowledge_registry;
 pub mod lifecycle;
 pub mod map_api;
 pub mod modifier_api;
@@ -82,13 +84,20 @@ impl Plugin for ScriptingPlugin {
                 load_event_definitions.after(load_all_scripts),
             )
             // #350 K-1: build KindRegistry + reserve <id>@recorded /
-            // <id>@observed entries. Must run after load_all_scripts (for
-            // accumulator population) and before run_lifecycle_hooks (so
-            // on_game_start can observe the finished registry).
+            // <id>@observed entries.
             .add_systems(
                 Startup,
                 load_knowledge_kinds
                     .after(load_all_scripts)
+                    .before(lifecycle::run_lifecycle_hooks),
+            )
+            // #352 (K-3): drain Lua-side knowledge subscription accumulator
+            // into the bucketed KnowledgeSubscriptionRegistry.
+            .add_systems(
+                Startup,
+                knowledge_registry::load_knowledge_subscriptions
+                    .after(load_all_scripts)
+                    .after(load_knowledge_kinds)
                     .before(lifecycle::run_lifecycle_hooks),
             )
             // #281: After the building/structure registries are populated,
@@ -641,6 +650,177 @@ mod tests {
 
         let handlers: mlua::Table = lua.globals().get("_event_handlers").unwrap();
         assert_eq!(handlers.len().unwrap(), 3);
+    }
+
+    // --- #352 (K-3) `on()` knowledge-event-id routing tests ---
+
+    #[test]
+    fn on_routes_knowledge_id_to_subscribers() {
+        // `on("foo:bar@recorded", fn)` must land in the knowledge
+        // subscription accumulator, NOT the legacy `_event_handlers` table.
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"on("vesk:famine_outbreak@recorded", function(e) end)"#)
+            .exec()
+            .unwrap();
+
+        let knowledge: mlua::Table = lua
+            .globals()
+            .get(knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS)
+            .unwrap();
+        assert_eq!(knowledge.len().unwrap(), 1);
+        let entry: mlua::Table = knowledge.get(1).unwrap();
+        let eid: String = entry.get("event_id").unwrap();
+        assert_eq!(eid, "vesk:famine_outbreak@recorded");
+        let _func: mlua::Function = entry.get("func").unwrap();
+
+        // Legacy handler table remains empty.
+        let legacy: mlua::Table = lua.globals().get("_event_handlers").unwrap();
+        assert_eq!(legacy.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn on_routes_wildcard_to_subscribers() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"on("*@observed", function(e) end)"#)
+            .exec()
+            .unwrap();
+
+        let knowledge: mlua::Table = lua
+            .globals()
+            .get(knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS)
+            .unwrap();
+        assert_eq!(knowledge.len().unwrap(), 1);
+        let eid: String = knowledge
+            .get::<mlua::Table>(1)
+            .unwrap()
+            .get("event_id")
+            .unwrap();
+        assert_eq!(eid, "*@observed");
+    }
+
+    #[test]
+    fn on_routes_legacy_event_id_to_handlers() {
+        // Non-knowledge ids must continue to use `_event_handlers`.
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"on("harvest_ended", function(e) end)"#)
+            .exec()
+            .unwrap();
+
+        let legacy: mlua::Table = lua.globals().get("_event_handlers").unwrap();
+        assert_eq!(legacy.len().unwrap(), 1);
+        let knowledge: mlua::Table = lua
+            .globals()
+            .get(knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS)
+            .unwrap();
+        assert_eq!(knowledge.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn on_unknown_lifecycle_errors() {
+        // Any id containing '@' must parse as a knowledge id; an unknown
+        // lifecycle suffix is a load-time error (plan-349 §0.5 9.2).
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let r: mlua::Result<()> = lua
+            .load(r#"on("foo@expired", function(e) end)"#)
+            .exec();
+        assert!(r.is_err(), "unknown lifecycle must error");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(msg.contains("unknown lifecycle"), "got: {msg}");
+    }
+
+    #[test]
+    fn on_empty_kind_errors() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let r: mlua::Result<()> = lua
+            .load(r#"on("@recorded", function(e) end)"#)
+            .exec();
+        assert!(r.is_err(), "empty kind must error");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(msg.contains("empty kind"), "got: {msg}");
+    }
+
+    #[test]
+    fn on_double_at_errors() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let r: mlua::Result<()> = lua
+            .load(r#"on("a@b@recorded", function(e) end)"#)
+            .exec();
+        assert!(r.is_err(), "double '@' must error");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(msg.contains("may not contain '@'"), "got: {msg}");
+    }
+
+    #[test]
+    fn on_knowledge_with_filter_errors() {
+        // Knowledge subscriptions do not accept the bus-style filter table.
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let r: mlua::Result<()> = lua
+            .load(
+                r#"on("foo@recorded", { kind = "x" }, function(e) end)"#,
+            )
+            .exec();
+        assert!(r.is_err(), "filter on knowledge id must error");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("does not accept a filter"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn on_mixed_registration_order_preserved() {
+        // Multiple on() calls accumulate in registration order in their
+        // respective tables. Exact and wildcard knowledge subscriptions
+        // share a single accumulator (drain-time bucketing preserves the
+        // per-bucket order).
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            on("kind_a@recorded", function(e) end)
+            on("*@recorded", function(e) end)
+            on("kind_a@recorded", function(e) end)
+            on("kind_b@observed", function(e) end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let pending: mlua::Table = lua
+            .globals()
+            .get(knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS)
+            .unwrap();
+        assert_eq!(pending.len().unwrap(), 4);
+        let ids: Vec<String> = (1..=4)
+            .map(|i| {
+                pending
+                    .get::<mlua::Table>(i)
+                    .unwrap()
+                    .get::<String>("event_id")
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "kind_a@recorded".to_string(),
+                "*@recorded".to_string(),
+                "kind_a@recorded".to_string(),
+                "kind_b@observed".to_string(),
+            ]
+        );
     }
 
     #[test]

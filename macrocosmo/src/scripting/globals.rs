@@ -193,37 +193,37 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     let event_handlers = lua.create_table()?;
     globals.set("_event_handlers", event_handlers)?;
 
-    // --- #350: Knowledge subscription registry (K-1 foundation) ---
-    //
-    // Parallel to `_event_handlers`, the knowledge-specific subscription
-    // accumulator. `on("vesk:famine@recorded", fn)` / `on("*@observed", fn)`
-    // are routed here by K-3 (#352); K-1 only reserves the table so that
-    // (a) the `define_knowledge` startup system can record the auto-registered
-    // `<id>@recorded` / `<id>@observed` event ids in a way subsequent code
-    // can inspect, and (b) K-3's `on()` router has a stable surface to write
-    // into without ordering games between the two parallel slices.
-    //
-    // Shape (K-1 reserves only; K-3 extends with actual handler entries):
-    // ```
-    // _knowledge_subscribers = {}                     -- array-style
-    // _knowledge_reserved_events = {                  -- lookup table
-    //     ["vesk:famine_outbreak@recorded"] = true,
-    //     ["vesk:famine_outbreak@observed"] = true,
-    //     ...
-    // }
-    // ```
-    //
-    // See `scripting/knowledge_api::register_auto_lifecycle_events`.
+    // #350 K-1: Knowledge reserved events table (auto-registered lifecycle
+    // event ids from define_knowledge). K-3 on() router checks this.
     globals.set("_knowledge_subscribers", lua.create_table()?)?;
     globals.set("_knowledge_reserved_events", lua.create_table()?)?;
 
-    // on(event_id, [filter,] handler) -- registers an event handler with optional structural filter
+    // #352 K-3: Knowledge subscription accumulator. on(event_id, fn) routes
+    // knowledge-lifecycle event ids here; load_knowledge_subscriptions
+    // drains into bucketed KnowledgeSubscriptionRegistry at startup.
+    let knowledge_subscriptions = lua.create_table()?;
+    globals.set(
+        super::knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS,
+        knowledge_subscriptions,
+    )?;
+
+    // on(event_id, [filter,] handler) -- registers an event handler with optional structural filter.
+    //
+    // #352 (K-3): event ids matching the knowledge pattern
+    // (`<kind>@recorded` / `<kind>@observed` / `*@recorded` / `*@observed`)
+    // are routed to the `_pending_knowledge_subscriptions` accumulator
+    // instead of `_event_handlers`. The Rust-side
+    // `load_knowledge_subscriptions` startup system drains that
+    // accumulator into the bucketed `KnowledgeSubscriptionRegistry`
+    // resource. Knowledge subscriptions do not accept structural filter
+    // tables — filter is a bus-dispatch concept; knowledge payload
+    // filtering happens inside the subscriber function itself.
+    //
+    // Event ids shaped like `foo@bar` where `bar` is not a recognised
+    // knowledge lifecycle (i.e. anything other than `recorded` /
+    // `observed`) are rejected at registration time with a clear error
+    // (plan-349 §0.5 9.2 — load-time hygiene).
     let on_fn = lua.create_function(|lua, args: mlua::MultiValue| {
-        let handlers: mlua::Table = lua.globals().get("_event_handlers")?;
-        let len = handlers.len()?;
-
-        let entry = lua.create_table()?;
-
         let mut args_iter = args.into_iter();
         // First arg: event_id string
         let event_id: String = match args_iter.next() {
@@ -234,7 +234,6 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
                 ));
             }
         };
-        entry.set("event_id", event_id)?;
 
         // Second arg: either a filter table or a handler function
         let second = args_iter.next().ok_or_else(|| {
@@ -243,13 +242,37 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
             )
         })?;
 
+        // Early classification so we can reject filters on knowledge ids
+        // and surface unknown-lifecycle errors before we bother allocating
+        // the entry table.
+        if event_id.contains('@') {
+            // Any id containing '@' is treated as knowledge-intent: either
+            // valid knowledge lifecycle or explicit error. This prevents
+            // a typo like `foo@observe` from silently entering
+            // `_event_handlers`.
+            if let Err(e) = super::knowledge_dispatch::parse_knowledge_event_id(&event_id) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "on(): {e}"
+                )));
+            }
+            // Knowledge ids do not accept filter tables.
+            if let mlua::Value::Table(_) = &second {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "on(): knowledge event id '{event_id}' does not accept a filter table (filtering is a bus-dispatch feature; knowledge subscribers should filter in the callback body)"
+                )));
+            }
+        }
+
+        let is_knowledge = super::knowledge_dispatch::is_knowledge_event_id(&event_id);
+
+        let entry = lua.create_table()?;
+        entry.set("event_id", event_id.clone())?;
+
         match second {
             mlua::Value::Function(func) => {
-                // on(event_id, handler) -- no filter
                 entry.set("func", func)?;
             }
             mlua::Value::Table(filter) => {
-                // on(event_id, filter, handler)
                 entry.set("filter", filter)?;
                 let func = match args_iter.next() {
                     Some(mlua::Value::Function(f)) => f,
@@ -269,7 +292,14 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
             }
         }
 
-        handlers.set(len + 1, entry)?;
+        let target_table_name = if is_knowledge {
+            super::knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS
+        } else {
+            "_event_handlers"
+        };
+        let target: mlua::Table = lua.globals().get(target_table_name)?;
+        let len = target.len()?;
+        target.set(len + 1, entry)?;
         Ok(())
     })?;
     globals.set("on", on_fn)?;
