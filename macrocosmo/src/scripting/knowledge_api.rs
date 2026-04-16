@@ -204,6 +204,66 @@ pub fn parse_kind_id(raw: &str) -> Result<KnowledgeKindId, mlua::Error> {
     KnowledgeKindId::parse(raw).map_err(|e| mlua::Error::RuntimeError(format!("{e}")))
 }
 
+/// Name of the Lua table that records every `<id>@recorded` /
+/// `<id>@observed` event id auto-reserved by `define_knowledge`. The
+/// entry value is `true` — the table is used as a set.
+///
+/// K-3 (#352) will consume this lookup in its `on(...)` router to validate
+/// subscribers and in the dispatcher to avoid walking unknown kind ids.
+/// K-1 only **populates** the table as a side-effect of kind registration;
+/// actual handler entries go into `_knowledge_subscribers`.
+pub const KNOWLEDGE_RESERVED_EVENTS_TABLE: &str = "_knowledge_reserved_events";
+
+/// Name of the Lua table that holds subscription entries (populated by
+/// K-3's extended `on(...)`). K-1 reserves the table so downstream code
+/// sees a stable shape.
+pub const KNOWLEDGE_SUBSCRIBERS_TABLE: &str = "_knowledge_subscribers";
+
+/// Walk `defs` and reserve `<id>@recorded` / `<id>@observed` event ids for
+/// every kind by writing `true` entries into the
+/// `_knowledge_reserved_events` Lua table (plan-349 §3.1 commit 3, §2.2.1).
+///
+/// K-1 responsibility is **reservation only** — the dispatch side (walking
+/// `_knowledge_subscribers` and firing handlers) lives in K-3 (#352). K-3
+/// reads `_knowledge_reserved_events` when `on("foo@recorded", fn)` is
+/// registered to confirm the kind exists, and the dispatch code uses it to
+/// know which ids are knowledge-lifecycle vs plain event ids.
+///
+/// This function is idempotent per (id, lifecycle) — re-reserving is a
+/// no-op, so callers can drain the accumulator multiple times safely
+/// during tests / hot reload.
+///
+/// Errors: propagates `mlua::Error` from table operations. Does **not**
+/// error on duplicate reservations (the registry's duplicate-id check
+/// catches those at `insert` time).
+pub fn register_auto_lifecycle_events(
+    lua: &Lua,
+    defs: &[KnowledgeKindDef],
+) -> Result<(), mlua::Error> {
+    let reserved: mlua::Table = lua.globals().get(KNOWLEDGE_RESERVED_EVENTS_TABLE)?;
+    for def in defs {
+        reserved.set(def.id.recorded_event_id(), true)?;
+        reserved.set(def.id.observed_event_id(), true)?;
+    }
+    Ok(())
+}
+
+/// True if `event_id` is one of the auto-registered `<id>@<lifecycle>`
+/// reservations. K-3 uses this to route `on(...)` registrations between
+/// `_knowledge_subscribers` and `_event_handlers` (plan §2.9). Includes
+/// the `*@recorded` / `*@observed` wildcards — those are valid
+/// knowledge-lifecycle subscriptions even though no kind id "`*`" exists
+/// in the registry.
+pub fn is_reserved_knowledge_event(lua: &Lua, event_id: &str) -> Result<bool, mlua::Error> {
+    // Wildcard always counts as knowledge-lifecycle.
+    if matches!(event_id, "*@recorded" | "*@observed") {
+        return Ok(true);
+    }
+    let reserved: mlua::Table = lua.globals().get(KNOWLEDGE_RESERVED_EVENTS_TABLE)?;
+    let present: Option<bool> = reserved.get(event_id)?;
+    Ok(present.unwrap_or(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,8 +274,18 @@ mod tests {
     fn setup_lua() -> Lua {
         let lua = Lua::new();
         let globals = lua.globals();
-        let acc = lua.create_table().unwrap();
-        globals.set(KNOWLEDGE_DEF_ACCUMULATOR, acc).unwrap();
+        globals
+            .set(KNOWLEDGE_DEF_ACCUMULATOR, lua.create_table().unwrap())
+            .unwrap();
+        // Reserve the K-3 placeholders so `register_auto_lifecycle_events`
+        // can write into them. Production uses `setup_globals`, but parser
+        // tests don't need the rest of that plumbing.
+        globals
+            .set(KNOWLEDGE_SUBSCRIBERS_TABLE, lua.create_table().unwrap())
+            .unwrap();
+        globals
+            .set(KNOWLEDGE_RESERVED_EVENTS_TABLE, lua.create_table().unwrap())
+            .unwrap();
         // Mimic the `define_knowledge` surface just enough for the parser tests.
         lua.load(
             r#"
@@ -499,5 +569,76 @@ mod tests {
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id.as_str(), "no_namespace");
         assert_eq!(defs[0].id.namespace(), None);
+    }
+
+    // --- register_auto_lifecycle_events + is_reserved_knowledge_event ---
+
+    #[test]
+    fn register_auto_events_populates_reserved_table() {
+        let lua = setup_lua();
+        lua.load(
+            r#"
+            define_knowledge { id = "vesk:famine_outbreak" }
+            define_knowledge { id = "mod:combat_report" }
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let defs = parse_knowledge_definitions(&lua).unwrap();
+        register_auto_lifecycle_events(&lua, &defs).unwrap();
+
+        // Both lifecycle events for each kind must be reserved.
+        for id in [
+            "vesk:famine_outbreak@recorded",
+            "vesk:famine_outbreak@observed",
+            "mod:combat_report@recorded",
+            "mod:combat_report@observed",
+        ] {
+            assert!(
+                is_reserved_knowledge_event(&lua, id).unwrap(),
+                "expected {id} reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn unregistered_event_ids_are_not_reserved() {
+        let lua = setup_lua();
+        lua.load(r#"define_knowledge { id = "vesk:famine_outbreak" }"#)
+            .exec()
+            .unwrap();
+        let defs = parse_knowledge_definitions(&lua).unwrap();
+        register_auto_lifecycle_events(&lua, &defs).unwrap();
+
+        // Unknown kind id — not reserved.
+        assert!(!is_reserved_knowledge_event(&lua, "mod:unknown@recorded").unwrap());
+        // Plain non-lifecycle event id — not reserved.
+        assert!(!is_reserved_knowledge_event(&lua, "harvest_ended").unwrap());
+        // Missing lifecycle suffix for a known kind — not reserved.
+        assert!(!is_reserved_knowledge_event(&lua, "vesk:famine_outbreak").unwrap());
+    }
+
+    #[test]
+    fn wildcard_lifecycle_ids_are_always_reserved() {
+        // `*@recorded` / `*@observed` must count as knowledge-lifecycle
+        // regardless of whether any kind is registered — plan §2.9.
+        let lua = setup_lua();
+        assert!(is_reserved_knowledge_event(&lua, "*@recorded").unwrap());
+        assert!(is_reserved_knowledge_event(&lua, "*@observed").unwrap());
+        // Wildcard with unknown lifecycle is NOT reserved.
+        assert!(!is_reserved_knowledge_event(&lua, "*@expired").unwrap());
+    }
+
+    #[test]
+    fn register_auto_events_is_idempotent() {
+        let lua = setup_lua();
+        lua.load(r#"define_knowledge { id = "mod:twice" }"#)
+            .exec()
+            .unwrap();
+        let defs = parse_knowledge_definitions(&lua).unwrap();
+        register_auto_lifecycle_events(&lua, &defs).unwrap();
+        // Call again — must not error.
+        register_auto_lifecycle_events(&lua, &defs).unwrap();
+        assert!(is_reserved_knowledge_event(&lua, "mod:twice@recorded").unwrap());
     }
 }
