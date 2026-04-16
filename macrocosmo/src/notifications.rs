@@ -283,26 +283,26 @@ pub fn auto_notify_from_events(
     }
 }
 
-/// #233: Drain facts whose arrival time has been reached and push them into
-/// the notification queue. Runs after `advance_game_time` so fresh facts
-/// written the same tick can arrive at `observed_at == clock.elapsed`.
+/// #233 / #354: Standalone fact-to-banner drainer.
 ///
-/// This is the systems-1 counterpart of `auto_notify_from_events`. Together
-/// the two cover the full notification surface area while keeping the
-/// light-speed contract intact for remote observations.
+/// **Historical note**: This system **used** to be the production drain
+/// in `NotificationsPlugin`; K-5 (#354) moves the production drain into
+/// `scripting::knowledge_dispatch::dispatch_knowledge_observed` so that
+/// all fact variants (core + scripted) flow through the same
+/// `@observed` dispatch path (plan §3.5 Commit 4, §0.5 9.5).
 ///
-/// #353 K-4: `KnowledgeFact::Scripted` variants are skipped here — they flow
-/// through `scripting::knowledge_dispatch::dispatch_knowledge_observed`,
-/// which drains them with `drain_ready_scripted` and fires `<kind>@observed`
-/// subscribers instead of pushing a banner. Without this skip, arriving
-/// Scripted facts would both surface a generic "Knowledge" banner *and*
-/// fire their subscriber chain — a double-notification bug.
+/// It is **no longer registered by `NotificationsPlugin`** — production
+/// flow goes through the K-5 dispatcher. The function is kept public
+/// and feature-complete so:
+/// * Integration tests that want to exercise the banner pipeline
+///   without the Lua scripting plugin (e.g.
+///   `tests/notification_knowledge_pipeline.rs`) can wire it manually
+///   via `app.add_systems(Update, notify_from_knowledge_facts)`.
+/// * Future headless / server-mode hosts can opt into the legacy
+///   non-Lua drain if they deliberately exclude the scripting plugin.
 ///
-/// K-5 (#354) will unify the drain: all fact variants (Scripted + core)
-/// will route through `dispatch_knowledge_observed`, and
-/// `notify_from_knowledge_facts` will become a thin bridge that consumes
-/// the post-dispatch banner queue. Until then, this system and
-/// `dispatch_knowledge_observed` drain disjoint subsets of the same queue.
+/// The function still skips `Scripted` variants so tests that set up a
+/// mixed queue do not produce spurious "Knowledge" banners.
 pub fn notify_from_knowledge_facts(
     clock: Res<GameClock>,
     mut queue: ResMut<PendingFactQueue>,
@@ -312,11 +312,9 @@ pub fn notify_from_knowledge_facts(
 ) {
     let ready = queue.drain_ready(clock.elapsed);
     for PerceivedFact { fact, .. } in ready {
-        // #353 K-4: Scripted facts are handled by
-        // dispatch_knowledge_observed. If one ended up here (e.g. tests
-        // that bypass drain_ready_scripted), drop the banner push without
-        // touching NotifiedEventIds so the scripted dispatcher can still
-        // process the id cleanly.
+        // Scripted facts never produce a banner through this drainer —
+        // they must go through the Lua subscriber path. Swallow the
+        // fact silently so tests that mix variants don't double-drain.
         if matches!(fact, KnowledgeFact::Scripted { .. }) {
             continue;
         }
@@ -393,6 +391,14 @@ pub fn drain_pending_notifications(
 
 /// Plugin wiring up the notification queue, the per-frame TTL ticker, and
 /// the auto-mapping from `GameEvent` to banners.
+///
+/// #354 K-5: `notify_from_knowledge_facts` is no longer registered
+/// here — the fact drain has moved into
+/// `scripting::knowledge_dispatch::dispatch_knowledge_observed` which
+/// handles both core + scripted variants in one pass (plan §0.5 9.5).
+/// The `sweep_notified_event_ids` order dependency on the dispatcher
+/// is declared via `.after(dispatch_knowledge_observed)` below so the
+/// NotifiedEventIds map is still trimmed each frame.
 pub struct NotificationsPlugin;
 
 impl Plugin for NotificationsPlugin {
@@ -403,16 +409,18 @@ impl Plugin for NotificationsPlugin {
             .add_systems(
                 Update,
                 (
-                    notify_from_knowledge_facts,
                     drain_pending_notifications,
-                    // #249: Frees notified ids each frame so the dedupe map
-                    // doesn't grow unbounded. Must run after both notify
-                    // systems flipped entries to `true`.
+                    // #249: Frees notified ids each frame so the dedupe
+                    // map doesn't grow unbounded. Must run after
+                    // `auto_notify_from_events` AND the K-5 dispatcher
+                    // (which is the new production drain) have flipped
+                    // entries to `true`.
                     crate::knowledge::sweep_notified_event_ids,
                 )
                     .chain()
                     .after(crate::time_system::advance_game_time)
-                    .after(auto_notify_from_events),
+                    .after(auto_notify_from_events)
+                    .after(crate::scripting::knowledge_dispatch::dispatch_knowledge_observed),
             );
     }
 }

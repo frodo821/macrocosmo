@@ -498,15 +498,24 @@ fn notify_from_knowledge_facts_skips_scripted() {
 }
 
 // -------------------------------------------------------------------------
-// Drain order: when dispatch_knowledge_observed runs BEFORE
-// notify_from_knowledge_facts (e.g. on a tick when no core facts are
-// present), the Scripted fact drains cleanly.
+// #354 K-5 drain-unification: dispatch_knowledge_observed now drains
+// BOTH core + scripted facts in a single pass and pushes a banner for
+// core variants as a post-dispatch side-effect (replacing the removed
+// `notify_from_knowledge_facts` production drainer).
 // -------------------------------------------------------------------------
 
 #[test]
-fn observed_drain_leaves_non_scripted_alone() {
+fn observed_drain_consumes_core_and_scripted_together() {
     let engine = ScriptEngine::new().unwrap();
     let mut world = make_world("test:kind", 1, 100);
+    // Banner bridge relies on these resources existing (they're part
+    // of `make_world` already, but spell out the expectation here).
+    assert!(
+        world
+            .get_resource::<macrocosmo::notifications::NotificationQueue>()
+            .is_some()
+    );
+
     let registry = setup_subscribers(
         &engine,
         r#"
@@ -517,8 +526,9 @@ fn observed_drain_leaves_non_scripted_alone() {
     world.insert_resource(registry);
     world.insert_resource(engine);
 
-    // Queue up one core fact + one Scripted fact. Observed dispatch should
-    // drain only the Scripted one and leave the core for later.
+    // Queue one core fact + one Scripted fact. K-5 dispatcher drains
+    // both: scripted fires its @observed subscriber, core produces a
+    // notification banner via the post-dispatch bridge.
     {
         let mut q = world.resource_mut::<PendingFactQueue>();
         q.record(PerceivedFact {
@@ -554,14 +564,16 @@ fn observed_drain_leaves_non_scripted_alone() {
 
     world.resource_scope::<ScriptEngine, _>(|_, engine| {
         let n: i64 = engine.lua().globals().get("_scripted_fired").unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 1, "scripted @observed subscriber fired once");
     });
 
-    // Core fact remains in the queue.
+    // Both facts are drained (K-5 unification).
     let q = world.resource::<PendingFactQueue>();
-    assert_eq!(q.pending_len(), 1);
-    assert!(matches!(
-        q.facts[0].fact,
-        KnowledgeFact::SurveyComplete { .. }
-    ));
+    assert_eq!(q.pending_len(), 0, "K-5: dispatcher drains both variants");
+
+    // Core variant produced a banner via the notification bridge.
+    let notifs = world.resource::<macrocosmo::notifications::NotificationQueue>();
+    assert_eq!(notifs.items.len(), 1);
+    assert_eq!(notifs.items[0].title, "Survey Complete");
+    assert_eq!(notifs.items[0].description, "surveyed");
 }

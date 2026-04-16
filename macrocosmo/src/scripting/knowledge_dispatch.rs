@@ -539,12 +539,15 @@ fn build_recorded_event_table(
 }
 
 // ======================================================================
-// #353 K-4: @observed dispatch (per-observer drain)
+// #353 K-4 / #354 K-5: @observed dispatch + notification bridge
 //
-// `dispatch_knowledge_observed` drains Scripted facts out of
-// `PendingFactQueue` when their `arrives_at <= clock.elapsed`, then for
-// each observer empire builds a sealed event table with lag metadata and
-// dispatches `<kind>@observed` subscribers.
+// `dispatch_knowledge_observed` drains **all** ready facts out of
+// `PendingFactQueue` (core + scripted, arrives_at <= clock.elapsed),
+// then for each observer empire builds a sealed event table with lag
+// metadata and dispatches `<kind>@observed` subscribers. After
+// dispatch completes, core variants additionally produce a
+// [`Notification`] via the bridge so the banner queue stays populated
+// (plan §3.5 K-5 Commit 4: "Rust 側 core:* bridge").
 //
 // Ordering / isolation invariants (plan-349 §2.5, §3.4):
 //   - observer iteration order is deterministic: empires are sorted by
@@ -557,10 +560,15 @@ fn build_recorded_event_table(
 //     `RuntimeError` on write (plan-349 §2.6). `payload` is mutable.
 //   - subscriber errors warn + chain continues (plan-349 §6 item 4).
 //
-// K-5 drain-unification (plan §0.5 9.5 / §5.4): this system currently
-// drains only Scripted variants via `drain_ready_scripted`. Core variants
-// stay on the legacy `notify_from_knowledge_facts` path for now. K-5
-// migrates core variants through the same @observed dispatch path.
+// #354 K-5 drain unification (plan §0.5 9.5, §3.5, §5.4):
+//   - The legacy `notify_from_knowledge_facts` system no longer drains
+//     the queue — it is removed from the plugin wiring. Banner pushes
+//     now live inside this system as a post-dispatch side-effect for
+//     core variants only (Scripted facts remain Lua-subscriber-only).
+//   - The `#249 NotifiedEventIds` tri-state map is honoured the same
+//     way the removed system did: the first registered `try_notify` for
+//     an `EventId` wins, subsequent pushes are silently suppressed.
+//   - `High` priority core banners also auto-pause `GameSpeed`.
 // ======================================================================
 
 /// Metadata keys injected into an `@observed` event table that must NOT
@@ -606,47 +614,54 @@ fn build_observed_event_table(
     Ok(event)
 }
 
-/// Exclusive system that drains Scripted facts whose `arrives_at` has
-/// elapsed and dispatches `<kind>@observed` subscribers for each
-/// observer empire.
+/// #354 K-5: Per-fact decision passed from the dispatcher to the
+/// post-dispatch notification bridge. Populated during `@observed`
+/// dispatch while we still have the full [`PerceivedFact`] in scope.
+struct BannerPush {
+    title: String,
+    description: String,
+    priority: crate::notifications::NotificationPriority,
+    related_system: Option<Entity>,
+    event_id: Option<crate::knowledge::facts::EventId>,
+}
+
+/// Exclusive system that drains all ready facts (core + scripted)
+/// whose `arrives_at` has elapsed, dispatches `<kind>@observed`
+/// subscribers for each observer empire, and — for `core:*` variants —
+/// pushes a banner into `NotificationQueue` as a post-dispatch
+/// side-effect.
 ///
-/// Schedule: `Update`, ordered `.after(advance_game_time)` and
-/// `.after(notify_from_knowledge_facts)`. The ordering against
-/// `notify_from_knowledge_facts` is defensive — Scripted variants are
-/// invisible to that system (§3 Commit 3) so the only coupling is the
-/// shared `PendingFactQueue` resource which Bevy serialises on
-/// `ResMut<PendingFactQueue>`.
+/// Schedule: `Update`, ordered `.after(advance_game_time)`. Before K-5
+/// this ran `.after(notify_from_knowledge_facts)`; with the legacy
+/// drainer removed the ordering is now just the clock dep.
 ///
 /// Uses `&mut World` exclusive access because dispatch_knowledge may
 /// trigger subscribers that call back into `gs:*` setters. Takes the
 /// subscription registry out of the world for the duration of dispatch
 /// (same pattern as `dispatch_knowledge_recorded`).
 pub fn dispatch_knowledge_observed(world: &mut World) {
+    use crate::knowledge::facts::{KnowledgeFact, PendingFactQueue};
+
     // Fast-path: nothing to drain.
     let now = world
         .get_resource::<crate::time_system::GameClock>()
         .map(|c| c.elapsed)
         .unwrap_or(0);
     let has_ready = world
-        .get_resource::<crate::knowledge::facts::PendingFactQueue>()
-        .map(|q| {
-            q.facts.iter().any(|pf| {
-                matches!(
-                    pf.fact,
-                    crate::knowledge::facts::KnowledgeFact::Scripted { .. }
-                ) && pf.arrives_at <= now
-            })
-        })
+        .get_resource::<PendingFactQueue>()
+        .map(|q| q.facts.iter().any(|pf| pf.arrives_at <= now))
         .unwrap_or(false);
     if !has_ready {
         return;
     }
 
-    // Drain ready Scripted facts out of the queue. Core variants remain
-    // for notify_from_knowledge_facts (banner path).
+    // #354 K-5: Drain ALL ready facts (core + scripted) from the queue.
+    // The legacy split between `drain_ready_scripted` (scripted) and
+    // `drain_ready` (core, via `notify_from_knowledge_facts`) collapses
+    // here into the unified drain required by plan §0.5 9.5.
     let ready: Vec<crate::knowledge::facts::PerceivedFact> = {
-        let mut queue = world.resource_mut::<crate::knowledge::facts::PendingFactQueue>();
-        queue.drain_ready_scripted(now)
+        let mut queue = world.resource_mut::<PendingFactQueue>();
+        queue.drain_ready(now)
     };
     if ready.is_empty() {
         return;
@@ -664,6 +679,11 @@ pub fn dispatch_knowledge_observed(world: &mut World) {
         v
     };
 
+    // #354 K-5: Collect banner pushes during the Lua dispatch so we can
+    // apply them in a subsequent world-scope once `ScriptEngine` is
+    // released.
+    let mut pending_banners: Vec<BannerPush> = Vec::new();
+
     // Remove the subscription registry so dispatch_knowledge can borrow
     // it without holding a world borrow (subscribers re-enter via gs:*).
     let registry_opt = world.remove_resource::<KnowledgeSubscriptionRegistry>();
@@ -671,8 +691,12 @@ pub fn dispatch_knowledge_observed(world: &mut World) {
     world.resource_scope::<super::ScriptEngine, _>(|_world, engine| {
         let lua = engine.lua();
         for pf in &ready {
+            // Derive the (kind_id, recorded_at, origin_system,
+            // payload_snapshot) tuple from the fact variant. Scripted
+            // facts carry these directly; core variants are flattened
+            // via `to_core_payload_snapshot()` (Commit 3).
             let (kind_id, recorded_at, origin_system, payload_snapshot) = match &pf.fact {
-                crate::knowledge::facts::KnowledgeFact::Scripted {
+                KnowledgeFact::Scripted {
                     kind_id,
                     recorded_at,
                     origin_system,
@@ -684,9 +708,25 @@ pub fn dispatch_knowledge_observed(world: &mut World) {
                     *origin_system,
                     payload_snapshot.clone(),
                 ),
-                // drain_ready_scripted filtered these out already — this
-                // arm is unreachable but kept as a defensive skip.
-                _ => continue,
+                _ => {
+                    // Core variant: synthesise the tuple from variant
+                    // fields via the K-5 converter. `core_kind_id` and
+                    // `to_core_payload_snapshot` are infallible for
+                    // built-in variants (covered by
+                    // `core_payload_schema_matches_converter_output`).
+                    let Some(kind_id) = pf.fact.core_kind_id() else {
+                        continue;
+                    };
+                    let Some(snap) = pf.fact.to_core_payload_snapshot() else {
+                        continue;
+                    };
+                    (
+                        kind_id.to_string(),
+                        pf.observed_at,
+                        pf.fact.core_origin_system(),
+                        snap,
+                    )
+                }
             };
             let observed_at = pf.arrives_at;
 
@@ -730,12 +770,80 @@ pub fn dispatch_knowledge_observed(world: &mut World) {
                     }
                 }
             }
+
+            // #354 K-5: Enqueue a banner push for core variants. Scripted
+            // facts stay Lua-subscriber-only (plan §3.5 Commit 4). We
+            // use the original `KnowledgeFact` helpers (`title()` /
+            // `description()` / `priority()` / `related_system()`) so
+            // the banner content exactly matches the pre-K-5 output.
+            if !matches!(pf.fact, KnowledgeFact::Scripted { .. }) {
+                pending_banners.push(BannerPush {
+                    title: pf.fact.title().to_string(),
+                    description: pf.fact.description(),
+                    priority: pf.fact.priority(),
+                    related_system: pf.fact.related_system(),
+                    event_id: pf.fact.event_id(),
+                });
+            }
         }
     });
 
     // Put the subscription registry back.
     if let Some(registry) = registry_opt {
         world.insert_resource(registry);
+    }
+
+    // #354 K-5: Apply the collected banner pushes with the full #249
+    // dedup + auto-pause semantics that `notify_from_knowledge_facts`
+    // used to provide. Resource access is cheap here because we're
+    // outside the ScriptEngine scope.
+    apply_pending_banners(world, pending_banners);
+}
+
+/// #354 K-5: Drain the per-tick banner push list collected during
+/// `@observed` dispatch. Honours:
+/// * `#249 NotifiedEventIds::try_notify` — first push for an id wins,
+///   subsequent pushes are suppressed.
+/// * `NotificationPriority::High` auto-pauses `GameSpeed`.
+/// * Low priority pushes return `None` from `queue.push()` but the
+///   EventId is still claimed so a follow-up higher-priority fact with
+///   the same id does not silently overwrite (matches the pre-K-5
+///   `NotifiedEventIds` contract — see
+///   `notifications::notify_from_knowledge_facts` history before this
+///   commit).
+fn apply_pending_banners(world: &mut World, pushes: Vec<BannerPush>) {
+    if pushes.is_empty() {
+        return;
+    }
+    let mut paused_any_high = false;
+    // Use `resource_scope` so we can hold `NotifiedEventIds` out of the
+    // world for the duration of the banner push loop — this keeps the
+    // borrow checker happy while we also hold `ResMut<NotificationQueue>`.
+    world.resource_scope::<crate::knowledge::facts::NotifiedEventIds, _>(|world, mut notified| {
+        let mut queue = world.resource_mut::<crate::notifications::NotificationQueue>();
+        for push in pushes {
+            // EventId dedup (tri-state). Facts with no id skip the gate.
+            if let Some(eid) = push.event_id
+                && !notified.try_notify(eid)
+            {
+                continue;
+            }
+            let id = queue.push(
+                push.title,
+                push.description,
+                None,
+                push.priority,
+                push.related_system,
+            );
+            if id.is_some() && push.priority.pauses_game() {
+                paused_any_high = true;
+            }
+        }
+    });
+    if paused_any_high
+        && let Some(mut speed) = world.get_resource_mut::<crate::time_system::GameSpeed>()
+    {
+        speed.pause();
     }
 }
 

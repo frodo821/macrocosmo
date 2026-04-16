@@ -127,17 +127,19 @@ impl Plugin for ScriptingPlugin {
                 knowledge_dispatch::dispatch_knowledge_recorded
                     .after(crate::time_system::advance_game_time),
             )
-            // #353 K-4: drain Scripted facts whose arrival time has
-            // elapsed and fire <kind>@observed subscribers. Runs after
-            // notify_from_knowledge_facts so the two drains cannot
-            // overlap on the same PendingFactQueue resource in a single
-            // schedule pass. Exclusive (&mut World) because subscribers
-            // may re-enter gs:* setters.
+            // #353 K-4 / #354 K-5: drain ALL ready facts (core +
+            // scripted) whose arrival time has elapsed, fire
+            // `<kind>@observed` subscribers, and push banners for core
+            // variants as a post-dispatch side-effect. This replaces
+            // the legacy `notify_from_knowledge_facts` drainer (now
+            // unregistered from `NotificationsPlugin`). Exclusive
+            // (&mut World) because subscribers may re-enter gs:*
+            // setters.
             .add_systems(
                 Update,
                 knowledge_dispatch::dispatch_knowledge_observed
                     .after(crate::time_system::advance_game_time)
-                    .after(crate::notifications::notify_from_knowledge_facts),
+                    .after(crate::notifications::auto_notify_from_events),
             );
     }
 }

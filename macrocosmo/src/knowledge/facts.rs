@@ -612,17 +612,15 @@ impl PendingFactQueue {
 
     /// #353 (K-4): Drain **only** `KnowledgeFact::Scripted` facts whose
     /// `arrives_at <= now`, leaving core variants in place for the legacy
-    /// `notify_from_knowledge_facts` path (banner drain). This is the
-    /// per-plan-349 §3.4 split: `dispatch_knowledge_observed` consumes the
-    /// Scripted subset, `notify_from_knowledge_facts` consumes the rest.
+    /// `notify_from_knowledge_facts` path (banner drain).
     ///
-    /// Ordering invariant: insertion order is preserved across both drains,
-    /// so the two systems can run in any order without double-processing
-    /// (the wrapper does not peek at the other subset).
-    ///
-    /// K-5 (#354) will unify this: core variants will also flow through
-    /// `dispatch_knowledge_observed` and `notify_from_knowledge_facts` will
-    /// become a thin bridge that reads the dispatched banner queue.
+    /// #354 K-5 status: this partitioned drain is **no longer used** by
+    /// the production pipeline — `dispatch_knowledge_observed` now
+    /// drains the whole queue via `drain_ready()` and handles both
+    /// core + scripted variants in a single pass. The partitioned
+    /// helper is retained for any future callsites that deliberately
+    /// want the Scripted-only subset (plus the K-4 unit tests that
+    /// exercise its ordering invariant).
     pub fn drain_ready_scripted(&mut self, now: i64) -> Vec<PerceivedFact> {
         let mut ready = Vec::new();
         let mut i = 0;
