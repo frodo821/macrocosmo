@@ -33,6 +33,7 @@ use bevy_egui::egui;
 
 use crate::colony::ResourceStockpile;
 use crate::galaxy::StarSystem;
+use crate::knowledge::KnowledgeStore;
 use crate::player::PlayerEmpire;
 use crate::time_system::GameClock;
 
@@ -145,11 +146,20 @@ impl ResourceTrendHistory {
 /// sample into `ResourceTrendHistory`. Intentionally gated on
 /// clock advance so a paused game doesn't flood the buffer with
 /// duplicates.
+///
+/// The 4 stock resources (Minerals / Energy / Food / Authority) are
+/// summed across every `ResourceStockpile` as a local real-time roll
+/// up. `Research` is intentionally read from the player empire's
+/// `KnowledgeStore` instead — research is a *flow* (per-hexady rate
+/// aggregated at the capital with light-speed delay), not a stock,
+/// so the displayed number is the value that has actually arrived at
+/// the capital. See CLAUDE.md "Resources are local" / "Research
+/// points are flow".
 pub fn record_resource_trends(
     clock: Option<Res<GameClock>>,
     mut history: ResMut<ResourceTrendHistory>,
     stockpiles: Query<&ResourceStockpile, With<StarSystem>>,
-    _player: Query<Entity, With<PlayerEmpire>>,
+    player_knowledge: Query<&KnowledgeStore, With<PlayerEmpire>>,
 ) {
     let Some(clock) = clock else {
         return;
@@ -160,12 +170,6 @@ pub fn record_resource_trends(
     if !history.samples.is_empty() && clock.elapsed == history.last_tick {
         return;
     }
-    // NB: totals currently span every system's stockpile regardless of
-    // ownership. Light-speed correctness (per `KnowledgeStore`) lives
-    // in the top bar; the ESC trends view is a local, real-time roll
-    // up matching the on-screen resource readout. When a proper per-
-    // empire aggregator lands (#268-ish), this lookup swaps for a
-    // `KnowledgeStore` walk.
     let mut sample = ResourceSample {
         tick: clock.elapsed,
         minerals: 0.0,
@@ -175,11 +179,20 @@ pub fn record_resource_trends(
         authority: 0.0,
     };
     for sp in &stockpiles {
-        sample.minerals += sp.minerals.raw() as f64;
-        sample.energy += sp.energy.raw() as f64;
-        sample.research += sp.research.raw() as f64;
-        sample.food += sp.food.raw() as f64;
-        sample.authority += sp.authority.raw() as f64;
+        sample.minerals += sp.minerals.to_f64();
+        sample.energy += sp.energy.to_f64();
+        sample.food += sp.food.to_f64();
+        sample.authority += sp.authority.to_f64();
+    }
+    // Research = flow aggregated at capital with light-speed delay.
+    // Sum every system's last-known `production_research` from the
+    // player empire's KnowledgeStore. Remote systems contribute their
+    // light-speed-delayed value; this is the number the capital
+    // actually has visibility into.
+    if let Ok(knowledge) = player_knowledge.single() {
+        for (_system, entry) in knowledge.iter() {
+            sample.research += entry.data.production_research.to_f64();
+        }
     }
     history.push(sample);
 }
@@ -310,7 +323,14 @@ fn collect_resource_events(world: &World) -> Vec<Event> {
             let value = current.get(kind).copied().unwrap_or(0.0);
             let peak = history.peak(*kind);
             let alert = is_declining(value, peak);
-            let base_label = format!("{}: {:.0}", kind.label(), value);
+            // Research is a flow (per-hexady rate) aggregated at the capital
+            // with light-speed delay, not a stock total. Tag the label so
+            // the player understands the displayed number's semantics.
+            let base_label = if matches!(kind, ResourceKind::Research) {
+                format!("Research (capital view): {:.0}/hd", value)
+            } else {
+                format!("{}: {:.0}", kind.label(), value)
+            };
             let label = if alert {
                 format!("[WARN] {}", base_label)
             } else {
@@ -499,10 +519,96 @@ mod tests {
         let history = world.resource::<ResourceTrendHistory>();
         assert_eq!(history.samples.len(), 1);
         let s = history.samples.back().unwrap();
-        // `Amt::units(n)` stores `n * SCALE` internally (SCALE = 1000).
-        // Totals: 25 * 1000 minerals, 20 * 1000 energy.
-        assert!((s.minerals - 25_000.0).abs() < 1e-6);
-        assert!((s.energy - 20_000.0).abs() < 1e-6);
+        // #365: stockpiles convert via `Amt::to_f64()`, NOT raw / SCALE.
+        // Totals: 10 + 15 = 25 minerals, 20 energy. Stockpile.research is
+        // ignored — research is sourced from KnowledgeStore (see
+        // `recorder_reads_research_from_knowledge_store`).
+        assert!((s.minerals - 25.0).abs() < 1e-6);
+        assert!((s.energy - 20.0).abs() < 1e-6);
+        assert!((s.food - 5.0).abs() < 1e-6);
+        assert!(s.research.abs() < 1e-6, "stockpile research must NOT leak into sample (got {})", s.research);
+    }
+
+    #[test]
+    fn recorder_reads_research_from_knowledge_store() {
+        // #365 Bug 2: research is a flow aggregated at the capital with
+        // light-speed delay, sourced from the player empire's
+        // `KnowledgeStore.production_research`. NOT from
+        // `ResourceStockpile.research`.
+        use crate::knowledge::{KnowledgeStore, ObservationSource, SystemKnowledge, SystemSnapshot};
+        use crate::player::{Empire, Faction, PlayerEmpire};
+
+        let mut world = World::new();
+        world.insert_resource(GameClock::new(1));
+        world.insert_resource(ResourceTrendHistory::default());
+
+        // Two systems with snapshots whose production_research is 5 and 7.
+        let sys_a = spawn_system_with_stockpile(
+            &mut world,
+            ResourceStockpile {
+                minerals: Amt::ZERO,
+                energy: Amt::ZERO,
+                // Stockpile.research must be ignored: set non-zero to
+                // prove the recorder doesn't pick it up.
+                research: Amt::units(999),
+                food: Amt::ZERO,
+                authority: Amt::ZERO,
+            },
+        );
+        let sys_b = spawn_system_with_stockpile(
+            &mut world,
+            ResourceStockpile {
+                minerals: Amt::ZERO,
+                energy: Amt::ZERO,
+                research: Amt::units(999),
+                food: Amt::ZERO,
+                authority: Amt::ZERO,
+            },
+        );
+
+        let mut store = KnowledgeStore::default();
+        let mut snap_a = SystemSnapshot::default();
+        snap_a.production_research = Amt::units(5);
+        let mut snap_b = SystemSnapshot::default();
+        snap_b.production_research = Amt::units(7);
+        store.update(SystemKnowledge {
+            system: sys_a,
+            observed_at: 0,
+            received_at: 0,
+            data: snap_a,
+            source: ObservationSource::Direct,
+        });
+        store.update(SystemKnowledge {
+            system: sys_b,
+            observed_at: 0,
+            received_at: 0,
+            data: snap_b,
+            source: ObservationSource::Direct,
+        });
+
+        world.spawn((
+            PlayerEmpire,
+            Empire {
+                name: "Test".into(),
+            },
+            Faction {
+                id: "test_faction".into(),
+                name: "Test".into(),
+            },
+            store,
+        ));
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(record_resource_trends);
+        schedule.run(&mut world);
+
+        let history = world.resource::<ResourceTrendHistory>();
+        let s = history.samples.back().unwrap();
+        assert!(
+            (s.research - 12.0).abs() < 1e-6,
+            "expected sum of production_research (5 + 7 = 12), got {}",
+            s.research
+        );
     }
 
     #[test]
