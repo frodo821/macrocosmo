@@ -16,16 +16,24 @@
 //! Lua API future-proof argument (why the traits here are stable under
 //! the upcoming `define_situation_tab` API).
 
+pub mod construction_tab;
+pub mod diplomatic_tab;
 pub mod lua_adapter;
 pub mod notifications_tab;
 pub mod panel;
 pub mod registry;
+pub mod resource_trends_tab;
+pub mod ship_ops_tab;
 pub mod state;
 pub mod tab;
 pub mod types;
 
 use bevy::prelude::*;
 
+pub use construction_tab::ConstructionOverviewTab;
+pub use diplomatic_tab::{
+    DiplomaticStandingHistory, DiplomaticStandingTab, record_diplomatic_history,
+};
 pub use lua_adapter::{LuaOngoingTabAdapter, LuaTabRegistration};
 pub use notifications_tab::{
     EscNotificationQueue, NotificationsTab, PendingAck, PushOutcome, apply_pending_acks_system,
@@ -33,6 +41,8 @@ pub use notifications_tab::{
 };
 pub use panel::{TOGGLE_KEY, draw_situation_center_system, toggle_situation_center};
 pub use registry::{AppSituationExt, SituationTabRegistry};
+pub use resource_trends_tab::{ResourceTrendHistory, ResourceTrendsTab, record_resource_trends};
+pub use ship_ops_tab::ShipOperationsTab;
 pub use state::{SituationCenterState, TabState};
 pub use tab::{
     OngoingTab, OngoingTabAdapter, SituationTab, TabBadge, TabId, TabMeta, render_event_tree,
@@ -63,19 +73,41 @@ impl Plugin for SituationCenterPlugin {
         app.init_resource::<SituationCenterState>()
             .init_resource::<SituationTabRegistry>()
             .init_resource::<EscNotificationQueue>()
-            .add_systems(Update, toggle_situation_center)
+            // ESC-3 Commit 3 (#346): snapshot of previous-tick standing
+            // values, refreshed every frame by `record_diplomatic_history`.
+            .init_resource::<DiplomaticStandingHistory>()
+            // ESC-3 Commit 4 (#346): rolling ring buffer of empire-wide
+            // resource totals, refreshed by `record_resource_trends`.
+            .init_resource::<ResourceTrendHistory>()
+            .add_systems(
+                Update,
+                (
+                    toggle_situation_center,
+                    record_diplomatic_history,
+                    record_resource_trends,
+                ),
+            )
             // #345 ESC-2: drain ack intents emitted by the tab renderer
-            // each frame and apply them to the queue. Registered in
-            // `Update` rather than `EguiPrimaryContextPass` so the
-            // render path can fire ack buttons in frame N and the
-            // queue reflects them at the start of frame N+1's game
-            // systems (ordering mirrors `toggle_situation_center`).
+            // each frame and apply them to the queue.
             .add_systems(Update, apply_pending_acks_system);
 
         // Register the framework-bundled Notifications tab. ESC-2
         // swaps the stub queue for the real pipeline but keeps this
         // registration intact.
         app.register_situation_tab(NotificationsTab);
+
+        // ESC-3 (#346): register the four ongoing tabs. `order` keys
+        // 100..400 place them left of the notifications tab (900).
+        // Badge counts are cheap (aggregate over `World::query` with no
+        // allocations beyond per-system buckets), so running them every
+        // frame is fine.
+        app.register_ongoing_situation_tab(ConstructionOverviewTab);
+        app.register_ongoing_situation_tab(ShipOperationsTab);
+        app.register_ongoing_situation_tab(DiplomaticStandingTab);
+        // Resource Trends draws per-resource sparklines that the
+        // default Event-tree renderer can't express, so it implements
+        // `SituationTab` directly (not `OngoingTab`).
+        app.register_situation_tab(ResourceTrendsTab);
     }
 }
 
