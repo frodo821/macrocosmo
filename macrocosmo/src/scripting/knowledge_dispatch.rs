@@ -678,6 +678,68 @@ mod tests {
         assert!(msg.contains("Function"), "got: {msg}");
     }
 
+    // #353 K-4 Commit 1: per-observer isolation. Each call to
+    // `snapshot_to_lua` must produce an independent Lua table so mutations
+    // made by one observer's subscriber chain do not leak to the next
+    // observer's copy (plan-349 §2.5, §3.4 test matrix).
+    #[test]
+    fn snapshot_to_lua_produces_independent_tables() {
+        use crate::knowledge::payload::{PayloadSnapshot, PayloadValue, snapshot_to_lua};
+
+        let lua = Lua::new();
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("severity".to_string(), PayloadValue::Number(0.7));
+        let snapshot = PayloadSnapshot { fields };
+
+        // Reconstruct the Lua table twice — one per simulated observer.
+        let observer_a = snapshot_to_lua(&lua, &snapshot).unwrap();
+        let observer_b = snapshot_to_lua(&lua, &snapshot).unwrap();
+
+        // Mutate observer A's copy; observer B must remain unchanged.
+        observer_a.set("severity", 1.0_f64).unwrap();
+
+        let a_val: f64 = observer_a.get("severity").unwrap();
+        let b_val: f64 = observer_b.get("severity").unwrap();
+        assert!((a_val - 1.0).abs() < f64::EPSILON);
+        assert!(
+            (b_val - 0.7).abs() < f64::EPSILON,
+            "observer B payload must not be affected by observer A mutation, got {b_val}"
+        );
+    }
+
+    // Per-observer isolation also holds for nested tables.
+    #[test]
+    fn snapshot_to_lua_nested_tables_are_independent() {
+        use crate::knowledge::payload::{PayloadSnapshot, PayloadValue, snapshot_to_lua};
+
+        let mut inner_fields = std::collections::HashMap::new();
+        inner_fields.insert("count".to_string(), PayloadValue::Int(5));
+        let mut outer_fields = std::collections::HashMap::new();
+        outer_fields.insert(
+            "stats".to_string(),
+            PayloadValue::Table(PayloadSnapshot {
+                fields: inner_fields,
+            }),
+        );
+        let snapshot = PayloadSnapshot {
+            fields: outer_fields,
+        };
+
+        let lua = Lua::new();
+        let a = snapshot_to_lua(&lua, &snapshot).unwrap();
+        let b = snapshot_to_lua(&lua, &snapshot).unwrap();
+
+        let a_stats: mlua::Table = a.get("stats").unwrap();
+        a_stats.set("count", 99).unwrap();
+
+        let b_stats: mlua::Table = b.get("stats").unwrap();
+        assert_eq!(
+            b_stats.get::<i64>("count").unwrap(),
+            5,
+            "observer B nested table must be independent of observer A"
+        );
+    }
+
     #[test]
     fn deep_copy_depth_limit_exceeded() {
         let lua = Lua::new();
