@@ -9,11 +9,17 @@ edition.workspace = true
 # bevy_scene / bevy_text / bevy_ui / bevy_state / bevy_input_focus / bevy_picking +
 # picking backends / png / vorbis / webgl2 / hdr / tonemapping_luts / smaa_luts /
 # custom_cursor / zstd_rust。egui で UI / text を担当するため bevy_ui 系は不要。
+#
+# IMPORTANT: `bevy_gizmos` は API レイヤ (Gizmos SystemParam, gizmos.circle_2d 等)
+# のみを提供し、実際に画面へ描画するレンダリングは `bevy_gizmos_render` 側にある。
+# 両方 enable しないと gizmo 呼び出しは silent no-op になり、map 上の船・経路・
+# overlay 等がすべて invisible になる (#364 regression)。
 bevy = { version = "0.18.1", default-features = false, features = [
     "bevy_asset",
     "bevy_color",
     "bevy_core_pipeline",
     "bevy_gizmos",
+    "bevy_gizmos_render",
     "bevy_log",
     "bevy_render",
     "bevy_sprite",
