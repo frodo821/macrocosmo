@@ -58,5 +58,14 @@ require("events")
 -- `record_knowledge` / `on("<id>@observed", fn)` once K-2 / K-3 land.
 require("knowledge.sample")
 
+-- #345 ESC-2: default Lua bridge from `*@observed` events to the ESC
+-- Notifications tab. Must come AFTER knowledge.sample (so the
+-- reserved events exist) and BEFORE lifecycle (so the `on()`
+-- subscriber is registered before lifecycle callbacks may fire
+-- `gs:record_knowledge` at game start). Loaded from a separate
+-- subdirectory so future notification bridges / policy overrides
+-- can sit alongside without cluttering the root init ordering.
+require("notifications.default_bridge")
+
 -- Lifecycle hooks (must be last — registers callbacks for game start/load)
 require("lifecycle")

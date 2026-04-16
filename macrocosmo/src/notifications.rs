@@ -283,23 +283,38 @@ pub fn auto_notify_from_events(
     }
 }
 
-/// #233 / #354: Standalone fact-to-banner drainer.
+/// #233 / #354 / #345: Standalone fact-to-banner drainer (legacy test-only).
 ///
 /// **Historical note**: This system **used** to be the production drain
-/// in `NotificationsPlugin`; K-5 (#354) moves the production drain into
+/// in `NotificationsPlugin`; K-5 (#354) moved the production drain into
 /// `scripting::knowledge_dispatch::dispatch_knowledge_observed` so that
 /// all fact variants (core + scripted) flow through the same
-/// `@observed` dispatch path (plan §3.5 Commit 4, §0.5 9.5).
+/// `@observed` dispatch path (plan §3.5 Commit 4, §0.5 9.5). ESC-2
+/// (#345) adds the ESC Notifications tab + `push_notification` Lua
+/// bridge as a *second* consumer of the same `@observed` dispatch.
 ///
-/// It is **no longer registered by `NotificationsPlugin`** — production
-/// flow goes through the K-5 dispatcher. The function is kept public
-/// and feature-complete so:
-/// * Integration tests that want to exercise the banner pipeline
-///   without the Lua scripting plugin (e.g.
-///   `tests/notification_knowledge_pipeline.rs`) can wire it manually
-///   via `app.add_systems(Update, notify_from_knowledge_facts)`.
-/// * Future headless / server-mode hosts can opt into the legacy
-///   non-Lua drain if they deliberately exclude the scripting plugin.
+/// This function is **not registered by any production plugin** —
+/// `NotificationsPlugin` no longer adds it to the schedule, and
+/// `ScriptingPlugin::dispatch_knowledge_observed` is the sole drain
+/// for `PendingFactQueue` in production. The function is retained
+/// only as:
+/// * A **regression harness** for the 17 banner tests in
+///   `tests/notification_knowledge_pipeline.rs`, which exercise the
+///   banner semantics (light-speed delay, relay path, #249 EventId
+///   dedupe, priority mapping, whitelist split) without spinning up
+///   the full Lua scripting plugin. Those tests wire
+///   `notify_from_knowledge_facts` manually via
+///   `app.add_systems(Update, notify_from_knowledge_facts)`.
+/// * A fallback for future headless / server-mode hosts that
+///   deliberately exclude the scripting plugin.
+///
+/// **Do not re-register this system in any plugin.** Doing so would
+/// double-drain `PendingFactQueue` alongside
+/// `dispatch_knowledge_observed` and both break the ESC Lua bridge
+/// (by draining facts before they reach `*@observed` subscribers) and
+/// double-push banners. The `notification_knowledge_pipeline` tests
+/// deliberately run in isolation for this reason — they never
+/// construct a full `ScriptingPlugin` / `NotificationsPlugin` stack.
 ///
 /// The function still skips `Scripted` variants so tests that set up a
 /// mixed queue do not produce spurious "Knowledge" banners.

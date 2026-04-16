@@ -27,7 +27,10 @@ pub mod types;
 use bevy::prelude::*;
 
 pub use lua_adapter::{LuaOngoingTabAdapter, LuaTabRegistration};
-pub use notifications_tab::{EscNotificationQueue, NotificationsTab};
+pub use notifications_tab::{
+    EscNotificationQueue, NotificationsTab, PendingAck, PushOutcome, apply_pending_acks_system,
+    drain_pending_acks_for_tests, enqueue_pending_ack,
+};
 pub use panel::{TOGGLE_KEY, draw_situation_center_system, toggle_situation_center};
 pub use registry::{AppSituationExt, SituationTabRegistry};
 pub use state::{SituationCenterState, TabState};
@@ -60,7 +63,14 @@ impl Plugin for SituationCenterPlugin {
         app.init_resource::<SituationCenterState>()
             .init_resource::<SituationTabRegistry>()
             .init_resource::<EscNotificationQueue>()
-            .add_systems(Update, toggle_situation_center);
+            .add_systems(Update, toggle_situation_center)
+            // #345 ESC-2: drain ack intents emitted by the tab renderer
+            // each frame and apply them to the queue. Registered in
+            // `Update` rather than `EguiPrimaryContextPass` so the
+            // render path can fire ack buttons in frame N and the
+            // queue reflects them at the start of frame N+1's game
+            // systems (ordering mirrors `toggle_situation_center`).
+            .add_systems(Update, apply_pending_acks_system);
 
         // Register the framework-bundled Notifications tab. ESC-2
         // swaps the stub queue for the real pipeline but keeps this

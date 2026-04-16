@@ -4,6 +4,7 @@ pub mod condition_ctx;
 pub mod condition_parser;
 pub mod effect_scope;
 pub mod engine;
+pub mod esc_notifications;
 pub mod event_api;
 pub mod faction_api;
 pub mod galaxy_api;
@@ -140,6 +141,22 @@ impl Plugin for ScriptingPlugin {
                 knowledge_dispatch::dispatch_knowledge_observed
                     .after(crate::time_system::advance_game_time)
                     .after(crate::notifications::auto_notify_from_events),
+            )
+            // #345 ESC-2: drain the `_pending_esc_notifications` Lua
+            // accumulator populated by `push_notification { ... }`
+            // calls (typically from `scripts/notifications/default_bridge.lua`
+            // inside the `*@observed` subscriber chain). Ordered
+            // `.after(dispatch_knowledge_observed)` so subscribers
+            // that fire this tick land in `EscNotificationQueue`
+            // within the same frame. Also `.before(sweep_notified_event_ids)`
+            // so the dedup map still holds `try_notify` state when we
+            // read it.
+            .add_systems(
+                Update,
+                esc_notifications::drain_pending_esc_notifications
+                    .after(crate::time_system::advance_game_time)
+                    .after(knowledge_dispatch::dispatch_knowledge_observed)
+                    .before(crate::knowledge::sweep_notified_event_ids),
             );
     }
 }
