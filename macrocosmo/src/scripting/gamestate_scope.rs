@@ -319,6 +319,163 @@ fn build_scoped_gamestate<'scope, 'env>(
                 apply::request_command(&mut **borrow, parsed)
             })?;
         gs.set("request_command", request_command)?;
+
+        // :record_knowledge({ kind = "...", origin_system = id?, payload = { ... } })
+        //
+        // #351 K-2: Lua-origin knowledge record with sync @recorded dispatch.
+        //
+        // Flow (plan-349 §2.4 / §0.5 9.1):
+        //   1. Parse args (Lua table reads, no Rust state needed)
+        //   2. Borrow world -> validate kind in KindRegistry, get clock.elapsed
+        //   3. Release world borrow
+        //   4. Build sealed event table + dispatch_knowledge(@recorded)
+        //      (subscribers may call gs:set_flag etc. — world is unborrowed)
+        //   5. Snapshot final payload (Lua table -> PayloadSnapshot)
+        //   6. Re-borrow world -> apply::enqueue_scripted_fact (Lua-free)
+        //
+        // NOTE: Unlike other setters, this closure uses `lua` (the scope-
+        // provided &Lua) for steps 4-5. The `apply::enqueue_scripted_fact`
+        // helper in step 6 is still Lua-unaware (§6 invariant). The dispatch
+        // in step 4 is NOT a write helper — it is a scope-closure operation
+        // that happens while the world is unborrowed.
+        let record_knowledge =
+            s.create_function_mut(move |lua, (_this, args): (Table, Table)| {
+                use crate::knowledge::kind_registry::KindRegistry;
+                use crate::knowledge::payload::{snapshot_from_lua, validate_payload_schema};
+                use crate::scripting::knowledge_dispatch::{
+                    KNOWLEDGE_PAYLOAD_DEPTH_LIMIT, KnowledgeLifecycle, dispatch_knowledge,
+                    seal_immutable_keys,
+                };
+                use crate::scripting::knowledge_registry::KnowledgeSubscriptionRegistry;
+
+                // Step 1: parse args from Lua (no world borrow needed).
+                let kind_id: String = args.get("kind").map_err(|_| {
+                    mlua::Error::RuntimeError(
+                        "record_knowledge: missing required field 'kind'".into(),
+                    )
+                })?;
+                let origin_system_bits: Option<u64> = args.get("origin_system").ok();
+                let payload_lua: Table = args.get("payload").map_err(|_| {
+                    mlua::Error::RuntimeError(
+                        "record_knowledge: missing required field 'payload'".into(),
+                    )
+                })?;
+
+                // Step 2: borrow world to validate kind + get clock.
+                let (recorded_at, kind_id_parsed) = {
+                    let mut borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
+                    let world = &mut **borrow;
+
+                    let registry = world.get_resource::<KindRegistry>().ok_or_else(|| {
+                        mlua::Error::RuntimeError("KindRegistry not found".into())
+                    })?;
+                    let kid = crate::knowledge::kind_registry::KnowledgeKindId::parse(&kind_id)
+                        .map_err(|e| mlua::Error::RuntimeError(format!("{e}")))?;
+                    let def = registry.get(kid.as_str()).ok_or_else(|| {
+                        mlua::Error::RuntimeError(format!(
+                            "record_knowledge: unknown kind '{kind_id}'"
+                        ))
+                    })?;
+                    validate_payload_schema(&kid, &def.payload_schema, &payload_lua)?;
+
+                    let clock_elapsed = world
+                        .get_resource::<crate::time_system::GameClock>()
+                        .map(|c| c.elapsed)
+                        .unwrap_or(0);
+
+                    (clock_elapsed, kid)
+                    // borrow released here
+                };
+
+                // Step 3-4: build sealed event table + dispatch @recorded.
+                let event = lua.create_table()?;
+                event.set("kind", kind_id.as_str())?;
+                if let Some(oid) = origin_system_bits {
+                    event.set("origin_system", oid)?;
+                }
+                event.set("recorded_at", recorded_at)?;
+                event.set("payload", payload_lua)?;
+                seal_immutable_keys(lua, &event, &["kind", "origin_system", "recorded_at"])?;
+
+                // Try to get registry for dispatch. If it doesn't exist yet
+                // (e.g. during startup before drain), skip dispatch.
+                let dispatch_result = {
+                    let borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
+                    let world = &**borrow;
+                    world
+                        .get_resource::<KnowledgeSubscriptionRegistry>()
+                        .map(|r| {
+                            // Clone the bucket keys we need for dispatch. We
+                            // cannot hold the world borrow during dispatch
+                            // because subscribers may call gs:*.
+                            // Instead, we collect RegistryKeys we need.
+                            // Actually, we need the whole registry reference.
+                            // Since we can't hold it across the borrow release,
+                            // we check if any subscribers exist and gather them.
+                            (
+                                r.exact.contains_key(&kind_id_parsed.recorded_event_id())
+                                    || r.wildcard.contains_key(&KnowledgeLifecycle::Recorded),
+                                // We need the registry itself for dispatch...
+                            )
+                        })
+                };
+                drop(dispatch_result);
+
+                // The tricky part: we need the KnowledgeSubscriptionRegistry
+                // to call dispatch_knowledge, but we can't hold the world
+                // borrow during dispatch. Solution: resource_scope-like
+                // manual take+put, but we can't do that with RefCell<&mut World>.
+                //
+                // Better approach: temporarily remove the registry from
+                // the world, dispatch, then put it back.
+                {
+                    let mut borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
+                    let world = &mut **borrow;
+                    let registry_opt = world.remove_resource::<KnowledgeSubscriptionRegistry>();
+                    drop(borrow); // release world borrow before dispatch
+
+                    if let Some(registry) = &registry_opt {
+                        // Subscribers may call gs:set_flag, gs:record_knowledge,
+                        // etc. — world is unborrowed so try_borrow_mut succeeds.
+                        if let Err(e) = dispatch_knowledge(
+                            lua,
+                            registry,
+                            kind_id_parsed.as_str(),
+                            KnowledgeLifecycle::Recorded,
+                            &event,
+                        ) {
+                            bevy::prelude::warn!(
+                                "record_knowledge dispatch error for '{}': {e}",
+                                kind_id
+                            );
+                        }
+                    }
+
+                    // Put the registry back.
+                    let mut borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
+                    if let Some(registry) = registry_opt {
+                        (**borrow).insert_resource(registry);
+                    }
+                }
+
+                // Step 5: snapshot the final (possibly mutated) payload.
+                let final_payload: Table = event.get("payload")?;
+                let snapshot =
+                    snapshot_from_lua(lua, &final_payload, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT)?;
+
+                // Step 6: re-borrow world and enqueue (Lua-free apply).
+                let mut borrow = world_cell.try_borrow_mut().map_err(map_reentrancy_err)?;
+                apply::enqueue_scripted_fact(
+                    &mut **borrow,
+                    apply::ParsedKnowledgeRecord {
+                        kind_id,
+                        origin_system: origin_system_bits.map(Entity::from_bits),
+                        payload_snapshot: snapshot,
+                        recorded_at,
+                    },
+                )
+            })?;
+        gs.set("record_knowledge", record_knowledge)?;
     }
 
     Ok(gs)
@@ -1646,6 +1803,110 @@ pub(crate) mod apply {
             }
         }
         Ok(command_id.0)
+    }
+
+    // ==================================================================
+    // #351 K-2: `gs:record_knowledge` apply helper
+    //
+    // Enqueues a scripted KnowledgeFact into PendingFactQueue. Never
+    // touches Lua — the subscriber dispatch chain runs upstream in
+    // the scope closure *before* this function is called.
+    //
+    // Invariant (plan §6 item 1 / feedback_rust_no_lua_callback.md):
+    // this helper takes no `&Lua` and never invokes Lua code.
+    // ==================================================================
+
+    /// Parsed, Lua-free knowledge record request.
+    #[derive(Debug, Clone)]
+    pub struct ParsedKnowledgeRecord {
+        pub kind_id: String,
+        pub origin_system: Option<Entity>,
+        pub payload_snapshot: crate::knowledge::payload::PayloadSnapshot,
+        pub recorded_at: i64,
+    }
+
+    /// Enqueue a [`KnowledgeFact::Scripted`] into [`PendingFactQueue`]
+    /// with light-speed delay calculation. Never touches `&Lua`.
+    pub fn enqueue_scripted_fact(
+        world: &mut World,
+        req: ParsedKnowledgeRecord,
+    ) -> mlua::Result<()> {
+        use crate::components::Position;
+        use crate::empire::comms::CommsParams;
+        use crate::knowledge::facts::*;
+        use crate::player::PlayerEmpire;
+
+        // Allocate event id for dedup.
+        let event_id = {
+            let mut nid = world
+                .get_resource_mut::<NextEventId>()
+                .ok_or_else(|| mlua::Error::RuntimeError("NextEventId resource missing".into()))?;
+            nid.allocate()
+        };
+        if let Some(mut nids) = world.get_resource_mut::<NotifiedEventIds>() {
+            nids.register(event_id);
+        }
+
+        let fact = KnowledgeFact::Scripted {
+            event_id: Some(event_id),
+            kind_id: req.kind_id,
+            origin_system: req.origin_system,
+            payload_snapshot: req.payload_snapshot,
+            recorded_at: req.recorded_at,
+        };
+
+        // Compute origin position.
+        let origin_pos = req
+            .origin_system
+            .and_then(|e| world.get::<Position>(e).map(|p| p.as_array()))
+            .unwrap_or([0.0, 0.0, 0.0]);
+
+        // Collect player vantage.
+        let (player_pos, player_aboard) = {
+            use crate::player::{AboardShip, StationedAt};
+            let mut q = world
+                .query_filtered::<(Option<&StationedAt>, Option<&AboardShip>), With<PlayerEmpire>>(
+                );
+            let (stationed, aboard) = q.iter(world).next().unwrap_or((None, None));
+            let pos = stationed
+                .and_then(|s| world.get::<Position>(s.system).map(|p| p.as_array()))
+                .unwrap_or([0.0, 0.0, 0.0]);
+            (pos, aboard.is_some())
+        };
+
+        // Collect comms params.
+        let comms = {
+            let mut q = world.query_filtered::<&CommsParams, With<PlayerEmpire>>();
+            q.iter(world).next().cloned().unwrap_or_default()
+        };
+
+        // Get relay network.
+        let relays = world
+            .get_resource::<RelayNetwork>()
+            .map(|r| r.relays.clone())
+            .unwrap_or_default();
+
+        // Compute arrival time and enqueue.
+        let related_system = fact.related_system();
+        let plan = crate::knowledge::facts::compute_fact_arrival(
+            req.recorded_at,
+            origin_pos,
+            player_pos,
+            &relays,
+            &comms,
+        );
+
+        let mut queue = world.resource_mut::<PendingFactQueue>();
+        queue.record(PerceivedFact {
+            fact,
+            observed_at: req.recorded_at,
+            arrives_at: plan.arrives_at,
+            source: plan.source,
+            origin_pos,
+            related_system,
+        });
+
+        Ok(())
     }
 }
 
