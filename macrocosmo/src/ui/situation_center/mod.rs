@@ -21,6 +21,7 @@ pub mod lua_adapter;
 pub mod notifications_tab;
 pub mod panel;
 pub mod registry;
+pub mod ship_ops_tab;
 pub mod state;
 pub mod tab;
 pub mod types;
@@ -35,6 +36,7 @@ pub use notifications_tab::{
 };
 pub use panel::{TOGGLE_KEY, draw_situation_center_system, toggle_situation_center};
 pub use registry::{AppSituationExt, SituationTabRegistry};
+pub use ship_ops_tab::ShipOperationsTab;
 pub use state::{SituationCenterState, TabState};
 pub use tab::{
     OngoingTab, OngoingTabAdapter, SituationTab, TabBadge, TabId, TabMeta, render_event_tree,
@@ -85,6 +87,7 @@ impl Plugin for SituationCenterPlugin {
         // allocations beyond per-system buckets), so running them every
         // frame is fine.
         app.register_ongoing_situation_tab(ConstructionOverviewTab);
+        app.register_ongoing_situation_tab(ShipOperationsTab);
     }
 }
 
