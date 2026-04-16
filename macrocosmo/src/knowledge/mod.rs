@@ -22,6 +22,7 @@
 //! [`perceived::PerceivedInfo`] facade only renames it to `last_updated`.
 pub mod facts;
 pub mod kind_registry;
+pub mod payload;
 pub mod perceived;
 
 use bevy::prelude::*;

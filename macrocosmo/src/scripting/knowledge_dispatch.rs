@@ -29,7 +29,7 @@
 //!   have been released before calling, because subscribers may re-enter
 //!   via `gs:*` setters (spike 10.4, K-2).
 
-use bevy::prelude::warn;
+use bevy::prelude::*;
 use mlua::prelude::*;
 
 use super::knowledge_registry::KnowledgeSubscriptionRegistry;
@@ -305,6 +305,239 @@ fn call_subscriber(lua: &Lua, key: &mlua::RegistryKey, payload: &mlua::Table, ev
     }
 }
 
+/// Maximum nesting depth for `deep_copy_table`. Exceeding this triggers
+/// `mlua::Error::RuntimeError` (plan-349 §0.5 9.3).
+pub const KNOWLEDGE_PAYLOAD_DEPTH_LIMIT: usize = 16;
+
+/// Deep-copy a Lua table, recursing into nested tables up to `depth_limit`.
+///
+/// Returns `mlua::Error::RuntimeError` if:
+/// - nesting exceeds `depth_limit`
+/// - a `Function` or `UserData` value is encountered (schema violation,
+///   spike 10.3)
+///
+/// Metatables are **not** copied — the result is a plain table. Callers
+/// that need sealed metadata should call `seal_immutable_keys` on the
+/// copy separately.
+pub fn deep_copy_table(
+    lua: &Lua,
+    src: &mlua::Table,
+    depth_limit: usize,
+) -> mlua::Result<mlua::Table> {
+    if depth_limit == 0 {
+        return Err(mlua::Error::RuntimeError(
+            "deep_copy_table: depth limit exceeded".into(),
+        ));
+    }
+    let dst = lua.create_table()?;
+    for pair in src.pairs::<mlua::Value, mlua::Value>() {
+        let (k, v) = pair?;
+        let copied_v = match v {
+            mlua::Value::Table(ref t) => {
+                mlua::Value::Table(deep_copy_table(lua, t, depth_limit - 1)?)
+            }
+            mlua::Value::Function(_) => {
+                return Err(mlua::Error::RuntimeError(
+                    "deep_copy_table: Function values are not allowed in knowledge payloads".into(),
+                ));
+            }
+            mlua::Value::UserData(_) => {
+                return Err(mlua::Error::RuntimeError(
+                    "deep_copy_table: UserData values are not allowed in knowledge payloads".into(),
+                ));
+            }
+            other => other,
+        };
+        dst.set(k, copied_v)?;
+    }
+    Ok(dst)
+}
+
+// ======================================================================
+// #351 K-2 Commit 4: Rust-origin knowledge record path
+//
+// Rust systems that produce knowledge facts cannot call Lua directly
+// (feedback_rust_no_lua_callback). Instead they push records into
+// PendingKnowledgeRecords, and a separate system
+// (dispatch_knowledge_recorded) drains the queue with ScriptEngine
+// exclusive access and fires @recorded subscribers.
+//
+// This is the system skeleton — K-5 will wire existing Rust fact
+// emitters to push into this queue.
+// ======================================================================
+
+/// A pending knowledge record request from Rust-origin code.
+#[derive(Debug, Clone)]
+pub struct PendingKnowledgeRecord {
+    pub kind_id: String,
+    pub origin_system: Option<Entity>,
+    pub payload_snapshot: crate::knowledge::payload::PayloadSnapshot,
+    pub recorded_at: i64,
+}
+
+/// Resource queue for Rust-origin knowledge records awaiting @recorded
+/// dispatch. Drained by [`dispatch_knowledge_recorded`] each tick.
+#[derive(Resource, Default, Debug)]
+pub struct PendingKnowledgeRecords {
+    pub records: Vec<PendingKnowledgeRecord>,
+}
+
+impl PendingKnowledgeRecords {
+    pub fn push(&mut self, record: PendingKnowledgeRecord) {
+        self.records.push(record);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+/// System that drains [`PendingKnowledgeRecords`], dispatches `@recorded`
+/// subscribers for each record, and enqueues the (possibly mutated)
+/// results into `PendingFactQueue`.
+///
+/// Scheduled `.after(knowledge emitters)` in the Update schedule so
+/// records pushed by Rust systems are dispatched within the same tick
+/// (plan-349 §0.5 9.1).
+///
+/// This system takes exclusive `&mut World` access to use
+/// `resource_scope` for `ScriptEngine`. The `@recorded` subscriber
+/// chain runs inside the scope with the subscription registry
+/// temporarily removed from the world (same pattern as
+/// `gs:record_knowledge` in gamestate_scope.rs).
+pub fn dispatch_knowledge_recorded(world: &mut World) {
+    // Fast-path: nothing to drain.
+    let has_records = world
+        .get_resource::<PendingKnowledgeRecords>()
+        .map(|r| !r.is_empty())
+        .unwrap_or(false);
+    if !has_records {
+        return;
+    }
+
+    // Take the pending records.
+    let records = {
+        let mut res = world.resource_mut::<PendingKnowledgeRecords>();
+        std::mem::take(&mut res.records)
+    };
+
+    // Take the subscription registry out of the world so we don't need
+    // to hold a world borrow during Lua dispatch.
+    let registry_opt = world.remove_resource::<KnowledgeSubscriptionRegistry>();
+
+    // Use resource_scope for ScriptEngine to get Lua access.
+    world.resource_scope::<super::ScriptEngine, _>(|world, engine| {
+        let lua = engine.lua();
+        for record in &records {
+            // Build the event table for @recorded dispatch.
+            let event = match build_recorded_event_table(lua, record) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "dispatch_knowledge_recorded: failed to build event table for '{}': {e}",
+                        record.kind_id
+                    );
+                    continue;
+                }
+            };
+
+            // Seal immutable keys.
+            if let Err(e) =
+                seal_immutable_keys(lua, &event, &["kind", "origin_system", "recorded_at"])
+            {
+                warn!(
+                    "dispatch_knowledge_recorded: seal error for '{}': {e}",
+                    record.kind_id
+                );
+                continue;
+            }
+
+            // Dispatch @recorded subscribers.
+            if let Some(ref registry) = registry_opt {
+                if let Err(e) = dispatch_knowledge(
+                    lua,
+                    registry,
+                    &record.kind_id,
+                    KnowledgeLifecycle::Recorded,
+                    &event,
+                ) {
+                    warn!(
+                        "dispatch_knowledge_recorded: dispatch error for '{}': {e}",
+                        record.kind_id
+                    );
+                }
+            }
+
+            // Snapshot the final payload after subscriber mutations.
+            let final_payload: mlua::Table = match event.get("payload") {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "dispatch_knowledge_recorded: payload read error for '{}': {e}",
+                        record.kind_id
+                    );
+                    continue;
+                }
+            };
+            let snapshot = match crate::knowledge::payload::snapshot_from_lua(
+                lua,
+                &final_payload,
+                KNOWLEDGE_PAYLOAD_DEPTH_LIMIT,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        "dispatch_knowledge_recorded: snapshot error for '{}': {e}",
+                        record.kind_id
+                    );
+                    continue;
+                }
+            };
+
+            // Enqueue via the same Lua-free apply helper.
+            use crate::scripting::gamestate_scope::apply::{
+                ParsedKnowledgeRecord, enqueue_scripted_fact,
+            };
+            if let Err(e) = enqueue_scripted_fact(
+                world,
+                ParsedKnowledgeRecord {
+                    kind_id: record.kind_id.clone(),
+                    origin_system: record.origin_system,
+                    payload_snapshot: snapshot,
+                    recorded_at: record.recorded_at,
+                },
+            ) {
+                warn!(
+                    "dispatch_knowledge_recorded: enqueue error for '{}': {e}",
+                    record.kind_id
+                );
+            }
+        }
+    });
+
+    // Put the subscription registry back.
+    if let Some(registry) = registry_opt {
+        world.insert_resource(registry);
+    }
+}
+
+/// Build a Lua event table for @recorded dispatch from a Rust-origin
+/// pending record.
+fn build_recorded_event_table(
+    lua: &Lua,
+    record: &PendingKnowledgeRecord,
+) -> mlua::Result<mlua::Table> {
+    let event = lua.create_table()?;
+    event.set("kind", record.kind_id.as_str())?;
+    if let Some(origin) = record.origin_system {
+        event.set("origin_system", origin.to_bits())?;
+    }
+    event.set("recorded_at", record.recorded_at)?;
+    let payload = crate::knowledge::payload::snapshot_to_lua(lua, &record.payload_snapshot)?;
+    event.set("payload", payload)?;
+    Ok(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +633,148 @@ mod tests {
             "foo:bar",
             KnowledgeLifecycle::Recorded
         ));
+    }
+
+    // --- deep_copy_table ---
+
+    #[test]
+    fn deep_copy_flat_table() {
+        let lua = Lua::new();
+        let src = lua.create_table().unwrap();
+        src.set("a", 1).unwrap();
+        src.set("b", "hello").unwrap();
+        let dst = deep_copy_table(&lua, &src, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT).unwrap();
+        assert_eq!(dst.get::<i64>("a").unwrap(), 1);
+        assert_eq!(dst.get::<String>("b").unwrap(), "hello");
+        // Mutation isolation: mutating dst should not affect src.
+        dst.set("a", 99).unwrap();
+        assert_eq!(src.get::<i64>("a").unwrap(), 1);
+    }
+
+    #[test]
+    fn deep_copy_nested_table() {
+        let lua = Lua::new();
+        let inner = lua.create_table().unwrap();
+        inner.set("x", 42).unwrap();
+        let src = lua.create_table().unwrap();
+        src.set("inner", inner).unwrap();
+        let dst = deep_copy_table(&lua, &src, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT).unwrap();
+        let dst_inner: mlua::Table = dst.get("inner").unwrap();
+        dst_inner.set("x", 99).unwrap();
+        // Original should be untouched.
+        let src_inner: mlua::Table = src.get("inner").unwrap();
+        assert_eq!(src_inner.get::<i64>("x").unwrap(), 42);
+    }
+
+    // Spike 10.3: Function value in table triggers error.
+    #[test]
+    fn spike_deep_copy_rejects_function() {
+        let lua = Lua::new();
+        let src = lua.create_table().unwrap();
+        let f: mlua::Function = lua.load("function() end").eval().unwrap();
+        src.set("callback", f).unwrap();
+        let err = deep_copy_table(&lua, &src, KNOWLEDGE_PAYLOAD_DEPTH_LIMIT).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Function"), "got: {msg}");
+    }
+
+    #[test]
+    fn deep_copy_depth_limit_exceeded() {
+        let lua = Lua::new();
+        // Build a chain 3 levels deep, then copy with limit=2 -> should error.
+        let t1 = lua.create_table().unwrap();
+        let t2 = lua.create_table().unwrap();
+        let t3 = lua.create_table().unwrap();
+        t3.set("leaf", true).unwrap();
+        t2.set("child", t3).unwrap();
+        t1.set("child", t2).unwrap();
+        let err = deep_copy_table(&lua, &t1, 2).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("depth limit"), "got: {msg}");
+    }
+
+    // Spike 10.4: borrow_mut release -> dispatch -> re-borrow is safe.
+    // This tests the pattern used by gs:record_knowledge (K-2 Commit 3).
+    #[test]
+    fn spike_reentrancy_release_before_dispatch() {
+        use std::cell::RefCell;
+
+        let lua = Lua::new();
+        let counter = RefCell::new(0i32);
+
+        // Simulate: borrow_mut -> release -> dispatch (lua call) -> re-borrow.
+        {
+            let mut borrow = counter.borrow_mut();
+            *borrow += 1;
+            // release borrow
+        }
+
+        // Now call a Lua function that in turn would "re-borrow" (simulated).
+        let f: mlua::Function = lua.load("function() end").eval().unwrap();
+        f.call::<()>(()).unwrap();
+
+        // re-borrow succeeds
+        {
+            let mut borrow = counter.borrow_mut();
+            *borrow += 1;
+        }
+        assert_eq!(*counter.borrow(), 2);
+    }
+
+    // Spike 10.4: verify that a scope closure can release its world
+    // borrow, call dispatch_knowledge (which invokes subscribers), and
+    // re-borrow without conflict.
+    #[test]
+    fn spike_scope_closure_borrow_release_dispatch_reborrow() {
+        use super::*;
+        use crate::scripting::knowledge_registry::{
+            KnowledgeSubscriptionRegistry, drain_pending_subscriptions,
+        };
+        use std::cell::RefCell;
+
+        let lua = Lua::new();
+        // Set up the on() global + accumulator.
+        let engine = crate::scripting::ScriptEngine::new().unwrap();
+        engine
+            .lua()
+            .load(
+                r#"
+            _side_effect = 0
+            on("test:kind@recorded", function(e)
+                _side_effect = _side_effect + 1
+            end)
+        "#,
+            )
+            .exec()
+            .unwrap();
+        let mut registry = KnowledgeSubscriptionRegistry::default();
+        drain_pending_subscriptions(engine.lua(), &mut registry).unwrap();
+
+        // Simulate the RefCell<&mut World> pattern.
+        let mut world_data: i32 = 0;
+        let world_cell = RefCell::new(&mut world_data);
+
+        // Step 1: borrow, do work, release.
+        {
+            let mut borrow = world_cell.try_borrow_mut().unwrap();
+            **borrow = 42;
+        }
+        // Step 2: dispatch (Lua executes, could re-enter world via gs:*).
+        let payload = engine.lua().create_table().unwrap();
+        dispatch_knowledge(
+            engine.lua(),
+            &registry,
+            "test:kind",
+            KnowledgeLifecycle::Recorded,
+            &payload,
+        )
+        .unwrap();
+        // Step 3: re-borrow succeeds.
+        {
+            let borrow = world_cell.try_borrow_mut().unwrap();
+            assert_eq!(**borrow, 42);
+        }
+        let se: i64 = engine.lua().globals().get("_side_effect").unwrap();
+        assert_eq!(se, 1);
     }
 }
