@@ -21,6 +21,7 @@
 //! convention `observed_at: i64` (integer hexadies) is preserved — the
 //! [`perceived::PerceivedInfo`] facade only renames it to `last_updated`.
 pub mod facts;
+pub mod kind_registry;
 pub mod perceived;
 
 use bevy::prelude::*;
