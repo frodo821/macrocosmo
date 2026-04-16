@@ -29,7 +29,7 @@
 //!   have been released before calling, because subscribers may re-enter
 //!   via `gs:*` setters (spike 10.4, K-2).
 
-use bevy::prelude::warn;
+use bevy::prelude::*;
 use mlua::prelude::*;
 
 use super::knowledge_registry::KnowledgeSubscriptionRegistry;
@@ -351,6 +351,191 @@ pub fn deep_copy_table(
         dst.set(k, copied_v)?;
     }
     Ok(dst)
+}
+
+// ======================================================================
+// #351 K-2 Commit 4: Rust-origin knowledge record path
+//
+// Rust systems that produce knowledge facts cannot call Lua directly
+// (feedback_rust_no_lua_callback). Instead they push records into
+// PendingKnowledgeRecords, and a separate system
+// (dispatch_knowledge_recorded) drains the queue with ScriptEngine
+// exclusive access and fires @recorded subscribers.
+//
+// This is the system skeleton — K-5 will wire existing Rust fact
+// emitters to push into this queue.
+// ======================================================================
+
+/// A pending knowledge record request from Rust-origin code.
+#[derive(Debug, Clone)]
+pub struct PendingKnowledgeRecord {
+    pub kind_id: String,
+    pub origin_system: Option<Entity>,
+    pub payload_snapshot: crate::knowledge::payload::PayloadSnapshot,
+    pub recorded_at: i64,
+}
+
+/// Resource queue for Rust-origin knowledge records awaiting @recorded
+/// dispatch. Drained by [`dispatch_knowledge_recorded`] each tick.
+#[derive(Resource, Default, Debug)]
+pub struct PendingKnowledgeRecords {
+    pub records: Vec<PendingKnowledgeRecord>,
+}
+
+impl PendingKnowledgeRecords {
+    pub fn push(&mut self, record: PendingKnowledgeRecord) {
+        self.records.push(record);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+/// System that drains [`PendingKnowledgeRecords`], dispatches `@recorded`
+/// subscribers for each record, and enqueues the (possibly mutated)
+/// results into `PendingFactQueue`.
+///
+/// Scheduled `.after(knowledge emitters)` in the Update schedule so
+/// records pushed by Rust systems are dispatched within the same tick
+/// (plan-349 §0.5 9.1).
+///
+/// This system takes exclusive `&mut World` access to use
+/// `resource_scope` for `ScriptEngine`. The `@recorded` subscriber
+/// chain runs inside the scope with the subscription registry
+/// temporarily removed from the world (same pattern as
+/// `gs:record_knowledge` in gamestate_scope.rs).
+pub fn dispatch_knowledge_recorded(world: &mut World) {
+    // Fast-path: nothing to drain.
+    let has_records = world
+        .get_resource::<PendingKnowledgeRecords>()
+        .map(|r| !r.is_empty())
+        .unwrap_or(false);
+    if !has_records {
+        return;
+    }
+
+    // Take the pending records.
+    let records = {
+        let mut res = world.resource_mut::<PendingKnowledgeRecords>();
+        std::mem::take(&mut res.records)
+    };
+
+    // Take the subscription registry out of the world so we don't need
+    // to hold a world borrow during Lua dispatch.
+    let registry_opt = world.remove_resource::<KnowledgeSubscriptionRegistry>();
+
+    // Use resource_scope for ScriptEngine to get Lua access.
+    world.resource_scope::<super::ScriptEngine, _>(|world, engine| {
+        let lua = engine.lua();
+        for record in &records {
+            // Build the event table for @recorded dispatch.
+            let event = match build_recorded_event_table(lua, record) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "dispatch_knowledge_recorded: failed to build event table for '{}': {e}",
+                        record.kind_id
+                    );
+                    continue;
+                }
+            };
+
+            // Seal immutable keys.
+            if let Err(e) =
+                seal_immutable_keys(lua, &event, &["kind", "origin_system", "recorded_at"])
+            {
+                warn!(
+                    "dispatch_knowledge_recorded: seal error for '{}': {e}",
+                    record.kind_id
+                );
+                continue;
+            }
+
+            // Dispatch @recorded subscribers.
+            if let Some(ref registry) = registry_opt {
+                if let Err(e) = dispatch_knowledge(
+                    lua,
+                    registry,
+                    &record.kind_id,
+                    KnowledgeLifecycle::Recorded,
+                    &event,
+                ) {
+                    warn!(
+                        "dispatch_knowledge_recorded: dispatch error for '{}': {e}",
+                        record.kind_id
+                    );
+                }
+            }
+
+            // Snapshot the final payload after subscriber mutations.
+            let final_payload: mlua::Table = match event.get("payload") {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "dispatch_knowledge_recorded: payload read error for '{}': {e}",
+                        record.kind_id
+                    );
+                    continue;
+                }
+            };
+            let snapshot = match crate::knowledge::payload::snapshot_from_lua(
+                lua,
+                &final_payload,
+                KNOWLEDGE_PAYLOAD_DEPTH_LIMIT,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        "dispatch_knowledge_recorded: snapshot error for '{}': {e}",
+                        record.kind_id
+                    );
+                    continue;
+                }
+            };
+
+            // Enqueue via the same Lua-free apply helper.
+            use crate::scripting::gamestate_scope::apply::{
+                ParsedKnowledgeRecord, enqueue_scripted_fact,
+            };
+            if let Err(e) = enqueue_scripted_fact(
+                world,
+                ParsedKnowledgeRecord {
+                    kind_id: record.kind_id.clone(),
+                    origin_system: record.origin_system,
+                    payload_snapshot: snapshot,
+                    recorded_at: record.recorded_at,
+                },
+            ) {
+                warn!(
+                    "dispatch_knowledge_recorded: enqueue error for '{}': {e}",
+                    record.kind_id
+                );
+            }
+        }
+    });
+
+    // Put the subscription registry back.
+    if let Some(registry) = registry_opt {
+        world.insert_resource(registry);
+    }
+}
+
+/// Build a Lua event table for @recorded dispatch from a Rust-origin
+/// pending record.
+fn build_recorded_event_table(
+    lua: &Lua,
+    record: &PendingKnowledgeRecord,
+) -> mlua::Result<mlua::Table> {
+    let event = lua.create_table()?;
+    event.set("kind", record.kind_id.as_str())?;
+    if let Some(origin) = record.origin_system {
+        event.set("origin_system", origin.to_bits())?;
+    }
+    event.set("recorded_at", record.recorded_at)?;
+    let payload = crate::knowledge::payload::snapshot_to_lua(lua, &record.payload_snapshot)?;
+    event.set("payload", payload)?;
+    Ok(event)
 }
 
 #[cfg(test)]

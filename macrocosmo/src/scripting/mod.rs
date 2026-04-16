@@ -6,11 +6,11 @@ pub mod effect_scope;
 pub mod engine;
 pub mod event_api;
 pub mod faction_api;
-pub mod gamestate_scope;
 pub mod galaxy_api;
 pub mod galaxy_gen_ctx;
 pub mod game_rng;
 pub mod game_start_ctx;
+pub mod gamestate_scope;
 pub mod globals;
 pub mod helpers;
 pub mod knowledge_api;
@@ -26,11 +26,10 @@ pub mod structure_api;
 
 // Re-exports for backward compatibility
 pub use engine::{
-    find_scripts_dir_upwards, resolve_scripts_dir, resolve_scripts_dir_from,
-    try_resolve_scripts_dir, ScriptEngine, ScriptsDirError, ScriptsDirInputs,
-    SCRIPTS_DIR_ENV_VAR,
+    SCRIPTS_DIR_ENV_VAR, ScriptEngine, ScriptsDirError, ScriptsDirInputs, find_scripts_dir_upwards,
+    resolve_scripts_dir, resolve_scripts_dir_from, try_resolve_scripts_dir,
 };
-pub use game_rng::{register_game_rand, GameRng};
+pub use game_rng::{GameRng, register_game_rand};
 pub use helpers::{extract_id_from_lua_value, extract_ref_id, parse_lua_function_field};
 
 use bevy::prelude::*;
@@ -41,14 +40,8 @@ impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameRng>()
             .add_systems(Startup, init_scripting)
-            .add_systems(
-                Startup,
-                load_all_scripts.after(init_scripting),
-            )
-            .add_systems(
-                Startup,
-                load_faction_type_registry.after(load_all_scripts),
-            )
+            .add_systems(Startup, load_all_scripts.after(init_scripting))
+            .add_systems(Startup, load_faction_type_registry.after(load_all_scripts))
             .add_systems(
                 Startup,
                 load_faction_registry
@@ -67,22 +60,10 @@ impl Plugin for ScriptingPlugin {
                 Startup,
                 load_predefined_system_registry.after(load_all_scripts),
             )
-            .add_systems(
-                Startup,
-                load_map_type_registry.after(load_all_scripts),
-            )
-            .add_systems(
-                Startup,
-                load_region_type_registry.after(load_all_scripts),
-            )
-            .add_systems(
-                Startup,
-                load_region_spec_queue.after(load_all_scripts),
-            )
-            .add_systems(
-                Startup,
-                load_event_definitions.after(load_all_scripts),
-            )
+            .add_systems(Startup, load_map_type_registry.after(load_all_scripts))
+            .add_systems(Startup, load_region_type_registry.after(load_all_scripts))
+            .add_systems(Startup, load_region_spec_queue.after(load_all_scripts))
+            .add_systems(Startup, load_event_definitions.after(load_all_scripts))
             // #350 K-1: build KindRegistry + reserve <id>@recorded /
             // <id>@observed entries.
             .add_systems(
@@ -138,6 +119,13 @@ impl Plugin for ScriptingPlugin {
                 lifecycle::dispatch_event_handlers
                     .after(crate::event_system::tick_events)
                     .after(crate::time_system::advance_game_time),
+            )
+            // #351 K-2: Rust-origin knowledge records queue + dispatch.
+            .init_resource::<knowledge_dispatch::PendingKnowledgeRecords>()
+            .add_systems(
+                Update,
+                knowledge_dispatch::dispatch_knowledge_recorded
+                    .after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -163,15 +151,25 @@ pub fn load_all_scripts(engine: Res<ScriptEngine>) {
                 return;
             }
             Err(e) => {
-                warn!("Failed to load {}: {e}; falling back to directory loading", init_path.display());
+                warn!(
+                    "Failed to load {}: {e}; falling back to directory loading",
+                    init_path.display()
+                );
             }
         }
     }
 
     // Fallback: load directories individually (legacy path, used when init.lua is absent)
     let subdirs = [
-        "stars", "planets", "jobs", "species", "buildings",
-        "tech", "ships", "structures", "events",
+        "stars",
+        "planets",
+        "jobs",
+        "species",
+        "buildings",
+        "tech",
+        "ships",
+        "structures",
+        "events",
     ];
     for subdir in &subdirs {
         let path = scripts_dir.join(subdir);
@@ -319,7 +317,10 @@ pub fn load_region_spec_queue(mut commands: Commands, engine: Res<ScriptEngine>)
     match region_api::parse_region_specs(engine.lua()) {
         Ok(specs) => {
             queue.specs = specs;
-            info!("Loaded {} region placement specs from Lua", queue.specs.len());
+            info!(
+                "Loaded {} region placement specs from Lua",
+                queue.specs.len()
+            );
         }
         Err(e) => {
             warn!("Failed to parse region placement specs: {e}");
@@ -565,10 +566,7 @@ mod tests {
         let store: mlua::Table = lua.globals().get("_flag_store").unwrap();
         store.set("my_flag", true).unwrap();
 
-        let result: bool = lua
-            .load(r#"return check_flag("my_flag")"#)
-            .eval()
-            .unwrap();
+        let result: bool = lua.load(r#"return check_flag("my_flag")"#).eval().unwrap();
         assert!(result);
     }
 
@@ -728,9 +726,7 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let r: mlua::Result<()> = lua
-            .load(r#"on("foo@expired", function(e) end)"#)
-            .exec();
+        let r: mlua::Result<()> = lua.load(r#"on("foo@expired", function(e) end)"#).exec();
         assert!(r.is_err(), "unknown lifecycle must error");
         let msg = format!("{}", r.unwrap_err());
         assert!(msg.contains("unknown lifecycle"), "got: {msg}");
@@ -740,9 +736,7 @@ mod tests {
     fn on_empty_kind_errors() {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
-        let r: mlua::Result<()> = lua
-            .load(r#"on("@recorded", function(e) end)"#)
-            .exec();
+        let r: mlua::Result<()> = lua.load(r#"on("@recorded", function(e) end)"#).exec();
         assert!(r.is_err(), "empty kind must error");
         let msg = format!("{}", r.unwrap_err());
         assert!(msg.contains("empty kind"), "got: {msg}");
@@ -752,9 +746,7 @@ mod tests {
     fn on_double_at_errors() {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
-        let r: mlua::Result<()> = lua
-            .load(r#"on("a@b@recorded", function(e) end)"#)
-            .exec();
+        let r: mlua::Result<()> = lua.load(r#"on("a@b@recorded", function(e) end)"#).exec();
         assert!(r.is_err(), "double '@' must error");
         let msg = format!("{}", r.unwrap_err());
         assert!(msg.contains("may not contain '@'"), "got: {msg}");
@@ -766,16 +758,11 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
         let r: mlua::Result<()> = lua
-            .load(
-                r#"on("foo@recorded", { kind = "x" }, function(e) end)"#,
-            )
+            .load(r#"on("foo@recorded", { kind = "x" }, function(e) end)"#)
             .exec();
         assert!(r.is_err(), "filter on knowledge id must error");
         let msg = format!("{}", r.unwrap_err());
-        assert!(
-            msg.contains("does not accept a filter"),
-            "got: {msg}"
-        );
+        assert!(msg.contains("does not accept a filter"), "got: {msg}");
     }
 
     #[test]
@@ -885,18 +872,17 @@ mod tests {
         let lua = engine.lua();
 
         // String form (backward compatible)
-        let cond_str: mlua::Table = lua
-            .load(r#"return has_tech("my_tech")"#)
-            .eval()
-            .unwrap();
+        let cond_str: mlua::Table = lua.load(r#"return has_tech("my_tech")"#).eval().unwrap();
         assert_eq!(cond_str.get::<String>("id").unwrap(), "my_tech");
 
         // Reference form
         let cond_ref: mlua::Table = lua
-            .load(r#"
+            .load(
+                r#"
                 local t = define_tech { id = "ref_tech", name = "Ref" }
                 return has_tech(t)
-            "#)
+            "#,
+            )
             .eval()
             .unwrap();
         assert_eq!(cond_ref.get::<String>("id").unwrap(), "ref_tech");
