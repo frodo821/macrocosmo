@@ -14,6 +14,7 @@ pub mod game_start_ctx;
 pub mod globals;
 pub mod helpers;
 pub mod knowledge_api;
+pub mod knowledge_dispatch;
 pub mod lifecycle;
 pub mod map_api;
 pub mod modifier_api;
