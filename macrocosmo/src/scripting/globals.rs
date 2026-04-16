@@ -100,6 +100,15 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
 
     register_define_fn(lua, "event", "_event_definitions")?;
 
+    // --- #350: Knowledge kind definition (Lua-extensible knowledge kinds) ---
+    //
+    // `define_knowledge { id, payload_schema }` appends to
+    // `_knowledge_kind_definitions`, which is parsed by
+    // `scripting::knowledge_api::parse_knowledge_definitions` at startup
+    // (see `load_knowledge_kinds` system). The accumulator name must match
+    // `knowledge_api::KNOWLEDGE_DEF_ACCUMULATOR`.
+    register_define_fn(lua, "knowledge", "_knowledge_kind_definitions")?;
+
     // --- Ship design Lua bindings ---
 
     register_define_fn(lua, "slot_type", "_slot_type_definitions")?;
@@ -183,6 +192,30 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     // Handler table for on() registrations
     let event_handlers = lua.create_table()?;
     globals.set("_event_handlers", event_handlers)?;
+
+    // --- #350: Knowledge subscription registry (K-1 foundation) ---
+    //
+    // Parallel to `_event_handlers`, the knowledge-specific subscription
+    // accumulator. `on("vesk:famine@recorded", fn)` / `on("*@observed", fn)`
+    // are routed here by K-3 (#352); K-1 only reserves the table so that
+    // (a) the `define_knowledge` startup system can record the auto-registered
+    // `<id>@recorded` / `<id>@observed` event ids in a way subsequent code
+    // can inspect, and (b) K-3's `on()` router has a stable surface to write
+    // into without ordering games between the two parallel slices.
+    //
+    // Shape (K-1 reserves only; K-3 extends with actual handler entries):
+    // ```
+    // _knowledge_subscribers = {}                     -- array-style
+    // _knowledge_reserved_events = {                  -- lookup table
+    //     ["vesk:famine_outbreak@recorded"] = true,
+    //     ["vesk:famine_outbreak@observed"] = true,
+    //     ...
+    // }
+    // ```
+    //
+    // See `scripting/knowledge_api::register_auto_lifecycle_events`.
+    globals.set("_knowledge_subscribers", lua.create_table()?)?;
+    globals.set("_knowledge_reserved_events", lua.create_table()?)?;
 
     // on(event_id, [filter,] handler) -- registers an event handler with optional structural filter
     let on_fn = lua.create_function(|lua, args: mlua::MultiValue| {

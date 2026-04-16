@@ -52,5 +52,11 @@ require("anomalies")
 -- Events
 require("events")
 
+-- #350: Knowledge kinds (ScriptableKnowledge epic #349). Loaded after
+-- events so modder-defined kinds can share namespaces with existing event
+-- definitions. Must come before lifecycle so on_game_start callbacks can
+-- `record_knowledge` / `on("<id>@observed", fn)` once K-2 / K-3 land.
+require("knowledge.sample")
+
 -- Lifecycle hooks (must be last — registers callbacks for game start/load)
 require("lifecycle")

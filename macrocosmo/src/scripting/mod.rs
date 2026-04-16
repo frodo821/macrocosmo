@@ -13,6 +13,7 @@ pub mod game_rng;
 pub mod game_start_ctx;
 pub mod globals;
 pub mod helpers;
+pub mod knowledge_api;
 pub mod lifecycle;
 pub mod map_api;
 pub mod modifier_api;
@@ -79,6 +80,16 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Startup,
                 load_event_definitions.after(load_all_scripts),
+            )
+            // #350 K-1: build KindRegistry + reserve <id>@recorded /
+            // <id>@observed entries. Must run after load_all_scripts (for
+            // accumulator population) and before run_lifecycle_hooks (so
+            // on_game_start can observe the finished registry).
+            .add_systems(
+                Startup,
+                load_knowledge_kinds
+                    .after(load_all_scripts)
+                    .before(lifecycle::run_lifecycle_hooks),
             )
             // #281: After the building/structure registries are populated,
             // walk their `on_built` / `on_upgraded` fields and register
@@ -413,6 +424,57 @@ fn load_event_definitions(
             warn!("Failed to parse event definitions: {e}");
         }
     }
+}
+
+/// #350: Startup system that parses Lua `define_knowledge` entries into a
+/// [`crate::knowledge::kind_registry::KindRegistry`] resource and reserves
+/// the matching `<id>@recorded` / `<id>@observed` lifecycle event ids in
+/// `_knowledge_reserved_events` (plan-349 §3.1 commit 4).
+///
+/// Ordering: runs `.after(load_all_scripts).before(lifecycle::run_lifecycle_hooks)`
+/// so that `on_game_start` callbacks observing newly-reserved kinds fire
+/// against a fully-populated registry.
+///
+/// Error handling: parse failures surface as `warn!` + an empty registry
+/// (consistent with `load_event_definitions` / `load_anomaly_registry`).
+/// The game still boots; downstream `record_knowledge` calls will fail at
+/// the callsite instead of at startup. K-5 preloads `core:*` here once
+/// the Rust-side core variants land.
+pub fn load_knowledge_kinds(mut commands: Commands, engine: Res<ScriptEngine>) {
+    use crate::knowledge::kind_registry::KindRegistry;
+
+    let lua = engine.lua();
+    let mut registry = KindRegistry::default();
+
+    // K-5 will preload `core:*` kinds here before Lua-side parsing so that
+    // duplicate detection catches Lua re-definitions of built-ins.
+
+    match knowledge_api::parse_knowledge_definitions(lua) {
+        Ok(defs) => {
+            let count = defs.len();
+            // Reserve lifecycle events first so even failed inserts (e.g.
+            // a core-namespace attempt later) don't leave reservations in
+            // an inconsistent state — `register_auto_lifecycle_events`
+            // already tolerates duplicates.
+            if let Err(e) = knowledge_api::register_auto_lifecycle_events(lua, &defs) {
+                warn!("Failed to reserve knowledge lifecycle events: {e}");
+            }
+            for def in defs {
+                let id = def.id.as_str().to_string();
+                if let Err(e) = registry.insert(def) {
+                    warn!("knowledge kind register error: {e} (id='{id}')");
+                }
+            }
+            info!(
+                "Loaded {} knowledge kind definition(s) from Lua",
+                registry.len().min(count)
+            );
+        }
+        Err(e) => {
+            warn!("Failed to parse knowledge definitions: {e}");
+        }
+    }
+    commands.insert_resource(registry);
 }
 
 #[cfg(test)]
