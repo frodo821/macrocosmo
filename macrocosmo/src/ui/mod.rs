@@ -5,6 +5,7 @@ pub mod outline;
 pub mod overlays;
 pub mod params;
 pub mod ship_panel;
+pub mod situation_center;
 pub mod system_panel;
 pub mod top_bar;
 
@@ -82,6 +83,12 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
+            // #344: ESC framework (SituationCenterState, SituationTabRegistry,
+            // EscNotificationQueue, F3 toggle system, Notifications tab).
+            // Registered before the draw chain is attached so any plugin
+            // that calls `register_situation_tab` during `build()` finds the
+            // registry already initialised.
+            .add_plugins(situation_center::SituationCenterPlugin)
             .init_resource::<ResearchPanelOpen>()
             .init_resource::<overlays::ShipDesignerState>()
             .init_resource::<EguiWantsPointer>()
@@ -101,6 +108,12 @@ impl Plugin for UiPlugin {
                     draw_outline_and_tooltips_system,
                     draw_main_panels_system,
                     draw_overlays_system,
+                    // #344: ESC panel sits alongside Research / Ship
+                    // Designer in the floating-window slot. Exclusive
+                    // system — keeps its own `&World` access for tab
+                    // `badge` / `render`, so it cannot be parallelised
+                    // with the surrounding UI systems anyway.
+                    situation_center::draw_situation_center_system,
                     draw_choice_dialog_system,
                     ai_debug::sample_ai_debug_stream,
                     ai_debug::draw_ai_debug_system,
