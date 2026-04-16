@@ -8,6 +8,39 @@
 //! 2. Player-local events (PlayerRespawn, ResourceAlert, Lua
 //!    `show_notification`) continue to fire the banner immediately via the
 //!    legacy `auto_notify_from_events` whitelist / `drain_pending_notifications`.
+//!
+//! # #354 K-5 Spike 10.5 — notification regression baseline
+//!
+//! The Rust-side K-5 migration (core:* kind preload + drain unification)
+//! moves the `PendingFactQueue` drain from `notify_from_knowledge_facts`
+//! into a post-dispatch bridge hanging off `dispatch_knowledge_observed`.
+//! The tests below pin the **observable** banner semantics that must not
+//! regress when the drain moves. Each test is tagged with the behaviour
+//! it covers so a reviewer can trace the before/after state:
+//!
+//! | test                                                      | covers                                   |
+//! |-----------------------------------------------------------|------------------------------------------|
+//! | `test_remote_detection_notification_light_speed_delayed`  | HostileDetected banner via light-delay   |
+//! | `test_detection_via_relay_network_near_instant`           | relay-path arrival (`ObservationSource`) |
+//! | `test_player_respawn_notification_instant`                | legacy whitelist (`PlayerRespawn`)       |
+//! | `test_lua_notification_instant`                           | Lua `show_notification` path             |
+//! | `test_survey_result_via_knowledge_store`                  | `SurveyComplete` banner title / body     |
+//! | `test_combat_victory_notification_delayed`                | `CombatOutcome` banner title             |
+//! | `test_channel_autoselect_picks_fastest`                   | `compute_fact_arrival` routing           |
+//! | `test_empire_comm_relay_inv_latency_increases_speed`      | CommsParams plumbing                     |
+//! | `test_empire_comm_relay_range_extends_coverage`           | `RelayNetwork` build                     |
+//! | `test_fleet_comm_relay_targets_routed_but_unused`         | storage-only modifier                    |
+//! | `test_legacy_whitelist_split`                             | whitelist surface (systems-2 only)       |
+//! | `test_survey_complete_fact_delayed_when_remote`           | remote survey → banner gated by arrival  |
+//! | `test_survey_hostile_dual_write_no_double_banner`         | #249 EventId dedupe (whitelist + fact)   |
+//! | `test_combat_defeat_per_ship_and_wipe_dedupe`             | #249 shared EventId dedupe               |
+//! | `test_ship_arrived_low_priority_silent`                   | Low priority = no banner                 |
+//! | `test_colony_established_remote_vs_local`                 | local bypass vs remote delay             |
+//! | `test_structure_built_low_priority_logged_only`           | Low priority + EventId dedupe tracking   |
+//!
+//! 17 tests total (all green as of K-4 land). They are the regression
+//! baseline for K-5: after the drain moves, the count and pass/fail
+//! shape here must stay identical.
 
 mod common;
 

@@ -65,6 +65,13 @@ fn load_knowledge_kinds_reads_sample_fixture() {
     // The startup system must pick up `scripts/knowledge/sample.lua`
     // (reached via `scripts/init.lua`) and hand the KindRegistry the four
     // kinds defined in that fixture.
+    //
+    // #354 K-5: the registry now also carries the 9 `core:*` kinds from
+    // `KindRegistry::preload_core()` (plan §3.5). The sample fixture
+    // kinds are appended after the preload, so we check their presence
+    // explicitly and use `CORE_KIND_IDS.len() + 4` for the full size.
+    use macrocosmo::knowledge::kind_registry::CORE_KIND_IDS;
+
     let mut app = run_load_knowledge_kinds();
     let registry = app
         .world_mut()
@@ -79,7 +86,14 @@ fn load_knowledge_kinds_reads_sample_fixture() {
     ] {
         assert!(registry.contains(id), "expected kind '{id}' in registry");
     }
-    assert_eq!(registry.len(), 4);
+    // Every `core:*` preloaded kind must also be present.
+    for id in CORE_KIND_IDS {
+        assert!(
+            registry.contains(id),
+            "expected preloaded core kind '{id}' in registry"
+        );
+    }
+    assert_eq!(registry.len(), CORE_KIND_IDS.len() + 4);
 
     // `sample:anomaly_surveyed` exercises every v1 payload type.
     let def = registry.get("sample:anomaly_surveyed").expect("kind def");
@@ -132,6 +146,15 @@ fn sample_fixture_exposes_accumulator_shape() {
     // Sanity check: the raw accumulator matches the registry size. Guards
     // against a future refactor that splits accumulators without updating
     // the parser.
+    //
+    // #354 K-5: the reserved-events table now also contains the 9
+    // `core:*` preload entries (one per `<id>@recorded` +
+    // `<id>@observed`). The Lua accumulator
+    // (`_knowledge_kind_definitions`) still holds only the Lua-origin
+    // kinds — core:* entries live directly in the Rust `KindRegistry`
+    // and skip the Lua accumulator — so its size stays at 4.
+    use macrocosmo::knowledge::kind_registry::CORE_KIND_IDS;
+
     let app = run_load_knowledge_kinds();
     let engine = app.world().resource::<ScriptEngine>();
     let lua = engine.lua();
@@ -148,7 +171,8 @@ fn sample_fixture_exposes_accumulator_shape() {
             count += 1;
         }
     }
-    assert_eq!(count, 8);
+    // 4 sample kinds + CORE_KIND_IDS.len() preloaded core kinds, each × 2 lifecycles.
+    assert_eq!(count, (4 + CORE_KIND_IDS.len()) * 2);
 }
 
 #[test]
@@ -250,6 +274,11 @@ fn register_auto_lifecycle_events_is_idempotent_end_to_end() {
     // bloat the reserved-events table or error — the startup system may
     // be invoked twice in hot-reload scenarios, and idempotence is the
     // contract we want modders to be able to rely on.
+    //
+    // #354 K-5: the reserved table also includes the 9 core:* kinds so
+    // the expected count is (4 sample + 9 core) × 2 lifecycles.
+    use macrocosmo::knowledge::kind_registry::CORE_KIND_IDS;
+
     let app = run_load_knowledge_kinds();
     let engine = app.world().resource::<ScriptEngine>();
     let lua = engine.lua();
@@ -258,7 +287,6 @@ fn register_auto_lifecycle_events_is_idempotent_end_to_end() {
     register_auto_lifecycle_events(lua, &defs).unwrap();
     register_auto_lifecycle_events(lua, &defs).unwrap();
 
-    // Still only 8 entries (4 kinds × 2 lifecycles).
     let reserved: mlua::Table = lua.globals().get(KNOWLEDGE_RESERVED_EVENTS_TABLE).unwrap();
     let mut count = 0;
     for pair in reserved.pairs::<String, bool>() {
@@ -267,5 +295,6 @@ fn register_auto_lifecycle_events_is_idempotent_end_to_end() {
             count += 1;
         }
     }
-    assert_eq!(count, 8);
+    // 4 sample kinds + CORE_KIND_IDS.len() preloaded core kinds, each × 2 lifecycles.
+    assert_eq!(count, (4 + CORE_KIND_IDS.len()) * 2);
 }

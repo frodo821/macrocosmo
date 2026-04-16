@@ -127,17 +127,19 @@ impl Plugin for ScriptingPlugin {
                 knowledge_dispatch::dispatch_knowledge_recorded
                     .after(crate::time_system::advance_game_time),
             )
-            // #353 K-4: drain Scripted facts whose arrival time has
-            // elapsed and fire <kind>@observed subscribers. Runs after
-            // notify_from_knowledge_facts so the two drains cannot
-            // overlap on the same PendingFactQueue resource in a single
-            // schedule pass. Exclusive (&mut World) because subscribers
-            // may re-enter gs:* setters.
+            // #353 K-4 / #354 K-5: drain ALL ready facts (core +
+            // scripted) whose arrival time has elapsed, fire
+            // `<kind>@observed` subscribers, and push banners for core
+            // variants as a post-dispatch side-effect. This replaces
+            // the legacy `notify_from_knowledge_facts` drainer (now
+            // unregistered from `NotificationsPlugin`). Exclusive
+            // (&mut World) because subscribers may re-enter gs:*
+            // setters.
             .add_systems(
                 Update,
                 knowledge_dispatch::dispatch_knowledge_observed
                     .after(crate::time_system::advance_game_time)
-                    .after(crate::notifications::notify_from_knowledge_facts),
+                    .after(crate::notifications::auto_notify_from_events),
             );
     }
 }
@@ -466,10 +468,24 @@ pub fn load_knowledge_kinds(mut commands: Commands, engine: Res<ScriptEngine>) {
     use crate::knowledge::kind_registry::KindRegistry;
 
     let lua = engine.lua();
-    let mut registry = KindRegistry::default();
+    // #354 K-5: preload `core:*` kinds before draining the Lua
+    // accumulator so subsequent Lua definitions of the same id trip
+    // either `CoreNamespaceReserved` (Lua origin) or `DuplicateKind`
+    // (both caught by the warn-log below). plan §0.5 9.6 / §3.5.
+    let mut registry = KindRegistry::preload_core();
+    info!(
+        "Preloaded {} core:* knowledge kind definition(s)",
+        registry.len()
+    );
 
-    // K-5 will preload `core:*` kinds here before Lua-side parsing so that
-    // duplicate detection catches Lua re-definitions of built-ins.
+    // #354 K-5: Reserve `<core:*>@recorded` / `<core:*>@observed` event
+    // ids in the Lua-side `_knowledge_reserved_events` table so K-3's
+    // subscription tooling (`is_reserved_knowledge_event` + future
+    // modder diagnostics) sees core:* alongside Lua-defined kinds.
+    let core_defs: Vec<_> = registry.kinds.values().cloned().collect();
+    if let Err(e) = knowledge_api::register_auto_lifecycle_events(lua, &core_defs) {
+        warn!("Failed to reserve core:* knowledge lifecycle events: {e}");
+    }
 
     match knowledge_api::parse_knowledge_definitions(lua) {
         Ok(defs) => {

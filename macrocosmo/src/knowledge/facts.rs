@@ -376,6 +376,185 @@ impl KnowledgeFact {
             | KnowledgeFact::Scripted { event_id, .. } => *event_id,
         }
     }
+
+    /// #354 (K-5): `core:*` kind id for each built-in variant. Returns
+    /// `None` for [`KnowledgeFact::Scripted`] — a Lua-origin fact
+    /// already carries its own kind id in the `kind_id` field.
+    ///
+    /// The mapping must stay in sync with
+    /// [`crate::knowledge::kind_registry::CORE_KIND_IDS`] — the unit
+    /// tests in `facts::tests::core_kind_id_mapping_matches_registry`
+    /// enforce this at CI time.
+    pub fn core_kind_id(&self) -> Option<&'static str> {
+        match self {
+            KnowledgeFact::HostileDetected { .. } => Some("core:hostile_detected"),
+            KnowledgeFact::CombatOutcome { .. } => Some("core:combat_outcome"),
+            KnowledgeFact::SurveyComplete { .. } => Some("core:survey_complete"),
+            KnowledgeFact::AnomalyDiscovered { .. } => Some("core:anomaly_discovered"),
+            KnowledgeFact::SurveyDiscovery { .. } => Some("core:survey_discovery"),
+            KnowledgeFact::StructureBuilt { .. } => Some("core:structure_built"),
+            KnowledgeFact::ColonyEstablished { .. } => Some("core:colony_established"),
+            KnowledgeFact::ColonyFailed { .. } => Some("core:colony_failed"),
+            KnowledgeFact::ShipArrived { .. } => Some("core:ship_arrived"),
+            KnowledgeFact::Scripted { .. } => None,
+        }
+    }
+
+    /// #354 (K-5): Flatten a core variant into a payload snapshot that
+    /// K-3 `<core:*>@recorded` / K-4 `<core:*>@observed` subscribers see
+    /// under `e.payload`. Returns `None` for [`KnowledgeFact::Scripted`]
+    /// — Lua-origin facts already carry their snapshot directly.
+    ///
+    /// Field mapping mirrors
+    /// [`crate::knowledge::kind_registry::core_kind_catalog`]:
+    /// * `Entity` values become [`PayloadValue::Entity`]
+    /// * `[f64; 3]` positions are flattened to `*_x/_y/_z` numbers
+    /// * `CombatVictor` becomes a `"player" | "hostile"` string
+    /// * `bool` becomes [`PayloadValue::Boolean`]
+    /// * `event_id` is **not** emitted — it lives in the Rust-internal
+    ///   `NotifiedEventIds` map and is not part of the observable
+    ///   `e.payload` surface (see plan-349 §3.5 field-rationale note).
+    ///
+    /// Optional `Entity` fields (`system: Option<Entity>` on
+    /// `StructureBuilt` / `ShipArrived`) are only inserted when `Some`.
+    pub fn to_core_payload_snapshot(&self) -> Option<super::payload::PayloadSnapshot> {
+        use super::payload::{PayloadSnapshot, PayloadValue};
+        use std::collections::HashMap;
+
+        let mut fields: HashMap<String, PayloadValue> = HashMap::new();
+        match self {
+            KnowledgeFact::HostileDetected {
+                target,
+                detector,
+                target_pos,
+                description,
+                ..
+            } => {
+                fields.insert("target".into(), PayloadValue::Entity(target.to_bits()));
+                fields.insert("detector".into(), PayloadValue::Entity(detector.to_bits()));
+                fields.insert("target_pos_x".into(), PayloadValue::Number(target_pos[0]));
+                fields.insert("target_pos_y".into(), PayloadValue::Number(target_pos[1]));
+                fields.insert("target_pos_z".into(), PayloadValue::Number(target_pos[2]));
+                fields.insert(
+                    "description".into(),
+                    PayloadValue::String(description.clone()),
+                );
+            }
+            KnowledgeFact::CombatOutcome {
+                system,
+                victor,
+                detail,
+                ..
+            } => {
+                fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
+                fields.insert(
+                    "victor".into(),
+                    PayloadValue::String(
+                        match victor {
+                            CombatVictor::Player => "player",
+                            CombatVictor::Hostile => "hostile",
+                        }
+                        .to_string(),
+                    ),
+                );
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::SurveyComplete {
+                system,
+                system_name,
+                detail,
+                ..
+            } => {
+                fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
+                fields.insert(
+                    "system_name".into(),
+                    PayloadValue::String(system_name.clone()),
+                );
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::AnomalyDiscovered {
+                system,
+                anomaly_id,
+                detail,
+                ..
+            } => {
+                fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
+                fields.insert(
+                    "anomaly_id".into(),
+                    PayloadValue::String(anomaly_id.clone()),
+                );
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::SurveyDiscovery { system, detail, .. } => {
+                fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::StructureBuilt {
+                system,
+                kind,
+                name,
+                destroyed,
+                detail,
+                ..
+            } => {
+                if let Some(s) = system {
+                    fields.insert("system".into(), PayloadValue::Entity(s.to_bits()));
+                }
+                fields.insert("kind".into(), PayloadValue::String(kind.clone()));
+                fields.insert("name".into(), PayloadValue::String(name.clone()));
+                fields.insert("destroyed".into(), PayloadValue::Boolean(*destroyed));
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::ColonyEstablished {
+                system,
+                planet,
+                name,
+                detail,
+                ..
+            } => {
+                fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
+                fields.insert("planet".into(), PayloadValue::Entity(planet.to_bits()));
+                fields.insert("name".into(), PayloadValue::String(name.clone()));
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::ColonyFailed {
+                system,
+                name,
+                reason,
+                ..
+            } => {
+                fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
+                fields.insert("name".into(), PayloadValue::String(name.clone()));
+                fields.insert("reason".into(), PayloadValue::String(reason.clone()));
+            }
+            KnowledgeFact::ShipArrived {
+                system,
+                name,
+                detail,
+                ..
+            } => {
+                if let Some(s) = system {
+                    fields.insert("system".into(), PayloadValue::Entity(s.to_bits()));
+                }
+                fields.insert("name".into(), PayloadValue::String(name.clone()));
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::Scripted { .. } => return None,
+        }
+        Some(PayloadSnapshot { fields })
+    }
+
+    /// #354 (K-5): Related star system for a core variant, matching the
+    /// `origin_system` metadata slot in `<core:*>@recorded` events. For
+    /// variants that already carry `Option<Entity>` (`StructureBuilt`,
+    /// `ShipArrived`) this forwards the optional field; other variants
+    /// provide their concrete system via `Some(_)`. Identical to
+    /// [`Self::related_system`] today but kept as a separate hook so
+    /// future core variants with a distinct "origin" vs "related"
+    /// semantic can diverge cleanly.
+    pub fn core_origin_system(&self) -> Option<Entity> {
+        self.related_system()
+    }
 }
 
 /// A [`KnowledgeFact`] plus the timing + provenance metadata the arrival
@@ -433,17 +612,15 @@ impl PendingFactQueue {
 
     /// #353 (K-4): Drain **only** `KnowledgeFact::Scripted` facts whose
     /// `arrives_at <= now`, leaving core variants in place for the legacy
-    /// `notify_from_knowledge_facts` path (banner drain). This is the
-    /// per-plan-349 §3.4 split: `dispatch_knowledge_observed` consumes the
-    /// Scripted subset, `notify_from_knowledge_facts` consumes the rest.
+    /// `notify_from_knowledge_facts` path (banner drain).
     ///
-    /// Ordering invariant: insertion order is preserved across both drains,
-    /// so the two systems can run in any order without double-processing
-    /// (the wrapper does not peek at the other subset).
-    ///
-    /// K-5 (#354) will unify this: core variants will also flow through
-    /// `dispatch_knowledge_observed` and `notify_from_knowledge_facts` will
-    /// become a thin bridge that reads the dispatched banner queue.
+    /// #354 K-5 status: this partitioned drain is **no longer used** by
+    /// the production pipeline — `dispatch_knowledge_observed` now
+    /// drains the whole queue via `drain_ready()` and handles both
+    /// core + scripted variants in a single pass. The partitioned
+    /// helper is retained for any future callsites that deliberately
+    /// want the Scripted-only subset (plus the K-4 unit tests that
+    /// exercise its ordering invariant).
     pub fn drain_ready_scripted(&mut self, now: i64) -> Vec<PerceivedFact> {
         let mut ready = Vec::new();
         let mut i = 0;
@@ -719,6 +896,13 @@ pub struct PlayerVantage {
 /// fact-writing callsite needs. Keeps the parameter count of the host system
 /// under Bevy's 16-param limit while avoiding a re-query of `Position` (the
 /// callsite supplies the vantage via [`PlayerVantage`]).
+///
+/// #354 K-5: [`FactSysParam::record`] now also pushes a
+/// [`PendingKnowledgeRecord`](crate::scripting::knowledge_dispatch::PendingKnowledgeRecord)
+/// mirroring the fact into the `core:*` kind so the K-2 pipeline can
+/// fire `<core:*>@recorded` subscribers on the next Update tick. This
+/// does **not** change the legacy banner / `PendingFactQueue` path —
+/// both flows are produced from the same `record()` call.
 #[derive(SystemParam)]
 pub struct FactSysParam<'w, 's> {
     pub fact_queue: ResMut<'w, PendingFactQueue>,
@@ -727,6 +911,12 @@ pub struct FactSysParam<'w, 's> {
     pub next_event_id: ResMut<'w, NextEventId>,
     pub relay_network: Res<'w, RelayNetwork>,
     pub empire_comms: Query<'w, 's, &'static CommsParams, With<crate::player::PlayerEmpire>>,
+    /// #354 K-5: core variant -> `PendingKnowledgeRecord` sink. Optional
+    /// so callsites that construct a `FactSysParam` outside
+    /// `ScriptingPlugin` (tests / observer-mode headless apps) don't
+    /// crash when the resource is absent.
+    pub pending_records:
+        Option<ResMut<'w, crate::scripting::knowledge_dispatch::PendingKnowledgeRecords>>,
 }
 
 impl<'w, 's> FactSysParam<'w, 's> {
@@ -764,6 +954,13 @@ impl<'w, 's> FactSysParam<'w, 's> {
     ///     &vantage,
     /// );
     /// ```
+    ///
+    /// #354 K-5: after the legacy `record_fact_or_local` call, a core
+    /// variant also pushes a `PendingKnowledgeRecord` so the K-2
+    /// `dispatch_knowledge_recorded` system can fire
+    /// `<core:*>@recorded` subscribers. Scripted variants are ignored
+    /// by the core push (they already come in through
+    /// `gs:record_knowledge`).
     pub fn record(
         &mut self,
         fact: KnowledgeFact,
@@ -775,6 +972,25 @@ impl<'w, 's> FactSysParam<'w, 's> {
         // overlap the borrow of `empire_comms` / `relay_network`.
         let comms = self.empire_comms.iter().next().cloned().unwrap_or_default();
         let relays = self.relay_network.relays.clone();
+
+        // #354 K-5: mirror the fact as a pending `core:*` record BEFORE
+        // the legacy dispatch consumes `fact` by move. We only push
+        // when we have a pending-records resource (production) and the
+        // variant maps to a core kind id (Scripted has `None`).
+        if let (Some(kind_id), Some(snapshot)) =
+            (fact.core_kind_id(), fact.to_core_payload_snapshot())
+            && let Some(records) = self.pending_records.as_mut()
+        {
+            records.push(
+                crate::scripting::knowledge_dispatch::PendingKnowledgeRecord {
+                    kind_id: kind_id.to_string(),
+                    origin_system: fact.core_origin_system(),
+                    payload_snapshot: snapshot,
+                    recorded_at: observed_at,
+                },
+            );
+        }
+
         record_fact_or_local(
             fact,
             origin_pos,
@@ -1125,6 +1341,311 @@ mod tests {
 
         // One future Scripted fact remains.
         assert_eq!(q.pending_len(), 1);
+    }
+
+    // --- #354 K-5: core variant -> kind id + payload converter ---
+
+    /// `core_kind_id` returns a `core:*` id for every built-in variant
+    /// and `None` for `Scripted`. The set must match `CORE_KIND_IDS`.
+    #[test]
+    fn core_kind_id_mapping_matches_registry() {
+        use crate::knowledge::kind_registry::CORE_KIND_IDS;
+        use std::collections::HashSet;
+
+        // Build one sample of each variant so we can interrogate `core_kind_id`.
+        let samples: Vec<KnowledgeFact> = vec![
+            KnowledgeFact::HostileDetected {
+                event_id: None,
+                target: Entity::PLACEHOLDER,
+                detector: Entity::PLACEHOLDER,
+                target_pos: [0.0; 3],
+                description: "".into(),
+            },
+            KnowledgeFact::CombatOutcome {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                victor: CombatVictor::Player,
+                detail: "".into(),
+            },
+            KnowledgeFact::SurveyComplete {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                system_name: "".into(),
+                detail: "".into(),
+            },
+            KnowledgeFact::AnomalyDiscovered {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                anomaly_id: "".into(),
+                detail: "".into(),
+            },
+            KnowledgeFact::SurveyDiscovery {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                detail: "".into(),
+            },
+            KnowledgeFact::StructureBuilt {
+                event_id: None,
+                system: None,
+                kind: "".into(),
+                name: "".into(),
+                destroyed: false,
+                detail: "".into(),
+            },
+            KnowledgeFact::ColonyEstablished {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                planet: Entity::PLACEHOLDER,
+                name: "".into(),
+                detail: "".into(),
+            },
+            KnowledgeFact::ColonyFailed {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                name: "".into(),
+                reason: "".into(),
+            },
+            KnowledgeFact::ShipArrived {
+                event_id: None,
+                system: None,
+                name: "".into(),
+                detail: "".into(),
+            },
+        ];
+
+        let seen: HashSet<&'static str> = samples
+            .iter()
+            .map(|f| f.core_kind_id().expect("built-in variant has core kind id"))
+            .collect();
+        let expected: HashSet<&'static str> = CORE_KIND_IDS.iter().copied().collect();
+        assert_eq!(
+            seen, expected,
+            "KnowledgeFact::core_kind_id must enumerate the same set as CORE_KIND_IDS"
+        );
+
+        // Scripted returns None.
+        let scripted = KnowledgeFact::Scripted {
+            event_id: None,
+            kind_id: "mod:x".into(),
+            origin_system: None,
+            payload_snapshot: super::super::payload::PayloadSnapshot::default(),
+            recorded_at: 0,
+        };
+        assert!(scripted.core_kind_id().is_none());
+    }
+
+    /// Converter drops `event_id`, flattens position + CombatVictor,
+    /// and covers every schema field declared by the registry.
+    #[test]
+    fn core_payload_snapshot_contains_expected_fields_hostile() {
+        use super::super::payload::PayloadValue;
+        let fact = KnowledgeFact::HostileDetected {
+            event_id: Some(EventId(7)),
+            target: Entity::from_bits(100),
+            detector: Entity::from_bits(200),
+            target_pos: [1.0, 2.5, -3.25],
+            description: "Saw pirate".into(),
+        };
+        let snap = fact.to_core_payload_snapshot().unwrap();
+        // `event_id` not present.
+        assert!(!snap.fields.contains_key("event_id"));
+        // Fields.
+        assert!(
+            matches!(snap.fields.get("target"), Some(PayloadValue::Entity(bits)) if *bits == 100)
+        );
+        assert!(
+            matches!(snap.fields.get("detector"), Some(PayloadValue::Entity(bits)) if *bits == 200)
+        );
+        assert!(
+            matches!(snap.fields.get("target_pos_x"), Some(PayloadValue::Number(n)) if (*n - 1.0).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(snap.fields.get("target_pos_y"), Some(PayloadValue::Number(n)) if (*n - 2.5).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(snap.fields.get("target_pos_z"), Some(PayloadValue::Number(n)) if (*n + 3.25).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(snap.fields.get("description"), Some(PayloadValue::String(s)) if s == "Saw pirate")
+        );
+    }
+
+    #[test]
+    fn core_payload_snapshot_combat_victor_flattens_to_string() {
+        use super::super::payload::PayloadValue;
+        for (v, expected) in [
+            (CombatVictor::Player, "player"),
+            (CombatVictor::Hostile, "hostile"),
+        ] {
+            let fact = KnowledgeFact::CombatOutcome {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                victor: v,
+                detail: "d".into(),
+            };
+            let snap = fact.to_core_payload_snapshot().unwrap();
+            assert!(
+                matches!(snap.fields.get("victor"), Some(PayloadValue::String(s)) if s == expected),
+                "victor={:?} should flatten to '{}'",
+                v,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn core_payload_snapshot_skips_system_when_none() {
+        // StructureBuilt / ShipArrived carry Option<Entity>; when None, the
+        // converter must omit the `system` field (not emit `Nil`) so the
+        // schema check upstream doesn't mis-type.
+        let fact = KnowledgeFact::StructureBuilt {
+            event_id: None,
+            system: None,
+            kind: "platform".into(),
+            name: "Beacon".into(),
+            destroyed: false,
+            detail: "".into(),
+        };
+        let snap = fact.to_core_payload_snapshot().unwrap();
+        assert!(!snap.fields.contains_key("system"));
+
+        let fact_with = KnowledgeFact::StructureBuilt {
+            event_id: None,
+            system: Some(Entity::from_bits(42)),
+            kind: "".into(),
+            name: "".into(),
+            destroyed: false,
+            detail: "".into(),
+        };
+        let snap_with = fact_with.to_core_payload_snapshot().unwrap();
+        assert!(snap_with.fields.contains_key("system"));
+    }
+
+    #[test]
+    fn core_payload_snapshot_scripted_returns_none() {
+        let fact = KnowledgeFact::Scripted {
+            event_id: None,
+            kind_id: "mod:x".into(),
+            origin_system: None,
+            payload_snapshot: super::super::payload::PayloadSnapshot::default(),
+            recorded_at: 0,
+        };
+        assert!(fact.to_core_payload_snapshot().is_none());
+    }
+
+    /// Every schema field declared by `core_kind_catalog` must be
+    /// emitted by the converter for its matching variant (when the
+    /// source field is not an `Option::None`). Catches future drift
+    /// between the schema list and the converter.
+    #[test]
+    fn core_payload_schema_matches_converter_output() {
+        use crate::knowledge::kind_registry::core_kind_catalog;
+
+        // Build one "populated" sample for each kind id so Option fields
+        // resolve to Some(_).
+        let samples: Vec<(&str, KnowledgeFact)> = vec![
+            (
+                "core:hostile_detected",
+                KnowledgeFact::HostileDetected {
+                    event_id: None,
+                    target: Entity::from_bits(1),
+                    detector: Entity::from_bits(2),
+                    target_pos: [0.0; 3],
+                    description: "".into(),
+                },
+            ),
+            (
+                "core:combat_outcome",
+                KnowledgeFact::CombatOutcome {
+                    event_id: None,
+                    system: Entity::from_bits(1),
+                    victor: CombatVictor::Player,
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:survey_complete",
+                KnowledgeFact::SurveyComplete {
+                    event_id: None,
+                    system: Entity::from_bits(1),
+                    system_name: "".into(),
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:anomaly_discovered",
+                KnowledgeFact::AnomalyDiscovered {
+                    event_id: None,
+                    system: Entity::from_bits(1),
+                    anomaly_id: "".into(),
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:survey_discovery",
+                KnowledgeFact::SurveyDiscovery {
+                    event_id: None,
+                    system: Entity::from_bits(1),
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:structure_built",
+                KnowledgeFact::StructureBuilt {
+                    event_id: None,
+                    system: Some(Entity::from_bits(1)),
+                    kind: "".into(),
+                    name: "".into(),
+                    destroyed: false,
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:colony_established",
+                KnowledgeFact::ColonyEstablished {
+                    event_id: None,
+                    system: Entity::from_bits(1),
+                    planet: Entity::from_bits(2),
+                    name: "".into(),
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:colony_failed",
+                KnowledgeFact::ColonyFailed {
+                    event_id: None,
+                    system: Entity::from_bits(1),
+                    name: "".into(),
+                    reason: "".into(),
+                },
+            ),
+            (
+                "core:ship_arrived",
+                KnowledgeFact::ShipArrived {
+                    event_id: None,
+                    system: Some(Entity::from_bits(1)),
+                    name: "".into(),
+                    detail: "".into(),
+                },
+            ),
+        ];
+
+        for (id, fact) in samples {
+            let snap = fact
+                .to_core_payload_snapshot()
+                .unwrap_or_else(|| panic!("no snapshot for {id}"));
+            let schema = core_kind_catalog()
+                .iter()
+                .find(|(k, _)| *k == id)
+                .unwrap_or_else(|| panic!("no schema for {id}"))
+                .1;
+            for (field_name, _) in schema {
+                assert!(
+                    snap.fields.contains_key(*field_name),
+                    "kind '{id}': converter missing field '{field_name}' declared in schema"
+                );
+            }
+        }
     }
 
     #[test]
