@@ -393,6 +393,9 @@ mod tests {
             maintenance: Amt::ZERO,
             modifiers: Vec::new(),
             prerequisites: prereq,
+            size: 1,
+            is_capital: false,
+            capabilities: std::collections::HashMap::new(),
         }
     }
 

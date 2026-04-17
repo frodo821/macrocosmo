@@ -52,6 +52,13 @@ pub struct HullDefinition {
     /// Optional Condition tree gating access to this hull.
     /// Populated from the Lua `prerequisites = has_tech(...)` / ... field.
     pub prerequisites: Option<Condition>,
+    /// Hull size tier (mandatory). Small craft = 1, capital ships = large values.
+    pub size: u32,
+    /// Whether this hull is a capital-class hull (default false).
+    pub is_capital: bool,
+    /// Capability-based extension point. Keys are capability names, values are
+    /// parameter maps (e.g. `{"harbour": {"capacity": 12.0}}`).
+    pub capabilities: HashMap<String, HashMap<String, f64>>,
 }
 
 #[derive(Resource, Default)]
@@ -281,12 +288,13 @@ impl ShipDesignDefinition {
         hulls: &HullRegistry,
         modules: &ModuleRegistry,
     ) -> Result<(), ShipDesignValidationError> {
-        let hull = hulls
-            .get(&self.hull_id)
-            .ok_or_else(|| ShipDesignValidationError::HullNotFound {
-                design_id: self.id.clone(),
-                hull_id: self.hull_id.clone(),
-            })?;
+        let hull =
+            hulls
+                .get(&self.hull_id)
+                .ok_or_else(|| ShipDesignValidationError::HullNotFound {
+                    design_id: self.id.clone(),
+                    hull_id: self.hull_id.clone(),
+                })?;
 
         // Tally requested slot assignments per slot_type for overfill checks.
         let mut per_slot_count: HashMap<&str, u32> = HashMap::new();
@@ -390,7 +398,10 @@ impl ShipDesignRegistry {
 
     /// Check if a design can colonize planets.
     pub fn can_colonize(&self, id: &str) -> bool {
-        self.designs.get(id).map(|d| d.can_colonize).unwrap_or(false)
+        self.designs
+            .get(id)
+            .map(|d| d.can_colonize)
+            .unwrap_or(false)
     }
 
     /// Get build cost (minerals, energy) for a design.
@@ -704,10 +715,7 @@ pub fn design_derived(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> D
 /// Compute total cost for a ship design: hull cost + sum of module costs.
 /// Returns (minerals, energy, build_time, maintenance).
 /// Retained as a thin wrapper around `design_derived` for existing call-sites.
-pub fn design_cost(
-    hull: &HullDefinition,
-    modules: &[&ModuleDefinition],
-) -> (Amt, Amt, i64, Amt) {
+pub fn design_cost(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> (Amt, Amt, i64, Amt) {
     let d = design_derived(hull, modules);
     (
         d.build_cost_minerals,
@@ -719,19 +727,14 @@ pub fn design_cost(
 
 /// Compute total stats for a design: HP, speed, evasion from hull + module modifiers.
 /// Retained as a thin wrapper around `design_derived` for existing call-sites.
-pub fn design_stats(
-    hull: &HullDefinition,
-    modules: &[&ModuleDefinition],
-) -> (f64, f64, f64) {
+pub fn design_stats(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> (f64, f64, f64) {
     let d = design_derived(hull, modules);
     (d.hp, d.sublight_speed, d.evasion)
 }
 
 /// #123: Convert a design's slot assignments into the EquippedModule list
 /// that should appear on a ship after applying that design.
-pub fn design_equipped_modules(
-    design: &ShipDesignDefinition,
-) -> Vec<crate::ship::EquippedModule> {
+pub fn design_equipped_modules(design: &ShipDesignDefinition) -> Vec<crate::ship::EquippedModule> {
     design
         .modules
         .iter()
@@ -794,8 +797,16 @@ pub fn refit_cost(
     // Refund 50% of old module value
     let refund_m = Amt::milli(old_m.raw() / 2);
     let refund_e = Amt::milli(old_e.raw() / 2);
-    let cost_m = if new_m > refund_m { new_m.sub(refund_m) } else { Amt::ZERO };
-    let cost_e = if new_e > refund_e { new_e.sub(refund_e) } else { Amt::ZERO };
+    let cost_m = if new_m > refund_m {
+        new_m.sub(refund_m)
+    } else {
+        Amt::ZERO
+    };
+    let cost_e = if new_e > refund_e {
+        new_e.sub(refund_e)
+    } else {
+        Amt::ZERO
+    };
     // Refit time: half of the full (hull + modules) build time.
     let total_time = hull.build_time.saturating_add(new_build_time);
     let time = total_time / 2;
@@ -819,8 +830,14 @@ mod tests {
             base_speed: 0.75,
             base_evasion: 30.0,
             slots: vec![
-                HullSlot { slot_type: "weapon".to_string(), count: 2 },
-                HullSlot { slot_type: "ftl".to_string(), count: 1 },
+                HullSlot {
+                    slot_type: "weapon".to_string(),
+                    count: 2,
+                },
+                HullSlot {
+                    slot_type: "ftl".to_string(),
+                    count: 1,
+                },
             ],
             build_cost_minerals: Amt::units(200),
             build_cost_energy: Amt::units(100),
@@ -828,6 +845,9 @@ mod tests {
             maintenance: Amt::new(0, 500),
             modifiers: vec![],
             prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         });
 
         let corvette = registry.get("corvette").unwrap();
@@ -932,6 +952,9 @@ mod tests {
             maintenance: Amt::ZERO,
             modifiers: vec![],
             prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         };
         let module = ModuleDefinition {
             id: "m100".to_string(),
@@ -976,6 +999,9 @@ mod tests {
             maintenance: Amt::new(0, 500),
             modifiers: vec![],
             prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         };
         let ftl = ModuleDefinition {
             id: "ftl_drive_mk1".to_string(),
@@ -1029,9 +1055,18 @@ mod tests {
             base_speed: 0.75,
             base_evasion: 30.0,
             slots: vec![
-                HullSlot { slot_type: "ftl".to_string(), count: 1 },
-                HullSlot { slot_type: "weapon".to_string(), count: 2 },
-                HullSlot { slot_type: "utility".to_string(), count: 1 },
+                HullSlot {
+                    slot_type: "ftl".to_string(),
+                    count: 1,
+                },
+                HullSlot {
+                    slot_type: "weapon".to_string(),
+                    count: 2,
+                },
+                HullSlot {
+                    slot_type: "utility".to_string(),
+                    count: 1,
+                },
             ],
             build_cost_minerals: Amt::units(200),
             build_cost_energy: Amt::units(100),
@@ -1039,6 +1074,9 @@ mod tests {
             maintenance: Amt::new(0, 500),
             modifiers: vec![],
             prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         });
 
         let mut modules = ModuleRegistry::default();
@@ -1089,9 +1127,18 @@ mod tests {
         let design = make_design(
             "ok",
             vec![
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
-                DesignSlotAssignment { slot_type: "weapon".into(), module_id: "weapon_laser".into() },
-                DesignSlotAssignment { slot_type: "utility".into(), module_id: "survey_equipment".into() },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "utility".into(),
+                    module_id: "survey_equipment".into(),
+                },
             ],
         );
         assert!(design.validate(&hulls, &modules).is_ok());
@@ -1109,7 +1156,9 @@ mod tests {
             }],
         );
         match design.validate(&hulls, &modules) {
-            Err(ShipDesignValidationError::SlotTypeMismatch { actual, expected, .. }) => {
+            Err(ShipDesignValidationError::SlotTypeMismatch {
+                actual, expected, ..
+            }) => {
                 assert_eq!(actual, "ftl");
                 assert_eq!(expected, "weapon");
             }
@@ -1174,8 +1223,14 @@ mod tests {
         let design = make_design(
             "too_many",
             vec![
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
             ],
         );
         match design.validate(&hulls, &modules) {
@@ -1252,7 +1307,10 @@ mod tests {
         let (hulls, modules) = validation_fixture();
         let design = make_design(
             "noop",
-            vec![DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() }],
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
         );
         assert!(ship_design_effective_prerequisites(&design, &hulls, &modules).is_none());
     }
@@ -1268,7 +1326,10 @@ mod tests {
 
         let design = make_design(
             "ok",
-            vec![DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() }],
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
         );
         let eff = ship_design_effective_prerequisites(&design, &hulls, &modules);
         // Exactly one contributing condition (hull's). Must not be wrapped in All.
@@ -1293,7 +1354,10 @@ mod tests {
 
         let design = make_design(
             "ok",
-            vec![DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() }],
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
         );
         let eff = ship_design_effective_prerequisites(&design, &hulls, &modules);
         match eff {
@@ -1311,8 +1375,14 @@ mod tests {
         let design = make_design(
             "ok",
             vec![
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
-                DesignSlotAssignment { slot_type: "weapon".into(), module_id: "weapon_laser".into() },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
             ],
         );
         let equipped = design_equipped_modules(&design);
@@ -1332,7 +1402,12 @@ mod tests {
     /// Small helper building a hull + module fixture that mirrors the real
     /// Lua courier_hull + ftl_drive content so we can assert exact numeric
     /// expectations in the derive tests.
-    fn derive_fixture_courier() -> (HullDefinition, ModuleDefinition, ModuleDefinition, ModuleDefinition) {
+    fn derive_fixture_courier() -> (
+        HullDefinition,
+        ModuleDefinition,
+        ModuleDefinition,
+        ModuleDefinition,
+    ) {
         let courier_hull = HullDefinition {
             id: "courier_hull".into(),
             name: "Courier Hull".into(),
@@ -1341,28 +1416,53 @@ mod tests {
             base_speed: 0.80,
             base_evasion: 25.0,
             slots: vec![
-                HullSlot { slot_type: "ftl".into(), count: 1 },
-                HullSlot { slot_type: "sublight".into(), count: 1 },
-                HullSlot { slot_type: "utility".into(), count: 2 },
+                HullSlot {
+                    slot_type: "ftl".into(),
+                    count: 1,
+                },
+                HullSlot {
+                    slot_type: "sublight".into(),
+                    count: 1,
+                },
+                HullSlot {
+                    slot_type: "utility".into(),
+                    count: 2,
+                },
             ],
             build_cost_minerals: Amt::units(100),
             build_cost_energy: Amt::units(50),
             build_time: 30,
             maintenance: Amt::new(0, 300),
             modifiers: vec![
-                ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 0.0, multiplier: 1.5, add: 0.0 },
-                ModuleModifier { target: "ship.ftl_range".into(), base_add: 0.0, multiplier: 1.2, add: 0.0 },
+                ModuleModifier {
+                    target: "ship.cargo_capacity".into(),
+                    base_add: 0.0,
+                    multiplier: 1.5,
+                    add: 0.0,
+                },
+                ModuleModifier {
+                    target: "ship.ftl_range".into(),
+                    base_add: 0.0,
+                    multiplier: 1.2,
+                    add: 0.0,
+                },
             ],
             prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         };
         let ftl_drive = ModuleDefinition {
             id: "ftl_drive".into(),
             name: "FTL Drive".into(),
             description: String::new(),
             slot_type: "ftl".into(),
-            modifiers: vec![
-                ModuleModifier { target: "ship.ftl_range".into(), base_add: 15.0, multiplier: 0.0, add: 0.0 },
-            ],
+            modifiers: vec![ModuleModifier {
+                target: "ship.ftl_range".into(),
+                base_add: 15.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
             weapon: None,
             cost_minerals: Amt::units(100),
             cost_energy: Amt::units(50),
@@ -1375,9 +1475,12 @@ mod tests {
             name: "Afterburner".into(),
             description: String::new(),
             slot_type: "sublight".into(),
-            modifiers: vec![
-                ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 0.2, add: 0.0 },
-            ],
+            modifiers: vec![ModuleModifier {
+                target: "ship.speed".into(),
+                base_add: 0.0,
+                multiplier: 0.2,
+                add: 0.0,
+            }],
             weapon: None,
             cost_minerals: Amt::units(60),
             cost_energy: Amt::units(40),
@@ -1390,9 +1493,12 @@ mod tests {
             name: "Cargo Bay".into(),
             description: String::new(),
             slot_type: "utility".into(),
-            modifiers: vec![
-                ModuleModifier { target: "ship.cargo_capacity".into(), base_add: 500.0, multiplier: 0.0, add: 0.0 },
-            ],
+            modifiers: vec![ModuleModifier {
+                target: "ship.cargo_capacity".into(),
+                base_add: 500.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
             weapon: None,
             cost_minerals: Amt::units(30),
             cost_energy: Amt::ZERO,
@@ -1410,7 +1516,11 @@ mod tests {
         let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
         // (0 + 15) * (1 + 1.2) = 33.0
         assert!(d.ftl_range > 0.0, "courier_mk1 must have FTL range > 0");
-        assert!((d.ftl_range - 33.0).abs() < 1e-9, "expected ftl_range 33.0, got {}", d.ftl_range);
+        assert!(
+            (d.ftl_range - 33.0).abs() < 1e-9,
+            "expected ftl_range 33.0, got {}",
+            d.ftl_range
+        );
     }
 
     /// #236: Hull modifiers feed into `design_derived`. Previously the inline
@@ -1420,37 +1530,77 @@ mod tests {
         // courier_hull ftl_range multiplier 1.2x applies on top of ftl_drive.
         let (courier, ftl, _, _) = derive_fixture_courier();
         let d = design_derived(&courier, &[&ftl]);
-        assert!((d.ftl_range - 33.0).abs() < 1e-9, "courier hull ftl_range 1.2x must apply");
+        assert!(
+            (d.ftl_range - 33.0).abs() < 1e-9,
+            "courier hull ftl_range 1.2x must apply"
+        );
 
         // scout_hull: survey_speed multiplier 1.3x applies on survey_equipment.
         let scout = HullDefinition {
             id: "scout_hull".into(),
             name: "Scout Hull".into(),
             description: String::new(),
-            base_hp: 40.0, base_speed: 0.85, base_evasion: 35.0,
-            slots: vec![HullSlot { slot_type: "utility".into(), count: 1 }],
-            build_cost_minerals: Amt::ZERO, build_cost_energy: Amt::ZERO,
-            build_time: 1, maintenance: Amt::ZERO,
+            base_hp: 40.0,
+            base_speed: 0.85,
+            base_evasion: 35.0,
+            slots: vec![HullSlot {
+                slot_type: "utility".into(),
+                count: 1,
+            }],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            maintenance: Amt::ZERO,
             modifiers: vec![
-                ModuleModifier { target: "ship.survey_speed".into(), base_add: 0.0, multiplier: 1.3, add: 0.0 },
-                ModuleModifier { target: "ship.speed".into(), base_add: 0.0, multiplier: 1.15, add: 0.0 },
+                ModuleModifier {
+                    target: "ship.survey_speed".into(),
+                    base_add: 0.0,
+                    multiplier: 1.3,
+                    add: 0.0,
+                },
+                ModuleModifier {
+                    target: "ship.speed".into(),
+                    base_add: 0.0,
+                    multiplier: 1.15,
+                    add: 0.0,
+                },
             ],
             prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         };
         let survey = ModuleDefinition {
-            id: "survey_equipment".into(), name: "Survey".into(), description: String::new(),
+            id: "survey_equipment".into(),
+            name: "Survey".into(),
+            description: String::new(),
             slot_type: "utility".into(),
-            modifiers: vec![
-                ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 },
-            ],
-            weapon: None, cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO,
-            prerequisites: None, upgrade_to: Vec::new(), build_time: 0,
+            modifiers: vec![ModuleModifier {
+                target: "ship.survey_speed".into(),
+                base_add: 1.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
         };
         let d = design_derived(&scout, &[&survey]);
         // (0 + 1.0) * (1 + 1.3) = 2.3
-        assert!((d.survey_speed - 2.3).abs() < 1e-9, "scout_hull survey_speed 1.3x must apply: got {}", d.survey_speed);
+        assert!(
+            (d.survey_speed - 2.3).abs() < 1e-9,
+            "scout_hull survey_speed 1.3x must apply: got {}",
+            d.survey_speed
+        );
         // sublight: 0.85 * (1 + 1.15) = 1.8275
-        assert!((d.sublight_speed - 1.8275).abs() < 1e-9, "scout_hull speed 1.15x must apply: got {}", d.sublight_speed);
+        assert!(
+            (d.sublight_speed - 1.8275).abs() < 1e-9,
+            "scout_hull speed 1.15x must apply: got {}",
+            d.sublight_speed
+        );
     }
 
     /// #236: `can_survey` and `can_colonize` derive from speed fields, not
@@ -1458,21 +1608,43 @@ mod tests {
     #[test]
     fn test_can_survey_derives_from_survey_speed() {
         let bare_hull = HullDefinition {
-            id: "corvette".into(), name: "Corvette".into(), description: String::new(),
-            base_hp: 50.0, base_speed: 0.75, base_evasion: 30.0,
-            slots: vec![HullSlot { slot_type: "utility".into(), count: 1 }],
-            build_cost_minerals: Amt::ZERO, build_cost_energy: Amt::ZERO,
-            build_time: 1, maintenance: Amt::ZERO,
-            modifiers: vec![], prerequisites: None,
+            id: "corvette".into(),
+            name: "Corvette".into(),
+            description: String::new(),
+            base_hp: 50.0,
+            base_speed: 0.75,
+            base_evasion: 30.0,
+            slots: vec![HullSlot {
+                slot_type: "utility".into(),
+                count: 1,
+            }],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            maintenance: Amt::ZERO,
+            modifiers: vec![],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         };
         let survey = ModuleDefinition {
-            id: "survey_equipment".into(), name: "Survey".into(), description: String::new(),
+            id: "survey_equipment".into(),
+            name: "Survey".into(),
+            description: String::new(),
             slot_type: "utility".into(),
-            modifiers: vec![
-                ModuleModifier { target: "ship.survey_speed".into(), base_add: 1.0, multiplier: 0.0, add: 0.0 },
-            ],
-            weapon: None, cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO,
-            prerequisites: None, upgrade_to: Vec::new(), build_time: 0,
+            modifiers: vec![ModuleModifier {
+                target: "ship.survey_speed".into(),
+                base_add: 1.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
         };
 
         // Without survey module → no survey capability.
@@ -1496,7 +1668,11 @@ mod tests {
 
         // Stats
         assert_eq!(d.hp, 35.0);
-        assert!((d.sublight_speed - 0.96).abs() < 1e-9, "0.80 * 1.2 = 0.96, got {}", d.sublight_speed);
+        assert!(
+            (d.sublight_speed - 0.96).abs() < 1e-9,
+            "0.80 * 1.2 = 0.96, got {}",
+            d.sublight_speed
+        );
         assert_eq!(d.evasion, 25.0);
         assert!((d.ftl_range - 33.0).abs() < 1e-9);
         assert_eq!(d.survey_speed, 0.0);
@@ -1528,13 +1704,19 @@ mod tests {
             base_hp: 10.0,
             base_speed: 1.0,
             base_evasion: 0.0,
-            slots: vec![HullSlot { slot_type: "utility".into(), count: 4 }],
+            slots: vec![HullSlot {
+                slot_type: "utility".into(),
+                count: 4,
+            }],
             build_cost_minerals: Amt::ZERO,
             build_cost_energy: Amt::ZERO,
             build_time,
             maintenance: Amt::ZERO,
             modifiers: vec![],
             prerequisites: None,
+            size: 1,
+            is_capital: false,
+            capabilities: HashMap::new(),
         }
     }
 
@@ -1653,10 +1835,7 @@ mod tests {
         // the post-#239 sum match by construction. Intentional: if anyone
         // later gives the fixture non-zero module times without updating
         // the expectation, the test fails and forces a consistent update.
-        let expected = hull.build_time
-            + ftl.build_time
-            + ab.build_time
-            + cargo.build_time;
+        let expected = hull.build_time + ftl.build_time + ab.build_time + cargo.build_time;
         let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
         assert_eq!(d.build_time, expected);
     }

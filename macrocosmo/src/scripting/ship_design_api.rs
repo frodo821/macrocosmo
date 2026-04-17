@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::amount::Amt;
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::ship_design::{
@@ -30,7 +32,9 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
         let base_hp: f64 = table.get::<Option<f64>>("base_hp")?.unwrap_or(100.0);
         let base_speed: f64 = table.get::<Option<f64>>("base_speed")?.unwrap_or(1.0);
         let base_evasion: f64 = table.get::<Option<f64>>("base_evasion")?.unwrap_or(0.0);
@@ -50,6 +54,27 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
         // Parse optional prerequisites (shared helper).
         let prerequisites = parse_prerequisites_field(&table)?;
 
+        // #382: size is mandatory — mlua will error if missing.
+        let size: u32 = table.get("size")?;
+        let is_capital: bool = table.get::<Option<bool>>("is_capital")?.unwrap_or(false);
+        let capabilities: HashMap<String, HashMap<String, f64>> = table
+            .get::<Option<mlua::Table>>("capabilities")?
+            .map(|cap_table| {
+                let mut caps = HashMap::new();
+                for pair in cap_table.pairs::<String, mlua::Table>() {
+                    let (key, params_table) = pair?;
+                    let mut params = HashMap::new();
+                    for param_pair in params_table.pairs::<String, f64>() {
+                        let (pk, pv) = param_pair?;
+                        params.insert(pk, pv);
+                    }
+                    caps.insert(key, params);
+                }
+                Ok::<_, mlua::Error>(caps)
+            })
+            .transpose()?
+            .unwrap_or_default();
+
         result.push(HullDefinition {
             id,
             name,
@@ -64,6 +89,9 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
             maintenance,
             modifiers,
             prerequisites,
+            size,
+            is_capital,
+            capabilities,
         });
     }
 
@@ -80,7 +108,9 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
         let slot_type_value: mlua::Value = table.get("slot_type")?;
         let slot_type = crate::scripting::extract_ref_id(&slot_type_value)?;
 
@@ -153,7 +183,9 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
         let hull_value: mlua::Value = table.get("hull")?;
         let hull_id = crate::scripting::extract_ref_id(&hull_value)?;
 
@@ -167,7 +199,8 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
             if !matches!(v, mlua::Value::Nil) {
                 bevy::log::warn!(
                     "ship design '{}' authors derived field '{}'; value will be ignored (#236: derive from hull + modules)",
-                    id, field
+                    id,
+                    field
                 );
             }
         }
@@ -201,10 +234,7 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
 // ---------------------------------------------------------------------------
 
 /// Parse the `cost = { minerals = N, energy = N }` or `build_cost = { ... }` sub-table.
-fn parse_cost_table(
-    table: &mlua::Table,
-    field_name: &str,
-) -> Result<(Amt, Amt), mlua::Error> {
+fn parse_cost_table(table: &mlua::Table, field_name: &str) -> Result<(Amt, Amt), mlua::Error> {
     let cost_value: mlua::Value = table.get(field_name)?;
     match cost_value {
         mlua::Value::Table(cost_table) => {
@@ -342,9 +372,7 @@ fn parse_module_upgrade_to(table: &mlua::Table) -> Result<Vec<ModuleUpgradePath>
 
 /// Parse the `modules = { { slot_type = "...", module = "..." }, ... }` array.
 /// Both `slot_type` and `module` accept string IDs or reference tables.
-fn parse_design_modules(
-    table: &mlua::Table,
-) -> Result<Vec<DesignSlotAssignment>, mlua::Error> {
+fn parse_design_modules(table: &mlua::Table) -> Result<Vec<DesignSlotAssignment>, mlua::Error> {
     let mods_value: mlua::Value = table.get("modules")?;
     match mods_value {
         mlua::Value::Table(mods_table) => {
@@ -407,6 +435,7 @@ mod tests {
             define_hull {
                 id = "corvette",
                 name = "Corvette",
+                size = 1,
                 base_hp = 50,
                 base_speed = 0.75,
                 base_evasion = 30.0,
@@ -444,6 +473,9 @@ mod tests {
         assert_eq!(corvette.build_cost_energy, Amt::units(100));
         assert_eq!(corvette.build_time, 60);
         assert_eq!(corvette.maintenance, Amt::new(0, 500));
+        assert_eq!(corvette.size, 1);
+        assert!(!corvette.is_capital);
+        assert!(corvette.capabilities.is_empty());
     }
 
     #[test]
@@ -458,11 +490,13 @@ mod tests {
             define_hull {
                 id = "plain_hull",
                 name = "Plain",
+                size = 1,
                 base_hp = 30,
             }
             define_hull {
                 id = "cruiser",
                 name = "Cruiser",
+                size = 4,
                 base_hp = 200,
                 prerequisites = has_tech("hull_cruiser"),
             }
@@ -739,13 +773,9 @@ mod tests {
     fn test_ship_design_scripts_load() {
         let engine = ScriptEngine::new().unwrap();
 
-        let init_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/init.lua");
+        let init_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/init.lua");
         if !init_path.exists() {
-            panic!(
-                "scripts/init.lua not found at {:?}",
-                init_path
-            );
+            panic!("scripts/init.lua not found at {:?}", init_path);
         }
 
         engine.load_file(&init_path).unwrap();
@@ -876,12 +906,118 @@ mod tests {
         // loader re-populates them via hull + modules.
         assert_eq!(d.hp, 0.0, "hp authored in Lua must be ignored");
         assert_eq!(d.sublight_speed, 0.0);
-        assert_eq!(d.ftl_range, 0.0, "ftl_range authored in Lua must be ignored");
+        assert_eq!(
+            d.ftl_range, 0.0,
+            "ftl_range authored in Lua must be ignored"
+        );
         assert_eq!(d.maintenance, Amt::ZERO);
         assert_eq!(d.build_cost_minerals, Amt::ZERO);
         assert_eq!(d.build_cost_energy, Amt::ZERO);
         assert_eq!(d.build_time, 0);
         assert!(!d.can_survey);
         assert!(!d.can_colonize);
+    }
+
+    /// #382: `size` is mandatory — parsing a hull without it must error.
+    #[test]
+    fn test_hull_size_is_mandatory() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_hull {
+                id = "no_size",
+                name = "No Size",
+                base_hp = 30,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let result = parse_hulls(lua);
+        assert!(result.is_err(), "hull without `size` must fail to parse");
+    }
+
+    /// #382: `is_capital` defaults to false when omitted.
+    #[test]
+    fn test_hull_is_capital_defaults_false() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_hull {
+                id = "basic",
+                name = "Basic",
+                size = 2,
+                base_hp = 50,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_hulls(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert!(!defs[0].is_capital);
+    }
+
+    /// #382: `capabilities` parses nested tables correctly.
+    #[test]
+    fn test_hull_capabilities_parse() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_hull {
+                id = "carrier",
+                name = "Carrier",
+                size = 8,
+                is_capital = true,
+                base_hp = 500,
+                capabilities = {
+                    harbour = { capacity = 12 },
+                },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_hulls(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let carrier = &defs[0];
+        assert!(carrier.is_capital);
+        assert_eq!(carrier.size, 8);
+        assert_eq!(carrier.capabilities.len(), 1);
+        let harbour = carrier.capabilities.get("harbour").unwrap();
+        assert_eq!(*harbour.get("capacity").unwrap(), 12.0);
+    }
+
+    /// #382: `capabilities` defaults to empty HashMap when omitted.
+    #[test]
+    fn test_hull_capabilities_default_empty() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_hull {
+                id = "simple",
+                name = "Simple",
+                size = 1,
+                base_hp = 30,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_hulls(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert!(defs[0].capabilities.is_empty());
     }
 }

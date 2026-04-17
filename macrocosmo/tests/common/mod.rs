@@ -1162,6 +1162,7 @@ pub fn spawn_mock_core_ship(world: &mut World, system: Entity, faction: Entity) 
 /// the test registry always reflects the canonical derivation formula.
 pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
     use macrocosmo::ship_design::{HullDefinition, HullRegistry, HullSlot, ModuleModifier};
+    use std::collections::HashMap;
     let mut hulls = HullRegistry::default();
     let slot = |t: &str, c: u32| HullSlot {
         slot_type: t.to_string(),
@@ -1188,6 +1189,9 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         maintenance: Amt::new(0, 500),
         modifiers: vec![],
         prerequisites: None,
+        size: 1,
+        is_capital: false,
+        capabilities: HashMap::new(),
     });
     hulls.insert(HullDefinition {
         id: "frigate".into(),
@@ -1211,6 +1215,9 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         maintenance: Amt::units(1),
         modifiers: vec![],
         prerequisites: None,
+        size: 2,
+        is_capital: false,
+        capabilities: HashMap::new(),
     });
     hulls.insert(HullDefinition {
         id: "scout_hull".into(),
@@ -1245,6 +1252,9 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
             },
         ],
         prerequisites: None,
+        size: 1,
+        is_capital: false,
+        capabilities: HashMap::new(),
     });
     hulls.insert(HullDefinition {
         id: "courier_hull".into(),
@@ -1278,6 +1288,9 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
             },
         ],
         prerequisites: None,
+        size: 1,
+        is_capital: false,
+        capabilities: HashMap::new(),
     });
     hulls
 }
