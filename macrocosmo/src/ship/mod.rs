@@ -564,6 +564,14 @@ impl Ship {
     }
 }
 
+/// #384: Modifiers that a harbour propagates to its docked ships.
+/// Each entry is (filter, target, modifier) where:
+/// - filter = "self" | "*" | "<hull_id>"
+/// - target = the modifier target string (e.g. "ship.speed")
+/// - modifier = the Modifier to apply
+#[derive(Component, Default, Debug, Clone)]
+pub struct HarbourModifiers(pub Vec<(String, String, crate::modifier::Modifier)>);
+
 /// Orthogonal marker: ship is docked at a specific entity (port, station, etc.).
 /// Added/removed independently of `ShipState`. Not yet used by game logic —
 /// introduced in #383 for future #372-B work.
