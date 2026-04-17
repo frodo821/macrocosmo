@@ -617,6 +617,35 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time),
     );
 
+    // #384: Harbour lifecycle systems (dock/undock, position sync, combat ROE, modifier sync).
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::ship::harbour::auto_undock_on_move_command
+                .before(sublight_movement_system)
+                .before(process_ftl_travel),
+            macrocosmo::ship::harbour::sync_docked_position
+                .after(sublight_movement_system)
+                .after(process_ftl_travel),
+            macrocosmo::ship::harbour::force_undock_on_harbour_destroy.after(resolve_combat),
+        )
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::ship::harbour::auto_undock_on_combat_roe.before(resolve_combat),
+            macrocosmo::ship::harbour::auto_return_dock_after_combat.after(resolve_combat),
+        )
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+    app.add_systems(
+        Update,
+        macrocosmo::ship::harbour::sync_docked_modifiers
+            .after(sync_ship_module_modifiers)
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+
     // Spawn the empire entity
     spawn_test_empire(app.world_mut());
 
@@ -915,6 +944,19 @@ pub fn full_test_app() -> App {
 
     // --- Faction systems (#171) ---
     app.add_systems(Update, macrocosmo::faction::tick_diplomatic_actions);
+
+    // #384: Harbour lifecycle systems.
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::ship::harbour::auto_undock_on_move_command,
+            macrocosmo::ship::harbour::sync_docked_position,
+            macrocosmo::ship::harbour::force_undock_on_harbour_destroy,
+            macrocosmo::ship::harbour::auto_undock_on_combat_roe,
+            macrocosmo::ship::harbour::auto_return_dock_after_combat,
+            macrocosmo::ship::harbour::sync_docked_modifiers,
+        ),
+    );
 
     // Spawn the empire entity
     spawn_test_empire(app.world_mut());
