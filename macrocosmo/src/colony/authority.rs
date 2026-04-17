@@ -1,7 +1,12 @@
+use std::borrow::Cow;
+use std::fmt;
+
 use bevy::prelude::*;
+use mlua::prelude::*;
 
 use crate::amount::Amt;
-use crate::faction::{system_owner, FactionOwner};
+use crate::event_system::EventContext;
+use crate::faction::{FactionOwner, system_owner};
 use crate::galaxy::{AtSystem, Planet, Sovereignty, StarSystem};
 use crate::modifier::ModifiedValue;
 use crate::ship::Owner;
@@ -38,6 +43,98 @@ impl Default for AuthorityParams {
             production: ModifiedValue::new(BASE_AUTHORITY_PER_HEXADIES),
             cost_per_colony: ModifiedValue::new(AUTHORITY_COST_PER_COLONY),
         }
+    }
+}
+
+/// #303 (S-10): After [`update_sovereignty`] detects owner changes and writes
+/// them to [`PendingSovereigntyChanges`], this system cascades the new owner
+/// to child entities:
+///
+/// - **Colony:** update `FactionOwner` on each Colony whose planet belongs to
+///   the changed system.
+/// - **SystemBuildings:** the StarSystem entity itself carries `FactionOwner`;
+///   update it to the new sovereign.
+/// - **Docked ships:** only `ShipState::Docked { system }` ships transfer.
+///   In-transit / loitering ships retain their original owner.
+/// - **DeepSpaceStructure:** structures `With<AtSystem>` matching the system
+///   get their `FactionOwner` updated. (Currently no DSS use `AtSystem`;
+///   included for forward-compat.)
+///
+/// **Abandonment special case:** When `new_owner` is `None`, child entities
+/// keep their previous `FactionOwner`. Abandoning a system does not
+/// magically transfer infrastructure to nobody -- entities just lose
+/// sovereignty protection.
+pub fn cascade_sovereignty_changes(
+    mut pending: ResMut<PendingSovereigntyChanges>,
+    colonies: Query<(Entity, &Colony)>,
+    planets: Query<&Planet>,
+    mut faction_owners: Query<&mut FactionOwner>,
+    mut ships: Query<(&crate::ship::ShipState, Entity, &mut crate::ship::Ship)>,
+    dss_at_system: Query<(Entity, &AtSystem), With<crate::deep_space::DeepSpaceStructure>>,
+) {
+    let changes: Vec<SovereigntyChangedContext> = pending.changes.drain(..).collect();
+    for change in &changes {
+        let Some(new_faction) = change.new_owner else {
+            // Abandonment: leave FactionOwner as-is on children.
+            continue;
+        };
+
+        let system = change.system;
+
+        // 1. Update FactionOwner on the StarSystem entity itself (SystemBuildings).
+        if let Ok(mut fo) = faction_owners.get_mut(system) {
+            fo.0 = new_faction;
+        }
+
+        // 2. Update FactionOwner on Colony entities whose planet is in the system.
+        for (colony_entity, colony) in &colonies {
+            if colony.system(&planets) == Some(system) {
+                if let Ok(mut fo) = faction_owners.get_mut(colony_entity) {
+                    fo.0 = new_faction;
+                }
+            }
+        }
+
+        // 3. Update docked ships: only ShipState::Docked { system } transfers.
+        for (state, ship_entity, mut ship) in &mut ships {
+            if let crate::ship::ShipState::Docked { system: docked_sys } = state {
+                if *docked_sys == system {
+                    // Dual-write: FactionOwner component + Ship.owner field.
+                    if let Ok(mut fo) = faction_owners.get_mut(ship_entity) {
+                        fo.0 = new_faction;
+                    }
+                    ship.owner = Owner::Empire(new_faction);
+                }
+            }
+        }
+
+        // 4. DeepSpaceStructure entities with AtSystem matching the system.
+        for (dss_entity, at_sys) in &dss_at_system {
+            if at_sys.0 == system {
+                if let Ok(mut fo) = faction_owners.get_mut(dss_entity) {
+                    fo.0 = new_faction;
+                }
+            }
+        }
+    }
+
+    // Re-fill pending so the downstream fire system can read the changes.
+    pending.changes = changes;
+}
+
+/// #303 (S-10): Fire sovereignty-changed events through `EventSystem` so the
+/// standard `dispatch_event_handlers` loop delivers them to Lua handlers.
+///
+/// Runs **after** [`cascade_sovereignty_changes`] so that Lua handlers
+/// observe the post-cascade world state. Queue-only — never calls into Lua
+/// directly (see `feedback_rust_no_lua_callback.md`).
+pub fn fire_sovereignty_events(
+    clock: Res<GameClock>,
+    mut pending: ResMut<PendingSovereigntyChanges>,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
+) {
+    for ctx in pending.changes.drain(..) {
+        event_system.fire_event_with_payload(Some(ctx.system), clock.elapsed, Box::new(ctx));
     }
 }
 
@@ -116,6 +213,99 @@ pub fn tick_authority(
     }
 }
 
+// =============================================================================
+// #303 (S-10): Sovereignty change detection + cascade
+// =============================================================================
+
+/// Event id fired when sovereignty of a star system changes. Lua scripts
+/// register via `on("macrocosmo:sovereignty_changed", fn)`.
+pub const SOVEREIGNTY_CHANGED_EVENT: &str = "macrocosmo:sovereignty_changed";
+
+/// Reason for a sovereignty change. Carried on [`SovereigntyChangedContext`]
+/// so Lua handlers can distinguish initial claims from conquests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Cession, Secession reserved for future #305 / secession mechanics
+pub enum SovereigntyChangeReason {
+    /// Enemy Core deployed / conquered existing Core.
+    Conquest,
+    /// Diplomatic transfer (future #305).
+    Cession,
+    /// Core withdrawn / destroyed — owner becomes None.
+    Abandonment,
+    /// Rebel faction takes over (future).
+    Secession,
+    /// Game start / first Core deployment in unclaimed system.
+    Initial,
+}
+
+impl fmt::Display for SovereigntyChangeReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Conquest => "conquest",
+            Self::Cession => "cession",
+            Self::Abandonment => "abandonment",
+            Self::Secession => "secession",
+            Self::Initial => "initial",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Typed [`EventContext`] payload for the `macrocosmo:sovereignty_changed`
+/// event. Built by [`update_sovereignty`] when it detects an owner change,
+/// then stored on [`PendingSovereigntyChanges`] for the cascade system and
+/// eventually forwarded to `EventSystem::fire_event_with_payload`.
+#[derive(Clone, Debug)]
+pub struct SovereigntyChangedContext {
+    pub system: Entity,
+    pub system_name: String,
+    pub previous_owner: Option<Entity>,
+    pub new_owner: Option<Entity>,
+    pub reason: SovereigntyChangeReason,
+}
+
+impl EventContext for SovereigntyChangedContext {
+    fn event_id(&self) -> &str {
+        SOVEREIGNTY_CHANGED_EVENT
+    }
+
+    fn to_lua_table(&self, lua: &Lua) -> mlua::Result<mlua::Table> {
+        let t = lua.create_table()?;
+        t.set("event_id", SOVEREIGNTY_CHANGED_EVENT)?;
+        t.set("system_id", self.system.to_bits().to_string())?;
+        t.set("system_name", self.system_name.as_str())?;
+        if let Some(prev) = self.previous_owner {
+            t.set("previous_owner_id", prev.to_bits().to_string())?;
+        }
+        if let Some(new) = self.new_owner {
+            t.set("new_owner_id", new.to_bits().to_string())?;
+        }
+        t.set("reason", self.reason.to_string())?;
+        Ok(t)
+    }
+
+    fn payload_get(&self, key: &str) -> Option<Cow<'_, str>> {
+        match key {
+            "system_id" => Some(Cow::Owned(self.system.to_bits().to_string())),
+            "system_name" => Some(Cow::Borrowed(&self.system_name)),
+            "previous_owner_id" => self
+                .previous_owner
+                .map(|e| Cow::Owned(e.to_bits().to_string())),
+            "new_owner_id" => self.new_owner.map(|e| Cow::Owned(e.to_bits().to_string())),
+            "reason" => Some(Cow::Owned(self.reason.to_string())),
+            _ => None,
+        }
+    }
+}
+
+/// Resource that queues sovereignty changes detected by [`update_sovereignty`]
+/// for the downstream [`cascade_sovereignty_changes`] system. Drained each
+/// tick to avoid stale events.
+#[derive(Resource, Default)]
+pub struct PendingSovereigntyChanges {
+    pub changes: Vec<SovereigntyChangedContext>,
+}
+
 /// #295 (S-1): Derive sovereignty of each star system from Core ship presence.
 ///
 /// A system is sovereign to `faction` when (and only when) a Core ship owned by
@@ -130,13 +320,19 @@ pub fn tick_authority(
 /// otherwise). Real control-score dynamics (population, garrison, distance
 /// decay) come in S-4.
 pub fn update_sovereignty(
-    mut sovereignties: Query<(Entity, &mut Sovereignty)>,
+    mut sovereignties: Query<(Entity, &mut Sovereignty, &StarSystem)>,
     at_system: Query<(&AtSystem, &FactionOwner), With<crate::ship::CoreShip>>,
+    mut pending: ResMut<PendingSovereigntyChanges>,
 ) {
-    for (entity, mut sov) in &mut sovereignties {
-        match system_owner(entity, &at_system) {
-            Some(faction) => {
-                sov.owner = Some(Owner::Empire(faction));
+    for (entity, mut sov, star) in &mut sovereignties {
+        let prev_owner = sov.owner;
+        let new_faction = system_owner(entity, &at_system);
+        let new_owner = new_faction.map(Owner::Empire);
+
+        // Write the derived sovereignty regardless.
+        match new_faction {
+            Some(_) => {
+                sov.owner = new_owner;
                 sov.control_score = 1.0;
             }
             None => {
@@ -144,5 +340,30 @@ pub fn update_sovereignty(
                 sov.control_score = 0.0;
             }
         }
+
+        // Detect change: compare previous vs new owner entity.
+        let prev_faction = match prev_owner {
+            Some(Owner::Empire(e)) => Some(e),
+            _ => None,
+        };
+        if prev_faction == new_faction {
+            continue;
+        }
+
+        // Determine reason.
+        let reason = match (prev_faction, new_faction) {
+            (None, Some(_)) => SovereigntyChangeReason::Initial,
+            (Some(_), Some(_)) => SovereigntyChangeReason::Conquest,
+            (Some(_), None) => SovereigntyChangeReason::Abandonment,
+            (None, None) => unreachable!(), // filtered out above
+        };
+
+        pending.changes.push(SovereigntyChangedContext {
+            system: entity,
+            system_name: star.name.clone(),
+            previous_owner: prev_faction,
+            new_owner: new_faction,
+            reason,
+        });
     }
 }
