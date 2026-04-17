@@ -19,6 +19,8 @@ mod observer;
 mod physics;
 mod player;
 mod profiling;
+#[cfg(feature = "remote")]
+mod remote;
 mod scripting;
 mod setup;
 mod ship;
@@ -91,8 +93,10 @@ fn main() {
 
     #[cfg(feature = "remote")]
     {
-        app.add_plugins(bevy::remote::RemotePlugin::default());
+        app.add_plugins(remote::remote_plugin());
         app.add_plugins(bevy::remote::http::RemoteHttpPlugin::default());
+        app.init_resource::<remote::PendingInputReleases>();
+        app.add_systems(PreUpdate, remote::release_pending_inputs);
         info!("BRP remote server enabled on localhost:15702");
     }
 
