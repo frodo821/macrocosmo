@@ -45,6 +45,7 @@ pub fn process_settling(
     existing_system_buildings: Query<&SystemBuildings>,
     mut events: MessageWriter<GameEvent>,
     hostiles: Query<(&AtSystem, Option<&crate::faction::FactionOwner>), With<Hostile>>,
+    cores: Query<(&AtSystem, &crate::faction::FactionOwner), With<crate::ship::CoreShip>>,
     faction_relations: Res<crate::faction::FactionRelations>,
     empire_entity_q: Query<Entity, With<crate::player::PlayerEmpire>>,
     player_q: Query<&StationedAt, Without<Ship>>,
@@ -125,6 +126,32 @@ pub fn process_settling(
                     let _ = desc;
                     fact_sys.record(fact, sys_pos_arr, clock.elapsed, &v);
                 }
+                continue;
+            }
+
+            // #299 (S-5): Safety net — verify that a Core owned by the
+            // settling ship's faction still exists in the system. If the
+            // Core was destroyed mid-settle, abort and return to Docked.
+            let settling_faction: Option<Entity> =
+                ship_faction_owner
+                    .map(|fo| fo.0)
+                    .or_else(|| match ship.owner {
+                        crate::ship::Owner::Empire(e) => Some(e),
+                        crate::ship::Owner::Neutral => None,
+                    });
+            let has_own_core = settling_faction.is_some_and(|faction| {
+                cores
+                    .iter()
+                    .any(|(at, fo)| at.0 == system_entity && fo.0 == faction)
+            });
+            if !has_own_core {
+                warn!(
+                    "Colony Ship {} settling at {} aborted — sovereignty core removed!",
+                    ship.name, star_system.name
+                );
+                *state = ShipState::Docked {
+                    system: system_entity,
+                };
                 continue;
             }
 
