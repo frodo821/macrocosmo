@@ -290,6 +290,14 @@ fn apply_building_command(
                         );
                         break;
                     };
+                    // #280: Reject demolish for non-dismantlable buildings.
+                    if !def.dismantlable {
+                        warn!(
+                            "Demolish (planet): building '{}' in slot {} is not dismantlable; rejecting",
+                            bid, target_slot
+                        );
+                        break;
+                    }
                     let (m_ref, e_ref) = def.demolition_refund();
                     bq.push_demolition_order(DemolitionOrder {
                         order_id: 0,
@@ -327,6 +335,14 @@ fn apply_building_command(
                     );
                     return;
                 };
+                // #280: Reject demolish for non-dismantlable buildings.
+                if !def.dismantlable {
+                    warn!(
+                        "Demolish (system): building '{}' in slot {} is not dismantlable; rejecting",
+                        bid, target_slot
+                    );
+                    return;
+                }
                 let (m_ref, e_ref) = def.demolition_refund();
                 sbq.push_demolition_order(DemolitionOrder {
                     order_id: 0,
