@@ -193,6 +193,7 @@ fn test_demolish_rejected_for_non_dismantlable() {
         on_built: None,
         on_upgraded: None,
         dismantlable: false,
+        ship_design_id: None,
     });
 
     let def = reg.get("hub_test").unwrap();

@@ -1,5 +1,7 @@
 local hulls = require("ships.hulls")
 local modules = require("ships.modules")
+local station_hulls = require("ships.station_hulls")
+local station_modules = require("ships.station_modules")
 
 -- #236: Ship design stats (hp/ftl_range/cost/maintenance/build_time/can_*)
 -- are derived from hull + modules at registry load time. Presets no longer
@@ -59,10 +61,41 @@ local patrol_corvette = define_ship_design {
     },
 }
 
+-- #385: Station designs for system buildings (immobile, spawned by building construction).
+local station_shipyard_v1 = define_ship_design {
+    id = "station_shipyard_v1",
+    name = "Orbital Shipyard",
+    hull = station_hulls.station_shipyard_hull,
+    modules = {
+        { slot_type = "utility", module = station_modules.shipyard_bay },
+    },
+}
+
+local station_port_v1 = define_ship_design {
+    id = "station_port_v1",
+    name = "Trade Port",
+    hull = station_hulls.station_port_hull,
+    modules = {
+        { slot_type = "utility", module = station_modules.port_dock },
+    },
+}
+
+local station_research_lab_v1 = define_ship_design {
+    id = "station_research_lab_v1",
+    name = "Research Station",
+    hull = station_hulls.station_research_lab_hull,
+    modules = {
+        { slot_type = "utility", module = station_modules.research_array },
+    },
+}
+
 return {
     explorer_mk1 = explorer_mk1,
     colony_ship_mk1 = colony_ship_mk1,
     courier_mk1 = courier_mk1,
     scout_mk1 = scout_mk1,
     patrol_corvette = patrol_corvette,
+    station_shipyard_v1 = station_shipyard_v1,
+    station_port_v1 = station_port_v1,
+    station_research_lab_v1 = station_research_lab_v1,
 }

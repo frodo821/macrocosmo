@@ -48,6 +48,7 @@ local research_lab = define_building {
         { target = "colony.researcher_slot", base_add = 4 },
     },
     is_system_building = true,
+    ship_design_id = "station_research_lab_v1",
 }
 
 local shipyard = define_building {
@@ -59,6 +60,7 @@ local shipyard = define_building {
     maintenance = 1.0,
     is_system_building = true,
     capabilities = { shipyard = { concurrent_builds = 1 } },
+    ship_design_id = "station_shipyard_v1",
 }
 
 local port = define_building {
@@ -70,6 +72,7 @@ local port = define_building {
     maintenance = 0.5,
     is_system_building = true,
     capabilities = { port = { ftl_range_bonus = 10.0, travel_time_factor = 0.8 } },
+    ship_design_id = "station_port_v1",
 }
 
 local farm = define_building {

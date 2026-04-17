@@ -470,6 +470,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
 
         let mut port_caps = HashMap::new();
@@ -505,6 +506,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
         registry
     }

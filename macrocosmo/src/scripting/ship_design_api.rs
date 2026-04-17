@@ -942,4 +942,73 @@ mod tests {
         assert_eq!(defs.len(), 1);
         assert!(!defs[0].is_capital);
     }
+
+    /// #385: Station hull definitions parse from Lua files and appear in
+    /// HullRegistry with the expected properties (immobile, size 10000).
+    #[test]
+    fn test_station_hulls_parse_from_lua() {
+        let engine = ScriptEngine::new().unwrap();
+        let init = engine.scripts_dir().join("init.lua");
+        engine.load_file(&init).unwrap();
+
+        let hulls = parse_hulls(engine.lua()).unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            hulls.iter().map(|h| (h.id.as_str(), h)).collect();
+
+        for id in &[
+            "station_shipyard_hull",
+            "station_port_hull",
+            "station_research_lab_hull",
+        ] {
+            let hull = by_id
+                .get(id)
+                .unwrap_or_else(|| panic!("Station hull '{}' should be in hull definitions", id));
+            assert_eq!(hull.size, 10000, "{} should have size 10000", id);
+            assert!(!hull.is_capital, "{} should not be capital", id);
+            assert_eq!(hull.base_speed, 0.0, "{} should be immobile", id);
+            assert_eq!(hull.base_evasion, 0.0, "{} should have zero evasion", id);
+        }
+    }
+
+    /// #385: Station ship designs parse from Lua and appear in the design list.
+    #[test]
+    fn test_station_designs_parse_from_lua() {
+        let engine = ScriptEngine::new().unwrap();
+        let init = engine.scripts_dir().join("init.lua");
+        engine.load_file(&init).unwrap();
+
+        let designs = parse_ship_designs(engine.lua()).unwrap();
+        let ids: Vec<&str> = designs.iter().map(|d| d.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"station_shipyard_v1"),
+            "station_shipyard_v1 missing from designs"
+        );
+        assert!(
+            ids.contains(&"station_port_v1"),
+            "station_port_v1 missing from designs"
+        );
+        assert!(
+            ids.contains(&"station_research_lab_v1"),
+            "station_research_lab_v1 missing from designs"
+        );
+
+        // Verify hull references
+        let shipyard = designs
+            .iter()
+            .find(|d| d.id == "station_shipyard_v1")
+            .unwrap();
+        assert_eq!(shipyard.hull_id, "station_shipyard_hull");
+        assert_eq!(shipyard.modules.len(), 1);
+        assert_eq!(shipyard.modules[0].module_id, "shipyard_bay");
+
+        let port = designs.iter().find(|d| d.id == "station_port_v1").unwrap();
+        assert_eq!(port.hull_id, "station_port_hull");
+
+        let lab = designs
+            .iter()
+            .find(|d| d.id == "station_research_lab_v1")
+            .unwrap();
+        assert_eq!(lab.hull_id, "station_research_lab_hull");
+    }
 }
