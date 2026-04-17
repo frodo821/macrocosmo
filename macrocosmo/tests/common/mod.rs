@@ -1191,7 +1191,6 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         prerequisites: None,
         size: 1,
         is_capital: false,
-        capabilities: HashMap::new(),
     });
     hulls.insert(HullDefinition {
         id: "frigate".into(),
@@ -1217,7 +1216,6 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         prerequisites: None,
         size: 2,
         is_capital: false,
-        capabilities: HashMap::new(),
     });
     hulls.insert(HullDefinition {
         id: "scout_hull".into(),
@@ -1254,7 +1252,6 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         prerequisites: None,
         size: 1,
         is_capital: false,
-        capabilities: HashMap::new(),
     });
     hulls.insert(HullDefinition {
         id: "courier_hull".into(),
@@ -1290,7 +1287,6 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         prerequisites: None,
         size: 1,
         is_capital: false,
-        capabilities: HashMap::new(),
     });
     hulls
 }

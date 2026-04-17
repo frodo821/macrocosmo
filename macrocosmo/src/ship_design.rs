@@ -56,9 +56,6 @@ pub struct HullDefinition {
     pub size: u32,
     /// Whether this hull is a capital-class hull (default false).
     pub is_capital: bool,
-    /// Capability-based extension point. Keys are capability names, values are
-    /// parameter maps (e.g. `{"harbour": {"capacity": 12.0}}`).
-    pub capabilities: HashMap<String, HashMap<String, f64>>,
 }
 
 #[derive(Resource, Default)]
@@ -847,7 +844,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         });
 
         let corvette = registry.get("corvette").unwrap();
@@ -954,7 +950,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         };
         let module = ModuleDefinition {
             id: "m100".to_string(),
@@ -1001,7 +996,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         };
         let ftl = ModuleDefinition {
             id: "ftl_drive_mk1".to_string(),
@@ -1076,7 +1070,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         });
 
         let mut modules = ModuleRegistry::default();
@@ -1450,7 +1443,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         };
         let ftl_drive = ModuleDefinition {
             id: "ftl_drive".into(),
@@ -1568,7 +1560,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         };
         let survey = ModuleDefinition {
             id: "survey_equipment".into(),
@@ -1626,7 +1617,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         };
         let survey = ModuleDefinition {
             id: "survey_equipment".into(),
@@ -1716,7 +1706,6 @@ mod tests {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: HashMap::new(),
         }
     }
 

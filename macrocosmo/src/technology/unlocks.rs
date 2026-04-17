@@ -395,7 +395,6 @@ mod tests {
             prerequisites: prereq,
             size: 1,
             is_capital: false,
-            capabilities: std::collections::HashMap::new(),
         }
     }
 

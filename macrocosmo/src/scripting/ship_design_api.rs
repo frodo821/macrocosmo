@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::amount::Amt;
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::ship_design::{
@@ -57,23 +55,6 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
         // #382: size is mandatory — mlua will error if missing.
         let size: u32 = table.get("size")?;
         let is_capital: bool = table.get::<Option<bool>>("is_capital")?.unwrap_or(false);
-        let capabilities: HashMap<String, HashMap<String, f64>> = table
-            .get::<Option<mlua::Table>>("capabilities")?
-            .map(|cap_table| {
-                let mut caps = HashMap::new();
-                for pair in cap_table.pairs::<String, mlua::Table>() {
-                    let (key, params_table) = pair?;
-                    let mut params = HashMap::new();
-                    for param_pair in params_table.pairs::<String, f64>() {
-                        let (pk, pv) = param_pair?;
-                        params.insert(pk, pv);
-                    }
-                    caps.insert(key, params);
-                }
-                Ok::<_, mlua::Error>(caps)
-            })
-            .transpose()?
-            .unwrap_or_default();
 
         result.push(HullDefinition {
             id,
@@ -91,7 +72,6 @@ pub fn parse_hulls(lua: &mlua::Lua) -> Result<Vec<HullDefinition>, mlua::Error> 
             prerequisites,
             size,
             is_capital,
-            capabilities,
         });
     }
 
@@ -475,7 +455,6 @@ mod tests {
         assert_eq!(corvette.maintenance, Amt::new(0, 500));
         assert_eq!(corvette.size, 1);
         assert!(!corvette.is_capital);
-        assert!(corvette.capabilities.is_empty());
     }
 
     #[test]
@@ -962,62 +941,5 @@ mod tests {
         let defs = parse_hulls(lua).unwrap();
         assert_eq!(defs.len(), 1);
         assert!(!defs[0].is_capital);
-    }
-
-    /// #382: `capabilities` parses nested tables correctly.
-    #[test]
-    fn test_hull_capabilities_parse() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(
-            r#"
-            define_hull {
-                id = "carrier",
-                name = "Carrier",
-                size = 8,
-                is_capital = true,
-                base_hp = 500,
-                capabilities = {
-                    harbour = { capacity = 12 },
-                },
-            }
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let defs = parse_hulls(lua).unwrap();
-        assert_eq!(defs.len(), 1);
-        let carrier = &defs[0];
-        assert!(carrier.is_capital);
-        assert_eq!(carrier.size, 8);
-        assert_eq!(carrier.capabilities.len(), 1);
-        let harbour = carrier.capabilities.get("harbour").unwrap();
-        assert_eq!(*harbour.get("capacity").unwrap(), 12.0);
-    }
-
-    /// #382: `capabilities` defaults to empty HashMap when omitted.
-    #[test]
-    fn test_hull_capabilities_default_empty() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(
-            r#"
-            define_hull {
-                id = "simple",
-                name = "Simple",
-                size = 1,
-                base_hp = 30,
-            }
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let defs = parse_hulls(lua).unwrap();
-        assert_eq!(defs.len(), 1);
-        assert!(defs[0].capabilities.is_empty());
     }
 }

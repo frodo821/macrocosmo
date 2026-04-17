@@ -1706,7 +1706,6 @@ fn test_hull_modifiers_applied_to_ship() {
             prerequisites: None,
             size: 1,
             is_capital: false,
-            capabilities: std::collections::HashMap::new(),
         });
     }
 
@@ -2239,7 +2238,6 @@ fn install_refit_fixture(app: &mut App) {
         prerequisites: None,
         size: 1,
         is_capital: false,
-        capabilities: std::collections::HashMap::new(),
     });
 
     let mut modules = ModuleRegistry::default();
