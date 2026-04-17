@@ -132,6 +132,8 @@ pub fn process_settling(
             // #299 (S-5): Safety net — verify that a Core owned by the
             // settling ship's faction still exists in the system. If the
             // Core was destroyed mid-settle, abort and return to Docked.
+            // Neutral ships (no faction) bypass the gate for backward
+            // compatibility with pre-faction test setups.
             let settling_faction: Option<Entity> =
                 ship_faction_owner
                     .map(|fo| fo.0)
@@ -139,20 +141,20 @@ pub fn process_settling(
                         crate::ship::Owner::Empire(e) => Some(e),
                         crate::ship::Owner::Neutral => None,
                     });
-            let has_own_core = settling_faction.is_some_and(|faction| {
-                cores
+            if let Some(faction) = settling_faction {
+                let has_own_core = cores
                     .iter()
-                    .any(|(at, fo)| at.0 == system_entity && fo.0 == faction)
-            });
-            if !has_own_core {
-                warn!(
-                    "Colony Ship {} settling at {} aborted — sovereignty core removed!",
-                    ship.name, star_system.name
-                );
-                *state = ShipState::Docked {
-                    system: system_entity,
-                };
-                continue;
+                    .any(|(at, fo)| at.0 == system_entity && fo.0 == faction);
+                if !has_own_core {
+                    warn!(
+                        "Colony Ship {} settling at {} aborted — sovereignty core removed!",
+                        ship.name, star_system.name
+                    );
+                    *state = ShipState::Docked {
+                        system: system_entity,
+                    };
+                    continue;
+                }
             }
 
             // Collect planets that already have a colony

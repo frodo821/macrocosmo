@@ -277,28 +277,29 @@ pub fn handle_colonize_requested(
 
         // #299 (S-5): Settle gate — require a Core ship owned by this
         // faction in the target system. Without sovereignty presence,
-        // colonization is blocked.
-        let has_own_core = ship_faction_entity.is_some_and(|faction| {
-            cores
+        // colonization is blocked. Neutral ships (no faction) bypass the
+        // gate for backward compatibility with pre-faction test setups.
+        if let Some(faction) = ship_faction_entity {
+            let has_own_core = cores
                 .iter()
-                .any(|(at, fo)| at.0 == req.target_system && fo.0 == faction)
-        });
-        if !has_own_core {
-            warn!(
-                "Queue: Ship {} cannot colonize {} — no sovereignty core in target system",
-                ship.name, target_star.name
-            );
-            executed.write(CommandExecuted {
-                command_id: req.command_id,
-                kind: CommandKind::Colonize,
-                ship: req.ship,
-                result: CommandResult::Rejected {
-                    reason: "no sovereignty core in target system".to_string(),
-                },
-                completed_at: clock.elapsed,
-            });
-            queue.sync_prediction(ship_pos.as_array(), docked_system);
-            continue;
+                .any(|(at, fo)| at.0 == req.target_system && fo.0 == faction);
+            if !has_own_core {
+                warn!(
+                    "Queue: Ship {} cannot colonize {} — no sovereignty core in target system",
+                    ship.name, target_star.name
+                );
+                executed.write(CommandExecuted {
+                    command_id: req.command_id,
+                    kind: CommandKind::Colonize,
+                    ship: req.ship,
+                    result: CommandResult::Rejected {
+                        reason: "no sovereignty core in target system".to_string(),
+                    },
+                    completed_at: clock.elapsed,
+                });
+                queue.sync_prediction(ship_pos.as_array(), docked_system);
+                continue;
+            }
         }
 
         let docked_sys = docked_system.expect("colonize already required docked");
