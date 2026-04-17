@@ -1895,7 +1895,6 @@ mod tests_229 {
             upgrade_from: None,
             on_built: None,
             on_upgraded: None,
-            dismantlable: true,
         }
     }
 

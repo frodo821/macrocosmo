@@ -369,7 +369,6 @@ fn test_empire_comm_relay_range_extends_coverage() {
         upgrade_from: None,
         on_built: None,
         on_upgraded: None,
-        dismantlable: true,
     });
     app.insert_resource(registry);
 

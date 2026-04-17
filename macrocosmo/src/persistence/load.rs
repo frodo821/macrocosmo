@@ -535,6 +535,11 @@ pub fn load_game_from_reader<R: Read>(world: &mut World, mut r: R) -> Result<(),
     // form is re-derived from Lua scripts on next startup, not saved.
     let _ = world.get_resource::<TechTree>();
 
+    // #280: Post-load migration — ensure every Colony has a hub/capital in
+    // slot 0. Pre-#280 saves have all-empty slot 0; patch those with
+    // colony_hub_t1 (or planetary_capital_t3 for capital system colonies).
+    migrate_colony_hub_slot_zero(world);
+
     Ok(())
 }
 
@@ -543,4 +548,74 @@ pub fn load_game_from_reader<R: Read>(world: &mut World, mut r: R) -> Result<(),
 pub fn load_game_from(world: &mut World, path: &Path) -> Result<(), LoadError> {
     let file = std::fs::File::open(path)?;
     load_game_from_reader(world, file)
+}
+
+/// #280: Post-load migration that inserts a Colony Hub / Planetary Capital in
+/// slot 0 of any Colony whose slot 0 is empty. This handles saves produced
+/// before the Colony Hub feature was introduced.
+///
+/// Detection: capital system colonies get `planetary_capital_t3`, all others
+/// get `colony_hub_t1`. If a colony already has a hub/capital-type building in
+/// slot 0 it is skipped (idempotent).
+fn migrate_colony_hub_slot_zero(world: &mut World) {
+    use crate::colony::{Buildings, Colony};
+    use crate::galaxy::{Planet, StarSystem};
+    use crate::scripting::building_api::BuildingId;
+
+    // Collect capital system entities.
+    let capital_systems: std::collections::HashSet<bevy::prelude::Entity> = {
+        let mut q = world.query::<(Entity, &StarSystem)>();
+        q.iter(world)
+            .filter(|(_, s)| s.is_capital)
+            .map(|(e, _)| e)
+            .collect()
+    };
+
+    // Collect (colony_entity, planet_entity) for colonies with empty slot 0.
+    let mut to_patch: Vec<(Entity, Entity)> = Vec::new();
+    {
+        let mut q = world.query::<(Entity, &Colony, &Buildings)>();
+        for (ce, colony, buildings) in q.iter(world) {
+            let slot_0_empty = buildings.slots.first().map(|s| s.is_none()).unwrap_or(true);
+            if slot_0_empty {
+                to_patch.push((ce, colony.planet));
+            }
+        }
+    }
+
+    if to_patch.is_empty() {
+        return;
+    }
+
+    // Resolve planet -> system mapping.
+    let planet_to_system: std::collections::HashMap<Entity, Entity> = {
+        let mut q = world.query::<(Entity, &Planet)>();
+        q.iter(world).map(|(e, p)| (e, p.system)).collect()
+    };
+
+    let mut migrated = 0usize;
+    for (colony_entity, planet_entity) in to_patch {
+        let is_capital = planet_to_system
+            .get(&planet_entity)
+            .is_some_and(|sys| capital_systems.contains(sys));
+        let hub_id = if is_capital {
+            "planetary_capital_t3"
+        } else {
+            "colony_hub_t1"
+        };
+        if let Some(mut buildings) = world.get_mut::<Buildings>(colony_entity) {
+            if buildings.slots.is_empty() {
+                buildings.slots.push(Some(BuildingId::new(hub_id)));
+            } else {
+                buildings.slots[0] = Some(BuildingId::new(hub_id));
+            }
+            migrated += 1;
+        }
+    }
+    if migrated > 0 {
+        info!(
+            "#280 migration: patched {} colonies with hub/capital in slot 0",
+            migrated
+        );
+    }
 }

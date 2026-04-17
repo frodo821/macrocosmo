@@ -75,11 +75,10 @@ use super::savebag::*;
 // next bytes for the new field, misaligning the rest. Regenerated
 // `tests/fixtures/minimal_game.bin` ships in the same commit as the version
 // bump so `load_minimal_game_fixture_smoke` continues to pass.
-// #335: Bumped 2 → 3 because `SavedComponentBag` gained a `biome`
-// (`Option<SavedBiome>`) field for the new Biome component on Planet entities.
-// Same postcard-wire-break rationale as #296 — the fixture is regenerated in
-// lockstep.
-pub const SAVE_VERSION: u32 = 3;
+// #280: Bumped 3 → 4 for Colony Hub migration. Post-load migration inserts
+// colony_hub_t1 (or planetary_capital_t3 for capital colonies) into slot 0
+// of any Colony whose slot 0 is empty (pre-#280 saves).
+pub const SAVE_VERSION: u32 = 4;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
