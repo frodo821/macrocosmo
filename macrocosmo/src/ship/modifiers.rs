@@ -31,6 +31,7 @@ pub fn sync_ship_module_modifiers(
         mods.armor_max = ScopedModifiers::default();
         mods.shield_max = ScopedModifiers::default();
         mods.shield_regen = ScopedModifiers::default();
+        mods.harbour_capacity = ScopedModifiers::default();
 
         // Apply hull modifiers first
         if let Some(hull_def) = hull_registry.get(&ship.hull_id) {
@@ -82,6 +83,7 @@ fn push_ship_modifier(mods: &mut Mut<ShipModifiers>, target: &str, modifier: Mod
         "ship.armor_max" => mods.armor_max.push_modifier(modifier),
         "ship.shield_max" => mods.shield_max.push_modifier(modifier),
         "ship.shield_regen" => mods.shield_regen.push_modifier(modifier),
+        "ship.harbour_capacity" => mods.harbour_capacity.push_modifier(modifier),
         _ => {}
     }
 }

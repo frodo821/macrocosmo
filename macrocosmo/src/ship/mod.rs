@@ -472,6 +472,8 @@ pub struct ShipModifiers {
     pub armor_max: ScopedModifiers,
     pub shield_max: ScopedModifiers,
     pub shield_regen: ScopedModifiers,
+    /// #384: How many size-units of ships this vessel can harbour.
+    pub harbour_capacity: ScopedModifiers,
 }
 
 /// Cached computed stats for a ship, derived from ShipModifiers.
@@ -484,6 +486,8 @@ pub struct ShipStats {
     pub evasion: CachedValue,
     pub cargo_capacity: CachedValue,
     pub maintenance: Amt,
+    /// #384: Cached harbour capacity (from ScopedModifiers). > 0 means ship is a harbour.
+    pub harbour_capacity: CachedValue,
 }
 
 /// 3-layer hit point model: shield → armor → hull.

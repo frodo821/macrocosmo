@@ -1294,6 +1294,9 @@ pub struct SavedShipModifiers {
     pub armor_max: ScopedModifiers,
     pub shield_max: ScopedModifiers,
     pub shield_regen: ScopedModifiers,
+    /// #384: Harbour capacity modifiers. Defaults to empty for older saves.
+    #[serde(default)]
+    pub harbour_capacity: ScopedModifiers,
 }
 
 impl SavedShipModifiers {
@@ -1310,6 +1313,7 @@ impl SavedShipModifiers {
             armor_max: v.armor_max.clone(),
             shield_max: v.shield_max.clone(),
             shield_regen: v.shield_regen.clone(),
+            harbour_capacity: v.harbour_capacity.clone(),
         }
     }
     pub fn into_live(self) -> ShipModifiers {
@@ -1325,6 +1329,7 @@ impl SavedShipModifiers {
             armor_max: self.armor_max,
             shield_max: self.shield_max,
             shield_regen: self.shield_regen,
+            harbour_capacity: self.harbour_capacity,
         }
     }
 }
@@ -2890,7 +2895,9 @@ pub enum SavedShipSnapshotState {
     Settling,
     Refitting,
     Destroyed,
-    Loitering { position: [f64; 3] },
+    Loitering {
+        position: [f64; 3],
+    },
 }
 impl From<&ShipSnapshotState> for SavedShipSnapshotState {
     fn from(v: &ShipSnapshotState) -> Self {
