@@ -20,12 +20,13 @@ pub mod persistence;
 pub mod physics;
 pub mod player;
 pub mod profiling;
+#[cfg(feature = "remote")]
 pub mod remote;
 pub mod scripting;
 pub mod setup;
-pub mod species;
 pub mod ship;
 pub mod ship_design;
+pub mod species;
 pub mod technology;
 pub mod time_system;
 pub mod ui;
