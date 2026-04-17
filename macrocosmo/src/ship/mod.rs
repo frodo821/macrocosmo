@@ -8,6 +8,8 @@ pub mod defense_fleet;
 pub mod deliverable_ops;
 pub mod exploration;
 pub mod fleet;
+/// #384: Harbour dock/undock core logic + harbour lifecycle systems.
+pub mod harbour;
 pub mod hitpoints;
 pub mod modifiers;
 pub mod movement;
