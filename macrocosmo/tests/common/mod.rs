@@ -541,6 +541,18 @@ pub fn test_app() -> App {
         Update,
         apply_pending_colonization_orders.after(macrocosmo::time_system::advance_game_time),
     );
+    // #303 (S-10): Sovereignty change detection + cascade + event firing.
+    app.init_resource::<macrocosmo::colony::PendingSovereigntyChanges>();
+    app.add_systems(
+        Update,
+        (
+            update_sovereignty,
+            macrocosmo::colony::cascade_sovereignty_changes,
+            macrocosmo::colony::fire_sovereignty_events,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time),
+    );
     app.add_systems(
         Update,
         macrocosmo::event_system::tick_events
@@ -788,10 +800,18 @@ pub fn full_test_app() -> App {
         )
             .chain(),
     );
+    // #303 (S-10): Sovereignty change detection + cascade + event firing.
+    app.init_resource::<macrocosmo::colony::PendingSovereigntyChanges>();
     app.add_systems(
         Update,
-        (update_sovereignty, apply_pending_colonization_orders),
+        (
+            update_sovereignty,
+            macrocosmo::colony::cascade_sovereignty_changes,
+            macrocosmo::colony::fire_sovereignty_events,
+        )
+            .chain(),
     );
+    app.add_systems(Update, apply_pending_colonization_orders);
 
     // --- Knowledge system (from KnowledgePlugin) ---
     app.add_systems(Update, propagate_knowledge);
