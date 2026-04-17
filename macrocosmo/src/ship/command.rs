@@ -62,7 +62,7 @@ pub fn process_pending_ship_commands(
         }
 
         let docked_system = match *state {
-            ShipState::Docked { system } => system,
+            ShipState::InSystem { system } => system,
             _ => {
                 info!(
                     "Remote command for {} discarded: ship is no longer docked",

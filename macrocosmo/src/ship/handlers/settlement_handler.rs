@@ -59,7 +59,7 @@ pub fn handle_survey_requested(
         };
 
         let docked_system: Option<Entity> = match *state {
-            ShipState::Docked { system } => Some(system),
+            ShipState::InSystem { system } => Some(system),
             ShipState::Loitering { .. } => None,
             _ => {
                 executed.write(CommandExecuted {
@@ -199,7 +199,7 @@ pub fn handle_colonize_requested(
             });
 
         let docked_system: Option<Entity> = match *state {
-            ShipState::Docked { system } => Some(system),
+            ShipState::InSystem { system } => Some(system),
             ShipState::Loitering { .. } => None,
             _ => {
                 executed.write(CommandExecuted {

@@ -987,8 +987,8 @@ mod tests {
         for (ship, state) in &ships {
             assert!(matches!(ship.owner, Owner::Empire(_)));
             match state {
-                ShipState::Docked { system } => assert_eq!(*system, capital),
-                _ => panic!("Expected Docked state at capital"),
+                ShipState::InSystem { system } => assert_eq!(*system, capital),
+                _ => panic!("Expected InSystem state at capital"),
             }
         }
         let names: Vec<String> = ships.iter().map(|(s, _)| s.name.clone()).collect();

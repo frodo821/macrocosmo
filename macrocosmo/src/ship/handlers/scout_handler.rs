@@ -44,7 +44,7 @@ pub fn handle_scout_requested(
         };
 
         let docked_system: Option<Entity> = match *state {
-            ShipState::Docked { system } => Some(system),
+            ShipState::InSystem { system } => Some(system),
             ShipState::Loitering { .. } => None,
             _ => {
                 executed.write(CommandExecuted {

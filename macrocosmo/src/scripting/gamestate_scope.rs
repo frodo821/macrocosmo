@@ -1019,7 +1019,7 @@ pub(crate) mod views {
                         t.set("origin_system", origin_system.to_bits())?;
                         t.set("destination_system", destination_system.to_bits())?;
                     }
-                    S::Docked { system } => {
+                    S::InSystem { system } => {
                         t.set("origin_system", system.to_bits())?;
                     }
                     _ => {}
@@ -1037,8 +1037,8 @@ pub(crate) mod views {
         use crate::ship::ShipState as S;
         let t = lua.create_table()?;
         match state {
-            S::Docked { system } => {
-                t.set("kind", "docked")?;
+            S::InSystem { system } => {
+                t.set("kind", "in_system")?;
                 t.set("system", system.to_bits())?;
             }
             S::SubLight {

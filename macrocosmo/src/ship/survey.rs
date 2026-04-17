@@ -69,7 +69,7 @@ pub fn start_survey_with_bonus(
     }
 
     let docked_system = match ship_state {
-        ShipState::Docked { system } => *system,
+        ShipState::InSystem { system } => *system,
         _ => return Err("Ship must be docked to begin a survey"),
     };
 
@@ -437,7 +437,7 @@ pub fn process_surveys(
                 }
             }
 
-            *state = ShipState::Docked {
+            *state = ShipState::InSystem {
                 system: target_system,
             };
         }
@@ -473,7 +473,7 @@ pub fn deliver_survey_results(
     });
 
     for (ship_entity, ship, state, survey_data) in &ships {
-        let ShipState::Docked { system: docked_at } = state else {
+        let ShipState::InSystem { system: docked_at } = state else {
             continue;
         };
 
@@ -633,7 +633,7 @@ mod tests {
         let mut world = World::new();
         let system = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1");
-        let mut state = ShipState::Docked { system };
+        let mut state = ShipState::InSystem { system };
         let pos = Position {
             x: 0.0,
             y: 0.0,
@@ -671,7 +671,7 @@ mod tests {
         let mut world = World::new();
         let system = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
-        let mut state = ShipState::Docked { system };
+        let mut state = ShipState::InSystem { system };
         let ship_pos = Position {
             x: 0.0,
             y: 0.0,
@@ -700,7 +700,7 @@ mod tests {
         let mut world = World::new();
         let system = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
-        let mut state = ShipState::Docked { system };
+        let mut state = ShipState::InSystem { system };
         let pos = Position {
             x: 0.0,
             y: 0.0,
@@ -730,7 +730,7 @@ mod tests {
         let system_a = world.spawn_empty().id();
         let system_b = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
-        let mut state = ShipState::Docked { system: system_a };
+        let mut state = ShipState::InSystem { system: system_a };
         let pos = Position {
             x: 0.0,
             y: 0.0,
@@ -749,7 +749,7 @@ mod tests {
         let mut world = World::new();
         let system = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
-        let mut state = ShipState::Docked { system };
+        let mut state = ShipState::InSystem { system };
         let pos = Position {
             x: 0.0,
             y: 0.0,

@@ -125,7 +125,7 @@ pub fn sublight_movement_system(
                 &mut fact_sys,
             );
             if let Some(system) = target_system {
-                *state = ShipState::Docked { system };
+                *state = ShipState::InSystem { system };
             } else {
                 *state = ShipState::Loitering {
                     position: destination,
@@ -151,7 +151,7 @@ pub fn sublight_movement_system(
                 &mut fact_sys,
             );
             if let Some(system) = target_system {
-                *state = ShipState::Docked { system };
+                *state = ShipState::InSystem { system };
             } else {
                 *state = ShipState::Loitering {
                     position: destination,
@@ -340,7 +340,7 @@ pub fn process_ftl_travel(
         if clock.elapsed >= arrival_at {
             if let Ok((star, dest_pos)) = systems.get(destination_system) {
                 *ship_pos = *dest_pos;
-                *state = ShipState::Docked {
+                *state = ShipState::InSystem {
                     system: destination_system,
                 };
                 // #249: Dual-write FTL arrival.

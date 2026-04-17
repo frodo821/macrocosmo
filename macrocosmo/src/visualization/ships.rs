@@ -57,7 +57,7 @@ pub fn draw_ships(
 
     for (_entity, ship, state, _queue) in &ships {
         match state {
-            ShipState::Docked { system } => {
+            ShipState::InSystem { system } => {
                 docked_counts
                     .entry(*system)
                     .or_default()
@@ -262,7 +262,7 @@ pub fn draw_ships(
             if !queue.commands.is_empty() {
                 // Determine the ship's current screen position from its state
                 let current_pos = match state {
-                    ShipState::Docked { system } => {
+                    ShipState::InSystem { system } => {
                         stars.get(*system).ok().map(|pos| {
                             Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
                         })

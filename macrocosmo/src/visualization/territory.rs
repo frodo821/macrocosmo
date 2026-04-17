@@ -252,7 +252,7 @@ fn sync_territory_material(
         if owner_entity != player_entity {
             continue;
         }
-        if let ShipState::Docked { system } = state {
+        if let ShipState::InSystem { system } = state {
             *garrison_by_system.entry(*system).or_insert(0.0) += hp.hull_max as f32;
         }
     }

@@ -216,7 +216,7 @@ pub fn resolve_combat(
                     if roe == RulesOfEngagement::Retreat {
                         return None; // #57: Retreat ships skip combat
                     }
-                    if let ShipState::Docked { system } = state {
+                    if let ShipState::InSystem { system } = state {
                         if *system != *system_entity {
                             return None;
                         }

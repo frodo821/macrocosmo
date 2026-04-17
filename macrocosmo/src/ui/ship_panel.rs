@@ -152,7 +152,7 @@ fn build_status_info(
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
 ) -> ShipStatusInfo {
     match state {
-        ShipState::Docked { system } => ShipStatusInfo {
+        ShipState::InSystem { system } => ShipStatusInfo {
             label: format!("Docked at {}", system_name(*system, stars)),
             progress: None,
         },
@@ -381,7 +381,7 @@ pub(super) fn ships_docked_at(
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _, _, _)| {
-            if let ShipState::Docked { system: s } = &*state {
+            if let ShipState::InSystem { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.design_id.clone()));
                 }
@@ -487,7 +487,7 @@ pub fn draw_ship_panel(
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
         let (_, ship, state, cargo, ship_hp, survey_data) = ships_query.get(ship_entity).ok()?;
-        let docked_system = if let ShipState::Docked { system } = &*state {
+        let docked_system = if let ShipState::InSystem { system } = &*state {
             Some(*system)
         } else {
             None
@@ -587,7 +587,7 @@ pub fn draw_ship_panel(
                 if m_design.revision <= m_ship.design_revision {
                     continue;
                 }
-                if !matches!(&*m_state, ShipState::Docked { .. }) {
+                if !matches!(&*m_state, ShipState::InSystem { .. }) {
                     continue;
                 }
                 let Some(m_hull) = hull_registry.get(&m_ship.hull_id) else {

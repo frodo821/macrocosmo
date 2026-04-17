@@ -427,7 +427,7 @@ fn seed_world_with_ship() -> (World, Entity, Entity) {
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sol },
+            ShipState::InSystem { system: sol },
             macrocosmo::ship::ShipHitpoints {
                 hull: 50.0,
                 hull_max: 50.0,
@@ -1235,7 +1235,7 @@ fn test_save_load_sovereignty_derived_cache_regression() {
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sol },
+            ShipState::InSystem { system: sol },
             AtSystem(sol),
             FactionOwner(empire),
             macrocosmo::ship::CoreShip,

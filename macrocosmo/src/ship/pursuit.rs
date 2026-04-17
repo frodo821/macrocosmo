@@ -100,7 +100,7 @@ fn ship_position(
     now: i64,
 ) -> Option<[f64; 3]> {
     match state {
-        ShipState::Docked { system } => positions.get(*system).ok().map(|p| p.as_array()),
+        ShipState::InSystem { system } => positions.get(*system).ok().map(|p| p.as_array()),
         ShipState::Surveying { target_system, .. } => {
             positions.get(*target_system).ok().map(|p| p.as_array())
         }
@@ -244,7 +244,7 @@ pub fn detect_hostiles_system(
         // #296 (S-3): Immobile ships (Infrastructure Cores) can never
         // intercept a hostile target, so they are excluded from the
         // detector loop entirely. Defence-in-depth: a Core always sits in
-        // ShipState::Docked and would already be filtered by is_deep_space,
+        // ShipState::InSystem and would already be filtered by is_deep_space,
         // but if a future feature ever loiters one in deep space the
         // pursuit pipeline must remain coherent.
         if ship.is_immobile() {
@@ -398,7 +398,7 @@ mod tests {
     fn is_deep_space_classification() {
         let mut world = World::new();
         let sys = world.spawn_empty().id();
-        assert!(!is_deep_space(&ShipState::Docked { system: sys }));
+        assert!(!is_deep_space(&ShipState::InSystem { system: sys }));
         assert!(!is_deep_space(&ShipState::InFTL {
             origin_system: sys,
             destination_system: sys,

@@ -784,8 +784,8 @@ pub fn sensor_buoy_detect_system(
             }
 
             let (snapshot_state, last_system) = match state {
-                crate::ship::ShipState::Docked { system } => {
-                    (ShipSnapshotState::Docked, Some(*system))
+                crate::ship::ShipState::InSystem { system } => {
+                    (ShipSnapshotState::InSystem, Some(*system))
                 }
                 crate::ship::ShipState::SubLight { target_system, .. } => {
                     (ShipSnapshotState::InTransit, *target_system)
@@ -1006,8 +1006,8 @@ pub fn relay_knowledge_propagate_system(
             }
 
             let (snapshot_state, last_system) = match state {
-                crate::ship::ShipState::Docked { system } => {
-                    (ShipSnapshotState::Docked, Some(*system))
+                crate::ship::ShipState::InSystem { system } => {
+                    (ShipSnapshotState::InSystem, Some(*system))
                 }
                 crate::ship::ShipState::SubLight { target_system, .. } => {
                     (ShipSnapshotState::InTransit, *target_system)

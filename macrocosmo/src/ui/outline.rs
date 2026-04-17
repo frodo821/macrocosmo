@@ -11,7 +11,7 @@ use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedSystem}
 /// Helper: format a ship status string from ShipState.
 fn ship_status_label(state: &ShipState) -> &'static str {
     match state {
-        ShipState::Docked { .. } => "Docked",
+        ShipState::InSystem { .. } => "Docked",
         ShipState::SubLight { .. } => "Sub-light",
         ShipState::InFTL { .. } => "In FTL",
         ShipState::Surveying { .. } => "Surveying",
@@ -283,7 +283,7 @@ pub fn draw_outline(
             let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
                 Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
-                if let ShipState::Docked { system } = &*state {
+                if let ShipState::InSystem { system } = &*state {
                     if !owned_system_entities.contains(system) {
                         // Find or create entry for this system
                         if let Ok((_, star, _, _)) = stars.get(*system) {
@@ -357,7 +357,7 @@ pub fn draw_outline(
             let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
                 let status = match &*state {
-                    ShipState::Docked { .. } => continue,
+                    ShipState::InSystem { .. } => continue,
                     ShipState::SubLight { .. } => "Moving",
                     ShipState::InFTL { .. } => "FTL",
                     ShipState::Surveying { .. } => "Surveying",
@@ -412,7 +412,7 @@ fn ships_docked_at(
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _, _, _)| {
-            if let ShipState::Docked { system: s } = &*state {
+            if let ShipState::InSystem { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.design_id.clone()));
                 }

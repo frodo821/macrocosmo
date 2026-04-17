@@ -152,7 +152,7 @@ pub fn tick_courier_routes(
         // command finished). If the queue is non-empty the courier is on
         // its way somewhere — let the standard movement systems work.
         let docked_system = match state {
-            ShipState::Docked { system } => *system,
+            ShipState::InSystem { system } => *system,
             _ => continue,
         };
         if !queue.commands.is_empty() {

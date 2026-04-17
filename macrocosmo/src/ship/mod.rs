@@ -245,7 +245,7 @@ impl Plugin for ShipPlugin {
                     .after(process_ftl_travel)
                     .after(handlers::handle_attack_requested),
                 // #217: Scout observation ticker — transitions a Scouting ship
-                // into Docked + attaches a ScoutReport when the timer expires.
+                // into InSystem + attaches a ScoutReport when the timer expires.
                 // Runs after FTL/sublight movement so a ship that finished
                 // travel and transitioned into Scouting this tick doesn't
                 // double-process.
@@ -560,9 +560,15 @@ impl Ship {
     }
 }
 
+/// Orthogonal marker: ship is docked at a specific entity (port, station, etc.).
+/// Added/removed independently of `ShipState`. Not yet used by game logic —
+/// introduced in #383 for future #372-B work.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct DockedAt(pub Entity);
+
 #[derive(Component)]
 pub enum ShipState {
-    Docked {
+    InSystem {
         system: Entity,
     },
     SubLight {
@@ -605,14 +611,14 @@ pub enum ShipState {
     /// Reached when a SubLight move with `target_system = None` arrives, or
     /// (future) when a ship is interdicted out of FTL or engaged in deep-space
     /// ship-vs-ship combat. Loitering ships are NOT subject to `resolve_combat`,
-    /// which currently only operates on Docked ships in star systems.
+    /// which currently only operates on InSystem ships in star systems.
     Loitering {
         position: [f64; 3],
     },
     /// #217: Scout ship is observing `target_system` for the duration of the
     /// observation window. On completion, `tick_scout_observation` produces
     /// a `ScoutReport` component on the ship and transitions it back to
-    /// `Docked { system: target_system }`. From there the ship either
+    /// `InSystem { system: target_system }`. From there the ship either
     /// delivers the report via FTL comm (if in coverage and mode allows) or
     /// is auto-routed home to `origin_system` to deliver on dock.
     Scouting {
@@ -762,7 +768,7 @@ pub fn spawn_ship(
             design_revision,
             fleet: Some(fleet_entity),
         },
-        ShipState::Docked { system },
+        ShipState::InSystem { system },
         initial_position,
         CommandQueue::default(),
         Cargo::default(),
@@ -988,11 +994,11 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        let mut state = ShipState::Docked { system };
+        let mut state = ShipState::InSystem { system };
         let result = start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 0);
         assert_eq!(result, Err("ship is immobile"));
-        // State must remain Docked.
-        assert!(matches!(state, ShipState::Docked { .. }));
+        // State must remain InSystem.
+        assert!(matches!(state, ShipState::InSystem { .. }));
     }
 
     #[test]
@@ -1010,7 +1016,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         }; // 1 LY away
-        let mut state = ShipState::Docked { system };
+        let mut state = ShipState::InSystem { system };
         start_sublight_travel(&mut state, &origin, &ship, dest, Some(system), 100)
             .expect("mobile ship should travel");
         match state {
@@ -1035,7 +1041,7 @@ mod tests {
         let dest = world.spawn_empty().id();
         let mut ship = make_ship("courier_mk1");
         ship.ftl_range = 0.0;
-        let mut state = ShipState::Docked { system: origin };
+        let mut state = ShipState::InSystem { system: origin };
         let origin_pos = Position {
             x: 0.0,
             y: 0.0,
@@ -1056,7 +1062,7 @@ mod tests {
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1");
-        let mut state = ShipState::Docked { system: origin };
+        let mut state = ShipState::InSystem { system: origin };
         let origin_pos = Position {
             x: 0.0,
             y: 0.0,
@@ -1077,7 +1083,7 @@ mod tests {
         let origin = world.spawn_empty().id();
         let dest = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1");
-        let mut state = ShipState::Docked { system: origin };
+        let mut state = ShipState::InSystem { system: origin };
         let origin_pos = Position {
             x: 0.0,
             y: 0.0,
@@ -1116,7 +1122,7 @@ mod tests {
         };
 
         // Without port
-        let mut state_no_port = ShipState::Docked { system: origin };
+        let mut state_no_port = ShipState::InSystem { system: origin };
         let _ = start_ftl_travel_with_bonus(
             &mut state_no_port,
             &ship,
@@ -1135,7 +1141,7 @@ mod tests {
         };
 
         // With port (using Lua-defined values)
-        let mut state_port = ShipState::Docked { system: origin };
+        let mut state_port = ShipState::InSystem { system: origin };
         let port_params = PortParams {
             has_port: true,
             ftl_range_bonus: 10.0,
@@ -1186,7 +1192,7 @@ mod tests {
         }; // 20 ly, beyond base 15 ly range
 
         // Without port: should fail
-        let mut state = ShipState::Docked { system: origin };
+        let mut state = ShipState::InSystem { system: origin };
         let result = start_ftl_travel_with_bonus(
             &mut state,
             &ship,
@@ -1202,7 +1208,7 @@ mod tests {
         assert_eq!(result, Err("Destination is beyond FTL range"));
 
         // With port: +10 ly range, so 25 ly total, should succeed
-        let mut state = ShipState::Docked { system: origin };
+        let mut state = ShipState::InSystem { system: origin };
         let port_params = PortParams {
             has_port: true,
             ftl_range_bonus: 10.0,
@@ -1306,13 +1312,13 @@ mod tests {
             commands: vec![QueuedCommand::Survey { system: system_b }],
             ..Default::default()
         };
-        let state = ShipState::Docked { system: system_a };
+        let state = ShipState::InSystem { system: system_a };
 
         // Simulate what `handlers::handle_survey_requested` does:
         // It checks if docked_system != target, and if so, inserts move + re-queues survey
         let docked_system = match &state {
-            ShipState::Docked { system } => *system,
-            _ => panic!("Expected Docked"),
+            ShipState::InSystem { system } => *system,
+            _ => panic!("Expected InSystem"),
         };
         let next = queue.commands.remove(0);
         match next {
@@ -1347,11 +1353,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let state = ShipState::Docked { system: system_a };
+        let state = ShipState::InSystem { system: system_a };
 
         let docked_system = match &state {
-            ShipState::Docked { system } => *system,
-            _ => panic!("Expected Docked"),
+            ShipState::InSystem { system } => *system,
+            _ => panic!("Expected InSystem"),
         };
         let next = queue.commands.remove(0);
         match next {
@@ -1379,5 +1385,20 @@ mod tests {
         assert_eq!(queue.commands.len(), 2);
         assert!(matches!(queue.commands[0], QueuedCommand::MoveTo { .. }));
         assert!(matches!(queue.commands[1], QueuedCommand::Colonize { .. }));
+    }
+
+    #[test]
+    fn test_docked_at_component_can_be_inserted_and_removed() {
+        let mut world = World::new();
+        let port = world.spawn_empty().id();
+        let ship = world.spawn(DockedAt(port)).id();
+
+        // Verify inserted.
+        let docked = world.get::<DockedAt>(ship).expect("DockedAt should exist");
+        assert_eq!(docked.0, port);
+
+        // Remove and verify gone.
+        world.entity_mut(ship).remove::<DockedAt>();
+        assert!(world.get::<DockedAt>(ship).is_none());
     }
 }

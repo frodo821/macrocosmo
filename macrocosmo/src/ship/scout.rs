@@ -11,7 +11,7 @@
 //!    `completes_at` is reached, it collects a sensor-range snapshot of the
 //!    surrounding hostile ships and deep-space structures, attaches a
 //!    [`ScoutReport`] to the ship, and parks the ship back in
-//!    `ShipState::Docked` at the target system.
+//!    `ShipState::InSystem` at the target system.
 //! 4. [`process_scout_report`] delivers the report:
 //!    - `ReportMode::FtlComm` — if the scout position and the player empire
 //!      are both covered by a paired FTL Comm Relay, write the snapshot into
@@ -255,7 +255,7 @@ pub fn tick_scout_observation(
 
     for (ship_entity, ship, state, ship_pos, hp) in ships.iter() {
         let (snap_state, last_system) = match state {
-            ShipState::Docked { system } => (ShipSnapshotState::Docked, Some(*system)),
+            ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
             ShipState::SubLight { target_system, .. } => {
                 (ShipSnapshotState::InTransit, *target_system)
             }
@@ -315,7 +315,7 @@ pub fn tick_scout_observation(
             Err(_) => {
                 warn!("Scout {ship_entity:?}: target system despawned mid-observation");
                 if let Ok((_, _, mut state, _, _)) = ships.get_mut(ship_entity) {
-                    *state = ShipState::Docked {
+                    *state = ShipState::InSystem {
                         system: target_system,
                     };
                 }
@@ -371,7 +371,7 @@ pub fn tick_scout_observation(
 
         // Park the ship at the target system and attach the report.
         if let Ok((_, _, mut state, _, _)) = ships.get_mut(ship_entity) {
-            *state = ShipState::Docked {
+            *state = ShipState::InSystem {
                 system: target_system,
             };
         }
@@ -463,7 +463,7 @@ pub fn process_scout_report(
                 //  1. The ship is still in the target system / at the
                 //     observation position (i.e., it hasn't left), AND
                 //  2. FTL comm coverage includes both scout pos and player.
-                let at_observation_post = matches!(state, ShipState::Docked { .. });
+                let at_observation_post = matches!(state, ShipState::InSystem { .. });
                 let covered = match player_pos {
                     Some(pp) => ftl_comm_covers(ship_pos.as_array(), pp, &coverage),
                     None => false,
@@ -482,7 +482,7 @@ pub fn process_scout_report(
                 // Fallback path: behave like ReportMode::Return. If the ship
                 // has already made it home, deliver; otherwise auto-queue
                 // move home.
-                if let ShipState::Docked { system } = state {
+                if let ShipState::InSystem { system } = state {
                     if *system == report.origin_system {
                         deliver(&mut store, &report, ObservationSource::Scout);
                         commands.entity(ship_entity).remove::<ScoutReport>();
@@ -512,7 +512,7 @@ pub fn process_scout_report(
                 }
             }
             ReportMode::Return => {
-                if let ShipState::Docked { system } = state {
+                if let ShipState::InSystem { system } = state {
                     if *system == report.origin_system {
                         deliver(&mut store, &report, ObservationSource::Scout);
                         commands.entity(ship_entity).remove::<ScoutReport>();

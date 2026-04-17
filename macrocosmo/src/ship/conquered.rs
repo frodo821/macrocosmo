@@ -147,7 +147,7 @@ pub fn tick_conquered_recovery(
         let attacker_ship_present = ships_q.iter().any(|(s, state)| {
             if let Owner::Empire(f) = s.owner {
                 if f == conquered.attacker_faction {
-                    if let ShipState::Docked { system } = state {
+                    if let ShipState::InSystem { system } = state {
                         return *system == at_system.0;
                     }
                 }

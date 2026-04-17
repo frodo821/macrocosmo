@@ -51,7 +51,7 @@ fn spawn_core_at(
             design_revision: 0,
             fleet: Some(fleet_entity),
         },
-        ShipState::Docked { system },
+        ShipState::InSystem { system },
         pos,
         ShipHitpoints {
             hull,
@@ -336,7 +336,7 @@ fn peacetime_recovery_blocked_while_attacker_fleet_present() {
                 design_revision: 0,
                 fleet: Some(fleet_e),
             },
-            ShipState::Docked { system: sys },
+            ShipState::InSystem { system: sys },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
                 hull: 50.0,

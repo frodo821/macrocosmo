@@ -308,7 +308,7 @@ mod tests {
         world
             .spawn((
                 make_ship(design_id),
-                ShipState::Docked { system },
+                ShipState::InSystem { system },
                 pos,
                 CommandQueue::default(),
                 Cargo::default(),

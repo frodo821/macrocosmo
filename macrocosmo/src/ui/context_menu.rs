@@ -64,7 +64,7 @@ pub fn draw_context_menu(
             context_menu.open = false;
             return;
         };
-        let docked_system = if let ShipState::Docked { system } = &*state {
+        let docked_system = if let ShipState::InSystem { system } = &*state {
             Some(*system)
         } else {
             None
@@ -80,7 +80,7 @@ pub fn draw_context_menu(
             } => Some(*destination_system),
             ShipState::Surveying { target_system, .. } => Some(*target_system),
             ShipState::Settling { system, .. } => Some(*system),
-            ShipState::Docked { .. } => None, // handled via docked_system
+            ShipState::InSystem { .. } => None, // handled via docked_system
             ShipState::Refitting { system, .. } => Some(*system),
             ShipState::Loitering { .. } => None,
             ShipState::Scouting { target_system, .. } => Some(*target_system),

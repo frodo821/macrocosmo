@@ -479,7 +479,7 @@ fn process_command_queue_drops_movetto_on_immobile_ship() {
         .get::<macrocosmo::ship::ShipState>(core)
         .expect("ShipState");
     assert!(
-        matches!(st, macrocosmo::ship::ShipState::Docked { system } if *system == sys_a),
+        matches!(st, macrocosmo::ship::ShipState::InSystem { system } if *system == sys_a),
         "Core must remain Docked at home system"
     );
 }

@@ -125,7 +125,7 @@ fn spawn_scenario_ship(
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sys },
+            ShipState::InSystem { system: sys },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
                 hull,

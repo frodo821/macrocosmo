@@ -171,7 +171,7 @@ pub fn update_player_location(
 ) {
     for (aboard, mut stationed) in &mut player_q {
         if let Ok(state) = ships.get(aboard.ship) {
-            if let ShipState::Docked { system } = state {
+            if let ShipState::InSystem { system } = state {
                 stationed.system = *system;
             }
             // In transit states (SubLight, InFTL, etc.): keep StationedAt at last docked system

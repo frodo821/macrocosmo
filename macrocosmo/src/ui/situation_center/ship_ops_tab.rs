@@ -200,7 +200,7 @@ fn summarise_ships(world: &World) -> ShipSummary {
 
 fn ship_current_system(state: &ShipState) -> Option<Entity> {
     match state {
-        ShipState::Docked { system } => Some(*system),
+        ShipState::InSystem { system } => Some(*system),
         ShipState::Settling { system, .. } => Some(*system),
         ShipState::Refitting { system, .. } => Some(*system),
         ShipState::Surveying { target_system, .. } => Some(*target_system),
@@ -293,7 +293,7 @@ fn classify_ship(
             Some(*completes_at),
             *started_at,
         ),
-        ShipState::Docked { .. } => (Category::Other, "docked".into(), None, now),
+        ShipState::InSystem { .. } => (Category::Other, "docked".into(), None, now),
         ShipState::Loitering { .. } => (Category::Other, "loitering".into(), None, now),
     }
 }
@@ -393,7 +393,7 @@ mod tests {
         let mut world = World::new();
         setup_clock(&mut world, 0);
         let system = spawn_system(&mut world, "Sol");
-        spawn_ship(&mut world, "Alpha", ShipState::Docked { system });
+        spawn_ship(&mut world, "Alpha", ShipState::InSystem { system });
 
         let tab = ShipOperationsTab;
         let events = tab.collect(&world);
@@ -477,7 +477,7 @@ mod tests {
                 evasion: 0.1,
             },
         ));
-        spawn_ship(&mut world, "Guardian", ShipState::Docked { system });
+        spawn_ship(&mut world, "Guardian", ShipState::InSystem { system });
 
         let tab = ShipOperationsTab;
         let events = tab.collect(&world);

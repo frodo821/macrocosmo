@@ -34,7 +34,7 @@ fn spawn_ftl_explorer(world: &mut World, name: &str, system: Entity, pos: [f64; 
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system },
+            ShipState::InSystem { system },
             Position::from(pos),
             ShipHitpoints {
                 hull: 50.0,
@@ -114,7 +114,7 @@ fn test_sublight_travel_and_arrival() {
     // Ship should now be docked at System-B
     let state = app.world().get::<ShipState>(ship_entity).unwrap();
     match state {
-        ShipState::Docked { system } => {
+        ShipState::InSystem { system } => {
             assert_eq!(*system, sys_b, "Ship should be docked at System-B");
         }
         _ => panic!(
@@ -203,7 +203,7 @@ fn test_survey_completes_and_marks_system() {
     // Ship should be back to Docked at the target system
     let state = app.world().get::<ShipState>(ship_entity).unwrap();
     match state {
-        ShipState::Docked { system } => {
+        ShipState::InSystem { system } => {
             assert_eq!(*system, sys_b, "Ship should be docked at survey target");
         }
         _ => panic!("Expected ship to be Docked after survey"),
@@ -267,7 +267,7 @@ fn test_ftl_travel_and_arrival() {
     // Ship should be docked at System-B
     let state = app.world().get::<ShipState>(ship_entity).unwrap();
     match state {
-        ShipState::Docked { system } => {
+        ShipState::InSystem { system } => {
             assert_eq!(
                 *system, sys_b,
                 "Ship should be docked at System-B after FTL"
@@ -418,7 +418,7 @@ fn test_empire_owned_ships() {
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sys },
+            ShipState::InSystem { system: sys },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
                 hull: 50.0,
@@ -512,7 +512,7 @@ fn test_ftl_range_bonus_extends_range() {
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sys_a },
+            ShipState::InSystem { system: sys_a },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
                 hull: 50.0,
@@ -815,13 +815,13 @@ fn test_cancel_survey_returns_to_docked() {
         _ => None,
     };
     if let Some(sys) = dock_system {
-        *state = ShipState::Docked { system: sys };
+        *state = ShipState::InSystem { system: sys };
     }
 
     // Verify ship is docked
     let state = app.world().get::<ShipState>(ship).unwrap();
     assert!(
-        matches!(state, ShipState::Docked { system } if *system == sys_a),
+        matches!(state, ShipState::InSystem { system } if *system == sys_a),
         "Ship should be docked at System-A after cancelling survey"
     );
 }
@@ -864,13 +864,13 @@ fn test_cancel_settling_returns_to_docked() {
         _ => None,
     };
     if let Some(sys) = dock_system {
-        *state = ShipState::Docked { system: sys };
+        *state = ShipState::InSystem { system: sys };
     }
 
     // Verify ship is docked
     let state = app.world().get::<ShipState>(ship).unwrap();
     assert!(
-        matches!(state, ShipState::Docked { system } if *system == sys_a),
+        matches!(state, ShipState::InSystem { system } if *system == sys_a),
         "Ship should be docked at System-A after cancelling settling"
     );
 }
@@ -1728,7 +1728,7 @@ fn test_hull_modifiers_applied_to_ship() {
                     design_revision: 0,
                     fleet: None,
                 },
-                ShipState::Docked { system: sys },
+                ShipState::InSystem { system: sys },
                 Position::from([0.0, 0.0, 0.0]),
                 ShipHitpoints {
                     hull: 40.0,
@@ -2303,7 +2303,7 @@ fn spawn_rev_test_ship(world: &mut World, system: Entity, design_revision: u64) 
                 design_revision,
                 fleet: None,
             },
-            ShipState::Docked { system },
+            ShipState::InSystem { system },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
                 hull: 50.0,
@@ -2443,7 +2443,7 @@ fn refit_completes_brings_ship_in_sync_with_design() {
     assert_eq!(ship_comp.modules[0].module_id, "laser_mk2");
     assert!(matches!(
         app.world().get::<ShipState>(ship),
-        Some(ShipState::Docked { .. })
+        Some(ShipState::InSystem { .. })
     ));
 }
 
@@ -2812,7 +2812,7 @@ fn spawn_scout_ship(world: &mut World, system: Entity, pos: [f64; 3]) -> Entity 
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system },
+            ShipState::InSystem { system },
             Position::from(pos),
             ShipHitpoints {
                 hull: 40.0,
@@ -3125,7 +3125,7 @@ fn test_scout_report_via_return() {
     for _ in 0..100 {
         advance_time(&mut app, 1);
         let state = app.world().get::<ShipState>(ship).unwrap();
-        if matches!(state, ShipState::Docked { system } if *system == sys_home) {
+        if matches!(state, ShipState::InSystem { system } if *system == sys_home) {
             break;
         }
     }

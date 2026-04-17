@@ -121,7 +121,7 @@ pub fn handle_move_requested(
         // should never arrive here (dispatcher guards them) but we reject
         // gracefully if so.
         let docked_system: Option<Entity> = match *state {
-            ShipState::Docked { system } => Some(system),
+            ShipState::InSystem { system } => Some(system),
             ShipState::Loitering { .. } => None,
             _ => {
                 executed.write(CommandExecuted {

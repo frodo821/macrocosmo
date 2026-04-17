@@ -66,7 +66,7 @@ pub fn tick_ship_repair(
     let repair_amount = balance.repair_rate_per_hexadies() * delta as f64;
 
     for (state, mut hp) in &mut ships {
-        let ShipState::Docked { system } = state else {
+        let ShipState::InSystem { system } = state else {
             continue;
         };
 
