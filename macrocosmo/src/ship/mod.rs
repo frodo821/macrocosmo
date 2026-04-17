@@ -419,6 +419,14 @@ impl Plugin for ShipPlugin {
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
+        // #384: Docked modifier propagation — runs after module sync.
+        app.add_systems(
+            Update,
+            harbour::sync_docked_modifiers
+                .after(sync_ship_module_modifiers)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
     }
 }
 

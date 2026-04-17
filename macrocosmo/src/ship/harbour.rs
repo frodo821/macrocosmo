@@ -6,12 +6,19 @@
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::modifier::Modifier;
 use crate::ship_design::HullRegistry;
 
+use super::modifiers::push_ship_modifier;
 use super::{
-    CommandQueue, DockedAt, QueuedCommand, RulesOfEngagement, Ship, ShipState, ShipStats,
-    UndockedForCombat,
+    CommandQueue, DockedAt, HarbourModifiers, QueuedCommand, RulesOfEngagement, Ship,
+    ShipModifiers, ShipState, ShipStats, UndockedForCombat,
 };
+
+/// Tracks which docked modifier IDs were applied to this ship, so we can
+/// clean them up on undock or harbour change.
+#[derive(Component, Default, Debug, Clone)]
+pub struct AppliedDockedModifiers(pub Vec<String>);
 
 /// Returns the total hull size of all ships currently docked at `harbour_entity`.
 pub fn current_docked_size(
@@ -125,6 +132,131 @@ pub fn auto_undock_on_move_command(
                 // but defensively keep current state
             }
         }
+    }
+}
+
+/// #384: Apply harbour modifiers to docked ships, and clean up on undock.
+/// Runs after sync_ship_module_modifiers to avoid double-application.
+///
+/// For each ship with `DockedAt(harbour)`:
+/// - Read harbour's `HarbourModifiers`
+/// - For `docked_to:self::*`: always apply (the ship is docked at *this* harbour)
+/// - For `docked_to:<hull_id>::*`: apply if harbour's hull_id matches
+/// - For `docked_to:*::*`: always apply
+///
+/// On undock (ship has `AppliedDockedModifiers` but no `DockedAt`): strip applied modifiers.
+pub fn sync_docked_modifiers(
+    mut commands: Commands,
+    docked_ships: Query<(Entity, &DockedAt, Option<&AppliedDockedModifiers>)>,
+    harbour_data: Query<(&Ship, Option<&HarbourModifiers>)>,
+    mut ship_mods: Query<&mut ShipModifiers>,
+    undocked_ships: Query<(Entity, &AppliedDockedModifiers), Without<DockedAt>>,
+) {
+    // Phase 1: Clean up modifiers for ships that lost DockedAt
+    for (entity, applied) in &undocked_ships {
+        if let Ok(mut mods) = ship_mods.get_mut(entity) {
+            for mod_id in &applied.0 {
+                // Strip from all possible fields
+                mods.speed.pop_modifier(mod_id);
+                mods.ftl_range.pop_modifier(mod_id);
+                mods.survey_speed.pop_modifier(mod_id);
+                mods.colonize_speed.pop_modifier(mod_id);
+                mods.evasion.pop_modifier(mod_id);
+                mods.cargo_capacity.pop_modifier(mod_id);
+                mods.attack.pop_modifier(mod_id);
+                mods.defense.pop_modifier(mod_id);
+                mods.armor_max.pop_modifier(mod_id);
+                mods.shield_max.pop_modifier(mod_id);
+                mods.shield_regen.pop_modifier(mod_id);
+                mods.harbour_capacity.pop_modifier(mod_id);
+            }
+        }
+        commands.entity(entity).remove::<AppliedDockedModifiers>();
+    }
+
+    // Phase 2: Apply harbour modifiers to docked ships
+    for (entity, docked_at, existing_applied) in &docked_ships {
+        let harbour_entity = docked_at.0;
+        let Ok((harbour_ship, harbour_mods)) = harbour_data.get(harbour_entity) else {
+            continue;
+        };
+        let Some(harbour_mods) = harbour_mods else {
+            // Harbour has no docked-scope modifiers; clean up any previously applied
+            if existing_applied.is_some() {
+                if let Ok(mut mods) = ship_mods.get_mut(entity) {
+                    if let Some(applied) = existing_applied {
+                        for mod_id in &applied.0 {
+                            mods.speed.pop_modifier(mod_id);
+                            mods.ftl_range.pop_modifier(mod_id);
+                            mods.survey_speed.pop_modifier(mod_id);
+                            mods.colonize_speed.pop_modifier(mod_id);
+                            mods.evasion.pop_modifier(mod_id);
+                            mods.cargo_capacity.pop_modifier(mod_id);
+                            mods.attack.pop_modifier(mod_id);
+                            mods.defense.pop_modifier(mod_id);
+                            mods.armor_max.pop_modifier(mod_id);
+                            mods.shield_max.pop_modifier(mod_id);
+                            mods.shield_regen.pop_modifier(mod_id);
+                            mods.harbour_capacity.pop_modifier(mod_id);
+                        }
+                    }
+                }
+                commands.entity(entity).remove::<AppliedDockedModifiers>();
+            }
+            continue;
+        };
+
+        let harbour_hull_id = &harbour_ship.hull_id;
+        let Ok(mut mods) = ship_mods.get_mut(entity) else {
+            continue;
+        };
+
+        // Strip previously applied docked modifiers first (full diff)
+        if let Some(applied) = existing_applied {
+            for mod_id in &applied.0 {
+                mods.speed.pop_modifier(mod_id);
+                mods.ftl_range.pop_modifier(mod_id);
+                mods.survey_speed.pop_modifier(mod_id);
+                mods.colonize_speed.pop_modifier(mod_id);
+                mods.evasion.pop_modifier(mod_id);
+                mods.cargo_capacity.pop_modifier(mod_id);
+                mods.attack.pop_modifier(mod_id);
+                mods.defense.pop_modifier(mod_id);
+                mods.armor_max.pop_modifier(mod_id);
+                mods.shield_max.pop_modifier(mod_id);
+                mods.shield_regen.pop_modifier(mod_id);
+                mods.harbour_capacity.pop_modifier(mod_id);
+            }
+        }
+
+        // Apply matching modifiers
+        let mut applied_ids: Vec<String> = Vec::new();
+        for (filter, target, modifier) in &harbour_mods.0 {
+            let should_apply = match filter.as_str() {
+                "self" => true, // docked at *this* harbour
+                "*" => true,    // wildcard — always applies
+                hull_filter => hull_filter == harbour_hull_id.as_str(),
+            };
+            if !should_apply {
+                continue;
+            }
+            // Create a docked-scoped modifier with a stable ID
+            let docked_mod = Modifier {
+                id: format!("docked_{}_{}", harbour_entity.index(), modifier.id),
+                label: format!("Harbour: {}", modifier.label),
+                base_add: modifier.base_add,
+                multiplier: modifier.multiplier,
+                add: modifier.add,
+                expires_at: None,
+                on_expire_event: None,
+            };
+            applied_ids.push(docked_mod.id.clone());
+            push_ship_modifier(&mut mods, target, docked_mod);
+        }
+
+        commands
+            .entity(entity)
+            .insert(AppliedDockedModifiers(applied_ids));
     }
 }
 
