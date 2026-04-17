@@ -3,18 +3,16 @@ use bevy::prelude::*;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Anomalies, AtSystem, Hostile, StarSystem, SystemAttributes};
 use crate::knowledge::{
- FactSysParam, KnowledgeFact, KnowledgeStore, ObservationSource,
-    PlayerVantage, SystemKnowledge, SystemSnapshot,
+    FactSysParam, KnowledgeFact, KnowledgeStore, ObservationSource, PlayerVantage, SystemKnowledge,
+    SystemSnapshot,
 };
 use crate::physics::{distance_ly_arr, light_delay_hexadies};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
-use super::{
-    Ship, ShipHitpoints, ShipState, CommandQueue, QueuedCommand, SurveyData,
-};
 use super::exploration::roll_and_apply_anomaly;
+use super::{CommandQueue, QueuedCommand, Ship, ShipHitpoints, ShipState, SurveyData};
 
 /// Default duration of a survey operation in hexadies (30 hexadies = half a year) (#32).
 ///
@@ -38,8 +36,16 @@ pub fn start_survey(
     design_registry: &ShipDesignRegistry,
 ) -> Result<(), &'static str> {
     start_survey_with_bonus(
-        ship_state, ship, target_system, ship_pos, system_pos, current_time, 0.0,
-        design_registry, SURVEY_RANGE_LY, SURVEY_DURATION_HEXADIES,
+        ship_state,
+        ship,
+        target_system,
+        ship_pos,
+        system_pos,
+        current_time,
+        0.0,
+        design_registry,
+        SURVEY_RANGE_LY,
+        SURVEY_DURATION_HEXADIES,
     )
 }
 
@@ -98,8 +104,23 @@ pub fn start_survey_with_bonus(
 pub fn process_surveys(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut ships: Query<(Entity, &Ship, &mut ShipState, &mut ShipHitpoints, &crate::components::Position, Option<&mut CommandQueue>)>,
-    mut systems: Query<(&mut StarSystem, Option<&mut SystemAttributes>, &crate::components::Position, Option<&mut Anomalies>), Without<Ship>>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &mut ShipState,
+        &mut ShipHitpoints,
+        &crate::components::Position,
+        Option<&mut CommandQueue>,
+    )>,
+    mut systems: Query<
+        (
+            &mut StarSystem,
+            Option<&mut SystemAttributes>,
+            &crate::components::Position,
+            Option<&mut Anomalies>,
+        ),
+        Without<Ship>,
+    >,
     hostiles: Query<&AtSystem, With<Hostile>>,
     player_q: Query<&StationedAt, With<Player>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
@@ -116,9 +137,8 @@ pub fn process_surveys(
     let player_system = player_q.iter().next().map(|s| s.system);
 
     // #110: Pre-compute player system position and FTL speed for light-vs-FTL comparison
-    let player_system_pos: Option<[f64; 3]> = player_system.and_then(|sys| {
-        systems.get(sys).ok().map(|(_, _, pos, _)| pos.as_array())
-    });
+    let player_system_pos: Option<[f64; 3]> =
+        player_system.and_then(|sys| systems.get(sys).ok().map(|(_, _, pos, _)| pos.as_array()));
     let ftl_speed_multiplier = empire_params_q
         .iter()
         .next()
@@ -147,19 +167,27 @@ pub fn process_surveys(
 
             if has_ftl {
                 // #110: Compare light-speed propagation vs FTL return time
-                let use_light_speed = player_system_pos.map(|player_pos| {
-                    let distance = distance_ly_arr(ship_pos.as_array(), player_pos);
-                    let light_delay = light_delay_hexadies(distance);
-                    let effective_ftl_speed = initial_ftl_speed_c * ftl_speed_multiplier;
-                    let ftl_return_time = (distance * HEXADIES_PER_YEAR as f64 / effective_ftl_speed).ceil() as i64;
-                    light_delay <= ftl_return_time
-                }).unwrap_or(false);
+                let use_light_speed = player_system_pos
+                    .map(|player_pos| {
+                        let distance = distance_ly_arr(ship_pos.as_array(), player_pos);
+                        let light_delay = light_delay_hexadies(distance);
+                        let effective_ftl_speed = initial_ftl_speed_c * ftl_speed_multiplier;
+                        let ftl_return_time = (distance * HEXADIES_PER_YEAR as f64
+                            / effective_ftl_speed)
+                            .ceil() as i64;
+                        light_delay <= ftl_return_time
+                    })
+                    .unwrap_or(false);
 
                 if use_light_speed {
                     // #110: Light-speed is faster — mark surveyed immediately
-                    let sys_pos_arr: Option<[f64; 3]> =
-                        systems.get(target_system).ok().map(|(_, _, p, _)| p.as_array());
-                    if let Ok((mut star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
+                    let sys_pos_arr: Option<[f64; 3]> = systems
+                        .get(target_system)
+                        .ok()
+                        .map(|(_, _, p, _)| p.as_array());
+                    if let Ok((mut star_system, attrs, _sys_pos, anomalies)) =
+                        systems.get_mut(target_system)
+                    {
                         star_system.surveyed = true;
                         let system_name = star_system.name.clone();
                         info!(
@@ -190,7 +218,8 @@ pub fn process_surveys(
                         let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
                         if has_hostile {
                             let event_id = fact_sys.allocate_event_id();
-                            let desc = format!("Warning: Hostile presence detected at {}!", system_name);
+                            let desc =
+                                format!("Warning: Hostile presence detected at {}!", system_name);
                             events.write(GameEvent {
                                 id: event_id,
                                 timestamp: clock.elapsed,
@@ -212,8 +241,16 @@ pub fn process_surveys(
 
                         // #127: Roll anomaly discovery (with fallback to legacy exploration events)
                         let anomaly_id = roll_and_apply_anomaly(
-                            &anomaly_registry, &mut rng, &system_name, &ship, &mut ship_hp,
-                            attrs, anomalies, clock.elapsed, target_system, &mut events,
+                            &anomaly_registry,
+                            &mut rng,
+                            &system_name,
+                            &ship,
+                            &mut ship_hp,
+                            attrs,
+                            anomalies,
+                            clock.elapsed,
+                            target_system,
+                            &mut events,
                         );
                         // #249 / E: For light-speed propagation we also dual-write
                         // the AnomalyDiscovered banner so the player gets a
@@ -223,8 +260,7 @@ pub fn process_surveys(
                         // their own).
                         if let Some(aid) = anomaly_id {
                             let event_id = fact_sys.allocate_event_id();
-                            let desc =
-                                format!("Anomaly '{}' discovered at {}", aid, system_name);
+                            let desc = format!("Anomaly '{}' discovered at {}", aid, system_name);
                             events.write(GameEvent {
                                 id: event_id,
                                 timestamp: clock.elapsed,
@@ -244,84 +280,101 @@ pub fn process_surveys(
                         }
                     }
                 } else {
-                    let sys_pos_arr: Option<[f64; 3]> =
-                        systems.get(target_system).ok().map(|(_, _, p, _)| p.as_array());
-                    if let Ok((star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
-                    // #103: FTL return is faster — carry back
-                    let system_name = star_system.name.clone();
-                    info!(
-                        "Survey complete (FTL ship): {} surveyed {} — data stored on ship",
-                        ship.name, system_name
-                    );
+                    let sys_pos_arr: Option<[f64; 3]> = systems
+                        .get(target_system)
+                        .ok()
+                        .map(|(_, _, p, _)| p.as_array());
+                    if let Ok((star_system, attrs, _sys_pos, anomalies)) =
+                        systems.get_mut(target_system)
+                    {
+                        // #103: FTL return is faster — carry back
+                        let system_name = star_system.name.clone();
+                        info!(
+                            "Survey complete (FTL ship): {} surveyed {} — data stored on ship",
+                            ship.name, system_name
+                        );
 
-                    let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
-                    if has_hostile {
-                        // #249: Dual-write — hostile visible via light-speed/relay even
-                        // though the ship is FTL-returning the survey data itself.
-                        let event_id = fact_sys.allocate_event_id();
-                        let desc = format!("Warning: Hostile presence detected at {}!", system_name);
-                        events.write(GameEvent {
-                            id: event_id,
-                            timestamp: clock.elapsed,
-                            kind: GameEventKind::HostileDetected,
-                            description: desc.clone(),
-                            related_system: Some(target_system),
-                        });
-                        if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
-                            let fact = KnowledgeFact::HostileDetected {
-                                event_id: Some(event_id),
-                                target: Entity::PLACEHOLDER,
-                                detector: ship_entity,
-                                target_pos: origin_pos,
-                                description: desc,
-                            };
-                            fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                        let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
+                        if has_hostile {
+                            // #249: Dual-write — hostile visible via light-speed/relay even
+                            // though the ship is FTL-returning the survey data itself.
+                            let event_id = fact_sys.allocate_event_id();
+                            let desc =
+                                format!("Warning: Hostile presence detected at {}!", system_name);
+                            events.write(GameEvent {
+                                id: event_id,
+                                timestamp: clock.elapsed,
+                                kind: GameEventKind::HostileDetected,
+                                description: desc.clone(),
+                                related_system: Some(target_system),
+                            });
+                            if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                                let fact = KnowledgeFact::HostileDetected {
+                                    event_id: Some(event_id),
+                                    target: Entity::PLACEHOLDER,
+                                    detector: ship_entity,
+                                    target_pos: origin_pos,
+                                    description: desc,
+                                };
+                                fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                            }
                         }
-                    }
 
-                    // #127: Roll anomaly discovery; effects applied immediately, event deferred
-                    let anomaly_id = roll_and_apply_anomaly(
-                        &anomaly_registry, &mut rng, &system_name, &ship, &mut ship_hp,
-                        attrs, anomalies, clock.elapsed, target_system, &mut events,
-                    );
+                        // #127: Roll anomaly discovery; effects applied immediately, event deferred
+                        let anomaly_id = roll_and_apply_anomaly(
+                            &anomaly_registry,
+                            &mut rng,
+                            &system_name,
+                            &ship,
+                            &mut ship_hp,
+                            attrs,
+                            anomalies,
+                            clock.elapsed,
+                            target_system,
+                            &mut events,
+                        );
 
-                    // Use try_insert: ship may have been despawned by combat in the same frame
-                    commands.entity(ship_entity).try_insert(SurveyData {
-                        target_system,
-                        surveyed_at: clock.elapsed,
-                        system_name: system_name.clone(),
-                        anomaly_id,
-                    });
+                        // Use try_insert: ship may have been despawned by combat in the same frame
+                        commands.entity(ship_entity).try_insert(SurveyData {
+                            target_system,
+                            surveyed_at: clock.elapsed,
+                            system_name: system_name.clone(),
+                            anomaly_id,
+                        });
 
-                    let queue_empty = cmd_queue.as_ref().map(|q| q.commands.is_empty()).unwrap_or(true);
-                    if queue_empty {
-                        if let Some(player_sys) = player_system {
-                            if player_sys != target_system {
-                                if let Some(ref mut queue) = cmd_queue {
-                                    queue.commands.push(QueuedCommand::MoveTo {
-                                        system: player_sys,
-                                    });
-                                    info!(
-                                        "Auto-queued FTL return to player system for {}",
-                                        ship.name
-                                    );
+                        let queue_empty = cmd_queue
+                            .as_ref()
+                            .map(|q| q.commands.is_empty())
+                            .unwrap_or(true);
+                        if queue_empty {
+                            if let Some(player_sys) = player_system {
+                                if player_sys != target_system {
+                                    if let Some(ref mut queue) = cmd_queue {
+                                        queue
+                                            .commands
+                                            .push(QueuedCommand::MoveTo { system: player_sys });
+                                        info!(
+                                            "Auto-queued FTL return to player system for {}",
+                                            ship.name
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
-                    }
                 }
             } else {
                 // Non-FTL ship — existing behavior: mark surveyed immediately
-                let sys_pos_arr: Option<[f64; 3]> =
-                    systems.get(target_system).ok().map(|(_, _, p, _)| p.as_array());
-                if let Ok((mut star_system, attrs, _sys_pos, anomalies)) = systems.get_mut(target_system) {
+                let sys_pos_arr: Option<[f64; 3]> = systems
+                    .get(target_system)
+                    .ok()
+                    .map(|(_, _, p, _)| p.as_array());
+                if let Ok((mut star_system, attrs, _sys_pos, anomalies)) =
+                    systems.get_mut(target_system)
+                {
                     star_system.surveyed = true;
                     let system_name = star_system.name.clone();
-                    info!(
-                        "Survey complete: {} has been surveyed",
-                        system_name
-                    );
+                    info!("Survey complete: {} has been surveyed", system_name);
 
                     // #249: Dual-write SurveyComplete
                     let event_id = fact_sys.allocate_event_id();
@@ -347,7 +400,8 @@ pub fn process_surveys(
                     let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
                     if has_hostile {
                         let event_id = fact_sys.allocate_event_id();
-                        let desc = format!("Warning: Hostile presence detected at {}!", system_name);
+                        let desc =
+                            format!("Warning: Hostile presence detected at {}!", system_name);
                         events.write(GameEvent {
                             id: event_id,
                             timestamp: clock.elapsed,
@@ -369,8 +423,16 @@ pub fn process_surveys(
 
                     // #127: Roll anomaly discovery (with fallback to legacy exploration events)
                     roll_and_apply_anomaly(
-                        &anomaly_registry, &mut rng, &system_name, &ship, &mut ship_hp,
-                        attrs, anomalies, clock.elapsed, target_system, &mut events,
+                        &anomaly_registry,
+                        &mut rng,
+                        &system_name,
+                        &ship,
+                        &mut ship_hp,
+                        attrs,
+                        anomalies,
+                        clock.elapsed,
+                        target_system,
+                        &mut events,
                     );
                 }
             }
@@ -403,8 +465,7 @@ pub fn deliver_survey_results(
 
     // #249: Player vantage — delivered at player's docked system, so origin
     // matches player_pos → local path in `record_fact_or_local`.
-    let player_pos: Option<[f64; 3]> =
-        systems.get(player_system).ok().map(|(_, p)| p.as_array());
+    let player_pos: Option<[f64; 3]> = systems.get(player_system).ok().map(|(_, p)| p.as_array());
     let player_aboard = player_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
@@ -504,11 +565,11 @@ pub fn deliver_survey_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::ecs::world::World;
     use crate::amount::Amt;
     use crate::components::Position;
     use crate::ship::Owner;
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+    use bevy::ecs::world::World;
 
     fn test_design_registry() -> ShipDesignRegistry {
         let mut registry = ShipDesignRegistry::default();
@@ -573,7 +634,11 @@ mod tests {
         let system = world.spawn_empty().id();
         let ship = make_ship("colony_ship_mk1");
         let mut state = ShipState::Docked { system };
-        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let registry = test_design_registry();
         let result = start_survey(&mut state, &ship, system, &pos, &pos, 0, &registry);
         assert_eq!(result, Err("Only Explorer ships can perform surveys"));
@@ -591,7 +656,11 @@ mod tests {
             departed_at: 0,
             arrival_at: 100,
         };
-        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let registry = test_design_registry();
         let result = start_survey(&mut state, &ship, system, &pos, &pos, 0, &registry);
         assert_eq!(result, Err("Ship must be docked to begin a survey"));
@@ -603,10 +672,26 @@ mod tests {
         let system = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system };
-        let ship_pos = Position { x: 0.0, y: 0.0, z: 0.0 };
-        let target_pos = Position { x: 10.0, y: 0.0, z: 0.0 };
+        let ship_pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let target_pos = Position {
+            x: 10.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let registry = test_design_registry();
-        let result = start_survey(&mut state, &ship, system, &ship_pos, &target_pos, 0, &registry);
+        let result = start_survey(
+            &mut state,
+            &ship,
+            system,
+            &ship_pos,
+            &target_pos,
+            0,
+            &registry,
+        );
         assert_eq!(result, Err("Target system is beyond survey range"));
     }
 
@@ -616,12 +701,20 @@ mod tests {
         let system = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system };
-        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let registry = test_design_registry();
         let result = start_survey(&mut state, &ship, system, &pos, &pos, 50, &registry);
         assert!(result.is_ok());
         match state {
-            ShipState::Surveying { completes_at, started_at, .. } => {
+            ShipState::Surveying {
+                completes_at,
+                started_at,
+                ..
+            } => {
                 assert_eq!(started_at, 50);
                 assert_eq!(completes_at, 80); // 50 + SURVEY_DURATION_HEXADIES (30)
             }
@@ -638,10 +731,17 @@ mod tests {
         let system_b = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system: system_a };
-        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let registry = test_design_registry();
         let result = start_survey(&mut state, &ship, system_b, &pos, &pos, 0, &registry);
-        assert_eq!(result, Err("Ship must be docked at the target system to survey it"));
+        assert_eq!(
+            result,
+            Err("Ship must be docked at the target system to survey it")
+        );
     }
 
     #[test]
@@ -650,7 +750,11 @@ mod tests {
         let system = world.spawn_empty().id();
         let ship = make_ship("explorer_mk1");
         let mut state = ShipState::Docked { system };
-        let pos = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let pos = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let registry = test_design_registry();
         let result = start_survey(&mut state, &ship, system, &pos, &pos, 0, &registry);
         assert!(result.is_ok());

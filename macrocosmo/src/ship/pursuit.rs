@@ -41,7 +41,7 @@ use crate::empire::CommsParams;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::knowledge::{
-    compute_fact_arrival, KnowledgeFact, NextEventId, PendingFactQueue, PerceivedFact, RelayNetwork,
+    KnowledgeFact, NextEventId, PendingFactQueue, PerceivedFact, RelayNetwork, compute_fact_arrival,
 };
 use crate::physics;
 use crate::player::{Player, PlayerEmpire, StationedAt};
@@ -142,7 +142,10 @@ fn ship_position(
 /// by the in-system combat path (`resolve_combat`), and FTL ships are beyond
 /// baseline sensors.
 fn is_deep_space(state: &ShipState) -> bool {
-    matches!(state, ShipState::SubLight { .. } | ShipState::Loitering { .. })
+    matches!(
+        state,
+        ShipState::SubLight { .. } | ShipState::Loitering { .. }
+    )
 }
 
 /// Resolve a ship's faction entity. Ship owners store this as
@@ -349,13 +352,8 @@ pub fn detect_hostiles_system(
                     .as_deref()
                     .map(|n| n.relays.as_slice())
                     .unwrap_or(&empty_relays);
-                let plan = compute_fact_arrival(
-                    now,
-                    det.target_pos,
-                    player_pos,
-                    relays_slice,
-                    comms,
-                );
+                let plan =
+                    compute_fact_arrival(now, det.target_pos, player_pos, relays_slice, comms);
                 fact_queue.record(PerceivedFact {
                     fact: KnowledgeFact::HostileDetected {
                         event_id: Some(event_id),

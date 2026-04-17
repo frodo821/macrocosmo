@@ -9,10 +9,20 @@ use super::{Ship, ShipHitpoints};
 /// Result of an exploration event rolled when a survey completes.
 #[derive(Clone, Debug)]
 pub enum ExplorationEvent {
-    ResourceBonus { resource: String, old_level: String, new_level: String },
-    AncientRuins { research_bonus: f64 },
-    Danger { description: String },
-    Special { description: String },
+    ResourceBonus {
+        resource: String,
+        old_level: String,
+        new_level: String,
+    },
+    AncientRuins {
+        research_bonus: f64,
+    },
+    Danger {
+        description: String,
+    },
+    Special {
+        description: String,
+    },
     Nothing,
 }
 
@@ -30,11 +40,17 @@ pub fn roll_exploration_event(rng: &mut impl Rng) -> ExplorationEvent {
             new_level: String::new(),
         }
     } else if roll < 0.85 {
-        ExplorationEvent::AncientRuins { research_bonus: 0.0 }
+        ExplorationEvent::AncientRuins {
+            research_bonus: 0.0,
+        }
     } else if roll < 0.95 {
-        ExplorationEvent::Danger { description: String::new() }
+        ExplorationEvent::Danger {
+            description: String::new(),
+        }
     } else {
-        ExplorationEvent::Special { description: String::new() }
+        ExplorationEvent::Special {
+            description: String::new(),
+        }
     }
 }
 
@@ -131,7 +147,10 @@ pub(crate) fn apply_exploration_event(
                 kind: GameEventKind::SurveyDiscovery,
                 description: format!(
                     "Danger at {}! Ship {} took {:.0} damage ({:.0}% hull) from hazardous anomaly",
-                    system_name, ship.name, damage, damage_pct * 100.0,
+                    system_name,
+                    ship.name,
+                    damage,
+                    damage_pct * 100.0,
                 ),
                 related_system: Some(target_system),
             });
@@ -211,7 +230,9 @@ pub(crate) fn roll_and_apply_anomaly(
                                     kind: GameEventKind::AnomalyDiscovered,
                                     description: format!(
                                         "{}: {} — {} deposits upgraded ({} -> {})",
-                                        system_name, anomaly_name, name,
+                                        system_name,
+                                        anomaly_name,
+                                        name,
                                         resource_level_name(old_level),
                                         resource_level_name(new_level),
                                     ),
@@ -273,7 +294,17 @@ pub(crate) fn roll_and_apply_anomaly(
 
     // Fallback: no anomaly registry available, use legacy exploration events
     let event = roll_exploration_event(rng);
-    apply_exploration_event(&event, system_name, ship, ship_hp, attrs, rng, timestamp, target_system, events);
+    apply_exploration_event(
+        &event,
+        system_name,
+        ship,
+        ship_hp,
+        attrs,
+        rng,
+        timestamp,
+        target_system,
+        events,
+    );
     None
 }
 
@@ -338,7 +369,13 @@ mod tests {
         assert!(danger > 0, "Danger should appear");
         assert!(special > 0, "Special should appear");
 
-        assert!(nothing > resource, "Nothing should be more common than ResourceBonus");
-        assert!(nothing > ruins, "Nothing should be more common than AncientRuins");
+        assert!(
+            nothing > resource,
+            "Nothing should be more common than ResourceBonus"
+        );
+        assert!(
+            nothing > ruins,
+            "Nothing should be more common than AncientRuins"
+        );
     }
 }

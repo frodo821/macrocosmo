@@ -35,9 +35,7 @@ use crate::physics::distance_ly_arr;
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::time_system::GameClock;
 
-use super::{
-    CommandQueue, QueuedCommand, ReportMode, Ship, ShipHitpoints, ShipState,
-};
+use super::{CommandQueue, QueuedCommand, ReportMode, Ship, ShipHitpoints, ShipState};
 
 /// Fallback sensor range for scout operations (light-years). In the MVP
 /// release the value is a constant; future iterations will derive the range
@@ -155,12 +153,11 @@ pub fn collect_relay_coverage(
 ) -> Vec<RelayCoverageSnapshot> {
     let mut out = Vec::new();
 
-    let relay_range_for =
-        |structure: &crate::deep_space::DeepSpaceStructure| -> Option<f64> {
-            let def = registry.get(&structure.definition_id)?;
-            let cap = def.capabilities.get("ftl_comm_relay")?;
-            Some(cap.range)
-        };
+    let relay_range_for = |structure: &crate::deep_space::DeepSpaceStructure| -> Option<f64> {
+        let def = registry.get(&structure.definition_id)?;
+        let cap = def.capabilities.get("ftl_comm_relay")?;
+        Some(cap.range)
+    };
 
     for (_source_entity, source_structure, source_pos, relay) in relays.iter() {
         let Some(source_range) = relay_range_for(source_structure) else {
@@ -268,15 +265,14 @@ pub fn tick_scout_observation(
             ShipState::Surveying { target_system, .. } => {
                 (ShipSnapshotState::Surveying, Some(*target_system))
             }
-            ShipState::Settling { system, .. } => {
-                (ShipSnapshotState::Settling, Some(*system))
-            }
-            ShipState::Refitting { system, .. } => {
-                (ShipSnapshotState::Refitting, Some(*system))
-            }
-            ShipState::Loitering { position } => {
-                (ShipSnapshotState::Loitering { position: *position }, None)
-            }
+            ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
+            ShipState::Refitting { system, .. } => (ShipSnapshotState::Refitting, Some(*system)),
+            ShipState::Loitering { position } => (
+                ShipSnapshotState::Loitering {
+                    position: *position,
+                },
+                None,
+            ),
             ShipState::Scouting { target_system, .. } => {
                 (ShipSnapshotState::Surveying, Some(*target_system))
             }
@@ -440,25 +436,26 @@ pub fn process_scout_report(
     );
 
     for (ship_entity, ship, state, ship_pos, mut queue, mut report) in reports.iter_mut() {
-        let deliver = |store: &mut KnowledgeStore, report: &ScoutReport, source: ObservationSource| {
-            // System knowledge entry.
-            store.update(SystemKnowledge {
-                system: report.target_system,
-                observed_at: report.observed_at,
-                received_at: clock.elapsed,
-                data: report.system_snapshot.clone(),
-                source,
-            });
-            // Ship snapshots.
-            for snap in &report.ship_snapshots {
-                let mut snap = snap.clone();
-                // Keep the original observation time; callers set the source
-                // already, but overwrite for safety when the report was
-                // carried home (still Scout).
-                snap.source = source;
-                store.update_ship(snap);
-            }
-        };
+        let deliver =
+            |store: &mut KnowledgeStore, report: &ScoutReport, source: ObservationSource| {
+                // System knowledge entry.
+                store.update(SystemKnowledge {
+                    system: report.target_system,
+                    observed_at: report.observed_at,
+                    received_at: clock.elapsed,
+                    data: report.system_snapshot.clone(),
+                    source,
+                });
+                // Ship snapshots.
+                for snap in &report.ship_snapshots {
+                    let mut snap = snap.clone();
+                    // Keep the original observation time; callers set the source
+                    // already, but overwrite for safety when the report was
+                    // carried home (still Scout).
+                    snap.source = source;
+                    store.update_ship(snap);
+                }
+            };
 
         match report.report_mode {
             ReportMode::FtlComm => {
@@ -561,11 +558,7 @@ mod tests {
             partner_range: 5.0,
         }];
         // Scout at source, player near partner → covered.
-        assert!(ftl_comm_covers(
-            [1.0, 0.0, 0.0],
-            [99.0, 0.0, 0.0],
-            &relays
-        ));
+        assert!(ftl_comm_covers([1.0, 0.0, 0.0], [99.0, 0.0, 0.0], &relays));
         // Scout out of source range → not covered.
         assert!(!ftl_comm_covers(
             [10.0, 0.0, 0.0],
@@ -573,11 +566,7 @@ mod tests {
             &relays
         ));
         // Player out of partner range → not covered.
-        assert!(!ftl_comm_covers(
-            [1.0, 0.0, 0.0],
-            [50.0, 0.0, 0.0],
-            &relays
-        ));
+        assert!(!ftl_comm_covers([1.0, 0.0, 0.0], [50.0, 0.0, 0.0], &relays));
     }
 
     #[test]

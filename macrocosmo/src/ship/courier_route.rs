@@ -141,15 +141,8 @@ pub fn tick_courier_routes(
     // point to swap out.
     let mut empire_store_opt = empire_q.iter_mut().next();
 
-    for (
-        entity,
-        ship,
-        state,
-        mut queue,
-        mut route,
-        cargo,
-        mut knowledge_cargo,
-    ) in couriers_q.iter_mut()
+    for (entity, ship, state, mut queue, mut route, cargo, mut knowledge_cargo) in
+        couriers_q.iter_mut()
     {
         if route.paused || route.is_finished() || route.waypoints.is_empty() {
             continue;
@@ -238,10 +231,7 @@ pub fn tick_courier_routes(
                         }
                         if cargo.energy > Amt::ZERO {
                             stockpile.energy = stockpile.energy.add(cargo.energy);
-                            info!(
-                                "Courier {} delivered {} energy",
-                                ship.name, cargo.energy
-                            );
+                            info!("Courier {} delivered {} energy", ship.name, cargo.energy);
                             cargo.energy = Amt::ZERO;
                         }
 
@@ -253,10 +243,7 @@ pub fn tick_courier_routes(
                         stockpile.energy = stockpile.energy.sub(take_e);
                         cargo.energy = take_e;
                         if take_m > Amt::ZERO || take_e > Amt::ZERO {
-                            info!(
-                                "Courier {} loaded {}M / {}E",
-                                ship.name, take_m, take_e
-                            );
+                            info!("Courier {} loaded {}M / {}E", ship.name, take_m, take_e);
                         }
                     }
                 }
@@ -273,7 +260,12 @@ pub fn tick_courier_routes(
         // Queue the move to the next waypoint (if any).
         if let Some(next_target) = route.waypoints.get(route.current_index).copied() {
             if next_target != docked_system {
-                queue.push(QueuedCommand::MoveTo { system: next_target }, &position_of);
+                queue.push(
+                    QueuedCommand::MoveTo {
+                        system: next_target,
+                    },
+                    &position_of,
+                );
             }
         }
     }

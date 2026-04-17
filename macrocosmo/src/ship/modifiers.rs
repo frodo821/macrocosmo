@@ -15,7 +15,9 @@ pub fn sync_ship_module_modifiers(
     hull_registry: Res<HullRegistry>,
 ) {
     for (entity, ship) in &ships {
-        let Ok(mut mods) = ship_mods.get_mut(entity) else { continue };
+        let Ok(mut mods) = ship_mods.get_mut(entity) else {
+            continue;
+        };
         // Reset all module modifiers by creating fresh scoped modifiers
         // (preserving base values but clearing modifiers)
         mods.speed = ScopedModifiers::default();

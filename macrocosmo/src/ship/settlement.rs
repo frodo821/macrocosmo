@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::amount::Amt;
@@ -21,6 +22,15 @@ use super::{Ship, ShipState};
 /// #160: Canonical value is `GameBalance.settling_duration` (Lua-defined).
 /// Retained as fallback for helpers/tests without ECS access.
 pub const SETTLING_DURATION_HEXADIES: i64 = 60;
+
+/// Bundled player-related queries to keep `process_settling` under Bevy's
+/// 16-parameter limit for `IntoSystemSet`.
+#[derive(SystemParam)]
+pub struct SettlementPlayerQueries<'w, 's> {
+    pub empire_entity_q: Query<'w, 's, Entity, With<crate::player::PlayerEmpire>>,
+    pub player_q: Query<'w, 's, &'static StationedAt, Without<Ship>>,
+    pub player_aboard_q: Query<'w, 's, &'static AboardShip, With<Player>>,
+}
 
 /// System that processes ongoing settling operations. When the timer completes,
 /// establishes a colony on the first habitable planet and despawns the colony ship.
@@ -47,17 +57,15 @@ pub fn process_settling(
     hostiles: Query<(&AtSystem, Option<&crate::faction::FactionOwner>), With<Hostile>>,
     cores: Query<(&AtSystem, &crate::faction::FactionOwner), With<crate::ship::CoreShip>>,
     faction_relations: Res<crate::faction::FactionRelations>,
-    empire_entity_q: Query<Entity, With<crate::player::PlayerEmpire>>,
-    player_q: Query<&StationedAt, Without<Ship>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    player_queries: SettlementPlayerQueries,
     mut fact_sys: FactSysParam,
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
-    let player_system = player_q.iter().next().map(|s| s.system);
+    let player_system = player_queries.player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| systems.get(s).ok())
         .map(|(_, p)| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let player_aboard = player_queries.player_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
         player_aboard,
@@ -84,7 +92,7 @@ pub fn process_settling(
             // aggressive. Hostiles without `FactionOwner` (tests that skip
             // `setup_test_hostile_factions`, or pre-faction-backfill frames)
             // default to blocking — preserves legacy behavior.
-            let viewer = empire_entity_q.iter().next();
+            let viewer = player_queries.empire_entity_q.iter().next();
             let has_hostile = hostiles.iter().any(|(at_system, owner)| {
                 if at_system.0 != system_entity {
                     return false;
