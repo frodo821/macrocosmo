@@ -1081,6 +1081,10 @@ pub enum SavedRulesOfEngagement {
     Aggressive,
     Defensive,
     Retreat,
+    /// #384: Evasive — stay docked if harboured, otherwise retreat
+    Evasive,
+    /// #384: Passive — never engage, stay docked if harboured
+    Passive,
 }
 
 impl From<&RulesOfEngagement> for SavedRulesOfEngagement {
@@ -1089,6 +1093,8 @@ impl From<&RulesOfEngagement> for SavedRulesOfEngagement {
             RulesOfEngagement::Aggressive => Self::Aggressive,
             RulesOfEngagement::Defensive => Self::Defensive,
             RulesOfEngagement::Retreat => Self::Retreat,
+            RulesOfEngagement::Evasive => Self::Evasive,
+            RulesOfEngagement::Passive => Self::Passive,
         }
     }
 }
@@ -1098,6 +1104,8 @@ impl From<SavedRulesOfEngagement> for RulesOfEngagement {
             SavedRulesOfEngagement::Aggressive => Self::Aggressive,
             SavedRulesOfEngagement::Defensive => Self::Defensive,
             SavedRulesOfEngagement::Retreat => Self::Retreat,
+            SavedRulesOfEngagement::Evasive => Self::Evasive,
+            SavedRulesOfEngagement::Passive => Self::Passive,
         }
     }
 }
@@ -1294,6 +1302,9 @@ pub struct SavedShipModifiers {
     pub armor_max: ScopedModifiers,
     pub shield_max: ScopedModifiers,
     pub shield_regen: ScopedModifiers,
+    /// #384: Harbour capacity modifiers. Defaults to empty for older saves.
+    #[serde(default)]
+    pub harbour_capacity: ScopedModifiers,
 }
 
 impl SavedShipModifiers {
@@ -1310,6 +1321,7 @@ impl SavedShipModifiers {
             armor_max: v.armor_max.clone(),
             shield_max: v.shield_max.clone(),
             shield_regen: v.shield_regen.clone(),
+            harbour_capacity: v.harbour_capacity.clone(),
         }
     }
     pub fn into_live(self) -> ShipModifiers {
@@ -1325,6 +1337,7 @@ impl SavedShipModifiers {
             armor_max: self.armor_max,
             shield_max: self.shield_max,
             shield_regen: self.shield_regen,
+            harbour_capacity: self.harbour_capacity,
         }
     }
 }
@@ -2890,7 +2903,9 @@ pub enum SavedShipSnapshotState {
     Settling,
     Refitting,
     Destroyed,
-    Loitering { position: [f64; 3] },
+    Loitering {
+        position: [f64; 3],
+    },
 }
 impl From<&ShipSnapshotState> for SavedShipSnapshotState {
     fn from(v: &ShipSnapshotState) -> Self {

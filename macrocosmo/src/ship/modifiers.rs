@@ -1,14 +1,16 @@
 use bevy::prelude::*;
 
 use crate::amount::SignedAmt;
-use crate::modifier::{Modifier, ScopedModifiers};
+use crate::modifier::{Modifier, ParsedModifier, ScopedModifiers};
 use crate::ship_design::{HullRegistry, ModuleRegistry};
 
-use super::{Ship, ShipModifiers};
+use super::{HarbourModifiers, Ship, ShipModifiers};
 
 /// Syncs module modifiers from equipped modules to ShipModifiers.
 /// Clears and rebuilds module modifiers each time a ship's modules change.
+/// Also extracts `docked_to:` scoped modifiers into HarbourModifiers component.
 pub fn sync_ship_module_modifiers(
+    mut commands: Commands,
     ships: Query<(Entity, &Ship), Changed<Ship>>,
     mut ship_mods: Query<&mut ShipModifiers>,
     module_registry: Res<ModuleRegistry>,
@@ -31,30 +33,35 @@ pub fn sync_ship_module_modifiers(
         mods.armor_max = ScopedModifiers::default();
         mods.shield_max = ScopedModifiers::default();
         mods.shield_regen = ScopedModifiers::default();
+        mods.harbour_capacity = ScopedModifiers::default();
+
+        // Collect docked-scope modifiers separately
+        let mut harbour_mods: Vec<(String, String, Modifier)> = Vec::new();
 
         // Apply hull modifiers first
         if let Some(hull_def) = hull_registry.get(&ship.hull_id) {
             for mod_def in &hull_def.modifiers {
-                let modifier = Modifier {
-                    id: format!("hull_{}_{}", ship.hull_id, mod_def.target),
-                    label: hull_def.name.clone(),
-                    base_add: SignedAmt::from_f64(mod_def.base_add),
-                    multiplier: SignedAmt::from_f64(mod_def.multiplier),
-                    add: SignedAmt::from_f64(mod_def.add),
-                    expires_at: None,
-                    on_expire_event: None,
+                let parsed = ParsedModifier {
+                    target: mod_def.target.clone(),
+                    base_add: mod_def.base_add,
+                    multiplier: mod_def.multiplier,
+                    add: mod_def.add,
                 };
-                push_ship_modifier(&mut mods, &mod_def.target, modifier);
-            }
-        }
-
-        // Apply module modifiers
-        for (i, equipped) in ship.modules.iter().enumerate() {
-            if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
-                for mod_def in &module_def.modifiers {
+                if let Some((filter, target)) = parsed.docked_scope() {
                     let modifier = Modifier {
-                        id: format!("module_{}_{}", equipped.module_id, i),
-                        label: module_def.name.clone(),
+                        id: format!("hull_{}_{}", ship.hull_id, mod_def.target),
+                        label: hull_def.name.clone(),
+                        base_add: SignedAmt::from_f64(mod_def.base_add),
+                        multiplier: SignedAmt::from_f64(mod_def.multiplier),
+                        add: SignedAmt::from_f64(mod_def.add),
+                        expires_at: None,
+                        on_expire_event: None,
+                    };
+                    harbour_mods.push((filter.to_string(), target.to_string(), modifier));
+                } else {
+                    let modifier = Modifier {
+                        id: format!("hull_{}_{}", ship.hull_id, mod_def.target),
+                        label: hull_def.name.clone(),
                         base_add: SignedAmt::from_f64(mod_def.base_add),
                         multiplier: SignedAmt::from_f64(mod_def.multiplier),
                         add: SignedAmt::from_f64(mod_def.add),
@@ -65,11 +72,57 @@ pub fn sync_ship_module_modifiers(
                 }
             }
         }
+
+        // Apply module modifiers
+        for (i, equipped) in ship.modules.iter().enumerate() {
+            if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
+                for mod_def in &module_def.modifiers {
+                    let parsed = ParsedModifier {
+                        target: mod_def.target.clone(),
+                        base_add: mod_def.base_add,
+                        multiplier: mod_def.multiplier,
+                        add: mod_def.add,
+                    };
+                    if let Some((filter, target)) = parsed.docked_scope() {
+                        let modifier = Modifier {
+                            id: format!("module_{}_{}", equipped.module_id, i),
+                            label: module_def.name.clone(),
+                            base_add: SignedAmt::from_f64(mod_def.base_add),
+                            multiplier: SignedAmt::from_f64(mod_def.multiplier),
+                            add: SignedAmt::from_f64(mod_def.add),
+                            expires_at: None,
+                            on_expire_event: None,
+                        };
+                        harbour_mods.push((filter.to_string(), target.to_string(), modifier));
+                    } else {
+                        let modifier = Modifier {
+                            id: format!("module_{}_{}", equipped.module_id, i),
+                            label: module_def.name.clone(),
+                            base_add: SignedAmt::from_f64(mod_def.base_add),
+                            multiplier: SignedAmt::from_f64(mod_def.multiplier),
+                            add: SignedAmt::from_f64(mod_def.add),
+                            expires_at: None,
+                            on_expire_event: None,
+                        };
+                        push_ship_modifier(&mut mods, &mod_def.target, modifier);
+                    }
+                }
+            }
+        }
+
+        // Update HarbourModifiers component
+        if harbour_mods.is_empty() {
+            commands.entity(entity).remove::<HarbourModifiers>();
+        } else {
+            commands
+                .entity(entity)
+                .insert(HarbourModifiers(harbour_mods));
+        }
     }
 }
 
 /// Push a modifier to the appropriate ShipModifiers field based on target string.
-fn push_ship_modifier(mods: &mut Mut<ShipModifiers>, target: &str, modifier: Modifier) {
+pub(crate) fn push_ship_modifier(mods: &mut Mut<ShipModifiers>, target: &str, modifier: Modifier) {
     match target {
         "ship.speed" => mods.speed.push_modifier(modifier),
         "ship.ftl_range" => mods.ftl_range.push_modifier(modifier),
@@ -82,6 +135,7 @@ fn push_ship_modifier(mods: &mut Mut<ShipModifiers>, target: &str, modifier: Mod
         "ship.armor_max" => mods.armor_max.push_modifier(modifier),
         "ship.shield_max" => mods.shield_max.push_modifier(modifier),
         "ship.shield_regen" => mods.shield_regen.push_modifier(modifier),
+        "ship.harbour_capacity" => mods.harbour_capacity.push_modifier(modifier),
         _ => {}
     }
 }

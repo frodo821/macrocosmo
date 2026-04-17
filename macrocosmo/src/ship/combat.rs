@@ -11,7 +11,9 @@ use crate::ship_design::ModuleRegistry;
 use crate::time_system::GameClock;
 
 use super::conquered::ConqueredCore;
-use super::{CoreShip, Owner, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState};
+use super::{
+    CoreShip, DockedAt, Owner, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState,
+};
 
 /// Hit chance: precision * track / (track + evasion)
 fn hit_chance(weapon: &crate::ship_design::WeaponStats, target_evasion: f64) -> f64 {
@@ -124,6 +126,7 @@ pub fn resolve_combat(
             Option<&RulesOfEngagement>,
             Option<&CoreShip>,
             Option<&ConqueredCore>,
+            Option<&DockedAt>,
         ),
         Without<Hostile>,
     >,
@@ -211,10 +214,20 @@ pub fn resolve_combat(
         let docked_ships: Vec<Entity> = ships
             .iter()
             .filter_map(
-                |(entity, ship, _hp, _mods, state, roe, _core, _conquered)| {
+                |(entity, ship, _hp, _mods, state, roe, _core, _conquered, docked_at)| {
+                    // #384: Ships with DockedAt are sheltered — skip combat entirely.
+                    if docked_at.is_some() {
+                        return None;
+                    }
                     let roe = roe.copied().unwrap_or_default();
-                    if roe == RulesOfEngagement::Retreat {
-                        return None; // #57: Retreat ships skip combat
+                    // #57: Retreat, Evasive, Passive ships skip combat
+                    if matches!(
+                        roe,
+                        RulesOfEngagement::Retreat
+                            | RulesOfEngagement::Evasive
+                            | RulesOfEngagement::Passive
+                    ) {
+                        return None;
                     }
                     if let ShipState::InSystem { system } = state {
                         if *system != *system_entity {
@@ -239,7 +252,9 @@ pub fn resolve_combat(
                         RulesOfEngagement::Defensive => view.should_engage_defensive(true),
                         // Already short-circuited above; `unreachable!` would
                         // also work but we prefer the safe fallthrough.
-                        RulesOfEngagement::Retreat => false,
+                        RulesOfEngagement::Retreat
+                        | RulesOfEngagement::Evasive
+                        | RulesOfEngagement::Passive => false,
                     };
                     if !engaged {
                         return None;
@@ -262,7 +277,7 @@ pub fn resolve_combat(
         }
         let mut ship_weapons: Vec<ShipWeaponData> = Vec::new();
         for &ship_entity in &docked_ships {
-            if let Ok((_e, ship, _hp, _mods, _state, _roe, _core, _conquered)) =
+            if let Ok((_e, ship, _hp, _mods, _state, _roe, _core, _conquered, _docked)) =
                 ships.get(ship_entity)
             {
                 let mut weapons = Vec::new();
@@ -351,7 +366,7 @@ pub fn resolve_combat(
             let mut destroyed_ships: Vec<(Entity, String)> = Vec::new();
 
             for &ship_entity in &docked_ships {
-                if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, conquered)) =
+                if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, conquered, _docked)) =
                     ships.get_mut(ship_entity)
                 {
                     // #298 (S-4): Conquered Cores are indestructible — skip damage entirely.

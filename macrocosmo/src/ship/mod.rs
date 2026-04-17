@@ -8,6 +8,8 @@ pub mod defense_fleet;
 pub mod deliverable_ops;
 pub mod exploration;
 pub mod fleet;
+/// #384: Harbour dock/undock core logic + harbour lifecycle systems.
+pub mod harbour;
 pub mod hitpoints;
 pub mod modifiers;
 pub mod movement;
@@ -391,6 +393,40 @@ impl Plugin for ShipPlugin {
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
+        // #384: Harbour lifecycle systems. Separate `add_systems` call to stay
+        // under Bevy's tuple-arm limit.
+        app.add_systems(
+            Update,
+            (
+                harbour::auto_undock_on_move_command
+                    .before(sublight_movement_system)
+                    .before(process_ftl_travel),
+                harbour::sync_docked_position
+                    .after(sublight_movement_system)
+                    .after(process_ftl_travel),
+                harbour::force_undock_on_harbour_destroy.after(resolve_combat),
+            )
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        // #384: Combat ROE harbour systems — auto-undock/re-dock.
+        app.add_systems(
+            Update,
+            (
+                harbour::auto_undock_on_combat_roe.before(resolve_combat),
+                harbour::auto_return_dock_after_combat.after(resolve_combat),
+            )
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        // #384: Docked modifier propagation — runs after module sync.
+        app.add_systems(
+            Update,
+            harbour::sync_docked_modifiers
+                .after(sync_ship_module_modifiers)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
     }
 }
 
@@ -406,6 +442,10 @@ pub enum RulesOfEngagement {
     Defensive,
     /// Do not engage hostiles; skip combat entirely
     Retreat,
+    /// #384: Evade combat — stay docked if harboured (sheltered), otherwise retreat
+    Evasive,
+    /// #384: Passive — never engage, stay docked if harboured (sheltered)
+    Passive,
 }
 
 impl RulesOfEngagement {
@@ -414,13 +454,17 @@ impl RulesOfEngagement {
             Self::Aggressive => "Aggressive",
             Self::Defensive => "Defensive",
             Self::Retreat => "Retreat",
+            Self::Evasive => "Evasive",
+            Self::Passive => "Passive",
         }
     }
 
-    pub const ALL: [RulesOfEngagement; 3] = [
+    pub const ALL: [RulesOfEngagement; 5] = [
         RulesOfEngagement::Aggressive,
         RulesOfEngagement::Defensive,
         RulesOfEngagement::Retreat,
+        RulesOfEngagement::Evasive,
+        RulesOfEngagement::Passive,
     ];
 }
 
@@ -472,6 +516,8 @@ pub struct ShipModifiers {
     pub armor_max: ScopedModifiers,
     pub shield_max: ScopedModifiers,
     pub shield_regen: ScopedModifiers,
+    /// #384: How many size-units of ships this vessel can harbour.
+    pub harbour_capacity: ScopedModifiers,
 }
 
 /// Cached computed stats for a ship, derived from ShipModifiers.
@@ -484,6 +530,8 @@ pub struct ShipStats {
     pub evasion: CachedValue,
     pub cargo_capacity: CachedValue,
     pub maintenance: Amt,
+    /// #384: Cached harbour capacity (from ScopedModifiers). > 0 means ship is a harbour.
+    pub harbour_capacity: CachedValue,
 }
 
 /// 3-layer hit point model: shield → armor → hull.
@@ -559,6 +607,19 @@ impl Ship {
         self.sublight_speed <= 0.0 && self.ftl_range <= 0.0
     }
 }
+
+/// #384: Modifiers that a harbour propagates to its docked ships.
+/// Each entry is (filter, target, modifier) where:
+/// - filter = "self" | "*" | "<hull_id>"
+/// - target = the modifier target string (e.g. "ship.speed")
+/// - modifier = the Modifier to apply
+#[derive(Component, Default, Debug, Clone)]
+pub struct HarbourModifiers(pub Vec<(String, String, crate::modifier::Modifier)>);
+
+/// #384: Transient marker on ships undocked for combat, tracking their original harbour.
+/// After combat resolves with no hostiles remaining, the ship attempts to re-dock.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct UndockedForCombat(pub Entity);
 
 /// Orthogonal marker: ship is docked at a specific entity (port, station, etc.).
 /// Added/removed independently of `ShipState`. Not yet used by game logic —
