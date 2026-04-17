@@ -8,7 +8,10 @@ use bevy::prelude::*;
 use crate::amount::Amt;
 use crate::ship_design::HullRegistry;
 
-use super::{CommandQueue, DockedAt, QueuedCommand, Ship, ShipState, ShipStats};
+use super::{
+    CommandQueue, DockedAt, QueuedCommand, RulesOfEngagement, Ship, ShipState, ShipStats,
+    UndockedForCombat,
+};
 
 /// Returns the total hull size of all ships currently docked at `harbour_entity`.
 pub fn current_docked_size(
@@ -121,6 +124,100 @@ pub fn auto_undock_on_move_command(
                 // Shouldn't normally happen (docked ships should be InSystem),
                 // but defensively keep current state
             }
+        }
+    }
+}
+
+/// #384: When hostiles are present in a system, ships with Aggressive/Defensive ROE
+/// that are docked auto-undock for combat. Evasive/Passive ships stay docked (sheltered).
+/// Runs before resolve_combat.
+pub fn auto_undock_on_combat_roe(
+    mut commands: Commands,
+    docked_ships: Query<(Entity, &DockedAt, &ShipState, Option<&RulesOfEngagement>)>,
+    hostiles: Query<&crate::galaxy::AtSystem, With<crate::galaxy::Hostile>>,
+) {
+    // Collect systems with hostiles
+    let hostile_systems: std::collections::HashSet<Entity> =
+        hostiles.iter().map(|at| at.0).collect();
+
+    if hostile_systems.is_empty() {
+        return;
+    }
+
+    for (entity, docked_at, state, roe) in &docked_ships {
+        let roe = roe.copied().unwrap_or_default();
+        let ship_system = match state {
+            ShipState::InSystem { system } => *system,
+            _ => continue,
+        };
+
+        if !hostile_systems.contains(&ship_system) {
+            continue;
+        }
+
+        match roe {
+            RulesOfEngagement::Aggressive | RulesOfEngagement::Defensive => {
+                // Undock for combat, remember harbour for re-docking
+                let harbour = docked_at.0;
+                commands.entity(entity).remove::<DockedAt>();
+                commands.entity(entity).insert(UndockedForCombat(harbour));
+            }
+            RulesOfEngagement::Evasive
+            | RulesOfEngagement::Passive
+            | RulesOfEngagement::Retreat => {
+                // Stay docked — sheltered by harbour
+            }
+        }
+    }
+}
+
+/// #384: After combat, ships with UndockedForCombat marker attempt to re-dock
+/// at their original harbour if no hostiles remain in the system.
+/// Runs after resolve_combat.
+pub fn auto_return_dock_after_combat(
+    mut commands: Commands,
+    undocked: Query<(Entity, &UndockedForCombat, &ShipState)>,
+    hostiles: Query<&crate::galaxy::AtSystem, With<crate::galaxy::Hostile>>,
+    harbour_stats: Query<&ShipStats>,
+    docked_query: Query<(&DockedAt, &Ship)>,
+    ship_query: Query<&Ship>,
+    hull_registry: Res<HullRegistry>,
+) {
+    let hostile_systems: std::collections::HashSet<Entity> =
+        hostiles.iter().map(|at| at.0).collect();
+
+    for (entity, undocked_marker, state) in &undocked {
+        let ship_system = match state {
+            ShipState::InSystem { system } => *system,
+            _ => {
+                // Ship moved away — just remove the marker
+                commands.entity(entity).remove::<UndockedForCombat>();
+                continue;
+            }
+        };
+
+        // Remove marker regardless — either we re-dock or we don't
+        commands.entity(entity).remove::<UndockedForCombat>();
+
+        // If hostiles remain in this system, don't re-dock
+        if hostile_systems.contains(&ship_system) {
+            continue;
+        }
+
+        // Try to re-dock at original harbour
+        let harbour = undocked_marker.0;
+        let Ok(stats) = harbour_stats.get(harbour) else {
+            continue; // harbour no longer exists
+        };
+        let Ok(ship) = ship_query.get(entity) else {
+            continue;
+        };
+        let docker_size = hull_registry
+            .get(&ship.hull_id)
+            .map(|h| h.size)
+            .unwrap_or(1);
+        if can_dock(docker_size, stats, harbour, &docked_query, &hull_registry) {
+            commands.entity(entity).insert(DockedAt(harbour));
         }
     }
 }

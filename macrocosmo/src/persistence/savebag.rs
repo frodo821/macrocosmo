@@ -1081,6 +1081,10 @@ pub enum SavedRulesOfEngagement {
     Aggressive,
     Defensive,
     Retreat,
+    /// #384: Evasive — stay docked if harboured, otherwise retreat
+    Evasive,
+    /// #384: Passive — never engage, stay docked if harboured
+    Passive,
 }
 
 impl From<&RulesOfEngagement> for SavedRulesOfEngagement {
@@ -1089,6 +1093,8 @@ impl From<&RulesOfEngagement> for SavedRulesOfEngagement {
             RulesOfEngagement::Aggressive => Self::Aggressive,
             RulesOfEngagement::Defensive => Self::Defensive,
             RulesOfEngagement::Retreat => Self::Retreat,
+            RulesOfEngagement::Evasive => Self::Evasive,
+            RulesOfEngagement::Passive => Self::Passive,
         }
     }
 }
@@ -1098,6 +1104,8 @@ impl From<SavedRulesOfEngagement> for RulesOfEngagement {
             SavedRulesOfEngagement::Aggressive => Self::Aggressive,
             SavedRulesOfEngagement::Defensive => Self::Defensive,
             SavedRulesOfEngagement::Retreat => Self::Retreat,
+            SavedRulesOfEngagement::Evasive => Self::Evasive,
+            SavedRulesOfEngagement::Passive => Self::Passive,
         }
     }
 }

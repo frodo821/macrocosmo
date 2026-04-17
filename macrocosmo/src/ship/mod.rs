@@ -409,6 +409,16 @@ impl Plugin for ShipPlugin {
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
+        // #384: Combat ROE harbour systems — auto-undock/re-dock.
+        app.add_systems(
+            Update,
+            (
+                harbour::auto_undock_on_combat_roe.before(resolve_combat),
+                harbour::auto_return_dock_after_combat.after(resolve_combat),
+            )
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
     }
 }
 
@@ -424,6 +434,10 @@ pub enum RulesOfEngagement {
     Defensive,
     /// Do not engage hostiles; skip combat entirely
     Retreat,
+    /// #384: Evade combat — stay docked if harboured (sheltered), otherwise retreat
+    Evasive,
+    /// #384: Passive — never engage, stay docked if harboured (sheltered)
+    Passive,
 }
 
 impl RulesOfEngagement {
@@ -432,13 +446,17 @@ impl RulesOfEngagement {
             Self::Aggressive => "Aggressive",
             Self::Defensive => "Defensive",
             Self::Retreat => "Retreat",
+            Self::Evasive => "Evasive",
+            Self::Passive => "Passive",
         }
     }
 
-    pub const ALL: [RulesOfEngagement; 3] = [
+    pub const ALL: [RulesOfEngagement; 5] = [
         RulesOfEngagement::Aggressive,
         RulesOfEngagement::Defensive,
         RulesOfEngagement::Retreat,
+        RulesOfEngagement::Evasive,
+        RulesOfEngagement::Passive,
     ];
 }
 
@@ -589,6 +607,11 @@ impl Ship {
 /// - modifier = the Modifier to apply
 #[derive(Component, Default, Debug, Clone)]
 pub struct HarbourModifiers(pub Vec<(String, String, crate::modifier::Modifier)>);
+
+/// #384: Transient marker on ships undocked for combat, tracking their original harbour.
+/// After combat resolves with no hostiles remaining, the ship attempts to re-dock.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct UndockedForCombat(pub Entity);
 
 /// Orthogonal marker: ship is docked at a specific entity (port, station, etc.).
 /// Added/removed independently of `ShipState`. Not yet used by game logic —
