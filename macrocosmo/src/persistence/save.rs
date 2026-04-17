@@ -79,7 +79,7 @@ use super::savebag::*;
 // (`Option<SavedBiome>`) field for the new Biome component on Planet entities.
 // Same postcard-wire-break rationale as #296 — the fixture is regenerated in
 // lockstep.
-pub const SAVE_VERSION: u32 = 3;
+pub const SAVE_VERSION: u32 = 4;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -523,6 +523,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     // #296 (S-3): CoreShip is a zero-sized marker; encode presence as Some(()).
     if e_ref.get::<crate::ship::CoreShip>().is_some() {
         bag.core_ship = Some(());
+    }
+    // #300 (S-6): Defense Fleet marker on fleet entities.
+    if let Some(df) = e_ref.get::<crate::ship::DefenseFleet>() {
+        bag.defense_fleet = Some(SavedDefenseFleet::from_live(df));
     }
 
     // Pending command entities

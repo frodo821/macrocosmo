@@ -2,6 +2,8 @@ pub mod combat;
 pub mod command;
 pub mod core_deliverable;
 pub mod courier_route;
+// #300 (S-6): Defense Fleet auto-composition on Core deploy.
+pub mod defense_fleet;
 pub mod deliverable_ops;
 pub mod exploration;
 pub mod fleet;
@@ -28,6 +30,7 @@ pub use core_deliverable::{
     CoreShip, handle_core_deploy_requested, spawn_core_ship_from_deliverable,
 };
 pub use courier_route::*;
+pub use defense_fleet::{DefenseFleet, join_defense_fleet};
 pub use exploration::*;
 pub use fleet::*;
 pub use hitpoints::*;

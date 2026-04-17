@@ -1504,6 +1504,26 @@ impl SavedFleetMembers {
     }
 }
 
+/// #300 (S-6): Defense Fleet marker. Persisted as the star system save-id
+/// so the one-to-one Core ↔ Defense Fleet relationship restores on load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedDefenseFleet {
+    pub system_bits: u64,
+}
+
+impl SavedDefenseFleet {
+    pub fn from_live(v: &crate::ship::DefenseFleet) -> Self {
+        Self {
+            system_bits: v.system.to_bits(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::ship::DefenseFleet {
+        crate::ship::DefenseFleet {
+            system: remap_entity(self.system_bits, map),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedDetectedHostiles {
     /// Vec<(target_save_id_bits, last_detected_at)>.
@@ -4362,6 +4382,10 @@ pub struct SavedComponentBag {
     /// `tests/fixtures/minimal_game.bin` in the same commit as this field.
     #[serde(default)]
     pub core_ship: Option<()>,
+    /// #300 (S-6): Defense Fleet marker on fleet entities. Links the fleet
+    /// to the star system it defends.
+    #[serde(default)]
+    pub defense_fleet: Option<SavedDefenseFleet>,
     // Pending command entities (free-standing entities, not attached to a "body")
     pub pending_ship_command: Option<SavedPendingShipCommand>,
     pub pending_diplomatic_action: Option<SavedPendingDiplomaticAction>,

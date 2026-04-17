@@ -259,6 +259,45 @@ pub fn handle_core_deploy_requested(
             "Spawned Core ship {:?} in system {:?} (deployer {:?}, submitted at {} hd)",
             entity, system, winner.deployer, winner.submitted_at
         );
+        // #300 (S-6): Create a Defense Fleet and reassign the Core ship
+        // from its auto-created single-ship fleet into it. We use
+        // `commands.queue` because `spawn_ship` wired the Core into a
+        // single-ship fleet via Commands that haven't applied yet — the
+        // world closure runs after Commands flush and can read/write
+        // the live Fleet/Ship components directly.
+        let core_entity = entity;
+        commands.queue(move |world: &mut World| {
+            use crate::ship::defense_fleet::DefenseFleet;
+            use crate::ship::fleet::{Fleet, FleetMembers};
+
+            // 1. Read the old auto-created fleet from the Core ship.
+            let old_fleet = world.get::<Ship>(core_entity).and_then(|s| s.fleet);
+
+            // 2. Remove Core from the old fleet's members (prune_empty_fleets
+            //    will despawn it if it becomes empty).
+            if let Some(old_fleet_entity) = old_fleet {
+                if let Some(mut members) = world.get_mut::<FleetMembers>(old_fleet_entity) {
+                    members.0.retain(|e| *e != core_entity);
+                }
+            }
+
+            // 3. Spawn the Defense Fleet entity with the Core as sole member.
+            let defense_fleet_entity = world
+                .spawn((
+                    Fleet {
+                        name: "Defense Fleet".to_string(),
+                        flagship: Some(core_entity),
+                    },
+                    FleetMembers(vec![core_entity]),
+                    DefenseFleet { system },
+                ))
+                .id();
+
+            // 4. Update the Core ship's fleet back-pointer.
+            if let Some(mut ship) = world.get_mut::<Ship>(core_entity) {
+                ship.fleet = Some(defense_fleet_entity);
+            }
+        });
         executed.write(CommandExecuted {
             command_id: winner.command_id,
             kind: CommandKind::CoreDeploy,

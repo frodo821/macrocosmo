@@ -420,6 +420,10 @@ fn apply_component_bag(
     if bag.core_ship.is_some() {
         ec.insert(crate::ship::CoreShip);
     }
+    // #300 (S-6): Restore Defense Fleet marker on fleet entities.
+    if let Some(df) = &bag.defense_fleet {
+        ec.insert(df.clone().into_live(map));
+    }
 
     // Pending command entities
     if let Some(p) = &bag.pending_ship_command {
