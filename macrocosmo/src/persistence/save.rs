@@ -75,12 +75,10 @@ use super::savebag::*;
 // next bytes for the new field, misaligning the rest. Regenerated
 // `tests/fixtures/minimal_game.bin` ships in the same commit as the version
 // bump so `load_minimal_game_fixture_smoke` continues to pass.
-// #335: Bumped 2 → 3 because `SavedComponentBag` gained a `biome`
-// (`Option<SavedBiome>`) field for the new Biome component on Planet entities.
-// Same postcard-wire-break rationale as #296 — the fixture is regenerated in
-// lockstep.
+// #335: Bumped 2 → 3 for biome field.
 // #300 (S-6): `defense_fleet` field added.
 // #298 (S-4): `conquered_core` field added.
+// #280: Colony Hub migration (hub_t1/planetary_capital_t3 into slot 0).
 pub const SAVE_VERSION: u32 = 4;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading

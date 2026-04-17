@@ -8,8 +8,8 @@ use crate::species::{ColonyJobs, JobRegistry, SpeciesRegistry};
 use crate::time_system::GameClock;
 
 use super::{
-    Buildings, Colony, LastProductionTick, ResourceCapacity, ResourceStockpile,
-    AUTHORITY_DEFICIT_PENALTY,
+    AUTHORITY_DEFICIT_PENALTY, Buildings, Colony, LastProductionTick, ResourceCapacity,
+    ResourceStockpile,
 };
 
 /// #29: Production focus weights for colony output
@@ -562,16 +562,21 @@ pub fn tick_production(
     // #73: Check if the capital has an authority deficit.
     let capital_authority = {
         let capital_sys = colonies.iter().find_map(|(colony, _, _)| {
-            colony.system(&planets).filter(|&sys| stars.get(sys).ok().is_some_and(|s| s.is_capital))
+            colony
+                .system(&planets)
+                .filter(|&sys| stars.get(sys).ok().is_some_and(|s| s.is_capital))
         });
         capital_sys.and_then(|sys| stockpiles.get(sys).ok().map(|(s, _)| s.authority))
     };
     let authority_deficit = matches!(capital_authority, Some(a) if a == Amt::ZERO);
 
     // Collect production deltas per system
-    let mut system_deltas: std::collections::HashMap<Entity, (Amt, Amt, Amt)> = std::collections::HashMap::new();
+    let mut system_deltas: std::collections::HashMap<Entity, (Amt, Amt, Amt)> =
+        std::collections::HashMap::new();
     for (colony, prod, focus) in &colonies {
-        let Some(sys) = colony.system(&planets) else { continue };
+        let Some(sys) = colony.system(&planets) else {
+            continue;
+        };
 
         let (mw, ew) = match focus {
             Some(f) => (f.minerals_weight, f.energy_weight),
@@ -586,11 +591,27 @@ pub fn tick_production(
             Amt::units(1)
         };
 
-        let minerals = prod.minerals_per_hexadies.final_value().mul_amt(mw).mul_amt(d_amt).mul_amt(authority_multiplier);
-        let energy = prod.energy_per_hexadies.final_value().mul_amt(ew).mul_amt(d_amt).mul_amt(authority_multiplier);
-        let food = prod.food_per_hexadies.final_value().mul_amt(d_amt).mul_amt(authority_multiplier);
+        let minerals = prod
+            .minerals_per_hexadies
+            .final_value()
+            .mul_amt(mw)
+            .mul_amt(d_amt)
+            .mul_amt(authority_multiplier);
+        let energy = prod
+            .energy_per_hexadies
+            .final_value()
+            .mul_amt(ew)
+            .mul_amt(d_amt)
+            .mul_amt(authority_multiplier);
+        let food = prod
+            .food_per_hexadies
+            .final_value()
+            .mul_amt(d_amt)
+            .mul_amt(authority_multiplier);
 
-        let entry = system_deltas.entry(sys).or_insert((Amt::ZERO, Amt::ZERO, Amt::ZERO));
+        let entry = system_deltas
+            .entry(sys)
+            .or_insert((Amt::ZERO, Amt::ZERO, Amt::ZERO));
         entry.0 = entry.0.add(minerals);
         entry.1 = entry.1.add(energy);
         entry.2 = entry.2.add(food);

@@ -456,6 +456,35 @@ pub fn advance_production_tick(
     last_tick.0 = clock.elapsed;
 }
 
+/// #280: Determine the initial building slot count for a new colony from the
+/// `colony_hub_t1` definition's `colony_hub.fixed_slots` capability. Returns
+/// `(num_slots, Some(BuildingId))` when the hub is found, or falls back to
+/// `(fallback(), None)` when the registry lacks the definition.
+///
+/// The `fallback` closure is only called when the hub is missing (e.g. tests
+/// without Lua scripts loaded).
+pub fn hub_slots_for_new_colony(
+    registry: &BuildingRegistry,
+    fallback: impl FnOnce() -> usize,
+) -> (usize, Option<crate::scripting::building_api::BuildingId>) {
+    if let Some(hub_def) = registry.get("colony_hub_t1") {
+        let fixed = hub_def
+            .capabilities
+            .get("colony_hub")
+            .and_then(|cap| cap.get("fixed_slots"))
+            .map(|v| v as usize)
+            .unwrap_or(4);
+        (
+            fixed,
+            Some(crate::scripting::building_api::BuildingId::new(
+                "colony_hub_t1",
+            )),
+        )
+    } else {
+        (fallback(), None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

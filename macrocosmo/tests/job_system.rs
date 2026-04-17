@@ -48,6 +48,7 @@ fn slot_based_building_registry() -> BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     registry.insert(BuildingDefinition {
         id: "farm".into(),
@@ -69,6 +70,7 @@ fn slot_based_building_registry() -> BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     // Shipyard — capability-only, no production/slots.
     registry.insert(BuildingDefinition {
@@ -98,6 +100,7 @@ fn slot_based_building_registry() -> BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     registry
 }
@@ -470,6 +473,7 @@ fn test_target_prefix_routes_to_job_bucket() {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     app.insert_resource(registry);
 

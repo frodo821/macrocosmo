@@ -598,20 +598,24 @@ fn draw_overview_tab(
                     Some(bid) => {
                         let def = building_registry.get(bid.as_str());
                         let name = def.map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                        let is_dismantlable = def.map(|d| d.dismantlable).unwrap_or(true);
                         let (m_refund, e_refund) = def
                             .map(|d| d.demolition_refund())
                             .unwrap_or((Amt::ZERO, Amt::ZERO));
                         let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                         ui.horizontal(|ui| {
                             ui.label(format!("  [{}] {}", i, name));
-                            let tooltip = format!(
-                                "Demolish: {} hd | Refund M:{} E:{}",
-                                demo_time,
-                                m_refund.display_compact(),
-                                e_refund.display_compact()
-                            );
-                            if ui.small_button("Demolish").on_hover_text(tooltip).clicked() {
-                                demolish_request = Some((i, bid.clone()));
+                            // #280: Only show Demolish button for dismantlable buildings.
+                            if is_dismantlable {
+                                let tooltip = format!(
+                                    "Demolish: {} hd | Refund M:{} E:{}",
+                                    demo_time,
+                                    m_refund.display_compact(),
+                                    e_refund.display_compact()
+                                );
+                                if ui.small_button("Demolish").on_hover_text(tooltip).clicked() {
+                                    demolish_request = Some((i, bid.clone()));
+                                }
                             }
                             // Show upgrade buttons if upgrade paths exist
                             if let Some(src_def) = def {

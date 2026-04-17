@@ -62,6 +62,9 @@ pub struct BuildingDefinition {
     /// id completes (cause = "upgrade"). The event payload carries
     /// `previous_id` so the hook can distinguish upgrade sources.
     pub on_upgraded: Option<LuaFunctionRef>,
+    /// #280: Whether this building can be demolished. Defaults to `true`.
+    /// Hub and Capital buildings set this to `false` to prevent removal.
+    pub dismantlable: bool,
 }
 
 /// Parameters for a named building capability.
@@ -124,7 +127,9 @@ impl BuildingRegistry {
 
     /// Return all planet-level building definitions that are directly buildable.
     pub fn planet_buildings(&self) -> Vec<&BuildingDefinition> {
-        let mut result: Vec<_> = self.buildings.values()
+        let mut result: Vec<_> = self
+            .buildings
+            .values()
             .filter(|b| !b.is_system_building && b.is_direct_buildable)
             .collect();
         result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -133,7 +138,9 @@ impl BuildingRegistry {
 
     /// Return all system-level building definitions that are directly buildable.
     pub fn system_buildings(&self) -> Vec<&BuildingDefinition> {
-        let mut result: Vec<_> = self.buildings.values()
+        let mut result: Vec<_> = self
+            .buildings
+            .values()
             .filter(|b| b.is_system_building && b.is_direct_buildable)
             .collect();
         result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -187,7 +194,9 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
 
         // Parse cost table (optional) — nil means upgrade-only
         let cost_value_check: mlua::Value = table.get("cost")?;
@@ -213,7 +222,9 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             );
         }
 
-        let is_system_building: bool = table.get::<Option<bool>>("is_system_building")?.unwrap_or(false);
+        let is_system_building: bool = table
+            .get::<Option<bool>>("is_system_building")?
+            .unwrap_or(false);
         let capabilities = parse_capabilities_table(&table)?;
         let upgrade_to = parse_upgrade_to_table(&table)?;
         let prerequisites = parse_prerequisites_field(&table)?;
@@ -222,6 +233,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         // `on_upgraded` fires after an upgrade path to this id completes.
         let on_built = crate::scripting::parse_lua_function_field(lua, &table, "on_built")?;
         let on_upgraded = crate::scripting::parse_lua_function_field(lua, &table, "on_upgraded")?;
+        let dismantlable: bool = table.get::<Option<bool>>("dismantlable")?.unwrap_or(true);
 
         result.push(BuildingDefinition {
             id,
@@ -243,6 +255,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             prerequisites,
             on_built,
             on_upgraded,
+            dismantlable,
         });
     }
 
@@ -254,12 +267,8 @@ fn parse_cost_table(table: &mlua::Table) -> Result<(Amt, Amt), mlua::Error> {
     let cost_value: mlua::Value = table.get("cost")?;
     match cost_value {
         mlua::Value::Table(cost_table) => {
-            let minerals: f64 = cost_table
-                .get::<Option<f64>>("minerals")?
-                .unwrap_or(0.0);
-            let energy: f64 = cost_table
-                .get::<Option<f64>>("energy")?
-                .unwrap_or(0.0);
+            let minerals: f64 = cost_table.get::<Option<f64>>("minerals")?.unwrap_or(0.0);
+            let energy: f64 = cost_table.get::<Option<f64>>("energy")?.unwrap_or(0.0);
             Ok((Amt::from_f64(minerals), Amt::from_f64(energy)))
         }
         mlua::Value::Nil => Ok((Amt::ZERO, Amt::ZERO)),
@@ -274,7 +283,9 @@ fn parse_cost_table(table: &mlua::Table) -> Result<(Amt, Amt), mlua::Error> {
 /// - `capabilities = { name = true }` — empty params
 /// - `capabilities = { name = { ftl_range_bonus = 10.0, travel_time_factor = 0.8 } }` — named params
 /// - `capabilities = { name = { value = N } }` — legacy single-value form
-fn parse_capabilities_table(table: &mlua::Table) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
+fn parse_capabilities_table(
+    table: &mlua::Table,
+) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
     let cap_value: mlua::Value = table.get("capabilities")?;
     match cap_value {
         mlua::Value::Table(cap_table) => {
@@ -325,9 +336,11 @@ fn parse_upgrade_to_table(table: &mlua::Table) -> Result<Vec<UpgradePath>, mlua:
                             (Amt::from_f64(m), Amt::from_f64(e))
                         }
                         mlua::Value::Nil => (Amt::ZERO, Amt::ZERO),
-                        _ => return Err(mlua::Error::RuntimeError(
-                            "Expected table or nil for upgrade 'cost' field".to_string(),
-                        )),
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "Expected table or nil for upgrade 'cost' field".to_string(),
+                            ));
+                        }
                     }
                 };
 
@@ -464,6 +477,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
 
         let mine = registry.get("mine").unwrap();
@@ -492,6 +506,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -508,11 +523,15 @@ mod tests {
         let building_script = std::path::Path::new("scripts/buildings/basic.lua");
         if !building_script.exists() {
             // Try from the workspace root (worktree directory)
-            let alt_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
+            let alt_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts/buildings/basic.lua");
             if alt_path.exists() {
                 engine.load_file(&alt_path).unwrap();
             } else {
-                panic!("scripts/buildings/basic.lua not found at {:?} or {:?}", building_script, alt_path);
+                panic!(
+                    "scripts/buildings/basic.lua not found at {:?} or {:?}",
+                    building_script, alt_path
+                );
             }
         } else {
             engine.load_file(building_script).unwrap();
@@ -520,9 +539,13 @@ mod tests {
 
         let defs = parse_building_definitions(engine.lua()).unwrap();
 
-        // basic.lua defines 8 buildings: mine, power_plant, research_lab, shipyard, port, farm,
-        // advanced_mine, advanced_power_plant
-        assert_eq!(defs.len(), 8, "Expected 8 building definitions from basic.lua");
+        // basic.lua defines 14 buildings: mine, power_plant, research_lab, shipyard, port, farm,
+        // advanced_mine, advanced_power_plant, colony_hub_t1/t2/t3, planetary_capital_t1/t2/t3
+        assert_eq!(
+            defs.len(),
+            14,
+            "Expected 14 building definitions from basic.lua"
+        );
 
         // Build a registry from the parsed definitions
         let mut registry = BuildingRegistry::default();
@@ -555,7 +578,9 @@ mod tests {
         );
 
         // Verify Shipyard has no production modifiers and is a system building.
-        let shipyard = registry.get("shipyard").expect("Shipyard should be in registry");
+        let shipyard = registry
+            .get("shipyard")
+            .expect("Shipyard should be in registry");
         assert_eq!(shipyard.name, "Shipyard");
         assert!(shipyard.modifiers.is_empty());
         assert_eq!(shipyard.maintenance, Amt::units(1));
@@ -595,6 +620,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
 
         // Replace with updated values
@@ -618,6 +644,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
 
         assert_eq!(registry.buildings.len(), 1);
@@ -706,6 +733,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
 
         // Upgrade-only planet building
@@ -729,6 +757,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
 
         // planet_buildings() should only return direct-buildable ones

@@ -10,8 +10,8 @@
 //!
 //! Issue #180.
 
-use macrocosmo::scripting::game_start_ctx::{GameStartCtx, PlanetRef};
 use macrocosmo::scripting::ScriptEngine;
+use macrocosmo::scripting::game_start_ctx::{GameStartCtx, PlanetRef};
 
 /// Build an engine with `initialize_default_capital` loaded and a fresh ctx
 /// installed at the global name `ctx`. Tests then `lua.load("...")` to call
@@ -88,7 +88,11 @@ fn defaults_record_capital_layout() {
             b.as_str()
         })
         .collect();
-    assert_eq!(planet_buildings, vec!["mine", "power_plant", "farm"]);
+    // #280: planetary_capital_t3 is prepended by lib/capital.lua.
+    assert_eq!(
+        planet_buildings,
+        vec!["planetary_capital_t3", "mine", "power_plant", "farm"]
+    );
 
     // Default system buildings: shipyard.
     assert_eq!(actions.system_buildings, vec!["shipyard".to_string()]);
@@ -173,7 +177,10 @@ fn additional_planets_explicit_specs_are_respected() {
     assert_eq!(actions.spawned_planets.len(), 4);
     assert_eq!(actions.spawned_planets[1].name, "Forge");
     assert_eq!(actions.spawned_planets[1].planet_type, "barren");
-    assert_eq!(actions.spawned_planets[1].attributes.habitability, Some(0.0));
+    assert_eq!(
+        actions.spawned_planets[1].attributes.habitability,
+        Some(0.0)
+    );
     assert_eq!(
         actions.spawned_planets[1].attributes.max_building_slots,
         Some(4)
@@ -207,9 +214,13 @@ fn starter_buildings_and_ships_are_overridable() {
 
     let actions = ctx.take_actions();
 
-    let planet_building_ids: Vec<&str> =
-        actions.planet_buildings.iter().map(|(_, b)| b.as_str()).collect();
-    assert_eq!(planet_building_ids, vec!["mine"]);
+    let planet_building_ids: Vec<&str> = actions
+        .planet_buildings
+        .iter()
+        .map(|(_, b)| b.as_str())
+        .collect();
+    // #280: planetary_capital_t3 prepended by lib/capital.lua.
+    assert_eq!(planet_building_ids, vec!["planetary_capital_t3", "mine"]);
 
     assert_eq!(
         actions.system_buildings,

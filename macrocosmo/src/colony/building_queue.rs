@@ -524,6 +524,7 @@ pub fn tick_building_queue(
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     planets: Query<&Planet>,
     mut event_system: ResMut<crate::event_system::EventSystem>,
+    building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -756,6 +757,17 @@ pub fn tick_building_queue(
                         payload,
                     )),
                 );
+                // #280: If the upgraded building has colony_hub capability,
+                // expand the colony's slot count to match fixed_slots.
+                if let Some(new_def) = building_registry.get(completed.target_id.as_str()) {
+                    if let Some(hub_cap) = new_def.capabilities.get("colony_hub") {
+                        let fixed = hub_cap.get_or("fixed_slots", 0.0) as usize;
+                        if fixed > buildings.slots.len() {
+                            buildings.slots.resize(fixed, None);
+                            info!("Colony hub upgrade expanded slots to {}", fixed);
+                        }
+                    }
+                }
             }
         }
 

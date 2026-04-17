@@ -50,14 +50,13 @@ use macrocosmo::amount::SignedAmt;
 use macrocosmo::empire::CommsParams;
 use macrocosmo::events::{GameEvent, GameEventKind};
 use macrocosmo::knowledge::{
-    compute_fact_arrival, rebuild_relay_network, relay_delay_hexadies, CombatVictor,
-    KnowledgeFact, ObservationSource, PendingFactQueue, PerceivedFact, RelayNetwork,
-    RelaySnapshot, FTL_RELAY_BASE_MULTIPLIER,
+    CombatVictor, FTL_RELAY_BASE_MULTIPLIER, KnowledgeFact, ObservationSource, PendingFactQueue,
+    PerceivedFact, RelayNetwork, RelaySnapshot, compute_fact_arrival, rebuild_relay_network,
+    relay_delay_hexadies,
 };
 use macrocosmo::modifier::Modifier;
 use macrocosmo::notifications::{
-    auto_notify_from_events, is_legacy_whitelisted, notify_from_knowledge_facts,
-    NotificationQueue,
+    NotificationQueue, auto_notify_from_events, is_legacy_whitelisted, notify_from_knowledge_facts,
 };
 use macrocosmo::player::PlayerEmpire;
 use macrocosmo::time_system::GameClock;
@@ -368,7 +367,7 @@ fn test_empire_comm_relay_range_extends_coverage() {
         deliverable: None,
         upgrade_to: Vec::new(),
         upgrade_from: None,
-            on_built: None,
+        on_built: None,
         on_upgraded: None,
     });
     app.insert_resource(registry);
@@ -386,7 +385,11 @@ fn test_empire_comm_relay_range_extends_coverage() {
             name: "R1".into(),
             owner: Owner::Neutral,
         },
-        macrocosmo::components::Position { x: 0.0, y: 0.0, z: 0.0 },
+        macrocosmo::components::Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
     ));
 
     app.add_systems(Update, rebuild_relay_network);
@@ -694,7 +697,11 @@ fn test_colony_established_remote_vs_local() {
     }
     local_app.update();
     assert_eq!(
-        local_app.world().resource::<NotificationQueue>().items.len(),
+        local_app
+            .world()
+            .resource::<NotificationQueue>()
+            .items
+            .len(),
         1,
         "local colony established surfaces immediately"
     );
@@ -728,13 +735,21 @@ fn test_colony_established_remote_vs_local() {
     remote_app.world_mut().resource_mut::<GameClock>().elapsed = 299;
     remote_app.update();
     assert_eq!(
-        remote_app.world().resource::<NotificationQueue>().items.len(),
+        remote_app
+            .world()
+            .resource::<NotificationQueue>()
+            .items
+            .len(),
         0,
     );
     remote_app.world_mut().resource_mut::<GameClock>().elapsed = 300;
     remote_app.update();
     assert_eq!(
-        remote_app.world().resource::<NotificationQueue>().items.len(),
+        remote_app
+            .world()
+            .resource::<NotificationQueue>()
+            .items
+            .len(),
         1,
     );
 }

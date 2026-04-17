@@ -469,6 +469,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
 
         let mut port_caps = HashMap::new();
@@ -503,6 +504,7 @@ mod tests {
             prerequisites: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         });
         registry
     }

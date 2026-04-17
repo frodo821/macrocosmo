@@ -64,6 +64,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     registry.insert(BuildingDefinition {
         id: "power_plant".into(),
@@ -85,6 +86,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     registry.insert(BuildingDefinition {
         id: "research_lab".into(),
@@ -106,6 +108,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     let mut shipyard_caps = HashMap::new();
     shipyard_caps.insert(
@@ -138,6 +141,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     let mut port_caps = HashMap::new();
     port_caps.insert(
@@ -171,6 +175,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     registry.insert(BuildingDefinition {
         id: "farm".into(),
@@ -192,6 +197,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     registry
 }

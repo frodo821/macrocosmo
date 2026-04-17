@@ -421,6 +421,7 @@ fn bare_building_def(id: &str) -> BuildingDefinition {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     }
 }
 
