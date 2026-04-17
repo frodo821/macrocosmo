@@ -159,6 +159,9 @@ function M.initialize_default_capital(ctx, opts)
         ctx.system:add_building(building)
     end
 
+    -- 5b) Spawn a sovereignty Core in the capital system (#299).
+    ctx.system:spawn_core()
+
     -- 6) Spawn starter ships.
     for _, entry in ipairs(starter_ships) do
         local design = entry[1]

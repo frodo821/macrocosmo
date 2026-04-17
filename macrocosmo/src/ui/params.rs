@@ -90,8 +90,11 @@ pub struct MainPanelWorldQueries<'w, 's> {
         ),
     >,
     pub remote_commands: Query<'w, 's, &'static crate::communication::PendingCommand>,
-    /// #370: Core ships query for sovereignty / system building gate checks.
-    pub core_ships: Query<'w, 's, &'static AtSystem, With<CoreShip>>,
+    /// #370 + #299: Core ships — `(AtSystem, FactionOwner)` keyed off the
+    /// `CoreShip` marker. Used for sovereignty / system building gate checks
+    /// and the colonize-gate UI.
+    pub core_ships:
+        Query<'w, 's, (&'static AtSystem, &'static FactionOwner), With<crate::ship::CoreShip>>,
 }
 
 #[derive(SystemParam)]

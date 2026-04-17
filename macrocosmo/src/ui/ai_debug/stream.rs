@@ -21,23 +21,17 @@ pub fn draw_stream(ui: &mut egui::Ui, state: &mut StreamState) {
             (StreamFilter::CommandsOnly, "Commands"),
             (StreamFilter::EvidenceOnly, "Evidence"),
         ] {
-            if ui
-                .selectable_label(state.filter == f, label)
-                .clicked()
-            {
+            if ui.selectable_label(state.filter == f, label).clicked() {
                 state.filter = f;
             }
         }
-        ui.with_layout(
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} / {}", state.log.len(), super::STREAM_LOG_CAP))
-                        .weak()
-                        .small(),
-                );
-            },
-        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                egui::RichText::new(format!("{} / {}", state.log.len(), super::STREAM_LOG_CAP))
+                    .weak()
+                    .small(),
+            );
+        });
     });
     ui.separator();
 

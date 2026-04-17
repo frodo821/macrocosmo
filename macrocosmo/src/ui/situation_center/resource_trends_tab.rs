@@ -526,7 +526,11 @@ mod tests {
         assert!((s.minerals - 25.0).abs() < 1e-6);
         assert!((s.energy - 20.0).abs() < 1e-6);
         assert!((s.food - 5.0).abs() < 1e-6);
-        assert!(s.research.abs() < 1e-6, "stockpile research must NOT leak into sample (got {})", s.research);
+        assert!(
+            s.research.abs() < 1e-6,
+            "stockpile research must NOT leak into sample (got {})",
+            s.research
+        );
     }
 
     #[test]
@@ -535,7 +539,9 @@ mod tests {
         // light-speed delay, sourced from the player empire's
         // `KnowledgeStore.production_research`. NOT from
         // `ResourceStockpile.research`.
-        use crate::knowledge::{KnowledgeStore, ObservationSource, SystemKnowledge, SystemSnapshot};
+        use crate::knowledge::{
+            KnowledgeStore, ObservationSource, SystemKnowledge, SystemSnapshot,
+        };
         use crate::player::{Empire, Faction, PlayerEmpire};
 
         let mut world = World::new();

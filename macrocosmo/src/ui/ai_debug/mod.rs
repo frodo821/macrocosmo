@@ -22,8 +22,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use macrocosmo_ai::{
-    BusSnapshot, CommandKindId, EvidenceKindId, FactionId, MetricId,
-    playthrough::Playthrough,
+    BusSnapshot, CommandKindId, EvidenceKindId, FactionId, MetricId, playthrough::Playthrough,
 };
 
 use crate::ai::plugin::AiBusResource;
@@ -177,10 +176,7 @@ pub struct AiDebugUi {
 }
 
 /// Toggle the debug window with F10.
-pub fn toggle_ai_debug(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut ui: ResMut<AiDebugUi>,
-) {
+pub fn toggle_ai_debug(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<AiDebugUi>) {
     if keys.just_pressed(KeyCode::F10) {
         ui.open = !ui.open;
     }
@@ -237,7 +233,10 @@ pub fn diff_snapshots(
 
     // Command kind declarations.
     for id in current.commands.keys() {
-        if previous.map(|p| !p.commands.contains_key(id)).unwrap_or(true) {
+        if previous
+            .map(|p| !p.commands.contains_key(id))
+            .unwrap_or(true)
+        {
             out.push(StreamEntry {
                 at: now,
                 event: StreamEvent::DeclarationAdded {
@@ -252,15 +251,14 @@ pub fn diff_snapshots(
     // drained each tick by CommandDrain, but we may still catch some in
     // the window; a naive "not in previous by (kind,issuer,at)" check is
     // enough for a rolling log.
-    let prev_pending: std::collections::HashSet<(CommandKindId, FactionId, i64)> =
-        previous
-            .map(|p| {
-                p.pending_commands
-                    .iter()
-                    .map(|c| (c.kind.clone(), c.issuer, c.at))
-                    .collect()
-            })
-            .unwrap_or_default();
+    let prev_pending: std::collections::HashSet<(CommandKindId, FactionId, i64)> = previous
+        .map(|p| {
+            p.pending_commands
+                .iter()
+                .map(|c| (c.kind.clone(), c.issuer, c.at))
+                .collect()
+        })
+        .unwrap_or_default();
     for cmd in &current.pending_commands {
         let key = (cmd.kind.clone(), cmd.issuer, cmd.at);
         if !prev_pending.contains(&key) {
@@ -370,16 +368,9 @@ pub fn draw_ai_debug_system(
                 ui.selectable_value(&mut ui_res.active_tab, DebugTab::Stream, "Stream");
                 ui.selectable_value(&mut ui_res.active_tab, DebugTab::Governor, "Governor");
                 ui.selectable_value(&mut ui_res.active_tab, DebugTab::Replay, "Replay");
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new(format!("tick {}", now))
-                                .weak()
-                                .small(),
-                        );
-                    },
-                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("tick {}", now)).weak().small());
+                });
             });
             ui.separator();
 

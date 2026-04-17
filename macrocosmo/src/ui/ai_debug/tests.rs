@@ -3,11 +3,11 @@
 
 use bevy::prelude::*;
 use macrocosmo_ai::{
-    AiBus, Command, CommandKindId, CommandSpec, EvidenceKindId, EvidenceSpec, FactionId,
-    MetricId, MetricSpec, Retention, StandingEvidence, WarningMode,
+    AiBus, Command, CommandKindId, CommandSpec, EvidenceKindId, EvidenceSpec, FactionId, MetricId,
+    MetricSpec, Retention, StandingEvidence, WarningMode,
     playthrough::{
-        Declarations, Playthrough, PlaythroughEvent, PlaythroughMeta, ScenarioConfig,
-        SUPPORTED_VERSION,
+        Declarations, Playthrough, PlaythroughEvent, PlaythroughMeta, SUPPORTED_VERSION,
+        ScenarioConfig,
     },
 };
 
@@ -15,8 +15,7 @@ use crate::ai::plugin::{AiBusResource, AiPlugin};
 use crate::time_system::GameClock;
 
 use super::{
-    AiDebugUi, DebugTab, StreamEntry, StreamEvent, STREAM_LOG_CAP, diff_snapshots,
-    toggle_ai_debug,
+    AiDebugUi, DebugTab, STREAM_LOG_CAP, StreamEntry, StreamEvent, diff_snapshots, toggle_ai_debug,
 };
 
 fn ready_metric() -> MetricId {
@@ -71,10 +70,7 @@ fn toggle_flips_open() {
 #[test]
 fn snapshot_diff_detects_metric_emit() {
     let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
-    bus.declare_metric(
-        ready_metric(),
-        MetricSpec::ratio(Retention::Short, "r"),
-    );
+    bus.declare_metric(ready_metric(), MetricSpec::ratio(Retention::Short, "r"));
     bus.emit(&ready_metric(), 0.5, 10);
     let prev = bus.snapshot();
 
@@ -99,10 +95,7 @@ fn snapshot_diff_detects_metric_emit() {
 #[test]
 fn snapshot_diff_first_run_emits_declarations() {
     let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
-    bus.declare_metric(
-        ready_metric(),
-        MetricSpec::ratio(Retention::Short, "r"),
-    );
+    bus.declare_metric(ready_metric(), MetricSpec::ratio(Retention::Short, "r"));
     let snap = bus.snapshot();
     let entries = diff_snapshots(None, &snap, 0);
     // On first snapshot the metric should surface as a DeclarationAdded.
@@ -186,10 +179,9 @@ fn mk_empty_playthrough() -> Playthrough {
 
 fn mk_simple_playthrough() -> Playthrough {
     let mut pt = mk_empty_playthrough();
-    pt.declarations.metrics.insert(
-        ready_metric(),
-        MetricSpec::ratio(Retention::Short, "r"),
-    );
+    pt.declarations
+        .metrics
+        .insert(ready_metric(), MetricSpec::ratio(Retention::Short, "r"));
     pt.events.push(PlaythroughEvent::Metric {
         id: ready_metric(),
         value: 0.3,

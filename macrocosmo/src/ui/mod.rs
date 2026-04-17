@@ -681,7 +681,7 @@ fn draw_main_panels_system(
     let selected_system_has_core = selection
         .selected_system
         .0
-        .map(|sys| world.core_ships.iter().any(|at| at.0 == sys))
+        .map(|sys| world.core_ships.iter().any(|(at, _)| at.0 == sys))
         .unwrap_or(false);
     system_panel::draw_system_panel(
         ctx,
@@ -1079,6 +1079,14 @@ fn draw_main_panels_system(
         }
         set
     };
+    // #299 (S-5): Build a map of systems that have a Core, keyed by
+    // faction entity, so the context menu can gate colonization on
+    // Core presence.
+    let core_by_system: Vec<(Entity, Entity)> = world
+        .core_ships
+        .iter()
+        .map(|(at, fo)| (at.0, fo.0))
+        .collect();
     context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,
@@ -1096,6 +1104,7 @@ fn draw_main_panels_system(
         &world.planet_entities,
         &hostile_systems,
         &registries.design_registry,
+        &core_by_system,
     );
     for pending_cmd in pending_ship_commands {
         commands.spawn(pending_cmd);

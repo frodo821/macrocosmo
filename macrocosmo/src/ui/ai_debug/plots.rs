@@ -10,12 +10,7 @@ use super::PlotsState;
 /// Available window presets (in ticks) shown in the header.
 const WINDOW_PRESETS: &[i64] = &[100, 500, 2000];
 
-pub fn draw_plots(
-    ui: &mut egui::Ui,
-    state: &mut PlotsState,
-    bus: &AiBus,
-    now: i64,
-) {
+pub fn draw_plots(ui: &mut egui::Ui, state: &mut PlotsState, bus: &AiBus, now: i64) {
     ui.horizontal(|ui| {
         ui.label("Window:");
         for &preset in WINDOW_PRESETS {
@@ -62,11 +57,9 @@ pub fn draw_plots(
     egui::CentralPanel::default().show_inside(ui, |ui| {
         if state.selected_metrics.is_empty() {
             ui.label(
-                egui::RichText::new(
-                    "Pick one or more metrics in the right panel to plot.",
-                )
-                .weak()
-                .italics(),
+                egui::RichText::new("Pick one or more metrics in the right panel to plot.")
+                    .weak()
+                    .italics(),
             );
             return;
         }
@@ -81,13 +74,7 @@ pub fn draw_plots(
     });
 }
 
-fn draw_metric_plot(
-    ui: &mut egui::Ui,
-    bus: &AiBus,
-    id: &MetricId,
-    now: i64,
-    window: i64,
-) {
+fn draw_metric_plot(ui: &mut egui::Ui, bus: &AiBus, id: &MetricId, now: i64, window: i64) {
     let points: Vec<(i64, f64)> = bus
         .window(id, now, window)
         .map(|tv| (tv.at, tv.value))

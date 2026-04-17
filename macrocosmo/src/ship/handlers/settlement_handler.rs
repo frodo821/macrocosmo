@@ -17,11 +17,14 @@ use crate::components::Position;
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
+use crate::faction::FactionOwner;
+use crate::galaxy::AtSystem;
 use crate::ship::command_events::{
     ColonizeRequested, CommandExecuted, CommandKind, CommandResult, SurveyRequested,
 };
+use crate::ship::core_deliverable::CoreShip;
 use crate::ship::survey::start_survey_with_bonus;
-use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
+use crate::ship::{CommandQueue, Owner, QueuedCommand, Ship, ShipState};
 
 #[allow(clippy::too_many_arguments)]
 pub fn handle_survey_requested(
@@ -160,14 +163,22 @@ pub fn handle_colonize_requested(
     balance: Res<crate::technology::GameBalance>,
     mut reqs: MessageReader<ColonizeRequested>,
     mut executed: MessageWriter<CommandExecuted>,
-    mut ships: Query<(&Ship, &mut ShipState, &Position, &mut CommandQueue)>,
+    mut ships: Query<(
+        &Ship,
+        &mut ShipState,
+        &Position,
+        &mut CommandQueue,
+        Option<&FactionOwner>,
+    )>,
     systems: Query<(&crate::galaxy::StarSystem, &Position), Without<Ship>>,
     design_registry: Res<ShipDesignRegistry>,
+    cores: Query<(&AtSystem, &FactionOwner), With<CoreShip>>,
 ) {
     let settling_duration = balance.settling_duration();
 
     for req in reqs.read() {
-        let Ok((ship, mut state, ship_pos, mut queue)) = ships.get_mut(req.ship) else {
+        let Ok((ship, mut state, ship_pos, mut queue, ship_faction)) = ships.get_mut(req.ship)
+        else {
             executed.write(CommandExecuted {
                 command_id: req.command_id,
                 kind: CommandKind::Colonize,
@@ -179,6 +190,13 @@ pub fn handle_colonize_requested(
             });
             continue;
         };
+
+        // #299 (S-5): Resolve the ship's faction for the Core ownership check.
+        let ship_faction_entity: Option<Entity> =
+            ship_faction.map(|fo| fo.0).or_else(|| match ship.owner {
+                Owner::Empire(e) => Some(e),
+                Owner::Neutral => None,
+            });
 
         let docked_system: Option<Entity> = match *state {
             ShipState::Docked { system } => Some(system),
@@ -255,6 +273,33 @@ pub fn handle_colonize_requested(
             });
             queue.sync_prediction(ship_pos.as_array(), docked_system);
             continue;
+        }
+
+        // #299 (S-5): Settle gate — require a Core ship owned by this
+        // faction in the target system. Without sovereignty presence,
+        // colonization is blocked. Neutral ships (no faction) bypass the
+        // gate for backward compatibility with pre-faction test setups.
+        if let Some(faction) = ship_faction_entity {
+            let has_own_core = cores
+                .iter()
+                .any(|(at, fo)| at.0 == req.target_system && fo.0 == faction);
+            if !has_own_core {
+                warn!(
+                    "Queue: Ship {} cannot colonize {} — no sovereignty core in target system",
+                    ship.name, target_star.name
+                );
+                executed.write(CommandExecuted {
+                    command_id: req.command_id,
+                    kind: CommandKind::Colonize,
+                    ship: req.ship,
+                    result: CommandResult::Rejected {
+                        reason: "no sovereignty core in target system".to_string(),
+                    },
+                    completed_at: clock.elapsed,
+                });
+                queue.sync_prediction(ship_pos.as_array(), docked_system);
+                continue;
+            }
         }
 
         let docked_sys = docked_system.expect("colonize already required docked");

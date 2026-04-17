@@ -52,10 +52,18 @@ pub fn draw_top_bar(
             if ui.button("\u{23F8}").on_hover_text("Pause").clicked() {
                 speed.hexadies_per_second = 0.0;
             }
-            if ui.button("\u{25B6}").on_hover_text("Normal speed").clicked() {
+            if ui
+                .button("\u{25B6}")
+                .on_hover_text("Normal speed")
+                .clicked()
+            {
                 speed.hexadies_per_second = 1.0;
             }
-            if ui.button("\u{23E9}").on_hover_text("Fast forward").clicked() {
+            if ui
+                .button("\u{23E9}")
+                .on_hover_text("Fast forward")
+                .clicked()
+            {
                 speed.hexadies_per_second = (speed.hexadies_per_second * 2.0).max(1.0).min(16.0);
             }
 
@@ -83,7 +91,9 @@ pub fn draw_top_bar(
                 } else {
                     egui::Color32::GRAY
                 };
-                ui.label(egui::RichText::new(format!("({})", net.display_compact())).color(net_color));
+                ui.label(
+                    egui::RichText::new(format!("({})", net.display_compact())).color(net_color),
+                );
             }
 
             ui.separator();

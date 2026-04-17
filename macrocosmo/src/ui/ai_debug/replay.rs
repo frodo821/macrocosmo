@@ -104,7 +104,10 @@ pub fn draw_replay(ui: &mut egui::Ui, state: &mut ReplayState) {
     let total = pt.events.len();
     ui.horizontal(|ui| {
         let rewind = ui.button("|<").on_hover_text("Rewind to start").clicked();
-        let step_back = ui.button("<").on_hover_text("Step back one event").clicked();
+        let step_back = ui
+            .button("<")
+            .on_hover_text("Step back one event")
+            .clicked();
         let step_forward = ui
             .button(">")
             .on_hover_text("Step forward one event")
@@ -212,8 +215,7 @@ fn load_playthrough(path: &str) -> Result<Playthrough, String> {
         return Err("empty path".into());
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
-    let pt: Playthrough =
-        serde_json::from_str(&text).map_err(|e| format!("parse: {e}"))?;
+    let pt: Playthrough = serde_json::from_str(&text).map_err(|e| format!("parse: {e}"))?;
     // Catch version mismatches up front so the UI doesn't silently accept a
     // playthrough it can't step through.
     let _ = replay_fn(&pt).map_err(|e| format!("{e}"))?;

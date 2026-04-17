@@ -23,7 +23,13 @@ fn ship_status_label(state: &ShipState) -> &'static str {
 }
 
 /// Draw a ship tooltip on hover.
-fn ship_tooltip(ui: &mut egui::Ui, ship: &Ship, state: &ShipState, hp: &ShipHitpoints, design_name: &str) {
+fn ship_tooltip(
+    ui: &mut egui::Ui,
+    ship: &Ship,
+    state: &ShipState,
+    hp: &ShipHitpoints,
+    design_name: &str,
+) {
     ui.label(egui::RichText::new(&ship.name).strong());
     ui.label(format!("Design: {}", design_name));
     ui.label(format!("Status: {}", ship_status_label(state)));
@@ -142,19 +148,25 @@ fn draw_unowned_system_header(
 fn draw_ship_list(
     ui: &mut egui::Ui,
     ship_entries: &[(Entity, String, String)],
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     selected_ship: &mut SelectedShip,
     design_registry: &ShipDesignRegistry,
 ) {
     if ship_entries.is_empty() {
-        ui.label(
-            egui::RichText::new("  (no ships)")
-                .weak()
-                .italics(),
-        );
+        ui.label(egui::RichText::new("  (no ships)").weak().italics());
     } else {
         for (ship_entity, name, design_id) in ship_entries {
-            let design_name = design_registry.get(design_id).map(|d| d.name.as_str()).unwrap_or(design_id);
+            let design_name = design_registry
+                .get(design_id)
+                .map(|d| d.name.as_str())
+                .unwrap_or(design_id);
             let label = format!("  {} ({})", name, design_name);
             let is_selected = selected_ship.0 == Some(*ship_entity);
             let mut response = ui.selectable_label(is_selected, &label);
@@ -186,7 +198,14 @@ pub fn draw_outline(
         Option<&crate::colony::MaintenanceCost>,
         Option<&crate::colony::FoodConsumption>,
     )>,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
     planets: &Query<&Planet>,
@@ -214,9 +233,7 @@ pub fn draw_outline(
             }
 
             // Sort: capital first, then alphabetical
-            owned_systems.sort_by(|a, b| {
-                b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1))
-            });
+            owned_systems.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
 
             // Auto-expand capital system on first encounter
             for (entity, _, is_capital) in &owned_systems {
@@ -274,7 +291,9 @@ pub fn draw_outline(
                                 .iter_mut()
                                 .find(|(e, _, _)| *e == *system)
                             {
-                                entry.2.push((entity, ship.name.clone(), ship.design_id.clone()));
+                                entry
+                                    .2
+                                    .push((entity, ship.name.clone(), ship.design_id.clone()));
                             } else {
                                 unowned_system_ships.push((
                                     *system,
@@ -304,8 +323,7 @@ pub fn draw_outline(
                         }
 
                         for (system_entity, system_name, docked) in &unowned_system_ships {
-                            let is_system_selected =
-                                selected_system.0 == Some(*system_entity);
+                            let is_system_selected = selected_system.0 == Some(*system_entity);
 
                             let is_expanded = draw_unowned_system_header(
                                 ui,
@@ -318,9 +336,18 @@ pub fn draw_outline(
                             );
 
                             if is_expanded {
-                                ui.indent(format!("outline_unowned_ships_{:?}", system_entity), |ui| {
-                                    draw_ship_list(ui, docked, ships, selected_ship, design_registry);
-                                });
+                                ui.indent(
+                                    format!("outline_unowned_ships_{:?}", system_entity),
+                                    |ui| {
+                                        draw_ship_list(
+                                            ui,
+                                            docked,
+                                            ships,
+                                            selected_ship,
+                                            design_registry,
+                                        );
+                                    },
+                                );
                             }
                         }
                     });
@@ -353,7 +380,10 @@ pub fn draw_outline(
                             let is_selected = selected_ship.0 == Some(*entity);
                             let mut response = ui.selectable_label(is_selected, &label);
                             if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
-                                let design_name = design_registry.get(&ship.design_id).map(|d| d.name.as_str()).unwrap_or(&ship.design_id);
+                                let design_name = design_registry
+                                    .get(&ship.design_id)
+                                    .map(|d| d.name.as_str())
+                                    .unwrap_or(&ship.design_id);
                                 response = response.on_hover_ui(|ui| {
                                     ship_tooltip(ui, &ship, &_state, &hp, design_name);
                                 });
@@ -370,7 +400,14 @@ pub fn draw_outline(
 /// Helper to collect ships docked at a given system.
 fn ships_docked_at(
     system: Entity,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()

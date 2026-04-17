@@ -6,7 +6,9 @@ use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
-use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship::{
+    Cargo, CommandQueue, Owner, QueuedCommand, Ship, ShipHitpoints, ShipState, SurveyData,
+};
 use crate::ship_design::ShipDesignRegistry;
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
@@ -20,7 +22,14 @@ pub fn draw_context_menu(
     context_menu: &mut crate::visualization::ContextMenu,
     selected_ship: &mut SelectedShip,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     command_queues: &mut Query<&mut CommandQueue>,
     positions: &Query<&Position>,
     clock: &GameClock,
@@ -32,6 +41,8 @@ pub fn draw_context_menu(
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
     hostile_systems: &std::collections::HashSet<Entity>,
     design_registry: &ShipDesignRegistry,
+    // #299 (S-5): (system_entity, faction_entity) pairs for all Core ships.
+    core_by_system: &[(Entity, Entity)],
 ) {
     if !context_menu.open {
         return;
@@ -64,7 +75,9 @@ pub fn draw_context_menu(
         // still compute light delay and open properly.
         let current_destination_system = match &*state {
             ShipState::SubLight { target_system, .. } => *target_system,
-            ShipState::InFTL { destination_system, .. } => Some(*destination_system),
+            ShipState::InFTL {
+                destination_system, ..
+            } => Some(*destination_system),
             ShipState::Surveying { target_system, .. } => Some(*target_system),
             ShipState::Settling { system, .. } => Some(*system),
             ShipState::Docked { .. } => None, // handled via docked_system
@@ -87,6 +100,8 @@ pub fn draw_context_menu(
             // #296: cache immobility so the MoveTo guard below stays a
             // simple boolean.
             ship.is_immobile(),
+            // #299 (S-5): ship faction for Core-presence check.
+            ship.owner,
         )
     };
 
@@ -99,6 +114,7 @@ pub fn draw_context_menu(
         current_destination_system,
         loitering_pos,
         ship_immobile,
+        ship_owner,
     ) = ship_data;
 
     let is_docked = docked_system.is_some();
@@ -149,9 +165,15 @@ pub fn draw_context_menu(
                 match &*state {
                     ShipState::InFTL { arrival_at, .. } => (*arrival_at - clock.elapsed).max(0),
                     ShipState::SubLight { arrival_at, .. } => (*arrival_at - clock.elapsed).max(0),
-                    ShipState::Surveying { completes_at, .. } => (*completes_at - clock.elapsed).max(0),
-                    ShipState::Settling { completes_at, .. } => (*completes_at - clock.elapsed).max(0),
-                    ShipState::Refitting { completes_at, .. } => (*completes_at - clock.elapsed).max(0),
+                    ShipState::Surveying { completes_at, .. } => {
+                        (*completes_at - clock.elapsed).max(0)
+                    }
+                    ShipState::Settling { completes_at, .. } => {
+                        (*completes_at - clock.elapsed).max(0)
+                    }
+                    ShipState::Refitting { completes_at, .. } => {
+                        (*completes_at - clock.elapsed).max(0)
+                    }
                     _ => 0,
                 }
             } else {
@@ -175,12 +197,13 @@ pub fn draw_context_menu(
     let target_surveyed = target_star.surveyed;
 
     // #114: Check for colonizable planets (habitable + uncolonized) in the target system
-    let colonized_planets: std::collections::HashSet<Entity> = colonies.iter()
-        .map(|c| c.planet)
-        .collect();
+    let colonized_planets: std::collections::HashSet<Entity> =
+        colonies.iter().map(|c| c.planet).collect();
     let has_colonizable_planet = planet_entities.iter().any(|(pe, p, attrs)| {
         p.system == target_entity
-            && attrs.map(|a| crate::galaxy::is_colonizable(a.habitability)).unwrap_or(false)
+            && attrs
+                .map(|a| crate::galaxy::is_colonizable(a.habitability))
+                .unwrap_or(false)
             && !colonized_planets.contains(&pe)
     });
 
@@ -192,8 +215,23 @@ pub fn draw_context_menu(
     let can_survey = design_registry.can_survey(&design_id) && !target_surveyed;
     // #52/#56: Check for hostile presence at target system
     let target_has_hostile = hostile_systems.contains(&target_entity);
-    // Colonize: can colonize surveyed system with at least one habitable uncolonized planet and no hostiles
-    let can_colonize = design_registry.can_colonize(&design_id) && has_colonizable_planet && target_surveyed && !target_has_hostile;
+    // #299 (S-5): Check Core presence — colonization requires a Core owned
+    // by the ship's faction in the target system.
+    let ship_faction_entity = match ship_owner {
+        Owner::Empire(e) => Some(e),
+        Owner::Neutral => None,
+    };
+    let target_has_own_core = ship_faction_entity.is_some_and(|faction| {
+        core_by_system
+            .iter()
+            .any(|&(sys, fo)| sys == target_entity && fo == faction)
+    });
+    // Colonize: can colonize surveyed system with at least one habitable uncolonized planet, no hostiles, and a Core
+    let can_colonize = design_registry.can_colonize(&design_id)
+        && has_colonizable_planet
+        && target_surveyed
+        && !target_has_hostile
+        && target_has_own_core;
 
     let mut command: Option<ShipState> = None;
     let mut queued_command: Option<QueuedCommand> = None;
@@ -219,7 +257,9 @@ pub fn draw_context_menu(
                         completes_at: clock.elapsed + crate::ship::SURVEY_DURATION_HEXADIES,
                     });
                 } else {
-                    delayed_command = Some(crate::ship::ShipCommand::Survey { target: target_entity });
+                    delayed_command = Some(crate::ship::ShipCommand::Survey {
+                        target: target_entity,
+                    });
                 }
             } else if can_colonize {
                 if command_delay == 0 {
@@ -242,7 +282,10 @@ pub fn draw_context_menu(
                 }
             }
             if let Some(ship_cmd) = delayed_command {
-                info!("Command sent to {} (arrives in {} hd)", ship_name, command_delay);
+                info!(
+                    "Command sent to {} (arrives in {} hd)",
+                    ship_name, command_delay
+                );
                 pending_commands_out.push(crate::ship::PendingShipCommand {
                     ship: ship_entity,
                     command: ship_cmd,
@@ -258,11 +301,15 @@ pub fn draw_context_menu(
                     system: target_entity,
                 });
             } else {
-                delayed_command = Some(crate::ship::ShipCommand::MoveTo { destination: target_entity });
+                delayed_command = Some(crate::ship::ShipCommand::MoveTo {
+                    destination: target_entity,
+                });
             }
         } else {
             // Non-docked: queue the default action (with delay if remote)
-            let qc = QueuedCommand::MoveTo { system: target_entity };
+            let qc = QueuedCommand::MoveTo {
+                system: target_entity,
+            };
             if command_delay > 0 {
                 delayed_command = Some(crate::ship::ShipCommand::EnqueueCommand(qc));
             } else {
@@ -280,7 +327,10 @@ pub fn draw_context_menu(
             }
         }
         if let Some(ship_cmd) = delayed_command {
-            info!("Command sent to {} (arrives in {} hd)", ship_name, command_delay);
+            info!(
+                "Command sent to {} (arrives in {} hd)",
+                ship_name, command_delay
+            );
             pending_commands_out.push(crate::ship::PendingShipCommand {
                 ship: ship_entity,
                 command: ship_cmd,
@@ -306,10 +356,7 @@ pub fn draw_context_menu(
         .collapsible(false)
         .title_bar(false)
         .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(format!("{} -> {}", ship_name, target_name))
-                    .strong(),
-            );
+            ui.label(egui::RichText::new(format!("{} -> {}", ship_name, target_name)).strong());
             ui.label(format!("Distance: {:.1} ly", dist));
             // #76: Show command delay if player is remote
             if command_delay > 0 {
@@ -328,13 +375,21 @@ pub fn draw_context_menu(
             ui.separator();
 
             // #108: Unified Move — auto-route picks FTL chain > FTL direct > SubLight
-            if can_move && ui.button(format!("{}Move to {}", queue_prefix, target_name)).clicked() {
-                let qc = QueuedCommand::MoveTo { system: target_entity };
+            if can_move
+                && ui
+                    .button(format!("{}Move to {}", queue_prefix, target_name))
+                    .clicked()
+            {
+                let qc = QueuedCommand::MoveTo {
+                    system: target_entity,
+                };
                 if is_docked {
                     if command_delay == 0 {
                         queued_command = Some(qc);
                     } else {
-                        delayed_command = Some(crate::ship::ShipCommand::MoveTo { destination: target_entity });
+                        delayed_command = Some(crate::ship::ShipCommand::MoveTo {
+                            destination: target_entity,
+                        });
                     }
                 } else if command_delay > 0 {
                     // In-transit + remote: delay until command reaches the ship
@@ -347,9 +402,15 @@ pub fn draw_context_menu(
 
             // Survey -- if Explorer + target unsurveyed
             if can_survey {
-                let survey_label = if !is_docked || !same_system { format!("{}Survey", queue_prefix) } else { "Survey".to_string() };
+                let survey_label = if !is_docked || !same_system {
+                    format!("{}Survey", queue_prefix)
+                } else {
+                    "Survey".to_string()
+                };
                 if ui.button(survey_label).clicked() {
-                    let qc = QueuedCommand::Survey { system: target_entity };
+                    let qc = QueuedCommand::Survey {
+                        system: target_entity,
+                    };
                     if !is_docked {
                         if command_delay > 0 {
                             delayed_command = Some(crate::ship::ShipCommand::EnqueueCommand(qc));
@@ -364,13 +425,17 @@ pub fn draw_context_menu(
                                 completes_at: clock.elapsed + crate::ship::SURVEY_DURATION_HEXADIES,
                             });
                         } else {
-                            delayed_command = Some(crate::ship::ShipCommand::Survey { target: target_entity });
+                            delayed_command = Some(crate::ship::ShipCommand::Survey {
+                                target: target_entity,
+                            });
                         }
                     } else {
                         // Docked at different system: queue survey (auto-inserts move)
                         if command_delay > 0 {
                             delayed_command = Some(crate::ship::ShipCommand::EnqueueCommand(
-                                QueuedCommand::Survey { system: target_entity },
+                                QueuedCommand::Survey {
+                                    system: target_entity,
+                                },
                             ));
                         } else {
                             queued_command = Some(QueuedCommand::Survey {
@@ -384,9 +449,16 @@ pub fn draw_context_menu(
 
             // Colonize -- if ColonyShip + target has colonizable planet
             if can_colonize {
-                let colonize_label = if !is_docked || !same_system { format!("{}Colonize", queue_prefix) } else { "Colonize".to_string() };
+                let colonize_label = if !is_docked || !same_system {
+                    format!("{}Colonize", queue_prefix)
+                } else {
+                    "Colonize".to_string()
+                };
                 if ui.button(colonize_label).clicked() {
-                    let qc = QueuedCommand::Colonize { system: target_entity, planet: None };
+                    let qc = QueuedCommand::Colonize {
+                        system: target_entity,
+                        planet: None,
+                    };
                     if !is_docked {
                         if command_delay > 0 {
                             delayed_command = Some(crate::ship::ShipCommand::EnqueueCommand(qc));
@@ -399,7 +471,8 @@ pub fn draw_context_menu(
                                 system: target_entity,
                                 planet: None,
                                 started_at: clock.elapsed,
-                                completes_at: clock.elapsed + crate::ship::SETTLING_DURATION_HEXADIES,
+                                completes_at: clock.elapsed
+                                    + crate::ship::SETTLING_DURATION_HEXADIES,
                             });
                         } else {
                             delayed_command = Some(crate::ship::ShipCommand::Colonize);
@@ -408,7 +481,10 @@ pub fn draw_context_menu(
                         // Docked at different system: queue colonize (auto-inserts move)
                         if command_delay > 0 {
                             delayed_command = Some(crate::ship::ShipCommand::EnqueueCommand(
-                                QueuedCommand::Colonize { system: target_entity, planet: None },
+                                QueuedCommand::Colonize {
+                                    system: target_entity,
+                                    planet: None,
+                                },
                             ));
                         } else {
                             queued_command = Some(QueuedCommand::Colonize {
@@ -442,7 +518,10 @@ pub fn draw_context_menu(
 
     // #76: Apply delayed command (docked ships, light-speed delay > 0)
     if let Some(ship_cmd) = delayed_command {
-        info!("Command sent to {} (arrives in {} hd)", ship_name, command_delay);
+        info!(
+            "Command sent to {} (arrives in {} hd)",
+            ship_name, command_delay
+        );
         pending_commands_out.push(crate::ship::PendingShipCommand {
             ship: ship_entity,
             command: ship_cmd,

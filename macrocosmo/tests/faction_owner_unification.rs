@@ -269,6 +269,10 @@ fn process_settling_attaches_faction_owner_via_ship_owner() {
     let (sys, _planet) =
         spawn_test_system_with_planet(app.world_mut(), "Settle-Sys", [0.0, 0.0, 0.0], 1.0, true);
 
+    // #299 (S-5): A Core owned by the empire must exist in the target
+    // system for settling to succeed.
+    common::spawn_mock_core_ship(app.world_mut(), sys, empire);
+
     // Colony ship owned by `empire` (via `Ship.owner`, no `FactionOwner`
     // component) — exercises the ship.owner fallback branch.
     let ship = common::spawn_test_ship(

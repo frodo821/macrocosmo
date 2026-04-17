@@ -4,11 +4,7 @@ use crate::communication::CommandLog;
 use crate::time_system::GameClock;
 
 /// Draws the bottom bar showing the command log / event log.
-pub fn draw_bottom_bar(
-    ctx: &egui::Context,
-    command_log: &CommandLog,
-    clock: &GameClock,
-) {
+pub fn draw_bottom_bar(ctx: &egui::Context, command_log: &CommandLog, clock: &GameClock) {
     egui::TopBottomPanel::bottom("bottom_bar")
         .max_height(120.0)
         .show(ctx, |ui| {

@@ -7,12 +7,7 @@ use macrocosmo_ai::{AiBus, CommandKindId, EvidenceKindId, MetricId};
 
 use super::{InspectorCategory, InspectorState};
 
-pub fn draw_inspector(
-    ui: &mut egui::Ui,
-    state: &mut InspectorState,
-    bus: &AiBus,
-    now: i64,
-) {
+pub fn draw_inspector(ui: &mut egui::Ui, state: &mut InspectorState, bus: &AiBus, now: i64) {
     ui.horizontal(|ui| {
         ui.label("Filter:");
         ui.text_edit_singleline(&mut state.filter);
@@ -51,9 +46,7 @@ pub fn draw_inspector(
                         let mut ids: Vec<&MetricId> = snapshot.metrics.keys().collect();
                         ids.sort();
                         for id in ids {
-                            if !filter.is_empty()
-                                && !id.as_str().to_lowercase().contains(&filter)
-                            {
+                            if !filter.is_empty() && !id.as_str().to_lowercase().contains(&filter) {
                                 continue;
                             }
                             let selected = state
@@ -70,9 +63,7 @@ pub fn draw_inspector(
                         let mut ids: Vec<&CommandKindId> = snapshot.commands.keys().collect();
                         ids.sort();
                         for id in ids {
-                            if !filter.is_empty()
-                                && !id.as_str().to_lowercase().contains(&filter)
-                            {
+                            if !filter.is_empty() && !id.as_str().to_lowercase().contains(&filter) {
                                 continue;
                             }
                             let selected = state
@@ -89,9 +80,7 @@ pub fn draw_inspector(
                         let mut ids: Vec<&EvidenceKindId> = snapshot.evidence.keys().collect();
                         ids.sort();
                         for id in ids {
-                            if !filter.is_empty()
-                                && !id.as_str().to_lowercase().contains(&filter)
-                            {
+                            if !filter.is_empty() && !id.as_str().to_lowercase().contains(&filter) {
                                 continue;
                             }
                             let selected = state
@@ -121,12 +110,8 @@ pub fn draw_inspector(
             .auto_shrink([false, false])
             .show(ui, |ui| match state.category {
                 InspectorCategory::Metrics => draw_metric_detail(ui, bus, &state.selected, now),
-                InspectorCategory::Commands => {
-                    draw_command_detail(ui, &snapshot, &state.selected)
-                }
-                InspectorCategory::Evidence => {
-                    draw_evidence_detail(ui, &snapshot, &state.selected)
-                }
+                InspectorCategory::Commands => draw_command_detail(ui, &snapshot, &state.selected),
+                InspectorCategory::Evidence => draw_evidence_detail(ui, &snapshot, &state.selected),
                 InspectorCategory::Pending => draw_pending_list(ui, &snapshot),
             });
     });
@@ -141,12 +126,7 @@ fn category_label(c: InspectorCategory) -> &'static str {
     }
 }
 
-fn draw_metric_detail(
-    ui: &mut egui::Ui,
-    bus: &AiBus,
-    selected: &Option<Arc<str>>,
-    _now: i64,
-) {
+fn draw_metric_detail(ui: &mut egui::Ui, bus: &AiBus, selected: &Option<Arc<str>>, _now: i64) {
     let Some(name) = selected else {
         ui.label(
             egui::RichText::new("Select a metric from the list on the left.")
@@ -178,7 +158,9 @@ fn draw_metric_detail(
     let latest_at = bus.latest_at(&id);
     ui.label(format!(
         "Current: {}",
-        current.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into())
+        current
+            .map(|v| format!("{:.4}", v))
+            .unwrap_or_else(|| "—".into())
     ));
     ui.label(format!(
         "Latest at: {}",
@@ -293,11 +275,7 @@ fn draw_evidence_detail(
 
 fn draw_pending_list(ui: &mut egui::Ui, snapshot: &macrocosmo_ai::BusSnapshot) {
     if snapshot.pending_commands.is_empty() {
-        ui.label(
-            egui::RichText::new("No pending commands.")
-                .weak()
-                .italics(),
-        );
+        ui.label(egui::RichText::new("No pending commands.").weak().italics());
         return;
     }
     egui::Grid::new("ai_debug_pending_commands")

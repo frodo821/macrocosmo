@@ -2,7 +2,11 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 
 use crate::amount::Amt;
-use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildings, SystemBuildingQueue};
+use crate::colony::{
+    BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption,
+    MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
+    SystemBuildings,
+};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::physics;
@@ -13,7 +17,7 @@ use crate::ship::{
 };
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
-use crate::visualization::{SelectedShip};
+use crate::visualization::SelectedShip;
 
 /// Action returned from draw_ship_panel when the player clicks "Scrap Ship".
 /// Processed in draw_all_ui where Commands is available for despawning.
@@ -293,14 +297,19 @@ fn build_status_info(
 /// resolve system names).
 fn format_deliverable_command(cmd: &QueuedCommand) -> Option<String> {
     match cmd {
-        QueuedCommand::LoadDeliverable { stockpile_index, .. } => {
-            Some(format!("Load deliverable #{}", stockpile_index))
-        }
-        QueuedCommand::DeployDeliverable { position, item_index } => Some(format!(
+        QueuedCommand::LoadDeliverable {
+            stockpile_index, ..
+        } => Some(format!("Load deliverable #{}", stockpile_index)),
+        QueuedCommand::DeployDeliverable {
+            position,
+            item_index,
+        } => Some(format!(
             "Deploy #{} -> ({:.1}, {:.1}, {:.1})",
             item_index, position[0], position[1], position[2]
         )),
-        QueuedCommand::TransferToStructure { minerals, energy, .. } => Some(format!(
+        QueuedCommand::TransferToStructure {
+            minerals, energy, ..
+        } => Some(format!(
             "Transfer {}m / {}e to structure",
             minerals.to_f64(),
             energy.to_f64()
@@ -327,7 +336,10 @@ fn format_queued_command(
         }
         QueuedCommand::Colonize { .. } => "Colonize".to_string(),
         QueuedCommand::MoveToCoordinates { target } => {
-            format!("Move -> ({:.1}, {:.1}, {:.1})", target[0], target[1], target[2])
+            format!(
+                "Move -> ({:.1}, {:.1}, {:.1})",
+                target[0], target[1], target[2]
+            )
         }
         // #217: Scout command display.
         QueuedCommand::Scout {
@@ -357,7 +369,14 @@ fn format_queued_command(
 /// Helper to collect ships docked at a given system.
 pub(super) fn ships_docked_at(
     system: Entity,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
@@ -424,7 +443,14 @@ struct ShipPanelData {
 pub fn draw_ship_panel(
     ctx: &egui::Context,
     selected_ship: &mut SelectedShip,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     clock: &GameClock,
     colonies: &mut Query<(
         Entity,
@@ -436,7 +462,10 @@ pub fn draw_ship_panel(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
+    system_stockpiles: &mut Query<
+        (&mut ResourceStockpile, Option<&ResourceCapacity>),
+        With<StarSystem>,
+    >,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     command_queues: &Query<&mut CommandQueue>,
     planets: &Query<&Planet>,
@@ -488,16 +517,24 @@ pub fn draw_ship_panel(
         // Check if docked at a system that has a colony (for "Set Home Port" button)
         let docked_at_colony = docked_system.and_then(|dock_sys| {
             colonies.iter().find_map(|(_, col, _, _, _, _, _, _)| {
-                if col.system(planets) == Some(dock_sys) { Some(dock_sys) } else { None }
+                if col.system(planets) == Some(dock_sys) {
+                    Some(dock_sys)
+                } else {
+                    None
+                }
             })
         });
         // Check if ship is in a cancellable state (surveying or settling)
-        let is_cancellable = matches!(&*state, ShipState::Surveying { .. } | ShipState::Settling { .. });
+        let is_cancellable = matches!(
+            &*state,
+            ShipState::Surveying { .. } | ShipState::Settling { .. }
+        );
         // #103: Check if ship carries unreported survey data
         let has_survey_data = survey_data.is_some();
         let survey_data_system = survey_data.map(|sd| sd.system_name.clone());
         // Collect pending commands for this ship
-        let pending_info: Option<i64> = pending_commands.iter()
+        let pending_info: Option<i64> = pending_commands
+            .iter()
             .filter(|pc| pc.ship == ship_entity)
             .map(|pc| pc.arrives_at)
             .min();
@@ -533,65 +570,64 @@ pub fn draw_ship_panel(
         // #123: Fleet membership + per-fleet refit summary (if applicable).
         // #287 (γ-1): membership is read from `Ship.fleet` and the peer
         // `FleetMembers` component on the fleet entity.
-        let fleet_refit_summary: Option<FleetRefitSummary> = ship.fleet
-            .and_then(|fleet_entity| {
-                let fleet = fleets.get(fleet_entity).ok()?;
-                let members = fleet_members.get(fleet_entity).ok()?;
-                let mut eligible = 0usize;
-                let mut total_m = Amt::ZERO;
-                let mut total_e = Amt::ZERO;
-                let mut max_time: i64 = 0;
-                for member in members.iter() {
-                    let Ok((_, m_ship, m_state, _, _, _)) = ships_query.get(*member) else {
-                        continue;
-                    };
-                    let Some(m_design) = design_registry.get(&m_ship.design_id) else {
-                        continue;
-                    };
-                    if m_design.revision <= m_ship.design_revision {
-                        continue;
-                    }
-                    if !matches!(&*m_state, ShipState::Docked { .. }) {
-                        continue;
-                    }
-                    let Some(m_hull) = hull_registry.get(&m_ship.hull_id) else {
-                        continue;
-                    };
-                    let (cm, ce, t) = crate::ship_design::refit_cost_to_design(
-                        &m_ship.modules,
-                        m_design,
-                        m_hull,
-                        module_registry,
-                    );
-                    eligible += 1;
-                    total_m = total_m.add(cm);
-                    total_e = total_e.add(ce);
-                    if t > max_time {
-                        max_time = t;
-                    }
+        let fleet_refit_summary: Option<FleetRefitSummary> = ship.fleet.and_then(|fleet_entity| {
+            let fleet = fleets.get(fleet_entity).ok()?;
+            let members = fleet_members.get(fleet_entity).ok()?;
+            let mut eligible = 0usize;
+            let mut total_m = Amt::ZERO;
+            let mut total_e = Amt::ZERO;
+            let mut max_time: i64 = 0;
+            for member in members.iter() {
+                let Ok((_, m_ship, m_state, _, _, _)) = ships_query.get(*member) else {
+                    continue;
+                };
+                let Some(m_design) = design_registry.get(&m_ship.design_id) else {
+                    continue;
+                };
+                if m_design.revision <= m_ship.design_revision {
+                    continue;
                 }
-                Some(FleetRefitSummary {
-                    fleet_entity,
-                    fleet_name: fleet.name.clone(),
-                    eligible_count: eligible,
-                    total_cost_minerals: total_m,
-                    total_cost_energy: total_e,
-                    max_refit_time: max_time,
-                })
-            });
+                if !matches!(&*m_state, ShipState::Docked { .. }) {
+                    continue;
+                }
+                let Some(m_hull) = hull_registry.get(&m_ship.hull_id) else {
+                    continue;
+                };
+                let (cm, ce, t) = crate::ship_design::refit_cost_to_design(
+                    &m_ship.modules,
+                    m_design,
+                    m_hull,
+                    module_registry,
+                );
+                eligible += 1;
+                total_m = total_m.add(cm);
+                total_e = total_e.add(ce);
+                if t > max_time {
+                    max_time = t;
+                }
+            }
+            Some(FleetRefitSummary {
+                fleet_entity,
+                fleet_name: fleet.name.clone(),
+                eligible_count: eligible,
+                total_cost_minerals: total_m,
+                total_cost_energy: total_e,
+                max_refit_time: max_time,
+            })
+        });
         // #57: Current ROE
         let current_roe = roe_query.get(ship_entity).copied().unwrap_or_default();
         // #57: Command delay for ROE changes
         let roe_command_delay: i64 = {
             // Determine the system the ship is at (or heading to)
-            let ship_system = docked_system.or_else(|| {
-                match &*state {
-                    ShipState::SubLight { target_system, .. } => *target_system,
-                    ShipState::InFTL { destination_system, .. } => Some(*destination_system),
-                    ShipState::Surveying { target_system, .. } => Some(*target_system),
-                    ShipState::Settling { system, .. } => Some(*system),
-                    _ => None,
-                }
+            let ship_system = docked_system.or_else(|| match &*state {
+                ShipState::SubLight { target_system, .. } => *target_system,
+                ShipState::InFTL {
+                    destination_system, ..
+                } => Some(*destination_system),
+                ShipState::Surveying { target_system, .. } => Some(*target_system),
+                ShipState::Settling { system, .. } => Some(*system),
+                _ => None,
             });
             player_stationed
                 .and_then(|player_sys| {
@@ -706,9 +742,9 @@ pub fn draw_ship_panel(
     // Entity of the system at the dock (for cargo transfers via system stockpile)
     let system_entity_at_dock: Option<Entity> = docked_system.and_then(|dock_sys| {
         // Check if there's a colony at this system
-        let has_colony = colonies.iter().any(|(_, col, _, _, _, _, _, _)| {
-            col.system(planets) == Some(dock_sys)
-        });
+        let has_colony = colonies
+            .iter()
+            .any(|(_, col, _, _, _, _, _, _)| col.system(planets) == Some(dock_sys));
         if has_colony { Some(dock_sys) } else { None }
     });
 
@@ -726,7 +762,10 @@ pub fn draw_ship_panel(
                     .strong()
                     .color(egui::Color32::from_rgb(100, 200, 255)),
             );
-            let design_display_name = design_registry.get(&design_id).map(|d| d.name.as_str()).unwrap_or(&design_id);
+            let design_display_name = design_registry
+                .get(&design_id)
+                .map(|d| d.name.as_str())
+                .unwrap_or(&design_id);
             ui.label(format!("Type: {}", design_display_name));
             // #59: Player aboard indicator
             if is_player_aboard {
@@ -768,17 +807,15 @@ pub fn draw_ship_panel(
             } else {
                 ui.label("No FTL capability");
             }
-            ui.label(format!(
-                "Sub-light speed: {:.0}% c",
-                sublight_speed * 100.0
-            ));
+            ui.label(format!("Sub-light speed: {:.0}% c", sublight_speed * 100.0));
 
             // #64: Home port and maintenance info
             ui.separator();
             ui.label(format!("Home Port: {}", home_port_name));
             ui.label(format!(
                 "Maintenance: {} E/hd (charged to {})",
-                maintenance_cost.display_compact(), home_port_name
+                maintenance_cost.display_compact(),
+                home_port_name
             ));
 
             // #57: Rules of Engagement selector
@@ -805,8 +842,11 @@ pub fn draw_ship_panel(
             if let Some(arrives_at) = pending_arrives_at {
                 let remaining = (arrives_at - clock.elapsed).max(0);
                 ui.label(
-                    egui::RichText::new(format!("Command in transit... arrives in {} hd", remaining))
-                        .color(egui::Color32::from_rgb(255, 191, 0)),
+                    egui::RichText::new(format!(
+                        "Command in transit... arrives in {} hd",
+                        remaining
+                    ))
+                    .color(egui::Color32::from_rgb(255, 191, 0)),
                 );
             }
 
@@ -876,10 +916,8 @@ pub fn draw_ship_panel(
             // to interact with. Positioned directly after the Cargo section
             // per the #229 UX design.
             let has_items = !cargo_items.is_empty();
-            let platforms: Vec<&NearbyStructure> = nearby_structures
-                .iter()
-                .filter(|s| s.is_platform)
-                .collect();
+            let platforms: Vec<&NearbyStructure> =
+                nearby_structures.iter().filter(|s| s.is_platform).collect();
             let scrapyards: Vec<&NearbyStructure> = nearby_structures
                 .iter()
                 .filter(|s| s.is_scrapyard)
@@ -926,24 +964,15 @@ pub fn draw_ship_panel(
                     let (have_m, have_e) = cargo_data.unwrap_or((Amt::ZERO, Amt::ZERO));
                     for p in &platforms {
                         ui.horizontal(|ui| {
-                            ui.label(format!(
-                                "  {} ({:.2} ly)",
-                                p.name, p.distance_ly,
-                            ));
+                            ui.label(format!("  {} ({:.2} ly)", p.name, p.distance_ly,));
                             let can_m = have_m > Amt::ZERO;
-                            if ui
-                                .add_enabled(can_m, egui::Button::new("+100 M"))
-                                .clicked()
-                            {
+                            if ui.add_enabled(can_m, egui::Button::new("+100 M")).clicked() {
                                 let m = step_m.min(have_m);
                                 actions.transfer_request =
                                     Some((ship_entity, p.entity, m, Amt::ZERO));
                             }
                             let can_e = have_e > Amt::ZERO;
-                            if ui
-                                .add_enabled(can_e, egui::Button::new("+100 E"))
-                                .clicked()
-                            {
+                            if ui.add_enabled(can_e, egui::Button::new("+100 E")).clicked() {
                                 let e = step_e.min(have_e);
                                 actions.transfer_request =
                                     Some((ship_entity, p.entity, Amt::ZERO, e));
@@ -958,13 +987,9 @@ pub fn draw_ship_panel(
                     ui.label(egui::RichText::new("Salvage from scrapyard").small());
                     for s in &scrapyards {
                         ui.horizontal(|ui| {
-                            ui.label(format!(
-                                "  {} ({:.2} ly)",
-                                s.name, s.distance_ly,
-                            ));
+                            ui.label(format!("  {} ({:.2} ly)", s.name, s.distance_ly,));
                             if ui.button("Load").clicked() {
-                                actions.load_from_scrapyard_request =
-                                    Some((ship_entity, s.entity));
+                                actions.load_from_scrapyard_request = Some((ship_entity, s.entity));
                             }
                         });
                     }
@@ -976,7 +1001,9 @@ pub fn draw_ship_panel(
                 ui.separator();
                 ui.label(egui::RichText::new("Courier Route").strong());
                 let route_opt = courier_routes.get(ship_entity).ok();
-                let current_mode = route_opt.map(|r| r.mode).unwrap_or(CourierMode::ResourceTransport);
+                let current_mode = route_opt
+                    .map(|r| r.mode)
+                    .unwrap_or(CourierMode::ResourceTransport);
 
                 // Mode selector
                 ui.horizontal(|ui| {
@@ -1005,7 +1032,11 @@ pub fn draw_ship_panel(
                         }
                     }
                     ui.horizontal(|ui| {
-                        let label = if route.paused { "Resume Route" } else { "Pause Route" };
+                        let label = if route.paused {
+                            "Resume Route"
+                        } else {
+                            "Pause Route"
+                        };
                         if ui.button(label).clicked() {
                             actions.courier_toggle_pause = Some(ship_entity);
                         }
@@ -1055,7 +1086,8 @@ pub fn draw_ship_panel(
                 if let Some(info) = refit_info.as_ref() {
                     ui.separator();
                     ui.label(egui::RichText::new("Refit Available").strong());
-                    let revisions_behind = info.target_revision.saturating_sub(info.current_revision);
+                    let revisions_behind =
+                        info.target_revision.saturating_sub(info.current_revision);
                     ui.label(
                         egui::RichText::new(format!(
                             "Design '{}' updated ({} revision{} behind)",
@@ -1068,7 +1100,9 @@ pub fn draw_ship_panel(
                     );
                     ui.label(format!(
                         "Refit cost: M:{} E:{} | {} hd",
-                        info.cost_minerals.display_compact(), info.cost_energy.display_compact(), info.refit_time
+                        info.cost_minerals.display_compact(),
+                        info.cost_energy.display_compact(),
+                        info.refit_time
                     ));
                     if let Some(dock_system) = docked_at_colony {
                         if ui.button("Apply Refit").clicked() {
@@ -1124,10 +1158,12 @@ pub fn draw_ship_panel(
 
             // #79: Scrap Ship button (only when docked at a colony)
             if let Some(dock_system) = docked_at_colony {
-                let (refund_m, refund_e) = design_registry.scrap_refund(&design_id, &ship_modules, module_registry);
+                let (refund_m, refund_e) =
+                    design_registry.scrap_refund(&design_id, &ship_modules, module_registry);
                 let scrap_label = format!("Scrap Ship (+{} M, +{} E)", refund_m, refund_e);
-                let response = ui.button(&scrap_label)
-                    .on_hover_text("Dismantle this ship and recover 50% of total value (hull + modules)");
+                let response = ui.button(&scrap_label).on_hover_text(
+                    "Dismantle this ship and recover 50% of total value (hull + modules)",
+                );
                 if response.clicked() {
                     // Use system entity for stockpile refund
                     if let Some(sys_e) = system_entity_at_dock {
