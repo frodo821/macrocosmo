@@ -1262,6 +1262,7 @@ fn test_save_load_sovereignty_derived_cache_regression() {
 
     // Run the real `update_sovereignty` system on the loaded world and
     // verify the cache converges to the Core-ship-derived value.
+    dst.init_resource::<macrocosmo::colony::authority::PendingSovereigntyChanges>();
     let mut schedule = Schedule::default();
     schedule.add_systems(update_sovereignty);
     schedule.run(&mut dst);
