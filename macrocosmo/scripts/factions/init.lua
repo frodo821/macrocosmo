@@ -54,6 +54,7 @@ define_faction {
         })
 
         ctx.system:add_building("shipyard")
+        ctx.system:spawn_core()
 
         ctx.system:spawn_ship("explorer_mk1", "Explorer-1")
         ctx.system:spawn_ship("explorer_mk1", "Explorer-2")
