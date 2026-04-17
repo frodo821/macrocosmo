@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use crate::amount::Amt;
 use crate::ship_design::HullRegistry;
 
-use super::{DockedAt, Ship, ShipState, ShipStats};
+use super::{CommandQueue, DockedAt, QueuedCommand, Ship, ShipState, ShipStats};
 
 /// Returns the total hull size of all ships currently docked at `harbour_entity`.
 pub fn current_docked_size(
@@ -62,6 +62,67 @@ pub fn undock(commands: &mut Commands, docker: Entity, system: Entity) {
     commands
         .entity(docker)
         .insert(ShipState::InSystem { system });
+}
+
+// ---------------------------------------------------------------------------
+// Systems
+// ---------------------------------------------------------------------------
+
+/// Docked ships derive their position from the harbour entity.
+/// Runs after movement systems so harbour position is up to date.
+pub fn sync_docked_position(
+    harbours: Query<(Entity, &crate::components::Position), Without<DockedAt>>,
+    mut docked_ships: Query<(&DockedAt, &mut crate::components::Position)>,
+) {
+    for (docked_at, mut pos) in &mut docked_ships {
+        if let Ok((_, harbour_pos)) = harbours.get(docked_at.0) {
+            *pos = harbour_pos.clone();
+        }
+    }
+}
+
+/// If a harbour entity no longer exists, forcibly undock all ships that reference it.
+/// Uses a query over docked ships and checks harbour existence.
+pub fn force_undock_on_harbour_destroy(
+    mut commands: Commands,
+    docked_ships: Query<(Entity, &DockedAt, &ShipState)>,
+    harbours: Query<Entity>,
+) {
+    for (entity, docked_at, state) in &docked_ships {
+        if harbours.get(docked_at.0).is_err() {
+            // Harbour entity no longer exists — forcibly undock
+            commands.entity(entity).remove::<DockedAt>();
+            // Keep current ShipState; if it was InSystem it stays InSystem.
+            // If it was something else, that's fine too — the state is independent.
+            let _ = state; // used to avoid unused warning
+        }
+    }
+}
+
+/// When a docked ship receives a MoveTo command, automatically undock first.
+/// Runs before movement systems.
+pub fn auto_undock_on_move_command(
+    mut commands: Commands,
+    docked_ships: Query<(Entity, &DockedAt, &CommandQueue, &ShipState)>,
+) {
+    for (entity, _docked_at, queue, state) in &docked_ships {
+        let has_move = queue.commands.iter().any(|cmd| {
+            matches!(
+                cmd,
+                QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. }
+            )
+        });
+        if has_move {
+            commands.entity(entity).remove::<DockedAt>();
+            // Ensure ship is InSystem if it isn't already
+            if let ShipState::InSystem { .. } = state {
+                // Already in the right state
+            } else {
+                // Shouldn't normally happen (docked ships should be InSystem),
+                // but defensively keep current state
+            }
+        }
+    }
 }
 
 #[cfg(test)]

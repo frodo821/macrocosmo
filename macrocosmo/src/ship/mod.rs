@@ -393,6 +393,22 @@ impl Plugin for ShipPlugin {
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
+        // #384: Harbour lifecycle systems. Separate `add_systems` call to stay
+        // under Bevy's tuple-arm limit.
+        app.add_systems(
+            Update,
+            (
+                harbour::auto_undock_on_move_command
+                    .before(sublight_movement_system)
+                    .before(process_ftl_travel),
+                harbour::sync_docked_position
+                    .after(sublight_movement_system)
+                    .after(process_ftl_travel),
+                harbour::force_undock_on_harbour_destroy.after(resolve_combat),
+            )
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
     }
 }
 
