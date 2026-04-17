@@ -539,12 +539,12 @@ mod tests {
 
         let defs = parse_building_definitions(engine.lua()).unwrap();
 
-        // basic.lua defines 8 buildings: mine, power_plant, research_lab, shipyard, port, farm,
-        // advanced_mine, advanced_power_plant
+        // basic.lua defines 14 buildings: mine, power_plant, research_lab, shipyard, port, farm,
+        // advanced_mine, advanced_power_plant, colony_hub_t1/t2/t3, planetary_capital_t1/t2/t3
         assert_eq!(
             defs.len(),
-            8,
-            "Expected 8 building definitions from basic.lua"
+            14,
+            "Expected 14 building definitions from basic.lua"
         );
 
         // Build a registry from the parsed definitions
