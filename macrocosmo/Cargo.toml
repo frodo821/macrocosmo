@@ -43,6 +43,8 @@ serde_json = "1"
 serde.workspace = true
 postcard.workspace = true
 macrocosmo-ai = { path = "../macrocosmo-ai", features = ["playthrough"] }
+base64 = { version = "0.22", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
 [features]
 # Default build carries no profiling overhead.
@@ -60,7 +62,7 @@ profile = ["bevy/trace_tracy", "bevy/debug"]
 
 # #390: Bevy Remote Protocol for automated UI testing via JSON-RPC.
 # Enables `bevy/bevy_remote` which provides BRP over HTTP (default port 15702).
-remote = ["bevy/bevy_remote"]
+remote = ["bevy/bevy_remote", "dep:base64", "dep:image"]
 
 [dev-dependencies]
 # #173: activate `mock` + `playthrough` features on the AI crate for

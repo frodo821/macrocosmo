@@ -29,3 +29,6 @@ pub mod technology;
 pub mod time_system;
 pub mod ui;
 pub mod visualization;
+
+#[cfg(feature = "remote")]
+pub mod remote;

@@ -29,6 +29,9 @@ mod time_system;
 mod ui;
 mod visualization;
 
+#[cfg(feature = "remote")]
+mod remote;
+
 use bevy::prelude::*;
 
 use observer::{CliArgs, ObserverMode, ObserverPlugin, RngSeed};
@@ -91,8 +94,12 @@ fn main() {
 
     #[cfg(feature = "remote")]
     {
-        app.add_plugins(bevy::remote::RemotePlugin::default());
+        app.add_plugins(
+            bevy::remote::RemotePlugin::default()
+                .with_method(remote::MACROCOSMO_SCREENSHOT_METHOD, remote::screenshot_handler),
+        );
         app.add_plugins(bevy::remote::http::RemoteHttpPlugin::default());
+        app.init_resource::<remote::ScreenshotBuffer>();
         info!("BRP remote server enabled on localhost:15702");
     }
 
