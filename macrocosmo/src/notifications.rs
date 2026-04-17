@@ -207,6 +207,8 @@ pub fn priority_for_event_kind(kind: &GameEventKind) -> Option<NotificationPrior
         GameEventKind::HostileDetected => Some(NotificationPriority::High),
         GameEventKind::PlayerRespawn => Some(NotificationPriority::High),
         GameEventKind::ResourceAlert => Some(NotificationPriority::Medium),
+        GameEventKind::CoreConquered => Some(NotificationPriority::High),
+        GameEventKind::CasusBelli => Some(NotificationPriority::High),
         // Other events are routine and do not deserve a banner.
         _ => None,
     }
@@ -230,6 +232,8 @@ fn title_for_event_kind(kind: &GameEventKind) -> &'static str {
         GameEventKind::ShipScrapped => "Ship Scrapped",
         GameEventKind::ColonyFailed => "Colony Failed",
         GameEventKind::AnomalyDiscovered => "Anomaly Discovered",
+        GameEventKind::CoreConquered => "Core Conquered",
+        GameEventKind::CasusBelli => "Casus Belli",
     }
 }
 

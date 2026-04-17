@@ -79,6 +79,8 @@ use super::savebag::*;
 // (`Option<SavedBiome>`) field for the new Biome component on Planet entities.
 // Same postcard-wire-break rationale as #296 — the fixture is regenerated in
 // lockstep.
+// #300 (S-6): `defense_fleet` field added.
+// #298 (S-4): `conquered_core` field added.
 pub const SAVE_VERSION: u32 = 4;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
@@ -527,6 +529,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     // #300 (S-6): Defense Fleet marker on fleet entities.
     if let Some(df) = e_ref.get::<crate::ship::DefenseFleet>() {
         bag.defense_fleet = Some(SavedDefenseFleet::from_live(df));
+    }
+    // #298 (S-4): Persist ConqueredCore state.
+    if let Some(c) = e_ref.get::<crate::ship::ConqueredCore>() {
+        bag.conquered_core = Some(SavedConqueredCore::from_live(c));
     }
 
     // Pending command entities

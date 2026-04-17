@@ -474,6 +474,10 @@ pub fn test_app() -> App {
             macrocosmo::ship::scout::tick_scout_observation,
             macrocosmo::ship::scout::process_scout_report,
             resolve_combat,
+            // #298 (S-4): Conquered Core systems.
+            macrocosmo::ship::conquered::check_conquered_transition,
+            macrocosmo::ship::conquered::enforce_conquered_hp_lock,
+            macrocosmo::ship::conquered::tick_conquered_recovery,
             tick_ship_repair,
             macrocosmo::ship::pursuit::detect_hostiles_system,
             // #287 (γ-1): Reconcile FleetMembers after ship despawns.
@@ -748,6 +752,10 @@ pub fn full_test_app() -> App {
             macrocosmo::ship::scout::tick_scout_observation,
             macrocosmo::ship::scout::process_scout_report,
             resolve_combat,
+            // #298 (S-4): Conquered Core systems.
+            macrocosmo::ship::conquered::check_conquered_transition,
+            macrocosmo::ship::conquered::enforce_conquered_hp_lock,
+            macrocosmo::ship::conquered::tick_conquered_recovery,
             tick_ship_repair,
             macrocosmo::ship::pursuit::detect_hostiles_system,
             // #287 (γ-1): Reconcile FleetMembers after ship despawns.
