@@ -20,19 +20,19 @@ use crate::colony::{
     SystemBuildingQueue, SystemBuildings,
 };
 use crate::communication::CommandLog;
-use crate::condition::ScopedFlags;
 use crate::components::Position;
+use crate::condition::ScopedFlags;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
+use crate::scripting::building_api::BuildingRegistry;
 use crate::ship::{
     Cargo, CommandQueue, CourierRoute, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship,
     ShipHitpoints, ShipState, SurveyData,
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
-use crate::scripting::building_api::BuildingRegistry;
 use crate::technology::{GameFlags, GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{
@@ -128,8 +128,7 @@ impl Plugin for UiPlugin {
 /// `github.com/googlefonts/zen-kakugothic`, distributed under SIL OFL 1.1 (see
 /// `assets/fonts/OFL.txt`). Embedded at compile time so the binary carries its
 /// own glyph coverage and doesn't depend on a filesystem asset path at runtime.
-const CJK_FONT_BYTES: &[u8] =
-    include_bytes!("../../assets/fonts/ZenKakuGothicNew-Regular.ttf");
+const CJK_FONT_BYTES: &[u8] = include_bytes!("../../assets/fonts/ZenKakuGothicNew-Regular.ttf");
 
 /// #261: Register the bundled CJK font with egui on the first pass so
 /// Japanese glyphs (タブ名、イベントログ、Lua 由来テキスト等) render instead
@@ -206,10 +205,7 @@ fn compute_ui_state(
         Option<&FoodConsumption>,
     )>,
     stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    system_stockpiles: Query<
-        (&ResourceStockpile, Option<&ResourceCapacity>),
-        With<StarSystem>,
-    >,
+    system_stockpiles: Query<(&ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     empire_q: Query<(&KnowledgeStore, &AuthorityParams), With<PlayerEmpire>>,
     planets: Query<&Planet>,
 ) {
@@ -269,7 +265,9 @@ fn compute_ui_state(
     let mut has_capital = false;
     for (_, colony, production, _, _, _, maintenance, food_consumption) in colonies.iter() {
         if let Some(prod) = production {
-            net_m = net_m.add(SignedAmt::from_amt(prod.minerals_per_hexadies.final_value()));
+            net_m = net_m.add(SignedAmt::from_amt(
+                prod.minerals_per_hexadies.final_value(),
+            ));
             let energy_prod = SignedAmt::from_amt(prod.energy_per_hexadies.final_value());
             let maint = maintenance
                 .map(|mc| SignedAmt::from_amt(mc.energy_per_hexadies.final_value()))
@@ -625,8 +623,16 @@ fn draw_main_panels_system(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok((knowledge, _command_log, global_params, construction_params, tech_tree, _research_pool, _research_queue, _authority_params)) =
-        empire_q.single()
+    let Ok((
+        knowledge,
+        _command_log,
+        global_params,
+        construction_params,
+        tech_tree,
+        _research_pool,
+        _research_queue,
+        _authority_params,
+    )) = empire_q.single()
     else {
         return;
     };
@@ -669,6 +675,14 @@ fn draw_main_panels_system(
     // --- System panel ---
     let mut colonization_actions = Vec::new();
     let mut system_actions = system_panel::SystemPanelActions::default();
+    // #370: Compute whether the selected system has a Core for the
+    // system building gate. Done before the draw_system_panel call to
+    // avoid borrow-conflict with `selection.selected_system`.
+    let selected_system_has_core = selection
+        .selected_system
+        .0
+        .map(|sys| world.core_ships.iter().any(|at| at.0 == sys))
+        .unwrap_or(false);
     system_panel::draw_system_panel(
         ctx,
         &mut selection.selected_system,
@@ -703,6 +717,7 @@ fn draw_main_panels_system(
         &mut system_actions,
         &mut deliverables_res.colony_dispatches,
         &world.remote_commands,
+        selected_system_has_core,
     );
 
     for action in colonization_actions {
@@ -730,12 +745,10 @@ fn draw_main_panels_system(
     // #229: Handle "Load" from DeliverableStockpile row.
     if let Some((ship_e, system_e, idx)) = system_actions.load_deliverable {
         if let Ok(mut queue) = command_queues.get_mut(ship_e) {
-            queue
-                .commands
-                .push(QueuedCommand::LoadDeliverable {
-                    system: system_e,
-                    stockpile_index: idx,
-                });
+            queue.commands.push(QueuedCommand::LoadDeliverable {
+                system: system_e,
+                stockpile_index: idx,
+            });
             queue.predicted_system = Some(system_e);
         }
     }
@@ -757,21 +770,20 @@ fn draw_main_panels_system(
                 .ok()
                 .and_then(|(_, _, state, _, _, _)| match &*state {
                     ShipState::Docked { system } => world.positions.get(*system).ok().copied(),
-                    ShipState::Loitering { position } => Some(crate::components::Position::from(*position)),
+                    ShipState::Loitering { position } => {
+                        Some(crate::components::Position::from(*position))
+                    }
                     ShipState::Surveying { target_system, .. }
-                    | ShipState::Settling { system: target_system, .. } => world
-                        .positions
-                        .get(*target_system)
-                        .ok()
-                        .copied(),
+                    | ShipState::Settling {
+                        system: target_system,
+                        ..
+                    } => world.positions.get(*target_system).ok().copied(),
                     _ => None,
                 });
             match ship_pos {
                 Some(sp) => {
                     let mut v: Vec<ship_panel::NearbyStructure> = Vec::new();
-                    for (entity, ds, pos, platform, scrap) in
-                        world.deep_space_structures.iter()
-                    {
+                    for (entity, ds, pos, platform, scrap) in world.deep_space_structures.iter() {
                         let d = sp.distance_to(pos);
                         if d > NEARBY_STRUCTURE_RADIUS_LY {
                             continue;
@@ -823,9 +835,7 @@ fn draw_main_panels_system(
         if let Some(ship_entity) = selection.selected_ship.0 {
             if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(ship_entity) {
                 let dock_system = match &*state {
-                    ShipState::Surveying {
-                        target_system, ..
-                    } => Some(*target_system),
+                    ShipState::Surveying { target_system, .. } => Some(*target_system),
                     ShipState::Settling { system, .. } => Some(*system),
                     _ => None,
                 };
@@ -905,21 +915,22 @@ fn draw_main_panels_system(
         for member in member_entities {
             // Determine if the member is docked at a system that has a colony
             // (matches the per-ship eligibility rule).
-            let dock_system: Option<Entity> = ships_query
-                .get(member)
-                .ok()
-                .and_then(|(_, ship, state, _, _, _)| {
-                    let docked = match &*state {
-                        ShipState::Docked { system } => Some(*system),
-                        _ => None,
-                    }?;
-                    // Refit-eligible only if design revision is ahead.
-                    let design = registries.design_registry.get(&ship.design_id)?;
-                    if design.revision <= ship.design_revision {
-                        return None;
-                    }
-                    Some(docked)
-                });
+            let dock_system: Option<Entity> =
+                ships_query
+                    .get(member)
+                    .ok()
+                    .and_then(|(_, ship, state, _, _, _)| {
+                        let docked = match &*state {
+                            ShipState::Docked { system } => Some(*system),
+                            _ => None,
+                        }?;
+                        // Refit-eligible only if design revision is ahead.
+                        let design = registries.design_registry.get(&ship.design_id)?;
+                        if design.revision <= ship.design_revision {
+                            return None;
+                        }
+                        Some(docked)
+                    });
             if let Some(sys) = dock_system {
                 apply_design_refit(
                     member,
@@ -993,7 +1004,9 @@ fn draw_main_panels_system(
         }
     }
     if let Some(ship_entity) = ship_panel_actions.courier_clear_route {
-        commands.entity(ship_entity).remove::<crate::ship::CourierRoute>();
+        commands
+            .entity(ship_entity)
+            .remove::<crate::ship::CourierRoute>();
     }
     if let Some((ship_entity, mode)) = ship_panel_actions.courier_set_mode {
         if let Ok(route) = world.courier_routes.get(ship_entity) {
@@ -1108,10 +1121,7 @@ fn draw_overlays_system(
         (&mut ResourceStockpile, Option<&ResourceCapacity>),
         With<StarSystem>,
     >,
-    mut empire_q: Query<
-        (&TechTree, &ResearchPool, &mut ResearchQueue),
-        With<PlayerEmpire>,
-    >,
+    mut empire_q: Query<(&TechTree, &ResearchPool, &mut ResearchQueue), With<PlayerEmpire>>,
     branch_registry: Res<crate::technology::TechBranchRegistry>,
     effects_preview: Res<crate::technology::TechEffectsPreview>,
     unlock_index: Res<crate::technology::TechUnlockIndex>,
@@ -1124,10 +1134,7 @@ fn draw_overlays_system(
         return;
     };
 
-    let capital_refs = ui_state
-        .capital_stockpile
-        .as_ref()
-        .map(|(m, e)| (m, e));
+    let capital_refs = ui_state.capital_stockpile.as_ref().map(|(m, e)| (m, e));
 
     let research_action = overlays::draw_overlays(
         ctx,
@@ -1275,8 +1282,7 @@ fn draw_map_tooltips(
     // Check for nearest star under cursor
     let mut best_star: Option<(Entity, f32)> = None;
     for (entity, _star, pos, _) in stars.iter() {
-        let star_px =
-            bevy::math::Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
+        let star_px = bevy::math::Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
         let dist = world_pos.distance(star_px);
         if dist < hover_radius {
             if best_star.is_none() || dist < best_star.unwrap().1 {
@@ -1354,7 +1360,8 @@ fn draw_map_tooltips(
         let star_closer = best_star.is_some_and(|(_, d)| d < ship_dist);
         if !star_closer {
             if let Ok((_, ship, state, _, hp, _)) = ships.get(ship_entity) {
-                let design_name = design_registry.get(&ship.design_id)
+                let design_name = design_registry
+                    .get(&ship.design_id)
                     .map(|d| d.name.as_str())
                     .unwrap_or(&ship.design_id);
                 let status = match &*state {
@@ -1389,7 +1396,11 @@ fn draw_map_tooltips(
     if let Some((star_entity, _)) = best_star {
         if let Ok((_, star, _, attrs)) = stars.get(star_entity) {
             let is_local = player_system == Some(star_entity);
-            let k_data = if is_local { None } else { knowledge.and_then(|k| k.get(star_entity)) };
+            let k_data = if is_local {
+                None
+            } else {
+                knowledge.and_then(|k| k.get(star_entity))
+            };
 
             // For remote systems, derive info from KnowledgeStore
             let effective_surveyed = if is_local {
@@ -1427,11 +1438,15 @@ fn draw_map_tooltips(
                 if effective_surveyed {
                     // Local: show actual planet count. Remote: planet count not in snapshot, skip.
                     if is_local {
-                        let planet_count = planets.iter().filter(|p| p.system == star_entity).count();
+                        let planet_count =
+                            planets.iter().filter(|p| p.system == star_entity).count();
                         ui.label(format!("Planets: {}", planet_count));
                     }
                     if let Some(hab) = effective_hab {
-                        ui.label(format!("Habitability: {}", crate::galaxy::habitability_label(hab)));
+                        ui.label(format!(
+                            "Habitability: {}",
+                            crate::galaxy::habitability_label(hab)
+                        ));
                     }
                 } else {
                     ui.label(egui::RichText::new("Unsurveyed").weak().italics());
@@ -1495,10 +1510,7 @@ fn apply_design_refit(
         &ShipHitpoints,
         Option<&SurveyData>,
     )>,
-    stockpiles: &mut Query<
-        (&mut ResourceStockpile, Option<&ResourceCapacity>),
-        With<StarSystem>,
-    >,
+    stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     design_registry: &ShipDesignRegistry,
     hull_registry: &HullRegistry,
     module_registry: &ModuleRegistry,
@@ -1522,12 +1534,8 @@ fn apply_design_refit(
     let Some(hull) = hull_registry.get(&ship.hull_id) else {
         return;
     };
-    let (cost_m, cost_e, time) = crate::ship_design::refit_cost_to_design(
-        &ship.modules,
-        design,
-        hull,
-        module_registry,
-    );
+    let (cost_m, cost_e, time) =
+        crate::ship_design::refit_cost_to_design(&ship.modules, design, hull, module_registry);
     let new_modules = crate::ship_design::design_equipped_modules(design);
     let target_revision = design.revision;
     if let Ok((mut stockpile, _)) = stockpiles.get_mut(system_entity) {
@@ -1623,12 +1631,11 @@ fn draw_choice_dialog_system(
                         }
                     };
 
-                    let mut button = egui::Button::new(
-                        egui::RichText::new(label_text).strong(),
-                    )
-                    .min_size(egui::vec2(400.0, 28.0));
+                    let mut button = egui::Button::new(egui::RichText::new(label_text).strong())
+                        .min_size(egui::vec2(400.0, 28.0));
                     if unavailable {
-                        button = button.fill(egui::Color32::from_rgba_premultiplied(40, 40, 40, 180));
+                        button =
+                            button.fill(egui::Color32::from_rgba_premultiplied(40, 40, 40, 180));
                     }
 
                     let mut response = ui.add(button);

@@ -748,3 +748,364 @@ fn core_deploy_sets_system_sovereignty() {
     assert_eq!(sov.owner, Some(Owner::Empire(empire)));
     assert!(sov.control_score > 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// #370: Core deploy creates SystemBuildings + SystemBuildingQueue
+// ---------------------------------------------------------------------------
+
+#[test]
+fn core_deploy_creates_system_buildings() {
+    use macrocosmo::colony::{SystemBuildingQueue, SystemBuildings};
+
+    let mut app = full_test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "NoColony",
+        [7.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let empire = empire_entity(app.world_mut());
+
+    // Verify the system does NOT have SystemBuildings yet.
+    assert!(
+        app.world().get::<SystemBuildings>(sys).is_none(),
+        "precondition: system must not have SystemBuildings before Core deploy"
+    );
+
+    {
+        let mut reg = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        reg.insert(macrocosmo::ship_design::ShipDesignDefinition {
+            id: "infrastructure_core_v1".to_string(),
+            name: "Infrastructure Core".to_string(),
+            description: String::new(),
+            hull_id: "infrastructure_core_hull".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::units(2),
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 400.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+        });
+    }
+
+    let deployer = app.world_mut().spawn_empty().id();
+    let pos = system_inner_orbit_position(sys, app.world());
+    {
+        app.world_mut()
+            .init_resource::<macrocosmo::scripting::GameRng>();
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(500),
+            deployer,
+            target_system: sys,
+            deploy_pos: pos,
+            faction_owner: Some(empire),
+            owner: Owner::Empire(empire),
+            design_id: "infrastructure_core_v1".to_string(),
+            submitted_at: 0,
+        });
+    }
+
+    app.world_mut()
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
+    app.update();
+
+    // SystemBuildings + SystemBuildingQueue must now be attached.
+    let sb = app
+        .world()
+        .get::<SystemBuildings>(sys)
+        .expect("SystemBuildings must be attached after Core deploy");
+    assert_eq!(
+        sb.slots.len(),
+        macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS,
+        "slot count must match DEFAULT_SYSTEM_BUILDING_SLOTS"
+    );
+    assert!(
+        sb.slots.iter().all(|s| s.is_none()),
+        "all slots must start empty"
+    );
+    assert!(
+        app.world().get::<SystemBuildingQueue>(sys).is_some(),
+        "SystemBuildingQueue must be attached after Core deploy"
+    );
+    // FactionOwner should also be present.
+    let fo = app
+        .world()
+        .get::<FactionOwner>(sys)
+        .expect("FactionOwner must be attached to system after Core deploy");
+    assert_eq!(fo.0, empire);
+}
+
+/// #370: If SystemBuildings already exist (e.g. from a prior colony), Core
+/// deploy must NOT overwrite them.
+#[test]
+fn core_deploy_does_not_overwrite_existing_system_buildings() {
+    use macrocosmo::colony::{SystemBuildingQueue, SystemBuildings};
+    use macrocosmo::scripting::building_api::BuildingId;
+
+    let mut app = full_test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "PreBuilt",
+        [8.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let empire = empire_entity(app.world_mut());
+
+    // Pre-attach SystemBuildings with a shipyard in slot 0.
+    app.world_mut().entity_mut(sys).insert((
+        SystemBuildings {
+            slots: vec![
+                Some(BuildingId::new("shipyard")),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+        },
+        SystemBuildingQueue::default(),
+    ));
+
+    {
+        let mut reg = app.world_mut().resource_mut::<ShipDesignRegistry>();
+        reg.insert(macrocosmo::ship_design::ShipDesignDefinition {
+            id: "infrastructure_core_v1".to_string(),
+            name: "Infrastructure Core".to_string(),
+            description: String::new(),
+            hull_id: "infrastructure_core_hull".to_string(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::units(2),
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 400.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+        });
+    }
+
+    let deployer = app.world_mut().spawn_empty().id();
+    let pos = system_inner_orbit_position(sys, app.world());
+    {
+        app.world_mut()
+            .init_resource::<macrocosmo::scripting::GameRng>();
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(501),
+            deployer,
+            target_system: sys,
+            deploy_pos: pos,
+            faction_owner: Some(empire),
+            owner: Owner::Empire(empire),
+            design_id: "infrastructure_core_v1".to_string(),
+            submitted_at: 0,
+        });
+    }
+
+    app.world_mut()
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
+    app.update();
+
+    // SystemBuildings must still have the shipyard in slot 0.
+    let sb = app
+        .world()
+        .get::<SystemBuildings>(sys)
+        .expect("SystemBuildings still present");
+    assert!(
+        sb.slots[0]
+            .as_ref()
+            .is_some_and(|b| b.as_str() == "shipyard"),
+        "pre-existing shipyard must not be overwritten"
+    );
+}
+
+/// #370: System building enqueue is rejected when no Core is present.
+#[test]
+fn system_building_enqueue_rejected_without_core() {
+    use macrocosmo::colony::{SystemBuildingQueue, SystemBuildings};
+    use macrocosmo::communication;
+
+    let mut app = common::test_app();
+    app.add_systems(
+        Update,
+        communication::process_pending_commands.after(macrocosmo::time_system::advance_game_time),
+    );
+
+    let (sys, _planet) = common::spawn_test_system_with_planet(
+        app.world_mut(),
+        "NoCoreSystem",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let empire = empire_entity(app.world_mut());
+
+    // Attach SystemBuildings + Queue (as if from a prior colony) but NO Core ship.
+    app.world_mut().entity_mut(sys).insert((
+        SystemBuildings {
+            slots: vec![None; macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS],
+        },
+        SystemBuildingQueue::default(),
+        macrocosmo::colony::ResourceStockpile {
+            minerals: Amt::units(9999),
+            energy: Amt::units(9999),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        },
+        macrocosmo::colony::ResourceCapacity::default(),
+    ));
+
+    // Insert a building registry with a system building.
+    {
+        let registry = common::create_test_building_registry();
+        app.insert_resource(registry);
+    }
+
+    // Spawn a PendingCommand that enqueues a system building.
+    let cmd = communication::RemoteCommand::Colony(communication::ColonyCommand {
+        scope: communication::BuildingScope::System,
+        kind: communication::BuildingKind::Queue {
+            building_id: "shipyard".to_string(),
+            target_slot: 0,
+        },
+    });
+    app.world_mut().spawn(communication::PendingCommand {
+        target_system: sys,
+        command: cmd,
+        sent_at: 0,
+        arrives_at: 0,
+        origin_pos: [0.0, 0.0, 0.0],
+        destination_pos: [0.0, 0.0, 0.0],
+    });
+    // Ensure CommandLog exists on the empire.
+    if app
+        .world()
+        .get::<communication::CommandLog>(empire)
+        .is_none()
+    {
+        app.world_mut()
+            .entity_mut(empire)
+            .insert(communication::CommandLog::default());
+    }
+
+    advance_time(&mut app, 1);
+
+    // The queue must remain empty — the enqueue was rejected.
+    let sbq = app
+        .world()
+        .get::<SystemBuildingQueue>(sys)
+        .expect("SystemBuildingQueue still present");
+    assert!(
+        sbq.queue.is_empty(),
+        "system building enqueue must be rejected without a Core ship"
+    );
+}
+
+/// #370: System building enqueue succeeds when a Core IS present.
+#[test]
+fn system_building_enqueue_succeeds_with_core() {
+    use macrocosmo::colony::{SystemBuildingQueue, SystemBuildings};
+    use macrocosmo::communication;
+
+    let mut app = common::test_app();
+    app.add_systems(
+        Update,
+        communication::process_pending_commands.after(macrocosmo::time_system::advance_game_time),
+    );
+
+    let (sys, _planet) = common::spawn_test_system_with_planet(
+        app.world_mut(),
+        "CoreSystem",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+    let empire = empire_entity(app.world_mut());
+
+    // Attach SystemBuildings + Queue + resources.
+    app.world_mut().entity_mut(sys).insert((
+        SystemBuildings {
+            slots: vec![None; macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS],
+        },
+        SystemBuildingQueue::default(),
+        macrocosmo::colony::ResourceStockpile {
+            minerals: Amt::units(9999),
+            energy: Amt::units(9999),
+            research: Amt::ZERO,
+            food: Amt::ZERO,
+            authority: Amt::ZERO,
+        },
+        macrocosmo::colony::ResourceCapacity::default(),
+    ));
+
+    // Spawn a Core ship in the system.
+    app.world_mut()
+        .spawn((CoreShip, AtSystem(sys), FactionOwner(empire)));
+
+    // Insert a building registry with a system building.
+    {
+        let registry = common::create_test_building_registry();
+        app.insert_resource(registry);
+    }
+
+    // Spawn a PendingCommand that enqueues a system building.
+    let cmd = communication::RemoteCommand::Colony(communication::ColonyCommand {
+        scope: communication::BuildingScope::System,
+        kind: communication::BuildingKind::Queue {
+            building_id: "shipyard".to_string(),
+            target_slot: 0,
+        },
+    });
+    app.world_mut().spawn(communication::PendingCommand {
+        target_system: sys,
+        command: cmd,
+        sent_at: 0,
+        arrives_at: 0,
+        origin_pos: [0.0, 0.0, 0.0],
+        destination_pos: [0.0, 0.0, 0.0],
+    });
+    // Ensure CommandLog exists on the empire.
+    if app
+        .world()
+        .get::<communication::CommandLog>(empire)
+        .is_none()
+    {
+        app.world_mut()
+            .entity_mut(empire)
+            .insert(communication::CommandLog::default());
+    }
+
+    advance_time(&mut app, 1);
+
+    // The queue must have one entry.
+    let sbq = app
+        .world()
+        .get::<SystemBuildingQueue>(sys)
+        .expect("SystemBuildingQueue still present");
+    assert_eq!(
+        sbq.queue.len(),
+        1,
+        "system building enqueue must succeed with a Core ship present"
+    );
+    assert_eq!(sbq.queue[0].building_id.as_str(), "shipyard");
+}

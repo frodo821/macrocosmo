@@ -1,26 +1,44 @@
-use bevy::prelude::*;
 use bevy::ecs::system::SystemParam;
+use bevy::prelude::*;
 
 use crate::colony::{
     ColonizationQueue, ColonyJobRates, DeliverableStockpile, ResourceCapacity, ResourceStockpile,
     SystemBuildingQueue, SystemBuildings,
 };
-use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
 use crate::faction::FactionOwner;
 use crate::galaxy::{Anomalies, AtSystem, Hostile, Planet, StarSystem, SystemAttributes};
-use crate::ship::{CourierRoute, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement};
+use crate::ship::{
+    CoreShip, CourierRoute, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement,
+};
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
+use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
 use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
 
 #[derive(SystemParam)]
 pub struct MainPanelWorldQueries<'w, 's> {
     pub positions: Query<'w, 's, &'static Position>,
     pub planets: Query<'w, 's, &'static Planet>,
-    pub planet_entities: Query<'w, 's, (Entity, &'static Planet, Option<&'static SystemAttributes>)>,
-    pub stockpiles: Query<'w, 's, (&'static mut ResourceStockpile, Option<&'static ResourceCapacity>), With<StarSystem>>,
-    pub system_buildings: Query<'w, 's, (Option<&'static mut SystemBuildings>, Option<&'static mut SystemBuildingQueue>)>,
+    pub planet_entities:
+        Query<'w, 's, (Entity, &'static Planet, Option<&'static SystemAttributes>)>,
+    pub stockpiles: Query<
+        'w,
+        's,
+        (
+            &'static mut ResourceStockpile,
+            Option<&'static ResourceCapacity>,
+        ),
+        With<StarSystem>,
+    >,
+    pub system_buildings: Query<
+        'w,
+        's,
+        (
+            Option<&'static mut SystemBuildings>,
+            Option<&'static mut SystemBuildingQueue>,
+        ),
+    >,
     pub colonization_queues: Query<'w, 's, &'static ColonizationQueue>,
     pub roe: Query<'w, 's, &'static RulesOfEngagement>,
     /// #293: Hostile entities — `(AtSystem, Option<FactionOwner>)` tuple
@@ -72,6 +90,8 @@ pub struct MainPanelWorldQueries<'w, 's> {
         ),
     >,
     pub remote_commands: Query<'w, 's, &'static crate::communication::PendingCommand>,
+    /// #370: Core ships query for sovereignty / system building gate checks.
+    pub core_ships: Query<'w, 's, &'static AtSystem, With<CoreShip>>,
 }
 
 #[derive(SystemParam)]
@@ -95,7 +115,10 @@ pub struct MainPanelDeliverableRes<'w, 's> {
     pub empire_flags: Query<
         'w,
         's,
-        (&'static crate::technology::GameFlags, &'static crate::condition::ScopedFlags),
+        (
+            &'static crate::technology::GameFlags,
+            &'static crate::condition::ScopedFlags,
+        ),
         With<crate::player::PlayerEmpire>,
     >,
     pub colony_dispatches: ResMut<'w, crate::communication::PendingColonyDispatches>,

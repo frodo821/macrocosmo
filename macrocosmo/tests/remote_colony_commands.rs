@@ -157,6 +157,13 @@ fn queue_building_system_arrives_and_enqueues() {
         Amt::units(1000),
         vec![],
     );
+    // #370: System building enqueue requires a Core ship in the system.
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().spawn((
+        macrocosmo::ship::CoreShip,
+        macrocosmo::galaxy::AtSystem(sys),
+        macrocosmo::faction::FactionOwner(empire),
+    ));
 
     spawn_pending_remote_command(
         &mut app,
@@ -552,6 +559,13 @@ fn remote_system_level_dispatch_delayed() {
         Amt::units(10_000),
         vec![],
     );
+    // #370: System building enqueue requires a Core ship in the target system.
+    let empire = empire_entity(app.world_mut());
+    app.world_mut().spawn((
+        macrocosmo::ship::CoreShip,
+        macrocosmo::galaxy::AtSystem(target_sys),
+        macrocosmo::faction::FactionOwner(empire),
+    ));
     app.world_mut()
         .spawn((Player, StationedAt { system: home_sys }));
 

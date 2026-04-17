@@ -56,6 +56,7 @@ pub fn apply_remote_command(
     colonies: &mut ApplyColoniesQuery,
     sys_buildings_q: &mut ApplySystemBuildingsQuery,
     planets: &ApplyPlanetsQuery,
+    system_has_core: bool,
 ) {
     match cmd {
         RemoteCommand::BuildShip { .. } | RemoteCommand::SetProductionFocus { .. } => {
@@ -69,6 +70,7 @@ pub fn apply_remote_command(
             bldg_time_mod,
             colonies,
             sys_buildings_q,
+            system_has_core,
         ),
         RemoteCommand::ShipBuild {
             host_colony,
@@ -230,6 +232,7 @@ fn apply_building_command(
     bldg_time_mod: Amt,
     colonies: &mut ApplyColoniesQuery,
     sys_buildings_q: &mut ApplySystemBuildingsQuery,
+    system_has_core: bool,
 ) {
     match &cc.kind {
         BuildingKind::Queue {
@@ -257,6 +260,16 @@ fn apply_building_command(
                     push_planet_building_order(planet, order, colonies)
                 }
                 BuildingScope::System => {
+                    // #370: System building construction requires an
+                    // Infrastructure Core deployed in the target system.
+                    if !system_has_core {
+                        warn!(
+                            "Queue (system): target_system {:?} has no Infrastructure Core — \
+                             system building construction rejected",
+                            target_system
+                        );
+                        return;
+                    }
                     if let Ok((_, mut sbq)) = sys_buildings_q.get_mut(target_system) {
                         sbq.push_build_order(order);
                     } else {

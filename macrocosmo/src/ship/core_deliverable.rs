@@ -27,7 +27,9 @@
 
 use bevy::prelude::*;
 
+use crate::colony::{DEFAULT_SYSTEM_BUILDING_SLOTS, SystemBuildingQueue, SystemBuildings};
 use crate::components::Position;
+use crate::faction::FactionOwner;
 use crate::galaxy::{AtSystem, StarSystem};
 use crate::ship::command_events::{
     CommandExecuted, CommandKind, CommandResult, CoreDeployRequested,
@@ -107,6 +109,7 @@ pub fn handle_core_deploy_requested(
     design_registry: Res<ShipDesignRegistry>,
     existing_cores: Query<&AtSystem, With<CoreShip>>,
     star_systems: Query<&StarSystem>,
+    existing_system_buildings: Query<(), With<SystemBuildings>>,
 ) {
     use rand::Rng;
     use std::collections::HashMap;
@@ -236,6 +239,22 @@ pub fn handle_core_deploy_requested(
             winner.owner,
             &design_registry,
         );
+        // #370: Attach SystemBuildings + SystemBuildingQueue if the system
+        // does not already have them. Core deployment alone is sufficient for
+        // system building construction — colony is NOT required.
+        if existing_system_buildings.get(system).is_err() {
+            commands.entity(system).insert((
+                SystemBuildings {
+                    slots: vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS],
+                },
+                SystemBuildingQueue::default(),
+            ));
+            // Tag the StarSystem with FactionOwner so the administrative owner
+            // matches the Core deployer (same pattern as settlement.rs).
+            if let Some(faction) = winner.faction_owner {
+                commands.entity(system).insert(FactionOwner(faction));
+            }
+        }
         info!(
             "Spawned Core ship {:?} in system {:?} (deployer {:?}, submitted at {} hd)",
             entity, system, winner.deployer, winner.submitted_at

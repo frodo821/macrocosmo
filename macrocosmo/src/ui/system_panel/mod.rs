@@ -168,6 +168,7 @@ pub fn draw_system_panel(
     system_actions_out: &mut SystemPanelActions,
     dispatches: &mut crate::communication::PendingColonyDispatches,
     remote_commands: &Query<&crate::communication::PendingCommand>,
+    system_has_core: bool,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -408,6 +409,7 @@ pub fn draw_system_panel(
                                         dispatches,
                                         remote_commands,
                                         clock.elapsed,
+                                        system_has_core,
                                     );
                                 });
                         });
@@ -753,6 +755,7 @@ fn draw_right_panel(
     dispatches: &mut crate::communication::PendingColonyDispatches,
     remote_commands: &Query<&crate::communication::PendingCommand>,
     clock_elapsed: i64,
+    system_has_core: bool,
 ) {
     draw_in_flight_commands_section(ui, sel_entity, remote_commands, clock_elapsed);
 
@@ -1033,58 +1036,62 @@ fn draw_right_panel(
         }
 
         // Build system building buttons
-        if let Ok((Some(sys_bldgs_read), sys_bq_read)) = system_buildings_q.get(sel_entity) {
-            let pending_slots: Vec<usize> = sys_bq_read
-                .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
-                .unwrap_or_default();
-            let empty_slot = sys_bldgs_read
-                .slots
-                .iter()
-                .enumerate()
-                .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
+        // #370: System building construction requires an Infrastructure Core.
+        if system_has_core {
+            if let Ok((Some(sys_bldgs_read), sys_bq_read)) = system_buildings_q.get(sel_entity) {
+                let pending_slots: Vec<usize> = sys_bq_read
+                    .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
+                    .unwrap_or_default();
+                let empty_slot = sys_bldgs_read
+                    .slots
+                    .iter()
+                    .enumerate()
+                    .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
 
-            if let Some(slot_idx) = empty_slot {
-                ui.separator();
-                ui.label(egui::RichText::new("Build System Building").strong());
-                let system_building_defs = building_registry.system_buildings();
-                let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
-                let bldg_time_mod = construction_params
-                    .building_build_time_modifier
-                    .final_value();
-                let mut build_sys_building_request: Option<BuildingId> = None;
-                for def in &system_building_defs {
-                    let (base_m, base_e) = def.build_cost();
-                    let eff_m = base_m.mul_amt(bldg_cost_mod);
-                    let eff_e = base_e.mul_amt(bldg_cost_mod);
-                    let eff_time = (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
-                    let tooltip = format!(
-                        "M:{} E:{} | {} hexadies",
-                        eff_m.display_compact(),
-                        eff_e.display_compact(),
-                        eff_time
-                    );
-                    if ui.button(&def.name).on_hover_text(tooltip).clicked() {
-                        build_sys_building_request = Some(BuildingId::new(&def.id));
+                if let Some(slot_idx) = empty_slot {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Build System Building").strong());
+                    let system_building_defs = building_registry.system_buildings();
+                    let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
+                    let bldg_time_mod = construction_params
+                        .building_build_time_modifier
+                        .final_value();
+                    let mut build_sys_building_request: Option<BuildingId> = None;
+                    for def in &system_building_defs {
+                        let (base_m, base_e) = def.build_cost();
+                        let eff_m = base_m.mul_amt(bldg_cost_mod);
+                        let eff_e = base_e.mul_amt(bldg_cost_mod);
+                        let eff_time =
+                            (def.build_time as f64 * bldg_time_mod.to_f64()).ceil() as i64;
+                        let tooltip = format!(
+                            "M:{} E:{} | {} hexadies",
+                            eff_m.display_compact(),
+                            eff_e.display_compact(),
+                            eff_time
+                        );
+                        if ui.button(&def.name).on_hover_text(tooltip).clicked() {
+                            build_sys_building_request = Some(BuildingId::new(&def.id));
+                        }
+                    }
+                    if let Some(bid) = build_sys_building_request {
+                        dispatches
+                            .queue
+                            .push(crate::communication::PendingColonyDispatch {
+                                target_system: sel_entity,
+                                command: crate::communication::RemoteCommand::Colony(
+                                    crate::communication::ColonyCommand {
+                                        scope: crate::communication::BuildingScope::System,
+                                        kind: crate::communication::BuildingKind::Queue {
+                                            building_id: bid.0,
+                                            target_slot: slot_idx,
+                                        },
+                                    },
+                                ),
+                            });
                     }
                 }
-                if let Some(bid) = build_sys_building_request {
-                    dispatches
-                        .queue
-                        .push(crate::communication::PendingColonyDispatch {
-                            target_system: sel_entity,
-                            command: crate::communication::RemoteCommand::Colony(
-                                crate::communication::ColonyCommand {
-                                    scope: crate::communication::BuildingScope::System,
-                                    kind: crate::communication::BuildingKind::Queue {
-                                        building_id: bid.0,
-                                        target_slot: slot_idx,
-                                    },
-                                },
-                            ),
-                        });
-                }
             }
-        }
+        } // system_has_core
     }
 
     // === #134: Ship Build Queue + Build Ship (system-level) ===

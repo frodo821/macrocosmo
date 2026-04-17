@@ -499,6 +499,7 @@ pub fn process_pending_commands(
     mut colonies: crate::colony::remote::ApplyColoniesQuery,
     mut sys_buildings_q: crate::colony::remote::ApplySystemBuildingsQuery,
     planets: crate::colony::remote::ApplyPlanetsQuery,
+    core_ships: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
 ) {
     let Ok((mut command_log, construction_params)) = empire_q.single_mut() else {
         return;
@@ -517,6 +518,7 @@ pub fn process_pending_commands(
                 cmd.command.describe()
             );
 
+            let system_has_core = core_ships.iter().any(|at| at.0 == cmd.target_system);
             crate::colony::apply_remote_command(
                 &cmd.command,
                 cmd.target_system,
@@ -527,6 +529,7 @@ pub fn process_pending_commands(
                 &mut colonies,
                 &mut sys_buildings_q,
                 &planets,
+                system_has_core,
             );
 
             for entry in command_log.entries.iter_mut() {
