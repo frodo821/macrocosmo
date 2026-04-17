@@ -20,7 +20,7 @@ use crate::scripting::faction_api::{FactionRegistry, lookup_on_game_start};
 use crate::scripting::game_start_ctx::{
     GameStartActions, GameStartCtx, PlanetAttributesSpec, PlanetRef, SpawnedPlanetSpec,
 };
-use crate::ship::{Owner, spawn_ship};
+use crate::ship::{Owner, spawn_core_ship_from_deliverable, spawn_ship};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::technology::{
@@ -708,6 +708,55 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
             actions.ships.len(),
             faction_id,
             capital_name
+        );
+    }
+
+    // #299 (S-5): Spawn an Infrastructure Core at the capital when requested
+    // via `ctx.system:spawn_core()`. This uses the canonical
+    // `infrastructure_core_v1` design and the same owner resolution as ships.
+    if actions.spawn_core {
+        let owner = {
+            let empire_by_faction: Option<Entity> = {
+                let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+                q.iter(world)
+                    .find(|(_, f)| f.id == faction_id)
+                    .map(|(e, _)| e)
+            };
+            if let Some(e) = empire_by_faction {
+                Owner::Empire(e)
+            } else {
+                let mut q = world.query_filtered::<Entity, With<PlayerEmpire>>();
+                match q.iter(world).next() {
+                    Some(e) => Owner::Empire(e),
+                    None => {
+                        warn!(
+                            "No Empire found for faction '{}'; Core will be Neutral (no sovereignty)",
+                            faction_id
+                        );
+                        Owner::Neutral
+                    }
+                }
+            }
+        };
+        let core_pos = crate::galaxy::system_inner_orbit_position(capital_entity, world);
+        let mut state: bevy::ecs::system::SystemState<(Commands, Res<ShipDesignRegistry>)> =
+            bevy::ecs::system::SystemState::new(world);
+        {
+            let (mut commands, registry) = state.get_mut(world);
+            spawn_core_ship_from_deliverable(
+                &mut commands,
+                "infrastructure_core_v1",
+                format!("Infrastructure Core ({})", faction_id),
+                capital_entity,
+                Position::from(core_pos),
+                owner,
+                &registry,
+            );
+        }
+        state.apply(world);
+        info!(
+            "Spawned Infrastructure Core from on_game_start of '{}' at {}",
+            faction_id, capital_name
         );
     }
 
