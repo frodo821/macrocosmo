@@ -21,9 +21,9 @@ mod player;
 mod profiling;
 mod scripting;
 mod setup;
-mod species;
 mod ship;
 mod ship_design;
+mod species;
 mod technology;
 mod time_system;
 mod ui;
@@ -51,8 +51,8 @@ fn main() {
         );
     }
 
-    App::new()
-        .insert_resource(observer_mode)
+    let mut app = App::new();
+    app.insert_resource(observer_mode)
         .insert_resource(rng_seed)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -87,6 +87,14 @@ fn main() {
             ai::AiPlugin,
             ObserverPlugin,
         ))
-        .add_plugins(ui::UiPlugin)
-        .run();
+        .add_plugins(ui::UiPlugin);
+
+    #[cfg(feature = "remote")]
+    {
+        app.add_plugins(bevy::remote::RemotePlugin::default());
+        app.add_plugins(bevy::remote::http::RemoteHttpPlugin::default());
+        info!("BRP remote server enabled on localhost:15702");
+    }
+
+    app.run();
 }

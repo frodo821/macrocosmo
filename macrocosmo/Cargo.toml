@@ -58,6 +58,10 @@ default = []
 # See `docs/profiling.md` for the workflow.
 profile = ["bevy/trace_tracy", "bevy/debug"]
 
+# #390: Bevy Remote Protocol for automated UI testing via JSON-RPC.
+# Enables `bevy/bevy_remote` which provides BRP over HTTP (default port 15702).
+remote = ["bevy/bevy_remote"]
+
 [dev-dependencies]
 # #173: activate `mock` + `playthrough` features on the AI crate for
 # integration tests only. The production binary never sees the `mock`
