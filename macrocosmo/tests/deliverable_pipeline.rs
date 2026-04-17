@@ -25,8 +25,8 @@ use macrocosmo::deep_space::{
     ResourceCost, Scrapyard, StructureDefinition, StructureRegistry, UpgradeEdge,
 };
 use macrocosmo::ship::{
-    deliverable_ops::dismantle_structure, Cargo, CargoItem, CommandQueue, Owner, QueuedCommand,
-    ShipModifiers, ShipState,
+    Cargo, CargoItem, CommandQueue, Owner, QueuedCommand, ShipModifiers, ShipState,
+    deliverable_ops::dismantle_structure,
 };
 
 mod common;
@@ -62,7 +62,7 @@ fn install_test_deliverables(app: &mut App) {
         }),
         upgrade_to: Vec::new(),
         upgrade_from: None,
-            on_built: None,
+        on_built: None,
         on_upgraded: None,
     });
     // Platform kit with a single upgrade edge.
@@ -96,7 +96,7 @@ fn install_test_deliverables(app: &mut App) {
             build_time: 60,
         }],
         upgrade_from: None,
-            on_built: None,
+        on_built: None,
         on_upgraded: None,
     });
     // Upgrade target — finished defense platform.
@@ -114,7 +114,7 @@ fn install_test_deliverables(app: &mut App) {
         deliverable: None, // upgrade-only
         upgrade_to: Vec::new(),
         upgrade_from: None,
-            on_built: None,
+        on_built: None,
         on_upgraded: None,
     });
     // Rebuild the effective-edges cache.
@@ -135,14 +135,8 @@ fn test_deliverable_full_pipeline_direct() {
     let mut app = common::test_app();
     install_test_deliverables(&mut app);
 
-    let system = common::spawn_test_system(
-        app.world_mut(),
-        "Alpha",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let system =
+        common::spawn_test_system(app.world_mut(), "Alpha", [0.0, 0.0, 0.0], 1.0, true, true);
 
     // Place the ship directly at the system's position (docked).
     let ship = common::spawn_test_ship(
@@ -159,11 +153,13 @@ fn test_deliverable_full_pipeline_direct() {
     grant_cargo_capacity(&mut app, ship, 10);
 
     // Seed the stockpile with a pre-built sensor buoy.
-    app.world_mut().entity_mut(system).insert(DeliverableStockpile {
-        items: vec![CargoItem::Deliverable {
-            definition_id: "sensor_buoy".into(),
-        }],
-    });
+    app.world_mut()
+        .entity_mut(system)
+        .insert(DeliverableStockpile {
+            items: vec![CargoItem::Deliverable {
+                definition_id: "sensor_buoy".into(),
+            }],
+        });
 
     // 1) Load command
     {
@@ -188,7 +184,10 @@ fn test_deliverable_full_pipeline_direct() {
         .get::<DeliverableStockpile>(system)
         .map(|s| s.items.is_empty())
         .unwrap_or(false);
-    assert!(stockpile_empty, "system stockpile should be empty after load");
+    assert!(
+        stockpile_empty,
+        "system stockpile should be empty after load"
+    );
 
     // 2) Deploy command at (5,0,0)
     let target = [5.0, 0.0, 0.0];
@@ -208,9 +207,7 @@ fn test_deliverable_full_pipeline_direct() {
             .world_mut()
             .query::<(&DeepSpaceStructure, &Position)>()
             .iter(app.world())
-            .any(|(ds, pos)| {
-                ds.definition_id == "sensor_buoy" && (pos.x - target[0]).abs() < 0.1
-            });
+            .any(|(ds, pos)| ds.definition_id == "sensor_buoy" && (pos.x - target[0]).abs() < 0.1);
         if spawned {
             break;
         }
@@ -247,14 +244,8 @@ fn test_deliverable_full_pipeline_platform() {
     let mut app = common::test_app();
     install_test_deliverables(&mut app);
 
-    let system = common::spawn_test_system(
-        app.world_mut(),
-        "Alpha",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let system =
+        common::spawn_test_system(app.world_mut(), "Alpha", [0.0, 0.0, 0.0], 1.0, true, true);
 
     let ship = common::spawn_test_ship(
         app.world_mut(),
@@ -275,11 +266,13 @@ fn test_deliverable_full_pipeline_platform() {
     }
 
     // Deploy a platform_kit.
-    app.world_mut().entity_mut(system).insert(DeliverableStockpile {
-        items: vec![CargoItem::Deliverable {
-            definition_id: "defense_platform_kit".into(),
-        }],
-    });
+    app.world_mut()
+        .entity_mut(system)
+        .insert(DeliverableStockpile {
+            items: vec![CargoItem::Deliverable {
+                definition_id: "defense_platform_kit".into(),
+            }],
+        });
     {
         let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
         q.commands.push(QueuedCommand::LoadDeliverable {
@@ -331,7 +324,11 @@ fn test_deliverable_full_pipeline_platform() {
     for _ in 0..20 {
         common::advance_time(&mut app, 1);
         // Stop once the platform has been upgraded (ConstructionPlatform gone).
-        if app.world().get::<ConstructionPlatform>(platform_entity).is_none() {
+        if app
+            .world()
+            .get::<ConstructionPlatform>(platform_entity)
+            .is_none()
+        {
             break;
         }
     }
@@ -374,14 +371,8 @@ fn test_dismantle_and_scrapyard_drain() {
     let mut app = common::test_app();
     install_test_deliverables(&mut app);
 
-    let system = common::spawn_test_system(
-        app.world_mut(),
-        "Alpha",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let system =
+        common::spawn_test_system(app.world_mut(), "Alpha", [0.0, 0.0, 0.0], 1.0, true, true);
 
     // Spawn an active sensor_buoy directly.
     let buoy_pos = [2.0, 0.0, 0.0];
@@ -406,25 +397,18 @@ fn test_dismantle_and_scrapyard_drain() {
         .id();
 
     // Spawn a ship adjacent to the buoy.
-    let ship = common::spawn_test_ship(
-        app.world_mut(),
-        "Tug",
-        "courier_mk1",
-        system,
-        buoy_pos,
-    );
+    let ship = common::spawn_test_ship(app.world_mut(), "Tug", "courier_mk1", system, buoy_pos);
     // Tick once so Changed<Ship> fires the sync, then set cap.
     app.update();
     grant_cargo_capacity(&mut app, ship, 100);
     // Transition the ship to Loitering at buoy's position.
-    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Loitering { position: buoy_pos };
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() =
+        ShipState::Loitering { position: buoy_pos };
 
     // Dismantle via world API.
-    app.world_mut()
-        .commands()
-        .queue(move |world: &mut World| {
-            dismantle_structure(world, buoy).expect("dismantle should succeed");
-        });
+    app.world_mut().commands().queue(move |world: &mut World| {
+        dismantle_structure(world, buoy).expect("dismantle should succeed");
+    });
     app.update();
 
     // Structure should now have a Scrapyard with 50 % refund.
@@ -451,7 +435,12 @@ fn test_dismantle_and_scrapyard_drain() {
 
     // Second tick: Scrapyard becomes empty and entity despawns.
     // Trigger another load to be sure.
-    if app.world().get::<Scrapyard>(buoy).map(|s| !s.remaining.is_zero()).unwrap_or(false) {
+    if app
+        .world()
+        .get::<Scrapyard>(buoy)
+        .map(|s| !s.remaining.is_zero())
+        .unwrap_or(false)
+    {
         let mut q = app.world_mut().get_mut::<CommandQueue>(ship).unwrap();
         q.commands
             .push(QueuedCommand::LoadFromScrapyard { structure: buoy });

@@ -12,7 +12,7 @@ use crate::condition::{AtomKind, Condition};
 use crate::deep_space::StructureRegistry;
 use crate::scripting::building_api::BuildingRegistry;
 use crate::ship_design::{
-    ship_design_effective_prerequisites, HullRegistry, ModuleRegistry, ShipDesignRegistry,
+    HullRegistry, ModuleRegistry, ShipDesignRegistry, ship_design_effective_prerequisites,
 };
 
 use super::tree::{TechId, TechTree};
@@ -84,9 +84,7 @@ fn collect_tech_ids(cond: &Condition, out: &mut Vec<String>) {
                 out.push(id.clone());
             }
         }
-        Condition::All(children)
-        | Condition::Any(children)
-        | Condition::OneOf(children) => {
+        Condition::All(children) | Condition::Any(children) | Condition::OneOf(children) => {
             for c in children {
                 collect_tech_ids(c, out);
             }
@@ -241,7 +239,9 @@ mod tests {
     use crate::amount::Amt;
     use crate::condition::ConditionAtom;
     use crate::deep_space::{ResourceCost, StructureDefinition};
-    use crate::scripting::building_api::{BuildingDefinition, CapabilityParams as BCapabilityParams};
+    use crate::scripting::building_api::{
+        BuildingDefinition, CapabilityParams as BCapabilityParams,
+    };
     use crate::ship_design::{
         DesignSlotAssignment, HullDefinition, HullRegistry, ModuleDefinition, ModuleRegistry,
         ShipDesignDefinition, ShipDesignRegistry,
@@ -279,6 +279,7 @@ mod tests {
             upgrade_from: None,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         }
     }
 
@@ -315,6 +316,7 @@ mod tests {
             prerequisites: prereq,
             on_built: None,
             on_upgraded: None,
+            dismantlable: true,
         }
     }
 
@@ -444,7 +446,10 @@ mod tests {
         assert_eq!(index.for_tech("advanced_weapons").len(), 1);
         assert_eq!(index.for_tech("fusion_power").len(), 1);
         assert_eq!(index.for_tech("advanced_weapons")[0].id, "super_weapon");
-        assert_eq!(index.for_tech("advanced_weapons")[0].kind, UnlockKind::Module);
+        assert_eq!(
+            index.for_tech("advanced_weapons")[0].kind,
+            UnlockKind::Module
+        );
     }
 
     #[test]
@@ -666,12 +671,24 @@ mod tests {
 
         // Both T1 and T2 should list the design + the hull / module themselves.
         let t1 = index.for_tech("T1");
-        assert!(t1.iter().any(|e| e.kind == UnlockKind::ShipDesign && e.id == "explorer"));
-        assert!(t1.iter().any(|e| e.kind == UnlockKind::Hull && e.id == "corvette"));
+        assert!(
+            t1.iter()
+                .any(|e| e.kind == UnlockKind::ShipDesign && e.id == "explorer")
+        );
+        assert!(
+            t1.iter()
+                .any(|e| e.kind == UnlockKind::Hull && e.id == "corvette")
+        );
 
         let t2 = index.for_tech("T2");
-        assert!(t2.iter().any(|e| e.kind == UnlockKind::ShipDesign && e.id == "explorer"));
-        assert!(t2.iter().any(|e| e.kind == UnlockKind::Module && e.id == "ftl_drive"));
+        assert!(
+            t2.iter()
+                .any(|e| e.kind == UnlockKind::ShipDesign && e.id == "explorer")
+        );
+        assert!(
+            t2.iter()
+                .any(|e| e.kind == UnlockKind::Module && e.id == "ftl_drive")
+        );
     }
 
     #[test]

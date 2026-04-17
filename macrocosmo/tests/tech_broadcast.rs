@@ -642,6 +642,7 @@ fn job_slot_registry() -> macrocosmo::colony::BuildingRegistry {
         prerequisites: None,
         on_built: None,
         on_upgraded: None,
+        dismantlable: true,
     });
     registry
 }

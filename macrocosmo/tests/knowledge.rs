@@ -773,7 +773,15 @@ fn test_knowledge_snapshot_hostile_presence() {
     ));
 
     // Spawn hostile presence at remote system
-    let _ = common::spawn_raw_hostile(app.world_mut(), sys_hostile, 100.0, 100.0, 5.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys_hostile,
+        100.0,
+        100.0,
+        5.0,
+        0.0,
+        "space_creature",
+    );
 
     // Advance past light delay (1 LY = 60 hexadies)
     advance_time(&mut app, 61);
