@@ -65,6 +65,10 @@ pub struct BuildingDefinition {
     /// #280: Whether this building can be demolished. Defaults to `true`.
     /// Hub and Capital buildings set this to `false` to prevent removal.
     pub dismantlable: bool,
+    /// #385: Optional ship design id for buildings that should spawn as station
+    /// ships (e.g. Shipyard → "station_shipyard_v1"). The runtime can look this
+    /// up in the `ShipDesignRegistry` to spawn the corresponding station entity.
+    pub ship_design_id: Option<String>,
 }
 
 /// Parameters for a named building capability.
@@ -234,6 +238,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let on_built = crate::scripting::parse_lua_function_field(lua, &table, "on_built")?;
         let on_upgraded = crate::scripting::parse_lua_function_field(lua, &table, "on_upgraded")?;
         let dismantlable: bool = table.get::<Option<bool>>("dismantlable")?.unwrap_or(true);
+        let ship_design_id: Option<String> = table.get::<Option<String>>("ship_design_id")?;
 
         result.push(BuildingDefinition {
             id,
@@ -256,6 +261,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             on_built,
             on_upgraded,
             dismantlable,
+            ship_design_id,
         });
     }
 
@@ -478,6 +484,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
 
         let mine = registry.get("mine").unwrap();
@@ -507,6 +514,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -621,6 +629,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
 
         // Replace with updated values
@@ -645,6 +654,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
 
         assert_eq!(registry.buildings.len(), 1);
@@ -734,6 +744,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
 
         // Upgrade-only planet building
@@ -758,6 +769,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         });
 
         // planet_buildings() should only return direct-buildable ones
@@ -846,5 +858,72 @@ mod tests {
 
         let adv_pp = by_id.get("advanced_power_plant").unwrap();
         assert!(adv_pp.prerequisites.is_some());
+    }
+
+    /// #385: `ship_design_id` parses from Lua and defaults to None.
+    #[test]
+    fn test_building_ship_design_id_parses() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_building {
+                id = "plain",
+                name = "Plain",
+            }
+            define_building {
+                id = "shipyard",
+                name = "Shipyard",
+                ship_design_id = "station_shipyard_v1",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_building_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 2);
+
+        assert!(
+            defs[0].ship_design_id.is_none(),
+            "plain building should have no ship_design_id"
+        );
+        assert_eq!(
+            defs[1].ship_design_id.as_deref(),
+            Some("station_shipyard_v1"),
+            "shipyard should map to station_shipyard_v1"
+        );
+    }
+
+    /// #385: Building definitions from Lua scripts wire ship_design_id for
+    /// system buildings (shipyard, port, research_lab).
+    #[test]
+    fn test_building_ship_design_id_from_lua_file() {
+        let engine = ScriptEngine::new().unwrap();
+        let building_script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
+        if !building_script.exists() {
+            return;
+        }
+        engine.load_file(&building_script).unwrap();
+        let defs = parse_building_definitions(engine.lua()).unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            defs.iter().map(|d| (d.id.as_str(), d)).collect();
+
+        assert_eq!(
+            by_id.get("shipyard").unwrap().ship_design_id.as_deref(),
+            Some("station_shipyard_v1"),
+        );
+        assert_eq!(
+            by_id.get("port").unwrap().ship_design_id.as_deref(),
+            Some("station_port_v1"),
+        );
+        assert_eq!(
+            by_id.get("research_lab").unwrap().ship_design_id.as_deref(),
+            Some("station_research_lab_v1"),
+        );
+        // Mine should have no ship_design_id
+        assert!(by_id.get("mine").unwrap().ship_design_id.is_none());
     }
 }

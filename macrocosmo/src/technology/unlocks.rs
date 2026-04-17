@@ -316,6 +316,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
+            ship_design_id: None,
         }
     }
 
