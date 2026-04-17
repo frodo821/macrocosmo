@@ -176,6 +176,7 @@ pub fn tick_colonization_queue(
     player_aboard_q: Query<&AboardShip, With<Player>>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
+    building_registry: Res<super::BuildingRegistry>,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
@@ -226,15 +227,23 @@ pub fn tick_colonization_queue(
                 source.population -= transfer;
             }
 
-            // Get planet attributes (only num_slots is used; #250 removed
-            // the legacy per-attribute base production — all output now
-            // flows through building + job modifiers).
-            let (planet_name, num_slots) =
-                if let Ok((_, planet, attrs)) = planet_query.get(order.target_planet) {
-                    (planet.name.clone(), attrs.max_building_slots as usize)
-                } else {
-                    continue;
-                };
+            // Get planet attributes.
+            let planet_name = if let Ok((_, planet, _)) = planet_query.get(order.target_planet) {
+                planet.name.clone()
+            } else {
+                continue;
+            };
+
+            // #280: Determine slot count from colony_hub_t1's fixed_slots capability.
+            // Falls back to planet max_building_slots if hub definition is missing.
+            let (num_slots, hub_building) =
+                crate::colony::hub_slots_for_new_colony(&building_registry, || {
+                    planet_query
+                        .get(order.target_planet)
+                        .ok()
+                        .map(|(_, _, a)| a.max_building_slots as usize)
+                        .unwrap_or(4)
+                });
 
             // Spawn the new colony
             let pop_count = order.initial_population.round().max(0.0) as u32;
@@ -251,6 +260,13 @@ pub fn tick_colonization_queue(
                     order.source_colony
                 );
             }
+            // #280: Build slots vec with hub pre-placed at slot 0.
+            let mut slots = vec![None; num_slots];
+            if let Some(hub_id) = hub_building {
+                if !slots.is_empty() {
+                    slots[0] = Some(hub_id);
+                }
+            }
             let new_colony = commands
                 .spawn((
                     Colony {
@@ -266,9 +282,7 @@ pub fn tick_colonization_queue(
                         food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                     },
                     BuildQueue::default(),
-                    Buildings {
-                        slots: vec![None; num_slots],
-                    },
+                    Buildings { slots },
                     BuildingQueue::default(),
                     ProductionFocus::default(),
                     MaintenanceCost::default(),

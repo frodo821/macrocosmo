@@ -82,7 +82,8 @@ impl Plugin for ColonyPlugin {
                         // independent of `delta`. This guarantees the UI sees a
                         // correct production rate even while paused.
                         aggregate_job_contributions,
-                    ).chain(),
+                    )
+                        .chain(),
                     (
                         tick_production,
                         tick_maintenance,
@@ -93,7 +94,8 @@ impl Plugin for ColonyPlugin {
                         tick_colonization_queue,
                         check_resource_alerts,
                         advance_production_tick,
-                    ).chain(),
+                    )
+                        .chain(),
                 )
                     .chain()
                     .after(crate::time_system::advance_game_time)
@@ -103,10 +105,10 @@ impl Plugin for ColonyPlugin {
                     // swallowed in a single tick_building_queue pass.
                     .after(crate::communication::process_pending_commands),
             )
-            .add_systems(Update, (
-                update_sovereignty,
-                apply_pending_colonization_orders,
-            ));
+            .add_systems(
+                Update,
+                (update_sovereignty, apply_pending_colonization_orders),
+            );
     }
 }
 
@@ -228,7 +230,10 @@ pub fn tick_timed_effects(
     mut productions: Query<(Entity, &mut Production)>,
     mut maintenance_costs: Query<(Entity, &mut MaintenanceCost)>,
     mut food_consumptions: Query<(Entity, &mut FoodConsumption)>,
-    mut empire_q: Query<(&mut AuthorityParams, &mut ConstructionParams), With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        (&mut AuthorityParams, &mut ConstructionParams),
+        With<crate::player::PlayerEmpire>,
+    >,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
     let Ok((mut authority_params, mut construction_params)) = empire_q.single_mut() else {
@@ -246,33 +251,90 @@ pub fn tick_timed_effects(
         let expired = mv.drain_expired(now);
         for m in &expired {
             if let Some(ref evt) = m.on_expire_event {
-                info!(
-                    "Modifier '{}' expired, triggering event: {}",
-                    m.id, evt
-                );
+                info!("Modifier '{}' expired, triggering event: {}", m.id, evt);
                 event_system.fire_event(evt, target, now);
             }
         }
     }
 
     for (entity, mut prod) in &mut productions {
-        drain_and_fire(&mut prod.minerals_per_hexadies, now, Some(entity), &mut event_system);
-        drain_and_fire(&mut prod.energy_per_hexadies, now, Some(entity), &mut event_system);
-        drain_and_fire(&mut prod.research_per_hexadies, now, Some(entity), &mut event_system);
-        drain_and_fire(&mut prod.food_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(
+            &mut prod.minerals_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut prod.energy_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut prod.research_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut prod.food_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
     }
     for (entity, mut mc) in &mut maintenance_costs {
-        drain_and_fire(&mut mc.energy_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(
+            &mut mc.energy_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
     }
     for (entity, mut fc) in &mut food_consumptions {
-        drain_and_fire(&mut fc.food_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(
+            &mut fc.food_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
     }
-    drain_and_fire(&mut authority_params.production, now, None, &mut event_system);
-    drain_and_fire(&mut authority_params.cost_per_colony, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.ship_cost_modifier, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.building_cost_modifier, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.ship_build_time_modifier, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.building_build_time_modifier, now, None, &mut event_system);
+    drain_and_fire(
+        &mut authority_params.production,
+        now,
+        None,
+        &mut event_system,
+    );
+    drain_and_fire(
+        &mut authority_params.cost_per_colony,
+        now,
+        None,
+        &mut event_system,
+    );
+    drain_and_fire(
+        &mut construction_params.ship_cost_modifier,
+        now,
+        None,
+        &mut event_system,
+    );
+    drain_and_fire(
+        &mut construction_params.building_cost_modifier,
+        now,
+        None,
+        &mut event_system,
+    );
+    drain_and_fire(
+        &mut construction_params.ship_build_time_modifier,
+        now,
+        None,
+        &mut event_system,
+    );
+    drain_and_fire(
+        &mut construction_params.building_build_time_modifier,
+        now,
+        None,
+        &mut event_system,
+    );
 }
 
 /// Tracks cooldowns for resource alerts to prevent spamming the same alert every tick.
@@ -303,11 +365,7 @@ impl AlertCooldowns {
 pub fn check_resource_alerts(
     clock: Res<crate::time_system::GameClock>,
     last_tick: Res<LastProductionTick>,
-    colonies: Query<(
-        &Colony,
-        Option<&FoodConsumption>,
-        Option<&MaintenanceCost>,
-    )>,
+    colonies: Query<(&Colony, Option<&FoodConsumption>, Option<&MaintenanceCost>)>,
     stockpiles: Query<&ResourceStockpile, With<crate::galaxy::StarSystem>>,
     stars: Query<&crate::galaxy::StarSystem>,
     planets: Query<&crate::galaxy::Planet>,
@@ -327,7 +385,9 @@ pub fn check_resource_alerts(
             .map(|s| s.name.clone())
             .unwrap_or_default();
         let Some(sys) = colony_sys else { continue };
-        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let Ok(stockpile) = stockpiles.get(sys) else {
+            continue;
+        };
         // Use planet entity as alert key (unique per colony)
         let alert_key = colony.planet;
 
@@ -372,10 +432,7 @@ pub fn check_resource_alerts(
                     id: next_event_id.allocate(),
                     timestamp: clock.elapsed,
                     kind: crate::events::GameEventKind::ResourceAlert,
-                    description: format!(
-                        "{}: Energy depleted! Maintenance unpaid",
-                        system_name
-                    ),
+                    description: format!("{}: Energy depleted! Maintenance unpaid", system_name),
                     related_system: colony_sys,
                 });
                 alert_cooldowns.mark("energy_depleted", alert_key, clock.elapsed);
@@ -384,8 +441,40 @@ pub fn check_resource_alerts(
     }
 }
 
-pub fn advance_production_tick(clock: Res<crate::time_system::GameClock>, mut last_tick: ResMut<LastProductionTick>) {
+pub fn advance_production_tick(
+    clock: Res<crate::time_system::GameClock>,
+    mut last_tick: ResMut<LastProductionTick>,
+) {
     last_tick.0 = clock.elapsed;
+}
+
+/// #280: Determine the initial building slot count for a new colony from the
+/// `colony_hub_t1` definition's `colony_hub.fixed_slots` capability. Returns
+/// `(num_slots, Some(BuildingId))` when the hub is found, or falls back to
+/// `(fallback(), None)` when the registry lacks the definition.
+///
+/// The `fallback` closure is only called when the hub is missing (e.g. tests
+/// without Lua scripts loaded).
+pub fn hub_slots_for_new_colony(
+    registry: &BuildingRegistry,
+    fallback: impl FnOnce() -> usize,
+) -> (usize, Option<crate::scripting::building_api::BuildingId>) {
+    if let Some(hub_def) = registry.get("colony_hub_t1") {
+        let fixed = hub_def
+            .capabilities
+            .get("colony_hub")
+            .and_then(|cap| cap.get("fixed_slots"))
+            .map(|v| v as usize)
+            .unwrap_or(4);
+        (
+            fixed,
+            Some(crate::scripting::building_api::BuildingId::new(
+                "colony_hub_t1",
+            )),
+        )
+    } else {
+        (fallback(), None)
+    }
 }
 
 #[cfg(test)]

@@ -50,6 +50,7 @@ pub fn process_settling(
     player_q: Query<&StationedAt, Without<Ship>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
@@ -163,7 +164,11 @@ pub fn process_settling(
             };
 
             let system_name = star_system.name.clone();
-            let num_slots = attrs.max_building_slots as usize;
+
+            // #280: Determine slot count from colony_hub_t1 capability.
+            let planet_max = attrs.max_building_slots as usize;
+            let (num_slots, hub_building) =
+                crate::colony::hub_slots_for_new_colony(&building_registry, || planet_max);
 
             // #297 (S-2): Resolve administrative owner for the new colony /
             // SystemBuildings. Prefer the `FactionOwner` component on the
@@ -179,6 +184,13 @@ pub fn process_settling(
                         crate::ship::Owner::Neutral => None,
                     });
 
+            // #280: Build slots vec with hub pre-placed at slot 0.
+            let mut slots = vec![None; num_slots];
+            if let Some(hub_id) = hub_building {
+                if !slots.is_empty() {
+                    slots[0] = Some(hub_id);
+                }
+            }
             let new_colony = commands
                 .spawn((
                     Colony {
@@ -196,9 +208,7 @@ pub fn process_settling(
                         food_per_hexadies: crate::modifier::ModifiedValue::new(Amt::ZERO),
                     },
                     BuildQueue::default(),
-                    Buildings {
-                        slots: vec![None; num_slots],
-                    },
+                    Buildings { slots },
                     BuildingQueue::default(),
                     ProductionFocus::default(),
                     MaintenanceCost::default(),
