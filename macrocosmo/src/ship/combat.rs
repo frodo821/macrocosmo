@@ -5,14 +5,13 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, StarSystem};
-use crate::knowledge::{
- CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage,
-};
+use crate::knowledge::{CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
 use crate::time_system::GameClock;
 
-use super::{Owner, Ship, ShipHitpoints, ShipModifiers, ShipState, RulesOfEngagement};
+use super::conquered::ConqueredCore;
+use super::{CoreShip, Owner, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState};
 
 /// Hit chance: precision * track / (track + evasion)
 fn hit_chance(weapon: &crate::ship_design::WeaponStats, target_evasion: f64) -> f64 {
@@ -20,29 +19,43 @@ fn hit_chance(weapon: &crate::ship_design::WeaponStats, target_evasion: f64) -> 
 }
 
 /// Apply weapon damage to a hostile (single HP pool).
-fn apply_damage_to_hostile(hostile_hp: &mut f64, weapon: &crate::ship_design::WeaponStats, rng: &mut impl Rng) {
-    let dmg = (weapon.hull_damage + weapon.hull_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+fn apply_damage_to_hostile(
+    hostile_hp: &mut f64,
+    weapon: &crate::ship_design::WeaponStats,
+    rng: &mut impl Rng,
+) {
+    let dmg =
+        (weapon.hull_damage + weapon.hull_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
     *hostile_hp -= dmg;
 }
 
 /// Apply damage through 3-layer HP: shield → armor → hull.
-fn apply_damage_to_ship(hp: &mut ShipHitpoints, weapon: &crate::ship_design::WeaponStats, rng: &mut impl Rng) {
+fn apply_damage_to_ship(
+    hp: &mut ShipHitpoints,
+    weapon: &crate::ship_design::WeaponStats,
+    rng: &mut impl Rng,
+) {
     // Shield phase
     if hp.shield > 0.0 && rng.random::<f64>() >= weapon.shield_piercing {
-        let dmg = (weapon.shield_damage + weapon.shield_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+        let dmg = (weapon.shield_damage
+            + weapon.shield_damage_div * (rng.random::<f64>() * 2.0 - 1.0))
+            .max(0.0);
         hp.shield = (hp.shield - dmg).max(0.0);
         return; // damage absorbed by shield
     }
 
     // Armor phase
     if hp.armor > 0.0 && rng.random::<f64>() >= weapon.armor_piercing {
-        let dmg = (weapon.armor_damage + weapon.armor_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+        let dmg = (weapon.armor_damage
+            + weapon.armor_damage_div * (rng.random::<f64>() * 2.0 - 1.0))
+            .max(0.0);
         hp.armor = (hp.armor - dmg).max(0.0);
         return; // damage absorbed by armor
     }
 
     // Hull phase
-    let dmg = (weapon.hull_damage + weapon.hull_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
+    let dmg =
+        (weapon.hull_damage + weapon.hull_damage_div * (rng.random::<f64>() * 2.0 - 1.0)).max(0.0);
     hp.hull = (hp.hull - dmg).max(0.0);
 }
 
@@ -101,7 +114,19 @@ pub fn resolve_combat(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<crate::colony::LastProductionTick>,
-    mut ships: Query<(Entity, &Ship, &mut ShipHitpoints, &ShipModifiers, &ShipState, Option<&RulesOfEngagement>), Without<Hostile>>,
+    mut ships: Query<
+        (
+            Entity,
+            &Ship,
+            &mut ShipHitpoints,
+            &ShipModifiers,
+            &ShipState,
+            Option<&RulesOfEngagement>,
+            Option<&CoreShip>,
+            Option<&ConqueredCore>,
+        ),
+        Without<Hostile>,
+    >,
     mut hostiles: Query<
         (
             Entity,
@@ -143,10 +168,7 @@ pub fn resolve_combat(
         .collect();
 
     // #249: Snapshot player vantage once — used by CombatVictory / CombatDefeat fact dual-writes.
-    let player_stationed_system = player_q
-        .iter()
-        .next()
-        .map(|(_, s, _)| s.system);
+    let player_stationed_system = player_q.iter().next().map(|(_, s, _)| s.system);
     let player_pos: Option<[f64; 3]> = player_stationed_system
         .and_then(|s| systems.get(s).ok())
         .map(|(_, _, p)| p.as_array());
@@ -160,7 +182,9 @@ pub fn resolve_combat(
         player_aboard,
     });
 
-    for (hostile_entity, system_entity, hostile_strength, hostile_evasion, hostile_faction) in &hostile_data {
+    for (hostile_entity, system_entity, hostile_strength, hostile_evasion, hostile_faction) in
+        &hostile_data
+    {
         let (system_name, system_pos_arr): (String, Option<[f64; 3]>) = systems
             .get(*system_entity)
             .map(|(_, s, p)| (s.name.clone(), Some(p.as_array())))
@@ -169,7 +193,9 @@ pub fn resolve_combat(
         // #168: Skip hostiles without a FactionOwner — they have no diplomatic
         // identity in the new system, so combat cannot be evaluated. Legacy
         // (un-migrated) spawns therefore become passive instead of attacking.
-        let Some(hostile_faction) = *hostile_faction else { continue; };
+        let Some(hostile_faction) = *hostile_faction else {
+            continue;
+        };
 
         // Find all player ships docked at this system, excluding Retreat ROE
         // and ships whose faction view + ROE combination forbids engagement.
@@ -184,40 +210,44 @@ pub fn resolve_combat(
         //     present-hostile retaliation).
         let docked_ships: Vec<Entity> = ships
             .iter()
-            .filter_map(|(entity, ship, _hp, _mods, state, roe)| {
-                let roe = roe.copied().unwrap_or_default();
-                if roe == RulesOfEngagement::Retreat {
-                    return None; // #57: Retreat ships skip combat
-                }
-                if let ShipState::Docked { system } = state {
-                    if *system != *system_entity {
+            .filter_map(
+                |(entity, ship, _hp, _mods, state, roe, _core, _conquered)| {
+                    let roe = roe.copied().unwrap_or_default();
+                    if roe == RulesOfEngagement::Retreat {
+                        return None; // #57: Retreat ships skip combat
+                    }
+                    if let ShipState::Docked { system } = state {
+                        if *system != *system_entity {
+                            return None;
+                        }
+                    } else {
                         return None;
                     }
-                } else {
-                    return None;
-                }
 
-                // #168: Resolve ship's faction from Owner::Empire(_). Neutral
-                // ships have no diplomatic identity and cannot engage.
-                let Owner::Empire(faction_entity) = ship.owner else { return None; };
+                    // #168: Resolve ship's faction from Owner::Empire(_). Neutral
+                    // ships have no diplomatic identity and cannot engage.
+                    let Owner::Empire(faction_entity) = ship.owner else {
+                        return None;
+                    };
 
-                // Consult FactionRelations + ROE.
-                let view = relations.get_or_default(faction_entity, hostile_faction);
-                let engaged = match roe {
-                    RulesOfEngagement::Aggressive => view.can_attack_aggressive(),
-                    // A hostile co-located with the ship is treated as
-                    // actively attacking — see #169 spec.
-                    RulesOfEngagement::Defensive => view.should_engage_defensive(true),
-                    // Already short-circuited above; `unreachable!` would
-                    // also work but we prefer the safe fallthrough.
-                    RulesOfEngagement::Retreat => false,
-                };
-                if !engaged {
-                    return None;
-                }
+                    // Consult FactionRelations + ROE.
+                    let view = relations.get_or_default(faction_entity, hostile_faction);
+                    let engaged = match roe {
+                        RulesOfEngagement::Aggressive => view.can_attack_aggressive(),
+                        // A hostile co-located with the ship is treated as
+                        // actively attacking — see #169 spec.
+                        RulesOfEngagement::Defensive => view.should_engage_defensive(true),
+                        // Already short-circuited above; `unreachable!` would
+                        // also work but we prefer the safe fallthrough.
+                        RulesOfEngagement::Retreat => false,
+                    };
+                    if !engaged {
+                        return None;
+                    }
 
-                Some(entity)
-            })
+                    Some(entity)
+                },
+            )
             .collect();
 
         if docked_ships.is_empty() {
@@ -232,7 +262,9 @@ pub fn resolve_combat(
         }
         let mut ship_weapons: Vec<ShipWeaponData> = Vec::new();
         for &ship_entity in &docked_ships {
-            if let Ok((_e, ship, _hp, _mods, _state, _roe)) = ships.get(ship_entity) {
+            if let Ok((_e, ship, _hp, _mods, _state, _roe, _core, _conquered)) =
+                ships.get(ship_entity)
+            {
                 let mut weapons = Vec::new();
                 for equipped in &ship.modules {
                     if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
@@ -241,7 +273,10 @@ pub fn resolve_combat(
                         }
                     }
                 }
-                ship_weapons.push(ShipWeaponData { entity: ship_entity, weapons });
+                ship_weapons.push(ShipWeaponData {
+                    entity: ship_entity,
+                    weapons,
+                });
             }
         }
 
@@ -254,7 +289,11 @@ pub fn resolve_combat(
 
         for sw in &ship_weapons {
             for weapon in &sw.weapons {
-                let shots = if weapon.cooldown > 0 { combat_turns / weapon.cooldown as u32 } else { combat_turns };
+                let shots = if weapon.cooldown > 0 {
+                    combat_turns / weapon.cooldown as u32
+                } else {
+                    combat_turns
+                };
                 for _ in 0..shots {
                     let chance = hit_chance(weapon, *hostile_evasion);
                     if rng.random::<f64>() < chance {
@@ -312,9 +351,35 @@ pub fn resolve_combat(
             let mut destroyed_ships: Vec<(Entity, String)> = Vec::new();
 
             for &ship_entity in &docked_ships {
-                if let Ok((_e, ship, mut hp, _mods, _state, _roe)) = ships.get_mut(ship_entity) {
+                if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, conquered)) =
+                    ships.get_mut(ship_entity)
+                {
+                    // #298 (S-4): Conquered Cores are indestructible — skip damage entirely.
+                    if core.is_some() && conquered.is_some() {
+                        continue;
+                    }
                     apply_flat_damage_to_ship(&mut hp, damage_per_ship);
-                    if hp.hull <= 0.0 {
+                    // #298 (S-4): Core ships clamp at hull=1.0 instead of being destroyed.
+                    if core.is_some() && hp.hull < 1.0 {
+                        hp.hull = 1.0;
+                        // Emit casus belli event for peacetime Core attack
+                        if let Owner::Empire(owner_faction) = ship.owner {
+                            let view = relations.get_or_default(owner_faction, hostile_faction);
+                            if !view.is_at_war() {
+                                let event_id = fact_sys.allocate_event_id();
+                                events.write(GameEvent {
+                                    id: event_id,
+                                    timestamp: clock.elapsed,
+                                    kind: GameEventKind::CasusBelli,
+                                    description: format!(
+                                        "Peacetime attack on Infrastructure Core '{}' at {}!",
+                                        ship.name, system_name,
+                                    ),
+                                    related_system: Some(*system_entity),
+                                });
+                            }
+                        }
+                    } else if hp.hull <= 0.0 {
                         destroyed_ships.push((ship_entity, ship.name.clone()));
                     }
                 }
@@ -326,18 +391,22 @@ pub fn resolve_combat(
                     if let Some(aboard_ship) = aboard {
                         if aboard_ship.ship == *entity {
                             // Find capital system entity
-                            let capital_entity = systems.iter()
+                            let capital_entity = systems
+                                .iter()
                                 .find(|(_, s, _)| s.is_capital)
                                 .map(|(e, _, _)| e);
                             if let Some(cap_entity) = capital_entity {
                                 stationed.system = cap_entity;
                             }
-                            commands.entity(player_entity).remove::<crate::player::AboardShip>();
+                            commands
+                                .entity(player_entity)
+                                .remove::<crate::player::AboardShip>();
                             events.write(GameEvent {
                                 id: fact_sys.allocate_event_id(),
                                 timestamp: clock.elapsed,
                                 kind: GameEventKind::PlayerRespawn,
-                                description: "Flagship destroyed! Respawned at capital.".to_string(),
+                                description: "Flagship destroyed! Respawned at capital."
+                                    .to_string(),
                                 related_system: capital_entity,
                             });
                         }
@@ -378,8 +447,7 @@ pub fn resolve_combat(
                     .unwrap_or_else(|_| "hostile".to_string());
                 let desc = format!(
                     "All ships destroyed by {} at {}",
-                    hostile_label,
-                    system_name
+                    hostile_label, system_name
                 );
                 events.write(GameEvent {
                     id: event_id,

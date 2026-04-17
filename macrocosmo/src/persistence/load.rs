@@ -420,6 +420,10 @@ fn apply_component_bag(
     if bag.core_ship.is_some() {
         ec.insert(crate::ship::CoreShip);
     }
+    // #298 (S-4): Restore ConqueredCore state.
+    if let Some(c) = &bag.conquered_core {
+        ec.insert(c.clone().into_live(map));
+    }
 
     // Pending command entities
     if let Some(p) = &bag.pending_ship_command {

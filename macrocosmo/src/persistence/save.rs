@@ -79,7 +79,10 @@ use super::savebag::*;
 // (`Option<SavedBiome>`) field for the new Biome component on Planet entities.
 // Same postcard-wire-break rationale as #296 — the fixture is regenerated in
 // lockstep.
-pub const SAVE_VERSION: u32 = 3;
+// #298 (S-4): Bumped 3 → 4 because `SavedComponentBag` gained a
+// `conquered_core` (`Option<SavedConqueredCore>`) field. Same postcard
+// sequential-encoding wire break.
+pub const SAVE_VERSION: u32 = 4;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -523,6 +526,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     // #296 (S-3): CoreShip is a zero-sized marker; encode presence as Some(()).
     if e_ref.get::<crate::ship::CoreShip>().is_some() {
         bag.core_ship = Some(());
+    }
+    // #298 (S-4): Persist ConqueredCore state.
+    if let Some(c) = e_ref.get::<crate::ship::ConqueredCore>() {
+        bag.conquered_core = Some(SavedConqueredCore::from_live(c));
     }
 
     // Pending command entities

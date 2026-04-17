@@ -1,5 +1,6 @@
 pub mod combat;
 pub mod command;
+pub mod conquered;
 pub mod core_deliverable;
 pub mod courier_route;
 pub mod deliverable_ops;
@@ -24,6 +25,7 @@ pub mod bridges;
 
 pub use combat::*;
 pub use command::*;
+pub use conquered::ConqueredCore;
 pub use core_deliverable::{
     CoreShip, handle_core_deploy_requested, spawn_core_ship_from_deliverable,
 };
@@ -265,6 +267,19 @@ impl Plugin for ShipPlugin {
                     .after(process_settling)
                     .after(process_refitting)
                     .after(handlers::handle_attack_requested),
+            )
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        // #298 (S-4): Conquered Core lifecycle — transition, wartime lock,
+        // and peacetime recovery. Separate `add_systems` call to stay under
+        // Bevy 0.18's 20-arm `IntoScheduleConfigs` limit.
+        app.add_systems(
+            Update,
+            (
+                conquered::check_conquered_transition.after(resolve_combat),
+                conquered::enforce_conquered_hp_lock.after(conquered::check_conquered_transition),
+                conquered::tick_conquered_recovery.after(conquered::enforce_conquered_hp_lock),
             )
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),

@@ -1525,6 +1525,25 @@ impl SavedDetectedHostiles {
     }
 }
 
+/// #298 (S-4): Wire format for [`ConqueredCore`](crate::ship::ConqueredCore).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedConqueredCore {
+    pub attacker_faction_bits: u64,
+}
+
+impl SavedConqueredCore {
+    pub fn from_live(v: &crate::ship::ConqueredCore) -> Self {
+        Self {
+            attacker_faction_bits: v.attacker_faction.to_bits(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::ship::ConqueredCore {
+        crate::ship::ConqueredCore {
+            attacker_faction: remap_entity(self.attacker_faction_bits, map),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPendingShipCommand {
     pub ship_bits: u64,
@@ -4067,6 +4086,8 @@ pub enum SavedGameEventKind {
     PlayerRespawn,
     ColonyFailed,
     AnomalyDiscovered,
+    CoreConquered,
+    CasusBelli,
 }
 impl From<&GameEventKind> for SavedGameEventKind {
     fn from(v: &GameEventKind) -> Self {
@@ -4085,6 +4106,8 @@ impl From<&GameEventKind> for SavedGameEventKind {
             GameEventKind::PlayerRespawn => Self::PlayerRespawn,
             GameEventKind::ColonyFailed => Self::ColonyFailed,
             GameEventKind::AnomalyDiscovered => Self::AnomalyDiscovered,
+            GameEventKind::CoreConquered => Self::CoreConquered,
+            GameEventKind::CasusBelli => Self::CasusBelli,
         }
     }
 }
@@ -4105,6 +4128,8 @@ impl From<SavedGameEventKind> for GameEventKind {
             SavedGameEventKind::PlayerRespawn => Self::PlayerRespawn,
             SavedGameEventKind::ColonyFailed => Self::ColonyFailed,
             SavedGameEventKind::AnomalyDiscovered => Self::AnomalyDiscovered,
+            SavedGameEventKind::CoreConquered => Self::CoreConquered,
+            SavedGameEventKind::CasusBelli => Self::CasusBelli,
         }
     }
 }
@@ -4362,6 +4387,10 @@ pub struct SavedComponentBag {
     /// `tests/fixtures/minimal_game.bin` in the same commit as this field.
     #[serde(default)]
     pub core_ship: Option<()>,
+    /// #298 (S-4): Conquered Core state. Persisted as the attacker faction's
+    /// save id so the `ConqueredCore` component is restored on load.
+    #[serde(default)]
+    pub conquered_core: Option<SavedConqueredCore>,
     // Pending command entities (free-standing entities, not attached to a "body")
     pub pending_ship_command: Option<SavedPendingShipCommand>,
     pub pending_diplomatic_action: Option<SavedPendingDiplomaticAction>,

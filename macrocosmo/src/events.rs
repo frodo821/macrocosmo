@@ -56,6 +56,11 @@ pub enum GameEventKind {
     PlayerRespawn,
     ColonyFailed,
     AnomalyDiscovered,
+    /// #298 (S-4): An Infrastructure Core has been conquered (hull reached 1.0).
+    CoreConquered,
+    /// #298 (S-4): Peacetime attack on an Infrastructure Core — grounds for
+    /// war declaration (actual auto-war deferred to S-11).
+    CasusBelli,
 }
 
 impl GameEventKind {
@@ -70,7 +75,9 @@ impl GameEventKind {
             | GameEventKind::HostileDetected
             | GameEventKind::PlayerRespawn
             | GameEventKind::ColonyFailed
-            | GameEventKind::AnomalyDiscovered => true,
+            | GameEventKind::AnomalyDiscovered
+            | GameEventKind::CoreConquered
+            | GameEventKind::CasusBelli => true,
 
             GameEventKind::ShipArrived
             | GameEventKind::ShipBuilt
@@ -118,20 +125,14 @@ impl Plugin for EventsPlugin {
 }
 
 /// Collect GameEvents from the Bevy message queue into the EventLog
-pub fn collect_events(
-    mut reader: MessageReader<GameEvent>,
-    mut log: ResMut<EventLog>,
-) {
+pub fn collect_events(mut reader: MessageReader<GameEvent>, mut log: ResMut<EventLog>) {
     for event in reader.read() {
         log.push(event.clone());
     }
 }
 
 /// Auto-pause when a pause-worthy GameEvent fires
-pub fn auto_pause_on_event(
-    mut reader: MessageReader<GameEvent>,
-    mut speed: ResMut<GameSpeed>,
-) {
+pub fn auto_pause_on_event(mut reader: MessageReader<GameEvent>, mut speed: ResMut<GameSpeed>) {
     for event in reader.read() {
         if event.kind.should_pause() {
             speed.pause();
@@ -160,7 +161,11 @@ mod tests {
             max_entries: 3,
         };
         for i in 0..5 {
-            log.push(make_event(i, GameEventKind::ShipArrived, &format!("event {}", i)));
+            log.push(make_event(
+                i,
+                GameEventKind::ShipArrived,
+                &format!("event {}", i),
+            ));
         }
         assert_eq!(log.entries.len(), 3);
         // Oldest entries should have been removed
@@ -199,6 +204,8 @@ mod tests {
         assert!(GameEventKind::PlayerRespawn.should_pause());
         assert!(GameEventKind::ColonyFailed.should_pause());
         assert!(GameEventKind::AnomalyDiscovered.should_pause());
+        assert!(GameEventKind::CoreConquered.should_pause());
+        assert!(GameEventKind::CasusBelli.should_pause());
     }
 
     #[test]
