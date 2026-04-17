@@ -64,7 +64,7 @@ fn spawn_colony_ship(world: &mut World, system: Entity, faction: Entity) -> Enti
             design_revision: 0,
             fleet: Some(fleet_entity),
         },
-        ShipState::Docked { system },
+        ShipState::InSystem { system },
         Position::from(pos),
         ShipHitpoints {
             hull: 120.0,
@@ -192,7 +192,7 @@ fn test_colonize_rejected_without_core() {
     // Ship should remain Docked (not Settling)
     let state = app.world().get::<ShipState>(ship).unwrap();
     assert!(
-        matches!(state, ShipState::Docked { .. }),
+        matches!(state, ShipState::InSystem { .. }),
         "ship should remain Docked when no Core is present"
     );
 }
@@ -281,7 +281,7 @@ fn test_colonize_rejected_with_enemy_core() {
     // Ship should remain Docked (enemy Core doesn't count)
     let state = app.world().get::<ShipState>(ship).unwrap();
     assert!(
-        matches!(state, ShipState::Docked { .. }),
+        matches!(state, ShipState::InSystem { .. }),
         "ship should remain Docked when only enemy Core present"
     );
 }
@@ -351,7 +351,7 @@ fn test_settle_aborted_when_core_destroyed() {
             .get::<ShipState>(ship2)
             .expect("ship should still exist after Core removed mid-settle");
         assert!(
-            matches!(state, ShipState::Docked { .. }),
+            matches!(state, ShipState::InSystem { .. }),
             "ship should be Docked after Core removed mid-settle"
         );
     }

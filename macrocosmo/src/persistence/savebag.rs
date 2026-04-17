@@ -571,7 +571,8 @@ impl SavedShip {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedShipState {
-    Docked {
+    #[serde(alias = "Docked")]
+    InSystem {
         system_bits: u64,
     },
     SubLight {
@@ -621,7 +622,7 @@ impl SavedShipState {
     pub fn from_live(v: &ShipState) -> Self {
         use crate::ship::ReportMode;
         match v {
-            ShipState::Docked { system } => Self::Docked {
+            ShipState::InSystem { system } => Self::InSystem {
                 system_bits: system.to_bits(),
             },
             ShipState::SubLight {
@@ -708,7 +709,7 @@ impl SavedShipState {
     pub fn into_live(self, map: &EntityMap) -> ShipState {
         use crate::ship::ReportMode;
         match self {
-            Self::Docked { system_bits } => ShipState::Docked {
+            Self::InSystem { system_bits } => ShipState::InSystem {
                 system: remap_entity(system_bits, map),
             },
             Self::SubLight {
@@ -2882,7 +2883,8 @@ impl SavedSystemKnowledge {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedShipSnapshotState {
-    Docked,
+    #[serde(alias = "Docked")]
+    InSystem,
     InTransit,
     Surveying,
     Settling,
@@ -2893,7 +2895,7 @@ pub enum SavedShipSnapshotState {
 impl From<&ShipSnapshotState> for SavedShipSnapshotState {
     fn from(v: &ShipSnapshotState) -> Self {
         match v {
-            ShipSnapshotState::Docked => Self::Docked,
+            ShipSnapshotState::InSystem => Self::InSystem,
             ShipSnapshotState::InTransit => Self::InTransit,
             ShipSnapshotState::Surveying => Self::Surveying,
             ShipSnapshotState::Settling => Self::Settling,
@@ -2908,7 +2910,7 @@ impl From<&ShipSnapshotState> for SavedShipSnapshotState {
 impl From<SavedShipSnapshotState> for ShipSnapshotState {
     fn from(v: SavedShipSnapshotState) -> Self {
         match v {
-            SavedShipSnapshotState::Docked => Self::Docked,
+            SavedShipSnapshotState::InSystem => Self::InSystem,
             SavedShipSnapshotState::InTransit => Self::InTransit,
             SavedShipSnapshotState::Surveying => Self::Surveying,
             SavedShipSnapshotState::Settling => Self::Settling,

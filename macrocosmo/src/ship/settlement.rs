@@ -109,7 +109,7 @@ pub fn process_settling(
                     "Colony Ship {} cannot settle at {} — hostile presence!",
                     ship.name, star_system.name
                 );
-                *state = ShipState::Docked {
+                *state = ShipState::InSystem {
                     system: system_entity,
                 };
                 // #249: Dual-write ColonyFailed.
@@ -159,7 +159,7 @@ pub fn process_settling(
                         "Colony Ship {} settling at {} aborted — sovereignty core removed!",
                         ship.name, star_system.name
                     );
-                    *state = ShipState::Docked {
+                    *state = ShipState::InSystem {
                         system: system_entity,
                     };
                     continue;
@@ -370,7 +370,7 @@ pub fn process_refitting(
             ship.modules = new_modules;
             // #123: Mark ship as in sync with the design revision we refit to.
             ship.design_revision = target_revision;
-            *state = ShipState::Docked { system };
+            *state = ShipState::InSystem { system };
 
             let (system_name, sys_pos_arr) = systems
                 .get(system)

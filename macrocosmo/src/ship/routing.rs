@@ -585,7 +585,7 @@ pub fn poll_pending_routes(
         };
 
         // Ensure ship is still docked (may have changed state while waiting).
-        let ShipState::Docked {
+        let ShipState::InSystem {
             system: docked_system,
         } = *state
         else {

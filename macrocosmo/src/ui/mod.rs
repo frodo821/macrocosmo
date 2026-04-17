@@ -769,7 +769,7 @@ fn draw_main_panels_system(
                 .get(ship_e)
                 .ok()
                 .and_then(|(_, _, state, _, _, _)| match &*state {
-                    ShipState::Docked { system } => world.positions.get(*system).ok().copied(),
+                    ShipState::InSystem { system } => world.positions.get(*system).ok().copied(),
                     ShipState::Loitering { position } => {
                         Some(crate::components::Position::from(*position))
                     }
@@ -840,7 +840,7 @@ fn draw_main_panels_system(
                     _ => None,
                 };
                 if let Some(sys) = dock_system {
-                    *state = ShipState::Docked { system: sys };
+                    *state = ShipState::InSystem { system: sys };
                 }
             }
         }
@@ -921,7 +921,7 @@ fn draw_main_panels_system(
                     .ok()
                     .and_then(|(_, ship, state, _, _, _)| {
                         let docked = match &*state {
-                            ShipState::Docked { system } => Some(*system),
+                            ShipState::InSystem { system } => Some(*system),
                             _ => None,
                         }?;
                         // Refit-eligible only if design revision is ahead.
@@ -1374,7 +1374,7 @@ fn draw_map_tooltips(
                     .map(|d| d.name.as_str())
                     .unwrap_or(&ship.design_id);
                 let status = match &*state {
-                    ShipState::Docked { .. } => "Docked",
+                    ShipState::InSystem { .. } => "Docked",
                     ShipState::SubLight { .. } => "Sub-light",
                     ShipState::InFTL { .. } => "In FTL",
                     ShipState::Surveying { .. } => "Surveying",
@@ -1529,7 +1529,7 @@ fn apply_design_refit(
         return;
     };
     // Must be docked at the given system (not in transit, not refitting).
-    let docked_here = matches!(&*state, ShipState::Docked { system } if *system == system_entity);
+    let docked_here = matches!(&*state, ShipState::InSystem { system } if *system == system_entity);
     if !docked_here {
         return;
     }

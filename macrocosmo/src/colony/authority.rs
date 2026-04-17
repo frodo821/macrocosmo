@@ -54,7 +54,7 @@ impl Default for AuthorityParams {
 ///   the changed system.
 /// - **SystemBuildings:** the StarSystem entity itself carries `FactionOwner`;
 ///   update it to the new sovereign.
-/// - **Docked ships:** only `ShipState::Docked { system }` ships transfer.
+/// - **InSystem ships:** only `ShipState::InSystem { system }` ships transfer.
 ///   In-transit / loitering ships retain their original owner.
 /// - **DeepSpaceStructure:** structures `With<AtSystem>` matching the system
 ///   get their `FactionOwner` updated. (Currently no DSS use `AtSystem`;
@@ -95,9 +95,9 @@ pub fn cascade_sovereignty_changes(
             }
         }
 
-        // 3. Update docked ships: only ShipState::Docked { system } transfers.
+        // 3. Update docked ships: only ShipState::InSystem { system } transfers.
         for (state, ship_entity, mut ship) in &mut ships {
-            if let crate::ship::ShipState::Docked { system: docked_sys } = state {
+            if let crate::ship::ShipState::InSystem { system: docked_sys } = state {
                 if *docked_sys == system {
                     // Dual-write: FactionOwner component + Ship.owner field.
                     if let Ok(mut fo) = faction_owners.get_mut(ship_entity) {

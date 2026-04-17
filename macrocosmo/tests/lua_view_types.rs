@@ -155,7 +155,7 @@ fn scenario_world() -> World {
                 shield_max: 10.0,
                 shield_regen: 0.5,
             },
-            ShipState::Docked { system },
+            ShipState::InSystem { system },
         ))
         .id();
     world.spawn((
@@ -244,11 +244,11 @@ fn test_gamestate_view_hierarchical_navigation() {
     assert!(summary.contains("pop=100"), "colony pop: {summary}");
     assert!(summary.contains("bld1=mine"), "building id: {summary}");
     assert!(summary.contains("m/hx=10"), "production: {summary}");
-    assert!(summary.contains("state=docked"), "ship state: {summary}");
+    assert!(summary.contains("state=in_system"), "ship state: {summary}");
     assert!(summary.contains("hp=50"), "ship hp: {summary}");
     assert!(summary.contains("mod1=scanner"), "ship module: {summary}");
     assert!(
-        summary.contains("fleet_state=docked"),
+        summary.contains("fleet_state=in_system"),
         "fleet state: {summary}"
     );
     assert!(
@@ -261,7 +261,7 @@ fn test_gamestate_view_hierarchical_navigation() {
 fn test_ship_state_tag_union_docked() {
     // Ship state is a `{kind = ..., ...}` tag-union table exposed as
     // `ship.state` via `gs:ship(id)`. Docked ship should have
-    // `kind="docked"` and `system=<u64>`.
+    // `kind="in_system"` and `system=<u64>`.
     let mut world = scenario_world();
     let (kind, has_system): (String, bool) =
         with_gamestate(&mut world, GamestateMode::ReadOnly, |lua| {
@@ -277,7 +277,7 @@ fn test_ship_state_tag_union_docked() {
             .eval::<(String, bool)>()
             .unwrap()
         });
-    assert_eq!(kind, "docked");
+    assert_eq!(kind, "in_system");
     assert!(has_system);
 }
 
@@ -301,7 +301,7 @@ fn test_fleet_proxy_through_flagship() {
             .unwrap()
         });
     assert_eq!(owner_kind, "empire");
-    assert_eq!(state_kind, "docked");
+    assert_eq!(state_kind, "in_system");
 }
 
 #[test]

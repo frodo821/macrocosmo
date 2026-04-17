@@ -377,7 +377,7 @@ pub fn draw_galaxy_overlay(
             let effective_range = ship.ftl_range + global_params.ftl_range_bonus;
             if effective_range > 0.0 {
                 let ship_pos = match state {
-                    ShipState::Docked { system } => {
+                    ShipState::InSystem { system } => {
                         stars.get(*system).ok().map(|(_, _, pos)| {
                             Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
                         })

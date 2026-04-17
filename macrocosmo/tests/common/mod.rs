@@ -1498,7 +1498,7 @@ pub fn spawn_test_ship(
             design_revision: 0,
             fleet: Some(fleet_entity),
         },
-        ShipState::Docked { system },
+        ShipState::InSystem { system },
         Position::from(pos),
         ShipHitpoints {
             hull: hull_hp,

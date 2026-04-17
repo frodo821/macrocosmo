@@ -195,7 +195,7 @@ pub struct ShipSnapshot {
 /// Simplified ship state for knowledge snapshots.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShipSnapshotState {
-    Docked,
+    InSystem,
     InTransit,
     Surveying,
     Settling,
@@ -632,7 +632,7 @@ pub fn propagate_knowledge(
     for (ship_entity, ship, state, hp) in &ships {
         // Compute the ship's current world position as an [f64; 3].
         let ship_pos_arr: Option<[f64; 3]> = match state {
-            ShipState::Docked { system } => positions.get(*system).ok().map(|p| p.as_array()),
+            ShipState::InSystem { system } => positions.get(*system).ok().map(|p| p.as_array()),
             ShipState::Surveying { target_system, .. } => {
                 positions.get(*target_system).ok().map(|p| p.as_array())
             }
@@ -694,7 +694,7 @@ pub fn propagate_knowledge(
         }
 
         let (snapshot_state, last_system) = match state {
-            ShipState::Docked { system } => (ShipSnapshotState::Docked, Some(*system)),
+            ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
             ShipState::SubLight { target_system, .. } => (ShipSnapshotState::InTransit, *target_system),
             ShipState::InFTL { destination_system, .. } => (ShipSnapshotState::InTransit, Some(*destination_system)),
             ShipState::Surveying { target_system, .. } => (ShipSnapshotState::Surveying, Some(*target_system)),

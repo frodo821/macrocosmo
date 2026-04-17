@@ -69,7 +69,7 @@ fn test_hostile_destroyed_when_hp_zero() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -123,7 +123,7 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 0.01, hull_max: 20.0,
@@ -230,7 +230,7 @@ fn test_combat_takes_multiple_ticks() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -308,7 +308,7 @@ fn test_shield_regenerates() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -380,7 +380,7 @@ fn test_shield_regen_caps_at_max() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -466,7 +466,7 @@ fn test_combat_damages_3_layers() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 100.0, hull_max: 100.0,
@@ -521,7 +521,7 @@ fn test_hull_zero_destroys_ship() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 1.0, hull_max: 50.0,
@@ -608,7 +608,7 @@ fn test_weapon_cooldown() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints { hull: 100.0, hull_max: 100.0, armor: 0.0, armor_max: 0.0, shield: 0.0, shield_max: 0.0, shield_regen: 0.0 },
         ShipModifiers::default(), CommandQueue::default(), Cargo::default(),
@@ -625,7 +625,7 @@ fn test_weapon_cooldown() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys_b },
+        ShipState::InSystem { system: sys_b },
         Position::from([100.0, 0.0, 0.0]),
         ShipHitpoints { hull: 100.0, hull_max: 100.0, armor: 0.0, armor_max: 0.0, shield: 0.0, shield_max: 0.0, shield_regen: 0.0 },
         ShipModifiers::default(), CommandQueue::default(), Cargo::default(),
@@ -689,7 +689,7 @@ fn test_shield_piercing() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 100.0, hull_max: 100.0,
@@ -770,7 +770,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -826,7 +826,7 @@ fn test_retreat_ships_dont_take_damage() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 1.0, hull_max: 50.0,
@@ -900,7 +900,7 @@ fn test_aggressive_ships_engage_combat() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -973,7 +973,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -1046,7 +1046,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 5000.0, hull_max: 5000.0,
@@ -1075,7 +1075,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 1.0, hull_max: 50.0,
@@ -1127,7 +1127,7 @@ fn test_set_roe_via_pending_command() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: sys },
+        ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 50.0, hull_max: 50.0,
@@ -1328,7 +1328,7 @@ fn test_colonize_blocked_by_hostile() {
         .get::<ShipState>(ship_entity)
         .expect("Ship should still exist — colonization should be blocked by hostile");
     match ship_state {
-        ShipState::Docked { system } => {
+        ShipState::InSystem { system } => {
             assert_eq!(*system, sys, "Ship should be docked at the hostile system");
         }
         _ => panic!("Ship should be in Docked state after failed colonization"),
@@ -1515,7 +1515,7 @@ fn spawn_test_armed_ship(world: &mut World, sys: Entity, owner: Owner) -> Entity
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sys },
+            ShipState::InSystem { system: sys },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
                 hull: 100.0,

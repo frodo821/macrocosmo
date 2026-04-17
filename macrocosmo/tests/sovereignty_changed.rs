@@ -313,7 +313,7 @@ fn test_cascade_docked_ships_faction_owner() {
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sys },
+            ShipState::InSystem { system: sys },
             FactionOwner(empire),
         ))
         .id();
@@ -451,7 +451,7 @@ fn test_abandonment_preserves_faction_owner() {
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system: sys },
+            ShipState::InSystem { system: sys },
             FactionOwner(empire),
         ))
         .id();

@@ -145,7 +145,7 @@ fn test_remote_command_has_light_delay() {
     // Ship should still be docked — command hasn't arrived
     let state = app.world().get::<ShipState>(ship_entity).unwrap();
     assert!(
-        matches!(state, ShipState::Docked { system } if *system == sys_b),
+        matches!(state, ShipState::InSystem { system } if *system == sys_b),
         "Ship should remain docked before command arrives"
     );
 
@@ -292,7 +292,7 @@ fn test_pending_survey_command_executes_after_delay() {
     advance_time(&mut app, 100);
     let state = app.world().get::<ShipState>(ship_entity).unwrap();
     assert!(
-        matches!(state, ShipState::Docked { .. }),
+        matches!(state, ShipState::InSystem { .. }),
         "Ship should still be docked before command arrives"
     );
 
@@ -884,7 +884,7 @@ fn test_ship_knowledge_propagation() {
         let snap = ship_snap.unwrap();
         assert_eq!(snap.name, "Scout-1");
         assert_eq!(snap.design_id, "explorer_mk1");
-        assert_eq!(snap.last_known_state, ShipSnapshotState::Docked);
+        assert_eq!(snap.last_known_state, ShipSnapshotState::InSystem);
         assert_eq!(snap.last_known_system, Some(sys_remote));
     }
 }
@@ -926,7 +926,7 @@ fn test_ship_knowledge_local_system_immediate() {
     );
     assert_eq!(
         ship_snap.unwrap().last_known_state,
-        ShipSnapshotState::Docked
+        ShipSnapshotState::InSystem
     );
 }
 
@@ -945,7 +945,7 @@ fn test_knowledge_store_ship_update_newer_replaces() {
         entity,
         name: "Ship".into(),
         design_id: "test".into(),
-        last_known_state: ShipSnapshotState::Docked,
+        last_known_state: ShipSnapshotState::InSystem,
         last_known_system: Some(system_entity),
         observed_at: 10,
         hp: 100.0,
@@ -997,7 +997,7 @@ fn test_knowledge_store_ship_older_does_not_replace() {
         entity,
         name: "Ship".into(),
         design_id: "test".into(),
-        last_known_state: ShipSnapshotState::Docked,
+        last_known_state: ShipSnapshotState::InSystem,
         last_known_system: Some(system_entity),
         observed_at: 10,
         hp: 100.0,
@@ -1180,7 +1180,7 @@ fn test_sensor_buoy_detects_remote_docked_ship_via_buoy_path() {
     // observed_at = 350 - 300 = 50, and importantly LESS than 350 (proving
     // it isn't from a closer-but-untimed source).
     assert_eq!(snap.observed_at, 50);
-    assert_eq!(snap.last_known_state, ShipSnapshotState::Docked);
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InSystem);
     assert_eq!(snap.last_known_system, Some(sys_outpost));
 }
 
@@ -1354,7 +1354,7 @@ fn test_sensor_buoy_detects_docked_ship_in_range() {
     let snap = store
         .get_ship(ship_entity)
         .expect("Buoy should detect docked ship in range");
-    assert_eq!(snap.last_known_state, ShipSnapshotState::Docked);
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InSystem);
     assert_eq!(snap.last_known_system, Some(sys_outpost));
 }
 

@@ -35,7 +35,7 @@ fn spawn_basic_ship(world: &mut World, name: &str, system: Entity) -> Entity {
                 design_revision: 0,
                 fleet: None,
             },
-            ShipState::Docked { system },
+            ShipState::InSystem { system },
             Position::from([0.0, 0.0, 0.0]),
             ShipHitpoints {
                 hull: 50.0,
@@ -182,7 +182,7 @@ fn test_player_location_updates_with_ship() {
     // Simulate ship arriving at sys_b by changing its state to Docked at sys_b
     {
         let mut state = app.world_mut().get_mut::<ShipState>(ship_entity).unwrap();
-        *state = ShipState::Docked { system: sys_b };
+        *state = ShipState::InSystem { system: sys_b };
     }
 
     // Run update to trigger update_player_location
@@ -317,7 +317,7 @@ fn test_player_respawn_on_ship_destruction() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: remote },
+        ShipState::InSystem { system: remote },
         Position::from([10.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 0.01,
@@ -428,7 +428,7 @@ fn test_player_respawn_event_fires() {
             design_revision: 0,
             fleet: None,
         },
-        ShipState::Docked { system: remote },
+        ShipState::InSystem { system: remote },
         Position::from([10.0, 0.0, 0.0]),
         ShipHitpoints {
             hull: 0.01,

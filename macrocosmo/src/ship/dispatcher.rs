@@ -71,7 +71,7 @@ pub fn dispatch_queued_commands(
         // Loitering; mid-travel / mid-survey / mid-settling ships have to
         // finish the current action first. Preserve that exactly.
         let (is_docked, docked_system): (bool, Option<Entity>) = match *state {
-            ShipState::Docked { system } => (true, Some(system)),
+            ShipState::InSystem { system } => (true, Some(system)),
             ShipState::Loitering { .. } => (false, None),
             _ => continue,
         };
@@ -396,7 +396,7 @@ mod tests {
     ) -> Entity {
         let home_port = dummy_home_port(world);
         let state = match docked_system {
-            Some(system) => ShipState::Docked { system },
+            Some(system) => ShipState::InSystem { system },
             None => ShipState::Loitering { position: pos },
         };
         world

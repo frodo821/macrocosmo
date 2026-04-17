@@ -89,7 +89,7 @@ pub fn handle_load_deliverable_requested(
 
         // Ship must be docked at the target system.
         let docked_system = match state {
-            ShipState::Docked { system } => Some(*system),
+            ShipState::InSystem { system } => Some(*system),
             _ => None,
         };
         if docked_system != Some(req.system) {
@@ -282,7 +282,7 @@ pub fn handle_deploy_deliverable_requested(
         // Ship must not be in FTL or surveying. Loitering/Docked OK.
         let allowed = matches!(
             state,
-            ShipState::Docked { .. } | ShipState::Loitering { .. }
+            ShipState::InSystem { .. } | ShipState::Loitering { .. }
         );
         if !allowed {
             // Wait until movement completes — re-inject the original command
