@@ -748,3 +748,314 @@ fn core_deploy_sets_system_sovereignty() {
     assert_eq!(sov.owner, Some(Owner::Empire(empire)));
     assert!(sov.control_score > 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// #300 (S-6): Defense Fleet auto-composition tests
+// ---------------------------------------------------------------------------
+
+use macrocosmo::ship::defense_fleet::{DefenseFleet, join_defense_fleet};
+use macrocosmo::ship::{Fleet, FleetMembers, Ship};
+
+/// Helper: insert the immobile design into the registry. Avoids repeating
+/// the same block in every test.
+fn insert_core_design(app: &mut bevy::prelude::App) {
+    let mut reg = app.world_mut().resource_mut::<ShipDesignRegistry>();
+    reg.insert(macrocosmo::ship_design::ShipDesignDefinition {
+        id: "infrastructure_core_v1".to_string(),
+        name: "Infrastructure Core".to_string(),
+        description: String::new(),
+        hull_id: "infrastructure_core_hull".to_string(),
+        modules: Vec::new(),
+        can_survey: false,
+        can_colonize: false,
+        maintenance: Amt::units(2),
+        build_cost_minerals: Amt::ZERO,
+        build_cost_energy: Amt::ZERO,
+        build_time: 0,
+        hp: 400.0,
+        sublight_speed: 0.0,
+        ftl_range: 0.0,
+        revision: 0,
+    });
+}
+
+/// Deploy a Core via the message-driven handler and verify that a Defense
+/// Fleet entity is created with the Core as its sole member.
+#[test]
+fn core_deploy_creates_defense_fleet() {
+    let mut app = full_test_app();
+    let sys = spawn_test_system(app.world_mut(), "DFHome", [0.0, 0.0, 0.0], 1.0, true, false);
+    let empire = empire_entity(app.world_mut());
+    insert_core_design(&mut app);
+
+    let deployer = app.world_mut().spawn_empty().id();
+    let pos = system_inner_orbit_position(sys, app.world());
+    {
+        app.world_mut()
+            .init_resource::<macrocosmo::scripting::GameRng>();
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(500),
+            deployer,
+            target_system: sys,
+            deploy_pos: pos,
+            faction_owner: Some(empire),
+            owner: Owner::Empire(empire),
+            design_id: "infrastructure_core_v1".to_string(),
+            submitted_at: 0,
+        });
+    }
+
+    app.world_mut()
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
+    // Two updates: one for Commands from the handler, one for the queued
+    // world-closure that creates the Defense Fleet.
+    app.update();
+    app.update();
+
+    // Find the Core ship.
+    let mut core_q = app.world_mut().query::<(Entity, &CoreShip, &Ship)>();
+    let cores: Vec<_> = core_q.iter(app.world()).collect();
+    assert_eq!(cores.len(), 1, "exactly one Core ship");
+    let (core_entity, _, core_ship) = cores[0];
+
+    // The Core's fleet must carry the DefenseFleet marker.
+    let fleet_entity = core_ship
+        .fleet
+        .expect("Core ship must have a fleet backref");
+    let df = app
+        .world()
+        .get::<DefenseFleet>(fleet_entity)
+        .expect("fleet must carry DefenseFleet marker");
+    assert_eq!(df.system, sys, "DefenseFleet.system must match target");
+
+    // Fleet must have the Core as sole member and flagship.
+    let members = app
+        .world()
+        .get::<FleetMembers>(fleet_entity)
+        .expect("fleet must have FleetMembers");
+    assert!(members.contains(core_entity));
+    assert_eq!(members.len(), 1);
+    let fleet = app
+        .world()
+        .get::<Fleet>(fleet_entity)
+        .expect("fleet must have Fleet component");
+    assert_eq!(fleet.flagship, Some(core_entity));
+}
+
+/// After Defense Fleet creation, the old auto-generated single-ship fleet
+/// should be pruned (empty → despawned by `prune_empty_fleets`).
+#[test]
+fn defense_fleet_old_single_ship_fleet_pruned() {
+    use macrocosmo::ship::fleet::prune_empty_fleets;
+
+    let mut app = full_test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "PruneTest",
+        [1.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let empire = empire_entity(app.world_mut());
+    insert_core_design(&mut app);
+
+    let deployer = app.world_mut().spawn_empty().id();
+    let pos = system_inner_orbit_position(sys, app.world());
+    {
+        app.world_mut()
+            .init_resource::<macrocosmo::scripting::GameRng>();
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(501),
+            deployer,
+            target_system: sys,
+            deploy_pos: pos,
+            faction_owner: Some(empire),
+            owner: Owner::Empire(empire),
+            design_id: "infrastructure_core_v1".to_string(),
+            submitted_at: 0,
+        });
+    }
+
+    app.world_mut()
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
+    app.update();
+    app.update();
+
+    // Run prune_empty_fleets to clean up the orphaned auto-fleet.
+    app.world_mut()
+        .run_system_once(prune_empty_fleets)
+        .expect("prune");
+    app.update();
+
+    // Count fleets: only the Defense Fleet should remain (no orphan).
+    let mut fleet_q = app.world_mut().query::<(Entity, &Fleet)>();
+    let fleets: Vec<_> = fleet_q.iter(app.world()).collect();
+    // There should be exactly one fleet that is a Defense Fleet.
+    let defense_fleets: Vec<_> = fleets
+        .iter()
+        .filter(|(e, _)| app.world().get::<DefenseFleet>(*e).is_some())
+        .collect();
+    assert_eq!(defense_fleets.len(), 1, "exactly one Defense Fleet");
+
+    // All remaining fleets that are NOT Defense Fleets should have
+    // non-empty members (i.e. the orphan was pruned).
+    for (e, _) in &fleets {
+        if app.world().get::<DefenseFleet>(*e).is_some() {
+            continue;
+        }
+        let m = app.world().get::<FleetMembers>(*e);
+        assert!(
+            m.map_or(true, |m| !m.is_empty()),
+            "orphan fleet {:?} should have been pruned",
+            e,
+        );
+    }
+}
+
+/// Destroying the Core ship causes the Defense Fleet to be pruned (via the
+/// standard prune_empty_fleets path).
+#[test]
+fn core_destroy_prunes_defense_fleet() {
+    use macrocosmo::ship::fleet::prune_empty_fleets;
+
+    let mut app = full_test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "DestroyTest",
+        [2.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let empire = empire_entity(app.world_mut());
+    insert_core_design(&mut app);
+
+    let deployer = app.world_mut().spawn_empty().id();
+    let pos = system_inner_orbit_position(sys, app.world());
+    {
+        app.world_mut()
+            .init_resource::<macrocosmo::scripting::GameRng>();
+        let mut msgs = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<CoreDeployRequested>>();
+        msgs.write(CoreDeployRequested {
+            command_id: CommandId(502),
+            deployer,
+            target_system: sys,
+            deploy_pos: pos,
+            faction_owner: Some(empire),
+            owner: Owner::Empire(empire),
+            design_id: "infrastructure_core_v1".to_string(),
+            submitted_at: 0,
+        });
+    }
+
+    app.world_mut()
+        .run_system_once(handle_core_deploy_requested)
+        .expect("run core handler");
+    app.update();
+    app.update();
+
+    // Find the Core ship and its Defense Fleet.
+    let mut core_q = app.world_mut().query::<(Entity, &CoreShip, &Ship)>();
+    let (core_entity, _, core_ship) = core_q.iter(app.world()).next().expect("Core exists");
+    let defense_fleet_entity = core_ship.fleet.expect("Core has fleet");
+
+    // Destroy the Core.
+    app.world_mut().despawn(core_entity);
+
+    // Run prune.
+    app.world_mut()
+        .run_system_once(prune_empty_fleets)
+        .expect("prune");
+    app.update();
+
+    // Defense Fleet should be gone.
+    assert!(
+        app.world().get_entity(defense_fleet_entity).is_err(),
+        "Defense Fleet must be despawned after Core is destroyed"
+    );
+}
+
+/// Save/load round-trip preserves the DefenseFleet component.
+#[test]
+fn defense_fleet_save_load_round_trip() {
+    use macrocosmo::persistence::savebag::{SavedComponentBag, SavedDefenseFleet};
+
+    let system = Entity::from_raw_u32(42).unwrap();
+    let df = DefenseFleet { system };
+    let saved = SavedDefenseFleet::from_live(&df);
+    assert_eq!(saved.system_bits, system.to_bits());
+
+    // Round-trip through serde.
+    let json = serde_json::to_string(&saved).expect("serialize");
+    let restored: SavedDefenseFleet = serde_json::from_str(&json).expect("deserialize");
+
+    let mut map = macrocosmo::persistence::remap::EntityMap::new();
+    map.insert(system.to_bits(), system);
+    let live = restored.into_live(&map);
+    assert_eq!(live.system, system);
+}
+
+/// The `join_defense_fleet` helper successfully adds a ship to an existing
+/// Defense Fleet.
+#[test]
+fn join_defense_fleet_helper_adds_ship() {
+    use macrocosmo::ship::fleet::create_fleet;
+
+    let mut world = bevy::ecs::world::World::new();
+    let system = world.spawn_empty().id();
+
+    // Spawn a Core-like ship as initial member.
+    let core = world
+        .spawn(Ship {
+            name: "Core".into(),
+            design_id: "core_v1".into(),
+            hull_id: "hull".into(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+            fleet: None,
+        })
+        .id();
+    let fleet = create_fleet(&mut world, "Defense Fleet".into(), vec![core], Some(core));
+    world.entity_mut(fleet).insert(DefenseFleet { system });
+
+    // Spawn a new defense platform ship.
+    let platform = world
+        .spawn(Ship {
+            name: "Platform".into(),
+            design_id: "platform_v1".into(),
+            hull_id: "hull".into(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+            fleet: None,
+        })
+        .id();
+
+    let ok = join_defense_fleet(&mut world, platform, system);
+    assert!(ok, "join_defense_fleet should return true");
+
+    let members = world.get::<FleetMembers>(fleet).unwrap();
+    assert_eq!(members.len(), 2);
+    assert!(members.contains(platform));
+    assert_eq!(world.get::<Ship>(platform).unwrap().fleet, Some(fleet));
+}
