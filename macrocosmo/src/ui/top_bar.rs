@@ -5,6 +5,7 @@ use crate::amount::{Amt, SignedAmt};
 use crate::time_system::{GameClock, GameSpeed};
 
 use super::ResearchPanelOpen;
+use super::UiElementRegistry;
 use super::overlays::ShipDesignerState;
 
 /// Observer-mode metadata for the top-bar badge + faction selector.
@@ -34,6 +35,7 @@ pub fn draw_top_bar(
     research_open: &mut ResearchPanelOpen,
     designer_state: &mut ShipDesignerState,
     observer: Option<ObserverBarState<'_>>,
+    ui_registry: Option<&mut UiElementRegistry>,
 ) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
@@ -49,21 +51,16 @@ pub fn draw_top_bar(
 
             ui.separator();
 
-            if ui.button("\u{23F8}").on_hover_text("Pause").clicked() {
+            let pause_resp = ui.button("\u{23F8}").on_hover_text("Pause");
+            if pause_resp.clicked() {
                 speed.hexadies_per_second = 0.0;
             }
-            if ui
-                .button("\u{25B6}")
-                .on_hover_text("Normal speed")
-                .clicked()
-            {
+            let play_resp = ui.button("\u{25B6}").on_hover_text("Normal speed");
+            if play_resp.clicked() {
                 speed.hexadies_per_second = 1.0;
             }
-            if ui
-                .button("\u{23E9}")
-                .on_hover_text("Fast forward")
-                .clicked()
-            {
+            let ff_resp = ui.button("\u{23E9}").on_hover_text("Fast forward");
+            if ff_resp.clicked() {
                 speed.hexadies_per_second = (speed.hexadies_per_second * 2.0).max(1.0).min(16.0);
             }
 
@@ -103,7 +100,8 @@ pub fn draw_top_bar(
             } else {
                 "Research"
             };
-            if ui.button(r_label).clicked() {
+            let research_resp = ui.button(r_label);
+            if research_resp.clicked() {
                 research_open.0 = !research_open.0;
             }
 
@@ -112,7 +110,8 @@ pub fn draw_top_bar(
             } else {
                 "Ship Designer"
             };
-            if ui.button(d_label).clicked() {
+            let designer_resp = ui.button(d_label);
+            if designer_resp.clicked() {
                 designer_state.open = !designer_state.open;
             }
 
@@ -147,6 +146,31 @@ pub fn draw_top_bar(
                             }
                         });
                 }
+            }
+
+            // #390-T5: Register key top-bar widgets for BRP introspection.
+            #[cfg(feature = "remote")]
+            if let Some(reg) = ui_registry {
+                super::register_ui_element(reg, "top_bar.pause", "Pause", pause_resp.rect);
+                super::register_ui_element(reg, "top_bar.play", "Play", play_resp.rect);
+                super::register_ui_element(
+                    reg,
+                    "top_bar.fast_forward",
+                    "Fast Forward",
+                    ff_resp.rect,
+                );
+                super::register_ui_element(
+                    reg,
+                    "top_bar.research",
+                    r_label,
+                    research_resp.rect,
+                );
+                super::register_ui_element(
+                    reg,
+                    "top_bar.ship_designer",
+                    d_label,
+                    designer_resp.rect,
+                );
             }
         });
     });

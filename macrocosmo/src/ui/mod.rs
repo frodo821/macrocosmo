@@ -78,6 +78,54 @@ pub struct UiState {
     pub colony_panel_tab: ColonyPanelTab,
 }
 
+// ---------------------------------------------------------------------------
+// #390-T5: UI Element Registry for BRP introspection
+// ---------------------------------------------------------------------------
+
+/// A single registered UI element with its semantic ID, display text, and
+/// screen-space bounding rectangle. Used by the BRP `find_ui_element` /
+/// `list_ui_elements` commands to let automated test drivers locate widgets.
+pub struct UiElement {
+    pub id: String,
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Per-frame registry of egui widget positions. Cleared at the start of each
+/// frame and populated by UI draw systems via [`register_ui_element`].
+///
+/// The resource is only inserted when the `remote` cargo feature is enabled.
+/// UI systems access it as `Option<ResMut<UiElementRegistry>>` so the code
+/// compiles regardless.
+#[derive(Resource, Default)]
+pub struct UiElementRegistry {
+    pub elements: Vec<UiElement>,
+}
+
+/// Register a rendered UI widget in the [`UiElementRegistry`].
+///
+/// Call this after rendering a button / label whose position you want to expose
+/// to BRP consumers. All call-sites should be gated behind
+/// `#[cfg(feature = "remote")]`.
+pub fn register_ui_element(
+    registry: &mut UiElementRegistry,
+    id: &str,
+    text: &str,
+    rect: egui::Rect,
+) {
+    registry.elements.push(UiElement {
+        id: id.to_string(),
+        text: text.to_string(),
+        x: rect.min.x,
+        y: rect.min.y,
+        w: rect.width(),
+        h: rect.height(),
+    });
+}
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
@@ -334,6 +382,7 @@ fn draw_top_bar_system(
     observer_mode: Res<crate::observer::ObserverMode>,
     mut observer_view: ResMut<crate::observer::ObserverView>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
+    mut ui_registry: Option<ResMut<UiElementRegistry>>,
 ) {
     crate::prof_span!("draw_top_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -373,6 +422,7 @@ fn draw_top_bar_system(
         &mut research_open,
         &mut designer_state,
         observer_state,
+        ui_registry.as_mut().map(|r| &mut **r),
     );
 
     if selected != observer_view.viewing {
@@ -1105,6 +1155,7 @@ fn draw_main_panels_system(
         &hostile_systems,
         &registries.design_registry,
         &core_by_system,
+        selection.ui_registry.as_mut().map(|r| &mut **r),
     );
     for pending_cmd in pending_ship_commands {
         commands.spawn(pending_cmd);

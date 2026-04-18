@@ -97,7 +97,9 @@ fn main() {
         app.add_plugins(bevy::remote::http::RemoteHttpPlugin::default());
         app.init_resource::<remote::PendingInputReleases>();
         app.init_resource::<remote::ScreenshotBuffer>();
+        app.init_resource::<ui::UiElementRegistry>();
         app.add_systems(PreUpdate, remote::release_pending_inputs);
+        app.add_systems(PreUpdate, remote::clear_ui_element_registry);
         info!("BRP remote server enabled on localhost:15702");
     }
 
