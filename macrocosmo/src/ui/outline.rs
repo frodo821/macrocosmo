@@ -268,6 +268,24 @@ pub fn draw_outline(
                 );
 
                 if is_expanded {
+                    // #395: Show stations separately from ships
+                    let system_stations = stations_at(*system_entity, ships);
+                    if !system_stations.is_empty() {
+                        ui.indent(format!("outline_stations_{:?}", system_entity), |ui| {
+                            ui.label(
+                                egui::RichText::new("Stations")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(180, 160, 100)),
+                            );
+                            draw_ship_list(
+                                ui,
+                                &system_stations,
+                                ships,
+                                selected_ship,
+                                design_registry,
+                            );
+                        });
+                    }
                     ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
                         let docked = ships_docked_at(*system_entity, ships);
                         draw_ship_list(ui, &docked, ships, selected_ship, design_registry);
@@ -280,9 +298,13 @@ pub fn draw_outline(
                 owned_systems.iter().map(|(e, _, _)| *e).collect();
 
             // "Stationed Elsewhere" section for ships docked at unowned systems
+            // #395: Immobile ships (stations) are excluded here.
             let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
                 Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
+                if ship.is_immobile() {
+                    continue;
+                }
                 if let ShipState::InSystem { system } = &*state {
                     if !owned_system_entities.contains(system) {
                         // Find or create entry for this system
@@ -354,8 +376,12 @@ pub fn draw_outline(
             }
 
             // "In Transit" section for ships not docked
+            // #395: Immobile ships are excluded (they should never be in transit).
             let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
+                if ship.is_immobile() {
+                    continue;
+                }
                 let status = match &*state {
                     ShipState::InSystem { .. } => continue,
                     ShipState::SubLight { .. } => "Moving",
@@ -397,7 +423,8 @@ pub fn draw_outline(
         });
 }
 
-/// Helper to collect ships docked at a given system.
+/// Helper to collect mobile ships docked at a given system.
+/// #395: Immobile ships (stations) are excluded — they appear in the "Stations" section.
 fn ships_docked_at(
     system: Entity,
     ships: &Query<(
@@ -412,6 +439,39 @@ fn ships_docked_at(
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _, _, _)| {
+            if ship.is_immobile() {
+                return None;
+            }
+            if let ShipState::InSystem { system: s } = &*state {
+                if *s == system {
+                    return Some((e, ship.name.clone(), ship.design_id.clone()));
+                }
+            }
+            None
+        })
+        .collect();
+    result.sort_by(|a, b| a.1.cmp(&b.1));
+    result
+}
+
+/// #395: Collect immobile ships (stations) docked at a given system.
+fn stations_at(
+    system: Entity,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
+) -> Vec<(Entity, String, String)> {
+    let mut result: Vec<(Entity, String, String)> = ships
+        .iter()
+        .filter_map(|(e, ship, state, _, _, _)| {
+            if !ship.is_immobile() {
+                return None;
+            }
             if let ShipState::InSystem { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.design_id.clone()));

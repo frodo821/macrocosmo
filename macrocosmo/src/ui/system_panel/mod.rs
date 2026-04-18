@@ -22,7 +22,7 @@ use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
 
-use super::ship_panel::ships_docked_at;
+use super::ship_panel::{ships_docked_at, stations_docked_at};
 use planet_window::draw_planet_window;
 
 /// #114: Action to start colonizing a planet from the system panel build queue.
@@ -234,7 +234,9 @@ pub fn draw_system_panel(
     };
 
     // Collect data for docked ships before drawing (to avoid borrow issues)
+    // #395: Separate mobile ships from immobile stations.
     let docked_ships = ships_docked_at(sel_entity, ships_query);
+    let docked_stations = stations_docked_at(sel_entity, ships_query);
     // #229: Is the currently-selected ship docked at this system? Enables
     // the "Load" button on DeliverableStockpile rows.
     let selected_ship_docked_here: Option<Entity> = selected_ship
@@ -391,6 +393,7 @@ pub fn draw_system_panel(
                                         star_pos,
                                         selected_ship,
                                         &docked_ships,
+                                        &docked_stations,
                                         hull_registry,
                                         module_registry,
                                         design_registry,
@@ -719,6 +722,7 @@ fn draw_right_panel(
     star_pos: &Position,
     selected_ship: &mut SelectedShip,
     docked_ships: &[(Entity, String, String)],
+    docked_stations: &[(Entity, String, String)],
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
@@ -759,6 +763,28 @@ fn draw_right_panel(
     system_has_core: bool,
 ) {
     draw_in_flight_commands_section(ui, sel_entity, remote_commands, clock_elapsed);
+
+    // === #395: System Infrastructure (immobile station ships) ===
+    if !docked_stations.is_empty() {
+        ui.label(
+            egui::RichText::new("System Infrastructure")
+                .strong()
+                .color(egui::Color32::from_rgb(200, 180, 100)),
+        );
+        ui.separator();
+        for (entity, name, design_id) in docked_stations {
+            let is_selected = selected_ship.0 == Some(*entity);
+            let design_name = design_registry
+                .get(design_id)
+                .map(|d| d.name.as_str())
+                .unwrap_or(design_id);
+            let label = format!("{} ({})", name, design_name,);
+            if ui.selectable_label(is_selected, &label).clicked() {
+                selected_ship.0 = Some(*entity);
+            }
+        }
+        ui.add_space(8.0);
+    }
 
     // === Docked Ships ===
     ui.label(
