@@ -9,14 +9,16 @@ use crate::colony::{
 };
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::modifier::ModifiedValue;
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
     Cargo, CommandQueue, CourierMode, CourierRoute, DockedAt, PendingShipCommand, QueuedCommand,
-    RulesOfEngagement, Ship, ShipHitpoints, ShipState, ShipStats, SurveyData,
+    RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState, ShipStats, SurveyData,
 };
 use crate::ship_design::{HullRegistry, ShipDesignRegistry};
 use crate::time_system::GameClock;
+use crate::ui::{draw_modifier_breakdown, modified_value_label_with_tooltip};
 use crate::visualization::SelectedShip;
 
 /// Action returned from draw_ship_panel when the player clicks "Scrap Ship".
@@ -478,6 +480,14 @@ struct ShipPanelData {
     harbour_docked_ships: Vec<String>,
     /// #389: If this ship is docked at a harbour, the harbour entity and name.
     docked_at_harbour: Option<(Entity, String)>,
+    /// #391: Cloned modifier snapshots for tooltip breakdowns.
+    mod_speed: Option<ModifiedValue>,
+    mod_ftl_range: Option<ModifiedValue>,
+    mod_attack: Option<ModifiedValue>,
+    mod_defense: Option<ModifiedValue>,
+    mod_evasion: Option<ModifiedValue>,
+    mod_armor_max: Option<ModifiedValue>,
+    mod_shield_max: Option<ModifiedValue>,
 }
 
 /// Draws the floating ship details panel when a ship is selected.
@@ -532,6 +542,7 @@ pub fn draw_ship_panel(
     docked_at_query: &Query<(Entity, &DockedAt)>,
     docked_check: &Query<&DockedAt>,
     hull_reg: &HullRegistry,
+    ship_modifiers_query: &Query<&ShipModifiers>,
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -768,6 +779,34 @@ pub fn draw_ship_panel(
             harbour_docked_size,
             harbour_docked_ships,
             docked_at_harbour,
+            mod_speed: ship_modifiers_query
+                .get(ship_entity)
+                .ok()
+                .map(|m| m.speed.value().clone()),
+            mod_ftl_range: ship_modifiers_query
+                .get(ship_entity)
+                .ok()
+                .map(|m| m.ftl_range.value().clone()),
+            mod_attack: ship_modifiers_query
+                .get(ship_entity)
+                .ok()
+                .map(|m| m.attack.value().clone()),
+            mod_defense: ship_modifiers_query
+                .get(ship_entity)
+                .ok()
+                .map(|m| m.defense.value().clone()),
+            mod_evasion: ship_modifiers_query
+                .get(ship_entity)
+                .ok()
+                .map(|m| m.evasion.value().clone()),
+            mod_armor_max: ship_modifiers_query
+                .get(ship_entity)
+                .ok()
+                .map(|m| m.armor_max.value().clone()),
+            mod_shield_max: ship_modifiers_query
+                .get(ship_entity)
+                .ok()
+                .map(|m| m.shield_max.value().clone()),
         })
     });
 
@@ -810,6 +849,13 @@ pub fn draw_ship_panel(
         harbour_docked_size,
         harbour_docked_ships,
         docked_at_harbour,
+        mod_speed,
+        mod_ftl_range,
+        mod_attack,
+        mod_defense,
+        mod_evasion,
+        mod_armor_max,
+        mod_shield_max,
     }) = ship_data
     else {
         return ShipPanelActions::default();
@@ -866,10 +912,36 @@ pub fn draw_ship_panel(
             }
             ui.label(format!("Hull: {:.0}/{:.0}", hull_hp, hull_max));
             if armor_max > 0.0 {
-                ui.label(format!("Armor: {:.0}/{:.0}", armor, armor_max));
+                let response = ui.label(format!("Armor: {:.0}/{:.0}", armor, armor_max));
+                if let Some(ref mv) = mod_armor_max {
+                    if !mv.modifiers().is_empty() {
+                        response.on_hover_ui(|tooltip_ui| {
+                            draw_modifier_breakdown(
+                                tooltip_ui,
+                                "Armor (max)",
+                                mv,
+                                &|a| format!("{:.1}", a.to_f64()),
+                                Some(clock_elapsed),
+                            );
+                        });
+                    }
+                }
             }
             if shield_max > 0.0 {
-                ui.label(format!("Shield: {:.0}/{:.0}", shield, shield_max));
+                let response = ui.label(format!("Shield: {:.0}/{:.0}", shield, shield_max));
+                if let Some(ref mv) = mod_shield_max {
+                    if !mv.modifiers().is_empty() {
+                        response.on_hover_ui(|tooltip_ui| {
+                            draw_modifier_breakdown(
+                                tooltip_ui,
+                                "Shield (max)",
+                                mv,
+                                &|a| format!("{:.1}", a.to_f64()),
+                                Some(clock_elapsed),
+                            );
+                        });
+                    }
+                }
             }
 
             // #62: Detailed status with progress bar
@@ -892,11 +964,65 @@ pub fn draw_ship_panel(
             }
 
             if ftl_range > 0.0 {
-                ui.label(format!("FTL range: {:.1} ly", ftl_range));
+                if let Some(ref mv) = mod_ftl_range {
+                    modified_value_label_with_tooltip(
+                        ui,
+                        "FTL range",
+                        mv,
+                        |a| format!("{:.1} ly", a.to_f64()),
+                        Some(clock_elapsed),
+                    );
+                } else {
+                    ui.label(format!("FTL range: {:.1} ly", ftl_range));
+                }
             } else {
                 ui.label("No FTL capability");
             }
-            ui.label(format!("Sub-light speed: {:.0}% c", sublight_speed * 100.0));
+            if let Some(ref mv) = mod_speed {
+                modified_value_label_with_tooltip(
+                    ui,
+                    "Sub-light speed",
+                    mv,
+                    |a| format!("{:.0}% c", a.to_f64() * 100.0),
+                    Some(clock_elapsed),
+                );
+            } else {
+                ui.label(format!("Sub-light speed: {:.0}% c", sublight_speed * 100.0));
+            }
+
+            if let Some(ref mv) = mod_attack {
+                if mv.final_value() > Amt::ZERO || !mv.modifiers().is_empty() {
+                    modified_value_label_with_tooltip(
+                        ui,
+                        "Attack",
+                        mv,
+                        |a| a.display(),
+                        Some(clock_elapsed),
+                    );
+                }
+            }
+            if let Some(ref mv) = mod_defense {
+                if mv.final_value() > Amt::ZERO || !mv.modifiers().is_empty() {
+                    modified_value_label_with_tooltip(
+                        ui,
+                        "Defense",
+                        mv,
+                        |a| a.display(),
+                        Some(clock_elapsed),
+                    );
+                }
+            }
+            if let Some(ref mv) = mod_evasion {
+                if mv.final_value() > Amt::ZERO || !mv.modifiers().is_empty() {
+                    modified_value_label_with_tooltip(
+                        ui,
+                        "Evasion",
+                        mv,
+                        |a| a.display(),
+                        Some(clock_elapsed),
+                    );
+                }
+            }
 
             // #64: Home port and maintenance info
             ui.separator();
