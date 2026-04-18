@@ -41,7 +41,9 @@ use crate::deep_space::{
 };
 use crate::empire::CommsParams;
 use crate::events::EventLog;
-use crate::faction::{FactionOwner, FactionRelations, PendingDiplomaticAction};
+use crate::faction::{
+    DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionRelations, PendingDiplomaticAction,
+};
 use crate::galaxy::{
     Anomalies, AtSystem, Biome, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints,
     HostileStats, ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
@@ -223,6 +225,7 @@ fn assign_save_ids(world: &mut World) {
             With<PendingColonizationOrder>,
             With<ForbiddenRegion>,
             With<PortFacility>,
+            With<DiplomaticEvent>,
         )>>();
         for e in q.iter(world) {
             to_assign.push(e);
@@ -373,6 +376,12 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if let Some(f) = e_ref.get::<Faction>() {
         bag.faction = Some(SavedFaction::from_live(f));
+    }
+    if let Some(de) = e_ref.get::<DiplomaticEvent>() {
+        bag.diplomatic_event = Some(SavedDiplomaticEvent::from_live(de));
+    }
+    if let Some(di) = e_ref.get::<DiplomaticInbox>() {
+        bag.diplomatic_inbox = Some(SavedDiplomaticInbox::from_live(di));
     }
     if e_ref.get::<Player>().is_some() {
         bag.player = Some(SavedPlayer);
