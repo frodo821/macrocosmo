@@ -135,6 +135,7 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "faction", "_faction_definitions")?;
     register_define_fn(lua, "faction_type", "_faction_type_definitions")?;
     register_define_fn(lua, "diplomatic_action", "_diplomatic_action_definitions")?;
+    register_define_fn(lua, "diplomatic_option", "_diplomatic_option_definitions")?;
 
     // --- #160: Balance constants Lua binding ---
     // `define_balance { ... }` is expected to be called AT MOST ONCE from

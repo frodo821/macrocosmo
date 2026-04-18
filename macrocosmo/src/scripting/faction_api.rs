@@ -318,6 +318,130 @@ pub fn lookup_on_accepted(
     Ok(None)
 }
 
+// ---------------------------------------------------------------------------
+// #302: define_diplomatic_option — Lua-defined diplomatic option framework
+// ---------------------------------------------------------------------------
+
+/// A possible response to a diplomatic option (POD — no closures).
+///
+/// When the receiver picks this response, the `event_id` string is fired
+/// through the event system so Lua `on()` handlers can react.
+#[derive(Debug, Clone)]
+pub struct DiplomaticOptionResponse {
+    /// Unique response id within the option (e.g. "accept", "reject").
+    pub id: String,
+    /// Human-readable label shown in the UI.
+    pub label: String,
+    /// Event id to fire when this response is chosen.
+    pub event_id: String,
+}
+
+/// A diplomatic option definition loaded from Lua.
+///
+/// Unlike [`DiplomaticActionDefinition`], options model a richer interaction:
+/// they carry a `kind` (bilateral/unilateral), a list of POD
+/// [`DiplomaticOptionResponse`] entries, and a `payload_schema` hint that
+/// describes the `HashMap<String,String>` fields carried by the in-flight
+/// [`crate::faction::DiplomaticEvent`].
+#[derive(Debug, Clone)]
+pub struct DiplomaticOptionDefinition {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// `"bilateral"` (requires receiver response) or `"unilateral"` (fire and
+    /// forget).
+    pub kind: String,
+    /// Ordered list of responses available to the receiver (empty for
+    /// unilateral options).
+    pub responses: Vec<DiplomaticOptionResponse>,
+    /// Optional list of expected payload keys for documentation /
+    /// validation purposes. Not enforced at runtime.
+    pub payload_schema: Vec<String>,
+}
+
+/// Registry of all diplomatic-option definitions loaded from Lua.
+#[derive(Resource, Default, Debug)]
+pub struct DiplomaticOptionRegistry {
+    pub options: HashMap<String, DiplomaticOptionDefinition>,
+}
+
+impl DiplomaticOptionRegistry {
+    /// Look up an option by id.
+    pub fn get(&self, id: &str) -> Option<&DiplomaticOptionDefinition> {
+        self.options.get(id)
+    }
+}
+
+/// Parse diplomatic-option definitions from the Lua
+/// `_diplomatic_option_definitions` global table.
+pub fn parse_diplomatic_option_definitions(
+    lua: &mlua::Lua,
+) -> Result<Vec<DiplomaticOptionDefinition>, mlua::Error> {
+    let defs: mlua::Table = lua.globals().get("_diplomatic_option_definitions")?;
+    let mut result = Vec::new();
+
+    for pair in defs.pairs::<i64, mlua::Table>() {
+        let (_, table) = pair?;
+
+        let id: String = table.get("id")?;
+        let name: String = table
+            .get::<Option<String>>("name")?
+            .unwrap_or_else(|| id.clone());
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
+        let kind: String = table
+            .get::<Option<String>>("kind")?
+            .unwrap_or_else(|| "bilateral".to_string());
+
+        // Validate kind
+        if kind != "bilateral" && kind != "unilateral" {
+            return Err(mlua::Error::RuntimeError(format!(
+                "define_diplomatic_option '{}': kind must be 'bilateral' or 'unilateral', got '{}'",
+                id, kind
+            )));
+        }
+
+        // Parse responses array
+        let mut responses = Vec::new();
+        if let Some(resp_table) = table.get::<Option<mlua::Table>>("responses")? {
+            for resp_pair in resp_table.pairs::<i64, mlua::Table>() {
+                let (_, resp) = resp_pair?;
+                let resp_id: String = resp.get("id")?;
+                let resp_label: String = resp
+                    .get::<Option<String>>("label")?
+                    .unwrap_or_else(|| resp_id.clone());
+                let resp_event_id: String = resp.get("event_id")?;
+                responses.push(DiplomaticOptionResponse {
+                    id: resp_id,
+                    label: resp_label,
+                    event_id: resp_event_id,
+                });
+            }
+        }
+
+        // Parse payload_schema array
+        let mut payload_schema = Vec::new();
+        if let Some(schema_table) = table.get::<Option<mlua::Table>>("payload_schema")? {
+            for schema_pair in schema_table.pairs::<i64, String>() {
+                let (_, key) = schema_pair?;
+                payload_schema.push(key);
+            }
+        }
+
+        result.push(DiplomaticOptionDefinition {
+            id,
+            name,
+            description,
+            kind,
+            responses,
+            payload_schema,
+        });
+    }
+
+    Ok(result)
+}
+
 /// Look up the `on_game_start` Lua function for the given faction id, if any.
 /// Returns Ok(None) if the faction is not defined or has no callback.
 pub fn lookup_on_game_start(
@@ -718,5 +842,137 @@ mod tests {
         let defs = parse_faction_definitions(lua).unwrap();
         assert_eq!(defs.len(), 1);
         assert!(defs[0].faction_type.is_none());
+    }
+
+    // --- #302: define_diplomatic_option ---
+
+    #[test]
+    fn test_parse_diplomatic_option_bilateral() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_diplomatic_option {
+                id = "generic_negotiation",
+                name = "Negotiate",
+                description = "Open a bilateral negotiation.",
+                kind = "bilateral",
+                responses = {
+                    { id = "accept", label = "Accept", event_id = "negotiation_accepted" },
+                    { id = "reject", label = "Reject", event_id = "negotiation_rejected" },
+                },
+                payload_schema = { "terms", "duration" },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_diplomatic_option_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let opt = &defs[0];
+        assert_eq!(opt.id, "generic_negotiation");
+        assert_eq!(opt.name, "Negotiate");
+        assert_eq!(opt.kind, "bilateral");
+        assert_eq!(opt.responses.len(), 2);
+        assert_eq!(opt.responses[0].id, "accept");
+        assert_eq!(opt.responses[0].event_id, "negotiation_accepted");
+        assert_eq!(opt.responses[1].id, "reject");
+        assert_eq!(opt.payload_schema, vec!["terms", "duration"]);
+    }
+
+    #[test]
+    fn test_parse_diplomatic_option_unilateral() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_diplomatic_option {
+                id = "break_alliance",
+                name = "Break Alliance",
+                kind = "unilateral",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_diplomatic_option_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].kind, "unilateral");
+        assert!(defs[0].responses.is_empty());
+        assert!(defs[0].payload_schema.is_empty());
+    }
+
+    #[test]
+    fn test_parse_diplomatic_option_invalid_kind() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_diplomatic_option {
+                id = "bad",
+                kind = "trilateral",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let res = parse_diplomatic_option_definitions(lua);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_diplomatic_option_defaults() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"define_diplomatic_option { id = "minimal" }"#)
+            .exec()
+            .unwrap();
+
+        let defs = parse_diplomatic_option_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "minimal");
+        assert_eq!(defs[0].kind, "bilateral");
+        assert!(defs[0].description.is_empty());
+    }
+
+    #[test]
+    fn test_diplomatic_option_registry_lookup() {
+        let mut registry = DiplomaticOptionRegistry::default();
+        registry.options.insert(
+            "test".to_string(),
+            DiplomaticOptionDefinition {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                description: String::new(),
+                kind: "bilateral".to_string(),
+                responses: vec![],
+                payload_schema: vec![],
+            },
+        );
+        assert!(registry.get("test").is_some());
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_define_diplomatic_option_returns_reference() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let result: mlua::Table = lua
+            .load(r#"return define_diplomatic_option { id = "test_opt" }"#)
+            .eval()
+            .unwrap();
+
+        let def_type: String = result.get("_def_type").unwrap();
+        assert_eq!(def_type, "diplomatic_option");
+        let id: String = result.get("id").unwrap();
+        assert_eq!(id, "test_opt");
     }
 }
