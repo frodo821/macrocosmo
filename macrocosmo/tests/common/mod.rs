@@ -1528,6 +1528,7 @@ fn build_derived_design(
         sublight_speed: 0.0,
         ftl_range: 0.0,
         revision: 0,
+        is_direct_buildable: true,
     };
     macrocosmo::ship_design::apply_derived_to_definition(&mut def, hulls, modules);
     def

@@ -370,6 +370,10 @@ pub fn draw_ship_designer(
                             ftl_range: d.ftl_range,
                             // Revision is filled in by `upsert_edited`.
                             revision: 0,
+                            // #396: derived from hull build cost at registry time
+                            is_direct_buildable: hull.build_cost_minerals
+                                > crate::amount::Amt::ZERO
+                                || hull.build_cost_energy > crate::amount::Amt::ZERO,
                         });
                     }
 

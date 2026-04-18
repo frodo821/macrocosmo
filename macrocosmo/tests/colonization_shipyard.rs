@@ -214,6 +214,7 @@ fn test_core_deploy_auto_spawns_shipyard() {
                 sublight_speed: 0.0,
                 ftl_range: 0.0,
                 revision: 0,
+                is_direct_buildable: true,
             });
         }
     }

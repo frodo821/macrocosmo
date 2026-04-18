@@ -190,6 +190,11 @@ pub struct ShipDesignDefinition {
     /// the design is edited via the Ship Designer. Ships with a `design_revision`
     /// less than this value are considered "refit-eligible".
     pub revision: u64,
+    /// #396: Whether this design can be built from the normal Shipyard build queue.
+    /// `false` for installation hulls (Shipyard, Port, ResearchLab, Core) whose
+    /// hull has zero build cost — they are built through the SystemBuildingQueue instead.
+    /// Derived at registry time: `true` when `build_cost_minerals > 0 || build_cost_energy > 0`.
+    pub is_direct_buildable: bool,
 }
 
 /// An error raised when validating a ShipDesignDefinition against its hull/module registries.
@@ -569,6 +574,10 @@ pub fn apply_derived_to_definition(
     def.build_time = d.build_time;
     def.can_survey = d.can_survey;
     def.can_colonize = d.can_colonize;
+    // #396: installation hulls have zero hull build cost — they are built via
+    // the SystemBuildingQueue, not the normal Shipyard queue.
+    def.is_direct_buildable =
+        hull.build_cost_minerals > Amt::ZERO || hull.build_cost_energy > Amt::ZERO;
 }
 
 /// #226: derive a ship design's effective prerequisites from its hull and
@@ -915,6 +924,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 10.0,
             revision: 0,
+            is_direct_buildable: true,
         });
 
         let explorer = registry.get("explorer_mk1").unwrap();
@@ -1111,6 +1121,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         }
     }
 
@@ -1803,6 +1814,7 @@ mod tests {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         };
 
         let (_, _, t) = refit_cost_to_design(&[], &design, hull, &modules);
@@ -1847,5 +1859,77 @@ mod tests {
         );
         assert_eq!(d_light.build_time, 15);
         assert_eq!(d_heavy.build_time, 30);
+    }
+
+    /// #396: `is_direct_buildable` is set based on hull build cost.
+    /// Installation hulls (zero cost) produce `false`; normal hulls produce `true`.
+    #[test]
+    fn test_is_direct_buildable_derived_from_hull_cost() {
+        let mut hulls = HullRegistry::default();
+        let mut modules = ModuleRegistry::default();
+
+        // Installation hull: zero build cost
+        let mut install_hull = tiny_hull(0);
+        install_hull.id = "installation".into();
+        install_hull.build_cost_minerals = Amt::ZERO;
+        install_hull.build_cost_energy = Amt::ZERO;
+        hulls.insert(install_hull);
+
+        // Normal hull: non-zero build cost
+        let mut normal_hull = tiny_hull(30);
+        normal_hull.id = "normal".into();
+        normal_hull.build_cost_minerals = Amt::units(100);
+        normal_hull.build_cost_energy = Amt::units(50);
+        hulls.insert(normal_hull);
+
+        modules.insert(tiny_module("m1", 0, 0));
+
+        let mut install_design = ShipDesignDefinition {
+            id: "install_design".into(),
+            name: "Install".into(),
+            description: String::new(),
+            hull_id: "installation".into(),
+            modules: vec![],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 0.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: true, // will be overwritten
+        };
+        apply_derived_to_definition(&mut install_design, &hulls, &modules);
+        assert!(
+            !install_design.is_direct_buildable,
+            "installation hull design must not be direct-buildable"
+        );
+
+        let mut normal_design = ShipDesignDefinition {
+            id: "normal_design".into(),
+            name: "Normal".into(),
+            description: String::new(),
+            hull_id: "normal".into(),
+            modules: vec![],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 0.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: false, // will be overwritten
+        };
+        apply_derived_to_definition(&mut normal_design, &hulls, &modules);
+        assert!(
+            normal_design.is_direct_buildable,
+            "normal hull design must be direct-buildable"
+        );
     }
 }
