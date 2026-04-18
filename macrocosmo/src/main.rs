@@ -88,6 +88,7 @@ fn main() {
             faction::FactionRelationsPlugin,
             choice::ChoicesPlugin,
             ai::AiPlugin,
+            casus_belli::CasusBelliPlugin,
             ObserverPlugin,
         ))
         .add_plugins(ui::UiPlugin);

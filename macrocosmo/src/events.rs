@@ -61,6 +61,10 @@ pub enum GameEventKind {
     /// #298 (S-4): Peacetime attack on an Infrastructure Core — grounds for
     /// war declaration (actual auto-war deferred to S-11).
     CasusBelli,
+    /// #305 (S-11): War declared via the Casus Belli system.
+    WarDeclared,
+    /// #305 (S-11): War ended via the Casus Belli system.
+    WarEnded,
 }
 
 impl GameEventKind {
@@ -77,7 +81,9 @@ impl GameEventKind {
             | GameEventKind::ColonyFailed
             | GameEventKind::AnomalyDiscovered
             | GameEventKind::CoreConquered
-            | GameEventKind::CasusBelli => true,
+            | GameEventKind::CasusBelli
+            | GameEventKind::WarDeclared
+            | GameEventKind::WarEnded => true,
 
             GameEventKind::ShipArrived
             | GameEventKind::ShipBuilt
