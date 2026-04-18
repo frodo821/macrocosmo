@@ -21,6 +21,7 @@ pub mod knowledge_registry;
 pub mod lifecycle;
 pub mod map_api;
 pub mod modifier_api;
+pub mod negotiation_api;
 pub mod region_api;
 pub mod ship_design_api;
 pub mod species_api;
@@ -59,6 +60,10 @@ impl Plugin for ScriptingPlugin {
             .add_systems(
                 Startup,
                 load_diplomatic_option_registry.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                load_negotiation_item_kind_registry.after(load_all_scripts),
             )
             .add_systems(
                 Startup,
@@ -299,6 +304,30 @@ pub fn load_casus_belli_registry(mut commands: Commands, engine: Res<ScriptEngin
         Err(e) => {
             warn!("Failed to parse casus belli definitions: {e}");
             commands.insert_resource(CasusBelliRegistry::default());
+        }
+    }
+}
+
+/// #321: Startup system that parses Lua `define_negotiation_item_kind` blocks
+/// into [`NegotiationItemKindRegistry`]. Runs after `load_all_scripts`.
+pub fn load_negotiation_item_kind_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+    use crate::negotiation::NegotiationItemKindRegistry;
+    match negotiation_api::parse_negotiation_item_kind_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            let mut registry = NegotiationItemKindRegistry::default();
+            for def in defs {
+                registry.kinds.insert(def.id.clone(), def);
+            }
+            commands.insert_resource(registry);
+            info!(
+                "Loaded {} negotiation item kind definitions from Lua",
+                count
+            );
+        }
+        Err(e) => {
+            warn!("Failed to parse negotiation item kind definitions: {e}");
+            commands.insert_resource(NegotiationItemKindRegistry::default());
         }
     }
 }

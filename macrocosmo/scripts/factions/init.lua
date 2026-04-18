@@ -11,6 +11,10 @@ require("factions.actions")
 -- #305 (S-11): Casus Belli definitions.
 require("factions.casus_belli")
 
+-- #321: Negotiation item kinds. Loaded before diplomatic options so option
+-- definitions can reference item kinds by value if needed.
+require("factions.negotiation_items")
+
 -- Diplomatic options (#302). Lua-defined option framework for bilateral /
 -- unilateral interactions. Coexists with the older define_diplomatic_action.
 require("factions.options")

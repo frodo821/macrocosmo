@@ -15,6 +15,7 @@ mod faction;
 mod galaxy;
 mod knowledge;
 mod modifier;
+mod negotiation;
 mod notifications;
 mod observer;
 mod physics;

@@ -15,6 +15,7 @@ pub mod faction;
 pub mod galaxy;
 pub mod knowledge;
 pub mod modifier;
+pub mod negotiation;
 pub mod notifications;
 pub mod observer;
 pub mod persistence;
