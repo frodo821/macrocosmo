@@ -621,8 +621,7 @@ pub fn test_app() -> App {
     app.init_resource::<macrocosmo::casus_belli::ActiveWars>();
     app.add_systems(
         Update,
-        macrocosmo::faction::detect_annihilation
-            .after(macrocosmo::time_system::advance_game_time),
+        macrocosmo::faction::detect_annihilation.after(macrocosmo::time_system::advance_game_time),
     );
 
     // #384: Harbour lifecycle systems (dock/undock, position sync, combat ROE, modifier sync).

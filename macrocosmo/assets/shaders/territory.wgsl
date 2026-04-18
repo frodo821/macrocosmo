@@ -1,4 +1,4 @@
-#import bevy_sprite_render::mesh2d_vertex_output::VertexOutput
+#import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 // Colony data: xy = world position, z = authority strength, w = empire_id
 struct ColonyData {
