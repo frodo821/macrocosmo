@@ -713,7 +713,7 @@ pub fn full_test_app() -> App {
     app.insert_resource(visualization::SelectedSystem::default());
     app.insert_resource(visualization::SelectedShip::default());
     app.insert_resource(visualization::ContextMenu::default());
-    app.insert_resource(visualization::GalaxyView { scale: 5.0 });
+    app.insert_resource(visualization::GalaxyView { scale: 20.0 });
 
     // --- Input resources (needed by visualization + time_system + player systems) ---
     app.insert_resource(ButtonInput::<KeyCode>::default());
