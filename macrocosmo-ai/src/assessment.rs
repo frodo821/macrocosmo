@@ -34,15 +34,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai_params::AiParamsExt;
 use crate::bus::AiBus;
+use crate::eval::EvalContext;
 use crate::ids::{FactionId, IntentId, MetricId, ObjectiveId};
 use crate::objective::Objective;
 use crate::precondition::{PreconditionSet, PreconditionSummary, PreconditionTracker};
 use crate::projection::{
-    self, detect_windows, project, StrategicWindow, TrajectoryConfig, WindowDetectionConfig,
+    self, StrategicWindow, TrajectoryConfig, WindowDetectionConfig, detect_windows, project,
 };
 use crate::standing::{self, PerceivedStanding, StandingConfig, StandingSubject};
 use crate::time::Tick;
-use crate::eval::EvalContext;
 
 // -------------------------------------------------------------------------
 // Data types
@@ -161,7 +161,10 @@ pub struct TechLeadWeights {
 
 impl Default for TechLeadWeights {
     fn default() -> Self {
-        Self { vs_max: 0.6, vs_avg: 0.4 }
+        Self {
+            vs_max: 0.6,
+            vs_avg: 0.4,
+        }
     }
 }
 
@@ -388,13 +391,9 @@ pub fn compute_feasibility(
                 + precond.weighted_satisfaction * 0.25
         }
         ObjectiveKind::EconomicDominance => {
-            a.economic_capacity * 0.60
-                + a.tech_lead * 0.20
-                + precond.weighted_satisfaction * 0.20
+            a.economic_capacity * 0.60 + a.tech_lead * 0.20 + precond.weighted_satisfaction * 0.20
         }
-        ObjectiveKind::Survive => {
-            precond.weighted_satisfaction * 0.7 + a.economic_capacity * 0.3
-        }
+        ObjectiveKind::Survive => precond.weighted_satisfaction * 0.7 + a.economic_capacity * 0.3,
         // Combat-heavy objectives fall back to precond + economy until #190.
         ObjectiveKind::Conquer | ObjectiveKind::DefensivePosture | ObjectiveKind::Coalition => {
             precond.weighted_satisfaction * 0.7 + a.economic_capacity * 0.3
@@ -452,8 +451,7 @@ pub fn build_economic_snapshot(
         mg("population_growth_rate").clamp(-0.2, 0.5)
     };
 
-    let stockpile_months =
-        compute_stockpile_months(&net_production, bus, baseline.ticks_per_month);
+    let stockpile_months = compute_stockpile_months(&net_production, bus, baseline.ticks_per_month);
 
     let production_diversity = compute_production_diversity(&net_production);
 
@@ -556,8 +554,7 @@ pub fn build_assessment<P: AiParamsExt>(
         .with_ai_params(params);
     let detailed_results = precondition_set.evaluate_detailed(&eval_ctx);
     tracker.record(&detailed_results, now);
-    let objective_precondition_summary =
-        PreconditionSummary::from_results(&detailed_results, now);
+    let objective_precondition_summary = PreconditionSummary::from_results(&detailed_results, now);
     let intent_precondition_summaries: HashMap<IntentId, PreconditionSummary> = HashMap::new();
 
     // Assemble intermediate Assessment so we can run derived computations.
@@ -608,10 +605,7 @@ pub fn gather_trajectory_metric_ids(_me: FactionId, known_factions: &[FactionId]
             "foreign.research_output.faction_{}",
             f.0
         )));
-        out.push(MetricId::from(format!(
-            "foreign.strength.faction_{}",
-            f.0
-        )));
+        out.push(MetricId::from(format!("foreign.strength.faction_{}", f.0)));
     }
     out
 }
@@ -715,7 +709,7 @@ mod tests {
     use crate::condition::Condition;
     use crate::feasibility::{FeasibilityFormula, FeasibilityTerm};
     use crate::objective::{Objective, PreconditionSet as ObjPreconditionSet, SuccessCriteria};
-    use crate::precondition::{severity, PreconditionItem, PreconditionSet};
+    use crate::precondition::{PreconditionItem, PreconditionSet, severity};
     use crate::retention::Retention;
     use crate::spec::MetricSpec;
     use crate::value_expr::ValueExpr;
@@ -871,8 +865,9 @@ mod tests {
             bus.emit(&MetricId::from(m), 1.0, 100);
         }
         let mut a = Assessment::default();
-        a.perceived_standings
-            .insert(FactionId(1), PerceivedStanding {
+        a.perceived_standings.insert(
+            FactionId(1),
+            PerceivedStanding {
                 observer: FactionId(0),
                 target: FactionId(1),
                 subject: StandingSubject::ObserverSelf,
@@ -880,7 +875,8 @@ mod tests {
                 confidence: 0.7,
                 evidence_count: 5,
                 computed_at: 100,
-            });
+            },
+        );
         let cfg = AssessmentConfig::default();
         let conf = compute_overall_confidence(&bus, &a, &cfg, 100);
         assert!(
@@ -1022,7 +1018,10 @@ mod tests {
         bus.emit(&f1, 50.0, 0);
         let snap = build_tech_position_snapshot(&bus, FactionId(0), &[FactionId(1)]);
         assert!((snap.my_tech_level - 100.0).abs() < 1e-6);
-        assert_eq!(snap.known_competitor_levels.get(&FactionId(1)).copied(), Some(50.0));
+        assert_eq!(
+            snap.known_competitor_levels.get(&FactionId(1)).copied(),
+            Some(50.0)
+        );
     }
 
     #[test]

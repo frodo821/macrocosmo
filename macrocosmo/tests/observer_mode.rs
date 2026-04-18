@@ -11,8 +11,8 @@
 use bevy::prelude::*;
 
 use macrocosmo::observer::{
-    check_all_empires_eliminated, check_time_horizon, esc_to_exit, in_observer_mode,
-    not_in_observer_mode, ObserverMode, ObserverPlugin, ObserverView, RngSeed,
+    ObserverMode, ObserverPlugin, ObserverView, RngSeed, check_all_empires_eliminated,
+    check_time_horizon, esc_to_exit, in_observer_mode, not_in_observer_mode,
 };
 use macrocosmo::player::{Empire, Faction, Player};
 use macrocosmo::time_system::GameClock;
@@ -104,7 +104,9 @@ fn test_time_horizon_triggers_app_exit() {
     // Spawn an empire so the exit is unambiguously from the horizon,
     // not from the "all eliminated" check.
     app.world_mut().spawn((
-        Empire { name: "NPC 1".into() },
+        Empire {
+            name: "NPC 1".into(),
+        },
         Faction {
             id: "npc_1".into(),
             name: "NPC 1".into(),
@@ -134,7 +136,9 @@ fn test_time_horizon_not_triggered_before_reaching() {
     // Spawn an empire so the "all eliminated" check doesn't fire and
     // pollute the horizon-only assertion.
     app.world_mut().spawn((
-        Empire { name: "NPC 1".into() },
+        Empire {
+            name: "NPC 1".into(),
+        },
         Faction {
             id: "npc_1".into(),
             name: "NPC 1".into(),
@@ -188,7 +192,9 @@ fn test_all_empires_eliminated_does_not_trigger_when_empires_exist() {
 
     // Spawn a dummy Empire entity so the exit condition does not fire.
     app.world_mut().spawn((
-        Empire { name: "NPC 1".into() },
+        Empire {
+            name: "NPC 1".into(),
+        },
         Faction {
             id: "npc_1".into(),
             name: "NPC 1".into(),
@@ -306,13 +312,14 @@ fn test_exit_fn_signatures_are_usable_in_a_schedule() {
     app.insert_resource(GameClock::new(5));
     app.add_systems(
         Update,
-        (check_time_horizon, check_all_empires_eliminated, esc_to_exit)
+        (
+            check_time_horizon,
+            check_all_empires_eliminated,
+            esc_to_exit,
+        )
             .run_if(in_observer_mode),
     );
-    app.add_systems(
-        Update,
-        dummy_in_normal_mode.run_if(not_in_observer_mode),
-    );
+    app.add_systems(Update, dummy_in_normal_mode.run_if(not_in_observer_mode));
     app.update();
 }
 

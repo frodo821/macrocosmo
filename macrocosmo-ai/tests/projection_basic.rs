@@ -6,9 +6,9 @@
 
 use macrocosmo_ai::feasibility::{self, FeasibilityFormula, FeasibilityTerm};
 use macrocosmo_ai::{
-    emit_projections_to_bus, project, project_metric, AiBus, CompoundDelta, CompoundEffect,
-    MetricId, MetricRef, MetricSpec, ProjectionFidelity, ProjectionModel, ProjectionNaming,
-    Retention, TrajectoryConfig, Value, ValueExpr, WarningMode,
+    AiBus, CompoundDelta, CompoundEffect, MetricId, MetricRef, MetricSpec, ProjectionFidelity,
+    ProjectionModel, ProjectionNaming, Retention, TrajectoryConfig, Value, ValueExpr, WarningMode,
+    emit_projections_to_bus, project, project_metric,
 };
 
 fn bus_with(metric: &MetricId) -> AiBus {

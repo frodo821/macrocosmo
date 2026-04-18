@@ -73,7 +73,10 @@ fn ai_bus_writer_stamps_current_tick() {
     app.update();
     {
         let bus = app.world().resource::<AiBusResource>();
-        assert_eq!(bus.at(&MetricId::from("ai_integration_test"), 10), Some(0.25));
+        assert_eq!(
+            bus.at(&MetricId::from("ai_integration_test"), 10),
+            Some(0.25)
+        );
     }
 
     // Tick 2: clock=25, emit -> stamp at=25. Previous sample still there.
@@ -81,9 +84,18 @@ fn ai_bus_writer_stamps_current_tick() {
     app.update();
     {
         let bus = app.world().resource::<AiBusResource>();
-        assert_eq!(bus.at(&MetricId::from("ai_integration_test"), 25), Some(0.25));
-        assert_eq!(bus.at(&MetricId::from("ai_integration_test"), 10), Some(0.25));
-        assert_eq!(bus.current(&MetricId::from("ai_integration_test")), Some(0.25));
+        assert_eq!(
+            bus.at(&MetricId::from("ai_integration_test"), 25),
+            Some(0.25)
+        );
+        assert_eq!(
+            bus.at(&MetricId::from("ai_integration_test"), 10),
+            Some(0.25)
+        );
+        assert_eq!(
+            bus.current(&MetricId::from("ai_integration_test")),
+            Some(0.25)
+        );
     }
 }
 

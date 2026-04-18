@@ -88,9 +88,9 @@ impl CliArgs {
                     out.no_player = true;
                 }
                 "--seed" => {
-                    let v = iter.next().ok_or_else(|| {
-                        format!("error: --seed requires a value\n\n{HELP_TEXT}")
-                    })?;
+                    let v = iter
+                        .next()
+                        .ok_or_else(|| format!("error: --seed requires a value\n\n{HELP_TEXT}"))?;
                     let n: u64 = v.parse().map_err(|_| {
                         format!("error: --seed value '{v}' is not a valid u64\n\n{HELP_TEXT}")
                     })?;
@@ -108,18 +108,16 @@ impl CliArgs {
                     out.time_horizon = Some(n);
                 }
                 "--speed" => {
-                    let v = iter.next().ok_or_else(|| {
-                        format!("error: --speed requires a value\n\n{HELP_TEXT}")
-                    })?;
+                    let v = iter
+                        .next()
+                        .ok_or_else(|| format!("error: --speed requires a value\n\n{HELP_TEXT}"))?;
                     let n: f64 = v.parse().map_err(|_| {
                         format!("error: --speed value '{v}' is not a valid number\n\n{HELP_TEXT}")
                     })?;
                     out.speed = Some(n);
                 }
                 other => {
-                    return Err(format!(
-                        "error: unknown argument '{other}'\n\n{HELP_TEXT}"
-                    ));
+                    return Err(format!("error: unknown argument '{other}'\n\n{HELP_TEXT}"));
                 }
             }
         }
@@ -154,8 +152,7 @@ mod tests {
 
     #[test]
     fn cli_parses_seed_and_horizon() {
-        let a = parse(&["--no-player", "--seed", "42", "--time-horizon", "600"])
-            .expect("parse ok");
+        let a = parse(&["--no-player", "--seed", "42", "--time-horizon", "600"]).expect("parse ok");
         assert!(a.no_player);
         assert_eq!(a.seed, Some(42));
         assert_eq!(a.time_horizon, Some(600));

@@ -178,9 +178,18 @@ impl EvalContext<'_> {
                 }
                 false
             }
-            ConditionScope::Empire => self.empire.as_ref().is_some_and(|d| d.buildings.contains(id)),
-            ConditionScope::System => self.system.as_ref().is_some_and(|d| d.buildings.contains(id)),
-            ConditionScope::Planet => self.planet.as_ref().is_some_and(|d| d.buildings.contains(id)),
+            ConditionScope::Empire => self
+                .empire
+                .as_ref()
+                .is_some_and(|d| d.buildings.contains(id)),
+            ConditionScope::System => self
+                .system
+                .as_ref()
+                .is_some_and(|d| d.buildings.contains(id)),
+            ConditionScope::Planet => self
+                .planet
+                .as_ref()
+                .is_some_and(|d| d.buildings.contains(id)),
             ConditionScope::Ship => self.ship.as_ref().is_some_and(|d| d.buildings.contains(id)),
         }
     }
@@ -445,14 +454,10 @@ mod tests {
         let bldgs = make_empty_set();
         let ctx = flat_ctx(&techs, &mods, &bldgs);
 
-        let cond = Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_tech(
-            "tech_a",
-        ))));
+        let cond = Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_tech("tech_a"))));
         assert!(!cond.evaluate(&ctx).is_satisfied());
 
-        let cond = Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_tech(
-            "tech_b",
-        ))));
+        let cond = Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_tech("tech_b"))));
         assert!(cond.evaluate(&ctx).is_satisfied());
     }
 
@@ -495,7 +500,9 @@ mod tests {
         let result = cond.evaluate(&ctx);
 
         if let ConditionResult::All {
-            satisfied, children, ..
+            satisfied,
+            children,
+            ..
         } = &result
         {
             assert!(!satisfied);

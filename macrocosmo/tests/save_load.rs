@@ -12,7 +12,7 @@ use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
 use macrocosmo::galaxy::{GalaxyConfig, Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::persistence::{
-    capture_save, load::load_game_from_reader, save::save_game_to_writer, SaveId, SCRIPTS_VERSION,
+    SCRIPTS_VERSION, SaveId, capture_save, load::load_game_from_reader, save::save_game_to_writer,
 };
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::scripting::game_rng::GameRng;
@@ -347,7 +347,7 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
     // and continues. We simulate a mismatch by hand-crafting a GameSave with
     // a different scripts_version, re-encoding, and asserting that load
     // succeeds.
-    use macrocosmo::persistence::save::{GameSave, SavedResources, SAVE_VERSION};
+    use macrocosmo::persistence::save::{GameSave, SAVE_VERSION, SavedResources};
 
     let save = GameSave {
         version: SAVE_VERSION,
@@ -748,9 +748,10 @@ fn test_save_load_preserves_tech_tree() {
         .iter(&dst)
         .next()
         .expect("TechTree + ResearchQueue must round-trip");
-    assert!(tt
-        .researched
-        .contains(&TechId("industrial_automated_mining".into())));
+    assert!(
+        tt.researched
+            .contains(&TechId("industrial_automated_mining".into()))
+    );
     assert!(tt.researched.contains(&TechId("physics_ftl_drive".into())));
     assert_eq!(rq.current, Some(TechId("social_central_planning".into())));
     assert!((rq.accumulated - 42.5).abs() < 1e-9);

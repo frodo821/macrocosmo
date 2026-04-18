@@ -48,9 +48,7 @@
 //!   existing time-series, so no new topic IDs are required.
 
 use bevy::prelude::*;
-use macrocosmo_ai::{
-    AiBus, CommandSpec, EvidenceSpec, MetricSpec, MetricType, Retention,
-};
+use macrocosmo_ai::{AiBus, CommandSpec, EvidenceSpec, MetricSpec, MetricType, Retention};
 
 use crate::ai::plugin::AiBusResource;
 
@@ -721,9 +719,6 @@ mod tests {
         // `MetricId::from(&str)` allocates new `Arc<str>` each time but the
         // underlying string is equal, so id equality must hold.
         assert_eq!(ids::metric::my_strength(), ids::metric::my_strength());
-        assert_eq!(
-            ids::metric::my_strength().as_str(),
-            "my_strength",
-        );
+        assert_eq!(ids::metric::my_strength().as_str(), "my_strength",);
     }
 }

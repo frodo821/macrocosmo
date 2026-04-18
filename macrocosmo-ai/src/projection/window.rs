@@ -71,10 +71,7 @@ impl Default for WindowDetectionConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WindowKind {
     /// We lead and the lead is shrinking — attack before the gap closes.
-    Offensive {
-        mine: MetricId,
-        theirs: MetricId,
-    },
+    Offensive { mine: MetricId, theirs: MetricId },
     /// We lag and the gap is widening — must be addressed before crossover.
     Defensive {
         mine: MetricId,
@@ -97,19 +94,10 @@ pub enum WindowKind {
 /// Why the window opened. Phase-1 rationales map 1:1 with [`WindowKind`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WindowRationale {
-    Peaking {
-        metric: MetricId,
-    },
-    GapClosing {
-        gap_now: f64,
-        gap_at_close: f64,
-    },
-    CompoundEffect {
-        at: Tick,
-    },
-    ThresholdCrossing {
-        at: Tick,
-    },
+    Peaking { metric: MetricId },
+    GapClosing { gap_now: f64, gap_at_close: f64 },
+    CompoundEffect { at: Tick },
+    ThresholdCrossing { at: Tick },
 }
 
 /// A detected strategic window.
@@ -218,10 +206,7 @@ fn detect_pair(
             return None;
         }
         let intensity = normalise(g0, g0.abs().max(1.0));
-        let confidence = gaps
-            .iter()
-            .map(|(_, _, c)| *c)
-            .fold(1.0_f32, f32::min);
+        let confidence = gaps.iter().map(|(_, _, c)| *c).fold(1.0_f32, f32::min);
         return Some(StrategicWindow {
             kind: WindowKind::Offensive {
                 mine: pair.mine.clone(),
@@ -246,10 +231,7 @@ fn detect_pair(
         let closes_at = gaps[gaps.len() - 1].0;
         let crossover_at = closes_at; // Phase-1 proxy.
         let intensity = normalise(-g0, g0.abs().max(1.0));
-        let confidence = gaps
-            .iter()
-            .map(|(_, _, c)| *c)
-            .fold(1.0_f32, f32::min);
+        let confidence = gaps.iter().map(|(_, _, c)| *c).fold(1.0_f32, f32::min);
         return Some(StrategicWindow {
             kind: WindowKind::Defensive {
                 mine: pair.mine.clone(),
@@ -319,11 +301,7 @@ fn detect_growth(metric: &MetricId, tr: &Trajectory, min_span: Tick) -> Option<S
     })
 }
 
-fn detect_threshold(
-    metric: &MetricId,
-    threshold: f64,
-    tr: &Trajectory,
-) -> Option<StrategicWindow> {
+fn detect_threshold(metric: &MetricId, threshold: f64, tr: &Trajectory) -> Option<StrategicWindow> {
     if tr.samples.is_empty() {
         return None;
     }
@@ -398,7 +376,8 @@ mod tests {
         };
         let ws = detect_windows(&trajectories, 0, &cfg);
         assert!(
-            ws.iter().any(|w| matches!(w.kind, WindowKind::Offensive { .. })),
+            ws.iter()
+                .any(|w| matches!(w.kind, WindowKind::Offensive { .. })),
             "no offensive window detected: {ws:?}"
         );
     }
@@ -418,7 +397,10 @@ mod tests {
             ..Default::default()
         };
         let ws = detect_windows(&trajectories, 0, &cfg);
-        assert!(ws.iter().any(|w| matches!(w.kind, WindowKind::Defensive { .. })));
+        assert!(
+            ws.iter()
+                .any(|w| matches!(w.kind, WindowKind::Defensive { .. }))
+        );
     }
 
     #[test]
@@ -432,7 +414,10 @@ mod tests {
             ..Default::default()
         };
         let ws = detect_windows(&trajectories, 0, &cfg);
-        assert!(ws.iter().any(|w| matches!(w.kind, WindowKind::Growth { .. })));
+        assert!(
+            ws.iter()
+                .any(|w| matches!(w.kind, WindowKind::Growth { .. }))
+        );
     }
 
     #[test]

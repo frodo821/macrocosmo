@@ -71,10 +71,7 @@ impl Plugin for ObserverPlugin {
         app.init_resource::<ObserverMode>()
             .init_resource::<ObserverView>()
             .init_resource::<RngSeed>()
-            .add_systems(
-                Startup,
-                apply_initial_speed.run_if(in_observer_mode),
-            )
+            .add_systems(Startup, apply_initial_speed.run_if(in_observer_mode))
             .add_systems(
                 Update,
                 (

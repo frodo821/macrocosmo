@@ -4,7 +4,7 @@
 
 use bevy::prelude::*;
 use macrocosmo::ai::schema::foreign::{
-    foreign_metric_id, foreign_metric_templates, ForeignMetricTemplate,
+    ForeignMetricTemplate, foreign_metric_id, foreign_metric_templates,
 };
 use macrocosmo::ai::{AiBusResource, AiPlugin};
 use macrocosmo::player::Faction;

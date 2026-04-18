@@ -4,13 +4,13 @@
 
 use bevy::prelude::*;
 use macrocosmo::galaxy::{Planet, StarSystem};
+use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::galaxy_api::{
     PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition, StarTypeRegistry,
 };
 use macrocosmo::scripting::map_api::{
-    parse_map_types, parse_predefined_systems, MapTypeRegistry, PredefinedSystemRegistry,
+    MapTypeRegistry, PredefinedSystemRegistry, parse_map_types, parse_predefined_systems,
 };
-use macrocosmo::scripting::ScriptEngine;
 
 fn test_registries() -> (StarTypeRegistry, PlanetTypeRegistry) {
     let mut star_reg = StarTypeRegistry::default();

@@ -267,7 +267,11 @@ impl AiBus {
         duration: Tick,
     ) -> Box<dyn Iterator<Item = &'a StandingEvidence> + 'a> {
         match self.evidence.get(kind) {
-            Some(store) => Box::new(store.window(now, duration).filter(move |e| e.observer == observer)),
+            Some(store) => Box::new(
+                store
+                    .window(now, duration)
+                    .filter(move |e| e.observer == observer),
+            ),
             None => Box::new(std::iter::empty()),
         }
     }
@@ -385,7 +389,10 @@ mod tests {
         for t in 0..10 {
             bus.emit(&readiness(), t as f64 / 10.0, t * 5);
         }
-        let collected: Vec<f64> = bus.window(&readiness(), 25, 10).map(|tv| tv.value).collect();
+        let collected: Vec<f64> = bus
+            .window(&readiness(), 25, 10)
+            .map(|tv| tv.value)
+            .collect();
         assert_eq!(collected, vec![0.3, 0.4, 0.5]);
     }
 
@@ -412,7 +419,11 @@ mod tests {
     #[test]
     fn emit_undeclared_command_kind_is_noop() {
         let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
-        bus.emit_command(Command::new(CommandKindId::from("unknown"), FactionId(1), 0));
+        bus.emit_command(Command::new(
+            CommandKindId::from("unknown"),
+            FactionId(1),
+            0,
+        ));
         assert!(bus.drain_commands().is_empty());
     }
 

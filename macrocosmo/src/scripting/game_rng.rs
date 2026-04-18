@@ -188,10 +188,7 @@ mod tests {
     fn range_returns_value_in_bounds() {
         let lua = make_lua_with_rng(1);
         for _ in 0..100 {
-            let v: f64 = lua
-                .load("return game_rand.range(2.5, 7.5)")
-                .eval()
-                .unwrap();
+            let v: f64 = lua.load("return game_rand.range(2.5, 7.5)").eval().unwrap();
             assert!(v >= 2.5 && v < 7.5, "got {v}");
         }
     }
@@ -211,10 +208,7 @@ mod tests {
         let mut saw_min = false;
         let mut saw_max = false;
         for _ in 0..2000 {
-            let v: i64 = lua
-                .load("return game_rand.range_int(1, 6)")
-                .eval()
-                .unwrap();
+            let v: i64 = lua.load("return game_rand.range_int(1, 6)").eval().unwrap();
             assert!((1..=6).contains(&v), "got {v}");
             if v == 1 {
                 saw_min = true;
@@ -224,16 +218,16 @@ mod tests {
             }
         }
         assert!(saw_min, "never saw lower bound 1");
-        assert!(saw_max, "never saw upper bound 6 (range should be inclusive)");
+        assert!(
+            saw_max,
+            "never saw upper bound 6 (range should be inclusive)"
+        );
     }
 
     #[test]
     fn range_int_singleton_works() {
         let lua = make_lua_with_rng(3);
-        let v: i64 = lua
-            .load("return game_rand.range_int(7, 7)")
-            .eval()
-            .unwrap();
+        let v: i64 = lua.load("return game_rand.range_int(7, 7)").eval().unwrap();
         assert_eq!(v, 7);
     }
 
@@ -320,9 +314,7 @@ mod tests {
     #[test]
     fn weighted_empty_table_errors() {
         let lua = make_lua_with_rng(10);
-        let res = lua
-            .load("return game_rand.weighted({})")
-            .eval::<LuaValue>();
+        let res = lua.load("return game_rand.weighted({})").eval::<LuaValue>();
         assert!(res.is_err());
     }
 

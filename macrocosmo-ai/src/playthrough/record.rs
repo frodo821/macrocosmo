@@ -57,11 +57,7 @@ pub struct ScenarioConfig {
 /// A single accepted bus event, in the order it was emitted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlaythroughEvent {
-    Metric {
-        id: MetricId,
-        value: f64,
-        at: Tick,
-    },
+    Metric { id: MetricId, value: f64, at: Tick },
     Command(SerializedCommand),
     Evidence(StandingEvidence),
 }

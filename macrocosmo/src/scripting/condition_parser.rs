@@ -10,9 +10,7 @@ use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
 ///   (`has_tech`, `all`, `any`, `one_of`, `not_cond`, `has_flag`, ...).
 /// * a function `function(ctx) return <condition table> end` — the function is
 ///   called with a `ConditionCtx` to allow scoped atoms like `ctx.empire:has_tech(...)`.
-pub fn parse_prerequisites_field(
-    table: &mlua::Table,
-) -> Result<Option<Condition>, mlua::Error> {
+pub fn parse_prerequisites_field(table: &mlua::Table) -> Result<Option<Condition>, mlua::Error> {
     let prereq_value: mlua::Value = table.get("prerequisites")?;
     match prereq_value {
         mlua::Value::Table(prereq_table) => Ok(Some(parse_condition(&prereq_table)?)),
@@ -176,15 +174,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let table: mlua::Table = lua
-            .load(r#"return has_flag("my_flag")"#)
-            .eval()
-            .unwrap();
+        let table: mlua::Table = lua.load(r#"return has_flag("my_flag")"#).eval().unwrap();
         let cond = parse_condition(&table).unwrap();
-        assert_eq!(
-            cond,
-            Condition::Atom(ConditionAtom::has_flag("my_flag"))
-        );
+        assert_eq!(cond, Condition::Atom(ConditionAtom::has_flag("my_flag")));
     }
 
     #[test]
@@ -268,7 +260,9 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return all(has_tech("a"), any(has_modifier("m"), not_cond(has_building("b"))))"#)
+            .load(
+                r#"return all(has_tech("a"), any(has_modifier("m"), not_cond(has_building("b"))))"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -278,9 +272,7 @@ mod tests {
                 Condition::Atom(ConditionAtom::has_tech("a")),
                 Condition::Any(vec![
                     Condition::Atom(ConditionAtom::has_modifier("m")),
-                    Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_building(
-                        "b"
-                    )))),
+                    Condition::Not(Box::new(Condition::Atom(ConditionAtom::has_building("b")))),
                 ]),
             ])
         );
@@ -291,10 +283,7 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let table: mlua::Table = lua
-            .load(r#"return { type = "bogus" }"#)
-            .eval()
-            .unwrap();
+        let table: mlua::Table = lua.load(r#"return { type = "bogus" }"#).eval().unwrap();
         assert!(parse_condition(&table).is_err());
     }
 
@@ -303,10 +292,7 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let table: mlua::Table = lua
-            .load(r#"return has_flag("test_flag")"#)
-            .eval()
-            .unwrap();
+        let table: mlua::Table = lua.load(r#"return has_flag("test_flag")"#).eval().unwrap();
         let typ: String = table.get("type").unwrap();
         assert_eq!(typ, "has_flag");
         let id: String = table.get("id").unwrap();

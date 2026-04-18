@@ -22,7 +22,7 @@ pub fn parse_parsed_modifiers(
             return Err(mlua::Error::RuntimeError(format!(
                 "Expected table or nil for '{field}' field, got {:?}",
                 other
-            )))
+            )));
         }
     }) else {
         return Ok(Vec::new());

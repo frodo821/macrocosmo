@@ -53,10 +53,7 @@ pub fn check_all_empires_eliminated(
 /// Immediate exit on Escape key. The key-input resource is optional so
 /// this system is inert in headless test apps that don't register
 /// `InputPlugin`.
-pub fn esc_to_exit(
-    keys: Option<Res<ButtonInput<KeyCode>>>,
-    mut exit: MessageWriter<AppExit>,
-) {
+pub fn esc_to_exit(keys: Option<Res<ButtonInput<KeyCode>>>, mut exit: MessageWriter<AppExit>) {
     let Some(keys) = keys else { return };
     if keys.just_pressed(KeyCode::Escape) {
         info!("Observer mode: Esc pressed, exiting");

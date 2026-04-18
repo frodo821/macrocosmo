@@ -4,10 +4,10 @@
 //! and cache hit/miss/invalidation characteristics.
 
 use macrocosmo_ai::{
-    precond, severity, AiBus, CompareOp, Condition, ConditionAtom, Dependencies, EvalContext,
-    EvidenceKindId, EvidenceSpec, FactionId, MetricId, MetricRef, MetricSpec,
-    PreconditionCacheRegistry, PreconditionSet, PreconditionTracker, Retention,
-    StandingEvidence, Value, ValueExpr, WarningMode,
+    AiBus, CompareOp, Condition, ConditionAtom, Dependencies, EvalContext, EvidenceKindId,
+    EvidenceSpec, FactionId, MetricId, MetricRef, MetricSpec, PreconditionCacheRegistry,
+    PreconditionSet, PreconditionTracker, Retention, StandingEvidence, Value, ValueExpr,
+    WarningMode, precond, severity,
 };
 
 fn bus() -> AiBus {
@@ -71,7 +71,10 @@ fn window_aggregates_end_to_end() {
         metric: MetricRef::new(id.clone()),
         window: 30,
     };
-    assert_eq!(avg.evaluate_value(&ctx), Value::Number((1.0 + 3.0 + 7.0) / 3.0));
+    assert_eq!(
+        avg.evaluate_value(&ctx),
+        Value::Number((1.0 + 3.0 + 7.0) / 3.0)
+    );
     let sum = ValueExpr::WindowSum {
         metric: MetricRef::new(id.clone()),
         window: 30,
@@ -88,11 +91,7 @@ fn window_aggregates_end_to_end() {
 fn compare_atom_with_missing_is_false() {
     let b = bus();
     let ctx = EvalContext::new(&b, 0);
-    let c = Condition::compare(
-        ValueExpr::Missing,
-        CompareOp::Ge,
-        ValueExpr::Literal(1.0),
-    );
+    let c = Condition::compare(ValueExpr::Missing, CompareOp::Ge, ValueExpr::Literal(1.0));
     assert!(!c.evaluate(&ctx));
 }
 
@@ -166,11 +165,7 @@ fn precondition_set_weighted() {
 #[test]
 fn tracker_tracks_violation_duration() {
     let (b, _) = with_metric("m", 0.5, 0);
-    let failing = PreconditionSet::new(vec![precond(
-        "fail",
-        severity::CRITICAL,
-        Condition::Never,
-    )]);
+    let failing = PreconditionSet::new(vec![precond("fail", severity::CRITICAL, Condition::Never)]);
     let mut tracker = PreconditionTracker::new();
 
     let r = failing.evaluate_detailed(&EvalContext::new(&b, 5));
@@ -257,4 +252,3 @@ fn dependencies_dedup() {
     deps.dedup();
     assert_eq!(deps.metrics.len(), 1);
 }
-

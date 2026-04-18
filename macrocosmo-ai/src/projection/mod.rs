@@ -54,13 +54,13 @@ use crate::ids::MetricId;
 use crate::time::{Tick, TimestampedValue};
 
 pub use confidence::{confidence_at, effective_strategic_window};
-pub use emit::{emit_projections_to_bus, ProjectionNaming};
-pub use fit::{fit_linear, volatility, LinearFit};
+pub use emit::{ProjectionNaming, emit_projections_to_bus};
+pub use fit::{LinearFit, fit_linear, volatility};
 pub use model::ProjectionModel;
 pub use project_fn::{project, project_metric};
 pub use window::{
-    detect_windows, MetricPair, StrategicWindow, ThresholdGate, WindowDetectionConfig, WindowKind,
-    WindowRationale,
+    MetricPair, StrategicWindow, ThresholdGate, WindowDetectionConfig, WindowKind, WindowRationale,
+    detect_windows,
 };
 
 /// Fidelity knob for the projector.

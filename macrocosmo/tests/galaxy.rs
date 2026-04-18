@@ -65,11 +65,7 @@ fn test_galaxy_generation_uses_types() {
     }
 
     // Verify all planets have planet_type set
-    let planet_count = app
-        .world_mut()
-        .query::<&Planet>()
-        .iter(app.world())
-        .count();
+    let planet_count = app.world_mut().query::<&Planet>().iter(app.world()).count();
     assert!(planet_count > 0, "Should have generated planets");
 
     for planet in app.world_mut().query::<&Planet>().iter(app.world()) {

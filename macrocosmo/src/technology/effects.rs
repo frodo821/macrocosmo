@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use mlua::Lua;
 
+use crate::amount::SignedAmt;
 use crate::condition::ScopedFlags;
 use crate::effect::DescriptiveEffect;
 use crate::modifier::{Modifier, ParsedModifier};
-use crate::amount::SignedAmt;
 use crate::player::PlayerEmpire;
-use crate::scripting::effect_scope::{collect_effects, EffectScope};
 use crate::scripting::ScriptEngine;
+use crate::scripting::effect_scope::{EffectScope, collect_effects};
 use crate::technology::tree::TechId;
 use crate::technology::{EmpireModifiers, GameBalance, GameFlags, GlobalParams};
 
@@ -118,10 +118,7 @@ pub fn build_tech_effects_preview(
         let result = match func.call::<mlua::Value>(scope.clone()) {
             Ok(v) => v,
             Err(e) => {
-                debug!(
-                    "preview: on_researched for tech {} failed: {e}",
-                    tech_id.0
-                );
+                debug!("preview: on_researched for tech {} failed: {e}", tech_id.0);
                 continue;
             }
         };
@@ -279,11 +276,7 @@ pub fn apply_tech_effects(
             );
         }
 
-        info!(
-            "Applied {} effects for tech {}",
-            effects.len(),
-            tech_id.0
-        );
+        info!("Applied {} effects for tech {}", effects.len(), tech_id.0);
 
         // Log for UI display
         effects_log.effects.insert(tech_id.clone(), effects);
@@ -361,11 +354,7 @@ fn apply_effect(
             // PopModifier is for removing temporary modifiers; not applicable at tech level
             debug!("PopModifier in on_researched is a no-op (tech effects are permanent)");
         }
-        DescriptiveEffect::SetFlag {
-            name,
-            value,
-            ..
-        } => {
+        DescriptiveEffect::SetFlag { name, value, .. } => {
             if *value {
                 game_flags.set(name);
                 scoped_flags.set(name);
@@ -415,8 +404,11 @@ fn route_tech_modifier(
 ) {
     // 1) Ship/sensor/construction targets → GlobalParams (legacy routes kept).
     match target {
-        "ship.sublight_speed" | "ship.ftl_speed" | "ship.ftl_range"
-        | "sensor.range" | "construction.speed" => {
+        "ship.sublight_speed"
+        | "ship.ftl_speed"
+        | "ship.ftl_range"
+        | "sensor.range"
+        | "construction.speed" => {
             apply_modifier_to_params(global_params, target, base_add, multiplier, add);
             return;
         }
@@ -499,7 +491,11 @@ fn route_tech_modifier(
             "Tech '{}' targets '{}'; {} system not yet implemented (no-op)",
             source_tech_id.0,
             target,
-            if target.starts_with("combat.") { "combat" } else { "diplomacy" }
+            if target.starts_with("combat.") {
+                "combat"
+            } else {
+                "diplomacy"
+            }
         );
         return;
     }
@@ -560,10 +556,7 @@ pub fn sync_tech_colony_modifiers(
                     continue;
                 };
                 let bucket = rates.bucket_mut(job_id, inner_target);
-                bucket.push_modifier(pm.to_modifier(
-                    modifier_id,
-                    format!("Tech '{}'", tech_id.0),
-                ));
+                bucket.push_modifier(pm.to_modifier(modifier_id, format!("Tech '{}'", tech_id.0)));
                 continue;
             }
 
@@ -583,9 +576,7 @@ pub fn sync_tech_colony_modifiers(
                     continue;
                 }
                 let job_id = slot_rest.to_string();
-                if let Some(slot) =
-                    jobs.slots.iter_mut().find(|s| s.job_id == job_id)
-                {
+                if let Some(slot) = jobs.slots.iter_mut().find(|s| s.job_id == job_id) {
                     // Re-applying: clamp to (building_cap + contribution) to
                     // keep the push idempotent across ticks. The delta is
                     // stored outside `capacity_from_buildings` so building
@@ -614,10 +605,7 @@ pub fn sync_tech_colony_modifiers(
                 _ => None,
             };
             if let Some(mv) = bucket {
-                mv.push_modifier(pm.to_modifier(
-                    modifier_id,
-                    format!("Tech '{}'", tech_id.0),
-                ));
+                mv.push_modifier(pm.to_modifier(modifier_id, format!("Tech '{}'", tech_id.0)));
             }
         }
     }
@@ -659,18 +647,13 @@ fn apply_modifier_to_params(
         // for display but don't currently have GlobalParams fields.
         // They will be consumed by more granular modifier systems in the future.
         _ => {
-            debug!(
-                "Modifier target '{target}' stored in TechEffectsLog (no GlobalParams mapping)"
-            );
+            debug!("Modifier target '{target}' stored in TechEffectsLog (no GlobalParams mapping)");
         }
     }
 }
 
 /// Find the on_researched function for a tech by scanning _tech_definitions.
-fn find_on_researched(
-    tech_defs: &mlua::Table,
-    tech_id: &str,
-) -> Option<mlua::Function> {
+fn find_on_researched(tech_defs: &mlua::Table, tech_id: &str) -> Option<mlua::Function> {
     let len = tech_defs.len().ok()?;
     for i in 1..=len {
         let Ok(def) = tech_defs.get::<mlua::Table>(i) else {

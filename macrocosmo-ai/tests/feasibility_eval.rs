@@ -1,8 +1,8 @@
 //! Integration test: feasibility evaluation end-to-end against a bus.
 
 use macrocosmo_ai::{
-    feasibility::{self, FeasibilityFormula, FeasibilityTerm},
     AiBus, MetricId, MetricRef, MetricSpec, Retention, ValueExpr, WarningMode,
+    feasibility::{self, FeasibilityFormula, FeasibilityTerm},
 };
 
 #[test]
@@ -10,14 +10,8 @@ fn weighted_sum_end_to_end() {
     let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
     let readiness = MetricId::from("fleet_readiness");
     let capacity = MetricId::from("economic_capacity");
-    bus.declare_metric(
-        readiness.clone(),
-        MetricSpec::ratio(Retention::Medium, "r"),
-    );
-    bus.declare_metric(
-        capacity.clone(),
-        MetricSpec::ratio(Retention::Medium, "c"),
-    );
+    bus.declare_metric(readiness.clone(), MetricSpec::ratio(Retention::Medium, "r"));
+    bus.declare_metric(capacity.clone(), MetricSpec::ratio(Retention::Medium, "c"));
     bus.emit(&readiness, 0.6, 50);
     bus.emit(&capacity, 0.4, 50);
 

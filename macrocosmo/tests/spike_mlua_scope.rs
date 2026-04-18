@@ -25,9 +25,9 @@ fn spike_read_mutate_read_via_scope_closures() -> LuaResult<()> {
             let gs = lua.create_table()?;
 
             let read = s.create_function(|_, ()| -> LuaResult<i64> {
-                let v = counter_cell.try_borrow().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("try_borrow failed: {e}"))
-                })?;
+                let v = counter_cell
+                    .try_borrow()
+                    .map_err(|e| mlua::Error::RuntimeError(format!("try_borrow failed: {e}")))?;
                 Ok(**v)
             })?;
             let inc = s.create_function_mut(|_, by: i64| -> LuaResult<()> {
@@ -54,7 +54,10 @@ fn spike_read_mutate_read_via_scope_closures() -> LuaResult<()> {
                 )
                 .call(gs)?;
 
-            assert_eq!(diff, 8, "Lua should observe the mutation live (live-within-tick)");
+            assert_eq!(
+                diff, 8,
+                "Lua should observe the mutation live (live-within-tick)"
+            );
             Ok(())
         })?;
     }
@@ -77,9 +80,9 @@ fn spike_capture_resistance_closure_invalid_after_scope() -> LuaResult<()> {
 
         lua.scope(|s| {
             let read = s.create_function(|_, ()| -> LuaResult<i64> {
-                let v = counter_cell.try_borrow().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("try_borrow failed: {e}"))
-                })?;
+                let v = counter_cell
+                    .try_borrow()
+                    .map_err(|e| mlua::Error::RuntimeError(format!("try_borrow failed: {e}")))?;
                 Ok(**v)
             })?;
 
@@ -122,22 +125,22 @@ fn spike_sequential_borrows_do_not_conflict() -> LuaResult<()> {
         let gs = lua.create_table()?;
 
         let len = s.create_function(|_, ()| -> LuaResult<i64> {
-            let v = data_cell.try_borrow().map_err(|e| {
-                mlua::Error::RuntimeError(format!("try_borrow failed: {e}"))
-            })?;
+            let v = data_cell
+                .try_borrow()
+                .map_err(|e| mlua::Error::RuntimeError(format!("try_borrow failed: {e}")))?;
             Ok(v.len() as i64)
         })?;
         let push = s.create_function_mut(|_, x: i64| -> LuaResult<()> {
-            let mut v = data_cell.try_borrow_mut().map_err(|e| {
-                mlua::Error::RuntimeError(format!("try_borrow_mut failed: {e}"))
-            })?;
+            let mut v = data_cell
+                .try_borrow_mut()
+                .map_err(|e| mlua::Error::RuntimeError(format!("try_borrow_mut failed: {e}")))?;
             v.push(x);
             Ok(())
         })?;
         let first = s.create_function(|_, ()| -> LuaResult<Option<i64>> {
-            let v = data_cell.try_borrow().map_err(|e| {
-                mlua::Error::RuntimeError(format!("try_borrow failed: {e}"))
-            })?;
+            let v = data_cell
+                .try_borrow()
+                .map_err(|e| mlua::Error::RuntimeError(format!("try_borrow failed: {e}")))?;
             Ok(v.first().copied())
         })?;
 
@@ -182,13 +185,13 @@ fn spike_deliberate_double_borrow_mut_is_runtime_error() -> LuaResult<()> {
         lua.scope(|s| {
             let bad = s.create_function_mut(|_, ()| -> LuaResult<()> {
                 // Grab the outer borrow
-                let _outer = counter_cell.try_borrow_mut().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("outer: {e}"))
-                })?;
+                let _outer = counter_cell
+                    .try_borrow_mut()
+                    .map_err(|e| mlua::Error::RuntimeError(format!("outer: {e}")))?;
                 // Attempt a second borrow_mut while the first is held
-                let _inner = counter_cell.try_borrow_mut().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("inner: {e}"))
-                })?;
+                let _inner = counter_cell
+                    .try_borrow_mut()
+                    .map_err(|e| mlua::Error::RuntimeError(format!("inner: {e}")))?;
                 Ok(())
             })?;
 
@@ -205,6 +208,9 @@ fn spike_deliberate_double_borrow_mut_is_runtime_error() -> LuaResult<()> {
         })
     }));
 
-    assert!(hit_panic.is_ok(), "must not panic, only surface runtime error");
+    assert!(
+        hit_panic.is_ok(),
+        "must not panic, only surface runtime error"
+    );
     Ok(())
 }

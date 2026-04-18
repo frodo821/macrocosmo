@@ -40,37 +40,37 @@ pub mod mock;
 #[cfg(feature = "playthrough")]
 pub mod playthrough;
 
-pub use bus::snapshot::{BusSnapshot, EvidenceSnapshot, MetricSnapshot};
 pub use bus::AiBus;
+pub use bus::snapshot::{BusSnapshot, EvidenceSnapshot, MetricSnapshot};
 pub use condition::{CompareOp, Condition, ConditionAtom};
 pub use eval::EvalContext;
 pub use precondition::{
-    precond, severity, PreconditionEvalResult, PreconditionHistory, PreconditionItem,
-    PreconditionSet, PreconditionSummary, PreconditionTracker,
+    PreconditionEvalResult, PreconditionHistory, PreconditionItem, PreconditionSet,
+    PreconditionSummary, PreconditionTracker, precond, severity,
 };
 pub use precondition_cache::{CacheStats, PreconditionCacheRegistry};
 pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
+pub use assessment::{
+    Assessment, AssessmentConfig, EconomicBaseline, EconomicCapacityWeights, EconomicSnapshot,
+    FleetSnapshot, ObjectiveKind, ResourceVector, TechLeadWeights, TechPositionSnapshot,
+    build_assessment, build_economic_snapshot, build_tech_position_snapshot,
+    compute_economic_capacity, compute_feasibility, compute_fleet_readiness,
+    compute_overall_confidence, compute_tech_lead, compute_threat_level,
+    critical_violation_penalty, gather_trajectory_metric_ids, objective_kind,
+};
 pub use command::{Command, CommandParams, CommandValue, SerializedCommand};
 pub use evidence::StandingEvidence;
-pub use projection::{
-    confidence_at, detect_windows, effective_strategic_window, emit_projections_to_bus,
-    fit_linear, project, project_metric, volatility, CompoundDelta, CompoundEffect,
-    ConfidenceDecay, LinearFit, MetricPair, ProjectionFidelity, ProjectionModel, ProjectionNaming,
-    StrategicWindow, ThresholdGate, Trajectory, TrajectoryConfig, WindowDetectionConfig,
-    WindowKind, WindowRationale,
-};
 pub use ids::{
     CommandKindId, EntityRef, EvidenceKindId, FactionId, FactionRef, IntentId, MetricId,
     ObjectiveId, SystemRef,
 };
-pub use assessment::{
-    build_assessment, build_economic_snapshot, build_tech_position_snapshot,
-    compute_economic_capacity, compute_feasibility, compute_fleet_readiness,
-    compute_overall_confidence, compute_tech_lead, compute_threat_level, critical_violation_penalty,
-    gather_trajectory_metric_ids, objective_kind, Assessment, AssessmentConfig, EconomicBaseline,
-    EconomicCapacityWeights, EconomicSnapshot, FleetSnapshot, ObjectiveKind, ResourceVector,
-    TechLeadWeights, TechPositionSnapshot,
+pub use projection::{
+    CompoundDelta, CompoundEffect, ConfidenceDecay, LinearFit, MetricPair, ProjectionFidelity,
+    ProjectionModel, ProjectionNaming, StrategicWindow, ThresholdGate, Trajectory,
+    TrajectoryConfig, WindowDetectionConfig, WindowKind, WindowRationale, confidence_at,
+    detect_windows, effective_strategic_window, emit_projections_to_bus, fit_linear, project,
+    project_metric, volatility,
 };
 pub use retention::Retention;
 pub use spec::{CommandSpec, EvidenceSpec, MetricSpec, MetricType};

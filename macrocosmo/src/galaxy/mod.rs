@@ -17,7 +17,7 @@ pub use biome::{
 };
 pub use generation::{generate_galaxy, place_forbidden_regions, poisson_sample};
 pub use region::{
-    effective_radius, ForbiddenRegion, RegionBlockSnapshot, RegionSpecQueue, RegionTypeRegistry,
+    ForbiddenRegion, RegionBlockSnapshot, RegionSpecQueue, RegionTypeRegistry, effective_radius,
 };
 pub use types::{load_biome_registry, load_galaxy_types};
 
@@ -329,9 +329,6 @@ mod inner_orbit_tests {
     fn inner_orbit_position_returns_zero_for_missing_system() {
         let mut world = World::new();
         let sys = world.spawn_empty().id();
-        assert_eq!(
-            system_inner_orbit_position(sys, &world),
-            [0.0, 0.0, 0.0]
-        );
+        assert_eq!(system_inner_orbit_position(sys, &world), [0.0, 0.0, 0.0]);
     }
 }

@@ -382,7 +382,12 @@ pub fn draw_context_menu(
                 let move_resp = ui.button(&move_label);
                 #[cfg(feature = "remote")]
                 if let Some(ref mut reg) = ui_registry {
-                    crate::ui::register_ui_element(reg, "context_menu.move", "Move", move_resp.rect);
+                    crate::ui::register_ui_element(
+                        reg,
+                        "context_menu.move",
+                        "Move",
+                        move_resp.rect,
+                    );
                 }
                 if move_resp.clicked() {
                     let qc = QueuedCommand::MoveTo {
@@ -416,7 +421,12 @@ pub fn draw_context_menu(
                 let survey_resp = ui.button(&survey_label);
                 #[cfg(feature = "remote")]
                 if let Some(ref mut reg) = ui_registry {
-                    crate::ui::register_ui_element(reg, "context_menu.survey", "Survey", survey_resp.rect);
+                    crate::ui::register_ui_element(
+                        reg,
+                        "context_menu.survey",
+                        "Survey",
+                        survey_resp.rect,
+                    );
                 }
                 if survey_resp.clicked() {
                     let qc = QueuedCommand::Survey {
@@ -468,7 +478,12 @@ pub fn draw_context_menu(
                 let colonize_resp = ui.button(&colonize_label);
                 #[cfg(feature = "remote")]
                 if let Some(ref mut reg) = ui_registry {
-                    crate::ui::register_ui_element(reg, "context_menu.colonize", "Colonize", colonize_resp.rect);
+                    crate::ui::register_ui_element(
+                        reg,
+                        "context_menu.colonize",
+                        "Colonize",
+                        colonize_resp.rect,
+                    );
                 }
                 if colonize_resp.clicked() {
                     let qc = QueuedCommand::Colonize {
@@ -517,7 +532,12 @@ pub fn draw_context_menu(
             let cancel_resp = ui.button("Cancel");
             #[cfg(feature = "remote")]
             if let Some(ref mut reg) = ui_registry {
-                crate::ui::register_ui_element(reg, "context_menu.cancel", "Cancel", cancel_resp.rect);
+                crate::ui::register_ui_element(
+                    reg,
+                    "context_menu.cancel",
+                    "Cancel",
+                    cancel_resp.rect,
+                );
             }
             if cancel_resp.clicked() {
                 close_menu = true;

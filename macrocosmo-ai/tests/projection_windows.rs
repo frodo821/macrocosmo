@@ -8,8 +8,8 @@
 use ahash::AHashMap;
 
 use macrocosmo_ai::{
-    detect_windows, project, AiBus, MetricId, MetricPair, MetricSpec, ProjectionFidelity,
-    Retention, ThresholdGate, TrajectoryConfig, WarningMode, WindowDetectionConfig, WindowKind,
+    AiBus, MetricId, MetricPair, MetricSpec, ProjectionFidelity, Retention, ThresholdGate,
+    TrajectoryConfig, WarningMode, WindowDetectionConfig, WindowKind, detect_windows, project,
 };
 
 fn bus_with_two(a: &MetricId, b: &MetricId) -> AiBus {
@@ -53,7 +53,8 @@ fn detect_offensive_window_on_closing_gap() {
     };
     let ws = detect_windows(&trs, 15, &config);
     assert!(
-        ws.iter().any(|w| matches!(w.kind, WindowKind::Offensive { .. })),
+        ws.iter()
+            .any(|w| matches!(w.kind, WindowKind::Offensive { .. })),
         "no offensive window: {ws:?}"
     );
 }
@@ -72,15 +73,13 @@ fn detect_defensive_window_on_crossover() {
     let trs = project(&bus, &[mine.clone(), theirs.clone()], &cfg(), 20, &[]);
     let config = WindowDetectionConfig {
         min_intensity: 0.0,
-        pairs: vec![MetricPair {
-            mine,
-            theirs,
-        }],
+        pairs: vec![MetricPair { mine, theirs }],
         ..Default::default()
     };
     let ws = detect_windows(&trs, 20, &config);
     assert!(
-        ws.iter().any(|w| matches!(w.kind, WindowKind::Defensive { .. })),
+        ws.iter()
+            .any(|w| matches!(w.kind, WindowKind::Defensive { .. })),
         "no defensive window: {ws:?}"
     );
 }
@@ -101,7 +100,10 @@ fn detect_growth_window_on_monotone_run() {
         ..Default::default()
     };
     let ws = detect_windows(&trs, 20, &config);
-    assert!(ws.iter().any(|w| matches!(w.kind, WindowKind::Growth { .. })));
+    assert!(
+        ws.iter()
+            .any(|w| matches!(w.kind, WindowKind::Growth { .. }))
+    );
 }
 
 #[test]

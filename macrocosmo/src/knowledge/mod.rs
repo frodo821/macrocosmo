@@ -30,11 +30,10 @@ use std::collections::HashMap;
 
 #[allow(unused_imports)]
 pub use facts::{
-    compute_fact_arrival, effective_relay_range, rebuild_relay_network, record_fact_or_local,
-    record_world_event_fact, relay_delay_hexadies, sweep_notified_event_ids, ArrivalPlan,
-    CombatVictor, EventId, FactSysParam, KnowledgeFact, NextEventId, NotifiedEventIds,
-    PendingFactQueue, PerceivedFact, PlayerVantage, RelayNetwork, RelaySnapshot,
-    FTL_RELAY_BASE_MULTIPLIER,
+    ArrivalPlan, CombatVictor, EventId, FTL_RELAY_BASE_MULTIPLIER, FactSysParam, KnowledgeFact,
+    NextEventId, NotifiedEventIds, PendingFactQueue, PerceivedFact, PlayerVantage, RelayNetwork,
+    RelaySnapshot, compute_fact_arrival, effective_relay_range, rebuild_relay_network,
+    record_fact_or_local, record_world_event_fact, relay_delay_hexadies, sweep_notified_event_ids,
 };
 
 use crate::amount::Amt;
@@ -202,7 +201,9 @@ pub enum ShipSnapshotState {
     Refitting,
     Destroyed,
     /// #185: Ship is loitering at a deep-space coordinate (not in any system).
-    Loitering { position: [f64; 3] },
+    Loitering {
+        position: [f64; 3],
+    },
 }
 
 #[derive(Resource, Component, Default)]
@@ -382,24 +383,34 @@ pub fn build_system_snapshot(
     let hostile_strength = hostile.copied().unwrap_or(0.0);
 
     // #176: System buildings info (capability-based check via BuildingRegistry)
-    let has_port = sys_buildings.map(|sb| sb.has_port(building_registry)).unwrap_or(false);
-    let has_shipyard = sys_buildings.map(|sb| sb.has_shipyard(building_registry)).unwrap_or(false);
+    let has_port = sys_buildings
+        .map(|sb| sb.has_port(building_registry))
+        .unwrap_or(false);
+    let has_shipyard = sys_buildings
+        .map(|sb| sb.has_shipyard(building_registry))
+        .unwrap_or(false);
 
     // #176: System attributes — derive from best planet in the system
     let best_attrs = planet_attrs
         .iter()
         .filter(|(p, _)| p.system == entity)
         .map(|(_, a)| a)
-        .max_by(|a, b| a.habitability.partial_cmp(&b.habitability).unwrap_or(std::cmp::Ordering::Equal));
+        .max_by(|a, b| {
+            a.habitability
+                .partial_cmp(&b.habitability)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     let (habitability, mineral_richness, energy_potential, research_potential, max_building_slots) =
         best_attrs
-            .map(|a| (
-                Some(a.habitability),
-                Some(a.mineral_richness),
-                Some(a.energy_potential),
-                Some(a.research_potential),
-                Some(a.max_building_slots),
-            ))
+            .map(|a| {
+                (
+                    Some(a.habitability),
+                    Some(a.mineral_richness),
+                    Some(a.energy_potential),
+                    Some(a.research_potential),
+                    Some(a.max_building_slots),
+                )
+            })
             .unwrap_or((None, None, None, None, None));
 
     let colony_snapshots = build_colony_snapshots(entity, colonies, planets, planet_attrs);
@@ -453,7 +464,9 @@ fn build_colony_snapshots(
             .ok()
             .map(|(_, a)| a.habitability)
             .unwrap_or(0.5);
-        let food_prod = production.map(|p| p.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO);
+        let food_prod = production
+            .map(|p| p.food_per_hexadies.final_value())
+            .unwrap_or(Amt::ZERO);
         let k_habitat = BASE_CARRYING_CAPACITY * habitability;
         let k_food = if FOOD_PER_POP_PER_HEXADIES.raw() > 0 {
             food_prod.div_amt(FOOD_PER_POP_PER_HEXADIES).to_f64()
@@ -503,12 +516,22 @@ fn build_colony_snapshots(
             planet_name,
             population: colony.population,
             carrying_cap_hint,
-            production_minerals: production.map(|p| p.minerals_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
-            production_energy: production.map(|p| p.energy_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
+            production_minerals: production
+                .map(|p| p.minerals_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO),
+            production_energy: production
+                .map(|p| p.energy_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO),
             production_food: food_prod,
-            production_research: production.map(|p| p.research_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
-            food_consumption: food.map(|f| f.food_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
-            maintenance_energy: maintenance.map(|m| m.energy_per_hexadies.final_value()).unwrap_or(Amt::ZERO),
+            production_research: production
+                .map(|p| p.research_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO),
+            food_consumption: food
+                .map(|f| f.food_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO),
+            maintenance_energy: maintenance
+                .map(|m| m.energy_per_hexadies.final_value())
+                .unwrap_or(Amt::ZERO),
             buildings: buildings.map(|b| b.slots.clone()).unwrap_or_default(),
             build_queue,
             demolition_queue,
@@ -637,7 +660,9 @@ pub fn propagate_knowledge(
                 positions.get(*target_system).ok().map(|p| p.as_array())
             }
             ShipState::Settling { system, .. } => positions.get(*system).ok().map(|p| p.as_array()),
-            ShipState::Refitting { system, .. } => positions.get(*system).ok().map(|p| p.as_array()),
+            ShipState::Refitting { system, .. } => {
+                positions.get(*system).ok().map(|p| p.as_array())
+            }
             ShipState::InFTL { origin_system, .. } => {
                 // FTL ships are typically invisible to baseline sensors anyway, but use
                 // the origin system as a coarse reference (matches existing behavior).
@@ -695,22 +720,29 @@ pub fn propagate_knowledge(
 
         let (snapshot_state, last_system) = match state {
             ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
-            ShipState::SubLight { target_system, .. } => (ShipSnapshotState::InTransit, *target_system),
-            ShipState::InFTL { destination_system, .. } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-            ShipState::Surveying { target_system, .. } => (ShipSnapshotState::Surveying, Some(*target_system)),
+            ShipState::SubLight { target_system, .. } => {
+                (ShipSnapshotState::InTransit, *target_system)
+            }
+            ShipState::InFTL {
+                destination_system, ..
+            } => (ShipSnapshotState::InTransit, Some(*destination_system)),
+            ShipState::Surveying { target_system, .. } => {
+                (ShipSnapshotState::Surveying, Some(*target_system))
+            }
             ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
             ShipState::Refitting { system, .. } => (ShipSnapshotState::Refitting, Some(*system)),
             // #185: Loitering snapshot carries its position so the UI can render the
             // ship's last-known location even after it has moved on.
             ShipState::Loitering { position } => (
-                ShipSnapshotState::Loitering { position: *position },
+                ShipSnapshotState::Loitering {
+                    position: *position,
+                },
                 None,
             ),
             // #217: Scouting — surface like Surveying to external observers.
-            ShipState::Scouting { target_system, .. } => (
-                ShipSnapshotState::Surveying,
-                Some(*target_system),
-            ),
+            ShipState::Scouting { target_system, .. } => {
+                (ShipSnapshotState::Surveying, Some(*target_system))
+            }
         };
 
         store.update_ship(ShipSnapshot {
@@ -780,8 +812,10 @@ pub fn snapshot_production_knowledge(
         }
 
         // Only update if there's actual production data
-        if prod_minerals > Amt::ZERO || prod_energy > Amt::ZERO
-            || prod_food > Amt::ZERO || prod_research > Amt::ZERO
+        if prod_minerals > Amt::ZERO
+            || prod_energy > Amt::ZERO
+            || prod_food > Amt::ZERO
+            || prod_research > Amt::ZERO
             || maint_energy > Amt::ZERO
         {
             if let Some(entry) = store.entries.get_mut(&system_entity) {

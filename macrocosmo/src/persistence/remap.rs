@@ -120,10 +120,7 @@ pub mod entity_pair_map_serde {
     use serde::ser::{Serialize, Serializer};
     use std::collections::HashMap;
 
-    pub fn serialize<S, V>(
-        map: &HashMap<(Entity, Entity), V>,
-        ser: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S, V>(map: &HashMap<(Entity, Entity), V>, ser: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
         V: Serialize,
@@ -135,9 +132,7 @@ pub mod entity_pair_map_serde {
         as_vec.serialize(ser)
     }
 
-    pub fn deserialize<'de, D, V>(
-        de: D,
-    ) -> Result<HashMap<(Entity, Entity), V>, D::Error>
+    pub fn deserialize<'de, D, V>(de: D) -> Result<HashMap<(Entity, Entity), V>, D::Error>
     where
         D: Deserializer<'de>,
         V: Deserialize<'de>,

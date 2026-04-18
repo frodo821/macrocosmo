@@ -39,19 +39,13 @@ pub fn run_on_scripts_loaded(lua: &Lua) -> Result<(), mlua::Error> {
 ///
 /// The gamestate is rebuilt per-handler so each callback sees a fresh
 /// borrow; mutations performed by handler N are live for handler N+1.
-pub fn run_on_game_start_with_gamestate(
-    lua: &Lua,
-    world: &mut World,
-) -> Result<(), mlua::Error> {
+pub fn run_on_game_start_with_gamestate(lua: &Lua, world: &mut World) -> Result<(), mlua::Error> {
     run_handlers_with_gamestate(lua, world, "_on_game_start_handlers")
 }
 
 /// Execute all `_on_game_load_handlers` with a live `ReadWrite`
 /// gamestate attached to the payload. See [`run_on_game_start_with_gamestate`].
-pub fn run_on_game_load_with_gamestate(
-    lua: &Lua,
-    world: &mut World,
-) -> Result<(), mlua::Error> {
+pub fn run_on_game_load_with_gamestate(lua: &Lua, world: &mut World) -> Result<(), mlua::Error> {
     run_handlers_with_gamestate(lua, world, "_on_game_load_handlers")
 }
 
@@ -75,17 +69,12 @@ fn run_handlers_with_gamestate(
     for i in 1..=len {
         let func: mlua::Function = handlers.get(i)?;
         let payload = lua.create_table()?;
-        dispatch_with_gamestate(
-            lua,
-            world,
-            &payload,
-            GamestateMode::ReadWrite,
-            |_lua, p| func.call::<()>(p.clone()),
-        )?;
+        dispatch_with_gamestate(lua, world, &payload, GamestateMode::ReadWrite, |_lua, p| {
+            func.call::<()>(p.clone())
+        })?;
     }
     Ok(())
 }
-
 
 /// Startup system that runs lifecycle hooks after all scripts have been loaded.
 /// Scripts are loaded by `load_all_scripts`; this system only executes callbacks.

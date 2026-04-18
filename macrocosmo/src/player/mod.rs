@@ -2,13 +2,13 @@ use bevy::prelude::*;
 
 use crate::colony::{AuthorityParams, ConstructionParams};
 use crate::communication::CommandLog;
-use crate::empire::CommsParams;
 use crate::components::Position;
+use crate::condition::ScopedFlags;
+use crate::empire::CommsParams;
 use crate::galaxy::StarSystem;
-use crate::ship::{Ship, ShipState};
 use crate::knowledge::KnowledgeStore;
 use crate::physics;
-use crate::condition::ScopedFlags;
+use crate::ship::{Ship, ShipState};
 use crate::technology::{
     EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
     ResearchPool, ResearchQueue, TechTree,
@@ -20,23 +20,20 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         use crate::observer::not_in_observer_mode;
 
-        app.add_systems(
-            Startup,
-            spawn_player_empire.run_if(not_in_observer_mode),
-        )
-        .add_systems(
-            Startup,
-            spawn_player
-                .after(crate::galaxy::generate_galaxy)
-                .run_if(not_in_observer_mode),
-        )
-        .add_systems(
-            Update,
-            update_player_location
-                .after(crate::time_system::advance_game_time)
-                .run_if(not_in_observer_mode),
-        )
-        .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
+        app.add_systems(Startup, spawn_player_empire.run_if(not_in_observer_mode))
+            .add_systems(
+                Startup,
+                spawn_player
+                    .after(crate::galaxy::generate_galaxy)
+                    .run_if(not_in_observer_mode),
+            )
+            .add_systems(
+                Update,
+                update_player_location
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(not_in_observer_mode),
+            )
+            .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
     }
 }
 
@@ -108,10 +105,7 @@ pub struct Faction {
     pub name: String,
 }
 
-pub fn spawn_player(
-    mut commands: Commands,
-    capitals: Query<(Entity, &StarSystem)>,
-) {
+pub fn spawn_player(mut commands: Commands, capitals: Query<(Entity, &StarSystem)>) {
     for (entity, system) in &capitals {
         if system.is_capital {
             commands.spawn((Player, StationedAt { system: entity }));

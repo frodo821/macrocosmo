@@ -168,15 +168,13 @@ pub fn run_scenario(scenario: &Scenario) -> Playthrough {
         // Scripted evidence pulses at this tick.
         if let Some(pulses) = pulses_by_tick.get(&t) {
             for p in pulses {
-                rb.emit_evidence(
-                    StandingEvidence::new(
-                        p.kind.clone(),
-                        p.observer,
-                        p.target,
-                        p.magnitude,
-                        p.at,
-                    ),
-                );
+                rb.emit_evidence(StandingEvidence::new(
+                    p.kind.clone(),
+                    p.observer,
+                    p.target,
+                    p.magnitude,
+                    p.at,
+                ));
             }
         }
 
@@ -272,7 +270,10 @@ mod tests {
         let _ = Retention::Long;
         let scenario = Scenario::new(cfg);
         let pt = run_scenario(&scenario);
-        let has_ev = pt.events.iter().any(|e| matches!(e, PlaythroughEvent::Evidence(_)));
+        let has_ev = pt
+            .events
+            .iter()
+            .any(|e| matches!(e, PlaythroughEvent::Evidence(_)));
         assert!(has_ev);
     }
 }

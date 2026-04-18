@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use macrocosmo_ai::playthrough::{
-    assert_bus_equivalent, assert_command_count, assert_metric_monotone, assert_no_command_kind,
-    assert_no_panics, assert_playthrough_equivalent, replay, run_scenario, Direction,
-    MetricScript, Scenario, SyntheticDynamics,
-};
 use macrocosmo_ai::playthrough::record::ScenarioConfig;
+use macrocosmo_ai::playthrough::{
+    Direction, MetricScript, Scenario, SyntheticDynamics, assert_bus_equivalent,
+    assert_command_count, assert_metric_monotone, assert_no_command_kind, assert_no_panics,
+    assert_playthrough_equivalent, replay, run_scenario,
+};
 use macrocosmo_ai::{
     AiBus, Command, CommandKindId, CommandSpec, FactionId, MetricId, MetricSpec, Retention,
     WarningMode,
@@ -23,10 +23,7 @@ fn trivial_config(name: &str) -> ScenarioConfig {
             slope: 0.1,
         },
     );
-    metric_scripts.insert(
-        MetricId::from("flat_metric"),
-        MetricScript::Constant(0.5),
-    );
+    metric_scripts.insert(MetricId::from("flat_metric"), MetricScript::Constant(0.5));
     ScenarioConfig {
         name: name.into(),
         seed: 1,
@@ -59,8 +56,9 @@ fn metric_monotone_strict_passes_and_fails() {
     assert!(assert_metric_monotone(&pt, &flat, Direction::StrictlyDecreasing).is_err());
 
     // Unknown metric => error.
-    assert!(assert_metric_monotone(&pt, &MetricId::from("missing"), Direction::NonDecreasing)
-        .is_err());
+    assert!(
+        assert_metric_monotone(&pt, &MetricId::from("missing"), Direction::NonDecreasing).is_err()
+    );
 }
 
 #[test]

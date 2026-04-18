@@ -159,12 +159,7 @@ pub fn draw_top_bar(
                     "Fast Forward",
                     ff_resp.rect,
                 );
-                super::register_ui_element(
-                    reg,
-                    "top_bar.research",
-                    r_label,
-                    research_resp.rect,
-                );
+                super::register_ui_element(reg, "top_bar.research", r_label, research_resp.rect);
                 super::register_ui_element(
                     reg,
                     "top_bar.ship_designer",

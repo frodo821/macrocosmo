@@ -39,12 +39,7 @@ pub enum FeasibilityFormula {
 ///
 /// `prior` (reserved) is not used in Phase 2; future phases may combine the
 /// fresh score with a stored prior via an EMA or similar smoother.
-pub fn evaluate(
-    formula: &FeasibilityFormula,
-    bus: &AiBus,
-    now: Tick,
-    _prior: Option<f64>,
-) -> f64 {
+pub fn evaluate(formula: &FeasibilityFormula, bus: &AiBus, now: Tick, _prior: Option<f64>) -> f64 {
     let ctx = EvalContext::new(bus, now);
     match formula {
         FeasibilityFormula::WeightedSum(terms) => terms
@@ -94,19 +89,13 @@ mod tests {
         let mut b = bus();
         let readiness = MetricId::from("readiness");
         let force = MetricId::from("force");
-        b.declare_metric(
-            readiness.clone(),
-            MetricSpec::ratio(Retention::Short, "r"),
-        );
+        b.declare_metric(readiness.clone(), MetricSpec::ratio(Retention::Short, "r"));
         b.declare_metric(force.clone(), MetricSpec::gauge(Retention::Short, "f"));
         b.emit(&readiness, 0.8, 10);
         b.emit(&force, 100.0, 10);
         let f = FeasibilityFormula::WeightedSum(vec![
             FeasibilityTerm::new(1.0, ValueExpr::Metric(MetricRef::new(readiness))),
-            FeasibilityTerm::new(
-                0.01,
-                ValueExpr::Metric(MetricRef::new(force)),
-            ),
+            FeasibilityTerm::new(0.01, ValueExpr::Metric(MetricRef::new(force))),
         ]);
         // 1.0*0.8 + 0.01*100 = 0.8 + 1.0 = 1.8
         assert!((evaluate(&f, &b, 10, None) - 1.8).abs() < 1e-9);

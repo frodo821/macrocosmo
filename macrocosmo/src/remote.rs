@@ -622,13 +622,15 @@ pub fn find_ui_element_handler(In(params): In<Option<Value>>, world: &mut World)
         });
     }
 
-    let registry = world.get_resource::<UiElementRegistry>().ok_or_else(|| {
-        BrpError::internal("UiElementRegistry resource not found")
-    })?;
+    let registry = world
+        .get_resource::<UiElementRegistry>()
+        .ok_or_else(|| BrpError::internal("UiElementRegistry resource not found"))?;
 
     let found = registry.elements.iter().find(|el| {
         let id_match = id.as_ref().map_or(true, |needle| el.id == *needle);
-        let text_match = text.as_ref().map_or(true, |needle| el.text.contains(needle.as_str()));
+        let text_match = text
+            .as_ref()
+            .map_or(true, |needle| el.text.contains(needle.as_str()));
         id_match && text_match
     });
 
@@ -667,9 +669,9 @@ pub fn list_ui_elements_handler(In(params): In<Option<Value>>, world: &mut World
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or(ListUiElementsParams { id_prefix: None });
 
-    let registry = world.get_resource::<UiElementRegistry>().ok_or_else(|| {
-        BrpError::internal("UiElementRegistry resource not found")
-    })?;
+    let registry = world
+        .get_resource::<UiElementRegistry>()
+        .ok_or_else(|| BrpError::internal("UiElementRegistry resource not found"))?;
 
     let elements: Vec<Value> = registry
         .elements

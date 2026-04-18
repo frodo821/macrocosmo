@@ -232,8 +232,7 @@ impl PreconditionTracker {
     /// are currently violated.
     pub fn critical_violations(&self) -> impl Iterator<Item = &PreconditionHistory> {
         self.history.values().filter(|h| {
-            (h.severity - severity::CRITICAL).abs() < f32::EPSILON
-                && h.violated_since.is_some()
+            (h.severity - severity::CRITICAL).abs() < f32::EPSILON && h.violated_since.is_some()
         })
     }
 
@@ -327,11 +326,7 @@ mod tests {
     #[test]
     fn tracker_violated_since_resets_on_recovery() {
         let (b, _) = setup();
-        let set = PreconditionSet::new(vec![precond(
-            "x",
-            severity::CRITICAL,
-            Condition::Never,
-        )]);
+        let set = PreconditionSet::new(vec![precond("x", severity::CRITICAL, Condition::Never)]);
         let mut tracker = PreconditionTracker::new();
 
         // Tick 10: violated, start of run
@@ -347,11 +342,8 @@ mod tests {
         assert_eq!(tracker.violated_for("x", 30), Some(20));
 
         // Tick 40: recovered.
-        let set_ok = PreconditionSet::new(vec![precond(
-            "x",
-            severity::CRITICAL,
-            Condition::Always,
-        )]);
+        let set_ok =
+            PreconditionSet::new(vec![precond("x", severity::CRITICAL, Condition::Always)]);
         let r = set_ok.evaluate_detailed(&EvalContext::new(&b, 40));
         tracker.record(&r, 40);
         assert_eq!(tracker.violated_for("x", 40), None);

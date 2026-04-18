@@ -143,11 +143,7 @@ pub fn draw_ships(
                     let sy = sys_pos.y as f32 * view.scale;
                     let (r, g, b) = ship_color_rgb(&ship.design_id);
                     let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
-                    gizmos.circle_2d(
-                        Vec2::new(sx, sy),
-                        6.0,
-                        Color::srgba(r, g, b, pulse),
-                    );
+                    gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
                     gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
                 }
             }
@@ -159,11 +155,7 @@ pub fn draw_ships(
 
                     // Pulsing indicator
                     let pulse = (clock.as_years_f64() as f32 * 5.0).sin() * 0.3 + 0.7;
-                    gizmos.circle_2d(
-                        Vec2::new(sx, sy),
-                        6.0,
-                        Color::srgba(r, g, b, pulse),
-                    );
+                    gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
 
                     // Ship marker
                     gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
@@ -262,11 +254,10 @@ pub fn draw_ships(
             if !queue.commands.is_empty() {
                 // Determine the ship's current screen position from its state
                 let current_pos = match state {
-                    ShipState::InSystem { system } => {
-                        stars.get(*system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
+                    ShipState::InSystem { system } => stars
+                        .get(*system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
                     ShipState::SubLight {
                         origin,
                         destination,
@@ -281,10 +272,8 @@ pub fn draw_ships(
                         } else {
                             1.0
                         };
-                        let cx =
-                            (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
-                        let cy =
-                            (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
+                        let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
+                        let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
                         Some(Vec2::new(cx, cy))
                     }
                     ShipState::InFTL {
@@ -312,34 +301,28 @@ pub fn draw_ships(
                             None
                         }
                     }
-                    ShipState::Settling { system, .. } => {
-                        stars.get(*system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
-                    ShipState::Surveying { target_system, .. } => {
-                        stars.get(*target_system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
-                    ShipState::Refitting { system, .. } => {
-                        stars.get(*system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
+                    ShipState::Settling { system, .. } => stars
+                        .get(*system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
+                    ShipState::Surveying { target_system, .. } => stars
+                        .get(*target_system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
+                    ShipState::Refitting { system, .. } => stars
+                        .get(*system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
                     // #185: Loitering ship's current screen pos for queue overlay.
-                    ShipState::Loitering { position } => {
-                        Some(Vec2::new(
-                            position[0] as f32 * view.scale,
-                            position[1] as f32 * view.scale,
-                        ))
-                    }
+                    ShipState::Loitering { position } => Some(Vec2::new(
+                        position[0] as f32 * view.scale,
+                        position[1] as f32 * view.scale,
+                    )),
                     // #217: Scouting ships render at the target system.
-                    ShipState::Scouting { target_system, .. } => {
-                        stars.get(*target_system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
+                    ShipState::Scouting { target_system, .. } => stars
+                        .get(*target_system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
                 };
 
                 if let Some(mut prev_pos) = current_pos {
@@ -371,7 +354,9 @@ pub fn draw_ships(
                             }
                             // #185: Loitering target — render directly from coordinates.
                             QueuedCommand::MoveToCoordinates { target }
-                            | QueuedCommand::DeployDeliverable { position: target, .. } => Vec2::new(
+                            | QueuedCommand::DeployDeliverable {
+                                position: target, ..
+                            } => Vec2::new(
                                 target[0] as f32 * view.scale,
                                 target[1] as f32 * view.scale,
                             ),
@@ -392,12 +377,9 @@ pub fn draw_ships(
 
                         // Command-specific markers
                         match cmd {
-                            QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
-                                gizmos.circle_2d(
-                                    target_screen,
-                                    4.0,
-                                    Color::srgba(r, g, b, 0.5),
-                                );
+                            QueuedCommand::MoveTo { .. }
+                            | QueuedCommand::MoveToCoordinates { .. } => {
+                                gizmos.circle_2d(target_screen, 4.0, Color::srgba(r, g, b, 0.5));
                             }
                             // #217: Scout marker — magenta accent to distinguish from Survey.
                             QueuedCommand::Scout { .. } => {

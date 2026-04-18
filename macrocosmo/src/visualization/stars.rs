@@ -34,10 +34,8 @@ pub fn spawn_star_visuals(
     view: Res<GalaxyView>,
 ) {
     // Build a set of colonized system entities
-    let colonized_systems: std::collections::HashSet<Entity> = colonies
-        .iter()
-        .filter_map(|c| c.system(&planets))
-        .collect();
+    let colonized_systems: std::collections::HashSet<Entity> =
+        colonies.iter().filter_map(|c| c.system(&planets)).collect();
 
     for (entity, star, pos, obscured) in &stars {
         let x = pos.x as f32 * view.scale;
@@ -68,7 +66,9 @@ pub fn spawn_star_visuals(
             };
             let glow_size = size * 3.0;
             commands.spawn((
-                StarVisual { system_entity: entity },
+                StarVisual {
+                    system_entity: entity,
+                },
                 StarGlow,
                 BaseStarSize(glow_size),
                 Sprite {
@@ -82,7 +82,9 @@ pub fn spawn_star_visuals(
 
         // Spawn main star dot
         commands.spawn((
-            StarVisual { system_entity: entity },
+            StarVisual {
+                system_entity: entity,
+            },
             BaseStarSize(size),
             Sprite {
                 color,
@@ -102,7 +104,9 @@ pub fn spawn_star_visuals(
                 0.7
             };
             commands.spawn((
-                StarVisual { system_entity: entity },
+                StarVisual {
+                    system_entity: entity,
+                },
                 Text2d::new(&star.name),
                 TextFont {
                     font_size: 14.0,
@@ -134,7 +138,12 @@ pub(super) fn star_color(star: &StarSystem, colonized: bool, obscured: bool) -> 
 // #176: Uses KnowledgeStore for remote system colonized status
 pub fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
-    mut visuals: Query<(&StarVisual, &mut Sprite, Option<&StarGlow>, Option<&BaseStarSize>)>,
+    mut visuals: Query<(
+        &StarVisual,
+        &mut Sprite,
+        Option<&StarGlow>,
+        Option<&BaseStarSize>,
+    )>,
     empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
     colonies: Query<&Colony>,
     planets: Query<&Planet>,
@@ -149,10 +158,8 @@ pub fn update_star_colors(
     let player_system = player_q.iter().next().map(|s| s.system);
 
     // Build colonized systems set for local system only (real-time)
-    let local_colonized: std::collections::HashSet<Entity> = colonies
-        .iter()
-        .filter_map(|c| c.system(&planets))
-        .collect();
+    let local_colonized: std::collections::HashSet<Entity> =
+        colonies.iter().filter_map(|c| c.system(&planets)).collect();
 
     // Get the current camera scale for zoom-responsive sizing
     let camera_scale = camera_q
@@ -175,7 +182,8 @@ pub fn update_star_colors(
             let is_colonized = if player_system == Some(vis.system_entity) {
                 local_colonized.contains(&vis.system_entity)
             } else {
-                knowledge.get(vis.system_entity)
+                knowledge
+                    .get(vis.system_entity)
                     .map(|k| k.data.colonized)
                     .unwrap_or(false)
             };
@@ -183,7 +191,8 @@ pub fn update_star_colors(
             let effective_surveyed = if player_system == Some(vis.system_entity) {
                 star.surveyed
             } else {
-                knowledge.get(vis.system_entity)
+                knowledge
+                    .get(vis.system_entity)
                     .map(|k| k.data.surveyed)
                     .unwrap_or(star.surveyed)
             };
@@ -280,11 +289,7 @@ pub fn draw_galaxy_overlay(
 
     // Capital pulsing ring (larger to match new star sizes)
     let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
-    gizmos.circle_2d(
-        Vec2::new(px, py),
-        20.0,
-        Color::srgba(1.0, 0.84, 0.0, pulse),
-    );
+    gizmos.circle_2d(Vec2::new(px, py), 20.0, Color::srgba(1.0, 0.84, 0.0, pulse));
 
     // #176: Build colonized systems set using KnowledgeStore for remote, real-time for local
     let local_colonized: std::collections::HashSet<Entity> = colonies
@@ -297,18 +302,15 @@ pub fn draw_galaxy_overlay(
         let is_colonized = if entity == player_system {
             local_colonized.contains(&entity)
         } else {
-            knowledge.get(entity)
+            knowledge
+                .get(entity)
                 .map(|k| k.data.colonized)
                 .unwrap_or(false)
         };
         if is_colonized && !star.is_capital {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
-            gizmos.circle_2d(
-                Vec2::new(sx, sy),
-                18.0,
-                Color::srgba(0.3, 1.0, 0.3, 0.6),
-            );
+            gizmos.circle_2d(Vec2::new(sx, sy), 18.0, Color::srgba(0.3, 1.0, 0.3, 0.6));
         }
     }
 
@@ -342,7 +344,8 @@ pub fn draw_galaxy_overlay(
         let is_surveyed = if entity == player_system {
             star.surveyed
         } else {
-            knowledge.get(entity)
+            knowledge
+                .get(entity)
                 .map(|k| k.data.surveyed)
                 .unwrap_or(false)
         };
@@ -377,20 +380,14 @@ pub fn draw_galaxy_overlay(
             let effective_range = ship.ftl_range + global_params.ftl_range_bonus;
             if effective_range > 0.0 {
                 let ship_pos = match state {
-                    ShipState::InSystem { system } => {
-                        stars.get(*system).ok().map(|(_, _, pos)| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
+                    ShipState::InSystem { system } => stars.get(*system).ok().map(|(_, _, pos)| {
+                        Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
+                    }),
                     _ => None,
                 };
                 if let Some(ship_pos_px) = ship_pos {
                     let range_px = effective_range as f32 * view.scale;
-                    gizmos.circle_2d(
-                        ship_pos_px,
-                        range_px,
-                        Color::srgba(0.3, 0.5, 1.0, 0.1),
-                    );
+                    gizmos.circle_2d(ship_pos_px, range_px, Color::srgba(0.3, 0.5, 1.0, 0.1));
                 }
             }
         }
@@ -426,8 +423,16 @@ pub fn draw_galaxy_overlay(
             let sy = star_pos.y as f32 * view.scale;
             let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
             let s = 5.0_f32;
-            gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
-            gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy - s),
+                Vec2::new(sx + s, sy + s),
+                hostile_color,
+            );
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy + s),
+                Vec2::new(sx + s, sy - s),
+                hostile_color,
+            );
         }
         // Remote system hostiles (from KnowledgeStore)
         for (_entity, k) in knowledge.iter() {
@@ -444,8 +449,16 @@ pub fn draw_galaxy_overlay(
             let sy = star_pos.y as f32 * view.scale;
             let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
             let s = 5.0_f32;
-            gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
-            gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy - s),
+                Vec2::new(sx + s, sy + s),
+                hostile_color,
+            );
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy + s),
+                Vec2::new(sx + s, sy - s),
+                hostile_color,
+            );
         }
     }
 

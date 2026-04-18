@@ -22,11 +22,13 @@ fn test_hostile_destroyed_when_hp_zero() {
     );
 
     // Spawn a hostile with low HP so it gets destroyed quickly
-    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
+    let hostile_entity =
+        common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
 
     // Register a weapon module in the ModuleRegistry
-    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
-        macrocosmo::ship_design::ModuleDefinition {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
             id: "test_laser".to_string(),
             name: "Test Laser".to_string(),
             description: String::new(),
@@ -51,8 +53,7 @@ fn test_hostile_destroyed_when_hp_zero() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
-        },
-    );
+        });
 
     // Spawn a strong explorer docked at that system with a weapon module
     app.world_mut().spawn((
@@ -60,7 +61,10 @@ fn test_hostile_destroyed_when_hp_zero() {
             name: "Warship-1".to_string(),
             design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "test_laser".to_string() }],
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "test_laser".to_string(),
+            }],
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -72,9 +76,12 @@ fn test_hostile_destroyed_when_hp_zero() {
         ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
+            hull: 50.0,
+            hull_max: 50.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
             shield_regen: 0.0,
         },
         ShipModifiers::default(),
@@ -106,35 +113,49 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
     );
 
     // Spawn a powerful hostile
-    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 1000.0, 1000.0, 100.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        1000.0,
+        1000.0,
+        100.0,
+        0.0,
+        "space_creature",
+    );
 
     // Spawn a very weak ship with nearly no hull HP
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Doomed-1".to_string(),
-            design_id: "courier_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.85,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 0.01, hull_max: 20.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Doomed-1".to_string(),
+                design_id: "courier_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.85,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 0.01,
+                hull_max: 20.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     // Run one tick of combat
     advance_time(&mut app, 1);
@@ -160,13 +181,17 @@ fn test_no_combat_when_no_ships_present() {
     );
 
     // Spawn hostile - should not be affected without ships present
-    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 10.0, 10.0, 5.0, 0.0, "space_creature");
+    let hostile_entity =
+        common::spawn_raw_hostile(app.world_mut(), sys, 10.0, 10.0, 5.0, 0.0, "space_creature");
 
     advance_time(&mut app, 1);
 
     // Hostile should still exist with full HP
     let hostile = app.world().get::<HostileHitpoints>(hostile_entity).unwrap();
-    assert!((hostile.hp - 10.0).abs() < f64::EPSILON, "Hostile HP should be unchanged");
+    assert!(
+        (hostile.hp - 10.0).abs() < f64::EPSILON,
+        "Hostile HP should be unchanged"
+    );
 }
 
 #[test]
@@ -183,11 +208,20 @@ fn test_combat_takes_multiple_ticks() {
     );
 
     // Hostile with significant HP
-    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 1000.0, 1000.0, 0.01, 0.0, "space_creature");
+    let hostile_entity = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        1000.0,
+        1000.0,
+        0.01,
+        0.0,
+        "space_creature",
+    );
 
     // Register a weapon module
-    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
-        macrocosmo::ship_design::ModuleDefinition {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
             id: "small_laser".to_string(),
             name: "Small Laser".to_string(),
             description: String::new(),
@@ -212,8 +246,7 @@ fn test_combat_takes_multiple_ticks() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
-        },
-    );
+        });
 
     // Ship with a weapon module
     app.world_mut().spawn((
@@ -221,7 +254,10 @@ fn test_combat_takes_multiple_ticks() {
             name: "Fighter-1".to_string(),
             design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "small_laser".to_string() }],
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "small_laser".to_string(),
+            }],
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -233,9 +269,12 @@ fn test_combat_takes_multiple_ticks() {
         ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
+            hull: 50.0,
+            hull_max: 50.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
             shield_regen: 0.0,
         },
         ShipModifiers::default(),
@@ -250,7 +289,10 @@ fn test_combat_takes_multiple_ticks() {
 
     let hostile = app.world().get::<HostileHitpoints>(hostile_entity).unwrap();
     assert!(hostile.hp < 1000.0, "Hostile should have taken some damage");
-    assert!(hostile.hp > 0.0, "Hostile should still be alive after one tick");
+    assert!(
+        hostile.hp > 0.0,
+        "Hostile should still be alive after one tick"
+    );
 }
 
 // --- #97: 3-layer HP model tests ---
@@ -270,7 +312,9 @@ fn test_shield_regenerates() {
 
     // Register a shield generator module
     {
-        let mut module_reg = app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
+        let mut module_reg = app
+            .world_mut()
+            .resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "shield_gen".to_string(),
             name: "Shield Generator".to_string(),
@@ -279,53 +323,72 @@ fn test_shield_regenerates() {
             modifiers: vec![
                 macrocosmo::ship_design::ModuleModifier {
                     target: "ship.shield_max".to_string(),
-                    base_add: 20.0, multiplier: 0.0, add: 0.0,
+                    base_add: 20.0,
+                    multiplier: 0.0,
+                    add: 0.0,
                 },
                 macrocosmo::ship_design::ModuleModifier {
                     target: "ship.shield_regen".to_string(),
-                    base_add: 2.0, multiplier: 0.0, add: 0.0,
+                    base_add: 2.0,
+                    multiplier: 0.0,
+                    add: 0.0,
                 },
             ],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
         });
     }
 
     // Spawn ship with the shield module equipped
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Shielded-1".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "utility".to_string(), module_id: "shield_gen".to_string() }],
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 5.0, shield_max: 20.0,
-            shield_regen: 2.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Shielded-1".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: vec![EquippedModule {
+                    slot_type: "utility".to_string(),
+                    module_id: "shield_gen".to_string(),
+                }],
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 5.0,
+                shield_max: 20.0,
+                shield_regen: 2.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     // Advance 3 hexadies — shield should regenerate 2.0 * 3 = 6.0 (5+6=11)
     advance_time(&mut app, 3);
 
     let hp = app.world().get::<ShipHitpoints>(ship_entity).unwrap();
-    assert!((hp.shield - 11.0).abs() < 0.01, "Shield should have regenerated to 11.0, got {}", hp.shield);
+    assert!(
+        (hp.shield - 11.0).abs() < 0.01,
+        "Shield should have regenerated to 11.0, got {}",
+        hp.shield
+    );
 }
 
 #[test]
@@ -343,7 +406,9 @@ fn test_shield_regen_caps_at_max() {
 
     // Register a shield module with shield_max=20, shield_regen=10
     {
-        let mut module_reg = app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
+        let mut module_reg = app
+            .world_mut()
+            .resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "big_shield".to_string(),
             name: "Big Shield".to_string(),
@@ -352,51 +417,70 @@ fn test_shield_regen_caps_at_max() {
             modifiers: vec![
                 macrocosmo::ship_design::ModuleModifier {
                     target: "ship.shield_max".to_string(),
-                    base_add: 20.0, multiplier: 0.0, add: 0.0,
+                    base_add: 20.0,
+                    multiplier: 0.0,
+                    add: 0.0,
                 },
                 macrocosmo::ship_design::ModuleModifier {
                     target: "ship.shield_regen".to_string(),
-                    base_add: 10.0, multiplier: 0.0, add: 0.0,
+                    base_add: 10.0,
+                    multiplier: 0.0,
+                    add: 0.0,
                 },
             ],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
         });
     }
 
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Shield-Cap".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "utility".to_string(), module_id: "big_shield".to_string() }],
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 18.0, shield_max: 20.0,
-            shield_regen: 10.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Shield-Cap".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: vec![EquippedModule {
+                    slot_type: "utility".to_string(),
+                    module_id: "big_shield".to_string(),
+                }],
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 18.0,
+                shield_max: 20.0,
+                shield_regen: 10.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     advance_time(&mut app, 1);
 
     let hp = app.world().get::<ShipHitpoints>(ship_entity).unwrap();
-    assert!((hp.shield - 20.0).abs() < 0.01, "Shield should be capped at max 20.0, got {}", hp.shield);
+    assert!(
+        (hp.shield - 20.0).abs() < 0.01,
+        "Shield should be capped at max 20.0, got {}",
+        hp.shield
+    );
 }
 
 #[test]
@@ -413,11 +497,21 @@ fn test_combat_damages_3_layers() {
     );
 
     // Spawn hostile with significant strength
-    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 10.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        10000.0,
+        10000.0,
+        10.0,
+        0.0,
+        "space_creature",
+    );
 
     // Register armor and shield modules
     {
-        let mut module_reg = app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
+        let mut module_reg = app
+            .world_mut()
+            .resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "armor_plating".to_string(),
             name: "Armor Plating".to_string(),
@@ -425,10 +519,14 @@ fn test_combat_damages_3_layers() {
             slot_type: "utility".to_string(),
             modifiers: vec![macrocosmo::ship_design::ModuleModifier {
                 target: "ship.armor_max".to_string(),
-                base_add: 50.0, multiplier: 0.0, add: 0.0,
+                base_add: 50.0,
+                multiplier: 0.0,
+                add: 0.0,
             }],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
         });
@@ -439,45 +537,61 @@ fn test_combat_damages_3_layers() {
             slot_type: "utility".to_string(),
             modifiers: vec![macrocosmo::ship_design::ModuleModifier {
                 target: "ship.shield_max".to_string(),
-                base_add: 30.0, multiplier: 0.0, add: 0.0,
+                base_add: 30.0,
+                multiplier: 0.0,
+                add: 0.0,
             }],
             weapon: None,
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
         });
     }
 
     // Ship with shield + armor + hull (modules provide the max values)
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Tanky-1".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: vec![
-                EquippedModule { slot_type: "utility".to_string(), module_id: "armor_plating".to_string() },
-                EquippedModule { slot_type: "utility".to_string(), module_id: "shield_unit".to_string() },
-            ],
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 100.0, hull_max: 100.0,
-            armor: 50.0, armor_max: 50.0,
-            shield: 30.0, shield_max: 30.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Tanky-1".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: vec![
+                    EquippedModule {
+                        slot_type: "utility".to_string(),
+                        module_id: "armor_plating".to_string(),
+                    },
+                    EquippedModule {
+                        slot_type: "utility".to_string(),
+                        module_id: "shield_unit".to_string(),
+                    },
+                ],
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 100.0,
+                hull_max: 100.0,
+                armor: 50.0,
+                armor_max: 50.0,
+                shield: 30.0,
+                shield_max: 30.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     // 1 hexadies = 12 combat turns, hostile strength=10 damage/turn
     // total damage = 10 * 12 = 120 distributed across shield->armor->hull
@@ -488,8 +602,16 @@ fn test_combat_damages_3_layers() {
     assert_eq!(hp.shield, 0.0, "Shield should be fully depleted");
     // Total damage = 120. Shield absorbs 30, remaining = 90. Armor absorbs 50, remaining = 40.
     // Hull = 100 - 40 = 60
-    assert!(hp.armor == 0.0, "Armor should be fully depleted, got {}", hp.armor);
-    assert!((hp.hull - 60.0).abs() < 0.01, "Hull should be ~60.0, got {}", hp.hull);
+    assert!(
+        hp.armor == 0.0,
+        "Armor should be fully depleted, got {}",
+        hp.armor
+    );
+    assert!(
+        (hp.hull - 60.0).abs() < 0.01,
+        "Hull should be ~60.0, got {}",
+        hp.hull
+    );
 }
 
 #[test]
@@ -505,34 +627,48 @@ fn test_hull_zero_destroys_ship() {
         false,
     );
 
-    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 100.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        10000.0,
+        10000.0,
+        100.0,
+        0.0,
+        "space_creature",
+    );
 
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Fragile-1".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 1.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Fragile-1".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 1.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     advance_time(&mut app, 1);
 
@@ -556,79 +692,158 @@ fn test_weapon_cooldown() {
     );
 
     // Register two weapon types: fast (cooldown 1) and slow (cooldown 6)
-    let mut module_reg = app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
+    let mut module_reg = app
+        .world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>();
     module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
         id: "fast_gun".to_string(),
         name: "Fast Gun".to_string(),
-            description: String::new(),
+        description: String::new(),
         slot_type: "weapon".to_string(),
         modifiers: Vec::new(),
         weapon: Some(macrocosmo::ship_design::WeaponStats {
-            track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
-            shield_damage: 0.0, shield_damage_div: 0.0, shield_piercing: 0.0,
-            armor_damage: 0.0, armor_damage_div: 0.0, armor_piercing: 0.0,
-            hull_damage: 1.0, hull_damage_div: 0.0,
+            track: 1000.0,
+            precision: 1.0,
+            cooldown: 1,
+            range: 100.0,
+            shield_damage: 0.0,
+            shield_damage_div: 0.0,
+            shield_piercing: 0.0,
+            armor_damage: 0.0,
+            armor_damage_div: 0.0,
+            armor_piercing: 0.0,
+            hull_damage: 1.0,
+            hull_damage_div: 0.0,
         }),
-        cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+        cost_minerals: Amt::ZERO,
+        cost_energy: Amt::ZERO,
+        prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
     });
     module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
         id: "slow_gun".to_string(),
         name: "Slow Gun".to_string(),
-            description: String::new(),
+        description: String::new(),
         slot_type: "weapon".to_string(),
         modifiers: Vec::new(),
         weapon: Some(macrocosmo::ship_design::WeaponStats {
-            track: 1000.0, precision: 1.0, cooldown: 6, range: 100.0,
-            shield_damage: 0.0, shield_damage_div: 0.0, shield_piercing: 0.0,
-            armor_damage: 0.0, armor_damage_div: 0.0, armor_piercing: 0.0,
-            hull_damage: 1.0, hull_damage_div: 0.0,
+            track: 1000.0,
+            precision: 1.0,
+            cooldown: 6,
+            range: 100.0,
+            shield_damage: 0.0,
+            shield_damage_div: 0.0,
+            shield_piercing: 0.0,
+            armor_damage: 0.0,
+            armor_damage_div: 0.0,
+            armor_piercing: 0.0,
+            hull_damage: 1.0,
+            hull_damage_div: 0.0,
         }),
-        cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+        cost_minerals: Amt::ZERO,
+        cost_energy: Amt::ZERO,
+        prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
     });
 
     // Hostile A: attacked by fast gun
-    let hostile_a = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 0.0, 0.0, "space_creature");
+    let hostile_a = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        10000.0,
+        10000.0,
+        0.0,
+        0.0,
+        "space_creature",
+    );
 
     // Hostile B: attacked by slow gun (separate system)
-    let sys_b = spawn_test_system(app.world_mut(), "Cooldown-B", [100.0, 0.0, 0.0], 0.7, true, false);
-    let hostile_b = common::spawn_raw_hostile(app.world_mut(), sys_b, 10000.0, 10000.0, 0.0, 0.0, "space_creature");
+    let sys_b = spawn_test_system(
+        app.world_mut(),
+        "Cooldown-B",
+        [100.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
+    let hostile_b = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys_b,
+        10000.0,
+        10000.0,
+        0.0,
+        0.0,
+        "space_creature",
+    );
 
     // Ship with fast gun at sys
     app.world_mut().spawn((
         Ship {
-            name: "Fast-Ship".to_string(), design_id: "explorer_mk1".to_string(),
+            name: "Fast-Ship".to_string(),
+            design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "fast_gun".to_string() }],
-            owner: Owner::Neutral, sublight_speed: 0.75, ftl_range: 0.0,
-            player_aboard: false, home_port: Entity::PLACEHOLDER,
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "fast_gun".to_string(),
+            }],
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
         },
         ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints { hull: 100.0, hull_max: 100.0, armor: 0.0, armor_max: 0.0, shield: 0.0, shield_max: 0.0, shield_regen: 0.0 },
-        ShipModifiers::default(), CommandQueue::default(), Cargo::default(),
+        ShipHitpoints {
+            hull: 100.0,
+            hull_max: 100.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
     ));
 
     // Ship with slow gun at sys_b
     app.world_mut().spawn((
         Ship {
-            name: "Slow-Ship".to_string(), design_id: "explorer_mk1".to_string(),
+            name: "Slow-Ship".to_string(),
+            design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "slow_gun".to_string() }],
-            owner: Owner::Neutral, sublight_speed: 0.75, ftl_range: 0.0,
-            player_aboard: false, home_port: Entity::PLACEHOLDER,
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "slow_gun".to_string(),
+            }],
+            owner: Owner::Neutral,
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
         },
         ShipState::InSystem { system: sys_b },
         Position::from([100.0, 0.0, 0.0]),
-        ShipHitpoints { hull: 100.0, hull_max: 100.0, armor: 0.0, armor_max: 0.0, shield: 0.0, shield_max: 0.0, shield_regen: 0.0 },
-        ShipModifiers::default(), CommandQueue::default(), Cargo::default(),
+        ShipHitpoints {
+            hull: 100.0,
+            hull_max: 100.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
     ));
 
     advance_time(&mut app, 1);
@@ -638,8 +853,12 @@ fn test_weapon_cooldown() {
     // Fast gun (cooldown=1): 12 shots per hexadies. Slow gun (cooldown=6): 2 shots per hexadies.
     let damage_a = 10000.0 - hp_a;
     let damage_b = 10000.0 - hp_b;
-    assert!(damage_a > damage_b * 3.0,
-        "Fast gun should deal much more damage ({}) than slow gun ({})", damage_a, damage_b);
+    assert!(
+        damage_a > damage_b * 3.0,
+        "Fast gun should deal much more damage ({}) than slow gun ({})",
+        damage_a,
+        damage_b
+    );
 }
 
 #[test]
@@ -656,59 +875,99 @@ fn test_shield_piercing() {
     );
 
     // Register a weapon with 100% shield piercing
-    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
-        macrocosmo::ship_design::ModuleDefinition {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
             id: "shield_piercer".to_string(),
             name: "Shield Piercer".to_string(),
             description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
-                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
-                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 1.0,  // always pierce shields
-                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 1.0,     // always pierce armor
-                hull_damage: 5.0, hull_damage_div: 0.0,
+                track: 1000.0,
+                precision: 1.0,
+                cooldown: 1,
+                range: 100.0,
+                shield_damage: 5.0,
+                shield_damage_div: 0.0,
+                shield_piercing: 1.0, // always pierce shields
+                armor_damage: 5.0,
+                armor_damage_div: 0.0,
+                armor_piercing: 1.0, // always pierce armor
+                hull_damage: 5.0,
+                hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
-        },
-    );
+        });
 
     // Hostile with no attack
-    let hostile = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 0.0, 0.0, "space_creature");
+    let hostile = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        10000.0,
+        10000.0,
+        0.0,
+        0.0,
+        "space_creature",
+    );
 
     // Ship with full shields, armor, and the piercing weapon
-    let _ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Piercer-1".to_string(), design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "shield_piercer".to_string() }],
-            owner: Owner::Neutral, sublight_speed: 0.75, ftl_range: 0.0,
-            player_aboard: false, home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 100.0, hull_max: 100.0,
-            armor: 50.0, armor_max: 50.0,
-            shield: 100.0, shield_max: 100.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(), CommandQueue::default(), Cargo::default(),
-    )).id();
+    let _ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Piercer-1".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: vec![EquippedModule {
+                    slot_type: "weapon".to_string(),
+                    module_id: "shield_piercer".to_string(),
+                }],
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 100.0,
+                hull_max: 100.0,
+                armor: 50.0,
+                armor_max: 50.0,
+                shield: 100.0,
+                shield_max: 100.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     advance_time(&mut app, 1);
 
     // With 100% shield+armor piercing, all damage goes to hull of hostile.
     // 12 combat turns * 5 hull_damage = 60 damage.
     let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
-    assert!(h.hp < 10000.0, "Hostile should have taken hull damage through piercing");
+    assert!(
+        h.hp < 10000.0,
+        "Hostile should have taken hull damage through piercing"
+    );
     let expected_hp = 10000.0 - 60.0;
-    assert!((h.hp - expected_hp).abs() < 1.0,
-        "Hostile HP should be ~{}, got {}", expected_hp, h.hp);
+    assert!(
+        (h.hp - expected_hp).abs() < 1.0,
+        "Hostile HP should be ~{}, got {}",
+        expected_hp,
+        h.hp
+    );
 }
 
 // --- #57: Rules of Engagement tests ---
@@ -733,27 +992,45 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
     );
 
     // Hostile with no attack but trackable HP
-    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 100.0, 100.0, 0.0, 0.0, "space_creature");
+    let hostile_entity = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        100.0,
+        100.0,
+        0.0,
+        0.0,
+        "space_creature",
+    );
 
     // Register a weapon module
-    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
-        macrocosmo::ship_design::ModuleDefinition {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
             id: "roe_laser".to_string(),
             name: "ROE Laser".to_string(),
             description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
-                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
-                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
-                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
-                hull_damage: 5.0, hull_damage_div: 0.0,
+                track: 1000.0,
+                precision: 1.0,
+                cooldown: 1,
+                range: 100.0,
+                shield_damage: 5.0,
+                shield_damage_div: 0.0,
+                shield_piercing: 0.0,
+                armor_damage: 5.0,
+                armor_damage_div: 0.0,
+                armor_piercing: 0.0,
+                hull_damage: 5.0,
+                hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
-        },
-    );
+        });
 
     // Ship with Retreat ROE — should NOT engage
     app.world_mut().spawn((
@@ -761,7 +1038,10 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
             name: "Coward-1".to_string(),
             design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "roe_laser".to_string() }],
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "roe_laser".to_string(),
+            }],
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -773,9 +1053,12 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
         ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
+            hull: 50.0,
+            hull_max: 50.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
             shield_regen: 0.0,
         },
         ShipModifiers::default(),
@@ -809,36 +1092,50 @@ fn test_retreat_ships_dont_take_damage() {
     );
 
     // Hostile with strong attack
-    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 10000.0, 10000.0, 100.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        10000.0,
+        10000.0,
+        100.0,
+        0.0,
+        "space_creature",
+    );
 
     // Ship with Retreat ROE — should not take damage
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Runner-1".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 1.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-        RulesOfEngagement::Retreat,
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Runner-1".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 1.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+            RulesOfEngagement::Retreat,
+        ))
+        .id();
 
     advance_time(&mut app, 1);
 
@@ -864,26 +1161,37 @@ fn test_aggressive_ships_engage_combat() {
         false,
     );
 
-    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
+    let hostile_entity =
+        common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
 
-    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
-        macrocosmo::ship_design::ModuleDefinition {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
             id: "aggro_laser".to_string(),
             name: "Aggro Laser".to_string(),
             description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
-                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
-                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
-                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
-                hull_damage: 5.0, hull_damage_div: 0.0,
+                track: 1000.0,
+                precision: 1.0,
+                cooldown: 1,
+                range: 100.0,
+                shield_damage: 5.0,
+                shield_damage_div: 0.0,
+                shield_piercing: 0.0,
+                armor_damage: 5.0,
+                armor_damage_div: 0.0,
+                armor_piercing: 0.0,
+                hull_damage: 5.0,
+                hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
-        },
-    );
+        });
 
     // Ship with Aggressive ROE
     app.world_mut().spawn((
@@ -891,7 +1199,10 @@ fn test_aggressive_ships_engage_combat() {
             name: "Aggressor-1".to_string(),
             design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "aggro_laser".to_string() }],
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "aggro_laser".to_string(),
+            }],
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -903,9 +1214,12 @@ fn test_aggressive_ships_engage_combat() {
         ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
+            hull: 50.0,
+            hull_max: 50.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
             shield_regen: 0.0,
         },
         ShipModifiers::default(),
@@ -937,26 +1251,37 @@ fn test_defensive_ships_engage_combat_same_as_before() {
         false,
     );
 
-    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
+    let hostile_entity =
+        common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 0.0, 0.0, "space_creature");
 
-    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
-        macrocosmo::ship_design::ModuleDefinition {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
             id: "def_laser".to_string(),
             name: "Defensive Laser".to_string(),
             description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
-                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
-                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
-                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
-                hull_damage: 5.0, hull_damage_div: 0.0,
+                track: 1000.0,
+                precision: 1.0,
+                cooldown: 1,
+                range: 100.0,
+                shield_damage: 5.0,
+                shield_damage_div: 0.0,
+                shield_piercing: 0.0,
+                armor_damage: 5.0,
+                armor_damage_div: 0.0,
+                armor_piercing: 0.0,
+                hull_damage: 5.0,
+                hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
-        },
-    );
+        });
 
     // Ship with Defensive ROE (default) — should still fight
     app.world_mut().spawn((
@@ -964,7 +1289,10 @@ fn test_defensive_ships_engage_combat_same_as_before() {
             name: "Defender-1".to_string(),
             design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "def_laser".to_string() }],
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "def_laser".to_string(),
+            }],
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -976,9 +1304,12 @@ fn test_defensive_ships_engage_combat_same_as_before() {
         ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
+            hull: 50.0,
+            hull_max: 50.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
             shield_regen: 0.0,
         },
         ShipModifiers::default(),
@@ -1010,26 +1341,44 @@ fn test_mixed_roe_only_non_retreat_fight() {
     );
 
     // Hostile with moderate HP and strong attack
-    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 0.05, 10.0, 50.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        0.05,
+        10.0,
+        50.0,
+        0.0,
+        "space_creature",
+    );
 
-    app.world_mut().resource_mut::<macrocosmo::ship_design::ModuleRegistry>().insert(
-        macrocosmo::ship_design::ModuleDefinition {
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
             id: "mix_laser".to_string(),
             name: "Mix Laser".to_string(),
             description: String::new(),
             slot_type: "weapon".to_string(),
             modifiers: Vec::new(),
             weapon: Some(macrocosmo::ship_design::WeaponStats {
-                track: 1000.0, precision: 1.0, cooldown: 1, range: 100.0,
-                shield_damage: 5.0, shield_damage_div: 0.0, shield_piercing: 0.0,
-                armor_damage: 5.0, armor_damage_div: 0.0, armor_piercing: 0.0,
-                hull_damage: 5.0, hull_damage_div: 0.0,
+                track: 1000.0,
+                precision: 1.0,
+                cooldown: 1,
+                range: 100.0,
+                shield_damage: 5.0,
+                shield_damage_div: 0.0,
+                shield_piercing: 0.0,
+                armor_damage: 5.0,
+                armor_damage_div: 0.0,
+                armor_piercing: 0.0,
+                hull_damage: 5.0,
+                hull_damage_div: 0.0,
             }),
-            cost_minerals: Amt::ZERO, cost_energy: Amt::ZERO, prerequisites: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
-        },
-    );
+        });
 
     // Aggressive ship — will fight
     app.world_mut().spawn((
@@ -1037,7 +1386,10 @@ fn test_mixed_roe_only_non_retreat_fight() {
             name: "Fighter".to_string(),
             design_id: "explorer_mk1".to_string(),
             hull_id: "corvette".to_string(),
-            modules: vec![EquippedModule { slot_type: "weapon".to_string(), module_id: "mix_laser".to_string() }],
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "mix_laser".to_string(),
+            }],
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
@@ -1049,9 +1401,12 @@ fn test_mixed_roe_only_non_retreat_fight() {
         ShipState::InSystem { system: sys },
         Position::from([0.0, 0.0, 0.0]),
         ShipHitpoints {
-            hull: 5000.0, hull_max: 5000.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
+            hull: 5000.0,
+            hull_max: 5000.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
             shield_regen: 0.0,
         },
         ShipModifiers::default(),
@@ -1061,33 +1416,39 @@ fn test_mixed_roe_only_non_retreat_fight() {
     ));
 
     // Retreat ship — should NOT take damage from hostile
-    let retreat_ship = app.world_mut().spawn((
-        Ship {
-            name: "Pacifist".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: Entity::PLACEHOLDER,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 1.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-        RulesOfEngagement::Retreat,
-    )).id();
+    let retreat_ship = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Pacifist".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: Entity::PLACEHOLDER,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 1.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+            RulesOfEngagement::Retreat,
+        ))
+        .id();
 
     advance_time(&mut app, 1);
 
@@ -1113,50 +1474,66 @@ fn test_set_roe_via_pending_command() {
         false,
     );
 
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "ROE-Target".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 0.0,
-            player_aboard: false,
-            home_port: sys,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: sys },
-        Position::from([0.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 50.0, hull_max: 50.0,
-            armor: 0.0, armor_max: 0.0,
-            shield: 0.0, shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-        RulesOfEngagement::Defensive,
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "ROE-Target".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: sys,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys },
+            Position::from([0.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 50.0,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+            RulesOfEngagement::Defensive,
+        ))
+        .id();
 
     // Spawn a pending SetROE command that arrives at tick 5
     app.world_mut().spawn(PendingShipCommand {
         ship: ship_entity,
-        command: ShipCommand::SetROE { roe: RulesOfEngagement::Aggressive },
+        command: ShipCommand::SetROE {
+            roe: RulesOfEngagement::Aggressive,
+        },
         arrives_at: 5,
     });
 
     // Before arrival, ROE should still be Defensive
     advance_time(&mut app, 3);
     let roe = app.world().get::<RulesOfEngagement>(ship_entity).unwrap();
-    assert_eq!(*roe, RulesOfEngagement::Defensive, "ROE should still be Defensive before command arrives");
+    assert_eq!(
+        *roe,
+        RulesOfEngagement::Defensive,
+        "ROE should still be Defensive before command arrives"
+    );
 
     // After arrival (tick 5), ROE should change to Aggressive
     advance_time(&mut app, 3);
     let roe = app.world().get::<RulesOfEngagement>(ship_entity).unwrap();
-    assert_eq!(*roe, RulesOfEngagement::Aggressive, "ROE should be Aggressive after command arrives");
+    assert_eq!(
+        *roe,
+        RulesOfEngagement::Aggressive,
+        "ROE should be Aggressive after command arrives"
+    );
 }
 
 // --- #52/#56: Galaxy hostile spawning + colonization restriction tests ---
@@ -1192,7 +1569,11 @@ fn test_galaxy_has_hostiles() {
         description: String::new(),
         base_habitability: 0.7,
         base_slots: 4,
-        resource_bias: ResourceBias { minerals: 1.0, energy: 1.0, research: 1.0 },
+        resource_bias: ResourceBias {
+            minerals: 1.0,
+            energy: 1.0,
+            research: 1.0,
+        },
         weight: 1.0,
         default_biome: None,
     });
@@ -1215,8 +1596,7 @@ fn test_galaxy_has_hostiles() {
         Startup,
         (
             macrocosmo::faction::spawn_hostile_factions,
-            macrocosmo::galaxy::generate_galaxy
-                .after(macrocosmo::faction::spawn_hostile_factions),
+            macrocosmo::galaxy::generate_galaxy.after(macrocosmo::faction::spawn_hostile_factions),
         ),
     );
     app.update();
@@ -1227,7 +1607,10 @@ fn test_galaxy_has_hostiles() {
         .query::<&Hostile>()
         .iter(app.world())
         .count();
-    assert!(hostile_count > 0, "Galaxy should have at least some hostile presences");
+    assert!(
+        hostile_count > 0,
+        "Galaxy should have at least some hostile presences"
+    );
 
     // Check that no hostile is at the capital system
     let capital_entity = app
@@ -1278,7 +1661,15 @@ fn test_colonize_blocked_by_hostile() {
     );
 
     // Spawn hostile at this system (low strength so it won't kill the ship via combat)
-    let _ = common::spawn_raw_hostile(app.world_mut(), sys, 500.0, 500.0, 0.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        500.0,
+        500.0,
+        0.0,
+        0.0,
+        "space_creature",
+    );
 
     // Spawn a colony ship that is settling at this system (completes at tick 1)
     let ship_entity = app
@@ -1340,7 +1731,10 @@ fn test_colonize_blocked_by_hostile() {
         .query::<&macrocosmo::colony::Colony>()
         .iter(app.world())
         .count();
-    assert_eq!(colony_count, 0, "No colony should exist when hostile presence blocks colonization");
+    assert_eq!(
+        colony_count, 0,
+        "No colony should exist when hostile presence blocks colonization"
+    );
 }
 
 #[test]
@@ -1356,7 +1750,15 @@ fn test_hostile_cleared_allows_colonization() {
     );
 
     // Spawn and immediately despawn a hostile (simulating it was defeated)
-    let hostile_entity = common::spawn_raw_hostile(app.world_mut(), sys, 10.0, 10.0, 10.0, 0.0, "space_creature");
+    let hostile_entity = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        10.0,
+        10.0,
+        10.0,
+        0.0,
+        "space_creature",
+    );
     app.world_mut().despawn(hostile_entity);
 
     // Spawn a colony ship settling at this system
@@ -1413,7 +1815,10 @@ fn test_hostile_cleared_allows_colonization() {
         .query::<&macrocosmo::colony::Colony>()
         .iter(app.world())
         .count();
-    assert_eq!(colony_count, 1, "Colony should be established after hostile is cleared");
+    assert_eq!(
+        colony_count, 1,
+        "Colony should be established after hostile is cleared"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,14 +1946,23 @@ fn test_combat_skipped_when_hostile_lacks_faction_owner() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Unmigrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Unmigrated-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
 
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
 
     // Drive the world directly — bypass the auto-migrating `advance_time`
     // helper. Hostile has no FactionOwner; ship has no Faction-bearing owner.
-    app.world_mut().resource_mut::<macrocosmo::time_system::GameClock>().elapsed += 1;
+    app.world_mut()
+        .resource_mut::<macrocosmo::time_system::GameClock>()
+        .elapsed += 1;
     app.update();
 
     let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
@@ -1566,7 +1980,14 @@ fn test_combat_triggers_with_default_hostile_relations() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Migrated-System", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Migrated-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
 
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
@@ -1594,7 +2015,14 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Peace-System", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Peace-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
 
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
@@ -1612,8 +2040,16 @@ fn test_combat_skipped_when_player_at_peace_with_hostile_faction() {
     // Override: peace with space_creature (both directions).
     {
         let mut rel = app.world_mut().resource_mut::<FactionRelations>();
-        rel.set(empire, space_creature, FactionView::new(RelationState::Peace, 0.0));
-        rel.set(space_creature, empire, FactionView::new(RelationState::Peace, 0.0));
+        rel.set(
+            empire,
+            space_creature,
+            FactionView::new(RelationState::Peace, 0.0),
+        );
+        rel.set(
+            space_creature,
+            empire,
+            FactionView::new(RelationState::Peace, 0.0),
+        );
     }
 
     advance_time(&mut app, 1);
@@ -1634,7 +2070,14 @@ fn test_combat_skipped_when_player_allied_with_hostile_faction() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Alliance-System", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Alliance-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
 
     let hostile = spawn_test_hostile(app.world_mut(), sys, "ancient_defense");
 
@@ -1649,8 +2092,16 @@ fn test_combat_skipped_when_player_allied_with_hostile_faction() {
 
     {
         let mut rel = app.world_mut().resource_mut::<FactionRelations>();
-        rel.set(empire, ancient_defense, FactionView::new(RelationState::Alliance, 100.0));
-        rel.set(ancient_defense, empire, FactionView::new(RelationState::Alliance, 100.0));
+        rel.set(
+            empire,
+            ancient_defense,
+            FactionView::new(RelationState::Alliance, 100.0),
+        );
+        rel.set(
+            ancient_defense,
+            empire,
+            FactionView::new(RelationState::Alliance, 100.0),
+        );
     }
 
     advance_time(&mut app, 1);
@@ -1672,7 +2123,14 @@ fn test_combat_triggers_when_at_war_even_with_positive_standing() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "War-System", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "War-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
 
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let _ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
@@ -1681,13 +2139,21 @@ fn test_combat_triggers_when_at_war_even_with_positive_standing() {
     let empire = common::empire_entity(app.world_mut());
     {
         let mut rel = app.world_mut().resource_mut::<FactionRelations>();
-        rel.set(empire, space_creature, FactionView::new(RelationState::War, 80.0));
+        rel.set(
+            empire,
+            space_creature,
+            FactionView::new(RelationState::War, 80.0),
+        );
     }
 
     advance_time(&mut app, 1);
 
     let h = app.world().get::<HostileHitpoints>(hostile).unwrap();
-    assert!(h.hp < 1000.0, "War must permit attack regardless of standing; HP={}", h.hp);
+    assert!(
+        h.hp < 1000.0,
+        "War must permit attack regardless of standing; HP={}",
+        h.hp
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1715,7 +2181,12 @@ fn assert_hostile_untouched(app: &App, hostile: Entity) {
 }
 
 /// Override the player↔hostile relation to a single `(state, standing)` view.
-fn set_player_view(app: &mut App, hostile_faction: Entity, state: macrocosmo::faction::RelationState, standing: f64) {
+fn set_player_view(
+    app: &mut App,
+    hostile_faction: Entity,
+    state: macrocosmo::faction::RelationState,
+    standing: f64,
+) {
     use macrocosmo::faction::{FactionRelations, FactionView};
     let empire = common::empire_entity(app.world_mut());
     let mut rel = app.world_mut().resource_mut::<FactionRelations>();
@@ -1732,10 +2203,19 @@ fn test_aggressive_engages_neutral_negative_standing() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Aggro-Neg", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Aggro-Neg",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
-    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Aggressive);
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(RulesOfEngagement::Aggressive);
 
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
     set_player_view(&mut app, space_creature, RelationState::Neutral, -25.0);
@@ -1766,10 +2246,19 @@ fn test_defensive_engages_at_war() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Def-War", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Def-War",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
-    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(RulesOfEngagement::Defensive);
 
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
     // Positive standing on purpose: only the War state should drive engagement.
@@ -1789,10 +2278,19 @@ fn test_defensive_retaliates_against_hostile_at_peace() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Def-Peace-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Def-Peace-Hostile",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
-    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Defensive);
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(RulesOfEngagement::Defensive);
 
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
     set_player_view(&mut app, space_creature, RelationState::Peace, 0.0);
@@ -1810,10 +2308,19 @@ fn test_retreat_skips_combat_at_war() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Retreat-War", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Retreat-War",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
-    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(RulesOfEngagement::Retreat);
 
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
     set_player_view(&mut app, space_creature, RelationState::War, -100.0);
@@ -1830,10 +2337,19 @@ fn test_retreat_skips_combat_with_hostile_present() {
     let mut app = test_app();
     install_test_weapon_module(&mut app);
 
-    let sys = spawn_test_system(app.world_mut(), "Retreat-Hostile", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Retreat-Hostile",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
     let hostile = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ship = spawn_test_armed_ship(app.world_mut(), sys, Owner::Neutral);
-    app.world_mut().entity_mut(ship).insert(RulesOfEngagement::Retreat);
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(RulesOfEngagement::Retreat);
 
     // Default migration keeps Neutral / -100 standing — would normally engage
     // under Aggressive or Defensive.
@@ -1851,7 +2367,14 @@ fn test_faction_owner_attached_by_hostile_type() {
 
     let mut app = test_app();
 
-    let sys = spawn_test_system(app.world_mut(), "Tagging", [0.0, 0.0, 0.0], 0.7, true, false);
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Tagging",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
 
     let creature = spawn_test_hostile(app.world_mut(), sys, "space_creature");
     let ancient = spawn_test_hostile(app.world_mut(), sys, "ancient_defense");
@@ -1878,14 +2401,8 @@ fn test_hostile_viz_uses_factionowner() {
 
     let sys_capital =
         spawn_test_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true);
-    let sys_remote = spawn_test_system(
-        app.world_mut(),
-        "Remote",
-        [1.0, 0.0, 0.0],
-        0.7,
-        true,
-        false,
-    );
+    let sys_remote =
+        spawn_test_system(app.world_mut(), "Remote", [1.0, 0.0, 0.0], 0.7, true, false);
 
     // Spawn player stationed at capital.
     app.world_mut().spawn((
@@ -1913,7 +2430,9 @@ fn test_hostile_viz_uses_factionowner() {
 
     // Empire must consider space_creature hostile.
     let empire = {
-        let mut q = app.world_mut().query_filtered::<Entity, With<macrocosmo::player::PlayerEmpire>>();
+        let mut q = app
+            .world_mut()
+            .query_filtered::<Entity, With<macrocosmo::player::PlayerEmpire>>();
         q.iter(app.world()).next().expect("empire")
     };
     {

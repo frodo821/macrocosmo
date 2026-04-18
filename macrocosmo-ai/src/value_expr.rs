@@ -297,8 +297,10 @@ impl ValueExpr {
             | ValueExpr::WindowCount { metric: m, .. } => {
                 deps.metrics.push(m.id.clone());
             }
-            ValueExpr::Add(children) | ValueExpr::Mul(children)
-            | ValueExpr::Min(children) | ValueExpr::Max(children) => {
+            ValueExpr::Add(children)
+            | ValueExpr::Mul(children)
+            | ValueExpr::Min(children)
+            | ValueExpr::Max(children) => {
                 for c in children {
                     c.collect_deps(deps);
                 }
@@ -345,12 +347,7 @@ impl Dependencies {
     }
 }
 
-fn variadic_collect<F>(
-    children: &[ValueExpr],
-    ctx: &EvalContext,
-    identity: f64,
-    op: F,
-) -> Value
+fn variadic_collect<F>(children: &[ValueExpr], ctx: &EvalContext, identity: f64, op: F) -> Value
 where
     F: Fn(f64, f64) -> f64,
 {
@@ -429,10 +426,7 @@ mod tests {
         b.declare_metric(id.clone(), MetricSpec::gauge(Retention::Long, "x"));
         b.emit(&id, 4.2, 10);
         let ctx = EvalContext::new(&b, 10);
-        assert_eq!(
-            ValueExpr::Metric(MetricRef::new(id)).evaluate(&ctx),
-            4.2
-        );
+        assert_eq!(ValueExpr::Metric(MetricRef::new(id)).evaluate(&ctx), 4.2);
     }
 
     #[test]
@@ -543,12 +537,16 @@ mod tests {
             ValueExpr::Abs(Box::new(ValueExpr::Literal(-4.5))).evaluate_value(&ctx),
             Value::Number(4.5)
         );
-        assert!(ValueExpr::Neg(Box::new(ValueExpr::Missing))
-            .evaluate_value(&ctx)
-            .is_missing());
-        assert!(ValueExpr::Abs(Box::new(ValueExpr::Missing))
-            .evaluate_value(&ctx)
-            .is_missing());
+        assert!(
+            ValueExpr::Neg(Box::new(ValueExpr::Missing))
+                .evaluate_value(&ctx)
+                .is_missing()
+        );
+        assert!(
+            ValueExpr::Abs(Box::new(ValueExpr::Missing))
+                .evaluate_value(&ctx)
+                .is_missing()
+        );
     }
 
     #[test]
@@ -789,12 +787,8 @@ mod tests {
             cond: Box::new(Condition::Atom(ConditionAtom::MetricPresent {
                 metric: MetricId::from("cond_m"),
             })),
-            then_: Box::new(ValueExpr::Metric(MetricRef::new(MetricId::from(
-                "then_m",
-            )))),
-            else_: Box::new(ValueExpr::Metric(MetricRef::new(MetricId::from(
-                "else_m",
-            )))),
+            then_: Box::new(ValueExpr::Metric(MetricRef::new(MetricId::from("then_m")))),
+            else_: Box::new(ValueExpr::Metric(MetricRef::new(MetricId::from("else_m")))),
         };
         let mut deps = Dependencies::new();
         e.collect_deps(&mut deps);

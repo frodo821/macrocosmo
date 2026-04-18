@@ -92,22 +92,13 @@ pub enum ConditionAtom {
     /// True iff the observer's perceived standing toward `target` is below
     /// `threshold`. Requires `ctx.faction`, `ctx.standing_config`, and
     /// `ctx.ai_params`; returns `false` (with a one-shot warning) otherwise.
-    StandingBelow {
-        target: FactionId,
-        threshold: f64,
-    },
+    StandingBelow { target: FactionId, threshold: f64 },
     /// True iff the observer's perceived standing toward `target` is above
     /// `threshold`. Same ctx requirements as `StandingBelow`.
-    StandingAbove {
-        target: FactionId,
-        threshold: f64,
-    },
+    StandingAbove { target: FactionId, threshold: f64 },
     /// True iff the observer's standing confidence toward `target` is above
     /// `threshold`. Same ctx requirements as `StandingBelow`.
-    StandingConfidenceAbove {
-        target: FactionId,
-        threshold: f64,
-    },
+    StandingConfidenceAbove { target: FactionId, threshold: f64 },
 }
 
 impl Condition {
@@ -151,10 +142,7 @@ impl Condition {
     /// `left / right >= ratio`. Encoded as `left >= right * ratio` to avoid
     /// division-by-zero pitfalls when `right` is zero.
     pub fn metric_ratio_ge(left: ValueExpr, right: ValueExpr, ratio: f64) -> Self {
-        Self::ge(
-            left,
-            ValueExpr::Mul(vec![right, ValueExpr::Literal(ratio)]),
-        )
+        Self::ge(left, ValueExpr::Mul(vec![right, ValueExpr::Literal(ratio)]))
     }
 
     /// Convenience: "metric m is trending up over window" (DelT > 0).
@@ -174,9 +162,7 @@ impl Condition {
             Condition::Never => false,
             Condition::All(children) => children.iter().all(|c| c.evaluate(ctx)),
             Condition::Any(children) => children.iter().any(|c| c.evaluate(ctx)),
-            Condition::OneOf(children) => {
-                children.iter().filter(|c| c.evaluate(ctx)).count() == 1
-            }
+            Condition::OneOf(children) => children.iter().filter(|c| c.evaluate(ctx)).count() == 1,
             Condition::Not(inner) => !inner.evaluate(ctx),
             Condition::Atom(a) => a.evaluate(ctx),
         }
@@ -200,14 +186,12 @@ impl Condition {
 impl ConditionAtom {
     pub fn evaluate(&self, ctx: &EvalContext) -> bool {
         match self {
-            ConditionAtom::MetricAbove { metric, threshold } => ctx
-                .bus
-                .current(metric)
-                .map_or(false, |v| v > *threshold),
-            ConditionAtom::MetricBelow { metric, threshold } => ctx
-                .bus
-                .current(metric)
-                .map_or(false, |v| v < *threshold),
+            ConditionAtom::MetricAbove { metric, threshold } => {
+                ctx.bus.current(metric).map_or(false, |v| v > *threshold)
+            }
+            ConditionAtom::MetricBelow { metric, threshold } => {
+                ctx.bus.current(metric).map_or(false, |v| v < *threshold)
+            }
             ConditionAtom::MetricPresent { metric } => ctx.bus.current(metric).is_some(),
             ConditionAtom::EvidenceCountExceeds {
                 kind,
@@ -421,21 +405,27 @@ mod tests {
         b.declare_metric(id.clone(), MetricSpec::gauge(Retention::Short, "x"));
         b.emit(&id, 0.7, 10);
         let ctx = EvalContext::new(&b, 10);
-        assert!(ConditionAtom::MetricAbove {
-            metric: id.clone(),
-            threshold: 0.5
-        }
-        .evaluate(&ctx));
-        assert!(ConditionAtom::MetricBelow {
-            metric: id.clone(),
-            threshold: 1.0
-        }
-        .evaluate(&ctx));
+        assert!(
+            ConditionAtom::MetricAbove {
+                metric: id.clone(),
+                threshold: 0.5
+            }
+            .evaluate(&ctx)
+        );
+        assert!(
+            ConditionAtom::MetricBelow {
+                metric: id.clone(),
+                threshold: 1.0
+            }
+            .evaluate(&ctx)
+        );
         assert!(ConditionAtom::MetricPresent { metric: id.clone() }.evaluate(&ctx));
-        assert!(!ConditionAtom::MetricPresent {
-            metric: MetricId::from("y"),
-        }
-        .evaluate(&ctx));
+        assert!(
+            !ConditionAtom::MetricPresent {
+                metric: MetricId::from("y"),
+            }
+            .evaluate(&ctx)
+        );
     }
 
     #[test]
@@ -502,8 +492,9 @@ mod tests {
         let b = bus();
         let ctx = EvalContext::new(&b, 0);
         assert!(Condition::Atom(ConditionAtom::ValueMissing(ValueExpr::Missing)).evaluate(&ctx));
-        assert!(!Condition::Atom(ConditionAtom::ValueMissing(ValueExpr::Literal(1.0)))
-            .evaluate(&ctx));
+        assert!(
+            !Condition::Atom(ConditionAtom::ValueMissing(ValueExpr::Literal(1.0))).evaluate(&ctx)
+        );
     }
 
     #[test]
@@ -568,18 +559,10 @@ mod tests {
     fn metric_ratio_ge_avoids_divide_by_zero() {
         let b = bus();
         let ctx = EvalContext::new(&b, 0);
-        let c = Condition::metric_ratio_ge(
-            ValueExpr::Literal(0.0),
-            ValueExpr::Literal(0.0),
-            0.7,
-        );
+        let c = Condition::metric_ratio_ge(ValueExpr::Literal(0.0), ValueExpr::Literal(0.0), 0.7);
         // 0 >= 0*0.7=0 → true
         assert!(c.evaluate(&ctx));
-        let c2 = Condition::metric_ratio_ge(
-            ValueExpr::Literal(5.0),
-            ValueExpr::Literal(10.0),
-            0.7,
-        );
+        let c2 = Condition::metric_ratio_ge(ValueExpr::Literal(5.0), ValueExpr::Literal(10.0), 0.7);
         // 5 >= 10*0.7=7 → false
         assert!(!c2.evaluate(&ctx));
     }

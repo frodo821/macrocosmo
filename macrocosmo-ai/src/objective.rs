@@ -93,11 +93,7 @@ impl Objective {
         }
     }
 
-    pub fn with_param(
-        mut self,
-        key: impl Into<std::sync::Arc<str>>,
-        value: ValueExpr,
-    ) -> Self {
+    pub fn with_param(mut self, key: impl Into<std::sync::Arc<str>>, value: ValueExpr) -> Self {
         self.params.insert(key.into(), value);
         self
     }

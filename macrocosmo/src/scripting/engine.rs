@@ -4,7 +4,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use super::game_rng::{register_game_rand, GameRng};
+use super::game_rng::{GameRng, register_game_rand};
 use super::globals;
 
 /// Environment variable that, when set, forces [`resolve_scripts_dir`] to use
@@ -153,10 +153,7 @@ pub struct ScriptsDirError {
 
 impl std::fmt::Display for ScriptsDirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Could not locate a valid scripts/ directory (checked: "
-        )?;
+        write!(f, "Could not locate a valid scripts/ directory (checked: ")?;
         for (i, p) in self.tried.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -203,8 +200,11 @@ impl ScriptEngine {
     ) -> Result<Self, mlua::Error> {
         // Sandbox: only load safe libraries (no io, os, debug, ffi)
         let lua = Lua::new_with(
-            LuaStdLib::TABLE | LuaStdLib::STRING | LuaStdLib::MATH
-                | LuaStdLib::PACKAGE | LuaStdLib::BIT,
+            LuaStdLib::TABLE
+                | LuaStdLib::STRING
+                | LuaStdLib::MATH
+                | LuaStdLib::PACKAGE
+                | LuaStdLib::BIT,
             mlua::LuaOptions::default(),
         )?;
         globals::setup_globals(&lua, &scripts_dir)?;

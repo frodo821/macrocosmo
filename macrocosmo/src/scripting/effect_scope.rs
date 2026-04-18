@@ -83,9 +83,8 @@ impl mlua::UserData for EffectScope {
         methods.add_method(
             "set_flag",
             |lua, this, (name, value, opts): (String, bool, Option<LuaTable>)| {
-                let description: Option<String> = opts
-                    .as_ref()
-                    .and_then(|t| t.get("description").ok());
+                let description: Option<String> =
+                    opts.as_ref().and_then(|t| t.get("description").ok());
 
                 let effect = DescriptiveEffect::SetFlag {
                     name: name.clone(),
@@ -111,17 +110,15 @@ impl mlua::UserData for EffectScope {
 /// Create a `fire_event` descriptor table (standalone function, not on scope).
 /// This returns a descriptor but does NOT queue the event for execution.
 pub fn create_fire_event_descriptor(lua: &Lua) -> Result<LuaFunction, LuaError> {
-    lua.create_function(
-        |lua, (event_id, payload): (String, Option<LuaTable>)| {
-            let desc = lua.create_table()?;
-            desc.set("_effect_type", "fire_event")?;
-            desc.set("event_id", event_id)?;
-            if let Some(p) = payload {
-                desc.set("payload", p)?;
-            }
-            Ok(desc)
-        },
-    )
+    lua.create_function(|lua, (event_id, payload): (String, Option<LuaTable>)| {
+        let desc = lua.create_table()?;
+        desc.set("_effect_type", "fire_event")?;
+        desc.set("event_id", event_id)?;
+        if let Some(p) = payload {
+            desc.set("payload", p)?;
+        }
+        Ok(desc)
+    })
 }
 
 /// Create a `hide` wrapper function that wraps a descriptor with a label.
@@ -267,9 +264,7 @@ mod tests {
         assert_eq!(effects.len(), 1);
         match &effects[0] {
             DescriptiveEffect::PushModifier {
-                target,
-                multiplier,
-                ..
+                target, multiplier, ..
             } => {
                 assert_eq!(target, "production.minerals");
                 assert!((multiplier - 0.15).abs() < 1e-10);
@@ -297,7 +292,10 @@ mod tests {
 
         let effects = scope.take_effects();
         assert_eq!(effects.len(), 3);
-        assert!(matches!(&effects[0], DescriptiveEffect::PushModifier { .. }));
+        assert!(matches!(
+            &effects[0],
+            DescriptiveEffect::PushModifier { .. }
+        ));
         assert!(matches!(&effects[1], DescriptiveEffect::SetFlag { .. }));
         assert!(matches!(&effects[2], DescriptiveEffect::PopModifier { .. }));
     }
@@ -333,9 +331,11 @@ mod tests {
         let lua = engine.lua();
         lua.globals().set("scope", scope.clone()).unwrap();
 
-        lua.load(r#"scope:set_flag("auto_mining", true, { description = "Enable automated mining" })"#)
-            .exec()
-            .unwrap();
+        lua.load(
+            r#"scope:set_flag("auto_mining", true, { description = "Enable automated mining" })"#,
+        )
+        .exec()
+        .unwrap();
 
         let effects = scope.take_effects();
         assert_eq!(effects.len(), 1);
@@ -381,7 +381,10 @@ mod tests {
 
         let returned = parse_effects(result).unwrap();
         assert_eq!(returned.len(), 2);
-        assert!(matches!(&returned[0], DescriptiveEffect::PushModifier { .. }));
+        assert!(matches!(
+            &returned[0],
+            DescriptiveEffect::PushModifier { .. }
+        ));
         assert!(matches!(&returned[1], DescriptiveEffect::SetFlag { .. }));
     }
 
@@ -391,7 +394,9 @@ mod tests {
         let lua = engine.lua();
 
         let fire_event_fn = create_fire_event_descriptor(lua).unwrap();
-        lua.globals().set("effect_fire_event", fire_event_fn).unwrap();
+        lua.globals()
+            .set("effect_fire_event", fire_event_fn)
+            .unwrap();
 
         let result: LuaValue = lua
             .load(

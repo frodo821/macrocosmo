@@ -23,7 +23,8 @@ pub enum Direction {
 }
 
 /// If the playthrough exists, nothing panicked during its production.
-pub fn assert_no_panics(_pt: &Playthrough) { /* reaching end = ok */ }
+pub fn assert_no_panics(_pt: &Playthrough) { /* reaching end = ok */
+}
 
 /// Assert the number of recorded command events falls within `[min, max]`.
 pub fn assert_command_count(pt: &Playthrough, min: usize, max: usize) -> Result<(), String> {
@@ -33,10 +34,7 @@ pub fn assert_command_count(pt: &Playthrough, min: usize, max: usize) -> Result<
         .filter(|e| matches!(e, PlaythroughEvent::Command(_)))
         .count();
     if n < min || n > max {
-        return Err(format!(
-            "command count {} outside [{}, {}]",
-            n, min, max
-        ));
+        return Err(format!("command count {} outside [{}, {}]", n, min, max));
     }
     Ok(())
 }
@@ -69,10 +67,7 @@ pub fn assert_metric_monotone(
             Direction::StrictlyDecreasing => b < a,
         };
         if !ok {
-            return Err(format!(
-                "metric '{id}' not {:?}: {} then {}",
-                dir, a, b
-            ));
+            return Err(format!("metric '{id}' not {:?}: {} then {}", dir, a, b));
         }
     }
 
@@ -98,10 +93,7 @@ pub fn assert_no_command_kind(pt: &Playthrough, kind: &CommandKindId) -> Result<
 /// and event sequence).
 pub fn assert_playthrough_equivalent(a: &Playthrough, b: &Playthrough) -> Result<(), String> {
     if a.version != b.version {
-        return Err(format!(
-            "version mismatch: {} vs {}",
-            a.version, b.version
-        ));
+        return Err(format!("version mismatch: {} vs {}", a.version, b.version));
     }
     if a.declarations != b.declarations {
         return Err("declarations differ".into());
@@ -132,9 +124,9 @@ pub fn assert_bus_equivalent(a: &AiBus, b: &AiBus) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::playthrough::SUPPORTED_VERSION;
     use crate::playthrough::record::{Declarations, PlaythroughMeta, ScenarioConfig};
     use crate::playthrough::scenario::SyntheticDynamics;
-    use crate::playthrough::SUPPORTED_VERSION;
 
     fn pt_with_events(events: Vec<PlaythroughEvent>) -> Playthrough {
         Playthrough {
@@ -186,7 +178,10 @@ mod tests {
             at: 0,
             priority: 0.0,
         };
-        let events = vec![PlaythroughEvent::Command(sc.clone()), PlaythroughEvent::Command(sc)];
+        let events = vec![
+            PlaythroughEvent::Command(sc.clone()),
+            PlaythroughEvent::Command(sc),
+        ];
         let pt = pt_with_events(events);
         assert!(assert_command_count(&pt, 1, 3).is_ok());
         assert!(assert_command_count(&pt, 3, 10).is_err());

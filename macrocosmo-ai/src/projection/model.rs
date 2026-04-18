@@ -140,7 +140,10 @@ mod tests {
 
     #[test]
     fn intrinsic_confidence_ranges() {
-        assert_eq!(ProjectionModel::Constant { value: 0.0 }.intrinsic_confidence(), 1.0);
+        assert_eq!(
+            ProjectionModel::Constant { value: 0.0 }.intrinsic_confidence(),
+            1.0
+        );
         assert_eq!(
             ProjectionModel::Linear {
                 slope: 1.0,

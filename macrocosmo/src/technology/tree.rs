@@ -348,13 +348,21 @@ mod tests {
             },
         ]);
 
-        let available: Vec<TechId> = tree.available_technologies().iter().map(|t| t.id.clone()).collect();
+        let available: Vec<TechId> = tree
+            .available_technologies()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
         assert!(available.contains(&TechId("test_1".into())));
         assert!(available.contains(&TechId("test_3".into())));
         assert!(!available.contains(&TechId("test_2".into())));
 
         tree.complete_research(TechId("test_1".into()));
-        let available: Vec<TechId> = tree.available_technologies().iter().map(|t| t.id.clone()).collect();
+        let available: Vec<TechId> = tree
+            .available_technologies()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
         assert!(!available.contains(&TechId("test_1".into())));
         assert!(available.contains(&TechId("test_2".into())));
         assert!(available.contains(&TechId("test_3".into())));

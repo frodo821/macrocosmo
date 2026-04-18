@@ -1,7 +1,7 @@
 //! Campaign state machine transitions.
 
-use macrocosmo_ai::campaign::{Campaign, CampaignError, CampaignState};
 use macrocosmo_ai::ObjectiveId;
+use macrocosmo_ai::campaign::{Campaign, CampaignError, CampaignState};
 
 fn oid() -> ObjectiveId {
     ObjectiveId::from("test_objective")

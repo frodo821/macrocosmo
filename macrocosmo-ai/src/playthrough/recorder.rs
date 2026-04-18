@@ -15,8 +15,7 @@ use crate::spec::{CommandSpec, EvidenceSpec, MetricSpec};
 use crate::time::Tick;
 
 use super::record::{
-    Declarations, Playthrough, PlaythroughEvent, PlaythroughMeta, ScenarioConfig,
-    SUPPORTED_VERSION,
+    Declarations, Playthrough, PlaythroughEvent, PlaythroughMeta, SUPPORTED_VERSION, ScenarioConfig,
 };
 
 /// Wraps an `AiBus` and records every accepted declaration + emit.

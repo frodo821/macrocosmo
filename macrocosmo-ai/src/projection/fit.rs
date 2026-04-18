@@ -27,11 +27,7 @@ pub fn fit_linear(samples: &[TimestampedValue], ref_t: Tick) -> Option<LinearFit
     }
 
     let n = samples.len() as f64;
-    let mean_x: f64 = samples
-        .iter()
-        .map(|s| (s.at - ref_t) as f64)
-        .sum::<f64>()
-        / n;
+    let mean_x: f64 = samples.iter().map(|s| (s.at - ref_t) as f64).sum::<f64>() / n;
     let mean_y: f64 = samples.iter().map(|s| s.value).sum::<f64>() / n;
 
     let mut sxx = 0.0;
@@ -62,11 +58,7 @@ pub fn fit_linear(samples: &[TimestampedValue], ref_t: Tick) -> Option<LinearFit
         // (slope ≈ 0), call that a "perfect" degenerate fit. The numeric
         // variance is 0, so r² is undefined mathematically — we return 1
         // so callers don't discard an otherwise-correct constant line.
-        if slope.abs() < f64::EPSILON {
-            1.0
-        } else {
-            0.0
-        }
+        if slope.abs() < f64::EPSILON { 1.0 } else { 0.0 }
     } else {
         // Coefficient of determination via explained / total variance.
         let ss_res: f64 = samples
@@ -193,7 +185,9 @@ mod tests {
     #[test]
     fn fit_linear_recovers_known_slope() {
         // y = 2*(t-10) + 5, ref=10
-        let data: Vec<_> = (0..5).map(|i| s(10 + i * 5, 2.0 * (i * 5) as f64 + 5.0)).collect();
+        let data: Vec<_> = (0..5)
+            .map(|i| s(10 + i * 5, 2.0 * (i * 5) as f64 + 5.0))
+            .collect();
         let fit = fit_linear(&data, 10).unwrap();
         assert!((fit.slope - 2.0).abs() < 1e-9);
         assert!((fit.intercept - 5.0).abs() < 1e-9);

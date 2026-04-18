@@ -2,21 +2,18 @@
 
 use std::collections::BTreeMap;
 
-use macrocosmo_ai::playthrough::{
-    assert_bus_equivalent, replay, run_scenario, EvidencePulse, MetricScript, Scenario,
-    SyntheticDynamics,
-};
 use macrocosmo_ai::playthrough::record::ScenarioConfig;
+use macrocosmo_ai::playthrough::{
+    EvidencePulse, MetricScript, Scenario, SyntheticDynamics, assert_bus_equivalent, replay,
+    run_scenario,
+};
 use macrocosmo_ai::{EvidenceKindId, FactionId, MetricId};
 
 fn config(name: &str, seed: u64) -> ScenarioConfig {
     let mut metric_scripts = BTreeMap::new();
     // Use exactly-representable f64 values so serde_json round-trips without
     // ULP drift. (1.0/0.5/0.25 are all dyadic fractions.)
-    metric_scripts.insert(
-        MetricId::from("readiness"),
-        MetricScript::Constant(0.5),
-    );
+    metric_scripts.insert(MetricId::from("readiness"), MetricScript::Constant(0.5));
     // Linear with from=0, to=16, duration=16 → values 0,1,2,...,16 (integers).
     metric_scripts.insert(
         MetricId::from("capacity"),

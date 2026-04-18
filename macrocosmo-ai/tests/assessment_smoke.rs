@@ -8,9 +8,9 @@ use macrocosmo_ai::ai_params::AiParamsExt;
 use macrocosmo_ai::feasibility::{FeasibilityFormula, FeasibilityTerm};
 use macrocosmo_ai::objective::{Objective, PreconditionSet as ObjPreconditionSet, SuccessCriteria};
 use macrocosmo_ai::{
-    build_assessment, severity, AiBus, Assessment, AssessmentConfig, Condition, EvidenceKindId,
-    EvidenceSpec, FactionId, MetricId, MetricSpec, ObjectiveId, PreconditionItem, PreconditionSet,
-    PreconditionTracker, Retention, StandingEvidence, ValueExpr, WarningMode,
+    AiBus, Assessment, AssessmentConfig, Condition, EvidenceKindId, EvidenceSpec, FactionId,
+    MetricId, MetricSpec, ObjectiveId, PreconditionItem, PreconditionSet, PreconditionTracker,
+    Retention, StandingEvidence, ValueExpr, WarningMode, build_assessment, severity,
 };
 
 // Custom minimal AiParams stub for the smoke test.
@@ -84,10 +84,7 @@ fn assessment_smoke() {
         ObjectiveId::from("economic_dominance"),
         ObjPreconditionSet::always(),
         SuccessCriteria::new(Condition::Always),
-        FeasibilityFormula::WeightedSum(vec![FeasibilityTerm::new(
-            1.0,
-            ValueExpr::Literal(0.5),
-        )]),
+        FeasibilityFormula::WeightedSum(vec![FeasibilityTerm::new(1.0, ValueExpr::Literal(0.5))]),
     );
     let precondition_set = PreconditionSet::new(vec![
         PreconditionItem::new("alive", severity::MAJOR, Condition::Always),

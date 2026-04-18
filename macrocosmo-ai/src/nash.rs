@@ -20,10 +20,7 @@ pub struct NashPayoff {
 /// returns `NashPayoff { row: 0.0, col: 0.0 }` regardless of input.
 #[allow(unused_variables)]
 pub fn solve_2p_zero_sum(payoff_matrix: &[[f64; 2]; 2]) -> NashPayoff {
-    NashPayoff {
-        row: 0.0,
-        col: 0.0,
-    }
+    NashPayoff { row: 0.0, col: 0.0 }
 }
 
 #[cfg(test)]

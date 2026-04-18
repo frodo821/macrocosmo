@@ -423,7 +423,7 @@ mod tests {
     use super::*;
     use crate::bus::AiBus;
     use crate::ids::MetricId;
-    use crate::precondition::{precond, severity, PreconditionSet};
+    use crate::precondition::{PreconditionSet, precond, severity};
     use crate::retention::Retention;
     use crate::spec::MetricSpec;
     use crate::value_expr::MetricRef;
@@ -518,9 +518,7 @@ mod tests {
         let id = MetricId::from("x");
         setup_metric(&mut b, &id, 0.5, 0);
         let mut reg = PreconditionCacheRegistry::new();
-        let c = Condition::Atom(crate::condition::ConditionAtom::MetricPresent {
-            metric: id,
-        });
+        let c = Condition::Atom(crate::condition::ConditionAtom::MetricPresent { metric: id });
         for t in [10, 20, 30, 40, 100_000] {
             let ctx = EvalContext::new(&b, t);
             reg.evaluate(&c, &ctx);
@@ -536,9 +534,7 @@ mod tests {
         let id = MetricId::from("x");
         setup_metric(&mut b, &id, 1.0, 0);
         let mut reg = PreconditionCacheRegistry::new();
-        let c = Condition::Atom(crate::condition::ConditionAtom::MetricPresent {
-            metric: id,
-        });
+        let c = Condition::Atom(crate::condition::ConditionAtom::MetricPresent { metric: id });
         reg.evaluate(&c, &EvalContext::new(&b, 0));
         assert_eq!(reg.len(), 1);
         reg.invalidate_all();

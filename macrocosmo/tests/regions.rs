@@ -8,22 +8,17 @@ use std::collections::HashMap;
 
 use bevy::prelude::Entity;
 use macrocosmo::galaxy::region::{
-    build_ftl_adjacency, effective_radius, place_regions, segment_sphere_intersects,
-    validate_constraints, CapabilityParams, ForbiddenRegion, PlacementInputs,
-    RegionBlockSnapshot, RegionSpec, RegionTypeDefinition,
+    CapabilityParams, ForbiddenRegion, PlacementInputs, RegionBlockSnapshot, RegionSpec,
+    RegionTypeDefinition, build_ftl_adjacency, effective_radius, place_regions,
+    segment_sphere_intersects, validate_constraints,
 };
-use macrocosmo::ship::routing::{plan_route_full, RouteSystemSnapshot};
 use macrocosmo::ship::RulesOfEngagement;
+use macrocosmo::ship::routing::{RouteSystemSnapshot, plan_route_full};
 
 fn caps(entries: &[(&str, f64)]) -> HashMap<String, CapabilityParams> {
     entries
         .iter()
-        .map(|(k, s)| {
-            (
-                (*k).to_string(),
-                CapabilityParams { strength: *s },
-            )
-        })
+        .map(|(k, s)| ((*k).to_string(), CapabilityParams { strength: *s }))
         .collect()
 }
 

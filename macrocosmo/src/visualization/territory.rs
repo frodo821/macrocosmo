@@ -89,15 +89,11 @@ pub fn authority_freshness(info_age: Option<i64>) -> f32 {
 /// Returns authority in `ly²` units. The caller must multiply by
 /// `view.scale²` before pushing to the GPU so that the shader's
 /// `strength / dist_sq` comparison operates in the same (world-unit) space.
-pub fn colony_effective_authority(
-    population: f32,
-    garrison_hull_hp: f32,
-    freshness: f32,
-) -> f32 {
+pub fn colony_effective_authority(population: f32, garrison_hull_hp: f32, freshness: f32) -> f32 {
     let pop = population.max(1.0);
     let pop_factor = 1.0 + pop.ln().max(0.0) / AUTHORITY_POP_LN_DIVISOR;
-    let garrison_factor = (garrison_hull_hp.max(0.0) / AUTHORITY_GARRISON_HP_UNIT)
-        * AUTHORITY_GARRISON_PER_UNIT;
+    let garrison_factor =
+        (garrison_hull_hp.max(0.0) / AUTHORITY_GARRISON_HP_UNIT) * AUTHORITY_GARRISON_PER_UNIT;
     AUTHORITY_BASE * pop_factor * (1.0 + garrison_factor) * freshness.max(0.0)
 }
 
@@ -248,7 +244,9 @@ fn sync_territory_material(
     let mut garrison_by_system: std::collections::HashMap<Entity, f32> =
         std::collections::HashMap::new();
     for (ship, state, hp) in ships.iter() {
-        let Owner::Empire(owner_entity) = ship.owner else { continue };
+        let Owner::Empire(owner_entity) = ship.owner else {
+            continue;
+        };
         if owner_entity != player_entity {
             continue;
         }
@@ -260,7 +258,9 @@ fn sync_territory_material(
     let scale_sq = view.scale * view.scale;
 
     for handle in material_handles.iter() {
-        let Some(mat) = materials.get_mut(&handle.0) else { continue };
+        let Some(mat) = materials.get_mut(&handle.0) else {
+            continue;
+        };
 
         let mut colony_count = 0usize;
         // Reset colony data
@@ -270,9 +270,13 @@ fn sync_territory_material(
             if colony_count >= MAX_COLONIES {
                 break;
             }
-            let Ok(planet) = planets.get(colony.planet) else { continue };
+            let Ok(planet) = planets.get(colony.planet) else {
+                continue;
+            };
             let system = planet.system;
-            let Ok(pos) = positions.get(system) else { continue };
+            let Ok(pos) = positions.get(system) else {
+                continue;
+            };
 
             let garrison_hp = garrison_by_system.get(&system).copied().unwrap_or(0.0);
             let freshness = authority_freshness(knowledge.info_age(system, clock.elapsed));
@@ -324,7 +328,10 @@ mod tests {
         let point = Vec2::new(0.01, 0.0); // Very close to colony
         let auth = authority_contribution(colony_pos, point, 1.0);
         // At distance 0.01, authority = 1.0 / 0.01^2 = 10000, but clamped dist_sq = max(0.0001, 0.01)
-        assert!(auth > 10.0, "Authority near colony should be high, got {auth}");
+        assert!(
+            auth > 10.0,
+            "Authority near colony should be high, got {auth}"
+        );
     }
 
     #[test]
@@ -387,7 +394,10 @@ mod tests {
     fn test_colony_effective_authority_baseline() {
         // Minimal population, no garrison, fresh comms: factor ≈ base.
         let a = colony_effective_authority(1.0, 0.0, AUTHORITY_FRESHNESS_FRESH);
-        assert!((a - AUTHORITY_BASE).abs() < 1e-4, "baseline should equal AUTHORITY_BASE, got {a}");
+        assert!(
+            (a - AUTHORITY_BASE).abs() < 1e-4,
+            "baseline should equal AUTHORITY_BASE, got {a}"
+        );
     }
 
     #[test]
@@ -412,9 +422,15 @@ mod tests {
         let aging = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_AGING);
         let old = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_OLD);
         let very_old = colony_effective_authority(100.0, 0.0, AUTHORITY_FRESHNESS_VERY_OLD);
-        assert!(fresh > aging, "FRESH should exceed AGING ({fresh} vs {aging})");
+        assert!(
+            fresh > aging,
+            "FRESH should exceed AGING ({fresh} vs {aging})"
+        );
         assert!(aging > old, "AGING should exceed OLD ({aging} vs {old})");
-        assert!(old > very_old, "OLD should exceed VERY_OLD ({old} vs {very_old})");
+        assert!(
+            old > very_old,
+            "OLD should exceed VERY_OLD ({old} vs {very_old})"
+        );
         // VERY_OLD should be roughly 15% of FRESH (freshness multiplier).
         let ratio = very_old / fresh;
         assert!(

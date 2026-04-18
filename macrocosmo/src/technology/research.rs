@@ -111,7 +111,12 @@ pub fn emit_research(
         };
         let d_amt = Amt::units(d as u64);
         // Building bonuses are already included via modifiers on Production
-        let amount = prod.research_per_hexadies.final_value().mul_amt(rw).mul_amt(d_amt).to_f64();
+        let amount = prod
+            .research_per_hexadies
+            .final_value()
+            .mul_amt(rw)
+            .mul_amt(d_amt)
+            .to_f64();
         if amount <= 0.0 {
             continue;
         }
@@ -168,7 +173,12 @@ pub fn tick_research(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastResearchTick>,
     mut empire_q: Query<
-        (&mut TechTree, &mut ResearchQueue, &mut ResearchPool, &mut RecentlyResearched),
+        (
+            &mut TechTree,
+            &mut ResearchQueue,
+            &mut ResearchPool,
+            &mut RecentlyResearched,
+        ),
         With<crate::player::PlayerEmpire>,
     >,
 ) {
@@ -178,8 +188,7 @@ pub fn tick_research(
     }
     last_tick.0 = clock.elapsed;
 
-    let Ok((mut tech_tree, mut queue, mut pool, mut recently_researched)) =
-        empire_q.single_mut()
+    let Ok((mut tech_tree, mut queue, mut pool, mut recently_researched)) = empire_q.single_mut()
     else {
         return;
     };
@@ -231,9 +240,7 @@ pub fn tick_research(
 }
 
 /// Flush unused research points at the end of each tick (use it or lose it).
-pub fn flush_research(
-    mut empire_q: Query<&mut ResearchPool, With<crate::player::PlayerEmpire>>,
-) {
+pub fn flush_research(mut empire_q: Query<&mut ResearchPool, With<crate::player::PlayerEmpire>>) {
     let Ok(mut pool) = empire_q.single_mut() else {
         return;
     };
@@ -267,7 +274,8 @@ pub fn propagate_tech_knowledge(
     let capital_pos = *capital_pos;
 
     // Collect colonized system entities
-    let colonized_systems: HashSet<Entity> = colonies.iter().filter_map(|c| c.system(&planets)).collect();
+    let colonized_systems: HashSet<Entity> =
+        colonies.iter().filter_map(|c| c.system(&planets)).collect();
 
     for tech_id in recently_researched.techs.drain(..) {
         // Capital gets it immediately

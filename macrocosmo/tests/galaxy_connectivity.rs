@@ -9,14 +9,14 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 use macrocosmo::components::Position;
-use macrocosmo::galaxy::{generate_galaxy, StarSystem};
+use macrocosmo::galaxy::{StarSystem, generate_galaxy};
+use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::galaxy_api::{
     PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition, StarTypeRegistry,
 };
 use macrocosmo::scripting::map_api::{
-    parse_map_types, parse_predefined_systems, MapTypeRegistry, PredefinedSystemRegistry,
+    MapTypeRegistry, PredefinedSystemRegistry, parse_map_types, parse_predefined_systems,
 };
-use macrocosmo::scripting::ScriptEngine;
 
 /// Locate the `scripts/` directory next to this crate's source tree. The
 /// tests workspace CWD is the macrocosmo crate; in worktrees the path is

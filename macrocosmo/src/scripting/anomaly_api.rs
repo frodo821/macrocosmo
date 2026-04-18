@@ -75,7 +75,9 @@ pub fn parse_anomaly_definitions(lua: &mlua::Lua) -> Result<Vec<AnomalyDefinitio
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
         let weight: u32 = table.get::<Option<u32>>("weight")?.unwrap_or(10);
 
         let effects = parse_effects(&table)?;
@@ -144,10 +146,7 @@ fn parse_effects(table: &mlua::Table) -> Result<Vec<AnomalyEffectDef>, mlua::Err
 }
 
 /// Startup system: parse Lua anomaly definitions into the AnomalyRegistry resource.
-pub fn load_anomaly_registry(
-    engine: Res<crate::scripting::ScriptEngine>,
-    mut commands: Commands,
-) {
+pub fn load_anomaly_registry(engine: Res<crate::scripting::ScriptEngine>, mut commands: Commands) {
     match parse_anomaly_definitions(engine.lua()) {
         Ok(anomalies) => {
             info!("Loaded {} anomaly definitions from Lua", anomalies.len());
@@ -199,9 +198,13 @@ mod tests {
         assert_eq!(defs[0].id, "test_mineral");
         assert_eq!(defs[0].weight, 15);
         assert_eq!(defs[0].effects.len(), 1);
-        assert!(matches!(&defs[0].effects[0], AnomalyEffectDef::ResourceBonus { resource } if resource == "minerals"));
+        assert!(
+            matches!(&defs[0].effects[0], AnomalyEffectDef::ResourceBonus { resource } if resource == "minerals")
+        );
         assert_eq!(defs[1].id, "test_ruins");
-        assert!(matches!(&defs[1].effects[0], AnomalyEffectDef::ResearchBonus { amount } if (*amount - 150.0).abs() < 0.01));
+        assert!(
+            matches!(&defs[1].effects[0], AnomalyEffectDef::ResearchBonus { amount } if (*amount - 150.0).abs() < 0.01)
+        );
     }
 
     #[test]
@@ -214,15 +217,13 @@ mod tests {
     #[test]
     fn test_anomaly_registry_roll_returns_valid() {
         let registry = AnomalyRegistry {
-            anomalies: vec![
-                AnomalyDefinition {
-                    id: "test".into(),
-                    name: "Test".into(),
-                    description: "Desc".into(),
-                    weight: 100,
-                    effects: vec![],
-                },
-            ],
+            anomalies: vec![AnomalyDefinition {
+                id: "test".into(),
+                name: "Test".into(),
+                description: "Desc".into(),
+                weight: 100,
+                effects: vec![],
+            }],
         };
         let mut rng = rand::rng();
         // Run many times; should get Some at least once (60% chance each time)

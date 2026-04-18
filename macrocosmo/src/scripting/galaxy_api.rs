@@ -87,7 +87,9 @@ pub fn parse_star_types(lua: &mlua::Lua) -> Result<Vec<StarTypeDefinition>, mlua
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
 
         let color_table: mlua::Table = table.get("color")?;
         let r: f32 = color_table.get("r")?;
@@ -156,7 +158,9 @@ pub fn parse_planet_types(lua: &mlua::Lua) -> Result<Vec<PlanetTypeDefinition>, 
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
         let base_habitability: f64 = table.get("base_habitability")?;
         let base_slots: usize = table.get("base_slots")?;
         let weight: f64 = table.get("weight")?;
@@ -273,8 +277,16 @@ mod tests {
 
         // All 5 exotic types must be present and existing types preserved.
         for id in &[
-            "yellow_dwarf", "red_dwarf", "blue_giant", "white_dwarf", "orange_giant",
-            "neutron_star", "pulsar", "magnetar", "black_hole", "binary_star",
+            "yellow_dwarf",
+            "red_dwarf",
+            "blue_giant",
+            "white_dwarf",
+            "orange_giant",
+            "neutron_star",
+            "pulsar",
+            "magnetar",
+            "black_hole",
+            "binary_star",
         ] {
             assert!(
                 types.iter().any(|t| t.id == *id),
@@ -288,49 +300,62 @@ mod tests {
         assert_eq!(neutron.name, "Neutron Star");
         assert!(neutron.habitability_bonus <= -1.0 + 1e-10);
         assert!(!neutron.modifiers.is_empty());
-        assert!(neutron
-            .modifiers
-            .iter()
-            .any(|m| m.target == "system.energy_potential" && m.multiplier > 0.0));
+        assert!(
+            neutron
+                .modifiers
+                .iter()
+                .any(|m| m.target == "system.energy_potential" && m.multiplier > 0.0)
+        );
 
         // Pulsar: FTL/comm disruption + anomaly bonus.
         let pulsar = types.iter().find(|t| t.id == "pulsar").unwrap();
-        assert!(pulsar
-            .modifiers
-            .iter()
-            .any(|m| m.target == "system.ftl_range" && m.multiplier < 0.0));
-        assert!(pulsar
-            .modifiers
-            .iter()
-            .any(|m| m.target == "system.anomaly_chance" && m.multiplier > 0.0));
+        assert!(
+            pulsar
+                .modifiers
+                .iter()
+                .any(|m| m.target == "system.ftl_range" && m.multiplier < 0.0)
+        );
+        assert!(
+            pulsar
+                .modifiers
+                .iter()
+                .any(|m| m.target == "system.anomaly_chance" && m.multiplier > 0.0)
+        );
 
         // Magnetar: shield-disabling modifiers.
         let magnetar = types.iter().find(|t| t.id == "magnetar").unwrap();
-        assert!(magnetar
-            .modifiers
-            .iter()
-            .any(|m| m.target == "ship.shield_max" && m.multiplier < 0.0));
-        assert!(magnetar
-            .modifiers
-            .iter()
-            .any(|m| m.target == "ship.shield_regen"));
+        assert!(
+            magnetar
+                .modifiers
+                .iter()
+                .any(|m| m.target == "ship.shield_max" && m.multiplier < 0.0)
+        );
+        assert!(
+            magnetar
+                .modifiers
+                .iter()
+                .any(|m| m.target == "ship.shield_regen")
+        );
 
         // Black hole: no planets, FTL research bonus.
         let bh = types.iter().find(|t| t.id == "black_hole").unwrap();
         assert_eq!(bh.max_planets, 0);
         assert!(bh.planet_lambda <= 1e-10);
-        assert!(bh
-            .modifiers
-            .iter()
-            .any(|m| m.target.contains("research") && m.multiplier > 0.0));
+        assert!(
+            bh.modifiers
+                .iter()
+                .any(|m| m.target.contains("research") && m.multiplier > 0.0)
+        );
 
         // Binary star: mineral + energy bonuses, habitability penalty.
         let binary = types.iter().find(|t| t.id == "binary_star").unwrap();
         assert!(binary.habitability_bonus < 0.0);
-        assert!(binary
-            .modifiers
-            .iter()
-            .any(|m| m.target == "system.mineral_richness" && m.multiplier > 0.0));
+        assert!(
+            binary
+                .modifiers
+                .iter()
+                .any(|m| m.target == "system.mineral_richness" && m.multiplier > 0.0)
+        );
 
         // Vanilla types must still have no modifiers (unchanged).
         let yellow = types.iter().find(|t| t.id == "yellow_dwarf").unwrap();

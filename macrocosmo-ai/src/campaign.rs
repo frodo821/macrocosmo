@@ -102,10 +102,9 @@ impl Campaign {
         use CampaignState::*;
         match (from, to) {
             (Proposed, Active) | (Proposed, Abandoned) => true,
-            (Active, Suspended)
-            | (Active, Succeeded)
-            | (Active, Failed)
-            | (Active, Abandoned) => true,
+            (Active, Suspended) | (Active, Succeeded) | (Active, Failed) | (Active, Abandoned) => {
+                true
+            }
             (Suspended, Active) | (Suspended, Failed) | (Suspended, Abandoned) => true,
             _ => false,
         }

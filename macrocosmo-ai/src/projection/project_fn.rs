@@ -367,10 +367,7 @@ mod tests {
         let a = MetricId::from("a");
         let b_id = MetricId::from("b");
         let mut bus = bus_with_metric(&a);
-        bus.declare_metric(
-            b_id.clone(),
-            MetricSpec::gauge(Retention::VeryLong, "test"),
-        );
+        bus.declare_metric(b_id.clone(), MetricSpec::gauge(Retention::VeryLong, "test"));
         for i in 0..4 {
             bus.emit(&a, 1.0, i * 5);
             bus.emit(&b_id, 2.0, i * 5);

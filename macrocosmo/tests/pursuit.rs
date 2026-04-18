@@ -21,7 +21,9 @@ fn setup_two_factions(app: &mut App) -> (Entity, Entity) {
         let mut q = app
             .world_mut()
             .query_filtered::<Entity, With<PlayerEmpire>>();
-        q.iter(app.world()).next().expect("player empire must exist")
+        q.iter(app.world())
+            .next()
+            .expect("player empire must exist")
     };
     let enemy_faction = app
         .world_mut()
@@ -171,10 +173,7 @@ fn test_app_with_notifications() -> App {
     // Spawn a minimal Player + capital system at origin so the new #233 fact
     // pipeline has a target coordinate. Place the player at the same origin
     // as the detector so local notifications surface instantly.
-    let system = app
-        .world_mut()
-        .spawn(Position::from([0.0, 0.0, 0.0]))
-        .id();
+    let system = app.world_mut().spawn(Position::from([0.0, 0.0, 0.0])).id();
     app.world_mut().spawn((
         macrocosmo::player::Player,
         macrocosmo::player::StationedAt { system },
@@ -524,7 +523,9 @@ fn duplicate_detection_is_suppressed_within_cooldown() {
     );
     // The detector accumulated a DetectedHostiles component.
     assert!(
-        app.world().get::<pursuit::DetectedHostiles>(detector).is_some(),
+        app.world()
+            .get::<pursuit::DetectedHostiles>(detector)
+            .is_some(),
         "detector must be tagged with DetectedHostiles"
     );
 

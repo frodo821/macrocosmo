@@ -4,8 +4,7 @@ use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEventKind};
-use macrocosmo::galaxy::{
-    AtSystem, Hostile, HostileHitpoints, HostileStats, };
+use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
 use macrocosmo::player::{AboardShip, Player, StationedAt};
 use macrocosmo::ship::*;
 
@@ -13,9 +12,7 @@ use common::{advance_time, spawn_test_system, test_app, test_app_with_event_log}
 
 /// Helper: spawn a player entity stationed at the given system.
 fn spawn_player(world: &mut World, system: Entity) -> Entity {
-    world
-        .spawn((Player, StationedAt { system }))
-        .id()
+    world.spawn((Player, StationedAt { system })).id()
 }
 
 /// Helper: spawn a basic ship docked at the given system.
@@ -57,14 +54,7 @@ fn spawn_basic_ship(world: &mut World, name: &str, system: Entity) -> Entity {
 fn test_player_board_ship() {
     let mut app = test_app();
 
-    let sys = spawn_test_system(
-        app.world_mut(),
-        "Home",
-        [0.0, 0.0, 0.0],
-        0.7,
-        true,
-        false,
-    );
+    let sys = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 0.7, true, false);
 
     let player_entity = spawn_player(app.world_mut(), sys);
     let ship_entity = spawn_basic_ship(app.world_mut(), "Scout-1", sys);
@@ -83,7 +73,10 @@ fn test_player_board_ship() {
     assert!(ship.player_aboard, "Ship should have player_aboard = true");
 
     let aboard = app.world().get::<AboardShip>(player_entity).unwrap();
-    assert_eq!(aboard.ship, ship_entity, "AboardShip should reference the correct ship");
+    assert_eq!(
+        aboard.ship, ship_entity,
+        "AboardShip should reference the correct ship"
+    );
 }
 
 #[test]
@@ -124,7 +117,10 @@ fn test_player_disembark() {
 
     // StationedAt should now be sys_b (ship is docked there)
     let stationed = app.world().get::<StationedAt>(player_entity).unwrap();
-    assert_eq!(stationed.system, sys_b, "StationedAt should update to ship's docked system");
+    assert_eq!(
+        stationed.system, sys_b,
+        "StationedAt should update to ship's docked system"
+    );
 
     // Now disembark
     {
@@ -143,21 +139,17 @@ fn test_player_disembark() {
 
     // StationedAt should still be sys_b
     let stationed = app.world().get::<StationedAt>(player_entity).unwrap();
-    assert_eq!(stationed.system, sys_b, "StationedAt should remain at disembark location");
+    assert_eq!(
+        stationed.system, sys_b,
+        "StationedAt should remain at disembark location"
+    );
 }
 
 #[test]
 fn test_player_location_updates_with_ship() {
     let mut app = test_app();
 
-    let sys_a = spawn_test_system(
-        app.world_mut(),
-        "Origin",
-        [0.0, 0.0, 0.0],
-        0.7,
-        true,
-        false,
-    );
+    let sys_a = spawn_test_system(app.world_mut(), "Origin", [0.0, 0.0, 0.0], 0.7, true, false);
     let sys_b = spawn_test_system(
         app.world_mut(),
         "Destination",
@@ -200,14 +192,7 @@ fn test_player_location_updates_with_ship() {
 fn test_player_location_stays_during_transit() {
     let mut app = test_app();
 
-    let sys_a = spawn_test_system(
-        app.world_mut(),
-        "Origin",
-        [0.0, 0.0, 0.0],
-        0.7,
-        true,
-        false,
-    );
+    let sys_a = spawn_test_system(app.world_mut(), "Origin", [0.0, 0.0, 0.0], 0.7, true, false);
     let sys_b = spawn_test_system(
         app.world_mut(),
         "Destination",
@@ -303,35 +288,38 @@ fn test_player_respawn_on_ship_destruction() {
     let player_entity = spawn_player(app.world_mut(), remote);
 
     // Spawn a weak ship at the remote system
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Flagship".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 10.0,
-            player_aboard: true,
-            home_port: capital,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: remote },
-        Position::from([10.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 0.01,
-            hull_max: 50.0,
-            armor: 0.0,
-            armor_max: 0.0,
-            shield: 0.0,
-            shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Flagship".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 10.0,
+                player_aboard: true,
+                home_port: capital,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: remote },
+            Position::from([10.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 0.01,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     // Player is aboard the ship
     app.world_mut()
@@ -339,7 +327,15 @@ fn test_player_respawn_on_ship_destruction() {
         .insert(AboardShip { ship: ship_entity });
 
     // Spawn a powerful hostile
-    let _ = common::spawn_raw_hostile(app.world_mut(), remote, 1000.0, 1000.0, 100.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        remote,
+        1000.0,
+        1000.0,
+        100.0,
+        0.0,
+        "space_creature",
+    );
 
     // Run combat
     advance_time(&mut app, 1);
@@ -414,41 +410,52 @@ fn test_player_respawn_event_fires() {
 
     let player_entity = spawn_player(app.world_mut(), remote);
 
-    let ship_entity = app.world_mut().spawn((
-        Ship {
-            name: "Doomed-Flagship".to_string(),
-            design_id: "explorer_mk1".to_string(),
-            hull_id: "corvette".to_string(),
-            modules: Vec::new(),
-            owner: Owner::Neutral,
-            sublight_speed: 0.75,
-            ftl_range: 10.0,
-            player_aboard: true,
-            home_port: capital,
-            design_revision: 0,
-            fleet: None,
-        },
-        ShipState::InSystem { system: remote },
-        Position::from([10.0, 0.0, 0.0]),
-        ShipHitpoints {
-            hull: 0.01,
-            hull_max: 50.0,
-            armor: 0.0,
-            armor_max: 0.0,
-            shield: 0.0,
-            shield_max: 0.0,
-            shield_regen: 0.0,
-        },
-        ShipModifiers::default(),
-        CommandQueue::default(),
-        Cargo::default(),
-    )).id();
+    let ship_entity = app
+        .world_mut()
+        .spawn((
+            Ship {
+                name: "Doomed-Flagship".to_string(),
+                design_id: "explorer_mk1".to_string(),
+                hull_id: "corvette".to_string(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.75,
+                ftl_range: 10.0,
+                player_aboard: true,
+                home_port: capital,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: remote },
+            Position::from([10.0, 0.0, 0.0]),
+            ShipHitpoints {
+                hull: 0.01,
+                hull_max: 50.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+            ShipModifiers::default(),
+            CommandQueue::default(),
+            Cargo::default(),
+        ))
+        .id();
 
     app.world_mut()
         .entity_mut(player_entity)
         .insert(AboardShip { ship: ship_entity });
 
-    let _ = common::spawn_raw_hostile(app.world_mut(), remote, 1000.0, 1000.0, 100.0, 0.0, "space_creature");
+    let _ = common::spawn_raw_hostile(
+        app.world_mut(),
+        remote,
+        1000.0,
+        1000.0,
+        100.0,
+        0.0,
+        "space_creature",
+    );
 
     advance_time(&mut app, 1);
 
@@ -466,7 +473,10 @@ fn test_player_respawn_event_fires() {
         "PlayerRespawn event should be fired when player's ship is destroyed"
     );
     assert!(
-        respawn_event.unwrap().description.contains("Flagship destroyed"),
+        respawn_event
+            .unwrap()
+            .description
+            .contains("Flagship destroyed"),
         "Respawn event should contain appropriate description"
     );
 }

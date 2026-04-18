@@ -1,4 +1,4 @@
-use crate::event_system::{time_to_hexadies, EventDefinition, EventTrigger, LuaFunctionRef};
+use crate::event_system::{EventDefinition, EventTrigger, LuaFunctionRef, time_to_hexadies};
 
 /// Parse event definitions from the Lua `_event_definitions` global table.
 /// Each entry should have at minimum `id`, `name`, and `description` fields.

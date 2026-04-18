@@ -21,9 +21,9 @@ use crate::amount::Amt;
 use crate::condition::{Condition, EvalContext, ScopeData, ScopedFlags};
 use crate::effect::DescriptiveEffect;
 use crate::player::PlayerEmpire;
-use crate::scripting::condition_parser::parse_condition;
-use crate::scripting::effect_scope::{collect_effects, EffectScope};
 use crate::scripting::ScriptEngine;
+use crate::scripting::condition_parser::parse_condition;
+use crate::scripting::effect_scope::{EffectScope, collect_effects};
 use crate::technology::{GameFlags, GlobalParams, TechTree};
 use crate::time_system::GameSpeed;
 
@@ -479,10 +479,7 @@ pub fn apply_pending_choice_selection(
     mut speed: ResMut<GameSpeed>,
     stars: Query<(Entity, &crate::galaxy::StarSystem)>,
     mut stockpiles: Query<&mut crate::colony::ResourceStockpile, With<crate::galaxy::StarSystem>>,
-    mut empire_q: Query<
-        (&mut GameFlags, &mut ScopedFlags, &mut GlobalParams),
-        With<PlayerEmpire>,
-    >,
+    mut empire_q: Query<(&mut GameFlags, &mut ScopedFlags, &mut GlobalParams), With<PlayerEmpire>>,
 ) {
     let Some(pick) = selection.pick.take() else {
         return;
@@ -490,8 +487,7 @@ pub fn apply_pending_choice_selection(
     let Some(active) = pending.current.as_mut() else {
         return;
     };
-    let Ok((mut game_flags, mut scoped_flags, mut global_params)) = empire_q.single_mut()
-    else {
+    let Ok((mut game_flags, mut scoped_flags, mut global_params)) = empire_q.single_mut() else {
         warn!("No PlayerEmpire for choice selection");
         return;
     };
@@ -512,10 +508,7 @@ pub fn apply_pending_choice_selection(
     // Subtract cost from the capital stockpile (best-effort — if no capital
     // exists, the cost is skipped with a log).
     if !option.cost.is_zero() {
-        let capital_entity = stars
-            .iter()
-            .find(|(_, s)| s.is_capital)
-            .map(|(e, _)| e);
+        let capital_entity = stars.iter().find(|(_, s)| s.is_capital).map(|(e, _)| e);
         if let Some(cap) = capital_entity {
             if let Ok(mut stockpile) = stockpiles.get_mut(cap) {
                 stockpile.minerals = stockpile.minerals.sub(option.cost.minerals);
@@ -538,7 +531,12 @@ pub fn apply_pending_choice_selection(
         }
     };
     for effect in &effects {
-        apply_choice_effect(effect, &mut game_flags, &mut scoped_flags, &mut global_params);
+        apply_choice_effect(
+            effect,
+            &mut game_flags,
+            &mut scoped_flags,
+            &mut global_params,
+        );
     }
 
     // Remember the resulting effects briefly (so the UI can show the summary

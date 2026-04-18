@@ -73,7 +73,10 @@ pub struct FTLCommRelay {
 
 impl FTLCommRelay {
     pub fn new(paired_with: Entity, direction: CommDirection) -> Self {
-        Self { paired_with, direction }
+        Self {
+            paired_with,
+            direction,
+        }
     }
 }
 
@@ -100,8 +103,7 @@ pub fn pair_relay_command(
     if a == b {
         return Err("cannot pair a relay with itself");
     }
-    if world.get::<DeepSpaceStructure>(a).is_none()
-        || world.get::<DeepSpaceStructure>(b).is_none()
+    if world.get::<DeepSpaceStructure>(a).is_none() || world.get::<DeepSpaceStructure>(b).is_none()
     {
         return Err("both entities must be DeepSpaceStructure");
     }
@@ -361,7 +363,7 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
-                    on_built: None,
+            on_built: None,
             on_upgraded: None,
         },
         StructureDefinition {
@@ -389,7 +391,7 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
-                    on_built: None,
+            on_built: None,
             on_upgraded: None,
         },
         StructureDefinition {
@@ -417,7 +419,7 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
-                    on_built: None,
+            on_built: None,
             on_upgraded: None,
         },
     ]
@@ -568,7 +570,7 @@ pub fn tick_platform_upgrade(
     player_aboard_q: Query<&crate::player::AboardShip, With<crate::player::Player>>,
     mut fact_sys: crate::knowledge::FactSysParam,
 ) {
-    use crate::knowledge::{ KnowledgeFact, PlayerVantage};
+    use crate::knowledge::{KnowledgeFact, PlayerVantage};
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| positions.get(s).ok())
@@ -607,11 +609,7 @@ pub fn tick_platform_upgrade(
             lifetime.0.add_assign_saturating(&edge.cost);
             // #249: Dual-write platform upgrade event.
             let event_id = fact_sys.allocate_event_id();
-            let desc = format!(
-                "Platform upgraded: {} → {}",
-                old_name,
-                new_def.name,
-            );
+            let desc = format!("Platform upgraded: {} → {}", old_name, new_def.name,);
             events.write(crate::events::GameEvent {
                 id: event_id,
                 timestamp: clock.elapsed,
@@ -637,8 +635,7 @@ pub fn tick_platform_upgrade(
                     payload,
                 )),
             );
-            let origin_pos: Option<[f64; 3]> =
-                positions.get(entity).ok().map(|p| p.as_array());
+            let origin_pos: Option<[f64; 3]> = positions.get(entity).ok().map(|p| p.as_array());
             if let (Some(v), Some(op)) = (vantage, origin_pos) {
                 let fact = KnowledgeFact::StructureBuilt {
                     event_id: Some(event_id),
@@ -662,10 +659,7 @@ pub fn tick_platform_upgrade(
 }
 
 /// #223: Despawn any `Scrapyard` whose resources have been drained by a ship.
-pub fn tick_scrapyard_despawn(
-    mut commands: Commands,
-    scrapyards: Query<(Entity, &Scrapyard)>,
-) {
+pub fn tick_scrapyard_despawn(mut commands: Commands, scrapyards: Query<(Entity, &Scrapyard)>) {
     for (entity, scrap) in &scrapyards {
         if scrap.remaining.is_zero() {
             commands.entity(entity).despawn();
@@ -804,14 +798,15 @@ pub fn sensor_buoy_detect_system(
                 }
                 // #185: Loitering ship — encode position in snapshot state.
                 crate::ship::ShipState::Loitering { position } => (
-                    ShipSnapshotState::Loitering { position: *position },
+                    ShipSnapshotState::Loitering {
+                        position: *position,
+                    },
                     None,
                 ),
                 // #217: Scouting ship — display like Surveying for sensor observers.
-                crate::ship::ShipState::Scouting { target_system, .. } => (
-                    ShipSnapshotState::Surveying,
-                    Some(*target_system),
-                ),
+                crate::ship::ShipState::Scouting { target_system, .. } => {
+                    (ShipSnapshotState::Surveying, Some(*target_system))
+                }
             };
 
             store.update_ship(ShipSnapshot {
@@ -876,7 +871,12 @@ pub fn relay_knowledge_propagate_system(
     // #223: Relays gated behind a ConstructionPlatform or a Scrapyard do not
     // propagate knowledge — they're in a non-operational transitional state.
     relays: Query<
-        (Entity, &DeepSpaceStructure, &crate::components::Position, &FTLCommRelay),
+        (
+            Entity,
+            &DeepSpaceStructure,
+            &crate::components::Position,
+            &FTLCommRelay,
+        ),
         (Without<ConstructionPlatform>, Without<Scrapyard>),
     >,
     // Any relay (incl. un-sending side) — used to look up partner position
@@ -1025,14 +1025,15 @@ pub fn relay_knowledge_propagate_system(
                     (ShipSnapshotState::Refitting, Some(*system))
                 }
                 crate::ship::ShipState::Loitering { position } => (
-                    ShipSnapshotState::Loitering { position: *position },
+                    ShipSnapshotState::Loitering {
+                        position: *position,
+                    },
                     None,
                 ),
                 // #217: Scouting ships appear like Surveying at target system.
-                crate::ship::ShipState::Scouting { target_system, .. } => (
-                    ShipSnapshotState::Surveying,
-                    Some(*target_system),
-                ),
+                crate::ship::ShipState::Scouting { target_system, .. } => {
+                    (ShipSnapshotState::Surveying, Some(*target_system))
+                }
             };
 
             store.update_ship(ShipSnapshot {
@@ -1141,9 +1142,7 @@ impl DeliverableValidationReport {
 ///
 /// Also (re)builds `effective_edges` on the registry as a side effect so that
 /// runtime callers can read merged outbound edges from a single table.
-pub fn validate_and_build_edges(
-    registry: &mut DeliverableRegistry,
-) -> DeliverableValidationReport {
+pub fn validate_and_build_edges(registry: &mut DeliverableRegistry) -> DeliverableValidationReport {
     let mut report = DeliverableValidationReport::default();
 
     let ids: std::collections::HashSet<String> = registry.definitions.keys().cloned().collect();
@@ -1181,11 +1180,7 @@ pub fn validate_and_build_edges(
         let Some(s_def) = registry.definitions.get(source_id) else {
             continue; // rule 3 already reported the dangling source
         };
-        if let Some(to_edge) = s_def
-            .upgrade_to
-            .iter()
-            .find(|e| e.target_id == *target_id)
-        {
+        if let Some(to_edge) = s_def.upgrade_to.iter().find(|e| e.target_id == *target_id) {
             report.warnings.push(format!(
                 "upgrade edge '{source_id}' -> '{target_id}' declared on BOTH sides \
                  (upgrade_to and upgrade_from); using upgrade_to values"
@@ -1225,8 +1220,7 @@ pub fn validate_and_build_edges(
     // Rule 5: construction_platform capability requires >=1 outgoing edge.
     // Outgoing = own upgrade_to OR any other def's self-declared upgrade_from
     // pointing at us.
-    let mut outbound_from: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut outbound_from: std::collections::HashSet<String> = std::collections::HashSet::new();
     for def in registry.definitions.values() {
         if !def.upgrade_to.is_empty() {
             outbound_from.insert(def.id.clone());
@@ -1356,13 +1350,14 @@ mod tests {
             description: "Enhanced sensor buoy.".to_string(),
             max_hp: 40.0,
             capabilities: HashMap::from([
-                ("detect_sublight".to_string(), CapabilityParams { range: 5.0 }),
+                (
+                    "detect_sublight".to_string(),
+                    CapabilityParams { range: 5.0 },
+                ),
                 ("detect_ftl".to_string(), CapabilityParams { range: 3.0 }),
             ]),
             energy_drain: Amt::milli(200),
-            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
-                "advanced_sensors",
-            ))),
+            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech("advanced_sensors"))),
             deliverable: Some(DeliverableMetadata {
                 cost: ResourceCost {
                     minerals: Amt::units(100),
@@ -1375,7 +1370,7 @@ mod tests {
             }),
             upgrade_to: Vec::new(),
             upgrade_from: None,
-                    on_built: None,
+            on_built: None,
             on_upgraded: None,
         });
 
@@ -1391,22 +1386,25 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
 
-        let entity = app.world_mut().spawn((
-            DeepSpaceStructure {
-                definition_id: "sensor_buoy".to_string(),
-                name: "Buoy Alpha".to_string(),
-                owner: Owner::Neutral,
-            },
-            StructureHitpoints {
-                current: 20.0,
-                max: 20.0,
-            },
-            Position {
-                x: 10.0,
-                y: 5.0,
-                z: 0.0,
-            },
-        )).id();
+        let entity = app
+            .world_mut()
+            .spawn((
+                DeepSpaceStructure {
+                    definition_id: "sensor_buoy".to_string(),
+                    name: "Buoy Alpha".to_string(),
+                    owner: Owner::Neutral,
+                },
+                StructureHitpoints {
+                    current: 20.0,
+                    max: 20.0,
+                },
+                Position {
+                    x: 10.0,
+                    y: 5.0,
+                    z: 0.0,
+                },
+            ))
+            .id();
 
         let world = app.world();
         let dss = world.get::<DeepSpaceStructure>(entity).unwrap();
@@ -1581,7 +1579,12 @@ mod tests {
         reg.insert(mk_platform("platform"));
         let report = validate_and_build_edges(&mut reg);
         assert!(!report.is_ok());
-        assert!(report.errors.iter().any(|e| e.contains("construction_platform")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("construction_platform"))
+        );
     }
 
     #[test]
@@ -1718,22 +1721,36 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_systems(Update, verify_relay_pairings_system);
 
-        let a = app.world_mut().spawn((
-            DeepSpaceStructure {
-                definition_id: "ftl_comm_relay".into(),
-                name: "A".into(),
-                owner: Owner::Neutral,
-            },
-            Position { x: 0.0, y: 0.0, z: 0.0 },
-        )).id();
-        let b = app.world_mut().spawn((
-            DeepSpaceStructure {
-                definition_id: "ftl_comm_relay".into(),
-                name: "B".into(),
-                owner: Owner::Neutral,
-            },
-            Position { x: 5.0, y: 0.0, z: 0.0 },
-        )).id();
+        let a = app
+            .world_mut()
+            .spawn((
+                DeepSpaceStructure {
+                    definition_id: "ftl_comm_relay".into(),
+                    name: "A".into(),
+                    owner: Owner::Neutral,
+                },
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ))
+            .id();
+        let b = app
+            .world_mut()
+            .spawn((
+                DeepSpaceStructure {
+                    definition_id: "ftl_comm_relay".into(),
+                    name: "B".into(),
+                    owner: Owner::Neutral,
+                },
+                Position {
+                    x: 5.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ))
+            .id();
 
         pair_relay_command(app.world_mut(), a, b, CommDirection::Bidirectional).unwrap();
 

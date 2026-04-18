@@ -13,7 +13,9 @@ pub fn parse_species_definitions(lua: &mlua::Lua) -> Result<Vec<SpeciesDefinitio
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
         let growth_rate: f64 = table.get::<Option<f64>>("growth_rate")?.unwrap_or(0.01);
 
         // #241: Legacy `job_bonuses` field is warn-then-ignored. Use `modifiers` with
@@ -54,7 +56,9 @@ pub fn parse_job_definitions(lua: &mlua::Lua) -> Result<Vec<JobDefinition>, mlua
 
         let id: String = table.get("id")?;
         let label: String = table.get("label")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
 
         // #241: Legacy `base_output` field is warn-then-ignored. Use `modifiers`
         // instead, e.g. `{ target = "colony.minerals_per_hexadies", base_add = 0.6 }`.

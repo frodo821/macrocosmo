@@ -5,8 +5,8 @@ mod common;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::choice::{
-    apply_pending_choice_selection, drain_pending_choices, evaluate_choice_availability,
-    PendingChoice, PendingChoiceSelection,
+    PendingChoice, PendingChoiceSelection, apply_pending_choice_selection, drain_pending_choices,
+    evaluate_choice_availability,
 };
 use macrocosmo::colony::ResourceStockpile;
 use macrocosmo::condition::ScopedFlags;
@@ -148,7 +148,10 @@ fn drain_enqueues_active_choice_and_pauses_game() {
     assert_eq!(active.options.len(), 2);
 
     let speed = app.world().resource::<GameSpeed>();
-    assert!(speed.is_paused(), "drain should auto-pause when a choice is active");
+    assert!(
+        speed.is_paused(),
+        "drain should auto-pause when a choice is active"
+    );
 }
 
 #[test]
@@ -197,9 +200,15 @@ fn evaluate_marks_unmet_condition_and_cost() {
         Some((Amt::units(100), Amt::units(100))),
     );
 
-    assert!(active.options[0].condition_unmet, "tech-gated option must be unmet");
+    assert!(
+        active.options[0].condition_unmet,
+        "tech-gated option must be unmet"
+    );
     assert!(!active.options[0].cost_unmet);
-    assert!(active.options[1].cost_unmet, "expensive option must be unaffordable");
+    assert!(
+        active.options[1].cost_unmet,
+        "expensive option must be unaffordable"
+    );
     assert!(active.options[1].unmet_reason.contains("minerals"));
     assert!(!active.options[2].condition_unmet);
     assert!(!active.options[2].cost_unmet);
@@ -248,17 +257,24 @@ fn apply_selection_runs_on_chosen_and_unpauses() {
     assert!(app.world().resource::<GameSpeed>().is_paused());
 
     // Stage the selection (option 1) and tick again.
-    app.world_mut().resource_mut::<PendingChoiceSelection>().pick = Some(1);
+    app.world_mut()
+        .resource_mut::<PendingChoiceSelection>()
+        .pick = Some(1);
     app.update();
 
     // Selection consumed, choice cleared, game unpaused.
     let pending = app.world().resource::<PendingChoice>();
     assert!(!pending.is_active(), "pending choice should be cleared");
     let speed = app.world().resource::<GameSpeed>();
-    assert!(!speed.is_paused(), "game should be unpaused after resolving");
+    assert!(
+        !speed.is_paused(),
+        "game should be unpaused after resolving"
+    );
 
     // DescriptiveEffect::SetFlag should have mirrored into GameFlags/ScopedFlags.
-    let mut q = app.world_mut().query_filtered::<&GameFlags, With<PlayerEmpire>>();
+    let mut q = app
+        .world_mut()
+        .query_filtered::<&GameFlags, With<PlayerEmpire>>();
     let flags = q.single(app.world()).unwrap();
     assert!(flags.flags.contains("ruins_studied"));
 }
@@ -310,12 +326,22 @@ fn apply_selection_deducts_cost_from_capital_stockpile() {
         }
     }
 
-    app.world_mut().resource_mut::<PendingChoiceSelection>().pick = Some(1);
+    app.world_mut()
+        .resource_mut::<PendingChoiceSelection>()
+        .pick = Some(1);
     app.update();
 
     let stockpile = app.world().get::<ResourceStockpile>(capital).unwrap();
-    assert_eq!(stockpile.minerals, Amt::units(350), "minerals should be debited by 150");
-    assert_eq!(stockpile.energy, Amt::units(450), "energy should be debited by 50");
+    assert_eq!(
+        stockpile.minerals,
+        Amt::units(350),
+        "minerals should be debited by 150"
+    );
+    assert_eq!(
+        stockpile.energy,
+        Amt::units(450),
+        "energy should be debited by 50"
+    );
 }
 
 #[test]
@@ -376,7 +402,9 @@ fn apply_selection_rejects_unavailable_option() {
     }
 
     // Stage the "unavailable" pick and tick.
-    app.world_mut().resource_mut::<PendingChoiceSelection>().pick = Some(1);
+    app.world_mut()
+        .resource_mut::<PendingChoiceSelection>()
+        .pick = Some(1);
     app.update();
 
     // Choice must still be active.
@@ -388,7 +416,9 @@ fn apply_selection_rejects_unavailable_option() {
     let stockpile = app.world().get::<ResourceStockpile>(capital).unwrap();
     assert_eq!(stockpile.minerals, Amt::units(10));
     // Flag must not have been set.
-    let mut q = app.world_mut().query_filtered::<&GameFlags, With<PlayerEmpire>>();
+    let mut q = app
+        .world_mut()
+        .query_filtered::<&GameFlags, With<PlayerEmpire>>();
     let flags = q.single(app.world()).unwrap();
     assert!(!flags.flags.contains("paid"));
 }

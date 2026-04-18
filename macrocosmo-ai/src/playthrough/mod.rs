@@ -19,8 +19,8 @@ pub mod replayer;
 pub mod scenario;
 
 pub use assertions::{
-    assert_bus_equivalent, assert_command_count, assert_metric_monotone, assert_no_command_kind,
-    assert_no_panics, assert_playthrough_equivalent, Direction,
+    Direction, assert_bus_equivalent, assert_command_count, assert_metric_monotone,
+    assert_no_command_kind, assert_no_panics, assert_playthrough_equivalent,
 };
 pub use record::{
     CommandSpecMap, Declarations, EvidenceSpecMap, MetricSpecMap, Playthrough, PlaythroughEvent,
@@ -31,7 +31,7 @@ pub use record::{
 // explicit imports.
 pub use record::ScenarioConfig;
 pub use recorder::RecordingBus;
-pub use replayer::{replay, ReplayError};
+pub use replayer::{ReplayError, replay};
 pub use scenario::{
-    run_scenario, EvidencePulse, MetricScript, Scenario, SyntheticDynamics, TickFn,
+    EvidencePulse, MetricScript, Scenario, SyntheticDynamics, TickFn, run_scenario,
 };

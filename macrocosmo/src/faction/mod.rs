@@ -105,7 +105,13 @@ impl Plugin for FactionRelationsPlugin {
 pub fn seed_npc_relations(
     mut relations: ResMut<FactionRelations>,
     hostiles: Res<HostileFactions>,
-    npcs: Query<Entity, (With<crate::player::Empire>, Without<crate::player::PlayerEmpire>)>,
+    npcs: Query<
+        Entity,
+        (
+            With<crate::player::Empire>,
+            Without<crate::player::PlayerEmpire>,
+        ),
+    >,
 ) {
     let npc_entities: Vec<Entity> = npcs.iter().collect();
     if npc_entities.is_empty() {
@@ -196,10 +202,26 @@ pub fn spawn_hostile_factions(
     // with standing 0 and combat will not trigger. The combat gate explicitly
     // requires `can_attack_aggressive()` so missing relations are safe.
     for empire in &empires {
-        relations.set(empire, space_creature, FactionView::new(RelationState::Neutral, -100.0));
-        relations.set(space_creature, empire, FactionView::new(RelationState::Neutral, -100.0));
-        relations.set(empire, ancient_defense, FactionView::new(RelationState::Neutral, -100.0));
-        relations.set(ancient_defense, empire, FactionView::new(RelationState::Neutral, -100.0));
+        relations.set(
+            empire,
+            space_creature,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        relations.set(
+            space_creature,
+            empire,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        relations.set(
+            empire,
+            ancient_defense,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        relations.set(
+            ancient_defense,
+            empire,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
     }
 }
 
@@ -349,10 +371,7 @@ impl FactionRelations {
 
     /// Get the view, or a default `Neutral` view if not present.
     pub fn get_or_default(&self, from: Entity, to: Entity) -> FactionView {
-        self.relations
-            .get(&(from, to))
-            .cloned()
-            .unwrap_or_default()
+        self.relations.get(&(from, to)).cloned().unwrap_or_default()
     }
 
     /// Set the view that `from` holds of `to`.
@@ -762,40 +781,31 @@ pub fn tick_custom_diplomatic_actions(
         }
 
         // Resolve the on_accepted function (may legitimately be absent).
-        let func_opt =
-            match crate::scripting::faction_api::lookup_on_accepted(lua, &action_id) {
-                Ok(f) => f,
-                Err(e) => {
-                    warn!(
-                        "Failed to look up on_accepted for '{}': {e}",
-                        action_id
-                    );
-                    commands.entity(entity).despawn();
-                    continue;
-                }
-            };
+        let func_opt = match crate::scripting::faction_api::lookup_on_accepted(lua, &action_id) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to look up on_accepted for '{}': {e}", action_id);
+                commands.entity(entity).despawn();
+                continue;
+            }
+        };
 
         if let Some(func) = func_opt {
             let scope = crate::scripting::effect_scope::EffectScope::new();
             let call_result = func.call::<mlua::Value>(scope.clone());
             let effects = match call_result {
-                Ok(v) => {
-                    match crate::scripting::effect_scope::collect_effects(&scope, v) {
-                        Ok(effects) => effects,
-                        Err(e) => {
-                            warn!(
-                                "collect_effects failed for custom diplomatic action '{}': {e}",
-                                action_id
-                            );
-                            Vec::new()
-                        }
+                Ok(v) => match crate::scripting::effect_scope::collect_effects(&scope, v) {
+                    Ok(effects) => effects,
+                    Err(e) => {
+                        warn!(
+                            "collect_effects failed for custom diplomatic action '{}': {e}",
+                            action_id
+                        );
+                        Vec::new()
                     }
-                }
+                },
                 Err(e) => {
-                    warn!(
-                        "on_accepted callback failed for '{}': {e}",
-                        action_id
-                    );
+                    warn!("on_accepted callback failed for '{}': {e}", action_id);
                     Vec::new()
                 }
             };
@@ -849,13 +859,7 @@ fn apply_custom_action_effect(
             add,
             ..
         } => {
-            apply_custom_action_modifier(
-                global_params,
-                target,
-                *base_add,
-                *multiplier,
-                *add,
-            );
+            apply_custom_action_modifier(global_params, target, *base_add, *multiplier, *add);
         }
         DescriptiveEffect::PopModifier { .. } => {
             // Pop is meaningless for one-shot acceptance.
@@ -930,9 +934,15 @@ pub fn faction_can_diplomacy(
     faction_registry: &crate::scripting::faction_api::FactionRegistry,
     type_registry: &crate::scripting::faction_api::FactionTypeRegistry,
 ) -> bool {
-    let Ok(faction) = factions.get(faction_entity) else { return false; };
-    let Some(def) = faction_registry.factions.get(&faction.id) else { return false; };
-    let Some(type_id) = def.faction_type.as_ref() else { return false; };
+    let Ok(faction) = factions.get(faction_entity) else {
+        return false;
+    };
+    let Some(def) = faction_registry.factions.get(&faction.id) else {
+        return false;
+    };
+    let Some(type_id) = def.faction_type.as_ref() else {
+        return false;
+    };
     type_registry
         .get(type_id)
         .map(|t| t.can_diplomacy)
@@ -953,10 +963,7 @@ pub fn faction_can_diplomacy(
 /// Infrastructure Core ship qualifies.
 pub fn system_owner(
     system: Entity,
-    at_system: &Query<
-        (&crate::galaxy::AtSystem, &FactionOwner),
-        With<crate::ship::CoreShip>,
-    >,
+    at_system: &Query<(&crate::galaxy::AtSystem, &FactionOwner), With<crate::ship::CoreShip>>,
 ) -> Option<Entity> {
     for (at, owner) in at_system.iter() {
         if at.0 == system {
@@ -1132,7 +1139,11 @@ mod tests {
     /// fights from negative standing alone.
     #[test]
     fn should_engage_defensive_idle_negative_standing_does_not_engage() {
-        for state in [RelationState::Neutral, RelationState::Peace, RelationState::Alliance] {
+        for state in [
+            RelationState::Neutral,
+            RelationState::Peace,
+            RelationState::Alliance,
+        ] {
             let v = FactionView::new(state, -100.0);
             assert!(
                 !v.should_engage_defensive(false),
@@ -1145,7 +1156,11 @@ mod tests {
     /// (stale-relation tolerance).
     #[test]
     fn should_engage_defensive_retaliates_when_attacked() {
-        for state in [RelationState::Neutral, RelationState::Peace, RelationState::Alliance] {
+        for state in [
+            RelationState::Neutral,
+            RelationState::Peace,
+            RelationState::Alliance,
+        ] {
             for &standing in &[-100.0, 0.0, 100.0] {
                 let v = FactionView::new(state, standing);
                 assert!(
@@ -1355,15 +1370,20 @@ mod tests {
     /// faction entities (one for SpaceCreature, one for AncientDefense).
     #[test]
     fn spawn_hostile_factions_creates_two_distinct_entities() {
-        use crate::player::{Empire, PlayerEmpire, Faction as PlayerFaction};
+        use crate::player::{Empire, Faction as PlayerFaction, PlayerEmpire};
         let mut app = App::new();
         app.init_resource::<FactionRelations>();
         app.init_resource::<HostileFactions>();
         // Spawn a player empire so relations get seeded.
         app.world_mut().spawn((
-            Empire { name: "Test".into() },
+            Empire {
+                name: "Test".into(),
+            },
             PlayerEmpire,
-            PlayerFaction { id: "test".into(), name: "Test".into() },
+            PlayerFaction {
+                id: "test".into(),
+                name: "Test".into(),
+            },
         ));
         app.add_systems(Update, spawn_hostile_factions);
         app.update();
@@ -1382,21 +1402,31 @@ mod tests {
     /// `can_attack_aggressive()` therefore returns true.
     #[test]
     fn spawn_hostile_factions_seeds_neutral_negative_relations() {
-        use crate::player::{Empire, PlayerEmpire, Faction as PlayerFaction};
+        use crate::player::{Empire, Faction as PlayerFaction, PlayerEmpire};
         let mut app = App::new();
         app.init_resource::<FactionRelations>();
         app.init_resource::<HostileFactions>();
-        let empire = app.world_mut().spawn((
-            Empire { name: "Test".into() },
-            PlayerEmpire,
-            PlayerFaction { id: "test".into(), name: "Test".into() },
-        )).id();
+        let empire = app
+            .world_mut()
+            .spawn((
+                Empire {
+                    name: "Test".into(),
+                },
+                PlayerEmpire,
+                PlayerFaction {
+                    id: "test".into(),
+                    name: "Test".into(),
+                },
+            ))
+            .id();
         app.add_systems(Update, spawn_hostile_factions);
         app.update();
 
         let hf = *app.world().resource::<HostileFactions>();
         let rel = app.world().resource::<FactionRelations>();
-        let view = rel.get(empire, hf.space_creature.unwrap()).expect("relation seeded");
+        let view = rel
+            .get(empire, hf.space_creature.unwrap())
+            .expect("relation seeded");
         assert_eq!(view.state, RelationState::Neutral);
         assert!(view.standing < 0.0);
         assert!(view.can_attack_aggressive());
@@ -1448,22 +1478,29 @@ mod tests {
         // Run the helper inside a system so we have access to Commands.
         app.add_systems(
             Update,
-            (move |mut c: Commands,
-                   mut r: ResMut<FactionRelations>,
-                   clk: Res<GameClock>| {
+            (move |mut c: Commands, mut r: ResMut<FactionRelations>, clk: Res<GameClock>| {
                 declare_war_with_delay(&mut c, &mut r, &clk, a, b, 60);
             })
-                .before(tick_diplomatic_actions),
+            .before(tick_diplomatic_actions),
         );
         app.update(); // T=0: helper runs, sender now at War, pending spawned
 
         // Sender side already at War.
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::War
         );
         // Receiver side still default (Neutral).
-        assert!(app.world().resource::<FactionRelations>().get(b, a).is_none());
+        assert!(
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .is_none()
+        );
 
         // Drop the helper system so subsequent updates don't keep firing it.
         // (We rebuild a fresh app instead — schedule mutation isn't allowed.)
@@ -1473,7 +1510,9 @@ mod tests {
     fn declare_war_receiver_flips_after_arrival() {
         let (mut app, a, b) = diplo_app();
         // Schedule the message manually (one-time) so we can advance time.
-        app.world_mut().resource_mut::<FactionRelations>().declare_war(a, b);
+        app.world_mut()
+            .resource_mut::<FactionRelations>()
+            .declare_war(a, b);
         app.world_mut().spawn(PendingDiplomaticAction {
             from: a,
             to: b,
@@ -1484,7 +1523,12 @@ mod tests {
 
         // Before arrival.
         diplo_tick(&mut app, 30);
-        assert!(app.world().resource::<FactionRelations>().get(b, a).is_none());
+        assert!(
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .is_none()
+        );
 
         // At arrival — clock=60.
         diplo_tick(&mut app, 30);
@@ -1506,7 +1550,9 @@ mod tests {
             r.set(b, a, FactionView::new(RelationState::Alliance, 50.0));
         }
         // Schedule break manually.
-        app.world_mut().resource_mut::<FactionRelations>().break_alliance(a, b);
+        app.world_mut()
+            .resource_mut::<FactionRelations>()
+            .break_alliance(a, b);
         app.world_mut().spawn(PendingDiplomaticAction {
             from: a,
             to: b,
@@ -1517,18 +1563,30 @@ mod tests {
 
         // Sender already at Peace.
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::Peace
         );
         // Receiver still Alliance.
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .unwrap()
+                .state,
             RelationState::Alliance
         );
 
         diplo_tick(&mut app, 60);
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .unwrap()
+                .state,
             RelationState::Peace
         );
     }
@@ -1555,29 +1613,49 @@ mod tests {
         // Before arrival both sides still War.
         diplo_tick(&mut app, 30);
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .unwrap()
+                .state,
             RelationState::War
         );
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::War
         );
 
         // At T=60: receiver flips to Peace; sender still War.
         diplo_tick(&mut app, 30);
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .unwrap()
+                .state,
             RelationState::Peace
         );
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::War
         );
 
         // Acceptance return leg arrives at T=120.
         diplo_tick(&mut app, 60);
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::Peace
         );
     }
@@ -1601,17 +1679,29 @@ mod tests {
 
         diplo_tick(&mut app, 30);
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .unwrap()
+                .state,
             RelationState::Alliance
         );
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::Peace
         );
 
         diplo_tick(&mut app, 30);
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::Alliance
         );
     }
@@ -1621,7 +1711,9 @@ mod tests {
         let (mut app, a, b) = diplo_app();
         // delay_hexadies=0 (e.g. cohabitating capitals): both sides should
         // be in sync after the next update.
-        app.world_mut().resource_mut::<FactionRelations>().declare_war(a, b);
+        app.world_mut()
+            .resource_mut::<FactionRelations>()
+            .declare_war(a, b);
         app.world_mut().spawn(PendingDiplomaticAction {
             from: a,
             to: b,
@@ -1632,11 +1724,19 @@ mod tests {
         app.update();
 
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(a, b).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(a, b)
+                .unwrap()
+                .state,
             RelationState::War
         );
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .unwrap()
+                .state,
             RelationState::War
         );
     }
@@ -1649,11 +1749,15 @@ mod tests {
         // the receiver's side returns false (Defensive ROE would hold fire).
         let (mut app, sender, receiver) = diplo_app();
         // Receiver previously had Peace with sender (positive standing).
+        app.world_mut().resource_mut::<FactionRelations>().set(
+            receiver,
+            sender,
+            FactionView::new(RelationState::Peace, 20.0),
+        );
+
         app.world_mut()
             .resource_mut::<FactionRelations>()
-            .set(receiver, sender, FactionView::new(RelationState::Peace, 20.0));
-
-        app.world_mut().resource_mut::<FactionRelations>().declare_war(sender, receiver);
+            .declare_war(sender, receiver);
         app.world_mut().spawn(PendingDiplomaticAction {
             from: sender,
             to: receiver,
@@ -1695,18 +1799,20 @@ mod tests {
 
         app.add_systems(
             Update,
-            (move |mut c: Commands,
-                   mut r: ResMut<FactionRelations>,
-                   clk: Res<GameClock>| {
+            (move |mut c: Commands, mut r: ResMut<FactionRelations>, clk: Res<GameClock>| {
                 declare_war_with_delay(&mut c, &mut r, &clk, a, b, -10);
             })
-                .before(tick_diplomatic_actions),
+            .before(tick_diplomatic_actions),
         );
         app.update();
 
         // Pending action should have arrived in the same frame.
         assert_eq!(
-            app.world().resource::<FactionRelations>().get(b, a).unwrap().state,
+            app.world()
+                .resource::<FactionRelations>()
+                .get(b, a)
+                .unwrap()
+                .state,
             RelationState::War
         );
     }
@@ -1718,10 +1824,13 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<FactionRegistry>();
         app.init_resource::<FactionTypeRegistry>();
-        let f = app.world_mut().spawn(crate::player::Faction {
-            id: "unknown".into(),
-            name: "Unknown".into(),
-        }).id();
+        let f = app
+            .world_mut()
+            .spawn(crate::player::Faction {
+                id: "unknown".into(),
+                name: "Unknown".into(),
+            })
+            .id();
 
         // Run inside a system to get Query access.
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -1773,10 +1882,13 @@ mod tests {
         app.insert_resource(freg);
         app.insert_resource(treg);
 
-        let f = app.world_mut().spawn(crate::player::Faction {
-            id: "empire_x".into(),
-            name: "Empire X".into(),
-        }).id();
+        let f = app
+            .world_mut()
+            .spawn(crate::player::Faction {
+                id: "empire_x".into(),
+                name: "Empire X".into(),
+            })
+            .id();
 
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let result_w = result.clone();

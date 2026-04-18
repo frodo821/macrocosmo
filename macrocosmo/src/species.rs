@@ -302,12 +302,14 @@ mod tests {
                 JobSlot {
                     job_id: "miner".to_string(),
                     capacity: 5,
-                    assigned: 5, capacity_from_buildings: 0,
+                    assigned: 5,
+                    capacity_from_buildings: 0,
                 },
                 JobSlot {
                     job_id: "farmer".to_string(),
                     capacity: 5,
-                    assigned: 3, capacity_from_buildings: 0,
+                    assigned: 3,
+                    capacity_from_buildings: 0,
                 },
             ],
         };
@@ -328,12 +330,14 @@ mod tests {
                 JobSlot {
                     job_id: "miner".to_string(),
                     capacity: 5,
-                    assigned: 5, capacity_from_buildings: 0,
+                    assigned: 5,
+                    capacity_from_buildings: 0,
                 },
                 JobSlot {
                     job_id: "farmer".to_string(),
                     capacity: 5,
-                    assigned: 5, capacity_from_buildings: 0,
+                    assigned: 5,
+                    capacity_from_buildings: 0,
                 },
             ],
         };

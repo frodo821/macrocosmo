@@ -1,7 +1,7 @@
-pub mod territory;
 mod camera;
 mod ships;
 mod stars;
+pub mod territory;
 
 pub use camera::camera_controls;
 
@@ -83,27 +83,31 @@ pub struct VisualizationPlugin;
 impl Plugin for VisualizationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(territory::TerritoryPlugin)
-        .insert_resource(GalaxyView {
-            scale: 15.0,
-        })
-        .insert_resource(SelectedSystem::default())
-        .insert_resource(SelectedShip::default())
-        .insert_resource(SelectedPlanet::default())
-        .insert_resource(ContextMenu::default())
-        .insert_resource(DeployMode::default())
-        .insert_resource(OutlineExpandedSystems::default())
-        .add_systems(Startup, camera::setup_camera)
-        .add_systems(PostStartup, (stars::spawn_star_visuals, camera::center_camera_on_capital))
-        .add_systems(Update, (
-            click_select_system,
-            camera::camera_controls,
-            stars::update_star_colors,
-            stars::draw_galaxy_overlay,
-            ships::draw_ships,
-            stars::draw_deep_space_structures,
-            stars::draw_forbidden_regions,
-            draw_deploy_preview_gizmo,
-        ));
+            .insert_resource(GalaxyView { scale: 15.0 })
+            .insert_resource(SelectedSystem::default())
+            .insert_resource(SelectedShip::default())
+            .insert_resource(SelectedPlanet::default())
+            .insert_resource(ContextMenu::default())
+            .insert_resource(DeployMode::default())
+            .insert_resource(OutlineExpandedSystems::default())
+            .add_systems(Startup, camera::setup_camera)
+            .add_systems(
+                PostStartup,
+                (stars::spawn_star_visuals, camera::center_camera_on_capital),
+            )
+            .add_systems(
+                Update,
+                (
+                    click_select_system,
+                    camera::camera_controls,
+                    stars::update_star_colors,
+                    stars::draw_galaxy_overlay,
+                    ships::draw_ships,
+                    stars::draw_deep_space_structures,
+                    stars::draw_forbidden_regions,
+                    draw_deploy_preview_gizmo,
+                ),
+            );
     }
 }
 
@@ -225,7 +229,11 @@ pub fn click_select_system(
                 let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
                 Vec2::new(cx, cy)
             }
-            ShipState::Settling { system, .. } | ShipState::Surveying { target_system: system, .. } => {
+            ShipState::Settling { system, .. }
+            | ShipState::Surveying {
+                target_system: system,
+                ..
+            } => {
                 let Ok(sys_pos) = star_positions.get(*system) else {
                     continue;
                 };
@@ -237,9 +245,10 @@ pub fn click_select_system(
                 departed_at,
                 arrival_at,
             } => {
-                let (Ok(origin_pos), Ok(dest_pos)) =
-                    (star_positions.get(*origin_system), star_positions.get(*destination_system))
-                else {
+                let (Ok(origin_pos), Ok(dest_pos)) = (
+                    star_positions.get(*origin_system),
+                    star_positions.get(*destination_system),
+                ) else {
                     continue;
                 };
                 let total = (*arrival_at - *departed_at) as f64;
@@ -254,9 +263,10 @@ pub fn click_select_system(
                 Vec2::new(cx, cy)
             }
             // #185: Loitering ships are selectable in deep space.
-            ShipState::Loitering { position } => {
-                Vec2::new(position[0] as f32 * view.scale, position[1] as f32 * view.scale)
-            }
+            ShipState::Loitering { position } => Vec2::new(
+                position[0] as f32 * view.scale,
+                position[1] as f32 * view.scale,
+            ),
             // Docked ships selected via outline panel
             _ => continue,
         };
@@ -314,7 +324,9 @@ pub fn click_select_system(
             if snapped_star_world.is_some() {
                 info!(
                     "Deploy queued: ship {:?} -> cargo idx {} at star {:?}",
-                    pending.ship, pending.item_index, best_star.map(|(e, _)| e),
+                    pending.ship,
+                    pending.item_index,
+                    best_star.map(|(e, _)| e),
                 );
             } else {
                 info!(

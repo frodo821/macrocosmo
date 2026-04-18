@@ -107,15 +107,15 @@ impl<'w> AiBusReader<'w> {
     /// convenience. Callers that iterate repeatedly should prefer
     /// [`Self::bus`] for zero-allocation access.
     pub fn window(&self, id: &MetricId, duration: Tick) -> Vec<TimestampedValue> {
-        self.bus.0.window(id, self.now(), duration).copied().collect()
+        self.bus
+            .0
+            .window(id, self.now(), duration)
+            .copied()
+            .collect()
     }
 
     /// Evidence for a given observer over `[now - duration, now]`.
-    pub fn evidence_for(
-        &self,
-        observer: FactionId,
-        duration: Tick,
-    ) -> Vec<StandingEvidence> {
+    pub fn evidence_for(&self, observer: FactionId, duration: Tick) -> Vec<StandingEvidence> {
         self.bus
             .0
             .evidence_for(observer, self.now(), duration)

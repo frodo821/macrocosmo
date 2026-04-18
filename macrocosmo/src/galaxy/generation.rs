@@ -3,28 +3,30 @@ use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 
 use crate::components::Position;
-use crate::scripting::galaxy_api::{PlanetTypeDefinition, PlanetTypeRegistry, StarTypeDefinition, StarTypeRegistry};
+use crate::scripting::ScriptEngine;
+use crate::scripting::galaxy_api::{
+    PlanetTypeDefinition, PlanetTypeRegistry, StarTypeDefinition, StarTypeRegistry,
+};
 use crate::scripting::galaxy_gen_ctx::{
     self, ChooseCapitalsCtx, GalaxyGenerateCtx, GenerationSettings, InitializeSystemActions,
     InitializeSystemCtx, PlanetAttrsOverride, SystemSnapshot,
 };
 use crate::scripting::map_api::{
-    lookup_map_type_generator, MapTypeRegistry, PredefinedPlanetSpec, PredefinedSystemRegistry,
+    MapTypeRegistry, PredefinedPlanetSpec, PredefinedSystemRegistry, lookup_map_type_generator,
 };
-use crate::scripting::ScriptEngine;
 use crate::technology::TechKnowledge;
 
+use super::biome::resolve_biome_id;
+use super::types::{default_planet_types, default_star_types};
 use super::{
     Anomalies, AtSystem, Biome, BiomeRegistry, GalaxyConfig, Hostile, HostileHitpoints,
     HostileStats, ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet,
     SystemAttributes, SystemModifiers,
 };
-use super::biome::resolve_biome_id;
-use crate::faction::{FactionOwner, HostileFactions};
 use crate::amount::SignedAmt;
+use crate::faction::{FactionOwner, HostileFactions};
 use crate::modifier::Modifier;
 use crate::scripting::galaxy_api::StarTypeModifier;
-use super::types::{default_planet_types, default_star_types};
 
 /// Galaxy generation parameters.
 pub(crate) struct GalaxyParams {
@@ -299,9 +301,7 @@ pub(crate) fn default_generate_empty_systems(
                     nearest_j = j;
                 }
             }
-            if nearest_dist > params.max_neighbor_distance
-                && nearest_dist > worst_nearest_dist
-            {
+            if nearest_dist > params.max_neighbor_distance && nearest_dist > worst_nearest_dist {
                 worst_nearest_dist = nearest_dist;
                 worst_nearest_idx = nearest_j;
                 worst_idx = Some(i);
@@ -359,10 +359,7 @@ pub(crate) fn default_choose_faction_capitals(
 ) -> CapitalAssignments {
     // #182: if Phase A tagged any system with `capital_for_faction` (via a
     // predefined system definition), pick the first such system as capital.
-    if let Some(idx) = systems
-        .iter()
-        .position(|s| s.capital_for_faction.is_some())
-    {
+    if let Some(idx) = systems.iter().position(|s| s.capital_for_faction.is_some()) {
         systems.swap(0, idx);
         return CapitalAssignments { capital_idx: 0 };
     }
@@ -448,7 +445,11 @@ pub(crate) fn initialize_systems(
     let mut all_planets: Vec<Vec<PlanetData>> = Vec::with_capacity(actual_count);
     for (i, sys) in systems.iter().enumerate() {
         // 1. Hook override wins.
-        if overrides.get(i).map(|o| o.override_planets).unwrap_or(false) {
+        if overrides
+            .get(i)
+            .map(|o| o.override_planets)
+            .unwrap_or(false)
+        {
             let resolved = resolve_pending_planets(
                 &overrides[i].pending_planets,
                 planet_types,
@@ -561,9 +562,7 @@ pub(crate) fn initialize_systems(
         let name = sys_override
             .and_then(|o| o.name.clone())
             .unwrap_or_else(|| sys.name.clone());
-        let surveyed = sys_override
-            .and_then(|o| o.surveyed)
-            .unwrap_or(is_capital);
+        let surveyed = sys_override.and_then(|o| o.surveyed).unwrap_or(is_capital);
 
         let star = StarSystem {
             name: name.clone(),
@@ -581,7 +580,11 @@ pub(crate) fn initialize_systems(
         // Build SystemModifiers with any known ship.* targets from the star type
         // applied. Unknown targets are retained in StarTypeModifierSet below.
         let mut system_modifiers = SystemModifiers::default();
-        apply_star_type_modifiers_to_system(&star_type.modifiers, &star_type.id, &mut system_modifiers);
+        apply_star_type_modifiers_to_system(
+            &star_type.modifiers,
+            &star_type.id,
+            &mut system_modifiers,
+        );
 
         let entity = commands.spawn((
             star,
@@ -614,10 +617,7 @@ pub(crate) fn initialize_systems(
             // #335: Resolve biome from planet_type.default_biome via the
             // BiomeRegistry. `resolve_biome_id` falls back to
             // DEFAULT_BIOME_ID when the referenced biome is unknown.
-            let biome_id = resolve_biome_id(
-                planet_type.default_biome.as_deref(),
-                biome_registry,
-            );
+            let biome_id = resolve_biome_id(planet_type.default_biome.as_deref(), biome_registry);
 
             commands.spawn((
                 Planet {
@@ -753,9 +753,8 @@ pub fn generate_galaxy(
     let predefined_arc: Option<Arc<PredefinedSystemRegistry>> = predefined_registry
         .as_deref()
         .map(|r| Arc::new(clone_predefined_registry(r)));
-    let active_map_type: Option<String> = map_type_registry
-        .as_deref()
-        .and_then(|r| r.current.clone());
+    let active_map_type: Option<String> =
+        map_type_registry.as_deref().and_then(|r| r.current.clone());
 
     // Phase A: Generate empty star systems (positions + star types only).
     // Precedence: active map_type.generator → on_galaxy_generate_empty hook
@@ -772,7 +771,13 @@ pub fn generate_galaxy(
 
     // Phase A' (#199): run `on_after_phase_a` hook if registered, to allow
     // Lua-driven connectivity enforcement (FTL-reachability bridges).
-    run_after_phase_a(lua, &mut systems, &params, &star_types, predefined_arc.clone());
+    run_after_phase_a(
+        lua,
+        &mut systems,
+        &params,
+        &star_types,
+        predefined_arc.clone(),
+    );
 
     // Phase B: Choose faction capitals. Honors `on_choose_capitals` if registered.
     let capitals = run_phase_b(lua, &mut systems, &star_types);
@@ -783,9 +788,7 @@ pub fn generate_galaxy(
     // Phase C: Initialize all systems (planets, resources, hostiles, ECS entities)
     // Fall back to a default registry when none was inserted (test-only path).
     let biome_fallback = BiomeRegistry::default();
-    let biome_ref: &BiomeRegistry = biome_registry
-        .as_deref()
-        .unwrap_or(&biome_fallback);
+    let biome_ref: &BiomeRegistry = biome_registry.as_deref().unwrap_or(&biome_fallback);
 
     initialize_systems(
         &mut commands,
@@ -833,12 +836,9 @@ fn run_phase_a(
                     "active map_type '{}' has no generator; falling back to on_galaxy_generate_empty / default",
                     map_id
                 );
-                galaxy_gen_ctx::last_registered_hook(
-                    lua,
-                    galaxy_gen_ctx::GENERATE_EMPTY_HANDLERS,
-                )
-                .ok()
-                .flatten()
+                galaxy_gen_ctx::last_registered_hook(lua, galaxy_gen_ctx::GENERATE_EMPTY_HANDLERS)
+                    .ok()
+                    .flatten()
             }
             Err(e) => {
                 warn!("map_type lookup error: {e}; falling back to default");
@@ -914,12 +914,10 @@ fn run_phase_b(
     let Some(lua) = lua else {
         return default_choose_faction_capitals(systems);
     };
-    let Some(func) = galaxy_gen_ctx::last_registered_hook(
-        lua,
-        galaxy_gen_ctx::CHOOSE_CAPITALS_HANDLERS,
-    )
-    .ok()
-    .flatten()
+    let Some(func) =
+        galaxy_gen_ctx::last_registered_hook(lua, galaxy_gen_ctx::CHOOSE_CAPITALS_HANDLERS)
+            .ok()
+            .flatten()
     else {
         return default_choose_faction_capitals(systems);
     };
@@ -982,12 +980,10 @@ fn run_after_phase_a(
     let Some(lua) = lua else {
         return;
     };
-    let Some(func) = galaxy_gen_ctx::last_registered_hook(
-        lua,
-        galaxy_gen_ctx::AFTER_PHASE_A_HANDLERS,
-    )
-    .ok()
-    .flatten()
+    let Some(func) =
+        galaxy_gen_ctx::last_registered_hook(lua, galaxy_gen_ctx::AFTER_PHASE_A_HANDLERS)
+            .ok()
+            .flatten()
     else {
         return;
     };
@@ -1070,12 +1066,10 @@ fn run_phase_c_hooks(
     let Some(lua) = lua else {
         return vec![SystemInitOverride::default(); systems.len()];
     };
-    let Some(func) = galaxy_gen_ctx::last_registered_hook(
-        lua,
-        galaxy_gen_ctx::INITIALIZE_SYSTEM_HANDLERS,
-    )
-    .ok()
-    .flatten()
+    let Some(func) =
+        galaxy_gen_ctx::last_registered_hook(lua, galaxy_gen_ctx::INITIALIZE_SYSTEM_HANDLERS)
+            .ok()
+            .flatten()
     else {
         return vec![SystemInitOverride::default(); systems.len()];
     };
@@ -1239,7 +1233,7 @@ pub fn place_forbidden_regions(
     mut region_specs: ResMut<super::region::RegionSpecQueue>,
     rng_seed: Option<Res<crate::observer::RngSeed>>,
 ) {
-    use super::region::{place_regions, PlacementInputs};
+    use super::region::{PlacementInputs, place_regions};
 
     if region_specs.specs.is_empty() {
         return;

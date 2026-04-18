@@ -23,7 +23,10 @@ pub enum ReplayError {
 /// already accepted, so warnings would be noise.
 pub fn replay(pt: &Playthrough) -> Result<AiBus, ReplayError> {
     if pt.version != SUPPORTED_VERSION {
-        return Err(ReplayError::UnsupportedVersion(pt.version, SUPPORTED_VERSION));
+        return Err(ReplayError::UnsupportedVersion(
+            pt.version,
+            SUPPORTED_VERSION,
+        ));
     }
 
     let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
@@ -52,9 +55,7 @@ pub fn replay(pt: &Playthrough) -> Result<AiBus, ReplayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::playthrough::record::{
-        Declarations, PlaythroughMeta, ScenarioConfig,
-    };
+    use crate::playthrough::record::{Declarations, PlaythroughMeta, ScenarioConfig};
     use crate::playthrough::scenario::SyntheticDynamics;
 
     fn mk(version: u32) -> Playthrough {
