@@ -54,10 +54,7 @@ fn spawn_two_empires(world: &mut World) -> (Entity, Entity) {
             Empire {
                 name: "Alpha".into(),
             },
-            Faction {
-                id: "alpha".into(),
-                name: "Alpha".into(),
-            },
+            Faction::new("alpha", "Alpha"),
         ))
         .id();
     let b = world
@@ -65,10 +62,7 @@ fn spawn_two_empires(world: &mut World) -> (Entity, Entity) {
             Empire {
                 name: "Beta".into(),
             },
-            Faction {
-                id: "beta".into(),
-                name: "Beta".into(),
-            },
+            Faction::new("beta", "Beta"),
         ))
         .id();
     (a, b)
