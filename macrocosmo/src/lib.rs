@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod amount;
+pub mod casus_belli;
 pub mod choice;
 pub mod colony;
 pub mod communication;

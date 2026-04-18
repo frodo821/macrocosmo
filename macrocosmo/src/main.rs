@@ -1,5 +1,6 @@
 mod ai;
 mod amount;
+mod casus_belli;
 mod choice;
 mod colony;
 mod communication;
