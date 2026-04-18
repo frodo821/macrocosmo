@@ -212,6 +212,8 @@ mod tests {
         assert!(GameEventKind::AnomalyDiscovered.should_pause());
         assert!(GameEventKind::CoreConquered.should_pause());
         assert!(GameEventKind::CasusBelli.should_pause());
+        assert!(GameEventKind::WarDeclared.should_pause());
+        assert!(GameEventKind::WarEnded.should_pause());
     }
 
     #[test]

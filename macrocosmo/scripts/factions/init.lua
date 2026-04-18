@@ -8,6 +8,9 @@ local types = require("factions.faction_types")
 -- registry resolves prerequisites against relations + types at call time.
 require("factions.actions")
 
+-- #305 (S-11): Casus Belli definitions.
+require("factions.casus_belli")
+
 define_faction {
     id = "humanity_empire",
     name = "Terran Federation",
