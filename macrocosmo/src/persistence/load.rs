@@ -512,14 +512,13 @@ fn remap_faction_relations(world: &mut World, save: &GameSave, map: &EntityMap) 
             .unwrap_or(Entity::PLACEHOLDER);
         let to = map.entity(to_bits.to_bits()).unwrap_or(Entity::PLACEHOLDER);
         // Use direct insert to bypass frozen check during load.
-        new_rel.relations.insert((from, to), view.clone().into_live());
+        new_rel
+            .relations
+            .insert((from, to), view.clone().into_live());
     }
     // #324: Restore frozen state for extinct factions.
     let mut extinct_query = world.query::<(Entity, &crate::faction::Extinct)>();
-    let extinct_entities: Vec<Entity> = extinct_query
-        .iter(world)
-        .map(|(e, _)| e)
-        .collect();
+    let extinct_entities: Vec<Entity> = extinct_query.iter(world).map(|(e, _)| e).collect();
     for e in extinct_entities {
         new_rel.freeze_faction(e);
     }
@@ -578,6 +577,10 @@ pub fn load_game_from_reader<R: Read>(world: &mut World, mut r: R) -> Result<(),
     // SystemBuildings that have filled slots with a ship_design_id but
     // no corresponding station Ship entity in the system.
     migrate_station_ships(world);
+
+    // #291: Post-load migration — insert LastDockedSystem for ships that
+    // were saved before this component existed.
+    migrate_last_docked_system(world);
 
     Ok(())
 }
@@ -818,6 +821,7 @@ fn migrate_station_ships(world: &mut World) {
             ShipModifiers::default(),
             ShipStats::default(),
             RulesOfEngagement::default(),
+            crate::ship::transit_events::LastDockedSystem(Some(system_entity)),
             SaveId(ship_entity.to_bits()),
             SaveableMarker,
         ));
@@ -844,5 +848,28 @@ fn migrate_station_ships(world: &mut World) {
             "#388 migration: spawned {} station ships for existing system buildings",
             spawned
         );
+    }
+}
+
+/// #291: Insert [`LastDockedSystem`] for ships that were saved before this
+/// component existed. Ships in `InSystem` get `Some(system)`, all others
+/// get `None`.
+fn migrate_last_docked_system(world: &mut World) {
+    use crate::ship::ShipState;
+    use crate::ship::transit_events::LastDockedSystem;
+
+    let mut to_insert: Vec<(Entity, Option<Entity>)> = Vec::new();
+    {
+        let mut q = world.query_filtered::<(Entity, &ShipState), Without<LastDockedSystem>>();
+        for (entity, state) in q.iter(world) {
+            let system = match state {
+                ShipState::InSystem { system } => Some(*system),
+                _ => None,
+            };
+            to_insert.push((entity, system));
+        }
+    }
+    for (entity, system) in to_insert {
+        world.entity_mut(entity).insert(LastDockedSystem(system));
     }
 }

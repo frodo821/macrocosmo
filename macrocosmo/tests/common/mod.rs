@@ -504,6 +504,18 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
+    // #291: Fleet departure detection — fires `macrocosmo:fleet_system_left`.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::transit_events::detect_fleet_departures
+            .after(sublight_movement_system)
+            .after(process_ftl_travel)
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested)
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
     // #334 Phase 1: CommandExecuted → CommandLog bridge.
     app.add_systems(
         Update,
@@ -814,6 +826,16 @@ pub fn full_test_app() -> App {
         )
             .chain()
             .after(macrocosmo::ship::handlers::handle_attack_requested),
+    );
+    // #291: Fleet departure detection (full_test_app).
+    app.add_systems(
+        Update,
+        macrocosmo::ship::transit_events::detect_fleet_departures
+            .after(sublight_movement_system)
+            .after(process_ftl_travel)
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested),
     );
     // #334 Phase 1: CommandExecuted → CommandLog bridge.
     app.add_systems(
@@ -1656,6 +1678,7 @@ pub fn spawn_test_ship(
         ShipModifiers::default(),
         macrocosmo::ship::ShipStats::default(),
         RulesOfEngagement::default(),
+        macrocosmo::ship::transit_events::LastDockedSystem(Some(system)),
     ));
     world.entity_mut(fleet_entity).insert((
         Fleet {

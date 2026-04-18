@@ -81,12 +81,18 @@ pub fn start_sublight_travel_with_bonus(
 #[allow(clippy::too_many_arguments)]
 pub fn sublight_movement_system(
     clock: Res<GameClock>,
-    mut query: Query<(&mut ShipState, &mut Position, &Ship)>,
+    mut query: Query<(
+        &mut ShipState,
+        &mut Position,
+        &Ship,
+        Option<&mut super::transit_events::LastDockedSystem>,
+    )>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
     player_q: Query<&StationedAt, Without<Ship>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
@@ -97,7 +103,7 @@ pub fn sublight_movement_system(
         player_pos: pos,
         player_aboard,
     });
-    for (mut state, mut pos, ship) in query.iter_mut() {
+    for (mut state, mut pos, ship, mut last_docked) in query.iter_mut() {
         let (origin, destination, target_system, departed_at, arrival_at) = match *state {
             ShipState::SubLight {
                 origin,
@@ -126,6 +132,20 @@ pub fn sublight_movement_system(
             );
             if let Some(system) = target_system {
                 *state = ShipState::InSystem { system };
+                // #291: fire fleet_system_entered for sublight arrival.
+                if let Some(fleet) = ship.fleet {
+                    super::transit_events::fire_fleet_transit(
+                        &mut event_system,
+                        super::transit_events::TransitDirection::Entered,
+                        clock.elapsed,
+                        super::transit_events::TransitMode::Sublight,
+                        system,
+                        fleet,
+                    );
+                }
+                if let Some(ref mut lds) = last_docked {
+                    lds.0 = Some(system);
+                }
             } else {
                 *state = ShipState::Loitering {
                     position: destination,
@@ -152,6 +172,20 @@ pub fn sublight_movement_system(
             );
             if let Some(system) = target_system {
                 *state = ShipState::InSystem { system };
+                // #291: fire fleet_system_entered for sublight arrival.
+                if let Some(fleet) = ship.fleet {
+                    super::transit_events::fire_fleet_transit(
+                        &mut event_system,
+                        super::transit_events::TransitDirection::Entered,
+                        clock.elapsed,
+                        super::transit_events::TransitMode::Sublight,
+                        system,
+                        fleet,
+                    );
+                }
+                if let Some(ref mut lds) = last_docked {
+                    lds.0 = Some(system);
+                }
             } else {
                 *state = ShipState::Loitering {
                     position: destination,
@@ -310,12 +344,18 @@ impl PortParams {
 #[allow(clippy::too_many_arguments)]
 pub fn process_ftl_travel(
     clock: Res<GameClock>,
-    mut ships: Query<(&Ship, &mut ShipState, &mut Position)>,
+    mut ships: Query<(
+        &Ship,
+        &mut ShipState,
+        &mut Position,
+        Option<&mut super::transit_events::LastDockedSystem>,
+    )>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
     player_q: Query<&StationedAt, Without<Ship>>,
     player_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
@@ -327,7 +367,7 @@ pub fn process_ftl_travel(
         player_aboard,
     });
 
-    for (ship, mut state, mut ship_pos) in ships.iter_mut() {
+    for (ship, mut state, mut ship_pos, last_docked) in ships.iter_mut() {
         let (destination_system, arrival_at) = match *state {
             ShipState::InFTL {
                 destination_system,
@@ -343,6 +383,20 @@ pub fn process_ftl_travel(
                 *state = ShipState::InSystem {
                     system: destination_system,
                 };
+                // #291: fire fleet_system_entered for FTL arrival.
+                if let Some(fleet) = ship.fleet {
+                    super::transit_events::fire_fleet_transit(
+                        &mut event_system,
+                        super::transit_events::TransitDirection::Entered,
+                        clock.elapsed,
+                        super::transit_events::TransitMode::Ftl,
+                        destination_system,
+                        fleet,
+                    );
+                }
+                if let Some(mut lds) = last_docked {
+                    lds.0 = Some(destination_system);
+                }
                 // #249: Dual-write FTL arrival.
                 let event_id = fact_sys.allocate_event_id();
                 let desc = format!("{} arrived at {} via FTL", ship.name, star.name);

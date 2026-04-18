@@ -363,6 +363,21 @@ pub const BUILDING_BUILT_EVENT: &str = "macrocosmo:building_built";
 /// `memory/feedback_rust_no_lua_callback.md` is preserved.
 pub const COMMAND_COMPLETED_EVENT: &str = "macrocosmo:command_completed";
 
+/// #291: Event id fired when a fleet arrives at a star system.
+/// Fires on FTL arrival (InFTL → InSystem) and sublight arrival
+/// (SubLight → InSystem, only when target_system is Some — deep-space
+/// Loitering arrivals do NOT fire this event).
+/// Payload: `date` (integer hexadies), `mode` (`"ftl"` | `"sublight"`),
+/// `system` (SystemView), `fleet` (FleetView).
+pub const FLEET_SYSTEM_ENTERED_EVENT: &str = "macrocosmo:fleet_system_entered";
+
+/// #291: Event id fired when a fleet departs from a star system.
+/// Fires on FTL departure (InSystem → InFTL) and sublight departure
+/// (InSystem → SubLight — ships departing from Loitering do NOT fire).
+/// Payload: `date` (integer hexadies), `mode` (`"ftl"` | `"sublight"`),
+/// `system` (SystemView), `fleet` (FleetView).
+pub const FLEET_SYSTEM_LEFT_EVENT: &str = "macrocosmo:fleet_system_left";
+
 /// Central event bus for dispatching events to Lua handlers.
 ///
 /// Handlers are stored in the Lua global `_event_handlers` table to avoid

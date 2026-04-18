@@ -442,6 +442,11 @@ pub fn dispatch_event_handlers(world: &mut World) {
                 },
             };
 
+            // #291: enrich fleet transit event payloads with SystemView /
+            // FleetView before entering the gamestate scope. We build the
+            // views here while `world` is still directly accessible.
+            enrich_fleet_transit_payload(lua, world, &fired, &payload_table);
+
             // #332: attach a live gamestate via Option B scope closures.
             // Event callbacks may mutate the world via setter methods
             // (`ReadWrite` mode); the resulting borrow is released per
@@ -470,6 +475,42 @@ pub fn dispatch_event_handlers(world: &mut World) {
             }
         }
     });
+}
+
+/// #291: If the fired event is a fleet transit event, enrich the payload
+/// table with `system` (SystemView) and `fleet` (FleetView) built from the
+/// entity ids stored in the context. Called before `dispatch_with_gamestate`
+/// while `world` is still directly accessible.
+fn enrich_fleet_transit_payload(
+    lua: &mlua::Lua,
+    world: &mut World,
+    fired: &crate::event_system::FiredEvent,
+    payload_table: &mlua::Table,
+) {
+    use crate::event_system::{FLEET_SYSTEM_ENTERED_EVENT, FLEET_SYSTEM_LEFT_EVENT};
+    let eid = fired.event_id.as_str();
+    if eid != FLEET_SYSTEM_ENTERED_EVENT && eid != FLEET_SYSTEM_LEFT_EVENT {
+        return;
+    }
+    // Extract entity ids from the payload table (set by FleetTransitCtx::to_lua_table).
+    let system_bits: Option<u64> = payload_table.get("system_entity").ok();
+    let fleet_bits: Option<u64> = payload_table.get("fleet_entity").ok();
+
+    use crate::scripting::gamestate_scope::views;
+    if let Some(bits) = system_bits {
+        if let Some(entity) = Entity::try_from_bits(bits) {
+            if let Ok(view) = views::build_system_view(lua, world, entity) {
+                let _ = payload_table.set("system", view);
+            }
+        }
+    }
+    if let Some(bits) = fleet_bits {
+        if let Some(entity) = Entity::try_from_bits(bits) {
+            if let Ok(view) = views::build_fleet_view(lua, world, entity) {
+                let _ = payload_table.set("fleet", view);
+            }
+        }
+    }
 }
 
 /// Re-implementation of `EventBus::fire` that reuses a caller-built
