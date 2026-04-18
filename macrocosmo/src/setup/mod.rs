@@ -99,10 +99,7 @@ fn player_faction_id(world: &mut World) -> Option<String> {
 fn empire_bundle(name: String, faction_id: String, faction_name: String) -> impl Bundle {
     (
         Empire { name },
-        Faction {
-            id: faction_id,
-            name: faction_name,
-        },
+        Faction::new(faction_id, faction_name),
         TechTree::default(),
         ResearchQueue::default(),
         ResearchPool::default(),
@@ -870,10 +867,7 @@ mod tests {
                     name: "Test Empire".into(),
                 },
                 PlayerEmpire,
-                Faction {
-                    id: "test_faction".into(),
-                    name: "Test".into(),
-                },
+                Faction::new("test_faction", "Test"),
                 TechTree::default(),
                 ResearchQueue::default(),
                 ResearchPool::default(),

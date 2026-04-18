@@ -44,10 +44,7 @@ fn spawn_player_empire_entity(world: &mut World, faction_id: &str) -> Entity {
                 name: "Test Empire".into(),
             },
             PlayerEmpire,
-            Faction {
-                id: faction_id.into(),
-                name: "Test Faction".into(),
-            },
+            Faction::new(faction_id, "Test Faction"),
         ))
         .id()
 }

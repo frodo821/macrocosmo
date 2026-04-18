@@ -50,20 +50,9 @@ fn build_seed_world() -> World {
     world.insert_resource(GameRng::from_seed(42));
 
     let empire = world
-        .spawn((
-            PlayerEmpire,
-            Faction {
-                id: "humanity".into(),
-                name: "Humanity".into(),
-            },
-        ))
+        .spawn((PlayerEmpire, Faction::new("humanity", "Humanity")))
         .id();
-    let xeno = world
-        .spawn(Faction {
-            id: "xeno".into(),
-            name: "Xeno".into(),
-        })
-        .id();
+    let xeno = world.spawn(Faction::new("xeno", "Xeno")).id();
     let mut relations = FactionRelations::new();
     relations.set(empire, xeno, FactionView::new(RelationState::War, -80.0));
     relations.set(

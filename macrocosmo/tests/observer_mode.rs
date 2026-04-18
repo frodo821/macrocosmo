@@ -107,10 +107,7 @@ fn test_time_horizon_triggers_app_exit() {
         Empire {
             name: "NPC 1".into(),
         },
-        Faction {
-            id: "npc_1".into(),
-            name: "NPC 1".into(),
-        },
+        Faction::new("npc_1", "NPC 1"),
     ));
     // Set the clock past the horizon.
     app.world_mut().resource_mut::<GameClock>().elapsed = 10;
@@ -139,10 +136,7 @@ fn test_time_horizon_not_triggered_before_reaching() {
         Empire {
             name: "NPC 1".into(),
         },
-        Faction {
-            id: "npc_1".into(),
-            name: "NPC 1".into(),
-        },
+        Faction::new("npc_1", "NPC 1"),
     ));
     app.world_mut().resource_mut::<GameClock>().elapsed = 50;
     app.update();
@@ -195,10 +189,7 @@ fn test_all_empires_eliminated_does_not_trigger_when_empires_exist() {
         Empire {
             name: "NPC 1".into(),
         },
-        Faction {
-            id: "npc_1".into(),
-            name: "NPC 1".into(),
-        },
+        Faction::new("npc_1", "NPC 1"),
     ));
 
     app.world_mut().resource_mut::<GameClock>().elapsed = 100;
@@ -275,13 +266,7 @@ fn test_sync_observer_view_to_governor_mirrors_selection() {
         .insert_resource(macrocosmo::ui::ai_debug::AiDebugUi::default());
 
     // Spawn a faction entity and point ObserverView at it.
-    let faction_entity = app
-        .world_mut()
-        .spawn(Faction {
-            id: "npc_1".into(),
-            name: "NPC 1".into(),
-        })
-        .id();
+    let faction_entity = app.world_mut().spawn(Faction::new("npc_1", "NPC 1")).id();
     app.world_mut().resource_mut::<ObserverView>().viewing = Some(faction_entity);
 
     app.update();

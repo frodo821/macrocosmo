@@ -286,21 +286,13 @@ mod tests {
             .spawn((
                 PlayerEmpire,
                 Empire { name: name.into() },
-                Faction {
-                    id: "player".into(),
-                    name: name.into(),
-                },
+                Faction::new("player", name),
             ))
             .id()
     }
 
     fn spawn_faction(world: &mut World, id: &str, name: &str) -> Entity {
-        world
-            .spawn(Faction {
-                id: id.into(),
-                name: name.into(),
-            })
-            .id()
+        world.spawn(Faction::new(id, name)).id()
     }
 
     fn setup(world: &mut World, now: i64) {

@@ -180,17 +180,17 @@ pub fn spawn_hostile_factions(
     }
 
     let space_creature = commands
-        .spawn(crate::player::Faction {
-            id: "space_creature_faction".into(),
-            name: "Space Creatures".into(),
-        })
+        .spawn(crate::player::Faction::new(
+            "space_creature_faction",
+            "Space Creatures",
+        ))
         .id();
 
     let ancient_defense = commands
-        .spawn(crate::player::Faction {
-            id: "ancient_defense_faction".into(),
-            name: "Ancient Defenses".into(),
-        })
+        .spawn(crate::player::Faction::new(
+            "ancient_defense_faction",
+            "Ancient Defenses",
+        ))
         .id();
 
     hostile_factions.space_creature = Some(space_creature);
@@ -1380,10 +1380,7 @@ mod tests {
                 name: "Test".into(),
             },
             PlayerEmpire,
-            PlayerFaction {
-                id: "test".into(),
-                name: "Test".into(),
-            },
+            PlayerFaction::new("test", "Test"),
         ));
         app.add_systems(Update, spawn_hostile_factions);
         app.update();
@@ -1413,10 +1410,7 @@ mod tests {
                     name: "Test".into(),
                 },
                 PlayerEmpire,
-                PlayerFaction {
-                    id: "test".into(),
-                    name: "Test".into(),
-                },
+                PlayerFaction::new("test", "Test"),
             ))
             .id();
         app.add_systems(Update, spawn_hostile_factions);
@@ -1826,10 +1820,7 @@ mod tests {
         app.init_resource::<FactionTypeRegistry>();
         let f = app
             .world_mut()
-            .spawn(crate::player::Faction {
-                id: "unknown".into(),
-                name: "Unknown".into(),
-            })
+            .spawn(crate::player::Faction::new("unknown", "Unknown"))
             .id();
 
         // Run inside a system to get Query access.
@@ -1877,6 +1868,7 @@ mod tests {
                 evasion: 0.0,
                 default_hp: 0.0,
                 default_max_hp: 0.0,
+                allowed_diplomatic_options: vec![],
             },
         );
         app.insert_resource(freg);
@@ -1884,10 +1876,7 @@ mod tests {
 
         let f = app
             .world_mut()
-            .spawn(crate::player::Faction {
-                id: "empire_x".into(),
-                name: "Empire X".into(),
-            })
+            .spawn(crate::player::Faction::new("empire_x", "Empire X"))
             .id();
 
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));

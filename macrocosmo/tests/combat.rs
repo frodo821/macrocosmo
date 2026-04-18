@@ -1587,10 +1587,7 @@ fn test_galaxy_has_hostiles() {
     app.init_resource::<macrocosmo::faction::HostileFactions>();
     app.world_mut().spawn((
         macrocosmo::player::PlayerEmpire,
-        macrocosmo::player::Faction {
-            id: "humanity_empire".into(),
-            name: "Terran Federation".into(),
-        },
+        macrocosmo::player::Faction::new("humanity_empire", "Terran Federation"),
     ));
     app.add_systems(
         Startup,

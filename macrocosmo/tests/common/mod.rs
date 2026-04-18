@@ -218,10 +218,7 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
                     name: "Test Empire".into(),
                 },
                 PlayerEmpire,
-                Faction {
-                    id: "humanity_empire".into(),
-                    name: "Test Empire".into(),
-                },
+                Faction::new("humanity_empire", "Test Empire"),
                 technology::TechTree::default(),
                 technology::ResearchQueue::default(),
                 technology::ResearchPool::default(),
@@ -269,19 +266,13 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     let mut hf = world.resource::<HostileFactions>().clone();
     if hf.space_creature.is_none() {
         let e = world
-            .spawn(Faction {
-                id: "space_creature_faction".into(),
-                name: "Space Creatures".into(),
-            })
+            .spawn(Faction::new("space_creature_faction", "Space Creatures"))
             .id();
         hf.space_creature = Some(e);
     }
     if hf.ancient_defense.is_none() {
         let e = world
-            .spawn(Faction {
-                id: "ancient_defense_faction".into(),
-                name: "Ancient Defenses".into(),
-            })
+            .spawn(Faction::new("ancient_defense_faction", "Ancient Defenses"))
             .id();
         hf.ancient_defense = Some(e);
     }

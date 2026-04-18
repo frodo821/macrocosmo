@@ -31,6 +31,8 @@ pub struct FactionTypeDefinition {
     pub default_hp: f64,
     /// Default max HP for a newly spawned hostile entity of this type.
     pub default_max_hp: f64,
+    /// Diplomatic option ids available to factions of this type (#302).
+    pub allowed_diplomatic_options: Vec<String>,
 }
 
 /// Registry of all faction-type definitions loaded from Lua.
@@ -136,6 +138,15 @@ pub fn parse_faction_type_definitions(
             .get::<Option<f64>>("default_max_hp")?
             .unwrap_or(default_hp);
 
+        // Parse allowed_diplomatic_options array (#302)
+        let mut allowed_diplomatic_options = Vec::new();
+        if let Some(opts_table) = table.get::<Option<mlua::Table>>("allowed_diplomatic_options")? {
+            for opt_pair in opts_table.pairs::<i64, mlua::Value>() {
+                let (_, val) = opt_pair?;
+                allowed_diplomatic_options.push(crate::scripting::extract_ref_id(&val)?);
+            }
+        }
+
         result.push(FactionTypeDefinition {
             id,
             can_diplomacy,
@@ -145,6 +156,7 @@ pub fn parse_faction_type_definitions(
             evasion,
             default_hp,
             default_max_hp,
+            allowed_diplomatic_options,
         });
     }
 
@@ -720,6 +732,7 @@ mod tests {
                 evasion: 0.0,
                 default_hp: 0.0,
                 default_max_hp: 0.0,
+                allowed_diplomatic_options: vec![],
             },
         );
 

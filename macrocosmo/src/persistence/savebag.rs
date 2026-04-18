@@ -913,10 +913,7 @@ impl SavedFaction {
         }
     }
     pub fn into_live(self) -> Faction {
-        Faction {
-            id: self.id,
-            name: self.name,
-        }
+        Faction::new(self.id, self.name)
     }
 }
 

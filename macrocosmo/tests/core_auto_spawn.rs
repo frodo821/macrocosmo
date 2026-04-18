@@ -252,10 +252,7 @@ fn test_colonize_rejected_with_enemy_core() {
     // Spawn a Core owned by a DIFFERENT faction
     let enemy = app
         .world_mut()
-        .spawn(macrocosmo::player::Faction {
-            id: "enemy_faction".to_string(),
-            name: "Enemy".to_string(),
-        })
+        .spawn(macrocosmo::player::Faction::new("enemy_faction", "Enemy"))
         .id();
     common::spawn_mock_core_ship(app.world_mut(), sys, enemy);
 
