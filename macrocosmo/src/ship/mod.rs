@@ -18,6 +18,8 @@ pub mod routing;
 pub mod scout;
 pub mod settlement;
 pub mod survey;
+/// #291: Fleet system transit events (entered / left).
+pub mod transit_events;
 // #334 Phase 1: event-driven command dispatch — message types and allocator.
 pub mod command_events;
 // #334 Phase 1: queue dispatcher — validates + emits CommandRequested messages.
@@ -378,6 +380,20 @@ impl Plugin for ShipPlugin {
                 .after(handlers::handle_scout_requested)
                 .after(handlers::handle_attack_requested)
                 .after(core_deliverable::handle_core_deploy_requested)
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        // #291: Fleet departure detection — fires `macrocosmo:fleet_system_left`
+        // when a ship's ShipState transitions from InSystem to InFTL/SubLight.
+        // Runs after all movement and command systems so state changes are final.
+        app.add_systems(
+            Update,
+            transit_events::detect_fleet_departures
+                .after(sublight_movement_system)
+                .after(process_ftl_travel)
+                .after(routing::poll_pending_routes)
+                .after(handlers::handle_move_requested)
+                .after(handlers::handle_move_to_coordinates_requested)
                 .after(crate::time_system::advance_game_time)
                 .before(crate::colony::advance_production_tick),
         );
@@ -845,6 +861,7 @@ pub fn spawn_ship(
         ShipModifiers::default(),
         ShipStats::default(),
         RulesOfEngagement::default(),
+        transit_events::LastDockedSystem(Some(system)),
     ));
     commands.entity(fleet_entity).insert((
         fleet::Fleet {
