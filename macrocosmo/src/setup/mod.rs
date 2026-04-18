@@ -34,12 +34,19 @@ impl Plugin for GameSetupPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
+            apply_faction_presets
+                .after(crate::player::spawn_player_empire)
+                .after(crate::scripting::load_faction_registry),
+        )
+        .add_systems(
+            Startup,
             run_faction_on_game_start
                 .after(crate::galaxy::generate_galaxy)
                 .after(crate::player::spawn_player_empire)
                 .after(crate::colony::spawn_capital_colony)
                 .after(crate::scripting::load_all_scripts)
                 .after(crate::scripting::load_faction_registry)
+                .after(apply_faction_presets)
                 .run_if(not_in_observer_mode),
         )
         // #173: `run_all_factions_on_game_start` spawns NPC empires for every
@@ -92,14 +99,39 @@ fn player_faction_id(world: &mut World) -> Option<String> {
     Some(f.id.clone())
 }
 
+/// Startup system that patches existing `Faction` components with preset
+/// fields from `FactionDefinition`. This covers factions spawned before the
+/// registry was loaded (e.g. the player empire from `spawn_player_empire`
+/// and hostile factions from `spawn_hostile_factions`).
+pub fn apply_faction_presets(mut factions: Query<&mut Faction>, registry: Res<FactionRegistry>) {
+    for mut faction in &mut factions {
+        if let Some(def) = registry.factions.get(&faction.id) {
+            faction.can_diplomacy = def.can_diplomacy;
+            faction.allowed_diplomatic_options =
+                def.allowed_diplomatic_options.iter().cloned().collect();
+        }
+    }
+}
+
 /// Build the full set of empire-level components for a spawned Empire. This
 /// mirrors `crate::player::spawn_player_empire` so observer-mode empires are
 /// indistinguishable from the player empire (aside from the `PlayerEmpire`
 /// marker).
-fn empire_bundle(name: String, faction_id: String, faction_name: String) -> impl Bundle {
+fn empire_bundle(
+    name: String,
+    faction_id: String,
+    faction_name: String,
+    can_diplomacy: bool,
+    allowed_diplomatic_options: std::collections::HashSet<String>,
+) -> impl Bundle {
     (
         Empire { name },
-        Faction::new(faction_id, faction_name),
+        Faction {
+            id: faction_id,
+            name: faction_name,
+            can_diplomacy,
+            allowed_diplomatic_options,
+        },
         TechTree::default(),
         ResearchQueue::default(),
         ResearchPool::default(),
@@ -125,11 +157,30 @@ fn empire_bundle(name: String, faction_id: String, faction_name: String) -> impl
 pub fn run_all_factions_on_game_start(world: &mut World) {
     // Snapshot the registry into a plain Vec so we can drop the borrow
     // before mutating the world.
-    let registry_ids: Vec<(String, String, bool)> = {
+    struct FactionSnapshot {
+        id: String,
+        name: String,
+        has_on_game_start: bool,
+        is_passive: bool,
+        can_diplomacy: bool,
+        allowed_diplomatic_options: std::collections::HashSet<String>,
+    }
+    let registry_ids: Vec<FactionSnapshot> = {
         let reg = world.resource::<FactionRegistry>();
         reg.factions
             .values()
-            .map(|def| (def.id.clone(), def.name.clone(), def.has_on_game_start))
+            .map(|def| FactionSnapshot {
+                id: def.id.clone(),
+                name: def.name.clone(),
+                has_on_game_start: def.has_on_game_start,
+                is_passive: def.is_passive,
+                can_diplomacy: def.can_diplomacy,
+                allowed_diplomatic_options: def
+                    .allowed_diplomatic_options
+                    .iter()
+                    .cloned()
+                    .collect(),
+            })
             .collect()
     };
 
@@ -152,46 +203,48 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
         q.iter(world).map(|f| f.id.clone()).collect()
     };
 
-    for (faction_id, faction_name, has_callback) in &registry_ids {
+    for snap in &registry_ids {
         // #173: Skip factions that already have an Empire (e.g. the player
         // empire spawned by `spawn_player_empire`). Don't re-run their
         // `on_game_start` — that is handled by `run_faction_on_game_start`.
-        if existing_empire_ids.contains(faction_id) {
+        if existing_empire_ids.contains(&snap.id) {
             continue;
         }
         // If a bare Faction entity already exists (without Empire), upgrade
         // it to an Empire by inserting the bundle. Otherwise spawn fresh.
-        if let Some(entity) = existing_by_id.get(faction_id) {
-            // Leave passive factions (space_creature, ancient_defense) alone
-            // — they're added by FactionRelationsPlugin and shouldn't be
-            // promoted to full empires.
-            let is_passive =
-                faction_id == "space_creature_faction" || faction_id == "ancient_defense_faction";
-            if is_passive {
+        if let Some(entity) = existing_by_id.get(&snap.id) {
+            // Leave passive factions alone — they're added by
+            // FactionRelationsPlugin and shouldn't be promoted to full
+            // empires. `is_passive` is a preset field from the faction type.
+            if snap.is_passive {
                 continue;
             }
             // Upgrade: defensive branch — normally no prior Faction entity
             // exists for an empire id that isn't passive.
             world.entity_mut(*entity).insert(empire_bundle(
-                faction_name.clone(),
-                faction_id.clone(),
-                faction_name.clone(),
+                snap.name.clone(),
+                snap.id.clone(),
+                snap.name.clone(),
+                snap.can_diplomacy,
+                snap.allowed_diplomatic_options.clone(),
             ));
             info!(
                 "Setup: upgraded existing Faction '{}' to full Empire",
-                faction_id
+                snap.id
             );
         } else {
             world.spawn(empire_bundle(
-                faction_name.clone(),
-                faction_id.clone(),
-                faction_name.clone(),
+                snap.name.clone(),
+                snap.id.clone(),
+                snap.name.clone(),
+                snap.can_diplomacy,
+                snap.allowed_diplomatic_options.clone(),
             ));
-            info!("Setup: spawned NPC Empire for faction '{}'", faction_id);
+            info!("Setup: spawned NPC Empire for faction '{}'", snap.id);
         }
 
-        if *has_callback {
-            run_on_game_start_for_faction(world, faction_id);
+        if snap.has_on_game_start {
+            run_on_game_start_for_faction(world, &snap.id);
         }
     }
 }

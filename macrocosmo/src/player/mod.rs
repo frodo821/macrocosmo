@@ -98,22 +98,32 @@ pub struct PlayerEmpire;
 
 /// Faction identity component. Defines which faction an empire belongs to.
 /// The `id` matches a FactionDefinition loaded from Lua scripts.
+///
+/// Preset fields (`can_diplomacy`, `allowed_diplomatic_options`) are copied
+/// from [`crate::scripting::faction_api::FactionDefinition`] at spawn time.
+/// Runtime code reads these fields directly instead of looking up the
+/// faction type registry.
 #[derive(Component, Clone, Debug)]
 pub struct Faction {
     pub id: String,
     pub name: String,
+    /// Whether this faction can engage in formal diplomacy (treaties,
+    /// declarations, etc.). Copied from `FactionDefinition.can_diplomacy`
+    /// at spawn time. Defaults to `false`.
+    pub can_diplomacy: bool,
     /// Set of diplomatic option ids available to this faction.
-    /// Populated from `FactionTypeDefinition.allowed_diplomatic_options`
+    /// Populated from `FactionDefinition.allowed_diplomatic_options`
     /// at spawn time. Empty by default.
     pub allowed_diplomatic_options: HashSet<String>,
 }
 
 impl Faction {
-    /// Convenience constructor with an empty `allowed_diplomatic_options` set.
+    /// Convenience constructor with default preset fields.
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
+            can_diplomacy: false,
             allowed_diplomatic_options: HashSet::new(),
         }
     }

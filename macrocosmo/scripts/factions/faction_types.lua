@@ -21,6 +21,7 @@ local empire = define_faction_type {
 local space_creature = define_faction_type {
     id = "space_creature",
     can_diplomacy = false,
+    is_passive = true,
     default_standing = -100,
     default_state = "neutral",
     -- #293: Hostile combat stats moved from hard-coded HostileType::SpaceCreature
@@ -35,6 +36,7 @@ local space_creature = define_faction_type {
 local ancient_defense = define_faction_type {
     id = "ancient_defense",
     can_diplomacy = false,
+    is_passive = true,
     default_standing = -100,
     default_state = "neutral",
     -- #293: Hostile combat stats moved from hard-coded HostileType::AncientDefense

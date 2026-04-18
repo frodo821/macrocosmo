@@ -922,34 +922,23 @@ fn apply_custom_action_modifier(
     }
 }
 
-/// Convenience: look up a [`FactionTypeRegistry`] entry for `faction` (via
-/// its [`crate::scripting::faction_api::FactionDefinition`] id) and return
-/// `true` iff the type is marked `can_diplomacy`. Used as a guard on the
-/// public diplomatic helpers so callers don't accidentally try to negotiate
-/// with passive factions (e.g. `space_creature`).
+/// Return `true` iff the faction entity's [`crate::player::Faction`]
+/// component has `can_diplomacy` set. Used as a guard on the public
+/// diplomatic helpers so callers don't accidentally try to negotiate with
+/// passive factions (e.g. `space_creature`).
 ///
-/// Returns `false` when the faction has no `Faction` component or when its
-/// declared `faction_type` is not registered. Callers that want to skip the
-/// guard (e.g. tests, internal lifecycle hooks) can call the per-action
-/// helpers directly — this function is purely advisory.
+/// Returns `false` when the entity has no `Faction` component.
+///
+/// The previous implementation looked up the [`FactionTypeRegistry`] at
+/// runtime; after #323 the preset is copied into the `Faction` component
+/// at spawn time.
 pub fn faction_can_diplomacy(
     faction_entity: Entity,
     factions: &Query<&crate::player::Faction>,
-    faction_registry: &crate::scripting::faction_api::FactionRegistry,
-    type_registry: &crate::scripting::faction_api::FactionTypeRegistry,
 ) -> bool {
-    let Ok(faction) = factions.get(faction_entity) else {
-        return false;
-    };
-    let Some(def) = faction_registry.factions.get(&faction.id) else {
-        return false;
-    };
-    let Some(type_id) = def.faction_type.as_ref() else {
-        return false;
-    };
-    type_registry
-        .get(type_id)
-        .map(|t| t.can_diplomacy)
+    factions
+        .get(faction_entity)
+        .map(|f| f.can_diplomacy)
         .unwrap_or(false)
 }
 
@@ -1926,12 +1915,8 @@ mod tests {
     }
 
     #[test]
-    fn faction_can_diplomacy_returns_false_for_unregistered_faction() {
-        use crate::scripting::faction_api::{FactionRegistry, FactionTypeRegistry};
-
+    fn faction_can_diplomacy_returns_false_by_default() {
         let mut app = App::new();
-        app.init_resource::<FactionRegistry>();
-        app.init_resource::<FactionTypeRegistry>();
         let f = app
             .world_mut()
             .spawn(crate::player::Faction::new("unknown", "Unknown"))
@@ -1940,70 +1925,27 @@ mod tests {
         // Run inside a system to get Query access.
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let result_w = result.clone();
-        app.add_systems(
-            Update,
-            move |q: Query<&crate::player::Faction>,
-                  fr: Res<FactionRegistry>,
-                  tr: Res<FactionTypeRegistry>| {
-                let v = faction_can_diplomacy(f, &q, &fr, &tr);
-                *result_w.lock().unwrap() = Some(v);
-            },
-        );
+        app.add_systems(Update, move |q: Query<&crate::player::Faction>| {
+            let v = faction_can_diplomacy(f, &q);
+            *result_w.lock().unwrap() = Some(v);
+        });
         app.update();
         assert_eq!(*result.lock().unwrap(), Some(false));
     }
 
     #[test]
-    fn faction_can_diplomacy_true_when_type_allows() {
-        use crate::scripting::faction_api::{
-            FactionDefinition, FactionRegistry, FactionTypeDefinition, FactionTypeRegistry,
-        };
-
+    fn faction_can_diplomacy_true_when_preset_set() {
         let mut app = App::new();
-        let mut freg = FactionRegistry::default();
-        freg.factions.insert(
-            "empire_x".into(),
-            FactionDefinition {
-                id: "empire_x".into(),
-                name: "Empire X".into(),
-                faction_type: Some("empire".into()),
-                has_on_game_start: false,
-            },
-        );
-        let mut treg = FactionTypeRegistry::default();
-        treg.types.insert(
-            "empire".into(),
-            FactionTypeDefinition {
-                id: "empire".into(),
-                can_diplomacy: true,
-                default_standing: 0.0,
-                default_state: RelationState::Neutral,
-                strength: 0.0,
-                evasion: 0.0,
-                default_hp: 0.0,
-                default_max_hp: 0.0,
-                allowed_diplomatic_options: vec![],
-            },
-        );
-        app.insert_resource(freg);
-        app.insert_resource(treg);
-
-        let f = app
-            .world_mut()
-            .spawn(crate::player::Faction::new("empire_x", "Empire X"))
-            .id();
+        let mut faction = crate::player::Faction::new("empire_x", "Empire X");
+        faction.can_diplomacy = true;
+        let f = app.world_mut().spawn(faction).id();
 
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let result_w = result.clone();
-        app.add_systems(
-            Update,
-            move |q: Query<&crate::player::Faction>,
-                  fr: Res<FactionRegistry>,
-                  tr: Res<FactionTypeRegistry>| {
-                let v = faction_can_diplomacy(f, &q, &fr, &tr);
-                *result_w.lock().unwrap() = Some(v);
-            },
-        );
+        app.add_systems(Update, move |q: Query<&crate::player::Faction>| {
+            let v = faction_can_diplomacy(f, &q);
+            *result_w.lock().unwrap() = Some(v);
+        });
         app.update();
         assert_eq!(*result.lock().unwrap(), Some(true));
     }
