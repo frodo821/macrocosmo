@@ -444,9 +444,9 @@ fn apply_component_bag(
     if let Some(p) = &bag.pending_ship_command {
         ec.insert(p.clone().into_live(map));
     }
-    if let Some(p) = &bag.pending_diplomatic_action {
-        ec.insert(p.clone().into_live(map));
-    }
+    // #325: PendingDiplomaticAction removed — old saves silently dropped.
+    // The `pending_diplomatic_action` field is still deserialized (backward
+    // compat) but its contents are not inserted into the entity.
     if let Some(p) = &bag.pending_command {
         ec.insert(p.clone().into_live(map));
     }

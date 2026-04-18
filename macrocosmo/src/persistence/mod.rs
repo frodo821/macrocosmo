@@ -40,7 +40,7 @@
 //! ConstructionParams), ship full stack (Ship/ShipState/ShipHitpoints/Cargo/
 //! CommandQueue/ShipModifiers/CourierRoute/SurveyData/ScoutReport/Fleet/
 //! FleetMembers/DetectedHostiles/RulesOfEngagement/PendingShipCommand/
-//! PendingDiplomaticAction/PendingCommand/PendingResearch/
+//! DiplomaticEvent/PendingCommand/PendingResearch/
 //! PendingKnowledgePropagation), deep-space structures, KnowledgeStore,
 //! CommandLog, TechTree / ResearchQueue, Empire modifiers, GameFlags /
 //! ScopedFlags, FactionOwner / Faction, Player / StationedAt / AboardShip /

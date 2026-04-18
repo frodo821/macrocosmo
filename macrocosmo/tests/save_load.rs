@@ -1282,7 +1282,7 @@ fn test_save_load_sovereignty_derived_cache_regression() {
 ///
 /// 1. `PendingCommand` (light-speed-delayed remote orders)
 /// 2. `PendingShipCommand` (light-speed-delayed ship orders)
-/// 3. `PendingDiplomaticAction` (light-speed-delayed diplomacy)
+/// 3. `DiplomaticEvent` (light-speed-delayed diplomacy, #325 migration)
 ///
 /// The finer-grained tests (`test_save_load_preserves_pending_colony_command`,
 /// `test_save_load_preserves_pending_facts`) stay — this one pins the
@@ -1291,7 +1291,7 @@ fn test_save_load_sovereignty_derived_cache_regression() {
 #[test]
 fn test_save_load_preserves_pending_commands() {
     use macrocosmo::communication::{PendingCommand, RemoteCommand};
-    use macrocosmo::faction::{DiplomaticAction, PendingDiplomaticAction};
+    use macrocosmo::faction::DiplomaticEvent;
     use macrocosmo::ship::{PendingShipCommand, ShipCommand};
 
     let (mut src, ship, sol) = seed_world_with_ship();
@@ -1339,13 +1339,13 @@ fn test_save_load_preserves_pending_commands() {
         arrives_at: 820,
     });
 
-    // (3) PendingDiplomaticAction — a DeclareWar from empire to xeno.
-    src.spawn(PendingDiplomaticAction {
+    // (3) DiplomaticEvent — a declare_war from empire to xeno.
+    src.spawn(DiplomaticEvent {
         from: empire,
         to: xeno,
-        action: DiplomaticAction::DeclareWar,
+        option_id: "declare_war".into(),
+        payload: std::collections::HashMap::new(),
         arrives_at: 930,
-        one_way_delay_hexadies: 40,
     });
 
     let bytes = round_trip_bytes(&mut src);
@@ -1421,18 +1421,17 @@ fn test_save_load_preserves_pending_commands() {
         }
     }
 
-    // (3) PendingDiplomaticAction round-trip.
+    // (3) DiplomaticEvent round-trip.
     {
-        let mut q = dst.query::<&PendingDiplomaticAction>();
-        let pda = q
+        let mut q = dst.query::<&DiplomaticEvent>();
+        let evt = q
             .iter(&dst)
             .next()
-            .expect("PendingDiplomaticAction must survive load");
-        assert_eq!(pda.from, empire_dst, "PendingDiplomaticAction.from remap");
-        assert_eq!(pda.to, xeno_dst, "PendingDiplomaticAction.to remap");
-        assert_eq!(pda.arrives_at, 930);
-        assert_eq!(pda.one_way_delay_hexadies, 40);
-        assert!(matches!(pda.action, DiplomaticAction::DeclareWar));
+            .expect("DiplomaticEvent must survive load");
+        assert_eq!(evt.from, empire_dst, "DiplomaticEvent.from remap");
+        assert_eq!(evt.to, xeno_dst, "DiplomaticEvent.to remap");
+        assert_eq!(evt.arrives_at, 930);
+        assert_eq!(evt.option_id, "declare_war");
     }
 
     // Sol exists as a sanity anchor — seed_world_with_ship ties the ship here.

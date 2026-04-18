@@ -41,9 +41,7 @@ use crate::deep_space::{
 };
 use crate::empire::CommsParams;
 use crate::events::EventLog;
-use crate::faction::{
-    DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionRelations, PendingDiplomaticAction,
-};
+use crate::faction::{DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionRelations};
 use crate::galaxy::{
     Anomalies, AtSystem, Biome, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints,
     HostileStats, ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
@@ -210,7 +208,7 @@ fn assign_save_ids(world: &mut World) {
             With<DeepSpaceStructure>,
             With<Fleet>,
             With<PendingShipCommand>,
-            With<PendingDiplomaticAction>,
+            With<DiplomaticEvent>,
             With<PendingCommand>,
             With<PendingResearch>,
             With<PendingKnowledgePropagation>,
@@ -552,9 +550,7 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     if let Some(p) = e_ref.get::<PendingShipCommand>() {
         bag.pending_ship_command = Some(SavedPendingShipCommand::from_live(p));
     }
-    if let Some(p) = e_ref.get::<PendingDiplomaticAction>() {
-        bag.pending_diplomatic_action = Some(SavedPendingDiplomaticAction::from_live(p));
-    }
+    // #325: PendingDiplomaticAction removed — old saves silently drop on load.
     if let Some(p) = e_ref.get::<PendingCommand>() {
         bag.pending_command = Some(SavedPendingCommand::from_live(p));
     }

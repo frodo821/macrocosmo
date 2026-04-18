@@ -31,7 +31,7 @@ use crate::knowledge::KnowledgeStore;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::scripting::building_api::BuildingRegistry;
-use crate::scripting::faction_api::{DiplomaticActionRegistry, DiplomaticOptionRegistry};
+use crate::scripting::faction_api::DiplomaticOptionRegistry;
 use crate::ship::{
     Cargo, CommandQueue, CourierRoute, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship,
     ShipHitpoints, ShipState, SurveyData,
@@ -1391,7 +1391,6 @@ fn draw_diplomacy_overlay_system(
     active_wars: Res<ActiveWars>,
     cb_registry: Res<CasusBelliRegistry>,
     option_registry: Res<DiplomaticOptionRegistry>,
-    action_registry: Res<DiplomaticActionRegistry>,
     faction_registry: Res<crate::scripting::faction_api::FactionRegistry>,
     type_registry: Res<crate::scripting::faction_api::FactionTypeRegistry>,
     empire_q: Query<Entity, With<PlayerEmpire>>,
@@ -1426,7 +1425,6 @@ fn draw_diplomacy_overlay_system(
         &active_wars,
         &cb_registry,
         &option_registry,
-        &action_registry,
         &faction_registry,
         &type_registry,
         &factions,
@@ -1435,12 +1433,16 @@ fn draw_diplomacy_overlay_system(
 
     // Execute returned actions.
     match action {
-        diplomacy_panel::DiplomacyAction::SendBuiltinAction { from, to, action } => {
+        diplomacy_panel::DiplomacyAction::SendDiplomaticEvent {
+            from,
+            to,
+            option_id,
+        } => {
             // Use a fixed 0-delay for now (same-system instant); a future
             // pass will compute real light-speed delay from physical distance.
             let delay = 0i64;
-            match action {
-                crate::faction::DiplomaticAction::DeclareWar => {
+            match option_id.as_str() {
+                crate::faction::DIPLO_DECLARE_WAR => {
                     crate::faction::declare_war_with_delay(
                         &mut commands,
                         &mut relations,
@@ -1450,25 +1452,7 @@ fn draw_diplomacy_overlay_system(
                         delay,
                     );
                 }
-                crate::faction::DiplomaticAction::ProposePeace => {
-                    crate::faction::propose_peace_with_delay(
-                        &mut commands,
-                        &clock,
-                        from,
-                        to,
-                        delay,
-                    );
-                }
-                crate::faction::DiplomaticAction::ProposeAlliance => {
-                    crate::faction::propose_alliance_with_delay(
-                        &mut commands,
-                        &clock,
-                        from,
-                        to,
-                        delay,
-                    );
-                }
-                crate::faction::DiplomaticAction::BreakAlliance => {
+                crate::faction::DIPLO_BREAK_ALLIANCE => {
                     crate::faction::break_alliance_with_delay(
                         &mut commands,
                         &mut relations,
@@ -1478,22 +1462,37 @@ fn draw_diplomacy_overlay_system(
                         delay,
                     );
                 }
-                _ => {}
+                crate::faction::DIPLO_PROPOSE_PEACE => {
+                    crate::faction::propose_peace_with_delay(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                crate::faction::DIPLO_PROPOSE_ALLIANCE => {
+                    crate::faction::propose_alliance_with_delay(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                _ => {
+                    // Lua-defined diplomatic option — send as DiplomaticEvent
+                    crate::faction::send_diplomatic_event(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        option_id,
+                        std::collections::HashMap::new(),
+                        delay,
+                    );
+                }
             }
-        }
-        diplomacy_panel::DiplomacyAction::SendCustomAction {
-            from,
-            to,
-            action_id,
-        } => {
-            crate::faction::send_custom_diplomatic_action(
-                &mut commands,
-                &clock,
-                from,
-                to,
-                action_id,
-                0,
-            );
         }
         diplomacy_panel::DiplomacyAction::EndWar {
             faction_a,

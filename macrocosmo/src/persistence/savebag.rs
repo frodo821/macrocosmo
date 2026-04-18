@@ -15,7 +15,7 @@
 //! (DeepSpaceStructure/FTLCommRelay/StructureHitpoints/ConstructionPlatform/
 //! Scrapyard/LifetimeCost/ForbiddenRegion), knowledge (KnowledgeStore/
 //! PendingFactQueue/CommsParams), pending command queues (PendingShipCommand/
-//! PendingDiplomaticAction/PendingCommand), tech tree (TechTree/ResearchQueue/
+//! DiplomaticEvent/PendingCommand), tech tree (TechTree/ResearchQueue/
 //! ResearchPool/PendingResearch/TechKnowledge/PendingKnowledgePropagation/
 //! PendingColonyTechModifiers/EmpireModifiers/GameFlags/ScopedFlags/
 //! GlobalParams), event/notification logs.
@@ -45,8 +45,7 @@ use crate::deep_space::{
 use crate::empire::CommsParams;
 use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::{
-    DiplomaticAction, DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionView,
-    PendingDiplomaticAction, PendingInboxItem, RelationState,
+    DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionView, PendingInboxItem, RelationState,
 };
 use crate::galaxy::{
     Anomalies, Anomaly, AtSystem, Biome, ForbiddenRegion, Hostile, HostileHitpoints, HostileStats,
@@ -3421,6 +3420,8 @@ impl SavedCommsParams {
 // Pending command / communication
 // ---------------------------------------------------------------------------
 
+/// #325: Legacy saved diplomatic action enum. Kept for backward-compatible
+/// deserialization of old saves — the field is silently ignored on load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedDiplomaticAction {
     DeclareWar,
@@ -3431,33 +3432,9 @@ pub enum SavedDiplomaticAction {
     AcceptAlliance,
     CustomAction(String),
 }
-impl From<&DiplomaticAction> for SavedDiplomaticAction {
-    fn from(v: &DiplomaticAction) -> Self {
-        match v {
-            DiplomaticAction::DeclareWar => Self::DeclareWar,
-            DiplomaticAction::ProposePeace => Self::ProposePeace,
-            DiplomaticAction::ProposeAlliance => Self::ProposeAlliance,
-            DiplomaticAction::BreakAlliance => Self::BreakAlliance,
-            DiplomaticAction::AcceptPeace => Self::AcceptPeace,
-            DiplomaticAction::AcceptAlliance => Self::AcceptAlliance,
-            DiplomaticAction::CustomAction(s) => Self::CustomAction(s.clone()),
-        }
-    }
-}
-impl From<SavedDiplomaticAction> for DiplomaticAction {
-    fn from(v: SavedDiplomaticAction) -> Self {
-        match v {
-            SavedDiplomaticAction::DeclareWar => Self::DeclareWar,
-            SavedDiplomaticAction::ProposePeace => Self::ProposePeace,
-            SavedDiplomaticAction::ProposeAlliance => Self::ProposeAlliance,
-            SavedDiplomaticAction::BreakAlliance => Self::BreakAlliance,
-            SavedDiplomaticAction::AcceptPeace => Self::AcceptPeace,
-            SavedDiplomaticAction::AcceptAlliance => Self::AcceptAlliance,
-            SavedDiplomaticAction::CustomAction(s) => Self::CustomAction(s),
-        }
-    }
-}
 
+/// #325: Legacy saved pending diplomatic action. Kept for backward-compatible
+/// deserialization of old saves — the field is silently ignored on load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPendingDiplomaticAction {
     pub from_bits: u64,
@@ -3465,26 +3442,6 @@ pub struct SavedPendingDiplomaticAction {
     pub action: SavedDiplomaticAction,
     pub arrives_at: i64,
     pub one_way_delay_hexadies: i64,
-}
-impl SavedPendingDiplomaticAction {
-    pub fn from_live(v: &PendingDiplomaticAction) -> Self {
-        Self {
-            from_bits: v.from.to_bits(),
-            to_bits: v.to.to_bits(),
-            action: (&v.action).into(),
-            arrives_at: v.arrives_at,
-            one_way_delay_hexadies: v.one_way_delay_hexadies,
-        }
-    }
-    pub fn into_live(self, map: &EntityMap) -> PendingDiplomaticAction {
-        PendingDiplomaticAction {
-            from: remap_entity(self.from_bits, map),
-            to: remap_entity(self.to_bits, map),
-            action: self.action.into(),
-            arrives_at: self.arrives_at,
-            one_way_delay_hexadies: self.one_way_delay_hexadies,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
