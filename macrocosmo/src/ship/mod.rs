@@ -1,4 +1,5 @@
 pub mod combat;
+pub mod combat_sim;
 pub mod command;
 pub mod conquered;
 pub mod core_deliverable;
