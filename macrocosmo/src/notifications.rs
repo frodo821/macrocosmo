@@ -234,6 +234,8 @@ fn title_for_event_kind(kind: &GameEventKind) -> &'static str {
         GameEventKind::AnomalyDiscovered => "Anomaly Discovered",
         GameEventKind::CoreConquered => "Core Conquered",
         GameEventKind::CasusBelli => "Casus Belli",
+        GameEventKind::WarDeclared => "War Declared",
+        GameEventKind::WarEnded => "War Ended",
     }
 }
 

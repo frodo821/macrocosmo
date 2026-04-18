@@ -1,5 +1,6 @@
 mod ai;
 mod amount;
+mod casus_belli;
 mod choice;
 mod colony;
 mod communication;
@@ -87,6 +88,7 @@ fn main() {
             faction::FactionRelationsPlugin,
             choice::ChoicesPlugin,
             ai::AiPlugin,
+            casus_belli::CasusBelliPlugin,
             ObserverPlugin,
         ))
         .add_plugins(ui::UiPlugin);

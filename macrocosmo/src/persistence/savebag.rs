@@ -4125,6 +4125,8 @@ pub enum SavedGameEventKind {
     AnomalyDiscovered,
     CoreConquered,
     CasusBelli,
+    WarDeclared,
+    WarEnded,
 }
 impl From<&GameEventKind> for SavedGameEventKind {
     fn from(v: &GameEventKind) -> Self {
@@ -4145,6 +4147,8 @@ impl From<&GameEventKind> for SavedGameEventKind {
             GameEventKind::AnomalyDiscovered => Self::AnomalyDiscovered,
             GameEventKind::CoreConquered => Self::CoreConquered,
             GameEventKind::CasusBelli => Self::CasusBelli,
+            GameEventKind::WarDeclared => Self::WarDeclared,
+            GameEventKind::WarEnded => Self::WarEnded,
         }
     }
 }
@@ -4167,6 +4171,8 @@ impl From<SavedGameEventKind> for GameEventKind {
             SavedGameEventKind::AnomalyDiscovered => Self::AnomalyDiscovered,
             SavedGameEventKind::CoreConquered => Self::CoreConquered,
             SavedGameEventKind::CasusBelli => Self::CasusBelli,
+            SavedGameEventKind::WarDeclared => Self::WarDeclared,
+            SavedGameEventKind::WarEnded => Self::WarEnded,
         }
     }
 }
