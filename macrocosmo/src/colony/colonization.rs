@@ -9,6 +9,8 @@ use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::modifier::ModifiedValue;
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
+use crate::ship::{Ship, ShipState};
+use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
@@ -177,6 +179,8 @@ pub fn tick_colonization_queue(
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
     building_registry: Res<super::BuildingRegistry>,
+    design_registry: Res<ShipDesignRegistry>,
+    ship_q: Query<(&Ship, &ShipState)>,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
@@ -322,6 +326,33 @@ pub fn tick_colonization_queue(
                     detail: desc,
                 };
                 fact_sys.record(fact, op, clock.elapsed, &v);
+            }
+
+            // #387: Auto-spawn a Shipyard station if none exists in this system.
+            if !crate::ship::system_has_station_ship("station_shipyard_v1", system_entity, &ship_q)
+            {
+                let owner = source_owners
+                    .get(order.source_colony)
+                    .ok()
+                    .map(|fo| crate::ship::Owner::Empire(fo.0))
+                    .unwrap_or(crate::ship::Owner::Neutral);
+                let sys_pos = positions
+                    .get(system_entity)
+                    .copied()
+                    .unwrap_or(Position::from([0.0, 0.0, 0.0]));
+                crate::ship::spawn_ship(
+                    &mut commands,
+                    "station_shipyard_v1",
+                    "Shipyard".to_string(),
+                    system_entity,
+                    sys_pos,
+                    owner,
+                    &design_registry,
+                );
+                info!(
+                    "Auto-spawned Shipyard station at {} on colonization",
+                    planet_name
+                );
             }
 
             info!(

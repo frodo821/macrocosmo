@@ -860,9 +860,23 @@ fn core_deploy_creates_system_buildings() {
         macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS,
         "slot count must match DEFAULT_SYSTEM_BUILDING_SLOTS"
     );
+    // #387: Core deploy auto-spawns a Shipyard station ship, which
+    // sync_system_buildings_from_ships then mirrors into one slot. The
+    // remaining slots must be empty.
+    let shipyard_count = sb
+        .slots
+        .iter()
+        .filter(|s| s.as_ref().is_some_and(|b| b.as_str() == "shipyard"))
+        .count();
+    let empty_count = sb.slots.iter().filter(|s| s.is_none()).count();
     assert!(
-        sb.slots.iter().all(|s| s.is_none()),
-        "all slots must start empty"
+        shipyard_count <= 1,
+        "at most one shipyard slot expected after Core deploy"
+    );
+    assert_eq!(
+        shipyard_count + empty_count,
+        sb.slots.len(),
+        "all slots must be either empty or shipyard"
     );
     assert!(
         app.world().get::<SystemBuildingQueue>(sys).is_some(),

@@ -110,6 +110,7 @@ pub fn handle_core_deploy_requested(
     existing_cores: Query<&AtSystem, With<CoreShip>>,
     star_systems: Query<&StarSystem>,
     existing_system_buildings: Query<(), With<SystemBuildings>>,
+    station_ships: Query<(&Ship, &crate::ship::ShipState)>,
 ) {
     use rand::Rng;
     use std::collections::HashMap;
@@ -255,6 +256,27 @@ pub fn handle_core_deploy_requested(
                 commands.entity(system).insert(FactionOwner(faction));
             }
         }
+        // #387: Auto-spawn a Shipyard station if none exists in this system.
+        if !crate::ship::system_has_station_ship("station_shipyard_v1", system, &station_ships) {
+            let shipyard_owner = winner
+                .faction_owner
+                .map(Owner::Empire)
+                .unwrap_or(Owner::Neutral);
+            spawn_ship(
+                &mut commands,
+                "station_shipyard_v1",
+                "Shipyard".to_string(),
+                system,
+                pos,
+                shipyard_owner,
+                &design_registry,
+            );
+            info!(
+                "Auto-spawned Shipyard station in system {:?} on Core deploy",
+                system
+            );
+        }
+
         info!(
             "Spawned Core ship {:?} in system {:?} (deployer {:?}, submitted at {} hd)",
             entity, system, winner.deployer, winner.submitted_at
