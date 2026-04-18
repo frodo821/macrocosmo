@@ -1592,3 +1592,188 @@ fn save_load_round_trips_deep_space_structure_faction_owner() {
         "DeepSpaceStructure FactionOwner must point at reloaded PlayerEmpire"
     );
 }
+
+// ===========================================================================
+// #388 (G): DockedAt + station ship migration
+// ===========================================================================
+
+use macrocosmo::colony::SystemBuildings;
+use macrocosmo::ship::DockedAt;
+
+#[test]
+fn test_docked_at_save_load_round_trip() {
+    let (mut src, ship, sol) = seed_world_with_ship();
+
+    // Spawn a harbour entity (any entity will do for the test).
+    let harbour = src
+        .spawn((
+            Ship {
+                name: "Harbour".into(),
+                design_id: "station_v1".into(),
+                hull_id: "station_hull".into(),
+                modules: Vec::new(),
+                owner: Owner::Neutral,
+                sublight_speed: 0.0,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: sol,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sol },
+            macrocosmo::ship::ShipHitpoints {
+                hull: 100.0,
+                hull_max: 100.0,
+                armor: 0.0,
+                armor_max: 0.0,
+                shield: 0.0,
+                shield_max: 0.0,
+                shield_regen: 0.0,
+            },
+        ))
+        .id();
+
+    // Dock the test ship at the harbour.
+    src.entity_mut(ship).insert(DockedAt(harbour));
+
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // Find the reloaded ship (TestShip) and verify DockedAt.
+    let mut found = false;
+    for (_, loaded_ship, docked) in dst.query::<(Entity, &Ship, &DockedAt)>().iter(&dst) {
+        if loaded_ship.name == "TestShip" {
+            found = true;
+            // The harbour entity must be remapped to the loaded entity.
+            let harbour_ship = dst
+                .get::<Ship>(docked.0)
+                .expect("DockedAt harbour must resolve to a valid entity");
+            assert_eq!(
+                harbour_ship.name, "Harbour",
+                "DockedAt must point to the harbour ship"
+            );
+        }
+    }
+    assert!(found, "TestShip with DockedAt must round-trip");
+}
+
+#[test]
+fn test_old_save_without_docked_at_loads_fine() {
+    let (mut src, _ship, _sol) = seed_world_with_ship();
+    // Ship has no DockedAt — just verify it loads without error and no DockedAt
+    // component appears.
+    let bytes = round_trip_bytes(&mut src);
+    let mut dst = World::new();
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    let docked_count = dst.query::<&DockedAt>().iter(&dst).count();
+    assert_eq!(
+        docked_count, 0,
+        "no DockedAt should exist when none was saved"
+    );
+
+    // Ships should still load fine.
+    let ship_count = dst.query::<&Ship>().iter(&dst).count();
+    assert!(ship_count > 0, "ships must survive load without DockedAt");
+}
+
+#[test]
+fn test_migration_spawns_station_ships_for_existing_buildings() {
+    use macrocosmo::scripting::building_api::{BuildingDefinition, BuildingRegistry};
+    use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+
+    let mut src = build_seed_world();
+    let sol = src
+        .query::<(Entity, &StarSystem)>()
+        .iter(&src)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+
+    // Add SystemBuildings with a filled slot referencing a building that has a
+    // ship_design_id, but do NOT spawn the corresponding station ship.
+    src.entity_mut(sol).insert(SystemBuildings {
+        slots: vec![Some(BuildingId::new("shipyard")), None, None, None],
+    });
+
+    let bytes = round_trip_bytes(&mut src);
+
+    // Load into a world that has the required registries.
+    let mut dst = World::new();
+
+    // Insert a BuildingRegistry with a "shipyard" entry that has ship_design_id.
+    let mut building_reg = BuildingRegistry::default();
+    building_reg.insert(BuildingDefinition {
+        id: "shipyard".into(),
+        name: "Shipyard".into(),
+        description: "A shipyard".into(),
+        minerals_cost: Amt::ZERO,
+        energy_cost: Amt::ZERO,
+        build_time: 10,
+        maintenance: Amt::ZERO,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
+        modifiers: Vec::new(),
+        is_system_building: true,
+        capabilities: Default::default(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
+        prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
+        dismantlable: true,
+        ship_design_id: Some("station_shipyard_v1".into()),
+    });
+    dst.insert_resource(building_reg);
+
+    // Insert a ShipDesignRegistry with the referenced design.
+    let mut design_reg = ShipDesignRegistry::default();
+    design_reg.insert(ShipDesignDefinition {
+        id: "station_shipyard_v1".into(),
+        name: "Station Shipyard".into(),
+        description: "A station shipyard".into(),
+        hull_id: "station_shipyard_hull".into(),
+        modules: Vec::new(),
+        can_survey: false,
+        can_colonize: false,
+        hp: 200.0,
+        sublight_speed: 0.0,
+        ftl_range: 0.0,
+        build_cost_minerals: Amt::ZERO,
+        build_cost_energy: Amt::ZERO,
+        build_time: 0,
+        maintenance: Amt::ZERO,
+        revision: 0,
+    });
+    dst.insert_resource(design_reg);
+
+    load_game_from_reader(&mut dst, &bytes[..]).expect("load");
+
+    // After migration, a station ship with design_id "station_shipyard_v1"
+    // should exist in the Sol system.
+    let sol_dst = dst
+        .query::<(Entity, &StarSystem)>()
+        .iter(&dst)
+        .find(|(_, s)| s.name == "Sol")
+        .map(|(e, _)| e)
+        .unwrap();
+
+    let mut station_found = false;
+    for (ship, state) in dst.query::<(&Ship, &ShipState)>().iter(&dst) {
+        if ship.design_id == "station_shipyard_v1" {
+            if let ShipState::InSystem { system } = state {
+                if *system == sol_dst {
+                    station_found = true;
+                    assert_eq!(ship.name, "Shipyard", "station ship name from building def");
+                }
+            }
+        }
+    }
+    assert!(
+        station_found,
+        "migration must auto-spawn station ship for SystemBuildings with ship_design_id"
+    );
+}

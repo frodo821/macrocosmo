@@ -4432,6 +4432,10 @@ pub struct SavedComponentBag {
     /// save id so the `ConqueredCore` component is restored on load.
     #[serde(default)]
     pub conquered_core: Option<SavedConqueredCore>,
+    /// #388 (G): DockedAt harbour entity. Persisted as the harbour's save id
+    /// so the component can be restored on load with entity remap.
+    #[serde(default)]
+    pub docked_at: Option<u64>,
     // Pending command entities (free-standing entities, not attached to a "body")
     pub pending_ship_command: Option<SavedPendingShipCommand>,
     pub pending_diplomatic_action: Option<SavedPendingDiplomaticAction>,

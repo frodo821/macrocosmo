@@ -52,8 +52,9 @@ use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, Stationed
 use crate::scripting::game_rng::GameRng;
 use crate::ship::scout::ScoutReport;
 use crate::ship::{
-    Cargo, CommandQueue, CourierRoute, DetectedHostiles, Fleet, FleetMembers, PendingShipCommand,
-    RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState, SurveyData,
+    Cargo, CommandQueue, CourierRoute, DetectedHostiles, DockedAt, Fleet, FleetMembers,
+    PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState,
+    SurveyData,
 };
 use crate::species::{ColonyJobs, ColonyPopulation};
 use crate::technology::{
@@ -79,7 +80,8 @@ use super::savebag::*;
 // #300 (S-6): `defense_fleet` field added.
 // #298 (S-4): `conquered_core` field added.
 // #280: Colony Hub migration (hub_t1/planetary_capital_t3 into slot 0).
-pub const SAVE_VERSION: u32 = 4;
+// #388 (G): Added `docked_at` field + station ship migration.
+pub const SAVE_VERSION: u32 = 5;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -531,6 +533,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     // #298 (S-4): Persist ConqueredCore state.
     if let Some(c) = e_ref.get::<crate::ship::ConqueredCore>() {
         bag.conquered_core = Some(SavedConqueredCore::from_live(c));
+    }
+    // #388 (G): Persist DockedAt harbour reference.
+    if let Some(docked_at) = e_ref.get::<DockedAt>() {
+        bag.docked_at = Some(docked_at.0.to_bits());
     }
 
     // Pending command entities
