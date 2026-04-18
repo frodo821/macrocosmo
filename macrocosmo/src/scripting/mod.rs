@@ -1,5 +1,6 @@
 pub mod anomaly_api;
 pub mod building_api;
+pub mod casus_belli_api;
 pub mod condition_ctx;
 pub mod condition_parser;
 pub mod effect_scope;
@@ -40,9 +41,11 @@ pub struct ScriptingPlugin;
 impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameRng>()
+            .init_resource::<crate::casus_belli::ActiveWars>()
             .add_systems(Startup, init_scripting)
             .add_systems(Startup, load_all_scripts.after(init_scripting))
             .add_systems(Startup, load_faction_type_registry.after(load_all_scripts))
+            .add_systems(Startup, load_casus_belli_registry.after(load_all_scripts))
             .add_systems(
                 Startup,
                 load_faction_registry
@@ -271,6 +274,27 @@ pub fn load_diplomatic_action_registry(mut commands: Commands, engine: Res<Scrip
         Err(e) => {
             warn!("Failed to parse diplomatic action definitions: {e}");
             commands.insert_resource(faction_api::DiplomaticActionRegistry::default());
+        }
+    }
+}
+
+/// #305 (S-11): Startup system that parses Lua `define_casus_belli` blocks
+/// into [`CasusBelliRegistry`]. Runs after `load_all_scripts`.
+pub fn load_casus_belli_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+    use crate::casus_belli::CasusBelliRegistry;
+    match casus_belli_api::parse_casus_belli_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            let mut registry = CasusBelliRegistry::default();
+            for def in defs {
+                registry.definitions.insert(def.id.clone(), def);
+            }
+            commands.insert_resource(registry);
+            info!("Loaded {} casus belli definitions from Lua", count);
+        }
+        Err(e) => {
+            warn!("Failed to parse casus belli definitions: {e}");
+            commands.insert_resource(CasusBelliRegistry::default());
         }
     }
 }

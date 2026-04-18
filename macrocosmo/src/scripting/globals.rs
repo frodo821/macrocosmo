@@ -136,6 +136,9 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "faction_type", "_faction_type_definitions")?;
     register_define_fn(lua, "diplomatic_action", "_diplomatic_action_definitions")?;
 
+    // --- #305 S-11: Casus Belli definition ---
+    register_define_fn(lua, "casus_belli", "_casus_belli_definitions")?;
+
     // --- #160: Balance constants Lua binding ---
     // `define_balance { ... }` is expected to be called AT MOST ONCE from
     // `scripts/config/balance.lua`. Subsequent calls overwrite the stored
