@@ -86,6 +86,10 @@ impl Plugin for FactionRelationsPlugin {
                 tick_custom_diplomatic_actions
                     .after(crate::time_system::advance_game_time)
                     .after(tick_diplomatic_actions),
+            )
+            .add_systems(
+                Update,
+                tick_diplomatic_events.after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -1017,6 +1021,116 @@ pub fn entity_owner_from_query(
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// #302: DiplomaticEvent + Inbox — option-based diplomatic messaging
+// ---------------------------------------------------------------------------
+
+/// In-flight diplomatic event carrying a [`DiplomaticOptionDefinition`] id and
+/// an arbitrary POD payload. Propagates at light-speed (or instant for same-
+/// system factions) and delivers into the receiver's [`DiplomaticInbox`].
+///
+/// Distinct from [`PendingDiplomaticAction`] which carries the built-in
+/// `DiplomaticAction` enum. `DiplomaticEvent` is the general-purpose
+/// extensible channel for Lua-defined diplomatic options.
+#[derive(Component, Clone, Debug)]
+pub struct DiplomaticEvent {
+    /// Faction entity that originated the event.
+    pub from: Entity,
+    /// Faction entity the event is delivered to.
+    pub to: Entity,
+    /// Id of the [`DiplomaticOptionDefinition`] this event is associated with.
+    pub option_id: String,
+    /// Arbitrary key-value payload (POD — no closures).
+    pub payload: HashMap<String, String>,
+    /// Absolute hexadies timestamp at which the event arrives.
+    pub arrives_at: i64,
+}
+
+/// A single item sitting in a faction's inbox, ready for the player/AI to act
+/// upon.
+#[derive(Clone, Debug)]
+pub struct PendingInboxItem {
+    /// Faction entity that sent the item.
+    pub from: Entity,
+    /// Id of the [`DiplomaticOptionDefinition`] this item originated from.
+    pub option_id: String,
+    /// Arbitrary key-value payload forwarded from the originating
+    /// [`DiplomaticEvent`].
+    pub payload: HashMap<String, String>,
+    /// Game time (hexadies) when the item was delivered.
+    pub delivered_at: i64,
+}
+
+/// Per-faction inbox for arrived diplomatic events.
+///
+/// Attached to faction entities that can receive diplomatic options (typically
+/// empire factions with `can_diplomacy = true`).
+#[derive(Component, Default, Clone, Debug)]
+pub struct DiplomaticInbox {
+    pub items: Vec<PendingInboxItem>,
+}
+
+/// Spawn a [`DiplomaticEvent`] entity that will arrive at `to` after
+/// `delay_hexadies`.
+///
+/// The delay is typically computed from the physical distance between the
+/// two factions' capitals via [`crate::physics::light_delay_hexadies`].
+pub fn send_diplomatic_event(
+    commands: &mut Commands,
+    clock: &crate::time_system::GameClock,
+    from: Entity,
+    to: Entity,
+    option_id: impl Into<String>,
+    payload: HashMap<String, String>,
+    delay_hexadies: i64,
+) {
+    let delay = delay_hexadies.max(0);
+    commands.spawn(DiplomaticEvent {
+        from,
+        to,
+        option_id: option_id.into(),
+        payload,
+        arrives_at: clock.elapsed + delay,
+    });
+}
+
+/// System: drain every [`DiplomaticEvent`] whose `arrives_at` has passed and
+/// deliver its contents into the receiver's [`DiplomaticInbox`].
+///
+/// Events addressed to a faction without a `DiplomaticInbox` component are
+/// logged and despawned (no crash — gracefully discards).
+pub fn tick_diplomatic_events(
+    mut commands: Commands,
+    clock: Res<crate::time_system::GameClock>,
+    events: Query<(Entity, &DiplomaticEvent)>,
+    mut inboxes: Query<&mut DiplomaticInbox>,
+) {
+    let now = clock.elapsed;
+
+    let arrived: Vec<(Entity, DiplomaticEvent)> = events
+        .iter()
+        .filter(|(_, e)| e.arrives_at <= now)
+        .map(|(eid, e)| (eid, e.clone()))
+        .collect();
+
+    for (entity, evt) in arrived {
+        if let Ok(mut inbox) = inboxes.get_mut(evt.to) {
+            inbox.items.push(PendingInboxItem {
+                from: evt.from,
+                option_id: evt.option_id.clone(),
+                payload: evt.payload.clone(),
+                delivered_at: now,
+            });
+        } else {
+            debug!(
+                "DiplomaticEvent '{}' addressed to entity {:?} without DiplomaticInbox; dropping",
+                evt.option_id, evt.to
+            );
+        }
+        commands.entity(entity).despawn();
+    }
 }
 
 #[cfg(test)]
