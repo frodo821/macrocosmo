@@ -57,7 +57,6 @@ fn is_harbour(stats: Option<&ShipStats>) -> bool {
 /// Per-ship metadata stashed while grouping docked ships by system.
 struct DockedShipInfo {
     design_id: String,
-    is_station: bool,
     is_harbour: bool,
 }
 
@@ -76,13 +75,27 @@ pub fn draw_ships(
     selected_ship: Res<SelectedShip>,
 ) {
     // Group docked ships by system so we can offset them.
+    // #395: Immobile ships (stations / infrastructure) are excluded entirely —
+    // they are represented by icons in the galaxy overlay instead.
     let mut docked_counts: HashMap<Entity, Vec<DockedShipInfo>> = HashMap::new();
-    // Also count ships per system for badge display.
-    // Immobile ships (stations) are excluded from the badge count.
     let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
 
     for (_entity, ship, state, _queue, stats) in &ships {
         let station = is_station(ship);
+        if station {
+            // #395: Skip immobile ships — they are shown as development icons
+            // next to system names in `draw_galaxy_overlay`, not as ship markers.
+            if !matches!(
+                state,
+                ShipState::InSystem { .. }
+                    | ShipState::Refitting { .. }
+                    | ShipState::Scouting { .. }
+            ) {
+                // Non-docked states still need movement visuals for mobile ships,
+                // but stations should never be in transit — skip entirely.
+            }
+            continue;
+        }
         let harbour = is_harbour(stats);
         match state {
             ShipState::InSystem { system } => {
@@ -91,12 +104,9 @@ pub fn draw_ships(
                     .or_default()
                     .push(DockedShipInfo {
                         design_id: ship.design_id.clone(),
-                        is_station: station,
                         is_harbour: harbour,
                     });
-                if !station {
-                    *system_ship_counts.entry(*system).or_insert(0) += 1;
-                }
+                *system_ship_counts.entry(*system).or_insert(0) += 1;
             }
             ShipState::SubLight {
                 origin,
@@ -202,12 +212,9 @@ pub fn draw_ships(
                     .or_default()
                     .push(DockedShipInfo {
                         design_id: ship.design_id.clone(),
-                        is_station: station,
                         is_harbour: harbour,
                     });
-                if !station {
-                    *system_ship_counts.entry(*system).or_insert(0) += 1;
-                }
+                *system_ship_counts.entry(*system).or_insert(0) += 1;
             }
             // #185: Loitering ships are drawn as a small marker at their deep-space coordinate.
             ShipState::Loitering { position } => {
@@ -225,12 +232,9 @@ pub fn draw_ships(
                     .or_default()
                     .push(DockedShipInfo {
                         design_id: ship.design_id.clone(),
-                        is_station: station,
                         is_harbour: harbour,
                     });
-                if !station {
-                    *system_ship_counts.entry(*target_system).or_insert(0) += 1;
-                }
+                *system_ship_counts.entry(*target_system).or_insert(0) += 1;
             }
         }
     }
@@ -250,16 +254,15 @@ pub fn draw_ships(
             } else {
                 std::f32::consts::TAU * (i as f32) / (count as f32)
             };
-            let offset_radius = if info.is_station { 10.0 } else { 8.0 };
+            let offset_radius = 8.0;
             let ox = sx + angle.cos() * offset_radius;
             let oy = sy + angle.sin() * offset_radius;
 
-            if info.is_station || info.is_harbour {
-                // Station / harbour ships: gold diamond, larger
+            if info.is_harbour {
+                // Harbour ships: gold diamond
                 let gold = Color::srgb(1.0, 0.85, 0.2);
                 let radius = 5.5;
                 let center = Vec2::new(ox, oy);
-                // Draw a diamond shape (rotated square)
                 let top = center + Vec2::new(0.0, radius);
                 let right = center + Vec2::new(radius, 0.0);
                 let bottom = center + Vec2::new(0.0, -radius);

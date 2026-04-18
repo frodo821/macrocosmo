@@ -370,7 +370,8 @@ fn format_queued_command(
     }
 }
 
-/// Helper to collect ships docked at a given system.
+/// Helper to collect mobile ships docked at a given system.
+/// #395: Immobile ships (stations) are excluded — use `stations_docked_at` for those.
 pub(super) fn ships_docked_at(
     system: Entity,
     ships: &Query<(
@@ -385,6 +386,39 @@ pub(super) fn ships_docked_at(
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _, _, _)| {
+            if ship.is_immobile() {
+                return None;
+            }
+            if let ShipState::InSystem { system: s } = &*state {
+                if *s == system {
+                    return Some((e, ship.name.clone(), ship.design_id.clone()));
+                }
+            }
+            None
+        })
+        .collect();
+    result.sort_by(|a, b| a.1.cmp(&b.1));
+    result
+}
+
+/// #395: Collect immobile ships (stations) docked at a given system.
+pub(super) fn stations_docked_at(
+    system: Entity,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
+) -> Vec<(Entity, String, String)> {
+    let mut result: Vec<(Entity, String, String)> = ships
+        .iter()
+        .filter_map(|(e, ship, state, _, _, _)| {
+            if !ship.is_immobile() {
+                return None;
+            }
             if let ShipState::InSystem { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.design_id.clone()));

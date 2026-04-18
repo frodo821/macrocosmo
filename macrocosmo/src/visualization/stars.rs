@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 
 use super::GalaxyView;
@@ -499,6 +501,135 @@ pub fn draw_galaxy_overlay(
                 gizmos.line_2d(bottom, left, port_color);
                 gizmos.line_2d(left, top, port_color);
             }
+        }
+    }
+
+    // #395: Station infrastructure icons — draw small icons next to system names
+    // for each immobile ship (station) docked there.
+    {
+        // Collect immobile ships per system, classified by hull type.
+        let mut system_stations: HashMap<Entity, Vec<StationKind>> = HashMap::new();
+        for (_, ship, state) in &ships {
+            if !ship.is_immobile() {
+                continue;
+            }
+            let sys = match &*state {
+                ShipState::InSystem { system } => *system,
+                ShipState::Refitting { system, .. } => *system,
+                _ => continue,
+            };
+            system_stations
+                .entry(sys)
+                .or_default()
+                .push(station_kind_from_hull(&ship.hull_id));
+        }
+
+        for (sys_entity, kinds) in &system_stations {
+            let Ok((_, _star, star_pos)) = stars.get(*sys_entity) else {
+                continue;
+            };
+            let sx = star_pos.x as f32 * view.scale;
+            // Position icons below the system name label (name is at y+14, so start at y+24)
+            let base_y = star_pos.y as f32 * view.scale + 24.0;
+            let icon_spacing = 10.0;
+            let start_x = sx - (kinds.len() as f32 - 1.0) * icon_spacing / 2.0;
+
+            for (i, kind) in kinds.iter().enumerate() {
+                let ix = start_x + i as f32 * icon_spacing;
+                let iy = base_y;
+                draw_station_icon(&mut gizmos, Vec2::new(ix, iy), *kind);
+            }
+        }
+    }
+}
+
+/// Classification of station types for icon rendering.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StationKind {
+    Core,
+    Shipyard,
+    Port,
+    ResearchLab,
+    Unknown,
+}
+
+/// Classify a station by its hull_id substring.
+fn station_kind_from_hull(hull_id: &str) -> StationKind {
+    if hull_id.contains("core") {
+        StationKind::Core
+    } else if hull_id.contains("shipyard") {
+        StationKind::Shipyard
+    } else if hull_id.contains("port") {
+        StationKind::Port
+    } else if hull_id.contains("research") {
+        StationKind::ResearchLab
+    } else {
+        StationKind::Unknown
+    }
+}
+
+/// Draw a small gizmo icon for a station type.
+fn draw_station_icon(gizmos: &mut Gizmos, center: Vec2, kind: StationKind) {
+    let s = 3.5;
+    match kind {
+        StationKind::Core => {
+            // Filled-looking circle (double ring)
+            let gold = Color::srgba(1.0, 0.84, 0.0, 0.8);
+            gizmos.circle_2d(center, s, gold);
+            gizmos.circle_2d(center, s * 0.5, gold);
+        }
+        StationKind::Shipyard => {
+            // Crossed lines (anvil/hammer shape)
+            let cyan = Color::srgba(0.3, 0.9, 1.0, 0.8);
+            gizmos.line_2d(
+                center + Vec2::new(-s, 0.0),
+                center + Vec2::new(s, 0.0),
+                cyan,
+            );
+            gizmos.line_2d(
+                center + Vec2::new(0.0, -s),
+                center + Vec2::new(0.0, s),
+                cyan,
+            );
+            gizmos.line_2d(
+                center + Vec2::new(-s * 0.7, -s * 0.7),
+                center + Vec2::new(s * 0.7, s * 0.7),
+                cyan,
+            );
+        }
+        StationKind::Port => {
+            // Small diamond
+            let purple = Color::srgba(0.8, 0.5, 1.0, 0.8);
+            let top = center + Vec2::new(0.0, s);
+            let right = center + Vec2::new(s, 0.0);
+            let bottom = center + Vec2::new(0.0, -s);
+            let left = center + Vec2::new(-s, 0.0);
+            gizmos.line_2d(top, right, purple);
+            gizmos.line_2d(right, bottom, purple);
+            gizmos.line_2d(bottom, left, purple);
+            gizmos.line_2d(left, top, purple);
+        }
+        StationKind::ResearchLab => {
+            // Triangle pointing up
+            let green = Color::srgba(0.3, 1.0, 0.5, 0.8);
+            let top = center + Vec2::new(0.0, s);
+            let bl = center + Vec2::new(-s * 0.87, -s * 0.5);
+            let br = center + Vec2::new(s * 0.87, -s * 0.5);
+            gizmos.line_2d(top, bl, green);
+            gizmos.line_2d(bl, br, green);
+            gizmos.line_2d(br, top, green);
+        }
+        StationKind::Unknown => {
+            // Simple square
+            let gray = Color::srgba(0.6, 0.6, 0.6, 0.6);
+            let tl = center + Vec2::new(-s, s);
+            let tr = center + Vec2::new(s, s);
+            let br = center + Vec2::new(s, -s);
+            let bl = center + Vec2::new(-s, -s);
+            gizmos.line_2d(tl, tr, gray);
+            gizmos.line_2d(tr, br, gray);
+            gizmos.line_2d(br, bl, gray);
+            gizmos.line_2d(bl, tl, gray);
         }
     }
 }
