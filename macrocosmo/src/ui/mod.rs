@@ -1,6 +1,7 @@
 pub mod ai_debug;
 pub mod bottom_bar;
 pub mod context_menu;
+pub mod diplomacy_panel;
 pub mod outline;
 pub mod overlays;
 pub mod params;
@@ -13,6 +14,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::amount::{Amt, SignedAmt};
+use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
 use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams,
@@ -23,11 +25,13 @@ use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::condition::ScopedFlags;
 use crate::events::{GameEvent, GameEventKind};
+use crate::faction::FactionRelations;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::scripting::building_api::BuildingRegistry;
+use crate::scripting::faction_api::{DiplomaticActionRegistry, DiplomaticOptionRegistry};
 use crate::ship::{
     Cargo, CommandQueue, CourierRoute, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship,
     ShipHitpoints, ShipState, SurveyData,
@@ -47,6 +51,10 @@ use params::{
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
 pub struct ResearchPanelOpen(pub bool);
+
+/// #304: Resource tracking whether the diplomacy panel is open.
+#[derive(Resource, Default)]
+pub struct DiplomacyPanelOpen(pub bool);
 
 /// #252: Selected tab in the colony detail panel. `Overview` retains the
 /// pre-existing income/buildings view; `PopManagement` shows population
@@ -138,11 +146,13 @@ impl Plugin for UiPlugin {
             // registry already initialised.
             .add_plugins(situation_center::SituationCenterPlugin)
             .init_resource::<ResearchPanelOpen>()
+            .init_resource::<DiplomacyPanelOpen>()
             .init_resource::<overlays::ShipDesignerState>()
             .init_resource::<EguiWantsPointer>()
             .init_resource::<UiState>()
             .init_resource::<ai_debug::AiDebugUi>()
             .add_systems(Update, ai_debug::toggle_ai_debug)
+            .add_systems(Update, toggle_diplomacy_panel)
             .add_systems(
                 EguiPrimaryContextPass,
                 (
@@ -156,6 +166,7 @@ impl Plugin for UiPlugin {
                     draw_outline_and_tooltips_system,
                     draw_main_panels_system,
                     draw_overlays_system,
+                    draw_diplomacy_overlay_system,
                     // #344: ESC panel sits alongside Research / Ship
                     // Designer in the floating-window slot. Exclusive
                     // system — keeps its own `&World` access for tab
@@ -378,6 +389,7 @@ fn draw_top_bar_system(
     clock: Res<GameClock>,
     mut speed: ResMut<GameSpeed>,
     mut research_open: ResMut<ResearchPanelOpen>,
+    mut diplomacy_open: ResMut<DiplomacyPanelOpen>,
     mut designer_state: ResMut<overlays::ShipDesignerState>,
     observer_mode: Res<crate::observer::ObserverMode>,
     mut observer_view: ResMut<crate::observer::ObserverView>,
@@ -420,6 +432,7 @@ fn draw_top_bar_system(
         ui_state.net_minerals,
         ui_state.net_authority,
         &mut research_open,
+        &mut diplomacy_open,
         &mut designer_state,
         observer_state,
         ui_registry.as_mut().map(|r| &mut **r),
@@ -1351,6 +1364,155 @@ fn draw_overlays_system(
             designer_state.editing_design_id = None;
         }
         overlays::ShipDesignerAction::None => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #304: F2 toggle for the diplomacy panel (runs in Update)
+// ---------------------------------------------------------------------------
+
+fn toggle_diplomacy_panel(keys: Res<ButtonInput<KeyCode>>, mut open: ResMut<DiplomacyPanelOpen>) {
+    if keys.just_pressed(diplomacy_panel::TOGGLE_KEY) {
+        open.0 = !open.0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #304: draw_diplomacy_overlay_system — diplomacy panel (floating window)
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn draw_diplomacy_overlay_system(
+    mut commands: Commands,
+    mut contexts: EguiContexts,
+    clock: Res<GameClock>,
+    mut diplomacy_open: ResMut<DiplomacyPanelOpen>,
+    mut relations: ResMut<FactionRelations>,
+    active_wars: Res<ActiveWars>,
+    cb_registry: Res<CasusBelliRegistry>,
+    option_registry: Res<DiplomaticOptionRegistry>,
+    action_registry: Res<DiplomaticActionRegistry>,
+    faction_registry: Res<crate::scripting::faction_api::FactionRegistry>,
+    type_registry: Res<crate::scripting::faction_api::FactionTypeRegistry>,
+    empire_q: Query<Entity, With<PlayerEmpire>>,
+    factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
+) {
+    crate::prof_span!("draw_diplomacy_overlay");
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    let Ok(player_entity) = empire_q.single() else {
+        return;
+    };
+
+    // Build sorted (entity, name, faction_type_id) list of empire factions.
+    let mut factions: Vec<(Entity, String, Option<String>)> = factions_q
+        .iter()
+        .map(|(e, f)| {
+            let ft = faction_registry
+                .factions
+                .get(&f.id)
+                .and_then(|fd| fd.faction_type.clone());
+            (e, f.name.clone(), ft)
+        })
+        .collect();
+    factions.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let action = diplomacy_panel::draw_diplomacy_panel(
+        ctx,
+        &mut diplomacy_open.0,
+        player_entity,
+        &relations,
+        &active_wars,
+        &cb_registry,
+        &option_registry,
+        &action_registry,
+        &faction_registry,
+        &type_registry,
+        &factions,
+        &clock,
+    );
+
+    // Execute returned actions.
+    match action {
+        diplomacy_panel::DiplomacyAction::SendBuiltinAction { from, to, action } => {
+            // Use a fixed 0-delay for now (same-system instant); a future
+            // pass will compute real light-speed delay from physical distance.
+            let delay = 0i64;
+            match action {
+                crate::faction::DiplomaticAction::DeclareWar => {
+                    crate::faction::declare_war_with_delay(
+                        &mut commands,
+                        &mut relations,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                crate::faction::DiplomaticAction::ProposePeace => {
+                    crate::faction::propose_peace_with_delay(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                crate::faction::DiplomaticAction::ProposeAlliance => {
+                    crate::faction::propose_alliance_with_delay(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                crate::faction::DiplomaticAction::BreakAlliance => {
+                    crate::faction::break_alliance_with_delay(
+                        &mut commands,
+                        &mut relations,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                _ => {}
+            }
+        }
+        diplomacy_panel::DiplomacyAction::SendCustomAction {
+            from,
+            to,
+            action_id,
+        } => {
+            crate::faction::send_custom_diplomatic_action(
+                &mut commands,
+                &clock,
+                from,
+                to,
+                action_id,
+                0,
+            );
+        }
+        diplomacy_panel::DiplomacyAction::EndWar {
+            faction_a,
+            faction_b,
+            scenario_id: _,
+        } => {
+            // For now, end war via peace proposal. A future pass will use
+            // the scenario's on_select callback and demand adjustments.
+            // `end_war` requires exclusive world access so we spawn a peace
+            // proposal that the next tick will resolve.
+            crate::faction::propose_peace_with_delay(
+                &mut commands,
+                &clock,
+                faction_a,
+                faction_b,
+                0,
+            );
+        }
+        diplomacy_panel::DiplomacyAction::None => {}
     }
 }
 

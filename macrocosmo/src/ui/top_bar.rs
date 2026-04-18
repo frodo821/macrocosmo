@@ -4,6 +4,7 @@ use bevy_egui::egui;
 use crate::amount::{Amt, SignedAmt};
 use crate::time_system::{GameClock, GameSpeed};
 
+use super::DiplomacyPanelOpen;
 use super::ResearchPanelOpen;
 use super::UiElementRegistry;
 use super::overlays::ShipDesignerState;
@@ -33,6 +34,7 @@ pub fn draw_top_bar(
     net_minerals: SignedAmt,
     net_authority: SignedAmt,
     research_open: &mut ResearchPanelOpen,
+    diplomacy_open: &mut DiplomacyPanelOpen,
     designer_state: &mut ShipDesignerState,
     observer: Option<ObserverBarState<'_>>,
     ui_registry: Option<&mut UiElementRegistry>,
@@ -105,6 +107,16 @@ pub fn draw_top_bar(
                 research_open.0 = !research_open.0;
             }
 
+            let dip_label = if diplomacy_open.0 {
+                "Diplomacy [open]"
+            } else {
+                "Diplomacy"
+            };
+            let diplomacy_resp = ui.button(dip_label);
+            if diplomacy_resp.clicked() {
+                diplomacy_open.0 = !diplomacy_open.0;
+            }
+
             let d_label = if designer_state.open {
                 "Ship Designer [open]"
             } else {
@@ -160,6 +172,12 @@ pub fn draw_top_bar(
                     ff_resp.rect,
                 );
                 super::register_ui_element(reg, "top_bar.research", r_label, research_resp.rect);
+                super::register_ui_element(
+                    reg,
+                    "top_bar.diplomacy",
+                    dip_label,
+                    diplomacy_resp.rect,
+                );
                 super::register_ui_element(
                     reg,
                     "top_bar.ship_designer",
