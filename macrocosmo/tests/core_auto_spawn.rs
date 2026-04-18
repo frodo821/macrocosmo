@@ -39,6 +39,7 @@ fn insert_core_design(app: &mut App) {
         sublight_speed: 0.0,
         ftl_range: 0.0,
         revision: 0,
+        is_direct_buildable: true,
     });
 }
 

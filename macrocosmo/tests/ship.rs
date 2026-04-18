@@ -2277,6 +2277,7 @@ fn install_refit_fixture(app: &mut App) {
         sublight_speed: 0.75,
         ftl_range: 0.0,
         revision: 0,
+        is_direct_buildable: true,
     });
 
     app.insert_resource(hulls);

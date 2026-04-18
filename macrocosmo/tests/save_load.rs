@@ -1735,6 +1735,7 @@ fn test_migration_spawns_station_ships_for_existing_buildings() {
         build_time: 0,
         maintenance: Amt::ZERO,
         revision: 0,
+        is_direct_buildable: true,
     });
     dst.insert_resource(design_reg);
 

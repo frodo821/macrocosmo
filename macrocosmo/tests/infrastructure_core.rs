@@ -73,6 +73,7 @@ fn spawn_core_helper_attaches_core_ship_and_at_system() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -141,6 +142,7 @@ fn pending_core_deploys_resolves_single_ticket() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -203,6 +205,7 @@ fn pending_core_deploys_discards_duplicate_on_owned_system() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -279,6 +282,7 @@ fn pending_core_deploys_same_tick_tie_break_picks_one() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -347,6 +351,7 @@ fn pending_core_deploys_preserves_across_different_systems() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -430,6 +435,7 @@ fn process_command_queue_drops_movetto_on_immobile_ship() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -521,6 +527,7 @@ fn end_to_end_deploy_spawns_core_at_inner_orbit() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
     // Register the deliverable with `spawns_as_ship`.
@@ -574,6 +581,7 @@ fn end_to_end_deploy_spawns_core_at_inner_orbit() {
                 sublight_speed: 0.5,
                 ftl_range: 10.0,
                 revision: 0,
+                is_direct_buildable: true,
             });
         }
     }
@@ -714,6 +722,7 @@ fn core_deploy_sets_system_sovereignty() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -776,6 +785,7 @@ fn insert_core_design(app: &mut bevy::prelude::App) {
         sublight_speed: 0.0,
         ftl_range: 0.0,
         revision: 0,
+        is_direct_buildable: true,
     });
 }
 
@@ -822,6 +832,7 @@ fn core_deploy_creates_system_buildings() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 
@@ -941,6 +952,7 @@ fn core_deploy_does_not_overwrite_existing_system_buildings() {
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
     }
 

@@ -821,6 +821,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 10.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         registry.insert(ShipDesignDefinition {
             id: "colony_ship_mk1".to_string(),
@@ -838,6 +839,7 @@ mod tests {
             sublight_speed: 0.5,
             ftl_range: 15.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         registry.insert(ShipDesignDefinition {
             id: "courier_mk1".to_string(),
@@ -855,6 +857,7 @@ mod tests {
             sublight_speed: 0.80,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         registry
     }

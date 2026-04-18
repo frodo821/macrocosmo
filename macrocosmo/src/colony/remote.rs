@@ -85,6 +85,14 @@ pub fn apply_remote_command(
                 warn!("ShipBuild: unknown design_id '{}'", design_id);
                 return;
             };
+            // #396: reject installation hulls from the normal Shipyard build queue
+            if !design.is_direct_buildable {
+                warn!(
+                    "ShipBuild: design '{}' is not direct-buildable (installation hull)",
+                    design_id
+                );
+                return;
+            }
             let build_time_total = sdr.build_time(design_id);
             build_q.push_order(BuildOrder {
                 order_id: 0,

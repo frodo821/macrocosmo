@@ -963,6 +963,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 15.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         // colony_ship_mk1 = frigate + ftl_drive + colony_module
         registry.insert(ShipDesignDefinition {
@@ -984,6 +985,7 @@ mod tests {
             sublight_speed: 0.5,
             ftl_range: 15.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         // courier_mk1 = courier_hull + ftl_drive + afterburner + cargo_bay
         registry.insert(ShipDesignDefinition {
@@ -1007,6 +1009,7 @@ mod tests {
             // 15 * (1+1.2) = 33.0 (courier_hull ftl_range multiplier 1.2)
             ftl_range: 33.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         // scout_mk1 = scout_hull + ftl_drive + survey_equipment
         registry.insert(ShipDesignDefinition {
@@ -1029,6 +1032,7 @@ mod tests {
             sublight_speed: 1.8275,
             ftl_range: 15.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         registry
     }

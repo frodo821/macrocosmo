@@ -203,6 +203,7 @@ pub fn parse_ship_designs(lua: &mlua::Lua) -> Result<Vec<ShipDesignDefinition>, 
             sublight_speed: 0.0,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: false,
         });
     }
 
@@ -895,6 +896,10 @@ mod tests {
         assert_eq!(d.build_time, 0);
         assert!(!d.can_survey);
         assert!(!d.can_colonize);
+        assert!(
+            !d.is_direct_buildable,
+            "is_direct_buildable is derived, must be false post-parse"
+        );
     }
 
     /// #382: `size` is mandatory — parsing a hull without it must error.

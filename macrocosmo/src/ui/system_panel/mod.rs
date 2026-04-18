@@ -1228,13 +1228,23 @@ fn draw_right_panel(
                 let mut build_request: Option<(String, String, Amt, Amt, i64)> = None;
 
                 let design_ids = design_registry.all_design_ids();
-                if !design_ids.is_empty() {
+                // #396: filter out installation hulls (is_direct_buildable == false)
+                let buildable_ids: Vec<String> = design_ids
+                    .into_iter()
+                    .filter(|id| {
+                        design_registry
+                            .get(id)
+                            .map(|d| d.is_direct_buildable)
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                if !buildable_ids.is_empty() {
                     ui.label(egui::RichText::new("Build Ship").strong());
                     egui::ScrollArea::horizontal()
                         .id_salt("system_panel_build_ship")
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                for design_id in &design_ids {
+                                for design_id in &buildable_ids {
                                     let design = &design_registry.designs[design_id];
                                     let hull = hull_registry.get(&design.hull_id);
                                     let (base_m, base_e, base_time) = if let Some(hull) = hull {

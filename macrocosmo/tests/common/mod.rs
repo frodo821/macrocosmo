@@ -621,8 +621,7 @@ pub fn test_app() -> App {
     app.init_resource::<macrocosmo::casus_belli::ActiveWars>();
     app.add_systems(
         Update,
-        macrocosmo::faction::detect_annihilation
-            .after(macrocosmo::time_system::advance_game_time),
+        macrocosmo::faction::detect_annihilation.after(macrocosmo::time_system::advance_game_time),
     );
 
     // #384: Harbour lifecycle systems (dock/undock, position sync, combat ROE, modifier sync).
@@ -1529,6 +1528,7 @@ fn build_derived_design(
         sublight_speed: 0.0,
         ftl_range: 0.0,
         revision: 0,
+        is_direct_buildable: true,
     };
     macrocosmo::ship_design::apply_derived_to_definition(&mut def, hulls, modules);
     def
