@@ -106,6 +106,14 @@ impl Plugin for ColonyPlugin {
                     // swallowed in a single tick_building_queue pass.
                     .after(crate::communication::process_pending_commands),
             )
+            // #386: Derive SystemBuildings from station Ship entities after
+            // the building queue tick has spawned/despawned station ships.
+            .add_systems(
+                Update,
+                sync_system_buildings_from_ships
+                    .after(tick_system_building_queue)
+                    .after(crate::time_system::advance_game_time),
+            )
             .add_systems(
                 Update,
                 (

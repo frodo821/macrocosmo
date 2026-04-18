@@ -1,9 +1,12 @@
 use bevy::prelude::*;
 
 use crate::amount::{Amt, SignedAmt};
+use crate::components::Position;
 use crate::galaxy::Planet;
 use crate::modifier::Modifier;
 use crate::scripting::building_api::{BuildingId, BuildingRegistry};
+use crate::ship::{Owner, Ship, ShipState};
+use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
 use super::{
@@ -233,8 +236,110 @@ pub fn sync_system_building_maintenance(
     }
 }
 
+/// #386: Rebuild `SystemBuildings.slots` from station Ship entities present in
+/// each system. This makes `SystemBuildings` a derived view — the source of
+/// truth is the set of station ships with `ShipState::InSystem`. A reverse
+/// index (ship design_id → BuildingId) is built from `BuildingRegistry` entries
+/// that carry a `ship_design_id`.
+pub fn sync_system_buildings_from_ships(
+    mut sys_buildings_q: Query<(Entity, &mut SystemBuildings)>,
+    ship_q: Query<(&Ship, &ShipState)>,
+    building_registry: Res<BuildingRegistry>,
+) {
+    // Build reverse index: ship_design_id → BuildingId
+    let reverse: std::collections::HashMap<&str, BuildingId> = building_registry
+        .buildings
+        .values()
+        .filter_map(|def| {
+            def.ship_design_id
+                .as_deref()
+                .map(|did| (did, BuildingId::new(&def.id)))
+        })
+        .collect();
+
+    if reverse.is_empty() {
+        return;
+    }
+
+    for (system_entity, mut sys_buildings) in &mut sys_buildings_q {
+        // Collect all station ship building_ids in this system.
+        let mut station_building_ids: Vec<BuildingId> = Vec::new();
+        for (ship, state) in &ship_q {
+            if let ShipState::InSystem { system } = state {
+                if *system == system_entity {
+                    if let Some(bid) = reverse.get(ship.design_id.as_str()) {
+                        station_building_ids.push(bid.clone());
+                    }
+                }
+            }
+        }
+
+        // If there are no station ships at all in this system, skip sync.
+        // This preserves backward compatibility with pre-migration setups
+        // where SystemBuildings was populated directly without station ships.
+        if station_building_ids.is_empty() {
+            continue;
+        }
+
+        // Reconcile slots with station ships.
+        // 1. Clear slots whose building has ship_design_id but no matching
+        //    station ship (stale entry from demolished station).
+        // 2. Place station ships that aren't yet in any slot into empty slots.
+        // 3. Leave non-station building slots (no ship_design_id) untouched.
+        let slot_count = sys_buildings.slots.len();
+        let mut new_slots = sys_buildings.slots.clone();
+        let mut consumed: Vec<bool> = vec![false; station_building_ids.len()];
+
+        // Pass 1: validate existing station-building slots against ships.
+        for slot in &mut new_slots {
+            if let Some(bid) = slot {
+                if let Some(def) = building_registry.get(bid.as_str()) {
+                    if def.ship_design_id.is_some() {
+                        // This slot should be backed by a station ship.
+                        if let Some(idx) = station_building_ids
+                            .iter()
+                            .enumerate()
+                            .find(|(i, sb)| !consumed[*i] && *sb == bid)
+                            .map(|(i, _)| i)
+                        {
+                            consumed[idx] = true;
+                        } else {
+                            // No matching station ship — clear stale slot.
+                            *slot = None;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pass 2: place unconsumed station ships into empty slots.
+        let mut next_empty = 0;
+        for (i, bid) in station_building_ids.into_iter().enumerate() {
+            if consumed[i] {
+                continue;
+            }
+            while next_empty < slot_count && new_slots[next_empty].is_some() {
+                next_empty += 1;
+            }
+            if next_empty < slot_count {
+                new_slots[next_empty] = Some(bid);
+                next_empty += 1;
+            }
+        }
+
+        // Only mutate if different (avoids unnecessary change detection).
+        if new_slots != sys_buildings.slots {
+            sys_buildings.slots = new_slots;
+        }
+    }
+}
+
 /// Tick system-level building construction/demolition queues on StarSystem entities.
+/// #386: On construction completion, if the building has a `ship_design_id`,
+/// spawn a station Ship entity at the system. On demolition, despawn the
+/// matching station Ship.
 pub fn tick_system_building_queue(
+    mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     mut query: Query<(
@@ -242,15 +347,20 @@ pub fn tick_system_building_queue(
         &mut SystemBuildingQueue,
         &mut SystemBuildings,
         &mut ResourceStockpile,
+        &Position,
     )>,
     mut event_system: ResMut<crate::event_system::EventSystem>,
+    building_registry: Res<BuildingRegistry>,
+    design_registry: Res<ShipDesignRegistry>,
+    faction_q: Query<&crate::faction::FactionOwner>,
+    ship_q: Query<(Entity, &Ship, &ShipState)>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
 
-    for (system_entity, mut bq, mut buildings, mut stockpile) in &mut query {
+    for (system_entity, mut bq, mut buildings, mut stockpile, sys_position) in &mut query {
         let mut available_minerals = stockpile.minerals;
         let mut available_energy = stockpile.energy;
         let mut minerals_consumed = Amt::ZERO;
@@ -317,6 +427,36 @@ pub fn tick_system_building_queue(
                             payload,
                         )),
                     );
+
+                    // #386: Spawn a station Ship if the building has ship_design_id.
+                    if let Some(def) = building_registry.get(
+                        buildings.slots[completed_slot]
+                            .as_ref()
+                            .map(|b| b.0.as_str())
+                            .unwrap_or(""),
+                    ) {
+                        if let Some(ref design_id) = def.ship_design_id {
+                            let owner = faction_q
+                                .get(system_entity)
+                                .ok()
+                                .map(|fo| Owner::Empire(fo.0))
+                                .unwrap_or(Owner::Neutral);
+                            let station_name = def.name.clone();
+                            crate::ship::spawn_ship(
+                                &mut commands,
+                                design_id,
+                                station_name,
+                                system_entity,
+                                *sys_position,
+                                owner,
+                                &design_registry,
+                            );
+                            info!(
+                                "Spawned station ship '{}' for system building '{}'",
+                                design_id, def.id
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -345,6 +485,31 @@ pub fn tick_system_building_queue(
                         "System building {} demolished in slot {}, refunded M:{} E:{}",
                         building_name, slot_idx, completed.minerals_refund, completed.energy_refund
                     );
+
+                    // #386: Despawn the corresponding station Ship if one exists.
+                    if let Some(bid) = &buildings.slots[slot_idx] {
+                        if let Some(def) = building_registry.get(bid.as_str()) {
+                            if let Some(ref design_id) = def.ship_design_id {
+                                // Find and despawn the station ship matching this
+                                // design at this system.
+                                for (ship_entity, ship, ship_state) in &ship_q {
+                                    if ship.design_id == *design_id {
+                                        if let ShipState::InSystem { system } = ship_state {
+                                            if *system == system_entity {
+                                                commands.entity(ship_entity).despawn();
+                                                info!(
+                                                    "Despawned station ship '{}' for demolished building '{}'",
+                                                    design_id, def.id
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     buildings.slots[slot_idx] = None;
                     minerals_refunded = minerals_refunded.add(completed.minerals_refund);
                     energy_refunded = energy_refunded.add(completed.energy_refund);

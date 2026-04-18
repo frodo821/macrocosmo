@@ -111,7 +111,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None,
+        ship_design_id: Some("station_research_lab_v1".into()),
     });
     let mut shipyard_caps = HashMap::new();
     shipyard_caps.insert(
@@ -145,7 +145,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None,
+        ship_design_id: Some("station_shipyard_v1".into()),
     });
     let mut port_caps = HashMap::new();
     port_caps.insert(
@@ -180,7 +180,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None,
+        ship_design_id: Some("station_port_v1".into()),
     });
     registry.insert(BuildingDefinition {
         id: "farm".into(),
@@ -546,6 +546,8 @@ pub fn test_app() -> App {
             // queue frozen. Added here so the system-building regression test
             // runs end-to-end.
             tick_system_building_queue,
+            // #386: Derive SystemBuildings from station Ship entities.
+            macrocosmo::colony::sync_system_buildings_from_ships,
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
@@ -843,6 +845,8 @@ pub fn full_test_app() -> App {
             tick_building_queue,
             // #260: Mirror the production chain; see test_app comment above.
             tick_system_building_queue,
+            // #386: Derive SystemBuildings from station Ship entities.
+            macrocosmo::colony::sync_system_buildings_from_ships,
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
@@ -1336,6 +1340,58 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         size: 1,
         is_capital: false,
     });
+    // #386: Station hulls for system building → Ship migration tests.
+    hulls.insert(HullDefinition {
+        id: "station_shipyard_hull".into(),
+        name: "Station Shipyard Hull".into(),
+        description: String::new(),
+        base_hp: 200.0,
+        base_speed: 0.0,
+        base_evasion: 0.0,
+        slots: vec![slot("utility", 1)],
+        build_cost_minerals: Amt::units(300),
+        build_cost_energy: Amt::units(200),
+        build_time: 30,
+        maintenance: Amt::units(1),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 20,
+        is_capital: false,
+    });
+    hulls.insert(HullDefinition {
+        id: "station_port_hull".into(),
+        name: "Station Port Hull".into(),
+        description: String::new(),
+        base_hp: 150.0,
+        base_speed: 0.0,
+        base_evasion: 0.0,
+        slots: vec![slot("utility", 1)],
+        build_cost_minerals: Amt::units(400),
+        build_cost_energy: Amt::units(300),
+        build_time: 40,
+        maintenance: Amt::new(0, 500),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 15,
+        is_capital: false,
+    });
+    hulls.insert(HullDefinition {
+        id: "station_research_lab_hull".into(),
+        name: "Station Research Lab Hull".into(),
+        description: String::new(),
+        base_hp: 100.0,
+        base_speed: 0.0,
+        base_evasion: 0.0,
+        slots: vec![slot("utility", 1)],
+        build_cost_minerals: Amt::units(100),
+        build_cost_energy: Amt::units(100),
+        build_time: 15,
+        maintenance: Amt::new(0, 500),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 10,
+        is_capital: false,
+    });
     hulls
 }
 
@@ -1516,6 +1572,31 @@ pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegis
         "Scout Mk.I",
         "scout_hull",
         &[("ftl", "ftl_drive"), ("utility", "survey_equipment")],
+        &hulls,
+        &modules,
+    ));
+    // #386: Station designs for system building → Ship migration tests.
+    registry.insert(build_derived_design(
+        "station_shipyard_v1",
+        "Orbital Shipyard",
+        "station_shipyard_hull",
+        &[],
+        &hulls,
+        &modules,
+    ));
+    registry.insert(build_derived_design(
+        "station_port_v1",
+        "Trade Port",
+        "station_port_hull",
+        &[],
+        &hulls,
+        &modules,
+    ));
+    registry.insert(build_derived_design(
+        "station_research_lab_v1",
+        "Research Station",
+        "station_research_lab_hull",
+        &[],
         &hulls,
         &modules,
     ));
