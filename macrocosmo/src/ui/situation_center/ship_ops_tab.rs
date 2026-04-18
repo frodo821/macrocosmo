@@ -130,6 +130,10 @@ fn collect_ship_events(world: &World) -> Vec<Event> {
 
     if let Some(mut q) = world.try_query::<(Entity, &Ship, &ShipState)>() {
         for (ship_entity, ship, state) in q.iter(world) {
+            // #389: Exclude immobile ships (stations) from ship operations
+            if ship.is_immobile() {
+                continue;
+            }
             let current_system = ship_current_system(state);
             let (category, state_label, eta, started_at) =
                 classify_ship(state, current_system, &hostiles, now);
@@ -184,7 +188,11 @@ fn summarise_ships(world: &World) -> ShipSummary {
     let clock = world.resource::<GameClock>();
     let now = clock.elapsed;
     if let Some(mut q) = world.try_query::<(&Ship, &ShipState)>() {
-        for (_ship, state) in q.iter(world) {
+        for (ship, state) in q.iter(world) {
+            // #389: Exclude immobile ships (stations) from summary
+            if ship.is_immobile() {
+                continue;
+            }
             let current_system = ship_current_system(state);
             let (category, _, _, _) = classify_ship(state, current_system, &hostiles, now);
             match category {

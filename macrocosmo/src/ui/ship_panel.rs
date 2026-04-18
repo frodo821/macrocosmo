@@ -12,10 +12,10 @@ use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
-    Cargo, CommandQueue, CourierMode, CourierRoute, PendingShipCommand, QueuedCommand,
-    RulesOfEngagement, Ship, ShipHitpoints, ShipState, SurveyData,
+    Cargo, CommandQueue, CourierMode, CourierRoute, DockedAt, PendingShipCommand, QueuedCommand,
+    RulesOfEngagement, Ship, ShipHitpoints, ShipState, ShipStats, SurveyData,
 };
-use crate::ship_design::ShipDesignRegistry;
+use crate::ship_design::{HullRegistry, ShipDesignRegistry};
 use crate::time_system::GameClock;
 use crate::visualization::SelectedShip;
 
@@ -111,6 +111,10 @@ pub struct ShipPanelActions {
     /// #229: Player requested draining a Scrapyard into the ship's Cargo.
     /// Payload: (ship, structure).
     pub load_from_scrapyard_request: Option<(Entity, Entity)>,
+    /// #389: Dock ship at a harbour. Payload: (ship, harbour).
+    pub dock_at: Option<(Entity, Entity)>,
+    /// #389: Undock ship from its current harbour. Payload: ship entity.
+    pub undock: Option<Entity>,
 }
 
 /// #229: Display info about a deep-space structure close enough to the ship
@@ -433,6 +437,13 @@ struct ShipPanelData {
     is_player_aboard: bool,
     can_board: bool,
     can_disembark: bool,
+    /// #389: Harbour capacity (0 = not a harbour).
+    harbour_capacity: u32,
+    /// #389: Current docked size / list of docked ship names.
+    harbour_docked_size: u32,
+    harbour_docked_ships: Vec<String>,
+    /// #389: If this ship is docked at a harbour, the harbour entity and name.
+    docked_at_harbour: Option<(Entity, String)>,
 }
 
 /// Draws the floating ship details panel when a ship is selected.
@@ -483,6 +494,10 @@ pub fn draw_ship_panel(
     fleet_members: &Query<&crate::ship::FleetMembers>,
     fleets: &Query<&crate::ship::Fleet>,
     nearby_structures: &[NearbyStructure],
+    ship_stats: &Query<&ShipStats>,
+    docked_at_query: &Query<(&DockedAt, &Ship)>,
+    docked_check: &Query<&DockedAt>,
+    hull_reg: &HullRegistry,
 ) -> ShipPanelActions {
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
@@ -648,6 +663,36 @@ pub fn draw_ship_panel(
             && docked_system == player_stationed;
         // #59: Can player disembark? (player aboard this ship and ship is docked)
         let can_disembark = is_player_aboard && docked_system.is_some();
+        // #389: Harbour capacity and docked ship info
+        let (harbour_capacity, harbour_docked_size, harbour_docked_ships) = ship_stats
+            .get(ship_entity)
+            .ok()
+            .filter(|s| s.harbour_capacity.cached().raw() > 0)
+            .map(|s| {
+                let cap = (s.harbour_capacity.cached().raw() / 1000) as u32;
+                let mut used: u32 = 0;
+                let mut names = Vec::new();
+                for (da, docked_ship) in docked_at_query.iter() {
+                    if da.0 == ship_entity {
+                        let sz = hull_reg
+                            .get(&docked_ship.hull_id)
+                            .map(|h| h.size)
+                            .unwrap_or(1);
+                        used = used.saturating_add(sz);
+                        names.push(docked_ship.name.clone());
+                    }
+                }
+                (cap, used, names)
+            })
+            .unwrap_or((0, 0, Vec::new()));
+        // #389: Check if this ship is docked at a harbour
+        let docked_at_harbour: Option<(Entity, String)> =
+            docked_check.get(ship_entity).ok().and_then(|da| {
+                ships_query
+                    .get(da.0)
+                    .ok()
+                    .map(|(_, h_ship, _, _, _, _)| (da.0, h_ship.name.clone()))
+            });
         Some(ShipPanelData {
             ship_entity,
             name: ship.name.clone(),
@@ -683,6 +728,10 @@ pub fn draw_ship_panel(
             is_player_aboard,
             can_board,
             can_disembark,
+            harbour_capacity,
+            harbour_docked_size,
+            harbour_docked_ships,
+            docked_at_harbour,
         })
     });
 
@@ -721,6 +770,10 @@ pub fn draw_ship_panel(
         is_player_aboard,
         can_board,
         can_disembark,
+        harbour_capacity,
+        harbour_docked_size,
+        harbour_docked_ships,
+        docked_at_harbour,
     }) = ship_data
     else {
         return ShipPanelActions::default();
@@ -817,6 +870,38 @@ pub fn draw_ship_panel(
                 maintenance_cost.display_compact(),
                 home_port_name
             ));
+
+            // #389: Undock button when docked at a harbour
+            if let Some((_, ref harbour_name)) = docked_at_harbour {
+                ui.label(
+                    egui::RichText::new(format!("Docked at harbour: {}", harbour_name))
+                        .color(egui::Color32::from_rgb(255, 215, 80)),
+                );
+                if ui.button("Undock").clicked() {
+                    actions.undock = Some(ship_entity);
+                }
+            }
+
+            // #389: Harbour capacity & docked ships
+            if harbour_capacity > 0 {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("Harbour")
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 215, 80)),
+                );
+                ui.label(format!(
+                    "Capacity: {} / {}",
+                    harbour_docked_size, harbour_capacity
+                ));
+                if harbour_docked_ships.is_empty() {
+                    ui.label(egui::RichText::new("(no ships docked)").small().weak());
+                } else {
+                    for docked_name in &harbour_docked_ships {
+                        ui.label(format!("  - {}", docked_name));
+                    }
+                }
+            }
 
             // #57: Rules of Engagement selector
             ui.separator();

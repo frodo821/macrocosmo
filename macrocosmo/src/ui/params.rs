@@ -10,7 +10,8 @@ use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
 use crate::faction::FactionOwner;
 use crate::galaxy::{Anomalies, AtSystem, Hostile, Planet, StarSystem, SystemAttributes};
 use crate::ship::{
-    CoreShip, CourierRoute, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement,
+    CoreShip, CourierRoute, DockedAt, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement,
+    Ship, ShipStats,
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
@@ -95,6 +96,12 @@ pub struct MainPanelWorldQueries<'w, 's> {
     /// and the colonize-gate UI.
     pub core_ships:
         Query<'w, 's, (&'static AtSystem, &'static FactionOwner), With<crate::ship::CoreShip>>,
+    /// #389: Ship stats — used for harbour capacity display.
+    pub ship_stats: Query<'w, 's, &'static ShipStats>,
+    /// #389: Docked-at relationships — used for harbour occupancy.
+    pub docked_at: Query<'w, 's, (&'static DockedAt, &'static Ship)>,
+    /// #389: Docked-at check — entity-indexed lookup for single ship.
+    pub docked_check: Query<'w, 's, &'static DockedAt>,
 }
 
 #[derive(SystemParam)]

@@ -15,6 +15,19 @@ use crate::time_system::GameClock;
 use crate::ui::UiElementRegistry;
 use crate::visualization::SelectedShip;
 
+/// #389: Pre-computed harbour info for context menu display.
+pub struct HarbourInfo {
+    pub entity: Entity,
+    pub name: String,
+    pub can_dock: bool,
+}
+
+/// #389: Actions that come out of the context menu requiring Commands access.
+pub struct ContextMenuActions {
+    /// Dock ship at harbour. Payload: (ship, harbour).
+    pub dock_at: Option<(Entity, Entity)>,
+}
+
 /// Draws the RTS-style context menu when a ship is selected and a star is clicked.
 /// #76: Commands are delayed by light-speed distance from player to ship.
 #[allow(clippy::too_many_arguments)]
@@ -45,26 +58,31 @@ pub fn draw_context_menu(
     // #299 (S-5): (system_entity, faction_entity) pairs for all Core ships.
     core_by_system: &[(Entity, Entity)],
     mut ui_registry: Option<&mut UiElementRegistry>,
-) {
+    // #389: Harbours in the target system that the selected ship could dock at.
+    target_harbours: &[HarbourInfo],
+    // #389: Whether the selected ship is already docked at a harbour.
+    ship_is_docked_at_harbour: bool,
+) -> ContextMenuActions {
+    let mut ctx_actions = ContextMenuActions { dock_at: None };
     if !context_menu.open {
-        return;
+        return ctx_actions;
     }
 
     let Some(ship_entity) = selected_ship.0 else {
         context_menu.open = false;
-        return;
+        return ctx_actions;
     };
 
     let Some(target_entity) = context_menu.target_system else {
         context_menu.open = false;
-        return;
+        return ctx_actions;
     };
 
     // Collect ship data
     let ship_data = {
         let Ok((_, ship, state, _, _, _)) = ships_query.get(ship_entity) else {
             context_menu.open = false;
-            return;
+            return ctx_actions;
         };
         let docked_system = if let ShipState::InSystem { system } = &*state {
             Some(*system)
@@ -142,7 +160,7 @@ pub fn draw_context_menu(
     let Some(ship_pos) = ship_pos else {
         // No origin determinable; close menu.
         context_menu.open = false;
-        return;
+        return ctx_actions;
     };
 
     let same_system = is_docked && origin_system == Some(target_entity);
@@ -191,7 +209,7 @@ pub fn draw_context_menu(
     // Collect target star data
     let Ok((_, target_star, target_pos, target_attrs)) = stars.get(target_entity) else {
         context_menu.open = false;
-        return;
+        return ctx_actions;
     };
 
     let dist = physics::distance_ly(&ship_pos, target_pos);
@@ -241,10 +259,13 @@ pub fn draw_context_menu(
     let mut delayed_command: Option<crate::ship::ShipCommand> = None;
     let mut close_menu = false;
 
+    // #389: Can dock at a harbour in the target system?
+    let can_dock = same_system && !ship_is_docked_at_harbour && !target_harbours.is_empty();
+
     // No actions available at all? Close and bail
-    if !can_move && !can_survey && !can_colonize {
+    if !can_move && !can_survey && !can_colonize && !can_dock {
         context_menu.open = false;
-        return;
+        return ctx_actions;
     }
 
     // Shift+click: execute default action immediately without showing menu
@@ -294,7 +315,7 @@ pub fn draw_context_menu(
                     arrives_at: clock.elapsed + command_delay,
                 });
             }
-            return;
+            return ctx_actions;
         } else if is_docked {
             // #108: Unified move — command queue or pending command handles FTL vs sublight
             if command_delay == 0 {
@@ -346,7 +367,7 @@ pub fn draw_context_menu(
                 selected_ship.0 = None;
             }
         }
-        return;
+        return ctx_actions;
     }
 
     let menu_pos = egui::pos2(context_menu.position[0], context_menu.position[1]);
@@ -528,6 +549,22 @@ pub fn draw_context_menu(
                 }
             }
 
+            // #389: Dock at harbour buttons
+            if can_dock {
+                for harbour in target_harbours {
+                    let label = format!("Dock at {}", harbour.name);
+                    let dock_btn = ui.add_enabled(harbour.can_dock, egui::Button::new(&label));
+                    if harbour.can_dock {
+                        if dock_btn.clicked() {
+                            ctx_actions.dock_at = Some((ship_entity, harbour.entity));
+                            close_menu = true;
+                        }
+                    } else {
+                        dock_btn.on_disabled_hover_text("Harbour full — insufficient capacity");
+                    }
+                }
+            }
+
             ui.separator();
             let cancel_resp = ui.button("Cancel");
             #[cfg(feature = "remote")]
@@ -578,4 +615,6 @@ pub fn draw_context_menu(
             selected_ship.0 = None;
         }
     }
+
+    ctx_actions
 }

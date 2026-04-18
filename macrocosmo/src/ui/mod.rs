@@ -878,6 +878,10 @@ fn draw_main_panels_system(
         &world.fleet_members,
         &world.fleets,
         &nearby_structures,
+        &world.ship_stats,
+        &world.docked_at,
+        &world.docked_check,
+        &registries.hull_registry,
     );
 
     // Handle cancel current action
@@ -1099,6 +1103,23 @@ fn draw_main_panels_system(
         }
     }
 
+    // #389: Dock/Undock actions from ship panel.
+    if let Some((ship_entity, harbour_entity)) = ship_panel_actions.dock_at {
+        crate::ship::harbour::dock(&mut commands, ship_entity, harbour_entity);
+    }
+    if let Some(ship_entity) = ship_panel_actions.undock {
+        // Determine the system the ship is in for state transition
+        if let Ok((_, _, state, _, _, _)) = ships_query.get(ship_entity) {
+            let system = match &*state {
+                ShipState::InSystem { system } => Some(*system),
+                _ => None,
+            };
+            if let Some(sys) = system {
+                crate::ship::harbour::undock(&mut commands, ship_entity, sys);
+            }
+        }
+    }
+
     // --- Context menu ---
     let mut pending_ship_commands = Vec::new();
     let colony_ro: Vec<Colony> = colonies
@@ -1137,7 +1158,59 @@ fn draw_main_panels_system(
         .iter()
         .map(|(at, fo)| (at.0, fo.0))
         .collect();
-    context_menu::draw_context_menu(
+    // #389: Build harbour info for the context menu target system.
+    let target_harbours: Vec<context_menu::HarbourInfo> = selection
+        .context_menu
+        .target_system
+        .map(|target_sys| {
+            // Collect harbours in the target system
+            let selected_ship_hull_size: u32 = selection
+                .selected_ship
+                .0
+                .and_then(|se| ships_query.get(se).ok())
+                .map(|(_, ship, _, _, _, _)| {
+                    registries
+                        .hull_registry
+                        .get(&ship.hull_id)
+                        .map(|h| h.size)
+                        .unwrap_or(1)
+                })
+                .unwrap_or(1);
+            let mut harbours = Vec::new();
+            for (h_entity, h_ship, h_state, _, _, _) in ships_query.iter() {
+                let in_target =
+                    matches!(h_state, ShipState::InSystem { system } if *system == target_sys);
+                if !in_target {
+                    continue;
+                }
+                let Ok(stats) = world.ship_stats.get(h_entity) else {
+                    continue;
+                };
+                let cap_raw = stats.harbour_capacity.cached().raw();
+                if cap_raw == 0 {
+                    continue;
+                }
+                let capacity = (cap_raw / 1000) as u32;
+                let used = crate::ship::harbour::current_docked_size(
+                    h_entity,
+                    &world.docked_at,
+                    &registries.hull_registry,
+                );
+                harbours.push(context_menu::HarbourInfo {
+                    entity: h_entity,
+                    name: h_ship.name.clone(),
+                    can_dock: used.saturating_add(selected_ship_hull_size) <= capacity,
+                });
+            }
+            harbours
+        })
+        .unwrap_or_default();
+    let ship_is_docked_at_harbour = selection
+        .selected_ship
+        .0
+        .and_then(|se| world.docked_check.get(se).ok())
+        .is_some();
+    let ctx_menu_actions = context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,
         &mut selection.selected_ship,
@@ -1156,7 +1229,13 @@ fn draw_main_panels_system(
         &registries.design_registry,
         &core_by_system,
         selection.ui_registry.as_mut().map(|r| &mut **r),
+        &target_harbours,
+        ship_is_docked_at_harbour,
     );
+    // #389: Handle dock action from context menu
+    if let Some((ship_entity, harbour_entity)) = ctx_menu_actions.dock_at {
+        crate::ship::harbour::dock(&mut commands, ship_entity, harbour_entity);
+    }
     for pending_cmd in pending_ship_commands {
         commands.spawn(pending_cmd);
     }
