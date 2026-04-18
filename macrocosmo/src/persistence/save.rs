@@ -383,6 +383,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     if let Some(di) = e_ref.get::<DiplomaticInbox>() {
         bag.diplomatic_inbox = Some(SavedDiplomaticInbox::from_live(di));
     }
+    // #324: Extinct faction marker.
+    if let Some(ext) = e_ref.get::<crate::faction::Extinct>() {
+        bag.extinct = Some(SavedExtinct::from_live(ext));
+    }
     if e_ref.get::<Player>().is_some() {
         bag.player = Some(SavedPlayer);
     }

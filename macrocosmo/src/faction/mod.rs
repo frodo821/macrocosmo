@@ -44,9 +44,35 @@
 //! delay that opens a window for surprise attacks (declare-war that is still
 //! in flight).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
+
+// ---------------------------------------------------------------------------
+// #324: Extinct component — marks an empire faction as annihilated.
+// ---------------------------------------------------------------------------
+
+/// Reason an empire became extinct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtinctionReason {
+    /// The empire lost all Core ships and all colonies.
+    AllCoresAndColoniesLost,
+    /// (Future) The empire surrendered via diplomatic action.
+    Surrendered,
+}
+
+/// Marker component attached to an Empire entity when it is detected as
+/// annihilated (no Core ships and no colonies remaining).
+///
+/// The entity is **not** despawned — it stays in the world so relation
+/// history, name, and final state remain accessible for UI and logs.
+#[derive(Component, Clone, Debug)]
+pub struct Extinct {
+    /// Game clock tick (hexadies) when extinction was detected.
+    pub since: i64,
+    /// Why the faction went extinct.
+    pub reason: ExtinctionReason,
+}
 
 /// Plugin that registers the [`FactionRelations`] resource and seeds the
 /// non-empire "hostile" factions used by hostile entities (#168/#293).
@@ -90,6 +116,11 @@ impl Plugin for FactionRelationsPlugin {
             .add_systems(
                 Update,
                 tick_diplomatic_events.after(crate::time_system::advance_game_time),
+            )
+            // #324: Detect annihilation (no Core ships + no colonies → Extinct).
+            .add_systems(
+                Update,
+                detect_annihilation.after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -355,6 +386,9 @@ impl FactionView {
 #[derive(Resource, Default, Debug)]
 pub struct FactionRelations {
     pub relations: HashMap<(Entity, Entity), FactionView>,
+    /// #324: Factions whose relations are frozen (Extinct). Mutation methods
+    /// silently no-op when either endpoint is in this set.
+    frozen: HashSet<Entity>,
 }
 
 impl FactionRelations {
@@ -378,8 +412,29 @@ impl FactionRelations {
         self.relations.get(&(from, to)).cloned().unwrap_or_default()
     }
 
+    /// #324: Mark a faction as frozen. All subsequent mutation methods
+    /// (`set`, `declare_war`, `make_peace`, `make_alliance`, `break_alliance`)
+    /// silently no-op when either `from` or `to` is frozen.
+    pub fn freeze_faction(&mut self, faction: Entity) {
+        self.frozen.insert(faction);
+    }
+
+    /// #324: Check if a faction's relations are frozen.
+    pub fn is_frozen(&self, faction: Entity) -> bool {
+        self.frozen.contains(&faction)
+    }
+
+    /// Returns `true` if either `from` or `to` is frozen.
+    fn either_frozen(&self, from: Entity, to: Entity) -> bool {
+        self.frozen.contains(&from) || self.frozen.contains(&to)
+    }
+
     /// Set the view that `from` holds of `to`.
+    /// No-op if either faction is frozen (#324).
     pub fn set(&mut self, from: Entity, to: Entity, view: FactionView) {
+        if self.either_frozen(from, to) {
+            return;
+        }
         self.relations.insert((from, to), view);
     }
 
@@ -404,7 +459,11 @@ impl FactionRelations {
     /// `to`'s view of `from` is **not** modified — propagation is
     /// performed asynchronously by the light-speed delivery system (#171).
     /// Inserts a default view first if none exists.
+    /// No-op if either faction is frozen (#324).
     pub fn declare_war(&mut self, from: Entity, to: Entity) {
+        if self.either_frozen(from, to) {
+            return;
+        }
         let view = self
             .relations
             .entry((from, to))
@@ -417,7 +476,11 @@ impl FactionRelations {
 
     /// Unilaterally break an alliance, returning to `Peace`. No-op if the
     /// view is not currently `Alliance`.
+    /// No-op if either faction is frozen (#324).
     pub fn break_alliance(&mut self, from: Entity, to: Entity) {
+        if self.either_frozen(from, to) {
+            return;
+        }
         if let Some(view) = self.relations.get_mut(&(from, to))
             && view.state == RelationState::Alliance
         {
@@ -428,7 +491,22 @@ impl FactionRelations {
     /// Set `from`'s view of `to` to [`RelationState::Peace`], preserving
     /// existing standing. Inserts a default view first if none exists.
     /// Used by [`tick_diplomatic_actions`] to apply mutual-agreement results.
+    /// No-op if either faction is frozen (#324).
     pub fn make_peace(&mut self, from: Entity, to: Entity) {
+        if self.either_frozen(from, to) {
+            return;
+        }
+        let view = self
+            .relations
+            .entry((from, to))
+            .or_insert_with(FactionView::default);
+        view.state = RelationState::Peace;
+    }
+
+    /// Like [`make_peace`] but bypasses the frozen check. Used internally
+    /// by [`detect_annihilation`] to set the surviving faction's view to
+    /// Peace when auto-ending wars (#324).
+    pub(crate) fn make_peace_unchecked(&mut self, from: Entity, to: Entity) {
         let view = self
             .relations
             .entry((from, to))
@@ -438,7 +516,11 @@ impl FactionRelations {
 
     /// Set `from`'s view of `to` to [`RelationState::Alliance`], preserving
     /// existing standing. Inserts a default view first if none exists.
+    /// No-op if either faction is frozen (#324).
     pub fn make_alliance(&mut self, from: Entity, to: Entity) {
+        if self.either_frozen(from, to) {
+            return;
+        }
         let view = self
             .relations
             .entry((from, to))
@@ -940,6 +1022,84 @@ pub fn faction_can_diplomacy(
         .get(faction_entity)
         .map(|f| f.can_diplomacy)
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// #324: Annihilation detection
+// ---------------------------------------------------------------------------
+
+/// System that detects empire annihilation each tick.
+///
+/// An empire is considered annihilated when it owns **no** Core ships and
+/// **no** colonies. When detected, the [`Extinct`] component is attached,
+/// all active wars involving the faction are ended, and relations with
+/// the faction are frozen (no further standing or state changes).
+///
+/// Factions that already carry `Extinct` are skipped to prevent
+/// re-detection.
+pub fn detect_annihilation(
+    mut commands: Commands,
+    clock: Res<crate::time_system::GameClock>,
+    empires: Query<(Entity, &crate::player::Faction), (With<crate::player::Empire>, Without<Extinct>)>,
+    core_ships: Query<&FactionOwner, With<crate::ship::CoreShip>>,
+    colonies: Query<&FactionOwner, With<crate::colony::Colony>>,
+    mut active_wars: ResMut<crate::casus_belli::ActiveWars>,
+    mut relations: ResMut<FactionRelations>,
+    mut next_event_id: ResMut<crate::knowledge::NextEventId>,
+) {
+    for (empire_entity, faction) in &empires {
+        // Check if this empire owns any Core ship.
+        let has_core = core_ships.iter().any(|fo| fo.0 == empire_entity);
+        if has_core {
+            continue;
+        }
+        // Check if this empire owns any colony.
+        let has_colony = colonies.iter().any(|fo| fo.0 == empire_entity);
+        if has_colony {
+            continue;
+        }
+
+        // --- Empire is annihilated ---
+        info!(
+            "Faction '{}' (entity {:?}) annihilated at t={}",
+            faction.name, empire_entity, clock.elapsed
+        );
+
+        commands.entity(empire_entity).insert(Extinct {
+            since: clock.elapsed,
+            reason: ExtinctionReason::AllCoresAndColoniesLost,
+        });
+
+        // Freeze relations: mark the faction as frozen in FactionRelations.
+        relations.freeze_faction(empire_entity);
+
+        // Auto-end all active wars involving this faction.
+        let wars_to_end: Vec<(Entity, Entity)> = active_wars
+            .wars_involving(empire_entity)
+            .iter()
+            .map(|w| (w.attacker, w.defender))
+            .collect();
+        for (a, b) in wars_to_end {
+            active_wars.remove_war_between(a, b);
+            // Make peace in both directions (the faction is frozen but
+            // we still set peace for the surviving side's bookkeeping).
+            relations.make_peace_unchecked(a, b);
+            relations.make_peace_unchecked(b, a);
+        }
+
+        // Emit FactionAnnihilated event.
+        let event_id = next_event_id.allocate();
+        let desc = format!("Faction '{}' has been annihilated", faction.name);
+        commands.queue(move |world: &mut World| {
+            world.write_message(crate::events::GameEvent {
+                id: event_id,
+                timestamp: world.resource::<crate::time_system::GameClock>().elapsed,
+                kind: crate::events::GameEventKind::FactionAnnihilated,
+                description: desc,
+                related_system: None,
+            });
+        });
+    }
 }
 
 /// #295 (S-1) / #296 (S-3): Derive the sovereign owner of a star system from

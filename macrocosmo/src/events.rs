@@ -65,6 +65,8 @@ pub enum GameEventKind {
     WarDeclared,
     /// #305 (S-11): War ended via the Casus Belli system.
     WarEnded,
+    /// #324: A faction has been annihilated (no Core ships, no colonies).
+    FactionAnnihilated,
 }
 
 impl GameEventKind {
@@ -83,7 +85,8 @@ impl GameEventKind {
             | GameEventKind::CoreConquered
             | GameEventKind::CasusBelli
             | GameEventKind::WarDeclared
-            | GameEventKind::WarEnded => true,
+            | GameEventKind::WarEnded
+            | GameEventKind::FactionAnnihilated => true,
 
             GameEventKind::ShipArrived
             | GameEventKind::ShipBuilt

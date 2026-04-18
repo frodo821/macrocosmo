@@ -1589,6 +1589,36 @@ impl SavedConqueredCore {
     }
 }
 
+/// #324: Wire format for [`Extinct`](crate::faction::Extinct).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedExtinct {
+    pub since: i64,
+    pub reason: u8,
+}
+
+impl SavedExtinct {
+    pub fn from_live(v: &crate::faction::Extinct) -> Self {
+        let reason = match v.reason {
+            crate::faction::ExtinctionReason::AllCoresAndColoniesLost => 0,
+            crate::faction::ExtinctionReason::Surrendered => 1,
+        };
+        Self {
+            since: v.since,
+            reason,
+        }
+    }
+    pub fn into_live(self) -> crate::faction::Extinct {
+        let reason = match self.reason {
+            1 => crate::faction::ExtinctionReason::Surrendered,
+            _ => crate::faction::ExtinctionReason::AllCoresAndColoniesLost,
+        };
+        crate::faction::Extinct {
+            since: self.since,
+            reason,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPendingShipCommand {
     pub ship_bits: u64,
@@ -4221,6 +4251,7 @@ pub enum SavedGameEventKind {
     CasusBelli,
     WarDeclared,
     WarEnded,
+    FactionAnnihilated,
 }
 impl From<&GameEventKind> for SavedGameEventKind {
     fn from(v: &GameEventKind) -> Self {
@@ -4243,6 +4274,7 @@ impl From<&GameEventKind> for SavedGameEventKind {
             GameEventKind::CasusBelli => Self::CasusBelli,
             GameEventKind::WarDeclared => Self::WarDeclared,
             GameEventKind::WarEnded => Self::WarEnded,
+            GameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
         }
     }
 }
@@ -4267,6 +4299,7 @@ impl From<SavedGameEventKind> for GameEventKind {
             SavedGameEventKind::CasusBelli => Self::CasusBelli,
             SavedGameEventKind::WarDeclared => Self::WarDeclared,
             SavedGameEventKind::WarEnded => Self::WarEnded,
+            SavedGameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
         }
     }
 }
@@ -4558,6 +4591,9 @@ pub struct SavedComponentBag {
     /// #302: Per-faction diplomatic inbox.
     #[serde(default)]
     pub diplomatic_inbox: Option<SavedDiplomaticInbox>,
+    /// #324: Extinct faction marker.
+    #[serde(default)]
+    pub extinct: Option<SavedExtinct>,
     // Player
     pub player: Option<SavedPlayer>,
     pub stationed_at: Option<SavedStationedAt>,
