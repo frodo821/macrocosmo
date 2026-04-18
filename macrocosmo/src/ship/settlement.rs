@@ -60,6 +60,7 @@ pub fn process_settling(
     player_queries: SettlementPlayerQueries,
     mut fact_sys: FactSysParam,
     building_registry: Res<crate::colony::BuildingRegistry>,
+    design_registry: Res<crate::ship_design::ShipDesignRegistry>,
 ) {
     let player_system = player_queries.player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
@@ -70,6 +71,20 @@ pub fn process_settling(
         player_pos: pos,
         player_aboard,
     });
+    // #387: Pre-collect systems that already have a shipyard station to avoid
+    // spawning duplicates. We snapshot before the mutable iteration because
+    // the ships query is borrowed mutably in the loop body.
+    let systems_with_shipyard: std::collections::HashSet<Entity> = ships
+        .iter()
+        .filter_map(|(_, ship, state, _)| {
+            if ship.design_id == "station_shipyard_v1" {
+                if let ShipState::InSystem { system } = &*state {
+                    return Some(*system);
+                }
+            }
+            None
+        })
+        .collect();
     for (ship_entity, ship, mut state, ship_faction_owner) in &mut ships {
         let (system_entity, target_planet_entity, completes_at) = match *state {
             ShipState::Settling {
@@ -321,6 +336,26 @@ pub fn process_settling(
             }
 
             info!("Colony established at {}", system_name);
+
+            // #387: Auto-spawn a Shipyard station if none exists in this system.
+            if !systems_with_shipyard.contains(&system_entity) {
+                let owner = new_owner
+                    .map(crate::ship::Owner::Empire)
+                    .unwrap_or(crate::ship::Owner::Neutral);
+                crate::ship::spawn_ship(
+                    &mut commands,
+                    "station_shipyard_v1",
+                    "Shipyard".to_string(),
+                    system_entity,
+                    *sys_pos,
+                    owner,
+                    &design_registry,
+                );
+                info!(
+                    "Auto-spawned Shipyard station at {} on settlement",
+                    system_name
+                );
+            }
 
             // Consume the colony ship
             commands.entity(ship_entity).despawn();

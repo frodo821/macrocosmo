@@ -867,6 +867,20 @@ pub fn spawn_ship(
     ship_entity
 }
 
+/// #387: Check whether a station ship with the given `design_id` already exists
+/// in the specified system. Used to prevent duplicate auto-spawns (e.g. Shipyard
+/// on colonization when one already exists from a Core deploy or prior colony).
+pub fn system_has_station_ship(
+    design_id: &str,
+    system: Entity,
+    ships: &Query<(&Ship, &ShipState)>,
+) -> bool {
+    ships.iter().any(|(ship, state)| {
+        ship.design_id == design_id
+            && matches!(state, ShipState::InSystem { system: s } if *s == system)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -338,6 +338,10 @@ pub fn sync_system_buildings_from_ships(
 /// #386: On construction completion, if the building has a `ship_design_id`,
 /// spawn a station Ship entity at the system. On demolition, despawn the
 /// matching station Ship.
+///
+/// #387 TODO: For the future Loitering case (mobile shipyard not InSystem),
+/// resource sourcing should deduct from the ship's Cargo instead of the
+/// system's ResourceStockpile. This is a follow-up task.
 pub fn tick_system_building_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
