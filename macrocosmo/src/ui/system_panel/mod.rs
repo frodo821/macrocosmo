@@ -71,6 +71,7 @@ impl<'a> DeliverableAvailabilityCtx<'a> {
             system: None,
             planet: None,
             ship: None,
+            diplomacy: None,
         }
     }
 }

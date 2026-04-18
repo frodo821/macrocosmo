@@ -80,6 +80,70 @@ pub fn parse_condition(table: &mlua::Table) -> Result<Condition, mlua::Error> {
                 scope,
             )))
         }
+        // --- Diplomacy atoms (#322) ---
+        "target_state_is" => {
+            let state: String = table.get("state")?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetStateIs { state },
+                ConditionScope::Any,
+            )))
+        }
+        "target_state_in" => {
+            let states_table: mlua::Table = table.get("states")?;
+            let states: Vec<String> = states_table
+                .sequence_values::<String>()
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetStateIn { states },
+                ConditionScope::Any,
+            )))
+        }
+        "target_standing_at_least" => {
+            let threshold: f64 = table.get("threshold")?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetStandingAtLeast { threshold },
+                ConditionScope::Any,
+            )))
+        }
+        "relative_power_at_least" => {
+            let ratio: f64 = table.get("ratio")?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::RelativePowerAtLeast { ratio },
+                ConditionScope::Any,
+            )))
+        }
+        "target_allows_option" => {
+            let option_id: String = table.get("option_id")?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetAllowsOption { option_id },
+                ConditionScope::Any,
+            )))
+        }
+        "actor_has_modifier" => {
+            let modifier_id: String = table.get("modifier_id")?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::ActorHasModifier { modifier_id },
+                ConditionScope::Any,
+            )))
+        }
+        "actor_holds_capital_of_target" => Ok(Condition::Atom(ConditionAtom::scoped(
+            AtomKind::ActorHoldsCapitalOfTarget,
+            ConditionScope::Any,
+        ))),
+        "target_system_count_at_most" => {
+            let count: u32 = table.get("count")?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetSystemCountAtMost { count },
+                ConditionScope::Any,
+            )))
+        }
+        "target_attacked_actor_core_within" => {
+            let hexadies: i64 = table.get("hexadies")?;
+            Ok(Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetAttackedActorCoreWithin { hexadies },
+                ConditionScope::Any,
+            )))
+        }
         "all" => {
             let children: mlua::Table = table.get("children")?;
             let conds = children
@@ -320,6 +384,219 @@ mod tests {
         assert_eq!(id, "advanced_sensors");
         let scope: String = table.get("scope").unwrap();
         assert_eq!(scope, "empire");
+    }
+
+    // --- Diplomacy atom parser tests (#322) ---
+
+    #[test]
+    fn test_parse_target_state_is() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua.load(r#"return target_state_is("war")"#).eval().unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetStateIs {
+                    state: "war".into()
+                },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_state_in() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return target_state_in("peace", "neutral")"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetStateIn {
+                    states: vec!["peace".into(), "neutral".into()]
+                },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_standing_at_least() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return target_standing_at_least(50)"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetStandingAtLeast { threshold: 50.0 },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_relative_power_at_least() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return relative_power_at_least(1.5)"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::RelativePowerAtLeast { ratio: 1.5 },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_allows_option() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return target_allows_option("generic_negotiation")"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetAllowsOption {
+                    option_id: "generic_negotiation".into()
+                },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_actor_has_modifier() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return actor_has_modifier("cb_broken_treaty_recent")"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::ActorHasModifier {
+                    modifier_id: "cb_broken_treaty_recent".into()
+                },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_actor_holds_capital_of_target() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return actor_holds_capital_of_target()"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::ActorHoldsCapitalOfTarget,
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_system_count_at_most() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return target_system_count_at_most(2)"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetSystemCountAtMost { count: 2 },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_attacked_actor_core_within() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let table: mlua::Table = lua
+            .load(r#"return target_attacked_actor_core_within(100)"#)
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::Atom(ConditionAtom::scoped(
+                AtomKind::TargetAttackedActorCoreWithin { hexadies: 100 },
+                ConditionScope::Any,
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_diplomacy_atoms_in_combinators() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        // Test that diplomacy atoms work inside all/any combinators
+        let table: mlua::Table = lua
+            .load(
+                r#"return all(
+                    target_state_in("peace", "neutral"),
+                    target_allows_option("generic_negotiation")
+                )"#,
+            )
+            .eval()
+            .unwrap();
+        let cond = parse_condition(&table).unwrap();
+        assert_eq!(
+            cond,
+            Condition::All(vec![
+                Condition::Atom(ConditionAtom::scoped(
+                    AtomKind::TargetStateIn {
+                        states: vec!["peace".into(), "neutral".into()]
+                    },
+                    ConditionScope::Any,
+                )),
+                Condition::Atom(ConditionAtom::scoped(
+                    AtomKind::TargetAllowsOption {
+                        option_id: "generic_negotiation".into()
+                    },
+                    ConditionScope::Any,
+                )),
+            ])
+        );
     }
 
     #[test]

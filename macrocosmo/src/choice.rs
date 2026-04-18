@@ -310,6 +310,7 @@ pub fn evaluate_choice_availability(
         system: None,
         planet: None,
         ship: None,
+        diplomacy: None,
     };
 
     let (m_avail, e_avail) = capital_stockpile.unwrap_or((Amt::ZERO, Amt::ZERO));
