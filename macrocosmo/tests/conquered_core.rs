@@ -64,6 +64,7 @@ fn spawn_core_at(
         },
         CoreShip,
         AtSystem(system),
+        macrocosmo::faction::FactionOwner(faction),
         macrocosmo::ship::CommandQueue::default(),
         macrocosmo::ship::ShipModifiers::default(),
         macrocosmo::ship::ShipStats::default(),
