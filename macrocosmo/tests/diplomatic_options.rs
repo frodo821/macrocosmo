@@ -14,11 +14,7 @@ use macrocosmo::time_system::GameClock;
 fn test_diplomatic_option_e2e() {
     let mut app = common::test_app();
 
-    // Register the tick system (no ordering needed in tests — clock is manual)
-    app.add_systems(
-        bevy::prelude::Update,
-        macrocosmo::faction::tick_diplomatic_events,
-    );
+    // tick_diplomatic_events is already registered by test_app().
 
     // Insert a DiplomaticOptionRegistry with a test option
     let mut registry = DiplomaticOptionRegistry::default();
@@ -136,10 +132,7 @@ fn test_allowed_options_from_type() {
 fn test_diplomatic_event_no_inbox_drops_gracefully() {
     let mut app = common::test_app();
 
-    app.add_systems(
-        bevy::prelude::Update,
-        macrocosmo::faction::tick_diplomatic_events,
-    );
+    // tick_diplomatic_events is already registered by test_app().
 
     let sender = app.world_mut().spawn(Faction::new("sender", "Sender")).id();
 

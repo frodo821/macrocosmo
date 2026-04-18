@@ -4,10 +4,6 @@
 -- reference them by value (e.g. `faction_type = types.empire`).
 local types = require("factions.faction_types")
 
--- Diplomatic actions (#172). Independent of faction definitions — the
--- registry resolves prerequisites against relations + types at call time.
-require("factions.actions")
-
 -- #305 (S-11): Casus Belli definitions.
 require("factions.casus_belli")
 
@@ -15,8 +11,8 @@ require("factions.casus_belli")
 -- definitions can reference item kinds by value if needed.
 require("factions.negotiation_items")
 
--- Diplomatic options (#302). Lua-defined option framework for bilateral /
--- unilateral interactions. Coexists with the older define_diplomatic_action.
+-- Diplomatic options (#302 / #325). Lua-defined option framework for bilateral /
+-- unilateral interactions. All diplomatic actions use this framework.
 require("factions.options")
 
 define_faction {

@@ -20,8 +20,7 @@ use bevy_egui::egui;
 use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
 use crate::faction::{FactionRelations, RelationState};
 use crate::scripting::faction_api::{
-    DiplomaticActionDefinition, DiplomaticActionRegistry, DiplomaticOptionDefinition,
-    DiplomaticOptionRegistry, FactionRegistry,
+    DiplomaticOptionDefinition, DiplomaticOptionRegistry, FactionRegistry,
 };
 use crate::time_system::GameClock;
 
@@ -31,17 +30,11 @@ pub const TOGGLE_KEY: KeyCode = KeyCode::F2;
 /// Action returned by the diplomacy panel to the caller system.
 pub enum DiplomacyAction {
     None,
-    /// Send a built-in diplomatic action (declare war, propose peace, etc.)
-    SendBuiltinAction {
+    /// Send a diplomatic event with the given option id.
+    SendDiplomaticEvent {
         from: Entity,
         to: Entity,
-        action: crate::faction::DiplomaticAction,
-    },
-    /// Send a custom Lua-defined diplomatic action.
-    SendCustomAction {
-        from: Entity,
-        to: Entity,
-        action_id: String,
+        option_id: String,
     },
     /// End a war via a specific end scenario.
     EndWar {
@@ -72,7 +65,6 @@ pub fn draw_diplomacy_panel(
     active_wars: &ActiveWars,
     cb_registry: &CasusBelliRegistry,
     option_registry: &DiplomaticOptionRegistry,
-    action_registry: &DiplomaticActionRegistry,
     _faction_registry: &FactionRegistry,
     factions: &[FactionEntry],
     clock: &GameClock,
@@ -196,22 +188,18 @@ pub fn draw_diplomacy_panel(
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(&entry.name).strong());
                                 let (state_text, state_color) = match view.state {
-                                    RelationState::Neutral => (
-                                        "Neutral",
-                                        egui::Color32::from_rgb(180, 180, 180),
-                                    ),
-                                    RelationState::Peace => (
-                                        "Peace",
-                                        egui::Color32::from_rgb(100, 200, 100),
-                                    ),
-                                    RelationState::War => (
-                                        "War",
-                                        egui::Color32::from_rgb(255, 100, 100),
-                                    ),
-                                    RelationState::Alliance => (
-                                        "Alliance",
-                                        egui::Color32::from_rgb(100, 150, 255),
-                                    ),
+                                    RelationState::Neutral => {
+                                        ("Neutral", egui::Color32::from_rgb(180, 180, 180))
+                                    }
+                                    RelationState::Peace => {
+                                        ("Peace", egui::Color32::from_rgb(100, 200, 100))
+                                    }
+                                    RelationState::War => {
+                                        ("War", egui::Color32::from_rgb(255, 100, 100))
+                                    }
+                                    RelationState::Alliance => {
+                                        ("Alliance", egui::Color32::from_rgb(100, 150, 255))
+                                    }
                                 };
                                 ui.label(
                                     egui::RichText::new(format!("[{}]", state_text))
@@ -239,7 +227,7 @@ pub fn draw_diplomacy_panel(
                             if can_diplomacy {
                                 let allowed_options = &entry.allowed_diplomatic_options;
 
-                                // Built-in diplomatic actions
+                                // Built-in diplomatic actions (using DiplomaticEvent)
                                 ui.horizontal(|ui| {
                                     let is_at_war = view.state == RelationState::War;
                                     let is_allied = view.state == RelationState::Alliance;
@@ -253,10 +241,10 @@ pub fn draw_diplomacy_panel(
                                             )
                                             .clicked()
                                         {
-                                            action = DiplomacyAction::SendBuiltinAction {
+                                            action = DiplomacyAction::SendDiplomaticEvent {
                                                 from: player_entity,
                                                 to: entry.entity,
-                                                action: crate::faction::DiplomaticAction::DeclareWar,
+                                                option_id: crate::faction::DIPLO_DECLARE_WAR.into(),
                                             };
                                         }
                                     }
@@ -265,16 +253,15 @@ pub fn draw_diplomacy_panel(
                                     if is_at_war
                                         && ui
                                             .button(
-                                                egui::RichText::new("Propose Peace").color(
-                                                    egui::Color32::from_rgb(100, 200, 100),
-                                                ),
+                                                egui::RichText::new("Propose Peace")
+                                                    .color(egui::Color32::from_rgb(100, 200, 100)),
                                             )
                                             .clicked()
                                     {
-                                        action = DiplomacyAction::SendBuiltinAction {
+                                        action = DiplomacyAction::SendDiplomaticEvent {
                                             from: player_entity,
                                             to: entry.entity,
-                                            action: crate::faction::DiplomaticAction::ProposePeace,
+                                            option_id: crate::faction::DIPLO_PROPOSE_PEACE.into(),
                                         };
                                     }
 
@@ -285,17 +272,16 @@ pub fn draw_diplomacy_panel(
                                     {
                                         if ui
                                             .button(
-                                                egui::RichText::new("Propose Alliance").color(
-                                                    egui::Color32::from_rgb(100, 150, 255),
-                                                ),
+                                                egui::RichText::new("Propose Alliance")
+                                                    .color(egui::Color32::from_rgb(100, 150, 255)),
                                             )
                                             .clicked()
                                         {
-                                            action = DiplomacyAction::SendBuiltinAction {
+                                            action = DiplomacyAction::SendDiplomaticEvent {
                                                 from: player_entity,
                                                 to: entry.entity,
-                                                action:
-                                                    crate::faction::DiplomaticAction::ProposeAlliance,
+                                                option_id: crate::faction::DIPLO_PROPOSE_ALLIANCE
+                                                    .into(),
                                             };
                                         }
                                     }
@@ -304,57 +290,18 @@ pub fn draw_diplomacy_panel(
                                     if is_allied
                                         && ui
                                             .button(
-                                                egui::RichText::new("Break Alliance").color(
-                                                    egui::Color32::from_rgb(230, 200, 90),
-                                                ),
+                                                egui::RichText::new("Break Alliance")
+                                                    .color(egui::Color32::from_rgb(230, 200, 90)),
                                             )
                                             .clicked()
                                     {
-                                        action = DiplomacyAction::SendBuiltinAction {
+                                        action = DiplomacyAction::SendDiplomaticEvent {
                                             from: player_entity,
                                             to: entry.entity,
-                                            action:
-                                                crate::faction::DiplomaticAction::BreakAlliance,
+                                            option_id: crate::faction::DIPLO_BREAK_ALLIANCE.into(),
                                         };
                                     }
                                 });
-
-                                // Lua-defined custom diplomatic actions
-                                if !allowed_options.is_empty() {
-                                    let custom_actions: Vec<&DiplomaticActionDefinition> =
-                                        action_registry
-                                            .actions
-                                            .values()
-                                            .filter(|a| allowed_options.contains(&a.id))
-                                            .collect();
-
-                                    if !custom_actions.is_empty() {
-                                        ui.horizontal(|ui| {
-                                            for act_def in &custom_actions {
-                                                let enabled = is_custom_action_available(
-                                                    act_def,
-                                                    player_entity,
-                                                    entry.entity,
-                                                    relations,
-                                                );
-                                                let mut btn = ui.add_enabled(
-                                                    enabled,
-                                                    egui::Button::new(&act_def.name),
-                                                );
-                                                if !act_def.description.is_empty() {
-                                                    btn = btn.on_hover_text(&act_def.description);
-                                                }
-                                                if btn.clicked() {
-                                                    action = DiplomacyAction::SendCustomAction {
-                                                        from: player_entity,
-                                                        to: entry.entity,
-                                                        action_id: act_def.id.clone(),
-                                                    };
-                                                }
-                                            }
-                                        });
-                                    }
-                                }
 
                                 // Lua-defined diplomatic options (from DiplomaticOptionRegistry)
                                 let option_defs: Vec<&DiplomaticOptionDefinition> = option_registry
@@ -371,13 +318,10 @@ pub fn draw_diplomacy_panel(
                                                 btn = btn.on_hover_text(&opt_def.description);
                                             }
                                             if btn.clicked() {
-                                                // For now, diplomatic options fire
-                                                // a custom action with the option id.
-                                                // Full negotiation modal is future scope.
-                                                action = DiplomacyAction::SendCustomAction {
+                                                action = DiplomacyAction::SendDiplomaticEvent {
                                                     from: player_entity,
                                                     to: entry.entity,
-                                                    action_id: opt_def.id.clone(),
+                                                    option_id: opt_def.id.clone(),
                                                 };
                                             }
                                         }
@@ -398,31 +342,4 @@ pub fn draw_diplomacy_panel(
         });
 
     action
-}
-
-/// Simplified availability check for a custom diplomatic action, evaluating
-/// the `requires_state` and `min_standing` prerequisites against the current
-/// relation view. Does NOT check `requires_diplomacy` (the caller has already
-/// filtered to diplomacy-capable factions).
-fn is_custom_action_available(
-    def: &DiplomaticActionDefinition,
-    from: Entity,
-    to: Entity,
-    relations: &FactionRelations,
-) -> bool {
-    let view = relations.get_or_default(from, to);
-
-    if let Some(state) = def.requires_state {
-        if view.state != state {
-            return false;
-        }
-    }
-
-    if let Some(min) = def.min_standing {
-        if view.standing < min {
-            return false;
-        }
-    }
-
-    true
 }

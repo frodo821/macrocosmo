@@ -55,10 +55,6 @@ impl Plugin for ScriptingPlugin {
             )
             .add_systems(
                 Startup,
-                load_diplomatic_action_registry.after(load_all_scripts),
-            )
-            .add_systems(
-                Startup,
                 load_diplomatic_option_registry.after(load_all_scripts),
             )
             .add_systems(
@@ -261,28 +257,6 @@ pub fn load_faction_registry(mut commands: Commands, engine: Res<ScriptEngine>) 
         Err(e) => {
             warn!("Failed to parse faction definitions: {e}");
             commands.insert_resource(faction_api::FactionRegistry::default());
-        }
-    }
-}
-
-/// Startup system that parses Lua diplomatic-action definitions into
-/// [`faction_api::DiplomaticActionRegistry`] (#172). Runs after
-/// `load_all_scripts`; independent of faction / faction-type registries
-/// (prerequisite checks resolve against those at call time, not parse time).
-pub fn load_diplomatic_action_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
-    match faction_api::parse_diplomatic_action_definitions(engine.lua()) {
-        Ok(defs) => {
-            let count = defs.len();
-            let mut registry = faction_api::DiplomaticActionRegistry::default();
-            for def in defs {
-                registry.actions.insert(def.id.clone(), def);
-            }
-            commands.insert_resource(registry);
-            info!("Loaded {} diplomatic action definitions from Lua", count);
-        }
-        Err(e) => {
-            warn!("Failed to parse diplomatic action definitions: {e}");
-            commands.insert_resource(faction_api::DiplomaticActionRegistry::default());
         }
     }
 }

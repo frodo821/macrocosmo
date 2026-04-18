@@ -608,11 +608,12 @@ pub fn test_app() -> App {
             .after(process_ftl_travel),
     );
 
-    // #171: Light-speed delayed diplomatic actions (drains arrived
-    // PendingDiplomaticAction entities into FactionRelations).
+    // #171 / #325: Light-speed delayed diplomatic events (drains arrived
+    // DiplomaticEvent entities, applies builtin state changes and delivers
+    // to DiplomaticInbox).
     app.add_systems(
         Update,
-        macrocosmo::faction::tick_diplomatic_actions
+        macrocosmo::faction::tick_diplomatic_events
             .after(macrocosmo::time_system::advance_game_time),
     );
 
@@ -951,8 +952,8 @@ pub fn full_test_app() -> App {
     // --- Visualization systems (excluding Gizmos-dependent ones) ---
     app.add_systems(Update, (visualization::camera_controls,));
 
-    // --- Faction systems (#171) ---
-    app.add_systems(Update, macrocosmo::faction::tick_diplomatic_actions);
+    // --- Faction systems (#171 / #325) ---
+    app.add_systems(Update, macrocosmo::faction::tick_diplomatic_events);
 
     // #324: Annihilation detection.
     app.init_resource::<macrocosmo::casus_belli::ActiveWars>();

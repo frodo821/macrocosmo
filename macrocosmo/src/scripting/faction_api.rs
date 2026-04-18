@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::faction::{FactionRelations, RelationState};
+use crate::faction::RelationState;
 
 /// Category that a faction belongs to (e.g. `empire`, `space_creature`,
 /// `ancient_defense`). Defined from Lua via `define_faction_type`.
@@ -228,166 +228,6 @@ pub fn parse_faction_type_definitions(
 }
 
 // ---------------------------------------------------------------------------
-// #172: define_diplomatic_action — Lua-defined custom diplomatic actions
-// ---------------------------------------------------------------------------
-
-/// Lua-defined custom diplomatic action (e.g. "trade_agreement") that
-/// coexists with the built-in [`crate::faction::DiplomaticAction`] variants
-/// (`DeclareWar`, `ProposePeace`, etc.).
-///
-/// Prerequisite checks (`requires_diplomacy`, `requires_state`,
-/// `min_standing`) gate whether the sending faction may propose the action
-/// against a given target. When delivered and accepted, the optional
-/// `on_accepted` Lua callback runs with an `EffectScope` whose returned
-/// [`crate::effect::DescriptiveEffect`] list is applied as normal tech-style
-/// effects (flag sets, global param modifiers, etc.).
-#[derive(Debug, Clone)]
-pub struct DiplomaticActionDefinition {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    /// If `true`, the target faction's `Faction.can_diplomacy` must be
-    /// `true` for the action to be available.
-    pub requires_diplomacy: bool,
-    /// If set, the *sender's* current view of the target must be in this
-    /// state for the action to be available.
-    pub requires_state: Option<RelationState>,
-    /// If set, the sender's standing toward the target must be `>=` this
-    /// value for the action to be available.
-    pub min_standing: Option<f64>,
-    /// Whether the definition declared an `on_accepted` Lua callback. The
-    /// actual function is looked up lazily at call time via
-    /// [`lookup_on_accepted`] so we don't need to retain a long-lived
-    /// reference to the `Lua` context in the registry.
-    pub has_on_accepted: bool,
-}
-
-impl DiplomaticActionDefinition {
-    /// Evaluate prerequisite checks against the current game state.
-    ///
-    /// Returns `true` iff:
-    /// - when `requires_diplomacy`: the target faction's `Faction` component
-    ///   has `can_diplomacy` set;
-    /// - when `requires_state` is set: the sender's view of the target
-    ///   matches that state (an absent relation counts as `Neutral`);
-    /// - when `min_standing` is set: the sender's standing toward the
-    ///   target is `>=` the threshold.
-    pub fn is_available(
-        &self,
-        from_faction_entity: Entity,
-        to_faction_entity: Entity,
-        factions: &Query<&crate::player::Faction>,
-        relations: &FactionRelations,
-    ) -> bool {
-        if self.requires_diplomacy
-            && !crate::faction::faction_can_diplomacy(to_faction_entity, factions)
-        {
-            return false;
-        }
-
-        let view = relations.get_or_default(from_faction_entity, to_faction_entity);
-
-        if let Some(state) = self.requires_state
-            && view.state != state
-        {
-            return false;
-        }
-
-        if let Some(min) = self.min_standing
-            && view.standing < min
-        {
-            return false;
-        }
-
-        true
-    }
-}
-
-/// Registry of all diplomatic-action definitions loaded from Lua.
-#[derive(Resource, Default, Debug)]
-pub struct DiplomaticActionRegistry {
-    pub actions: HashMap<String, DiplomaticActionDefinition>,
-}
-
-impl DiplomaticActionRegistry {
-    /// Look up an action by id. Returns `None` if not registered.
-    pub fn get(&self, id: &str) -> Option<&DiplomaticActionDefinition> {
-        self.actions.get(id)
-    }
-}
-
-/// Parse diplomatic-action definitions from the Lua
-/// `_diplomatic_action_definitions` global table.
-pub fn parse_diplomatic_action_definitions(
-    lua: &mlua::Lua,
-) -> Result<Vec<DiplomaticActionDefinition>, mlua::Error> {
-    let defs: mlua::Table = lua.globals().get("_diplomatic_action_definitions")?;
-    let mut result = Vec::new();
-
-    for pair in defs.pairs::<i64, mlua::Table>() {
-        let (_, table) = pair?;
-
-        let id: String = table.get("id")?;
-        let name: String = table
-            .get::<Option<String>>("name")?
-            .unwrap_or_else(|| id.clone());
-        let description: String = table
-            .get::<Option<String>>("description")?
-            .unwrap_or_default();
-        let requires_diplomacy: bool = table
-            .get::<Option<bool>>("requires_diplomacy")?
-            .unwrap_or(false);
-
-        let requires_state = match table.get::<Option<String>>("requires_state")? {
-            Some(s) => Some(RelationState::from_str(&s)?),
-            None => None,
-        };
-
-        let min_standing = table.get::<Option<f64>>("min_standing")?;
-
-        let has_on_accepted = matches!(
-            table
-                .get::<mlua::Value>("on_accepted")
-                .unwrap_or(mlua::Value::Nil),
-            mlua::Value::Function(_)
-        );
-
-        result.push(DiplomaticActionDefinition {
-            id,
-            name,
-            description,
-            requires_diplomacy,
-            requires_state,
-            min_standing,
-            has_on_accepted,
-        });
-    }
-
-    Ok(result)
-}
-
-/// Look up the `on_accepted` Lua function for the given diplomatic-action id,
-/// if any. Returns Ok(None) if the action is not defined or has no callback.
-pub fn lookup_on_accepted(
-    lua: &mlua::Lua,
-    action_id: &str,
-) -> Result<Option<mlua::Function>, mlua::Error> {
-    let defs: mlua::Table = lua.globals().get("_diplomatic_action_definitions")?;
-    for pair in defs.pairs::<i64, mlua::Table>() {
-        let (_, table) = pair?;
-        let id: String = table.get("id")?;
-        if id == action_id {
-            let value: mlua::Value = table.get("on_accepted")?;
-            if let mlua::Value::Function(f) = value {
-                return Ok(Some(f));
-            }
-            return Ok(None);
-        }
-    }
-    Ok(None)
-}
-
-// ---------------------------------------------------------------------------
 // #302: define_diplomatic_option — Lua-defined diplomatic option framework
 // ---------------------------------------------------------------------------
 
@@ -407,7 +247,7 @@ pub struct DiplomaticOptionResponse {
 
 /// A diplomatic option definition loaded from Lua.
 ///
-/// Unlike [`DiplomaticActionDefinition`], options model a richer interaction:
+/// Options model a richer interaction than the old (removed) DiplomaticAction enum:
 /// they carry a `kind` (bilateral/unilateral), a list of POD
 /// [`DiplomaticOptionResponse`] entries, and a `payload_schema` hint that
 /// describes the `HashMap<String,String>` fields carried by the in-flight
