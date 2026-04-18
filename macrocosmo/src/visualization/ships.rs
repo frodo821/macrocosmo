@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use super::{GalaxyView, SelectedShip};
 use crate::components::Position;
 use crate::galaxy::StarSystem;
-use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
+use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState, ShipStats};
 use crate::time_system::GameClock;
 
 // #16: Ship drawing helpers and system
@@ -42,27 +42,61 @@ fn draw_dashed_line(gizmos: &mut Gizmos, start: Vec2, end: Vec2, color: Color) {
     }
 }
 
+/// Returns true when a ship is immobile (station / infrastructure core).
+fn is_station(ship: &Ship) -> bool {
+    ship.sublight_speed <= 0.0 && ship.ftl_range <= 0.0
+}
+
+/// Returns true when a ship acts as a harbour (harbour_capacity > 0).
+fn is_harbour(stats: Option<&ShipStats>) -> bool {
+    stats
+        .map(|s| s.harbour_capacity.cached().raw() > 0)
+        .unwrap_or(false)
+}
+
+/// Per-ship metadata stashed while grouping docked ships by system.
+struct DockedShipInfo {
+    design_id: String,
+    is_station: bool,
+    is_harbour: bool,
+}
+
 pub fn draw_ships(
     mut gizmos: Gizmos,
-    ships: Query<(Entity, &Ship, &ShipState, Option<&CommandQueue>)>,
+    ships: Query<(
+        Entity,
+        &Ship,
+        &ShipState,
+        Option<&CommandQueue>,
+        Option<&ShipStats>,
+    )>,
     stars: Query<&Position, With<StarSystem>>,
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
     selected_ship: Res<SelectedShip>,
 ) {
     // Group docked ships by system so we can offset them.
-    let mut docked_counts: HashMap<Entity, Vec<String>> = HashMap::new();
+    let mut docked_counts: HashMap<Entity, Vec<DockedShipInfo>> = HashMap::new();
     // Also count ships per system for badge display.
+    // Immobile ships (stations) are excluded from the badge count.
     let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
 
-    for (_entity, ship, state, _queue) in &ships {
+    for (_entity, ship, state, _queue, stats) in &ships {
+        let station = is_station(ship);
+        let harbour = is_harbour(stats);
         match state {
             ShipState::InSystem { system } => {
                 docked_counts
                     .entry(*system)
                     .or_default()
-                    .push(ship.design_id.clone());
-                *system_ship_counts.entry(*system).or_insert(0) += 1;
+                    .push(DockedShipInfo {
+                        design_id: ship.design_id.clone(),
+                        is_station: station,
+                        is_harbour: harbour,
+                    });
+                if !station {
+                    *system_ship_counts.entry(*system).or_insert(0) += 1;
+                }
             }
             ShipState::SubLight {
                 origin,
@@ -166,8 +200,14 @@ pub fn draw_ships(
                 docked_counts
                     .entry(*system)
                     .or_default()
-                    .push(ship.design_id.clone());
-                *system_ship_counts.entry(*system).or_insert(0) += 1;
+                    .push(DockedShipInfo {
+                        design_id: ship.design_id.clone(),
+                        is_station: station,
+                        is_harbour: harbour,
+                    });
+                if !station {
+                    *system_ship_counts.entry(*system).or_insert(0) += 1;
+                }
             }
             // #185: Loitering ships are drawn as a small marker at their deep-space coordinate.
             ShipState::Loitering { position } => {
@@ -183,33 +223,55 @@ pub fn draw_ships(
                 docked_counts
                     .entry(*target_system)
                     .or_default()
-                    .push(ship.design_id.clone());
-                *system_ship_counts.entry(*target_system).or_insert(0) += 1;
+                    .push(DockedShipInfo {
+                        design_id: ship.design_id.clone(),
+                        is_station: station,
+                        is_harbour: harbour,
+                    });
+                if !station {
+                    *system_ship_counts.entry(*target_system).or_insert(0) += 1;
+                }
             }
         }
     }
 
     // Draw docked ships offset around their system.
-    for (system_entity, design_ids) in &docked_counts {
+    for (system_entity, ship_infos) in &docked_counts {
         let Ok(sys_pos) = stars.get(*system_entity) else {
             continue;
         };
         let sx = sys_pos.x as f32 * view.scale;
         let sy = sys_pos.y as f32 * view.scale;
-        let count = design_ids.len();
+        let count = ship_infos.len();
 
-        for (i, design_id) in design_ids.iter().enumerate() {
+        for (i, info) in ship_infos.iter().enumerate() {
             let angle = if count == 1 {
                 0.0
             } else {
                 std::f32::consts::TAU * (i as f32) / (count as f32)
             };
-            let offset_radius = 8.0;
+            let offset_radius = if info.is_station { 10.0 } else { 8.0 };
             let ox = sx + angle.cos() * offset_radius;
             let oy = sy + angle.sin() * offset_radius;
 
-            let color = ship_color(design_id);
-            gizmos.circle_2d(Vec2::new(ox, oy), 3.0, color);
+            if info.is_station || info.is_harbour {
+                // Station / harbour ships: gold diamond, larger
+                let gold = Color::srgb(1.0, 0.85, 0.2);
+                let radius = 5.5;
+                let center = Vec2::new(ox, oy);
+                // Draw a diamond shape (rotated square)
+                let top = center + Vec2::new(0.0, radius);
+                let right = center + Vec2::new(radius, 0.0);
+                let bottom = center + Vec2::new(0.0, -radius);
+                let left = center + Vec2::new(-radius, 0.0);
+                gizmos.line_2d(top, right, gold);
+                gizmos.line_2d(right, bottom, gold);
+                gizmos.line_2d(bottom, left, gold);
+                gizmos.line_2d(left, top, gold);
+            } else {
+                let color = ship_color(&info.design_id);
+                gizmos.circle_2d(Vec2::new(ox, oy), 3.0, color);
+            }
         }
     }
 
@@ -250,7 +312,7 @@ pub fn draw_ships(
 
     // #104: Command queue overlay for selected ship
     if let Some(selected_entity) = selected_ship.0 {
-        if let Ok((_entity, ship, state, Some(queue))) = ships.get(selected_entity) {
+        if let Ok((_entity, ship, state, Some(queue), _stats)) = ships.get(selected_entity) {
             if !queue.commands.is_empty() {
                 // Determine the ship's current screen position from its state
                 let current_pos = match state {
