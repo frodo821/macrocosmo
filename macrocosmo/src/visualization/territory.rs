@@ -271,10 +271,20 @@ fn sync_territory_material(
                 break;
             }
             let Ok(planet) = planets.get(colony.planet) else {
+                warn_once!(
+                    "Territory: colony {:?} references planet {:?} which has no Planet component — skipped",
+                    colony.planet,
+                    colony.planet
+                );
                 continue;
             };
             let system = planet.system;
             let Ok(pos) = positions.get(system) else {
+                warn_once!(
+                    "Territory: planet {:?} references system {:?} which has no Position — skipped",
+                    colony.planet,
+                    system
+                );
                 continue;
             };
 
@@ -508,6 +518,24 @@ mod tests {
         assert!(
             auth_multi[0] > auth_single[0],
             "Multiple colonies should produce higher authority"
+        );
+    }
+
+    /// Regression test for #393: the territory shader must import from
+    /// `bevy_sprite::mesh2d_vertex_output`, NOT `bevy_sprite_render::`.
+    /// The WGSL module's `#define_import_path` uses `bevy_sprite::` as
+    /// namespace, so `bevy_sprite_render::` would silently fail to resolve
+    /// and render the territory quad as fully transparent.
+    #[test]
+    fn shader_import_uses_bevy_sprite_namespace() {
+        let shader_src = include_str!("../../assets/shaders/territory.wgsl");
+        assert!(
+            shader_src.contains("bevy_sprite::mesh2d_vertex_output"),
+            "territory.wgsl must import from bevy_sprite::, not bevy_sprite_render::"
+        );
+        assert!(
+            !shader_src.contains("bevy_sprite_render::"),
+            "territory.wgsl must NOT reference bevy_sprite_render:: (wrong WGSL namespace)"
         );
     }
 }
