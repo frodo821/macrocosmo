@@ -126,7 +126,19 @@ pub fn draw_situation_center_system(world: &mut World) {
                     for (meta, badge) in &meta_and_badges {
                         let is_active = state.active_tab == Some(meta.id);
                         let label = build_tab_label(meta, badge.as_ref());
-                        if ui.selectable_label(is_active, label).clicked() && !is_active {
+                        let tab_resp = ui.selectable_label(is_active, label);
+                        #[cfg(feature = "remote")]
+                        if let Some(mut reg) =
+                            world.get_resource_mut::<crate::ui::UiElementRegistry>()
+                        {
+                            crate::ui::register_ui_element(
+                                &mut reg,
+                                &format!("esc.tab.{}", meta.display_name),
+                                meta.display_name,
+                                tab_resp.rect,
+                            );
+                        }
+                        if tab_resp.clicked() && !is_active {
                             state.active_tab = Some(meta.id);
                         }
                     }

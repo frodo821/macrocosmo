@@ -583,6 +583,119 @@ fn on_screenshot_captured(trigger: On<ScreenshotCaptured>, mut buffer: ResMut<Sc
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 8. UI Element Registry (clearing system)
+// ═══════════════════════════════════════════════════════════════════════════
+
+use crate::ui::UiElementRegistry;
+
+/// System that clears the UI element registry at the start of each frame.
+pub fn clear_ui_element_registry(mut registry: ResMut<UiElementRegistry>) {
+    registry.elements.clear();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 9. macrocosmo/find_ui_element
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Deserialize)]
+struct FindUiElementParams {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+/// Handler for `macrocosmo/find_ui_element`.
+///
+/// Params: `{ "id": "context_menu.colonize" }` and/or `{ "text": "Colonize" }`
+///
+/// Returns `{ "found": true, "id": "...", "text": "...", "x": ..., "y": ..., "w": ..., "h": ... }`
+/// or `{ "found": false }`.
+pub fn find_ui_element_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let FindUiElementParams { id, text } = parse_params(params)?;
+
+    if id.is_none() && text.is_none() {
+        return Err(BrpError {
+            code: error_codes::INVALID_PARAMS,
+            message: "At least one of 'id' or 'text' must be provided".into(),
+            data: None,
+        });
+    }
+
+    let registry = world.get_resource::<UiElementRegistry>().ok_or_else(|| {
+        BrpError::internal("UiElementRegistry resource not found")
+    })?;
+
+    let found = registry.elements.iter().find(|el| {
+        let id_match = id.as_ref().map_or(true, |needle| el.id == *needle);
+        let text_match = text.as_ref().map_or(true, |needle| el.text.contains(needle.as_str()));
+        id_match && text_match
+    });
+
+    match found {
+        Some(el) => Ok(json!({
+            "found": true,
+            "id": el.id,
+            "text": el.text,
+            "x": el.x,
+            "y": el.y,
+            "w": el.w,
+            "h": el.h,
+        })),
+        None => Ok(json!({ "found": false })),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. macrocosmo/list_ui_elements
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Deserialize)]
+struct ListUiElementsParams {
+    #[serde(default)]
+    id_prefix: Option<String>,
+}
+
+/// Handler for `macrocosmo/list_ui_elements`.
+///
+/// Params: `{}` or `{ "id_prefix": "context_menu" }` (optional filter)
+///
+/// Returns an array of `{ "id", "text", "x", "y", "w", "h" }` objects.
+pub fn list_ui_elements_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    // Allow missing params (empty filter).
+    let filter: ListUiElementsParams = params
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or(ListUiElementsParams { id_prefix: None });
+
+    let registry = world.get_resource::<UiElementRegistry>().ok_or_else(|| {
+        BrpError::internal("UiElementRegistry resource not found")
+    })?;
+
+    let elements: Vec<Value> = registry
+        .elements
+        .iter()
+        .filter(|el| {
+            filter
+                .id_prefix
+                .as_ref()
+                .map_or(true, |prefix| el.id.starts_with(prefix.as_str()))
+        })
+        .map(|el| {
+            json!({
+                "id": el.id,
+                "text": el.text,
+                "x": el.x,
+                "y": el.y,
+                "w": el.w,
+                "h": el.h,
+            })
+        })
+        .collect();
+
+    Ok(Value::Array(elements))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Plugin integration — called from main.rs
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -596,4 +709,6 @@ pub fn remote_plugin() -> bevy::remote::RemotePlugin {
         .with_method("macrocosmo/key_press", key_press_handler)
         .with_method("macrocosmo/hover", hover_handler)
         .with_method("macrocosmo/screenshot", screenshot_handler)
+        .with_method("macrocosmo/find_ui_element", find_ui_element_handler)
+        .with_method("macrocosmo/list_ui_elements", list_ui_elements_handler)
 }

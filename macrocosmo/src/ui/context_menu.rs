@@ -12,6 +12,7 @@ use crate::ship::{
 use crate::ship_design::ShipDesignRegistry;
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
+use crate::ui::UiElementRegistry;
 use crate::visualization::SelectedShip;
 
 /// Draws the RTS-style context menu when a ship is selected and a star is clicked.
@@ -43,6 +44,7 @@ pub fn draw_context_menu(
     design_registry: &ShipDesignRegistry,
     // #299 (S-5): (system_entity, faction_entity) pairs for all Core ships.
     core_by_system: &[(Entity, Entity)],
+    mut ui_registry: Option<&mut UiElementRegistry>,
 ) {
     if !context_menu.open {
         return;
@@ -375,29 +377,33 @@ pub fn draw_context_menu(
             ui.separator();
 
             // #108: Unified Move — auto-route picks FTL chain > FTL direct > SubLight
-            if can_move
-                && ui
-                    .button(format!("{}Move to {}", queue_prefix, target_name))
-                    .clicked()
-            {
-                let qc = QueuedCommand::MoveTo {
-                    system: target_entity,
-                };
-                if is_docked {
-                    if command_delay == 0 {
-                        queued_command = Some(qc);
-                    } else {
-                        delayed_command = Some(crate::ship::ShipCommand::MoveTo {
-                            destination: target_entity,
-                        });
-                    }
-                } else if command_delay > 0 {
-                    // In-transit + remote: delay until command reaches the ship
-                    delayed_command = Some(crate::ship::ShipCommand::EnqueueCommand(qc));
-                } else {
-                    queued_command = Some(qc);
+            if can_move {
+                let move_label = format!("{}Move to {}", queue_prefix, target_name);
+                let move_resp = ui.button(&move_label);
+                #[cfg(feature = "remote")]
+                if let Some(ref mut reg) = ui_registry {
+                    crate::ui::register_ui_element(reg, "context_menu.move", "Move", move_resp.rect);
                 }
-                close_menu = true;
+                if move_resp.clicked() {
+                    let qc = QueuedCommand::MoveTo {
+                        system: target_entity,
+                    };
+                    if is_docked {
+                        if command_delay == 0 {
+                            queued_command = Some(qc);
+                        } else {
+                            delayed_command = Some(crate::ship::ShipCommand::MoveTo {
+                                destination: target_entity,
+                            });
+                        }
+                    } else if command_delay > 0 {
+                        // In-transit + remote: delay until command reaches the ship
+                        delayed_command = Some(crate::ship::ShipCommand::EnqueueCommand(qc));
+                    } else {
+                        queued_command = Some(qc);
+                    }
+                    close_menu = true;
+                }
             }
 
             // Survey -- if Explorer + target unsurveyed
@@ -407,7 +413,12 @@ pub fn draw_context_menu(
                 } else {
                     "Survey".to_string()
                 };
-                if ui.button(survey_label).clicked() {
+                let survey_resp = ui.button(&survey_label);
+                #[cfg(feature = "remote")]
+                if let Some(ref mut reg) = ui_registry {
+                    crate::ui::register_ui_element(reg, "context_menu.survey", "Survey", survey_resp.rect);
+                }
+                if survey_resp.clicked() {
                     let qc = QueuedCommand::Survey {
                         system: target_entity,
                     };
@@ -454,7 +465,12 @@ pub fn draw_context_menu(
                 } else {
                     "Colonize".to_string()
                 };
-                if ui.button(colonize_label).clicked() {
+                let colonize_resp = ui.button(&colonize_label);
+                #[cfg(feature = "remote")]
+                if let Some(ref mut reg) = ui_registry {
+                    crate::ui::register_ui_element(reg, "context_menu.colonize", "Colonize", colonize_resp.rect);
+                }
+                if colonize_resp.clicked() {
                     let qc = QueuedCommand::Colonize {
                         system: target_entity,
                         planet: None,
@@ -498,7 +514,12 @@ pub fn draw_context_menu(
             }
 
             ui.separator();
-            if ui.button("Cancel").clicked() {
+            let cancel_resp = ui.button("Cancel");
+            #[cfg(feature = "remote")]
+            if let Some(ref mut reg) = ui_registry {
+                crate::ui::register_ui_element(reg, "context_menu.cancel", "Cancel", cancel_resp.rect);
+            }
+            if cancel_resp.clicked() {
                 close_menu = true;
             }
         });

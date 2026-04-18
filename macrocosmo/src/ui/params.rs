@@ -103,6 +103,9 @@ pub struct MainPanelSelection<'w> {
     pub selected_ship: ResMut<'w, SelectedShip>,
     pub selected_planet: ResMut<'w, SelectedPlanet>,
     pub context_menu: ResMut<'w, ContextMenu>,
+    /// #390-T5: UI element registry for BRP introspection. `None` when the
+    /// `remote` feature is not enabled (resource not inserted).
+    pub ui_registry: Option<ResMut<'w, super::UiElementRegistry>>,
 }
 
 /// #229: Deliverable-pipeline resources used by the main panels: the Lua-
