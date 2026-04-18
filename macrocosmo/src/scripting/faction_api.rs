@@ -31,6 +31,10 @@ pub struct FactionTypeDefinition {
     pub default_hp: f64,
     /// Default max HP for a newly spawned hostile entity of this type.
     pub default_max_hp: f64,
+    /// Whether factions of this type are passive (not promoted to Empire).
+    /// Passive factions (e.g. `space_creature`, `ancient_defense`) exist as
+    /// bare `Faction` entities and are never upgraded to full empires.
+    pub is_passive: bool,
     /// Diplomatic option ids available to factions of this type (#302).
     pub allowed_diplomatic_options: Vec<String>,
 }
@@ -49,17 +53,40 @@ impl FactionTypeRegistry {
 }
 
 /// A faction definition loaded from Lua scripts.
+///
+/// Preset fields (`can_diplomacy`, `default_standing`, `default_state`,
+/// `is_passive`, `allowed_diplomatic_options`) are copied from the
+/// referenced [`FactionTypeDefinition`] at parse time. The `faction_type`
+/// string is kept as metadata but is NOT used for runtime behavior
+/// decisions — all runtime lookups read from the faction instance.
 #[derive(Debug, Clone)]
 pub struct FactionDefinition {
     pub id: String,
     pub name: String,
     /// Optional faction-type id (e.g. `"empire"`, `"space_creature"`).
-    /// Resolved against `FactionTypeRegistry` at runtime — not validated
-    /// at parse time so that types and factions can be defined in any order.
+    /// Kept as metadata/documentation. Runtime code should read the
+    /// preset fields below instead of looking up the type registry.
     pub faction_type: Option<String>,
     /// Whether this faction defines an `on_game_start` callback.
     /// The actual function is looked up from `_faction_definitions` at call time.
     pub has_on_game_start: bool,
+    // -- Preset fields (copied from FactionTypeDefinition at parse time) --
+    /// Whether this faction can engage in formal diplomacy. Copied from
+    /// `FactionTypeDefinition.can_diplomacy`; defaults to `false`.
+    pub can_diplomacy: bool,
+    /// Default standing for new relationships. Copied from
+    /// `FactionTypeDefinition.default_standing`; defaults to `0.0`.
+    pub default_standing: f64,
+    /// Default relation state for new relationships. Copied from
+    /// `FactionTypeDefinition.default_state`; defaults to `Neutral`.
+    pub default_state: RelationState,
+    /// Whether this faction is passive (space_creature, ancient_defense).
+    /// Passive factions are not promoted to Empire entities. Copied from
+    /// `FactionTypeDefinition`; defaults to `false`.
+    pub is_passive: bool,
+    /// Diplomatic option ids available to this faction. Copied from
+    /// `FactionTypeDefinition.allowed_diplomatic_options`; defaults to empty.
+    pub allowed_diplomatic_options: Vec<String>,
 }
 
 /// Registry of all faction definitions loaded from Lua.
@@ -68,8 +95,24 @@ pub struct FactionRegistry {
     pub factions: HashMap<String, FactionDefinition>,
 }
 
+/// Build a lookup map from faction-type id to [`FactionTypeDefinition`] by
+/// reading the `_faction_type_definitions` Lua global. Used internally by
+/// [`parse_faction_definitions`] to resolve preset fields at parse time.
+fn build_type_lookup(
+    lua: &mlua::Lua,
+) -> Result<std::collections::HashMap<String, FactionTypeDefinition>, mlua::Error> {
+    let defs = parse_faction_type_definitions(lua)?;
+    Ok(defs.into_iter().map(|d| (d.id.clone(), d)).collect())
+}
+
 /// Parse faction definitions from the Lua `_faction_definitions` global table.
+///
+/// Preset fields (`can_diplomacy`, `default_standing`, `default_state`,
+/// `is_passive`, `allowed_diplomatic_options`) are copied from the
+/// referenced [`FactionTypeDefinition`] at parse time. If no type is
+/// referenced or the type id is unknown, defaults apply.
 pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinition>, mlua::Error> {
+    let type_lookup = build_type_lookup(lua)?;
     let defs: mlua::Table = lua.globals().get("_faction_definitions")?;
     let mut result = Vec::new();
 
@@ -101,11 +144,29 @@ pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinitio
             v => Some(crate::scripting::extract_ref_id(&v)?),
         };
 
+        // Resolve preset fields from the faction type definition, if any.
+        let type_def = faction_type.as_deref().and_then(|tid| type_lookup.get(tid));
+
+        let can_diplomacy = type_def.map(|t| t.can_diplomacy).unwrap_or(false);
+        let default_standing = type_def.map(|t| t.default_standing).unwrap_or(0.0);
+        let default_state = type_def
+            .map(|t| t.default_state)
+            .unwrap_or(RelationState::Neutral);
+        let is_passive = type_def.map(|t| t.is_passive).unwrap_or(false);
+        let allowed_diplomatic_options = type_def
+            .map(|t| t.allowed_diplomatic_options.clone())
+            .unwrap_or_default();
+
         result.push(FactionDefinition {
             id,
             name,
             faction_type,
             has_on_game_start,
+            can_diplomacy,
+            default_standing,
+            default_state,
+            is_passive,
+            allowed_diplomatic_options,
         });
     }
 
@@ -138,6 +199,8 @@ pub fn parse_faction_type_definitions(
             .get::<Option<f64>>("default_max_hp")?
             .unwrap_or(default_hp);
 
+        let is_passive: bool = table.get::<Option<bool>>("is_passive")?.unwrap_or(false);
+
         // Parse allowed_diplomatic_options array (#302)
         let mut allowed_diplomatic_options = Vec::new();
         if let Some(opts_table) = table.get::<Option<mlua::Table>>("allowed_diplomatic_options")? {
@@ -156,6 +219,7 @@ pub fn parse_faction_type_definitions(
             evasion,
             default_hp,
             default_max_hp,
+            is_passive,
             allowed_diplomatic_options,
         });
     }
@@ -182,7 +246,7 @@ pub struct DiplomaticActionDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
-    /// If `true`, the target faction's `FactionType.can_diplomacy` must be
+    /// If `true`, the target faction's `Faction.can_diplomacy` must be
     /// `true` for the action to be available.
     pub requires_diplomacy: bool,
     /// If set, the *sender's* current view of the target must be in this
@@ -202,8 +266,8 @@ impl DiplomaticActionDefinition {
     /// Evaluate prerequisite checks against the current game state.
     ///
     /// Returns `true` iff:
-    /// - when `requires_diplomacy`: the target faction's type is marked
-    ///   `can_diplomacy`;
+    /// - when `requires_diplomacy`: the target faction's `Faction` component
+    ///   has `can_diplomacy` set;
     /// - when `requires_state` is set: the sender's view of the target
     ///   matches that state (an absent relation counts as `Neutral`);
     /// - when `min_standing` is set: the sender's standing toward the
@@ -214,16 +278,9 @@ impl DiplomaticActionDefinition {
         to_faction_entity: Entity,
         factions: &Query<&crate::player::Faction>,
         relations: &FactionRelations,
-        faction_registry: &FactionRegistry,
-        type_registry: &FactionTypeRegistry,
     ) -> bool {
         if self.requires_diplomacy
-            && !crate::faction::faction_can_diplomacy(
-                to_faction_entity,
-                factions,
-                faction_registry,
-                type_registry,
-            )
+            && !crate::faction::faction_can_diplomacy(to_faction_entity, factions)
         {
             return false;
         }
@@ -732,6 +789,7 @@ mod tests {
                 evasion: 0.0,
                 default_hp: 0.0,
                 default_max_hp: 0.0,
+                is_passive: false,
                 allowed_diplomatic_options: vec![],
             },
         );
@@ -855,6 +913,133 @@ mod tests {
         let defs = parse_faction_definitions(lua).unwrap();
         assert_eq!(defs.len(), 1);
         assert!(defs[0].faction_type.is_none());
+        // Defaults when no type is referenced.
+        assert!(!defs[0].can_diplomacy);
+        assert!((defs[0].default_standing - 0.0).abs() < 1e-9);
+        assert_eq!(defs[0].default_state, RelationState::Neutral);
+        assert!(!defs[0].is_passive);
+        assert!(defs[0].allowed_diplomatic_options.is_empty());
+    }
+
+    // --- #323: preset copy from faction_type ---
+
+    #[test]
+    fn test_faction_preset_copy_from_type() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            local empire = define_faction_type {
+                id = "empire",
+                can_diplomacy = true,
+                default_standing = 10,
+                default_state = "peace",
+                allowed_diplomatic_options = { "negotiate" },
+            }
+            define_faction {
+                id = "federation",
+                name = "Federation",
+                faction_type = empire,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let f = &defs[0];
+        assert!(f.can_diplomacy);
+        assert!((f.default_standing - 10.0).abs() < 1e-9);
+        assert_eq!(f.default_state, RelationState::Peace);
+        assert!(!f.is_passive);
+        assert_eq!(f.allowed_diplomatic_options, vec!["negotiate".to_string()]);
+    }
+
+    #[test]
+    fn test_faction_preset_copy_passive_type() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction_type {
+                id = "space_creature",
+                can_diplomacy = false,
+                is_passive = true,
+                default_standing = -100,
+                default_state = "neutral",
+            }
+            define_faction {
+                id = "bugs",
+                name = "Space Bugs",
+                faction_type = "space_creature",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let f = &defs[0];
+        assert!(!f.can_diplomacy);
+        assert!(f.is_passive);
+        assert!((f.default_standing - (-100.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_faction_preset_unknown_type_uses_defaults() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction {
+                id = "mystery",
+                name = "Mystery",
+                faction_type = "nonexistent",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let f = &defs[0];
+        assert_eq!(f.faction_type.as_deref(), Some("nonexistent"));
+        assert!(!f.can_diplomacy);
+        assert!((f.default_standing - 0.0).abs() < 1e-9);
+        assert_eq!(f.default_state, RelationState::Neutral);
+        assert!(!f.is_passive);
+    }
+
+    #[test]
+    fn test_faction_type_is_passive_parsed() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction_type {
+                id = "passive_type",
+                is_passive = true,
+            }
+            define_faction_type {
+                id = "active_type",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_type_definitions(lua).unwrap();
+        let passive = defs.iter().find(|d| d.id == "passive_type").unwrap();
+        assert!(passive.is_passive);
+        let active = defs.iter().find(|d| d.id == "active_type").unwrap();
+        assert!(!active.is_passive);
     }
 
     // --- #302: define_diplomatic_option ---

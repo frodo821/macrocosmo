@@ -904,6 +904,9 @@ impl SavedFactionOwner {
 pub struct SavedFaction {
     pub id: String,
     pub name: String,
+    /// #323: Whether this faction can engage in formal diplomacy.
+    #[serde(default)]
+    pub can_diplomacy: bool,
     /// #302: Diplomatic option ids available to this faction.
     #[serde(default)]
     pub allowed_diplomatic_options: Vec<String>,
@@ -914,6 +917,7 @@ impl SavedFaction {
         Self {
             id: v.id.clone(),
             name: v.name.clone(),
+            can_diplomacy: v.can_diplomacy,
             allowed_diplomatic_options: v.allowed_diplomatic_options.iter().cloned().collect(),
         }
     }
@@ -921,6 +925,7 @@ impl SavedFaction {
         Faction {
             id: self.id,
             name: self.name,
+            can_diplomacy: self.can_diplomacy,
             allowed_diplomatic_options: self.allowed_diplomatic_options.into_iter().collect(),
         }
     }

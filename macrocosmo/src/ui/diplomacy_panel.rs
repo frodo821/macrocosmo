@@ -21,7 +21,7 @@ use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
 use crate::faction::{FactionRelations, RelationState};
 use crate::scripting::faction_api::{
     DiplomaticActionDefinition, DiplomaticActionRegistry, DiplomaticOptionDefinition,
-    DiplomaticOptionRegistry, FactionRegistry, FactionTypeRegistry,
+    DiplomaticOptionRegistry, FactionRegistry,
 };
 use crate::time_system::GameClock;
 
@@ -51,6 +51,14 @@ pub enum DiplomacyAction {
     },
 }
 
+/// Per-faction data passed to the diplomacy panel for display.
+pub struct FactionEntry {
+    pub entity: Entity,
+    pub name: String,
+    pub can_diplomacy: bool,
+    pub allowed_diplomatic_options: Vec<String>,
+}
+
 /// Draws the diplomacy panel.
 ///
 /// Returns a [`DiplomacyAction`] for the caller system to execute (the panel
@@ -66,8 +74,7 @@ pub fn draw_diplomacy_panel(
     option_registry: &DiplomaticOptionRegistry,
     action_registry: &DiplomaticActionRegistry,
     _faction_registry: &FactionRegistry,
-    type_registry: &FactionTypeRegistry,
-    factions: &[(Entity, String, Option<String>)], // (entity, name, faction_type_id)
+    factions: &[FactionEntry],
     clock: &GameClock,
 ) -> DiplomacyAction {
     if !*open {
@@ -93,8 +100,8 @@ pub fn draw_diplomacy_panel(
                     };
                     let opponent_name = factions
                         .iter()
-                        .find(|(e, _, _)| *e == opponent)
-                        .map(|(_, n, _)| n.as_str())
+                        .find(|f| f.entity == opponent)
+                        .map(|f| f.name.as_str())
                         .unwrap_or("Unknown");
                     let cb_name = cb_registry
                         .get(&war.cb_id)
@@ -175,24 +182,19 @@ pub fn draw_diplomacy_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for (faction_entity, faction_name, faction_type_id) in factions {
-                        if *faction_entity == player_entity {
+                    for entry in factions {
+                        if entry.entity == player_entity {
                             continue;
                         }
 
-                        let view = relations.get_or_default(player_entity, *faction_entity);
+                        let view = relations.get_or_default(player_entity, entry.entity);
 
-                        // Check if this faction type supports diplomacy
-                        let can_diplomacy = faction_type_id
-                            .as_ref()
-                            .and_then(|ft| type_registry.get(ft))
-                            .map(|ft| ft.can_diplomacy)
-                            .unwrap_or(false);
+                        let can_diplomacy = entry.can_diplomacy;
 
                         ui.group(|ui| {
                             // Header: faction name + relation state
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(faction_name).strong());
+                                ui.label(egui::RichText::new(&entry.name).strong());
                                 let (state_text, state_color) = match view.state {
                                     RelationState::Neutral => (
                                         "Neutral",
@@ -235,12 +237,7 @@ pub fn draw_diplomacy_panel(
 
                             // Diplomatic options
                             if can_diplomacy {
-                                // Collect allowed option ids from the faction type
-                                let allowed_options: Vec<String> = faction_type_id
-                                    .as_ref()
-                                    .and_then(|ft| type_registry.get(ft))
-                                    .map(|ft| ft.allowed_diplomatic_options.clone())
-                                    .unwrap_or_default();
+                                let allowed_options = &entry.allowed_diplomatic_options;
 
                                 // Built-in diplomatic actions
                                 ui.horizontal(|ui| {
@@ -258,7 +255,7 @@ pub fn draw_diplomacy_panel(
                                         {
                                             action = DiplomacyAction::SendBuiltinAction {
                                                 from: player_entity,
-                                                to: *faction_entity,
+                                                to: entry.entity,
                                                 action: crate::faction::DiplomaticAction::DeclareWar,
                                             };
                                         }
@@ -276,7 +273,7 @@ pub fn draw_diplomacy_panel(
                                     {
                                         action = DiplomacyAction::SendBuiltinAction {
                                             from: player_entity,
-                                            to: *faction_entity,
+                                            to: entry.entity,
                                             action: crate::faction::DiplomaticAction::ProposePeace,
                                         };
                                     }
@@ -296,7 +293,7 @@ pub fn draw_diplomacy_panel(
                                         {
                                             action = DiplomacyAction::SendBuiltinAction {
                                                 from: player_entity,
-                                                to: *faction_entity,
+                                                to: entry.entity,
                                                 action:
                                                     crate::faction::DiplomaticAction::ProposeAlliance,
                                             };
@@ -315,7 +312,7 @@ pub fn draw_diplomacy_panel(
                                     {
                                         action = DiplomacyAction::SendBuiltinAction {
                                             from: player_entity,
-                                            to: *faction_entity,
+                                            to: entry.entity,
                                             action:
                                                 crate::faction::DiplomaticAction::BreakAlliance,
                                         };
@@ -337,7 +334,7 @@ pub fn draw_diplomacy_panel(
                                                 let enabled = is_custom_action_available(
                                                     act_def,
                                                     player_entity,
-                                                    *faction_entity,
+                                                    entry.entity,
                                                     relations,
                                                 );
                                                 let mut btn = ui.add_enabled(
@@ -350,7 +347,7 @@ pub fn draw_diplomacy_panel(
                                                 if btn.clicked() {
                                                     action = DiplomacyAction::SendCustomAction {
                                                         from: player_entity,
-                                                        to: *faction_entity,
+                                                        to: entry.entity,
                                                         action_id: act_def.id.clone(),
                                                     };
                                                 }
@@ -379,7 +376,7 @@ pub fn draw_diplomacy_panel(
                                                 // Full negotiation modal is future scope.
                                                 action = DiplomacyAction::SendCustomAction {
                                                     from: player_entity,
-                                                    to: *faction_entity,
+                                                    to: entry.entity,
                                                     action_id: opt_def.id.clone(),
                                                 };
                                             }

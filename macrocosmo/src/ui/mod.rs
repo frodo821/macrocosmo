@@ -1393,7 +1393,6 @@ fn draw_diplomacy_overlay_system(
     option_registry: Res<DiplomaticOptionRegistry>,
     action_registry: Res<DiplomaticActionRegistry>,
     faction_registry: Res<crate::scripting::faction_api::FactionRegistry>,
-    type_registry: Res<crate::scripting::faction_api::FactionTypeRegistry>,
     empire_q: Query<Entity, With<PlayerEmpire>>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
 ) {
@@ -1405,18 +1404,17 @@ fn draw_diplomacy_overlay_system(
         return;
     };
 
-    // Build sorted (entity, name, faction_type_id) list of empire factions.
-    let mut factions: Vec<(Entity, String, Option<String>)> = factions_q
+    // Build sorted FactionEntry list from Faction component (preset fields).
+    let mut factions: Vec<diplomacy_panel::FactionEntry> = factions_q
         .iter()
-        .map(|(e, f)| {
-            let ft = faction_registry
-                .factions
-                .get(&f.id)
-                .and_then(|fd| fd.faction_type.clone());
-            (e, f.name.clone(), ft)
+        .map(|(e, f)| diplomacy_panel::FactionEntry {
+            entity: e,
+            name: f.name.clone(),
+            can_diplomacy: f.can_diplomacy,
+            allowed_diplomatic_options: f.allowed_diplomatic_options.iter().cloned().collect(),
         })
         .collect();
-    factions.sort_by(|a, b| a.1.cmp(&b.1));
+    factions.sort_by(|a, b| a.name.cmp(&b.name));
 
     let action = diplomacy_panel::draw_diplomacy_panel(
         ctx,
@@ -1428,7 +1426,6 @@ fn draw_diplomacy_overlay_system(
         &option_registry,
         &action_registry,
         &faction_registry,
-        &type_registry,
         &factions,
         &clock,
     );

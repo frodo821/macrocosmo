@@ -114,6 +114,7 @@ fn test_allowed_options_from_type() {
     let faction = Faction {
         id: "test".into(),
         name: "Test".into(),
+        can_diplomacy: true,
         allowed_diplomatic_options: allowed.clone(),
     };
 
@@ -213,6 +214,7 @@ fn test_diplomatic_event_save_load() {
     let faction = Faction {
         id: "test".into(),
         name: "Test".into(),
+        can_diplomacy: false,
         allowed_diplomatic_options: ["opt_a".to_string()].into_iter().collect(),
     };
     let saved_faction = SavedFaction::from_live(&faction);
