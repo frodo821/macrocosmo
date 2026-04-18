@@ -11,7 +11,7 @@ use crate::faction::FactionOwner;
 use crate::galaxy::{Anomalies, AtSystem, Hostile, Planet, StarSystem, SystemAttributes};
 use crate::ship::{
     CoreShip, CourierRoute, DockedAt, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement,
-    Ship, ShipStats,
+    Ship, ShipModifiers, ShipStats,
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
@@ -105,6 +105,8 @@ pub struct MainPanelWorldQueries<'w, 's> {
     pub docked_at: Query<'w, 's, (Entity, &'static DockedAt)>,
     /// #389: Docked-at check — entity-indexed lookup for single ship.
     pub docked_check: Query<'w, 's, &'static DockedAt>,
+    /// #391: Ship modifiers — used for modifier breakdown tooltips.
+    pub ship_modifiers: Query<'w, 's, &'static ShipModifiers>,
 }
 
 #[derive(SystemParam)]

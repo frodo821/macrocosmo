@@ -28,6 +28,7 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::faction::FactionRelations;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
+use crate::modifier::ModifiedValue;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::scripting::building_api::BuildingRegistry;
@@ -132,6 +133,92 @@ pub fn register_ui_element(
         w: rect.width(),
         h: rect.height(),
     });
+}
+
+/// #391: Render the modifier breakdown body into a `Ui` (used inside tooltips).
+/// Shows base, each modifier's contribution, and the final computed value.
+pub fn draw_modifier_breakdown(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &ModifiedValue,
+    format_fn: &dyn Fn(Amt) -> String,
+    current_time: Option<i64>,
+) {
+    let final_val = value.final_value();
+    let modifiers = value.modifiers();
+
+    ui.set_min_width(220.0);
+    ui.label(egui::RichText::new(format!("{}: {}", label, format_fn(final_val))).strong());
+    ui.separator();
+    ui.label(format!("Base: {}", format_fn(value.base())));
+
+    for m in modifiers {
+        let mut parts = Vec::new();
+        if m.base_add.raw() != 0 {
+            parts.push(format!("{} (base add)", m.base_add.display()));
+        }
+        if m.multiplier.raw() != 0 {
+            let mult_with_one = SignedAmt::units(1).add(m.multiplier);
+            let abs_raw = mult_with_one.raw().unsigned_abs();
+            let w = abs_raw / 1000;
+            let f = abs_raw % 1000;
+            let sign = if mult_with_one.raw() < 0 { "-" } else { "" };
+            let mult_str = if f == 0 {
+                format!("x{}{}", sign, w)
+            } else if f % 100 == 0 {
+                format!("x{}{}.{}", sign, w, f / 100)
+            } else if f % 10 == 0 {
+                format!("x{}{}.{:02}", sign, w, f / 10)
+            } else {
+                format!("x{}{}.{:03}", sign, w, f)
+            };
+            parts.push(format!("{} (mult)", mult_str));
+        }
+        if m.add.raw() != 0 {
+            parts.push(format!("{} (add)", m.add.display()));
+        }
+        let effect = parts.join(", ");
+
+        let mut line = format!("[{}]  {}", m.label, effect);
+        if let Some(now) = current_time {
+            if let Some(remaining) = m.remaining_duration(now) {
+                line.push_str(&format!("  ({} hd left)", remaining));
+            }
+        }
+        ui.label(line);
+    }
+
+    ui.separator();
+    ui.label(format!("Final: {}", format_fn(final_val)));
+}
+
+/// #391: Render a label showing a `ModifiedValue`'s final value, with a hover
+/// tooltip that breaks down base, each modifier contribution, and the final
+/// result. `format_fn` converts an `Amt` to the display string appropriate
+/// for this stat (e.g. percentage for speed, decimal for range).
+pub fn modified_value_label_with_tooltip(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &ModifiedValue,
+    format_fn: impl Fn(Amt) -> String,
+    current_time: Option<i64>,
+) {
+    let final_val = value.final_value();
+    let text = format!("{}: {}", label, format_fn(final_val));
+    let response = ui.label(&text);
+
+    let modifiers = value.modifiers();
+    if modifiers.is_empty() {
+        response.on_hover_text(format!(
+            "{}: {}\n(no modifiers)",
+            label,
+            format_fn(value.base())
+        ));
+    } else {
+        response.on_hover_ui(|tooltip_ui| {
+            draw_modifier_breakdown(tooltip_ui, label, value, &format_fn, current_time);
+        });
+    }
 }
 
 pub struct UiPlugin;
@@ -895,6 +982,7 @@ fn draw_main_panels_system(
         &world.docked_at,
         &world.docked_check,
         &registries.hull_registry,
+        &world.ship_modifiers,
     );
 
     // Handle cancel current action
