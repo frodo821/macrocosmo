@@ -341,6 +341,89 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     })?;
     globals.set("has_flag", has_flag)?;
 
+    // --- Diplomacy condition helpers (#322) ---
+
+    let target_state_is = lua.create_function(|lua, state: String| {
+        let t = lua.create_table()?;
+        t.set("type", "target_state_is")?;
+        t.set("state", state)?;
+        Ok(t)
+    })?;
+    globals.set("target_state_is", target_state_is)?;
+
+    let target_state_in = lua.create_function(|lua, args: mlua::MultiValue| {
+        let t = lua.create_table()?;
+        t.set("type", "target_state_in")?;
+        let states = lua.create_table()?;
+        for (i, arg) in args.into_iter().enumerate() {
+            states.set(i + 1, arg)?;
+        }
+        t.set("states", states)?;
+        Ok(t)
+    })?;
+    globals.set("target_state_in", target_state_in)?;
+
+    let target_standing_at_least = lua.create_function(|lua, threshold: f64| {
+        let t = lua.create_table()?;
+        t.set("type", "target_standing_at_least")?;
+        t.set("threshold", threshold)?;
+        Ok(t)
+    })?;
+    globals.set("target_standing_at_least", target_standing_at_least)?;
+
+    let relative_power_at_least = lua.create_function(|lua, ratio: f64| {
+        let t = lua.create_table()?;
+        t.set("type", "relative_power_at_least")?;
+        t.set("ratio", ratio)?;
+        Ok(t)
+    })?;
+    globals.set("relative_power_at_least", relative_power_at_least)?;
+
+    let target_allows_option = lua.create_function(|lua, value: mlua::Value| {
+        let t = lua.create_table()?;
+        t.set("type", "target_allows_option")?;
+        t.set("option_id", extract_id_from_lua_value(&value)?)?;
+        Ok(t)
+    })?;
+    globals.set("target_allows_option", target_allows_option)?;
+
+    let actor_has_modifier = lua.create_function(|lua, value: mlua::Value| {
+        let t = lua.create_table()?;
+        t.set("type", "actor_has_modifier")?;
+        t.set("modifier_id", extract_id_from_lua_value(&value)?)?;
+        Ok(t)
+    })?;
+    globals.set("actor_has_modifier", actor_has_modifier)?;
+
+    let actor_holds_capital_of_target = lua.create_function(|lua, _: ()| {
+        let t = lua.create_table()?;
+        t.set("type", "actor_holds_capital_of_target")?;
+        Ok(t)
+    })?;
+    globals.set(
+        "actor_holds_capital_of_target",
+        actor_holds_capital_of_target,
+    )?;
+
+    let target_system_count_at_most = lua.create_function(|lua, count: u32| {
+        let t = lua.create_table()?;
+        t.set("type", "target_system_count_at_most")?;
+        t.set("count", count)?;
+        Ok(t)
+    })?;
+    globals.set("target_system_count_at_most", target_system_count_at_most)?;
+
+    let target_attacked_actor_core_within = lua.create_function(|lua, hexadies: i64| {
+        let t = lua.create_table()?;
+        t.set("type", "target_attacked_actor_core_within")?;
+        t.set("hexadies", hexadies)?;
+        Ok(t)
+    })?;
+    globals.set(
+        "target_attacked_actor_core_within",
+        target_attacked_actor_core_within,
+    )?;
+
     let all_fn = lua.create_function(|lua, args: mlua::MultiValue| {
         let t = lua.create_table()?;
         t.set("type", "all")?;

@@ -20,6 +20,42 @@ pub enum AtomKind {
     HasModifier(String),
     HasBuilding(String),
     HasFlag(String),
+
+    // --- Diplomacy atoms (#322) ---
+    /// Check if the relation state with the target is a specific value.
+    TargetStateIs {
+        state: String,
+    },
+    /// Check if the relation state with the target is one of several values.
+    TargetStateIn {
+        states: Vec<String>,
+    },
+    /// Check if standing with target is >= threshold.
+    TargetStandingAtLeast {
+        threshold: f64,
+    },
+    /// Check if actor's relative military power vs target is >= ratio.
+    RelativePowerAtLeast {
+        ratio: f64,
+    },
+    /// Check if target faction's allowed_diplomatic_options contains the given option id.
+    TargetAllowsOption {
+        option_id: String,
+    },
+    /// Check if the actor has a specific modifier (distinct from HasModifier which checks empire scope).
+    ActorHasModifier {
+        modifier_id: String,
+    },
+    /// Check if the actor holds the capital system of the target.
+    ActorHoldsCapitalOfTarget,
+    /// Check if the target's owned system count is <= n.
+    TargetSystemCountAtMost {
+        count: u32,
+    },
+    /// Check if the target attacked an actor core system within the given number of hexadies.
+    TargetAttackedActorCoreWithin {
+        hexadies: i64,
+    },
 }
 
 /// Atomic condition that checks a single game-state predicate with an optional scope.
@@ -67,6 +103,41 @@ impl ConditionAtom {
         Self { kind, scope }
     }
 
+    /// Human-readable reason string for UI tooltip display when the atom is not satisfied.
+    pub fn display_message(&self) -> String {
+        match &self.kind {
+            AtomKind::HasTech(id) => format!("Requires technology: {id}"),
+            AtomKind::HasModifier(id) => format!("Requires modifier: {id}"),
+            AtomKind::HasBuilding(id) => format!("Requires building: {id}"),
+            AtomKind::HasFlag(id) => format!("Requires flag: {id}"),
+            AtomKind::TargetStateIs { state } => {
+                format!("Relation must be: {state}")
+            }
+            AtomKind::TargetStateIn { states } => {
+                format!("Relation must be one of: {}", states.join(", "))
+            }
+            AtomKind::TargetStandingAtLeast { threshold } => {
+                format!("Standing must be at least {threshold}")
+            }
+            AtomKind::RelativePowerAtLeast { ratio } => {
+                format!("Military power ratio must be at least {ratio}")
+            }
+            AtomKind::TargetAllowsOption { option_id } => {
+                format!("Target must allow option: {option_id}")
+            }
+            AtomKind::ActorHasModifier { modifier_id } => {
+                format!("Requires modifier: {modifier_id}")
+            }
+            AtomKind::ActorHoldsCapitalOfTarget => "Must hold target's capital".to_string(),
+            AtomKind::TargetSystemCountAtMost { count } => {
+                format!("Target must own at most {count} systems")
+            }
+            AtomKind::TargetAttackedActorCoreWithin { hexadies } => {
+                format!("Target must have attacked a core system within {hexadies} hexadies")
+            }
+        }
+    }
+
     // Backward-compatible constructors matching old enum variant syntax:
     /// Alias for `has_tech` — matches old `ConditionAtom::HasTech(id)` usage.
     #[allow(non_snake_case)]
@@ -107,6 +178,33 @@ pub struct ScopeData<'a> {
     pub buildings: &'a HashSet<String>,
 }
 
+/// Diplomacy-specific context for evaluating diplomacy condition atoms (#322).
+///
+/// Populated when evaluating conditions in a diplomatic context (e.g.,
+/// DiplomaticOption.available, CasusBelli.evaluate). When absent, all
+/// diplomacy atoms evaluate to `false`.
+pub struct DiplomacyContext<'a> {
+    /// The relation state from actor to target (e.g., "war", "peace").
+    pub relation_state: &'a str,
+    /// The standing value from actor to target ([-100.0, +100.0]).
+    pub standing: f64,
+    /// The actor's active modifiers (for `actor_has_modifier`).
+    pub actor_modifiers: &'a HashSet<String>,
+    /// The target faction's allowed diplomatic options (for `target_allows_option`).
+    pub target_allowed_options: &'a HashSet<String>,
+    /// The actor's military power score (for `relative_power_at_least`).
+    pub actor_military_power: f64,
+    /// The target's military power score (for `relative_power_at_least`).
+    pub target_military_power: f64,
+    /// Whether the actor holds the target's capital system (for `actor_holds_capital_of_target`).
+    pub actor_holds_target_capital: bool,
+    /// The number of systems the target owns (for `target_system_count_at_most`).
+    pub target_system_count: u32,
+    /// The elapsed hexadies since the target last attacked an actor core system.
+    /// `None` if no attack has occurred (for `target_attacked_actor_core_within`).
+    pub hexadies_since_target_attacked_actor_core: Option<i64>,
+}
+
 /// Context for evaluating conditions against current game state.
 pub struct EvalContext<'a> {
     pub researched_techs: &'a HashSet<String>,
@@ -115,6 +213,8 @@ pub struct EvalContext<'a> {
     pub system: Option<ScopeData<'a>>,
     pub planet: Option<ScopeData<'a>>,
     pub ship: Option<ScopeData<'a>>,
+    /// Diplomacy context, present when evaluating in a diplomatic scope.
+    pub diplomacy: Option<DiplomacyContext<'a>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -133,6 +233,7 @@ impl<'a> EvalContext<'a> {
             system: None,
             planet: None,
             ship: None,
+            diplomacy: None,
         }
     }
 }
@@ -225,6 +326,54 @@ impl Condition {
                     AtomKind::HasModifier(id) => ctx.active_modifiers.contains(id),
                     AtomKind::HasBuilding(id) => ctx.has_building_in_scope(&atom.scope, id),
                     AtomKind::HasFlag(id) => ctx.has_flag_in_scope(&atom.scope, id),
+
+                    // --- Diplomacy atoms (#322) ---
+                    AtomKind::TargetStateIs { state } => ctx
+                        .diplomacy
+                        .as_ref()
+                        .is_some_and(|d| d.relation_state.eq_ignore_ascii_case(state)),
+                    AtomKind::TargetStateIn { states } => ctx.diplomacy.as_ref().is_some_and(|d| {
+                        states
+                            .iter()
+                            .any(|s| d.relation_state.eq_ignore_ascii_case(s))
+                    }),
+                    AtomKind::TargetStandingAtLeast { threshold } => ctx
+                        .diplomacy
+                        .as_ref()
+                        .is_some_and(|d| d.standing >= *threshold),
+                    AtomKind::RelativePowerAtLeast { ratio } => {
+                        ctx.diplomacy.as_ref().is_some_and(|d| {
+                            if d.target_military_power <= 0.0 {
+                                // If target has no military power, any positive actor power
+                                // satisfies any ratio.
+                                d.actor_military_power > 0.0 || *ratio <= 0.0
+                            } else {
+                                d.actor_military_power / d.target_military_power >= *ratio
+                            }
+                        })
+                    }
+                    AtomKind::TargetAllowsOption { option_id } => ctx
+                        .diplomacy
+                        .as_ref()
+                        .is_some_and(|d| d.target_allowed_options.contains(option_id)),
+                    AtomKind::ActorHasModifier { modifier_id } => ctx
+                        .diplomacy
+                        .as_ref()
+                        .is_some_and(|d| d.actor_modifiers.contains(modifier_id)),
+                    AtomKind::ActorHoldsCapitalOfTarget => ctx
+                        .diplomacy
+                        .as_ref()
+                        .is_some_and(|d| d.actor_holds_target_capital),
+                    AtomKind::TargetSystemCountAtMost { count } => ctx
+                        .diplomacy
+                        .as_ref()
+                        .is_some_and(|d| d.target_system_count <= *count),
+                    AtomKind::TargetAttackedActorCoreWithin { hexadies } => {
+                        ctx.diplomacy.as_ref().is_some_and(|d| {
+                            d.hexadies_since_target_attacked_actor_core
+                                .is_some_and(|elapsed| elapsed <= *hexadies)
+                        })
+                    }
                 };
                 ConditionResult::Atom {
                     atom: atom.clone(),
@@ -562,6 +711,7 @@ mod tests {
             }),
             planet: None,
             ship: None,
+            diplomacy: None,
         };
 
         // Any scope should find the flag on the system scope
@@ -591,6 +741,7 @@ mod tests {
             }),
             planet: None,
             ship: None,
+            diplomacy: None,
         };
 
         // Check system scope specifically — flag is on empire, so should NOT be found
@@ -616,5 +767,340 @@ mod tests {
         flags.set("test_flag");
         assert!(flags.check("test_flag"));
         assert!(!flags.check("other_flag"));
+    }
+
+    // --- Diplomacy atom tests (#322) ---
+
+    fn diplomacy_ctx<'a>(
+        techs: &'a HashSet<String>,
+        modifiers: &'a HashSet<String>,
+        diplomacy: DiplomacyContext<'a>,
+    ) -> EvalContext<'a> {
+        static EMPTY: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
+        EvalContext {
+            researched_techs: techs,
+            active_modifiers: modifiers,
+            empire: Some(ScopeData {
+                flags: &EMPTY,
+                buildings: &EMPTY,
+            }),
+            system: None,
+            planet: None,
+            ship: None,
+            diplomacy: Some(diplomacy),
+        }
+    }
+
+    fn default_diplomacy_context<'a>(
+        relation_state: &'a str,
+        standing: f64,
+        actor_mods: &'a HashSet<String>,
+        target_opts: &'a HashSet<String>,
+    ) -> DiplomacyContext<'a> {
+        DiplomacyContext {
+            relation_state,
+            standing,
+            actor_modifiers: actor_mods,
+            target_allowed_options: target_opts,
+            actor_military_power: 100.0,
+            target_military_power: 100.0,
+            actor_holds_target_capital: false,
+            target_system_count: 5,
+            hexadies_since_target_attacked_actor_core: None,
+        }
+    }
+
+    #[test]
+    fn test_target_state_is() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let dc = default_diplomacy_context("war", 0.0, &actor_mods, &target_opts);
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetStateIs {
+                state: "war".into(),
+            },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetStateIs {
+                state: "peace".into(),
+            },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_target_state_in() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let dc = default_diplomacy_context("peace", 0.0, &actor_mods, &target_opts);
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetStateIn {
+                states: vec!["peace".into(), "neutral".into()],
+            },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetStateIn {
+                states: vec!["war".into(), "alliance".into()],
+            },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_target_standing_at_least() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let dc = default_diplomacy_context("peace", 50.0, &actor_mods, &target_opts);
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetStandingAtLeast { threshold: 50.0 },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetStandingAtLeast { threshold: 51.0 },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_relative_power_at_least() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let mut dc = default_diplomacy_context("war", 0.0, &actor_mods, &target_opts);
+        dc.actor_military_power = 200.0;
+        dc.target_military_power = 100.0;
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::RelativePowerAtLeast { ratio: 2.0 },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::RelativePowerAtLeast { ratio: 2.1 },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_relative_power_target_zero() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let mut dc = default_diplomacy_context("war", 0.0, &actor_mods, &target_opts);
+        dc.actor_military_power = 10.0;
+        dc.target_military_power = 0.0;
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::RelativePowerAtLeast { ratio: 999.0 },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_target_allows_option() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_set(&["generic_negotiation"]);
+        let dc = default_diplomacy_context("peace", 0.0, &actor_mods, &target_opts);
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetAllowsOption {
+                option_id: "generic_negotiation".into(),
+            },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetAllowsOption {
+                option_id: "declare_war".into(),
+            },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_actor_has_modifier() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_set(&["cb_broken_treaty_recent"]);
+        let target_opts = make_empty_set();
+        let dc = default_diplomacy_context("peace", 0.0, &actor_mods, &target_opts);
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::ActorHasModifier {
+                modifier_id: "cb_broken_treaty_recent".into(),
+            },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::ActorHasModifier {
+                modifier_id: "nonexistent".into(),
+            },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_actor_holds_capital_of_target() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let mut dc = default_diplomacy_context("war", 0.0, &actor_mods, &target_opts);
+        dc.actor_holds_target_capital = true;
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::ActorHoldsCapitalOfTarget,
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_target_system_count_at_most() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let mut dc = default_diplomacy_context("war", 0.0, &actor_mods, &target_opts);
+        dc.target_system_count = 2;
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetSystemCountAtMost { count: 2 },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetSystemCountAtMost { count: 1 },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_target_attacked_actor_core_within() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let mut dc = default_diplomacy_context("war", 0.0, &actor_mods, &target_opts);
+        dc.hexadies_since_target_attacked_actor_core = Some(50);
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetAttackedActorCoreWithin { hexadies: 100 },
+            ConditionScope::Any,
+        ));
+        assert!(cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetAttackedActorCoreWithin { hexadies: 30 },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_target_attacked_actor_core_within_never_attacked() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let actor_mods = make_empty_set();
+        let target_opts = make_empty_set();
+        let dc = default_diplomacy_context("war", 0.0, &actor_mods, &target_opts);
+        // hexadies_since_target_attacked_actor_core is None by default
+        let ctx = diplomacy_ctx(&techs, &mods, dc);
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetAttackedActorCoreWithin { hexadies: 1000 },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_diplomacy_atoms_false_without_context() {
+        let techs = make_empty_set();
+        let mods = make_empty_set();
+        let bldgs = make_empty_set();
+        let ctx = flat_ctx(&techs, &mods, &bldgs);
+
+        // All diplomacy atoms should return false when no DiplomacyContext is present
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::TargetStateIs {
+                state: "war".into(),
+            },
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+
+        let cond = Condition::Atom(ConditionAtom::scoped(
+            AtomKind::ActorHoldsCapitalOfTarget,
+            ConditionScope::Any,
+        ));
+        assert!(!cond.evaluate(&ctx).is_satisfied());
+    }
+
+    #[test]
+    fn test_display_message() {
+        let atom = ConditionAtom::has_tech("laser");
+        assert_eq!(atom.display_message(), "Requires technology: laser");
+
+        let atom = ConditionAtom::scoped(
+            AtomKind::TargetStateIs {
+                state: "war".into(),
+            },
+            ConditionScope::Any,
+        );
+        assert_eq!(atom.display_message(), "Relation must be: war");
+
+        let atom = ConditionAtom::scoped(
+            AtomKind::TargetSystemCountAtMost { count: 3 },
+            ConditionScope::Any,
+        );
+        assert_eq!(atom.display_message(), "Target must own at most 3 systems");
+
+        let atom = ConditionAtom::scoped(AtomKind::ActorHoldsCapitalOfTarget, ConditionScope::Any);
+        assert_eq!(atom.display_message(), "Must hold target's capital");
     }
 }
