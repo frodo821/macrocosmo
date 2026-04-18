@@ -99,7 +99,10 @@ pub struct MainPanelWorldQueries<'w, 's> {
     /// #389: Ship stats — used for harbour capacity display.
     pub ship_stats: Query<'w, 's, &'static ShipStats>,
     /// #389: Docked-at relationships — used for harbour occupancy.
-    pub docked_at: Query<'w, 's, (&'static DockedAt, &'static Ship)>,
+    /// NOTE: does NOT include `&Ship` — that would conflict (B0001) with
+    /// the mutable `ships_query` in `draw_main_panels_system`. Look up
+    /// ship names via `ships_query.get(entity)` instead.
+    pub docked_at: Query<'w, 's, (Entity, &'static DockedAt)>,
     /// #389: Docked-at check — entity-indexed lookup for single ship.
     pub docked_check: Query<'w, 's, &'static DockedAt>,
 }

@@ -1191,11 +1191,22 @@ fn draw_main_panels_system(
                     continue;
                 }
                 let capacity = (cap_raw / 1000) as u32;
-                let used = crate::ship::harbour::current_docked_size(
-                    h_entity,
-                    &world.docked_at,
-                    &registries.hull_registry,
-                );
+                let used = {
+                    let mut total: u32 = 0;
+                    for (de, da) in world.docked_at.iter() {
+                        if da.0 == h_entity {
+                            if let Ok((_, ds, _, _, _, _)) = ships_query.get(de) {
+                                let sz = registries
+                                    .hull_registry
+                                    .get(&ds.hull_id)
+                                    .map(|h| h.size)
+                                    .unwrap_or(1);
+                                total = total.saturating_add(sz);
+                            }
+                        }
+                    }
+                    total
+                };
                 harbours.push(context_menu::HarbourInfo {
                     entity: h_entity,
                     name: h_ship.name.clone(),

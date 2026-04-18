@@ -495,7 +495,7 @@ pub fn draw_ship_panel(
     fleets: &Query<&crate::ship::Fleet>,
     nearby_structures: &[NearbyStructure],
     ship_stats: &Query<&ShipStats>,
-    docked_at_query: &Query<(&DockedAt, &Ship)>,
+    docked_at_query: &Query<(Entity, &DockedAt)>,
     docked_check: &Query<&DockedAt>,
     hull_reg: &HullRegistry,
 ) -> ShipPanelActions {
@@ -672,14 +672,16 @@ pub fn draw_ship_panel(
                 let cap = (s.harbour_capacity.cached().raw() / 1000) as u32;
                 let mut used: u32 = 0;
                 let mut names = Vec::new();
-                for (da, docked_ship) in docked_at_query.iter() {
+                for (docked_entity, da) in docked_at_query.iter() {
                     if da.0 == ship_entity {
-                        let sz = hull_reg
-                            .get(&docked_ship.hull_id)
-                            .map(|h| h.size)
-                            .unwrap_or(1);
-                        used = used.saturating_add(sz);
-                        names.push(docked_ship.name.clone());
+                        if let Ok((_, docked_ship, _, _, _, _)) = ships_query.get(docked_entity) {
+                            let sz = hull_reg
+                                .get(&docked_ship.hull_id)
+                                .map(|h| h.size)
+                                .unwrap_or(1);
+                            used = used.saturating_add(sz);
+                            names.push(docked_ship.name.clone());
+                        }
                     }
                 }
                 (cap, used, names)

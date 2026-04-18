@@ -23,15 +23,17 @@ pub struct AppliedDockedModifiers(pub Vec<String>);
 /// Returns the total hull size of all ships currently docked at `harbour_entity`.
 pub fn current_docked_size(
     harbour_entity: Entity,
-    docked_query: &Query<(&DockedAt, &Ship)>,
+    docked_query: &Query<(Entity, &DockedAt)>,
+    ships: &Query<&Ship>,
     hull_registry: &HullRegistry,
 ) -> u32 {
     let mut total: u32 = 0;
-    for (docked_at, ship) in docked_query.iter() {
+    for (docked_entity, docked_at) in docked_query.iter() {
         if docked_at.0 == harbour_entity {
-            let size = hull_registry
-                .get(&ship.hull_id)
-                .map(|h| h.size)
+            let size = ships
+                .get(docked_entity)
+                .ok()
+                .and_then(|s| hull_registry.get(&s.hull_id).map(|h| h.size))
                 .unwrap_or(1);
             total = total.saturating_add(size);
         }
@@ -48,16 +50,16 @@ pub fn can_dock(
     docker_size: u32,
     harbour_stats: &ShipStats,
     harbour_entity: Entity,
-    docked_query: &Query<(&DockedAt, &Ship)>,
+    docked_query: &Query<(Entity, &DockedAt)>,
+    ships: &Query<&Ship>,
     hull_registry: &HullRegistry,
 ) -> bool {
     let capacity_raw = harbour_stats.harbour_capacity.cached().raw();
     if capacity_raw == 0 {
         return false;
     }
-    // Convert from Amt (×1000) to integer capacity units
     let capacity = (capacity_raw / 1000) as u32;
-    let used = current_docked_size(harbour_entity, docked_query, hull_registry);
+    let used = current_docked_size(harbour_entity, docked_query, ships, hull_registry);
     used.saturating_add(docker_size) <= capacity
 }
 
@@ -311,7 +313,7 @@ pub fn auto_return_dock_after_combat(
     undocked: Query<(Entity, &UndockedForCombat, &ShipState)>,
     hostiles: Query<&crate::galaxy::AtSystem, With<crate::galaxy::Hostile>>,
     harbour_stats: Query<&ShipStats>,
-    docked_query: Query<(&DockedAt, &Ship)>,
+    docked_query: Query<(Entity, &DockedAt)>,
     ship_query: Query<&Ship>,
     hull_registry: Res<HullRegistry>,
 ) {
@@ -348,7 +350,14 @@ pub fn auto_return_dock_after_combat(
             .get(&ship.hull_id)
             .map(|h| h.size)
             .unwrap_or(1);
-        if can_dock(docker_size, stats, harbour, &docked_query, &hull_registry) {
+        if can_dock(
+            docker_size,
+            stats,
+            harbour,
+            &docked_query,
+            &ship_query,
+            &hull_registry,
+        ) {
             commands.entity(entity).insert(DockedAt(harbour));
         }
     }
