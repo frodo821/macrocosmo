@@ -8,6 +8,10 @@ local types = require("factions.faction_types")
 -- registry resolves prerequisites against relations + types at call time.
 require("factions.actions")
 
+-- Diplomatic options (#302). Lua-defined option framework for bilateral /
+-- unilateral interactions. Coexists with the older define_diplomatic_action.
+require("factions.options")
+
 define_faction {
     id = "humanity_empire",
     name = "Terran Federation",

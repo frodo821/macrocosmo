@@ -55,6 +55,10 @@ impl Plugin for ScriptingPlugin {
             )
             .add_systems(
                 Startup,
+                load_diplomatic_option_registry.after(load_all_scripts),
+            )
+            .add_systems(
+                Startup,
                 anomaly_api::load_anomaly_registry.after(load_all_scripts),
             )
             .add_systems(
@@ -271,6 +275,27 @@ pub fn load_diplomatic_action_registry(mut commands: Commands, engine: Res<Scrip
         Err(e) => {
             warn!("Failed to parse diplomatic action definitions: {e}");
             commands.insert_resource(faction_api::DiplomaticActionRegistry::default());
+        }
+    }
+}
+
+/// Startup system that parses Lua diplomatic-option definitions into
+/// [`faction_api::DiplomaticOptionRegistry`] (#302). Runs after
+/// `load_all_scripts`.
+pub fn load_diplomatic_option_registry(mut commands: Commands, engine: Res<ScriptEngine>) {
+    match faction_api::parse_diplomatic_option_definitions(engine.lua()) {
+        Ok(defs) => {
+            let count = defs.len();
+            let mut registry = faction_api::DiplomaticOptionRegistry::default();
+            for def in defs {
+                registry.options.insert(def.id.clone(), def);
+            }
+            commands.insert_resource(registry);
+            info!("Loaded {} diplomatic option definitions from Lua", count);
+        }
+        Err(e) => {
+            warn!("Failed to parse diplomatic option definitions: {e}");
+            commands.insert_resource(faction_api::DiplomaticOptionRegistry::default());
         }
     }
 }
