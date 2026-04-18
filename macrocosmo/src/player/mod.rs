@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use crate::colony::{AuthorityParams, ConstructionParams};
@@ -46,10 +48,7 @@ pub fn spawn_player_empire(mut commands: Commands) {
                 name: "Human Federation".into(),
             },
             PlayerEmpire,
-            Faction {
-                id: "humanity_empire".into(),
-                name: "Terran Federation".into(),
-            },
+            Faction::new("humanity_empire", "Terran Federation"),
             TechTree::default(),
             ResearchQueue::default(),
             ResearchPool::default(),
@@ -103,6 +102,21 @@ pub struct PlayerEmpire;
 pub struct Faction {
     pub id: String,
     pub name: String,
+    /// Set of diplomatic option ids available to this faction.
+    /// Populated from `FactionTypeDefinition.allowed_diplomatic_options`
+    /// at spawn time. Empty by default.
+    pub allowed_diplomatic_options: HashSet<String>,
+}
+
+impl Faction {
+    /// Convenience constructor with an empty `allowed_diplomatic_options` set.
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            allowed_diplomatic_options: HashSet::new(),
+        }
+    }
 }
 
 pub fn spawn_player(mut commands: Commands, capitals: Query<(Entity, &StarSystem)>) {

@@ -23,10 +23,7 @@ fn spawn_rival_faction(world: &mut World) -> Entity {
             Empire {
                 name: "Rival Empire".to_string(),
             },
-            Faction {
-                id: "rival".to_string(),
-                name: "Rival Faction".to_string(),
-            },
+            Faction::new("rival", "Rival Faction"),
         ))
         .id()
 }

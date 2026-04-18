@@ -263,6 +263,12 @@ fn apply_component_bag(
     if let Some(f) = &bag.faction {
         ec.insert(f.clone().into_live());
     }
+    if let Some(de) = &bag.diplomatic_event {
+        ec.insert(de.clone().into_live(map));
+    }
+    if let Some(di) = &bag.diplomatic_inbox {
+        ec.insert(di.clone().into_live(map));
+    }
     if bag.player.is_some() {
         ec.insert(crate::player::Player);
     }

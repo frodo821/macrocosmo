@@ -41,20 +41,9 @@ fn build_seed_world() -> World {
 
     // Empire + faction entities.
     let empire = world
-        .spawn((
-            PlayerEmpire,
-            Faction {
-                id: "humanity".into(),
-                name: "Humanity".into(),
-            },
-        ))
+        .spawn((PlayerEmpire, Faction::new("humanity", "Humanity")))
         .id();
-    let xeno_faction = world
-        .spawn(Faction {
-            id: "xeno".into(),
-            name: "Xeno".into(),
-        })
-        .id();
+    let xeno_faction = world.spawn(Faction::new("xeno", "Xeno")).id();
 
     // Seed faction relations with asymmetric views.
     let mut relations = FactionRelations::new();

@@ -27,10 +27,7 @@ fn setup_two_factions(app: &mut App) -> (Entity, Entity) {
     };
     let enemy_faction = app
         .world_mut()
-        .spawn(Faction {
-            id: "enemy_test_faction".into(),
-            name: "Enemy Test Faction".into(),
-        })
+        .spawn(Faction::new("enemy_test_faction", "Enemy Test Faction"))
         .id();
 
     // Seed hostile Neutral + -100 relations in both directions.
@@ -429,10 +426,7 @@ fn non_hostile_standing_is_not_detected() {
     };
     let other_f = app
         .world_mut()
-        .spawn(Faction {
-            id: "friendly_neutral".into(),
-            name: "Friendly".into(),
-        })
+        .spawn(Faction::new("friendly_neutral", "Friendly"))
         .id();
     // Leave relations empty → get_or_default returns Neutral/0 → hostile check fails.
 

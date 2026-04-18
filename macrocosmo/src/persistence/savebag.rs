@@ -45,7 +45,8 @@ use crate::deep_space::{
 use crate::empire::CommsParams;
 use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::{
-    DiplomaticAction, FactionOwner, FactionView, PendingDiplomaticAction, RelationState,
+    DiplomaticAction, DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionView,
+    PendingDiplomaticAction, PendingInboxItem, RelationState,
 };
 use crate::galaxy::{
     Anomalies, Anomaly, AtSystem, Biome, ForbiddenRegion, Hostile, HostileHitpoints, HostileStats,
@@ -903,6 +904,9 @@ impl SavedFactionOwner {
 pub struct SavedFaction {
     pub id: String,
     pub name: String,
+    /// #302: Diplomatic option ids available to this faction.
+    #[serde(default)]
+    pub allowed_diplomatic_options: Vec<String>,
 }
 
 impl SavedFaction {
@@ -910,12 +914,14 @@ impl SavedFaction {
         Self {
             id: v.id.clone(),
             name: v.name.clone(),
+            allowed_diplomatic_options: v.allowed_diplomatic_options.iter().cloned().collect(),
         }
     }
     pub fn into_live(self) -> Faction {
         Faction {
             id: self.id,
             name: self.name,
+            allowed_diplomatic_options: self.allowed_diplomatic_options.into_iter().collect(),
         }
     }
 }
@@ -3481,6 +3487,89 @@ impl SavedPendingDiplomaticAction {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #302: DiplomaticEvent + DiplomaticInbox persistence
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedDiplomaticEvent {
+    pub from_bits: u64,
+    pub to_bits: u64,
+    pub option_id: String,
+    pub payload: HashMap<String, String>,
+    pub arrives_at: i64,
+}
+
+impl SavedDiplomaticEvent {
+    pub fn from_live(v: &DiplomaticEvent) -> Self {
+        Self {
+            from_bits: v.from.to_bits(),
+            to_bits: v.to.to_bits(),
+            option_id: v.option_id.clone(),
+            payload: v.payload.clone(),
+            arrives_at: v.arrives_at,
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> DiplomaticEvent {
+        DiplomaticEvent {
+            from: remap_entity(self.from_bits, map),
+            to: remap_entity(self.to_bits, map),
+            option_id: self.option_id,
+            payload: self.payload,
+            arrives_at: self.arrives_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPendingInboxItem {
+    pub from_bits: u64,
+    pub option_id: String,
+    pub payload: HashMap<String, String>,
+    pub delivered_at: i64,
+}
+
+impl SavedPendingInboxItem {
+    pub fn from_live(v: &PendingInboxItem) -> Self {
+        Self {
+            from_bits: v.from.to_bits(),
+            option_id: v.option_id.clone(),
+            payload: v.payload.clone(),
+            delivered_at: v.delivered_at,
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> PendingInboxItem {
+        PendingInboxItem {
+            from: remap_entity(self.from_bits, map),
+            option_id: self.option_id,
+            payload: self.payload,
+            delivered_at: self.delivered_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedDiplomaticInbox {
+    pub items: Vec<SavedPendingInboxItem>,
+}
+
+impl SavedDiplomaticInbox {
+    pub fn from_live(v: &DiplomaticInbox) -> Self {
+        Self {
+            items: v
+                .items
+                .iter()
+                .map(SavedPendingInboxItem::from_live)
+                .collect(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> DiplomaticInbox {
+        DiplomaticInbox {
+            items: self.items.into_iter().map(|i| i.into_live(map)).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SavedRemoteCommand {
     BuildShip {
@@ -4458,6 +4547,12 @@ pub struct SavedComponentBag {
     // Faction
     pub faction_owner: Option<SavedFactionOwner>,
     pub faction: Option<SavedFaction>,
+    /// #302: In-flight diplomatic event (option-based messaging).
+    #[serde(default)]
+    pub diplomatic_event: Option<SavedDiplomaticEvent>,
+    /// #302: Per-faction diplomatic inbox.
+    #[serde(default)]
+    pub diplomatic_inbox: Option<SavedDiplomaticInbox>,
     // Player
     pub player: Option<SavedPlayer>,
     pub stationed_at: Option<SavedStationedAt>,

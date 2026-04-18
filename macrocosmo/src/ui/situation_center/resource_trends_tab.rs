@@ -597,10 +597,7 @@ mod tests {
             Empire {
                 name: "Test".into(),
             },
-            Faction {
-                id: "test_faction".into(),
-                name: "Test".into(),
-            },
+            Faction::new("test_faction", "Test"),
             store,
         ));
 

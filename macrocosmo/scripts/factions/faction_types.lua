@@ -13,6 +13,9 @@ local empire = define_faction_type {
     can_diplomacy = true,
     default_standing = 0,
     default_state = "neutral",
+    -- #302: Diplomatic options available to empire-type factions.
+    -- Populated after scripts/factions/options.lua is loaded (forward refs).
+    allowed_diplomatic_options = { "generic_negotiation", "break_alliance" },
 }
 
 local space_creature = define_faction_type {

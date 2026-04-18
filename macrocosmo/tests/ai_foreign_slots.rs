@@ -30,10 +30,7 @@ fn foreign_slots_declared_on_faction_spawn() {
     // Spawn a Faction entity.
     let entity = app
         .world_mut()
-        .spawn(Faction {
-            id: "terran".into(),
-            name: "Terran Federation".into(),
-        })
+        .spawn(Faction::new("terran", "Terran Federation"))
         .id();
 
     // Tick again so declare_foreign_slots_on_awareness runs and picks up
@@ -57,20 +54,8 @@ fn foreign_slots_available_for_known_factions() {
     let mut app = minimal_ai_app();
     app.update();
 
-    let a = app
-        .world_mut()
-        .spawn(Faction {
-            id: "a".into(),
-            name: "A".into(),
-        })
-        .id();
-    let b = app
-        .world_mut()
-        .spawn(Faction {
-            id: "b".into(),
-            name: "B".into(),
-        })
-        .id();
+    let a = app.world_mut().spawn(Faction::new("a", "A")).id();
+    let b = app.world_mut().spawn(Faction::new("b", "B")).id();
     app.update();
 
     let fid_a = macrocosmo::ai::convert::to_ai_faction(a);
