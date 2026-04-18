@@ -269,6 +269,10 @@ fn apply_component_bag(
     if let Some(di) = &bag.diplomatic_inbox {
         ec.insert(di.clone().into_live(map));
     }
+    // #324: Restore Extinct marker on annihilated factions.
+    if let Some(ext) = &bag.extinct {
+        ec.insert(ext.clone().into_live());
+    }
     if bag.player.is_some() {
         ec.insert(crate::player::Player);
     }
@@ -501,12 +505,23 @@ fn remap_faction_relations(world: &mut World, save: &GameSave, map: &EntityMap) 
         return;
     };
     let mut new_rel = FactionRelations::new();
+    // Relations must be inserted before freezing, because `set` checks frozen.
     for ((from_bits, to_bits), view) in saved.relations.iter() {
         let from = map
             .entity(from_bits.to_bits())
             .unwrap_or(Entity::PLACEHOLDER);
         let to = map.entity(to_bits.to_bits()).unwrap_or(Entity::PLACEHOLDER);
-        new_rel.set(from, to, view.clone().into_live());
+        // Use direct insert to bypass frozen check during load.
+        new_rel.relations.insert((from, to), view.clone().into_live());
+    }
+    // #324: Restore frozen state for extinct factions.
+    let mut extinct_query = world.query::<(Entity, &crate::faction::Extinct)>();
+    let extinct_entities: Vec<Entity> = extinct_query
+        .iter(world)
+        .map(|(e, _)| e)
+        .collect();
+    for e in extinct_entities {
+        new_rel.freeze_faction(e);
     }
     world.insert_resource(new_rel);
 }

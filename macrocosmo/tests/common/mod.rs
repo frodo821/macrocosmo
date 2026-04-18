@@ -616,6 +616,14 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time),
     );
 
+    // #324: Annihilation detection (no Core ships + no colonies → Extinct).
+    app.init_resource::<macrocosmo::casus_belli::ActiveWars>();
+    app.add_systems(
+        Update,
+        macrocosmo::faction::detect_annihilation
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+
     // #384: Harbour lifecycle systems (dock/undock, position sync, combat ROE, modifier sync).
     app.add_systems(
         Update,
@@ -945,6 +953,10 @@ pub fn full_test_app() -> App {
 
     // --- Faction systems (#171) ---
     app.add_systems(Update, macrocosmo::faction::tick_diplomatic_actions);
+
+    // #324: Annihilation detection.
+    app.init_resource::<macrocosmo::casus_belli::ActiveWars>();
+    app.add_systems(Update, macrocosmo::faction::detect_annihilation);
 
     // #384: Harbour lifecycle systems.
     app.add_systems(
