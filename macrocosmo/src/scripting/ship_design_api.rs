@@ -913,9 +913,9 @@ mod tests {
         let corvette = corvette.unwrap();
         assert_eq!(corvette.base_hp, 50.0);
 
-        // Verify a weapon module was parsed
-        let laser = modules.iter().find(|m| m.id == "weapon_laser");
-        assert!(laser.is_some(), "weapon_laser module should be defined");
+        // Verify a weapon module was parsed (#403: size variants renamed to _s/_m/_l)
+        let laser = modules.iter().find(|m| m.id == "weapon_laser_s");
+        assert!(laser.is_some(), "weapon_laser_s module should be defined");
         assert!(laser.unwrap().weapon.is_some());
     }
 

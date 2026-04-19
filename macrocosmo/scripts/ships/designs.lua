@@ -40,7 +40,7 @@ local courier_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "sublight", module = modules.afterburner },
         { slot_type = "utility", module = modules.cargo_bay },
-        { slot_type = "reactor", module = modules.fusion_reactor },
+        { slot_type = "reactor", module = modules.fusion_reactor_s },
     },
 }
 
@@ -54,16 +54,34 @@ local scout_mk1 = define_ship_design {
     },
 }
 
+-- #403: Corvette combat design — small weapon/defense modules
 local patrol_corvette = define_ship_design {
     id = "patrol_corvette",
     name = "Patrol Corvette",
     hull = hulls.corvette,
     modules = {
-        { slot_type = "weapon", module = modules.weapon_laser },
-        { slot_type = "weapon", module = modules.weapon_laser },
+        { slot_type = "weapon", module = modules.weapon_laser_s },
+        { slot_type = "weapon", module = modules.weapon_laser_s },
         { slot_type = "ftl", module = modules.ftl_drive },
-        { slot_type = "defense", module = modules.armor_plating },
-        { slot_type = "reactor", module = modules.fusion_reactor },
+        { slot_type = "defense", module = modules.armor_plating_s },
+        { slot_type = "reactor", module = modules.fusion_reactor_s },
+    },
+}
+
+-- #403: Frigate combat design — medium weapon/defense modules
+-- Power budget: 2*4 (laser_m) + 5 (railgun_m) + 0 (armor_m) + 6 (shield_m) = 19 / 20
+local assault_frigate = define_ship_design {
+    id = "assault_frigate",
+    name = "Assault Frigate",
+    hull = hulls.frigate,
+    modules = {
+        { slot_type = "weapon", module = modules.weapon_laser_m },
+        { slot_type = "weapon", module = modules.weapon_laser_m },
+        { slot_type = "weapon", module = modules.weapon_railgun_m },
+        { slot_type = "ftl", module = modules.ftl_drive },
+        { slot_type = "defense", module = modules.armor_plating_m },
+        { slot_type = "defense", module = modules.shield_generator_m },
+        { slot_type = "reactor", module = modules.fusion_reactor_m },
     },
 }
 
@@ -101,6 +119,7 @@ return {
     courier_mk1 = courier_mk1,
     scout_mk1 = scout_mk1,
     patrol_corvette = patrol_corvette,
+    assault_frigate = assault_frigate,
     station_shipyard_v1 = station_shipyard_v1,
     station_port_v1 = station_port_v1,
     station_research_lab_v1 = station_research_lab_v1,
