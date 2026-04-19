@@ -1006,6 +1006,7 @@ fn test_save_load_preserves_pending_colony_command() {
         .expect("build_seed_world spawned a colony");
 
     src.spawn(PendingCommand {
+        id: macrocosmo::ship::command_events::CommandId::ZERO,
         target_system: alpha_centauri,
         command: RemoteCommand::ShipBuild {
             host_colony: colony_entity,
@@ -1320,6 +1321,7 @@ fn test_save_load_preserves_pending_commands() {
 
     // (1) PendingCommand — RemoteCommand::ShipBuild references a colony.
     src.spawn(PendingCommand {
+        id: macrocosmo::ship::command_events::CommandId::ZERO,
         target_system: alpha,
         command: RemoteCommand::ShipBuild {
             host_colony: colony_entity,
