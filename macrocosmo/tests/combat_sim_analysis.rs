@@ -81,6 +81,10 @@ fn corvette(weapon: WeaponStats, speed: f64) -> ShipProfile {
         evasion: 5.0,
         speed,
         shield_regen_cooldown: 0,
+        index: 0,
+        name: String::new(),
+        is_core: false,
+        is_conquered_core: false,
     }
 }
 
@@ -97,6 +101,10 @@ fn shield_tank(weapon: WeaponStats, speed: f64) -> ShipProfile {
         evasion: 2.0,
         speed,
         shield_regen_cooldown: 0,
+        index: 0,
+        name: String::new(),
+        is_core: false,
+        is_conquered_core: false,
     }
 }
 
@@ -113,6 +121,10 @@ fn armor_tank(weapon: WeaponStats, speed: f64) -> ShipProfile {
         evasion: 1.0,
         speed,
         shield_regen_cooldown: 0,
+        index: 0,
+        name: String::new(),
+        is_core: false,
+        is_conquered_core: false,
     }
 }
 
@@ -129,6 +141,10 @@ fn interceptor(weapon: WeaponStats, speed: f64) -> ShipProfile {
         evasion: 10.0,
         speed,
         shield_regen_cooldown: 0,
+        index: 0,
+        name: String::new(),
+        is_core: false,
+        is_conquered_core: false,
     }
 }
 

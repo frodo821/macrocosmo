@@ -32,6 +32,14 @@ pub struct ShipProfile {
     pub speed: f64,
     /// Turns remaining before shield regen resumes (reset on hit).
     pub shield_regen_cooldown: u32,
+    /// Maps back to the index in the ECS entity list used to build profiles.
+    pub index: usize,
+    /// Ship name for logging.
+    pub name: String,
+    /// Core ships have their hull clamped at 1.0 — they never truly die.
+    pub is_core: bool,
+    /// Conquered cores are indestructible — skip all damage.
+    pub is_conquered_core: bool,
 }
 
 impl ShipProfile {
@@ -41,7 +49,7 @@ impl ShipProfile {
     }
 
     pub fn is_alive(&self) -> bool {
-        self.hull > 0.0
+        self.is_core || self.hull > 0.0
     }
 }
 
@@ -111,12 +119,20 @@ fn hit_chance(weapon: &WeaponStats, target_evasion: f64) -> f64 {
 
 /// Apply weapon damage through the 3-layer HP model.
 /// Returns the total HP removed. Resets shield regen cooldown on any hit.
+///
+/// Conquered cores are indestructible — all damage is skipped.
+/// Core ships have their hull clamped at 1.0 after damage.
 fn apply_damage_to_profile(
     target: &mut ShipProfile,
     weapon: &WeaponStats,
     rng: &mut impl Rng,
     shield_regen_delay: u32,
 ) -> f64 {
+    // Conquered cores are indestructible — skip all damage.
+    if target.is_conquered_core {
+        return 0.0;
+    }
+
     let mut removed = 0.0;
 
     // Any damage suppresses shield regen.
@@ -150,6 +166,12 @@ fn apply_damage_to_profile(
     let actual = dmg.min(target.hull);
     target.hull -= actual;
     removed += actual;
+
+    // Core ships clamp hull at 1.0.
+    if target.is_core && target.hull < 1.0 {
+        target.hull = 1.0;
+    }
+
     removed
 }
 
@@ -309,7 +331,12 @@ pub fn simulate_combat(
                     let target_evasion = defenders[target_idx].evasion;
                     let chance = hit_chance(weapon, target_evasion);
                     if rng.random::<f64>() < chance {
-                        let dmg = apply_damage_to_profile(&mut defenders[target_idx], weapon, rng, config.shield_regen_delay);
+                        let dmg = apply_damage_to_profile(
+                            &mut defenders[target_idx],
+                            weapon,
+                            rng,
+                            config.shield_regen_delay,
+                        );
                         dmg_by_attacker += dmg;
                     }
                     weapons_fired += 1;
@@ -339,7 +366,12 @@ pub fn simulate_combat(
                     let target_evasion = attackers[target_idx].evasion;
                     let chance = hit_chance(weapon, target_evasion);
                     if rng.random::<f64>() < chance {
-                        let dmg = apply_damage_to_profile(&mut attackers[target_idx], weapon, rng, config.shield_regen_delay);
+                        let dmg = apply_damage_to_profile(
+                            &mut attackers[target_idx],
+                            weapon,
+                            rng,
+                            config.shield_regen_delay,
+                        );
                         dmg_by_defender += dmg;
                     }
                     weapons_fired += 1;
@@ -513,6 +545,10 @@ mod tests {
             evasion: 2.0,
             speed,
             shield_regen_cooldown: 0,
+            index: 0,
+            name: String::new(),
+            is_core: false,
+            is_conquered_core: false,
         }
     }
 
@@ -520,6 +556,7 @@ mod tests {
         CombatConfig {
             turns_per_tick: 12,
             distance_step_factor: 1.0,
+            ..Default::default()
         }
     }
 
@@ -571,6 +608,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 30,
             distance_step_factor: 2.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -614,12 +652,17 @@ mod tests {
                 evasion: 2.0,
                 speed: 2.0,
                 shield_regen_cooldown: 0,
+                index: 0,
+                name: String::new(),
+                is_core: false,
+                is_conquered_core: false,
             })
             .collect();
 
         let cfg = CombatConfig {
             turns_per_tick: 24,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -652,12 +695,17 @@ mod tests {
                 evasion: 2.0,
                 speed: 2.0,
                 shield_regen_cooldown: 0,
+                index: 0,
+                name: String::new(),
+                is_core: false,
+                is_conquered_core: false,
             })
             .collect();
 
         let cfg = CombatConfig {
             turns_per_tick: 24,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -687,6 +735,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 24,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -720,6 +769,7 @@ mod tests {
             let cfg = CombatConfig {
                 turns_per_tick: 30,
                 distance_step_factor: 1.0,
+                ..Default::default()
             };
             let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
             match log.outcome {
@@ -781,6 +831,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 8,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -827,6 +878,10 @@ mod tests {
             evasion: 0.0,
             speed: 1.0,
             shield_regen_cooldown: 0,
+            index: 0,
+            name: String::new(),
+            is_core: false,
+            is_conquered_core: false,
         }];
         let mut defenders = vec![ShipProfile {
             weapons: vec![long_weapon],
@@ -840,11 +895,16 @@ mod tests {
             evasion: 0.0,
             speed: 1.0,
             shield_regen_cooldown: 0,
+            index: 0,
+            name: String::new(),
+            is_core: false,
+            is_conquered_core: false,
         }];
 
         let cfg = CombatConfig {
             turns_per_tick: 6,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
