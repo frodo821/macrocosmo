@@ -64,6 +64,12 @@ pub fn declare_all(mut bus: ResMut<AiBusResource>) {
     declare_evidence(&mut bus.0);
 }
 
+/// Declare all metrics on a standalone `AiBus` (no Bevy system context).
+/// Useful for tests that need a bus with declared metrics.
+pub fn declare_metrics_standalone(bus: &mut AiBus) {
+    declare_metrics(bus);
+}
+
 /// Helper: construct a `MetricSpec` for any `MetricType` (spec only exposes
 /// `::gauge` / `::ratio` constructors).
 fn spec(kind: MetricType, retention: Retention, description: &'static str) -> MetricSpec {
@@ -148,6 +154,22 @@ fn declare_metrics(bus: &mut AiBus) {
         MetricSpec::ratio(
             Retention::Medium,
             "1.0 iff a flagship entity exists and is operable, else 0.0",
+        ),
+    );
+    bus.declare_metric(
+        m::my_total_attack(),
+        spec(
+            MetricType::Gauge,
+            Retention::Medium,
+            "sum of attack values across owned fleet",
+        ),
+    );
+    bus.declare_metric(
+        m::my_total_defense(),
+        spec(
+            MetricType::Gauge,
+            Retention::Medium,
+            "sum of defense values across owned fleet",
         ),
     );
 

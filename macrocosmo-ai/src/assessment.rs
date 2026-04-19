@@ -88,10 +88,69 @@ pub struct TechPositionSnapshot {
     pub known_competitor_levels: HashMap<FactionId, f32>,
 }
 
-/// Fleet-state snapshot. Placeholder until #190 (combat).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Fleet-state snapshot built from military metrics on the AI bus (#190).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FleetSnapshot {
-    // TODO(#190): total_strength, doctrine_match, ...
+    pub ship_count: u32,
+    pub total_attack: f64,
+    pub total_defense: f64,
+    pub total_hp: f64,
+    pub total_armor: f64,
+    pub total_shields: f64,
+    pub shield_regen: f64,
+    pub fleet_ready_fraction: f64,
+    pub vulnerability_score: f64,
+    pub has_flagship: bool,
+}
+
+impl Default for FleetSnapshot {
+    fn default() -> Self {
+        Self {
+            ship_count: 0,
+            total_attack: 0.0,
+            total_defense: 0.0,
+            total_hp: 0.0,
+            total_armor: 0.0,
+            total_shields: 0.0,
+            shield_regen: 0.0,
+            fleet_ready_fraction: 0.0,
+            vulnerability_score: 0.0,
+            has_flagship: false,
+        }
+    }
+}
+
+/// Build a [`FleetSnapshot`] from the military metrics currently on the bus.
+pub fn build_fleet_snapshot(bus: &AiBus, _me: FactionId) -> FleetSnapshot {
+    let mg = |name: &str| bus.current(&MetricId::from(name)).unwrap_or(0.0);
+
+    let ship_count = mg("my_total_ships");
+    let total_attack = mg("my_total_attack");
+    let total_defense = mg("my_total_defense");
+    let total_armor = mg("my_armor");
+    let total_shields = mg("my_shields");
+    let shield_regen = mg("my_shield_regen_rate");
+    let fleet_ready_fraction = mg("my_fleet_ready");
+    let vulnerability_score = mg("my_vulnerability_score");
+    let has_flagship = mg("my_has_flagship") >= 0.5;
+
+    // total_hp = total attack + defense + armor + shields (strength proxy)
+    // Actually, my_strength on the bus = attack + defense + current_hp per ship.
+    // We store total_hp as a direct value here.
+    let total_hp = total_armor + total_shields + mg("my_strength") - total_attack - total_defense;
+
+    FleetSnapshot {
+        ship_count: ship_count as u32,
+        total_attack,
+        total_defense,
+        total_hp,
+        total_armor,
+        total_shields,
+        shield_regen,
+        fleet_ready_fraction,
+        vulnerability_score,
+        has_flagship,
+    }
 }
 
 /// Baseline for normalising economic metrics.
@@ -328,21 +387,52 @@ pub fn compute_tech_lead(s: &TechPositionSnapshot, w: &TechLeadWeights) -> f32 {
     (vs_max * w.vs_max + vs_avg * w.vs_avg).clamp(0.0, 1.0)
 }
 
-/// Placeholder for #190. Always `0.0`.
+/// Compute threat level from perceived standings and estimated rival strength.
+///
+/// For each known rival, weight their estimated foreign strength by hostility
+/// (negative standing = more hostile). Sum contributions, clamp to `[0, 1]`.
 pub fn compute_threat_level(
-    _bus: &AiBus,
+    bus: &AiBus,
     _me: FactionId,
-    _perceived: &HashMap<FactionId, PerceivedStanding>,
+    perceived: &HashMap<FactionId, PerceivedStanding>,
 ) -> f32 {
-    // TODO(#190): weight standings by estimated rival strength, neighbour distance,
-    // fleet deltas; for now a zero placeholder keeps `threat_level` numeric.
-    0.0
+    if perceived.is_empty() {
+        return 0.0;
+    }
+
+    let mut threat_sum: f64 = 0.0;
+    let my_strength = bus.current(&MetricId::from("my_strength")).unwrap_or(1.0);
+    let denom = my_strength.max(1.0);
+
+    for (fid, standing) in perceived {
+        // Hostility: how negative the standing is. Clamp to [0, 1].
+        // standing.inferred_standing is in [-1, 1]: -1 = hostile, +1 = friendly.
+        let hostility = ((-standing.inferred_standing) * 0.5 + 0.5).clamp(0.0, 1.0);
+
+        // Estimated rival strength from foreign metrics.
+        let rival_strength_id = MetricId::from(format!("foreign.strength.faction_{}", fid.0));
+        let rival_strength = bus.current(&rival_strength_id).unwrap_or(0.0);
+
+        // Threat contribution: how strong they are relative to us, weighted by hostility.
+        let relative_strength = (rival_strength / denom).min(2.0);
+        threat_sum += hostility * relative_strength;
+    }
+
+    // Normalize: max threat is ~2.0 per faction; divide by count to get per-faction average,
+    // then clamp to [0, 1].
+    let avg_threat = threat_sum / perceived.len() as f64;
+    avg_threat.clamp(0.0, 1.0) as f32
 }
 
-/// Placeholder for #190. Always `0.0`.
-pub fn compute_fleet_readiness(_bus: &AiBus, _me: FactionId, _fleet: &FleetSnapshot) -> f32 {
-    // TODO(#190): integrate ship rosters, doctrine match, repair state.
-    0.0
+/// Compute fleet readiness from the fleet snapshot.
+///
+/// Blends ready-fraction (ships in system), inverse vulnerability (repair
+/// state), and flagship presence into a single `[0, 1]` score.
+pub fn compute_fleet_readiness(_bus: &AiBus, _me: FactionId, fleet: &FleetSnapshot) -> f32 {
+    let ready = fleet.fleet_ready_fraction as f32;
+    let vuln_inv = 1.0 - fleet.vulnerability_score as f32;
+    let flagship = if fleet.has_flagship { 1.0 } else { 0.5 };
+    (ready * 0.5 + vuln_inv * 0.3 + flagship * 0.2).clamp(0.0, 1.0)
 }
 
 /// Combine knowledge freshness, standing confidence, enemy-estimate confidence
@@ -355,9 +445,15 @@ pub fn compute_overall_confidence(
 ) -> f32 {
     let k = knowledge_freshness(bus, now, config.knowledge_freshness_halflife);
     let s = standing_confidence(&assessment.perceived_standings);
-    // TODO(#190): replace constant with a real estimate-confidence once fleet
-    // / threat snapshots land.
-    let e = 0.5_f32;
+    // Estimate confidence: if we have fleet data (ship_count > 0), confidence
+    // is higher. Otherwise fall back to a conservative 0.3.
+    let e = if assessment.fleet.ship_count > 0 {
+        // Fleet data exists — confidence scales with how complete our picture is.
+        // Ready fraction proxies for "ships we can observe right now".
+        (0.5 + assessment.fleet.fleet_ready_fraction as f32 * 0.5).clamp(0.3, 1.0)
+    } else {
+        0.3_f32
+    };
     let t = trajectory_confidence(bus, now, &config.trajectory_config);
     (0.4 * k + 0.2 * s + 0.2 * e + 0.2 * t).clamp(0.0, 1.0)
 }
@@ -522,7 +618,7 @@ pub fn build_assessment<P: AiParamsExt>(
 ) -> Assessment {
     let economic = build_economic_snapshot(bus, me, &config.baseline, now);
     let tech_position = build_tech_position_snapshot(bus, me, known_factions);
-    let fleet = FleetSnapshot::default();
+    let fleet = build_fleet_snapshot(bus, me);
 
     // Perceived standings toward each known rival.
     let mut perceived_standings: HashMap<FactionId, PerceivedStanding> = HashMap::new();
@@ -1069,6 +1165,98 @@ mod tests {
         assert_eq!(a.last_updated_at, 100);
         assert_eq!(a.objective_precondition_summary.total, 1);
         assert!(a.objective_precondition_summary.weighted_satisfaction >= 0.0);
+    }
+
+    #[test]
+    fn build_fleet_snapshot_reads_bus() {
+        let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
+        for (m, v) in [
+            ("my_total_ships", 5.0),
+            ("my_total_attack", 100.0),
+            ("my_total_defense", 50.0),
+            ("my_strength", 300.0),
+            ("my_armor", 80.0),
+            ("my_shields", 40.0),
+            ("my_shield_regen_rate", 5.0),
+            ("my_fleet_ready", 0.8),
+            ("my_vulnerability_score", 0.2),
+            ("my_has_flagship", 1.0),
+        ] {
+            bus.declare_metric(MetricId::from(m), MetricSpec::gauge(Retention::Medium, m));
+            bus.emit(&MetricId::from(m), v, 0);
+        }
+
+        let snap = build_fleet_snapshot(&bus, FactionId(0));
+        assert_eq!(snap.ship_count, 5);
+        assert!((snap.total_attack - 100.0).abs() < 1e-6);
+        assert!((snap.total_defense - 50.0).abs() < 1e-6);
+        assert!((snap.total_armor - 80.0).abs() < 1e-6);
+        assert!((snap.total_shields - 40.0).abs() < 1e-6);
+        assert!((snap.shield_regen - 5.0).abs() < 1e-6);
+        assert!((snap.fleet_ready_fraction - 0.8).abs() < 1e-6);
+        assert!((snap.vulnerability_score - 0.2).abs() < 1e-6);
+        assert!(snap.has_flagship);
+    }
+
+    #[test]
+    fn fleet_readiness_scales_with_ready_fraction() {
+        let bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let low = FleetSnapshot {
+            fleet_ready_fraction: 0.2,
+            vulnerability_score: 0.5,
+            has_flagship: false,
+            ..Default::default()
+        };
+        let high = FleetSnapshot {
+            fleet_ready_fraction: 1.0,
+            vulnerability_score: 0.0,
+            has_flagship: true,
+            ..Default::default()
+        };
+        let r_low = compute_fleet_readiness(&bus, FactionId(0), &low);
+        let r_high = compute_fleet_readiness(&bus, FactionId(0), &high);
+        assert!(r_high > r_low, "high={r_high}, low={r_low}");
+        // high: 1.0*0.5 + 1.0*0.3 + 1.0*0.2 = 1.0
+        assert!((r_high - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn threat_level_increases_with_hostile_strength() {
+        let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
+        // Declare self strength.
+        bus.declare_metric(
+            MetricId::from("my_strength"),
+            MetricSpec::gauge(Retention::Medium, "s"),
+        );
+        bus.emit(&MetricId::from("my_strength"), 100.0, 0);
+
+        // No rivals → 0 threat.
+        let empty: HashMap<FactionId, PerceivedStanding> = HashMap::new();
+        assert!((compute_threat_level(&bus, FactionId(0), &empty) - 0.0).abs() < 1e-6);
+
+        // Add a hostile rival with strength.
+        bus.declare_metric(
+            MetricId::from("foreign.strength.faction_1"),
+            MetricSpec::gauge(Retention::Medium, "r"),
+        );
+        bus.emit(&MetricId::from("foreign.strength.faction_1"), 200.0, 0);
+
+        let mut perceived = HashMap::new();
+        perceived.insert(
+            FactionId(1),
+            PerceivedStanding {
+                observer: FactionId(0),
+                target: FactionId(1),
+                subject: StandingSubject::ObserverSelf,
+                inferred_standing: -0.8, // hostile
+                confidence: 0.5,
+                evidence_count: 3,
+                computed_at: 0,
+            },
+        );
+        let threat = compute_threat_level(&bus, FactionId(0), &perceived);
+        assert!(threat > 0.0, "expected positive threat, got {threat}");
+        assert!(threat <= 1.0, "expected <=1.0, got {threat}");
     }
 
     #[test]

@@ -83,7 +83,11 @@ impl Plugin for AiPlugin {
             .add_systems(Startup, schema::declare_all)
             .add_systems(
                 Update,
-                declare_foreign_slots_on_awareness.in_set(AiTickSet::MetricProduce),
+                (
+                    declare_foreign_slots_on_awareness,
+                    super::emitters::emit_military_metrics,
+                )
+                    .in_set(AiTickSet::MetricProduce),
             )
             // #173: NPC decision tick — hand-written no-op default policy.
             .add_systems(
