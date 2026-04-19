@@ -59,6 +59,7 @@ fn spawn_pending_remote_command(
     cmd: RemoteCommand,
 ) {
     app.world_mut().spawn(PendingCommand {
+        id: macrocosmo::ship::command_events::CommandId::ZERO,
         target_system,
         command: cmd,
         sent_at,

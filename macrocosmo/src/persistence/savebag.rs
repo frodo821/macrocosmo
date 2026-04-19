@@ -3816,6 +3816,10 @@ pub struct SavedPendingCommand {
     pub arrives_at: i64,
     pub origin_pos: [f64; 3],
     pub destination_pos: [f64; 3],
+    /// #268: Stable command ID for courier relay dedup. Defaults to 0 for
+    /// saves that predate this field.
+    #[serde(default)]
+    pub id_raw: u64,
 }
 impl SavedPendingCommand {
     pub fn from_live(v: &PendingCommand) -> Self {
@@ -3826,10 +3830,12 @@ impl SavedPendingCommand {
             arrives_at: v.arrives_at,
             origin_pos: v.origin_pos,
             destination_pos: v.destination_pos,
+            id_raw: v.id.0,
         }
     }
     pub fn into_live(self, map: &EntityMap) -> PendingCommand {
         PendingCommand {
+            id: crate::ship::command_events::CommandId(self.id_raw),
             target_system: remap_entity(self.target_system_bits, map),
             command: self.command.into_live(map),
             sent_at: self.sent_at,

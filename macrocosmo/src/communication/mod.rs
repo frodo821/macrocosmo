@@ -1,6 +1,9 @@
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use crate::physics;
+use crate::ship::command_events::CommandId;
 use crate::time_system::GameClock;
 
 pub struct CommunicationPlugin;
@@ -8,6 +11,8 @@ pub struct CommunicationPlugin;
 impl Plugin for CommunicationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingColonyDispatches>();
+        app.init_resource::<NextRemoteCommandId>();
+        app.init_resource::<AppliedCommandIds>();
         // Dispatcher chained before process_pending_commands so local
         // (zero-delay) commands apply within the same Update pass.
         app.add_systems(
@@ -22,6 +27,31 @@ impl Plugin for CommunicationPlugin {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Remote command dedup (#268)
+// ---------------------------------------------------------------------------
+
+/// Monotonic counter for stamping [`PendingCommand`] IDs. Separate from the
+/// dispatcher's `NextCommandId` (ship/command_events) because remote commands
+/// go through a different code path (`send_remote_command`), but they share
+/// the same `CommandId` type so courier relay dedup works uniformly.
+#[derive(Resource, Debug, Default)]
+pub struct NextRemoteCommandId(pub u64);
+
+impl NextRemoteCommandId {
+    /// Allocate a fresh [`CommandId`]. Starts at 1_000_000 to avoid any
+    /// overlap with the dispatcher's allocation range during a session.
+    pub fn allocate(&mut self) -> CommandId {
+        self.0 = self.0.saturating_add(1);
+        CommandId(1_000_000 + self.0)
+    }
+}
+
+/// Set of command IDs that have already been applied. Used to deduplicate
+/// commands that arrive both via light-speed and via courier relay (#268).
+#[derive(Resource, Default, Debug)]
+pub struct AppliedCommandIds(pub HashSet<CommandId>);
 
 /// Max consecutive frames the dispatcher will retain an un-dispatchable
 /// queue (no `PlayerEmpire` / unresolvable origin) before giving up. At
@@ -159,6 +189,8 @@ pub fn process_courier_ships(
 /// A command the player has issued to a remote system that hasn't arrived yet.
 #[derive(Component)]
 pub struct PendingCommand {
+    /// #268: Stable ID for dedup when a courier relays the same command.
+    pub id: CommandId,
     pub target_system: Entity,
     pub command: RemoteCommand,
     pub sent_at: i64,
@@ -375,6 +407,7 @@ pub fn dispatch_pending_colony_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
     mut queue: ResMut<PendingColonyDispatches>,
+    mut next_id: ResMut<NextRemoteCommandId>,
     stars: Query<&crate::components::Position, With<crate::galaxy::StarSystem>>,
     ship_positions: Query<&crate::components::Position, With<crate::ship::Ship>>,
     player_q: Query<
@@ -451,6 +484,7 @@ pub fn dispatch_pending_colony_commands(
             dispatch.command,
             dispatch.target_system,
             &mut command_log,
+            &mut next_id,
         );
     }
 }
@@ -465,6 +499,7 @@ pub fn send_remote_command(
     command: RemoteCommand,
     target_system: Entity,
     command_log: &mut CommandLog,
+    next_id: &mut NextRemoteCommandId,
 ) {
     let distance = physics::distance_ly_arr(origin, destination);
     let delay = physics::light_delay_hexadies(distance);
@@ -477,6 +512,7 @@ pub fn send_remote_command(
     ));
 
     commands.spawn(PendingCommand {
+        id: next_id.allocate(),
         target_system,
         command,
         sent_at,
@@ -490,6 +526,7 @@ pub fn process_pending_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
     pending: Query<(Entity, &PendingCommand)>,
+    mut applied_ids: ResMut<AppliedCommandIds>,
     mut empire_q: Query<
         (&mut CommandLog, &crate::colony::ConstructionParams),
         With<crate::player::PlayerEmpire>,
@@ -511,6 +548,20 @@ pub fn process_pending_commands(
 
     for (entity, cmd) in &pending {
         if clock.elapsed >= cmd.arrives_at {
+            // #268: Dedup — if this command was already applied (e.g. the
+            // courier relay arrived first), skip it and just despawn.
+            if cmd.id != crate::ship::command_events::CommandId::ZERO
+                && applied_ids.0.contains(&cmd.id)
+            {
+                info!(
+                    "Skipping duplicate command {:?}: {}",
+                    cmd.id,
+                    cmd.command.describe()
+                );
+                commands.entity(entity).despawn();
+                continue;
+            }
+
             let delay = cmd.arrives_at - cmd.sent_at;
             info!(
                 "Remote command arrived at target (delay: {} sd): {}",
@@ -531,6 +582,11 @@ pub fn process_pending_commands(
                 &planets,
                 system_has_core,
             );
+
+            // #268: Record this command as applied for dedup.
+            if cmd.id != crate::ship::command_events::CommandId::ZERO {
+                applied_ids.0.insert(cmd.id);
+            }
 
             for entry in command_log.entries.iter_mut() {
                 if entry.sent_at == cmd.sent_at

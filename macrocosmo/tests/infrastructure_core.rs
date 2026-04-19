@@ -1046,6 +1046,7 @@ fn system_building_enqueue_rejected_without_core() {
         },
     });
     app.world_mut().spawn(communication::PendingCommand {
+        id: macrocosmo::ship::command_events::CommandId::ZERO,
         target_system: sys,
         command: cmd,
         sent_at: 0,
@@ -1133,6 +1134,7 @@ fn system_building_enqueue_succeeds_with_core() {
         },
     });
     app.world_mut().spawn(communication::PendingCommand {
+        id: macrocosmo::ship::command_events::CommandId::ZERO,
         target_system: sys,
         command: cmd,
         sent_at: 0,

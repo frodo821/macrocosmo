@@ -22,9 +22,12 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::colony::ResourceStockpile;
+use crate::communication::{AppliedCommandIds, PendingCommand, RemoteCommand};
 use crate::components::Position;
 use crate::galaxy::StarSystem;
 use crate::knowledge::{KnowledgeStore, SystemKnowledge};
+use crate::physics;
+use crate::ship::command_events::CommandId;
 use crate::time_system::GameClock;
 
 use super::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState};
@@ -109,6 +112,35 @@ impl CourierKnowledgeCargo {
     }
 }
 
+/// #268: A single in-flight command carried by a courier ship. The original
+/// `PendingCommand` entity is kept alive (light-speed race), and the courier
+/// emits a new light-speed relay from the closest waypoint to the target.
+#[derive(Clone, Debug)]
+pub struct CarriedCommandEntry {
+    /// Stable ID — preserved through relay so dedup works.
+    pub cmd_id: CommandId,
+    /// The command payload to relay on delivery.
+    pub command: RemoteCommand,
+    /// Target system the command is destined for.
+    pub target_system: Entity,
+    /// World-space position of the target system (cached at pickup).
+    pub target_pos: [f64; 3],
+    /// The waypoint entity where this entry should be released (closest
+    /// waypoint to `target_pos` along the remaining route at pickup time).
+    pub release_at_waypoint: Entity,
+}
+
+/// #268: Commands carried by a courier ship for faster-than-light relay.
+///
+/// Attached to couriers operating in `CourierMode::MessageDelivery`.
+/// Entries are picked up at each waypoint (if their target lies roughly
+/// in the direction of travel) and released at the closest waypoint to
+/// the target, spawning a new light-speed `PendingCommand` from there.
+#[derive(Component, Default, Clone, Debug)]
+pub struct CarriedCommands {
+    pub entries: Vec<CarriedCommandEntry>,
+}
+
 /// Drive courier ships along their routes.
 ///
 /// Run after movement systems so docked-state transitions from the same
@@ -119,6 +151,8 @@ pub fn tick_courier_routes(
     systems_q: Query<(Entity, &Position), With<StarSystem>>,
     mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
     mut stockpiles_q: Query<&mut ResourceStockpile, With<StarSystem>>,
+    pending_q: Query<(Entity, &PendingCommand)>,
+    mut applied_ids: ResMut<AppliedCommandIds>,
     mut couriers_q: Query<(
         Entity,
         &Ship,
@@ -127,6 +161,7 @@ pub fn tick_courier_routes(
         &mut CourierRoute,
         Option<&mut Cargo>,
         Option<&mut CourierKnowledgeCargo>,
+        Option<&mut CarriedCommands>,
     )>,
     mut commands: Commands,
 ) {
@@ -141,7 +176,7 @@ pub fn tick_courier_routes(
     // point to swap out.
     let mut empire_store_opt = empire_q.iter_mut().next();
 
-    for (entity, ship, state, mut queue, mut route, cargo, mut knowledge_cargo) in
+    for (entity, ship, state, mut queue, mut route, cargo, mut knowledge_cargo, mut carried_cmds) in
         couriers_q.iter_mut()
     {
         if route.paused || route.is_finished() || route.waypoints.is_empty() {
@@ -249,8 +284,164 @@ pub fn tick_courier_routes(
                 }
             }
             CourierMode::MessageDelivery => {
-                // Stub: full implementation deferred. Couriers still cycle
-                // waypoints so testing the loop logic remains possible.
+                let current_pos = match position_of(docked_system) {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                // --- Step 1: Deliver carried commands whose release waypoint is this system ---
+                if let Some(ref mut bag) = carried_cmds {
+                    let mut delivered = Vec::new();
+                    for (i, entry) in bag.entries.iter().enumerate() {
+                        if entry.release_at_waypoint == docked_system {
+                            // Emit a new light-speed PendingCommand from here to target.
+                            let distance = physics::distance_ly_arr(current_pos, entry.target_pos);
+                            let delay = physics::light_delay_hexadies(distance);
+                            commands.spawn(PendingCommand {
+                                id: entry.cmd_id,
+                                target_system: entry.target_system,
+                                command: entry.command.clone(),
+                                sent_at: clock.elapsed,
+                                arrives_at: clock.elapsed + delay,
+                                origin_pos: current_pos,
+                                destination_pos: entry.target_pos,
+                            });
+                            info!(
+                                "Courier {} relayed command {:?} from waypoint (remaining light delay: {} hd)",
+                                ship.name, entry.cmd_id, delay
+                            );
+                            delivered.push(i);
+                        }
+                    }
+                    // Remove delivered entries in reverse to preserve indices.
+                    for i in delivered.into_iter().rev() {
+                        bag.entries.remove(i);
+                    }
+                }
+
+                // --- Step 2: Pick up in-flight PendingCommands that we can deliver faster ---
+                // Determine the next waypoint direction for directional filtering.
+                let next_wp_idx = if route.current_index + 1 < route.waypoints.len() {
+                    route.current_index + 1
+                } else if route.repeat {
+                    0
+                } else {
+                    // Route finished after this waypoint, no next leg to carry along.
+                    usize::MAX
+                };
+                let next_wp_pos = if next_wp_idx != usize::MAX {
+                    route
+                        .waypoints
+                        .get(next_wp_idx)
+                        .and_then(|&e| position_of(e))
+                } else {
+                    None
+                };
+
+                if let Some(next_pos) = next_wp_pos {
+                    let v_leg = [
+                        next_pos[0] - current_pos[0],
+                        next_pos[1] - current_pos[1],
+                        next_pos[2] - current_pos[2],
+                    ];
+
+                    // Build remaining waypoint list for release-point computation.
+                    let remaining_waypoints: Vec<(Entity, [f64; 3])> = {
+                        let start = route.current_index + 1;
+                        let mut wps = Vec::new();
+                        if route.repeat {
+                            // Full cycle from next waypoint.
+                            for offset in 0..route.waypoints.len() {
+                                let idx = (start + offset) % route.waypoints.len();
+                                if let Some(pos) = route
+                                    .waypoints
+                                    .get(idx)
+                                    .and_then(|&e| position_of(e).map(|p| (e, p)))
+                                {
+                                    wps.push(pos);
+                                }
+                            }
+                        } else {
+                            for idx in start..route.waypoints.len() {
+                                if let Some(pos) = route
+                                    .waypoints
+                                    .get(idx)
+                                    .and_then(|&e| position_of(e).map(|p| (e, p)))
+                                {
+                                    wps.push(pos);
+                                }
+                            }
+                        }
+                        wps
+                    };
+
+                    let mut pickups: Vec<CarriedCommandEntry> = Vec::new();
+                    for (_cmd_entity, cmd) in &pending_q {
+                        // Skip commands that have already been applied.
+                        if applied_ids.0.contains(&cmd.id) {
+                            continue;
+                        }
+                        // Only pick up commands with a real id (non-zero).
+                        if cmd.id == CommandId::ZERO {
+                            continue;
+                        }
+                        // Don't pick up the same command twice.
+                        if let Some(ref bag) = carried_cmds {
+                            if bag.entries.iter().any(|e| e.cmd_id == cmd.id) {
+                                continue;
+                            }
+                        }
+                        if pickups.iter().any(|e| e.cmd_id == cmd.id) {
+                            continue;
+                        }
+
+                        let target_pos = cmd.destination_pos;
+                        let v_cmd = [
+                            target_pos[0] - current_pos[0],
+                            target_pos[1] - current_pos[1],
+                            target_pos[2] - current_pos[2],
+                        ];
+                        let dot = v_leg[0] * v_cmd[0] + v_leg[1] * v_cmd[1] + v_leg[2] * v_cmd[2];
+
+                        if dot <= 0.0 {
+                            // Target is behind us relative to next leg.
+                            continue;
+                        }
+
+                        // Find the closest remaining waypoint to target.
+                        let release_wp =
+                            remaining_waypoints.iter().min_by(|(_, a_pos), (_, b_pos)| {
+                                let da = physics::distance_ly_arr(*a_pos, target_pos);
+                                let db = physics::distance_ly_arr(*b_pos, target_pos);
+                                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                            });
+
+                        if let Some(&(release_entity, _release_pos)) = release_wp {
+                            pickups.push(CarriedCommandEntry {
+                                cmd_id: cmd.id,
+                                command: cmd.command.clone(),
+                                target_system: cmd.target_system,
+                                target_pos,
+                                release_at_waypoint: release_entity,
+                            });
+                        }
+                    }
+
+                    if !pickups.is_empty() {
+                        let count = pickups.len();
+                        if let Some(ref mut bag) = carried_cmds {
+                            bag.entries.extend(pickups);
+                        } else {
+                            commands
+                                .entity(entity)
+                                .insert(CarriedCommands { entries: pickups });
+                        }
+                        info!(
+                            "Courier {} picked up {} pending command(s) for relay",
+                            ship.name, count
+                        );
+                    }
+                }
             }
         }
 

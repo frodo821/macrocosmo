@@ -404,6 +404,9 @@ pub fn test_app() -> App {
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+    // #268: Courier command relay resources.
+    app.init_resource::<macrocosmo::communication::AppliedCommandIds>();
+    app.init_resource::<macrocosmo::communication::NextRemoteCommandId>();
     // #334 Phase 2 (Commit 2): `PendingCoreDeploys` resource retired —
     // `CoreDeployRequested` messages flow through `CommandEventsPlugin`.
     app.init_resource::<macrocosmo::scripting::GameRng>();
@@ -736,6 +739,9 @@ pub fn full_test_app() -> App {
 
     // --- Routing resource ---
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+    // #268: Courier command relay resources.
+    app.init_resource::<macrocosmo::communication::AppliedCommandIds>();
+    app.init_resource::<macrocosmo::communication::NextRemoteCommandId>();
     // #296 (S-3) / #334 Phase 2 (Commit 2): the `PendingCoreDeploys` resource
     // was retired in favour of `CoreDeployRequested` messages — only the RNG
     // stays.
