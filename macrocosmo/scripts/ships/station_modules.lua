@@ -43,8 +43,25 @@ local research_array = define_module {
     build_time = 0,
 }
 
+-- #219: Point defense turret for station self-defense. Light armament with
+-- high tracking (good vs small targets) but modest damage output.
+local point_defense_turret = define_module {
+    id = "point_defense_turret",
+    name = "Point Defense Turret",
+    slot_type = slot_types.weapon,
+    weapon = {
+        track = 8.0, precision = 0.80, cooldown = 1, range = 5.0,
+        shield_damage = 2.0, shield_damage_div = 0.5, shield_piercing = 0.0,
+        armor_damage = 1.5, armor_damage_div = 0.5, armor_piercing = 0.0,
+        hull_damage = 2.0, hull_damage_div = 0.5,
+    },
+    cost = { minerals = 0, energy = 0 },
+    build_time = 0,
+}
+
 return {
     shipyard_bay = shipyard_bay,
     port_dock = port_dock,
     research_array = research_array,
+    point_defense_turret = point_defense_turret,
 }

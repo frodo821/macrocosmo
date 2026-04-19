@@ -27,7 +27,7 @@ local station_shipyard_hull = define_hull {
 local station_port_hull = define_hull {
     id = "station_port_hull",
     name = "Trade Port",
-    description = "Immobile orbital trade hub providing harbour and logistics.",
+    description = "Immobile orbital trade hub providing harbour and logistics. Equipped with light point-defense armament.",
     size = 10000,
     is_capital = false,
     base_hp = 300,
@@ -35,6 +35,7 @@ local station_port_hull = define_hull {
     base_evasion = 0.0,
     slots = {
         { type = slot_types.utility, count = 2 },
+        { type = slot_types.weapon, count = 1 },
     },
     build_cost = { minerals = 0, energy = 0 },
     build_time = 0,
