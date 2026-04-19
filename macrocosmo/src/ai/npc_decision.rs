@@ -62,11 +62,17 @@ pub fn npc_decision_tick(
     clock: Res<GameClock>,
     _bus: ResMut<AiBusResource>,
     npcs: Query<&Faction, (With<Empire>, Without<PlayerEmpire>)>,
+    #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
     let now = clock.elapsed;
     let mut policy = NoOpPolicy;
     for faction in &npcs {
         policy.tick(&faction.id, now);
+
+        #[cfg(feature = "ai-log")]
+        if let Some(ref mut log) = log {
+            super::debug_log::write_decision_log(log, now, &faction.id, &_bus);
+        }
     }
 }
 

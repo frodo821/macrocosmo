@@ -50,6 +50,11 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # Default build carries no profiling overhead.
 default = []
 
+# #397: AI debug logging. Writes JSONL decision + world-state logs under
+# `logs/` for offline analysis. Zero cost when disabled — all log code is
+# `#[cfg(feature = "ai-log")]`-gated.
+ai-log = []
+
 # #284: development-only profiling feature. Enables:
 #   - `bevy/trace_tracy` — Tracy profiler integration (CPU spans + GPU
 #     `RenderQueue` row). The `prof_span!` macro expands to
