@@ -86,6 +86,7 @@ impl Plugin for VisualizationPlugin {
             .insert_resource(GalaxyView { scale: 15.0 })
             .insert_resource(SelectedSystem::default())
             .insert_resource(SelectedShip::default())
+            .insert_resource(SelectedShips::default())
             .insert_resource(SelectedPlanet::default())
             .insert_resource(ContextMenu::default())
             .insert_resource(DeployMode::default())
@@ -99,6 +100,7 @@ impl Plugin for VisualizationPlugin {
                 Update,
                 (
                     click_select_system,
+                    sync_selected_ship_from_ships.after(click_select_system),
                     camera::camera_controls,
                     stars::update_star_colors,
                     stars::draw_galaxy_overlay,
@@ -116,6 +118,55 @@ pub struct SelectedSystem(pub Option<Entity>);
 
 #[derive(Resource, Default)]
 pub struct SelectedShip(pub Option<Entity>);
+
+/// #407: Multi-ship selection resource. Maintains an ordered list of selected
+/// ship entities. `SelectedShip` is kept in sync with `primary()` via
+/// `sync_selected_ship_from_ships`.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct SelectedShips(pub Vec<Entity>);
+
+impl SelectedShips {
+    /// The first (primary) selected ship, if any.
+    pub fn primary(&self) -> Option<Entity> {
+        self.0.first().copied()
+    }
+
+    /// Whether `e` is in the selection set.
+    pub fn contains(&self, e: Entity) -> bool {
+        self.0.contains(&e)
+    }
+
+    /// Add if absent, remove if present.
+    pub fn toggle(&mut self, e: Entity) {
+        if let Some(idx) = self.0.iter().position(|x| *x == e) {
+            self.0.remove(idx);
+        } else {
+            self.0.push(e);
+        }
+    }
+
+    /// Replace selection with a single entity.
+    pub fn set_single(&mut self, e: Entity) {
+        self.0 = vec![e];
+    }
+
+    /// Clear selection.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Entity> {
+        self.0.iter()
+    }
+}
 
 #[derive(Resource, Default)]
 pub struct SelectedPlanet(pub Option<Entity>);
@@ -153,6 +204,7 @@ pub fn click_select_system(
     clock: Res<GameClock>,
     mut selected: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
+    mut selected_ships: ResMut<SelectedShips>,
     mut context_menu: ResMut<ContextMenu>,
     mut deploy_mode: ResMut<DeployMode>,
     mut command_queues: Query<&mut CommandQueue>,
@@ -167,6 +219,7 @@ pub fn click_select_system(
         }
         if selected_ship.0.is_some() {
             selected_ship.0 = None;
+            selected_ships.clear();
             context_menu.open = false;
         } else {
             selected.0 = None;
@@ -200,6 +253,7 @@ pub fn click_select_system(
     let Ok(world_pos) = camera.viewport_to_world_2d(global_transform, cursor_pos) else {
         selected.0 = None;
         selected_ship.0 = None;
+        selected_ships.clear();
         return;
     };
 
@@ -279,9 +333,15 @@ pub fn click_select_system(
         }
     }
 
-    // Clicking on a ship always selects that ship (regardless of current selection)
+    // #407: Shift+click toggles multi-select; plain click replaces selection.
     if let Some((ship_entity, _)) = best_ship {
-        selected_ship.0 = Some(ship_entity);
+        if shift_held {
+            selected_ships.toggle(ship_entity);
+        } else {
+            selected_ships.set_single(ship_entity);
+        }
+        // Sync SelectedShip to match primary
+        selected_ship.0 = selected_ships.primary();
         return;
     }
 
@@ -358,6 +418,30 @@ pub fn click_select_system(
         // Clicked empty space
         selected.0 = None;
         selected_ship.0 = None;
+        selected_ships.clear();
+    }
+}
+
+/// #407: Keep `SelectedShip` in sync with `SelectedShips.primary()`. This
+/// runs every frame so code that only reads `SelectedShip` (visualization,
+/// UI panels) always sees the primary of the multi-select set. Writes to
+/// `SelectedShip.0` from UI code (outline, ship panel) are also propagated
+/// back into `SelectedShips`.
+fn sync_selected_ship_from_ships(
+    mut selected_ship: ResMut<SelectedShip>,
+    mut selected_ships: ResMut<SelectedShips>,
+) {
+    let primary = selected_ships.primary();
+    if selected_ship.0 != primary {
+        // If SelectedShip was changed externally (e.g., by outline click),
+        // update SelectedShips to match.
+        if let Some(e) = selected_ship.0 {
+            if !selected_ships.contains(e) {
+                selected_ships.set_single(e);
+            }
+        } else {
+            selected_ships.clear();
+        }
     }
 }
 
@@ -494,5 +578,48 @@ mod tests {
     #[test]
     fn bevy_gizmos_render_feature_is_enabled() {
         let _: bevy::gizmos_render::GizmoRenderPlugin = bevy::gizmos_render::GizmoRenderPlugin;
+    }
+
+    // -----------------------------------------------------------------------
+    // #407: SelectedShips multi-select tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shift_click_toggles_selection() {
+        let mut selected = SelectedShips::default();
+        let mut world = bevy::prelude::World::new();
+        let e1 = world.spawn_empty().id();
+        let e2 = world.spawn_empty().id();
+
+        // Set single
+        selected.set_single(e1);
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains(e1));
+        assert_eq!(selected.primary(), Some(e1));
+
+        // Toggle adds e2
+        selected.toggle(e2);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(e1));
+        assert!(selected.contains(e2));
+        assert_eq!(selected.primary(), Some(e1));
+
+        // Toggle removes e1
+        selected.toggle(e1);
+        assert_eq!(selected.len(), 1);
+        assert!(!selected.contains(e1));
+        assert!(selected.contains(e2));
+        assert_eq!(selected.primary(), Some(e2));
+
+        // Toggle removes e2 — now empty
+        selected.toggle(e2);
+        assert!(selected.is_empty());
+        assert_eq!(selected.primary(), None);
+
+        // Clear
+        selected.set_single(e1);
+        selected.toggle(e2);
+        selected.clear();
+        assert!(selected.is_empty());
     }
 }

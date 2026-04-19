@@ -13,7 +13,7 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
 use crate::ui::UiElementRegistry;
-use crate::visualization::SelectedShip;
+use crate::visualization::{SelectedShip, SelectedShips};
 
 /// #389: Pre-computed harbour info for context menu display.
 pub struct HarbourInfo {
@@ -35,6 +35,7 @@ pub fn draw_context_menu(
     ctx: &egui::Context,
     context_menu: &mut crate::visualization::ContextMenu,
     selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     ships_query: &mut Query<(
         Entity,
@@ -609,9 +610,18 @@ pub fn draw_context_menu(
     }
 
     // Apply queued command (non-docked ships)
-    if let Some(qc) = queued_command {
-        if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
-            queue.commands.push(qc);
+    // #407: Apply MoveTo to all selected ships when multi-selected.
+    if let Some(ref qc) = queued_command {
+        if matches!(qc, QueuedCommand::MoveTo { .. }) && selected_ships.len() > 1 {
+            for &other_ship in selected_ships.iter() {
+                if let Ok(mut queue) = command_queues.get_mut(other_ship) {
+                    queue.commands.push(qc.clone());
+                }
+            }
+            selected_ship.0 = None;
+            selected_ships.clear();
+        } else if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
+            queue.commands.push(qc.clone());
             selected_ship.0 = None;
         }
     }

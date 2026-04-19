@@ -15,7 +15,9 @@ use crate::ship::{
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
 use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry};
-use crate::visualization::{ContextMenu, SelectedPlanet, SelectedShip, SelectedSystem};
+use crate::visualization::{
+    ContextMenu, SelectedPlanet, SelectedShip, SelectedShips, SelectedSystem,
+};
 
 #[derive(SystemParam)]
 pub struct MainPanelWorldQueries<'w, 's> {
@@ -109,10 +111,58 @@ pub struct MainPanelWorldQueries<'w, 's> {
     pub ship_modifiers: Query<'w, 's, &'static ShipModifiers>,
 }
 
+/// #407: Bundled queries for the outline/tooltip system, to keep its
+/// parameter count under Bevy's 16-param limit after SelectedShips +
+/// fleet queries were added.
+#[derive(SystemParam)]
+pub struct OutlineQueries<'w, 's> {
+    pub stars: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static crate::galaxy::StarSystem,
+            &'static Position,
+            Option<&'static crate::galaxy::SystemAttributes>,
+        ),
+    >,
+    pub colonies: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static crate::colony::Colony,
+            Option<&'static crate::colony::Production>,
+            Option<&'static mut crate::colony::BuildQueue>,
+            Option<&'static crate::colony::Buildings>,
+            Option<&'static mut crate::colony::BuildingQueue>,
+            Option<&'static crate::colony::MaintenanceCost>,
+            Option<&'static crate::colony::FoodConsumption>,
+        ),
+    >,
+    pub ships_query: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut Ship,
+            &'static mut crate::ship::ShipState,
+            Option<&'static mut crate::ship::Cargo>,
+            &'static crate::ship::ShipHitpoints,
+            Option<&'static crate::ship::SurveyData>,
+        ),
+    >,
+    pub planets: Query<'w, 's, &'static crate::galaxy::Planet>,
+    pub windows: Query<'w, 's, &'static Window>,
+    pub camera_q: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<Camera2d>>,
+    pub fleets: Query<'w, 's, (Entity, &'static Fleet, &'static FleetMembers)>,
+}
+
 #[derive(SystemParam)]
 pub struct MainPanelSelection<'w> {
     pub selected_system: ResMut<'w, SelectedSystem>,
     pub selected_ship: ResMut<'w, SelectedShip>,
+    pub selected_ships: ResMut<'w, SelectedShips>,
     pub selected_planet: ResMut<'w, SelectedPlanet>,
     pub context_menu: ResMut<'w, ContextMenu>,
     /// #390-T5: UI element registry for BRP introspection. `None` when the

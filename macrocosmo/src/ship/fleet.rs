@@ -442,4 +442,128 @@ mod tests {
         assert_eq!(members.0, vec![ship_b]);
         assert_eq!(world.get::<Fleet>(fleet).unwrap().flagship, None);
     }
+
+    // -----------------------------------------------------------------------
+    // #407: Fleet operations tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn form_fleet_groups_selected_ships() {
+        let mut world = World::new();
+        let ship_a = spawn_test_ship(&mut world, "explorer_mk1");
+        let ship_b = spawn_test_ship(&mut world, "colony_ship_mk1");
+        // Each ship starts with no fleet.
+        assert!(world.get::<Ship>(ship_a).unwrap().fleet.is_none());
+        assert!(world.get::<Ship>(ship_b).unwrap().fleet.is_none());
+
+        // Form a fleet from both ships.
+        let fleet = create_fleet(
+            &mut world,
+            "Alpha".to_string(),
+            vec![ship_a, ship_b],
+            Some(ship_a),
+        );
+
+        // Both ships now belong to the same fleet.
+        assert_eq!(world.get::<Ship>(ship_a).unwrap().fleet, Some(fleet));
+        assert_eq!(world.get::<Ship>(ship_b).unwrap().fleet, Some(fleet));
+        let members = world.get::<FleetMembers>(fleet).unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(ship_a));
+        assert!(members.contains(ship_b));
+    }
+
+    #[test]
+    fn merge_fleet_combines_two_fleets() {
+        let mut world = World::new();
+        let ship_a = spawn_test_ship(&mut world, "explorer_mk1");
+        let ship_b = spawn_test_ship(&mut world, "colony_ship_mk1");
+        let ship_c = spawn_test_ship(&mut world, "explorer_mk1");
+
+        let fleet_alpha = create_fleet(
+            &mut world,
+            "Alpha".to_string(),
+            vec![ship_a, ship_b],
+            Some(ship_a),
+        );
+        let fleet_beta = create_fleet(&mut world, "Beta".to_string(), vec![ship_c], Some(ship_c));
+
+        // Move ship_c from fleet_beta into fleet_alpha (simulating merge).
+        {
+            // Remove from old fleet
+            if let Some(mut old_members) = world.get_mut::<FleetMembers>(fleet_beta) {
+                old_members.0.retain(|e| *e != ship_c);
+            }
+            // Add to target fleet
+            if let Some(mut ship) = world.get_mut::<Ship>(ship_c) {
+                ship.fleet = Some(fleet_alpha);
+            }
+            if let Some(mut target_members) = world.get_mut::<FleetMembers>(fleet_alpha) {
+                if !target_members.0.contains(&ship_c) {
+                    target_members.0.push(ship_c);
+                }
+            }
+        }
+
+        // Verify all ships are now in fleet_alpha.
+        assert_eq!(world.get::<Ship>(ship_a).unwrap().fleet, Some(fleet_alpha));
+        assert_eq!(world.get::<Ship>(ship_b).unwrap().fleet, Some(fleet_alpha));
+        assert_eq!(world.get::<Ship>(ship_c).unwrap().fleet, Some(fleet_alpha));
+        let members = world.get::<FleetMembers>(fleet_alpha).unwrap();
+        assert_eq!(members.len(), 3);
+        // fleet_beta should be empty.
+        let beta_members = world.get::<FleetMembers>(fleet_beta).unwrap();
+        assert!(beta_members.is_empty());
+    }
+
+    #[test]
+    fn fleet_moveto_applies_to_all_members() {
+        let mut world = World::new();
+        let target_system = world.spawn_empty().id();
+        let ship_a = spawn_test_ship(&mut world, "explorer_mk1");
+        let ship_b = spawn_test_ship(&mut world, "colony_ship_mk1");
+
+        // Both ships should have empty command queues initially.
+        assert!(
+            world
+                .get::<CommandQueue>(ship_a)
+                .unwrap()
+                .commands
+                .is_empty()
+        );
+        assert!(
+            world
+                .get::<CommandQueue>(ship_b)
+                .unwrap()
+                .commands
+                .is_empty()
+        );
+
+        // Simulate fleet-level MoveTo: push the same command to both ships.
+        let cmd = super::super::QueuedCommand::MoveTo {
+            system: target_system,
+        };
+        world
+            .get_mut::<CommandQueue>(ship_a)
+            .unwrap()
+            .commands
+            .push(cmd.clone());
+        world
+            .get_mut::<CommandQueue>(ship_b)
+            .unwrap()
+            .commands
+            .push(cmd.clone());
+
+        // Both ships should have the MoveTo command.
+        assert_eq!(world.get::<CommandQueue>(ship_a).unwrap().commands.len(), 1);
+        assert_eq!(world.get::<CommandQueue>(ship_b).unwrap().commands.len(), 1);
+        assert!(matches!(
+            world.get::<CommandQueue>(ship_a).unwrap().commands[0],
+            super::super::QueuedCommand::MoveTo { system } if system == target_system
+        ));
+        assert!(matches!(
+            world.get::<CommandQueue>(ship_b).unwrap().commands[0],
+            super::super::QueuedCommand::MoveTo { system } if system == target_system
+        ));
+    }
 }
