@@ -13,6 +13,9 @@ use crate::ship_design::WeaponStats;
 // Data types
 // ---------------------------------------------------------------------------
 
+/// Default number of turns shield regen is suppressed after taking damage.
+pub const DEFAULT_SHIELD_REGEN_DELAY: u32 = 3;
+
 /// Ship profile extracted from ECS for simulation.
 #[derive(Clone, Debug)]
 pub struct ShipProfile {
@@ -27,6 +30,8 @@ pub struct ShipProfile {
     pub evasion: f64,
     /// Sublight speed — used for distance control between fleets.
     pub speed: f64,
+    /// Turns remaining before shield regen resumes (reset on hit).
+    pub shield_regen_cooldown: u32,
 }
 
 impl ShipProfile {
@@ -47,6 +52,8 @@ pub struct CombatConfig {
     pub turns_per_tick: u32,
     /// How much distance changes per unit of speed difference each turn.
     pub distance_step_factor: f64,
+    /// Turns shield regen is suppressed after taking a hit.
+    pub shield_regen_delay: u32,
 }
 
 impl Default for CombatConfig {
@@ -54,6 +61,7 @@ impl Default for CombatConfig {
         Self {
             turns_per_tick: 12,
             distance_step_factor: 1.0,
+            shield_regen_delay: DEFAULT_SHIELD_REGEN_DELAY,
         }
     }
 }
@@ -102,13 +110,17 @@ fn hit_chance(weapon: &WeaponStats, target_evasion: f64) -> f64 {
 }
 
 /// Apply weapon damage through the 3-layer HP model.
-/// Returns the total HP removed.
+/// Returns the total HP removed. Resets shield regen cooldown on any hit.
 fn apply_damage_to_profile(
     target: &mut ShipProfile,
     weapon: &WeaponStats,
     rng: &mut impl Rng,
+    shield_regen_delay: u32,
 ) -> f64 {
     let mut removed = 0.0;
+
+    // Any damage suppresses shield regen.
+    target.shield_regen_cooldown = shield_regen_delay;
 
     // Shield phase
     if target.shield > 0.0 && rng.random::<f64>() >= weapon.shield_piercing {
@@ -118,7 +130,7 @@ fn apply_damage_to_profile(
         let actual = dmg.min(target.shield);
         target.shield -= actual;
         removed += actual;
-        return removed; // absorbed by shield
+        return removed;
     }
 
     // Armor phase
@@ -129,7 +141,7 @@ fn apply_damage_to_profile(
         let actual = dmg.min(target.armor);
         target.armor -= actual;
         removed += actual;
-        return removed; // absorbed by armor
+        return removed;
     }
 
     // Hull phase
@@ -275,8 +287,6 @@ pub fn simulate_combat(
 
         // Attacker fires
         {
-            let mut target_cursor = 0usize;
-            // We need to iterate attackers immutably while mutating defenders.
             // Clone attacker weapon refs to avoid borrow conflict.
             let attacker_weapons: Vec<(Vec<WeaponStats>, f64)> = attackers
                 .iter()
@@ -293,13 +303,13 @@ pub fn simulate_combat(
                         continue;
                     }
                     // Find alive target.
-                    let Some(target_idx) = find_alive_target(defenders, &mut target_cursor) else {
+                    let Some(target_idx) = find_weakest_alive_target(defenders) else {
                         break;
                     };
                     let target_evasion = defenders[target_idx].evasion;
                     let chance = hit_chance(weapon, target_evasion);
                     if rng.random::<f64>() < chance {
-                        let dmg = apply_damage_to_profile(&mut defenders[target_idx], weapon, rng);
+                        let dmg = apply_damage_to_profile(&mut defenders[target_idx], weapon, rng, config.shield_regen_delay);
                         dmg_by_attacker += dmg;
                     }
                     weapons_fired += 1;
@@ -309,7 +319,6 @@ pub fn simulate_combat(
 
         // Defender fires
         {
-            let mut target_cursor = 0usize;
             let defender_weapons: Vec<Vec<WeaponStats>> = defenders
                 .iter()
                 .filter(|s| s.is_alive())
@@ -324,13 +333,13 @@ pub fn simulate_combat(
                     if weapon.cooldown > 0 && (turn as i64) % weapon.cooldown != 0 {
                         continue;
                     }
-                    let Some(target_idx) = find_alive_target(attackers, &mut target_cursor) else {
+                    let Some(target_idx) = find_weakest_alive_target(attackers) else {
                         break;
                     };
                     let target_evasion = attackers[target_idx].evasion;
                     let chance = hit_chance(weapon, target_evasion);
                     if rng.random::<f64>() < chance {
-                        let dmg = apply_damage_to_profile(&mut attackers[target_idx], weapon, rng);
+                        let dmg = apply_damage_to_profile(&mut attackers[target_idx], weapon, rng, config.shield_regen_delay);
                         dmg_by_defender += dmg;
                     }
                     weapons_fired += 1;
@@ -338,9 +347,14 @@ pub fn simulate_combat(
             }
         }
 
-        // --- 3. Shield regen ---
+        // --- 3. Shield regen (suppressed while cooldown > 0) ---
         for ship in attackers.iter_mut().chain(defenders.iter_mut()) {
-            if ship.is_alive() && ship.shield_regen > 0.0 {
+            if !ship.is_alive() {
+                continue;
+            }
+            if ship.shield_regen_cooldown > 0 {
+                ship.shield_regen_cooldown -= 1;
+            } else if ship.shield_regen > 0.0 {
                 ship.shield = (ship.shield + ship.shield_regen).min(ship.shield_max);
             }
         }
@@ -388,23 +402,15 @@ pub fn simulate_combat(
     CombatLog { turns, outcome }
 }
 
-/// Find the next alive target using round-robin cursor.
-/// Returns `Some(index)` if found, `None` if no alive targets.
-fn find_alive_target(fleet: &[ShipProfile], cursor: &mut usize) -> Option<usize> {
-    if fleet.is_empty() {
-        return None;
-    }
-    let start = *cursor;
-    loop {
-        let idx = *cursor % fleet.len();
-        *cursor += 1;
-        if fleet[idx].is_alive() {
-            return Some(idx);
-        }
-        if *cursor - start >= fleet.len() {
-            return None;
-        }
-    }
+/// Find the weakest alive target (lowest total HP).
+/// Ties broken by index (stable).
+fn find_weakest_alive_target(fleet: &[ShipProfile]) -> Option<usize> {
+    fleet
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.is_alive())
+        .min_by(|(_, a), (_, b)| a.total_hp().partial_cmp(&b.total_hp()).unwrap())
+        .map(|(i, _)| i)
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +512,7 @@ mod tests {
             shield_regen: 1.0,
             evasion: 2.0,
             speed,
+            shield_regen_cooldown: 0,
         }
     }
 
@@ -606,6 +613,7 @@ mod tests {
                 shield_regen: 5.0,
                 evasion: 2.0,
                 speed: 2.0,
+                shield_regen_cooldown: 0,
             })
             .collect();
 
@@ -643,6 +651,7 @@ mod tests {
                 shield_regen: 0.0,
                 evasion: 2.0,
                 speed: 2.0,
+                shield_regen_cooldown: 0,
             })
             .collect();
 
@@ -817,6 +826,7 @@ mod tests {
             shield_regen: 0.0,
             evasion: 0.0,
             speed: 1.0,
+            shield_regen_cooldown: 0,
         }];
         let mut defenders = vec![ShipProfile {
             weapons: vec![long_weapon],
@@ -829,6 +839,7 @@ mod tests {
             shield_regen: 0.0,
             evasion: 0.0,
             speed: 1.0,
+            shield_regen_cooldown: 0,
         }];
 
         let cfg = CombatConfig {
