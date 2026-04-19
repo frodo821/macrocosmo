@@ -29,6 +29,44 @@ use crate::galaxy::{AtSystem, Hostile};
 use crate::player::{Empire, Faction, PlayerEmpire};
 use crate::time_system::GameClock;
 
+/// Marker component: this empire's decisions are made by the AI policy.
+/// Applied to NPC empires automatically, and optionally to the player
+/// empire when `--ai-player` is passed or `AiPlayerMode(true)` is set.
+#[derive(Component)]
+pub struct AiControlled;
+
+/// Resource that opts the player empire into AI control.
+/// Default is `false` — normal gameplay where the player makes decisions.
+/// Set to `true` to let the AI policy drive the player empire.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct AiPlayerMode(pub bool);
+
+/// System that marks all NPC empires (those with `Empire` but without
+/// `PlayerEmpire`) with `AiControlled`. Runs every frame to catch newly
+/// spawned empires.
+pub fn mark_npc_empires_ai_controlled(
+    mut commands: Commands,
+    empires: Query<Entity, (With<Empire>, Without<PlayerEmpire>, Without<AiControlled>)>,
+) {
+    for entity in &empires {
+        commands.entity(entity).insert(AiControlled);
+    }
+}
+
+/// System that marks the player empire with `AiControlled` when
+/// `AiPlayerMode(true)` is set.
+pub fn mark_player_ai_controlled(
+    mut commands: Commands,
+    mode: Res<AiPlayerMode>,
+    player: Query<Entity, (With<PlayerEmpire>, Without<AiControlled>)>,
+) {
+    if mode.0 {
+        for entity in &player {
+            commands.entity(entity).insert(AiControlled);
+        }
+    }
+}
+
 /// Trait implemented by pluggable NPC decision policies. Stateless policies
 /// are encouraged; stateful policies can live in a `Resource` and be read
 /// from the tick system.
@@ -144,13 +182,13 @@ impl NpcPolicy for SimpleNpcPolicy {
 }
 
 /// System run under [`AiTickSet::Reason`](super::AiTickSet::Reason):
-/// walk every NPC empire (`Empire` without `PlayerEmpire`) and invoke the
-/// currently-configured policy. Today the policy is [`SimpleNpcPolicy`];
-/// it reads bus metrics and emits commands for the command consumer to drain.
+/// walk every empire marked [`AiControlled`] and invoke [`SimpleNpcPolicy`].
+/// NPC empires are auto-marked by [`mark_npc_empires_ai_controlled`].
+/// The player empire is also marked when [`AiPlayerMode`]`(true)` is set.
 pub fn npc_decision_tick(
     clock: Res<GameClock>,
     mut bus: ResMut<AiBusResource>,
-    npcs: Query<(Entity, &Faction), (With<Empire>, Without<PlayerEmpire>)>,
+    npcs: Query<(Entity, &Faction), With<AiControlled>>,
     hostiles: Query<&AtSystem, With<Hostile>>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {

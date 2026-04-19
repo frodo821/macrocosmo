@@ -80,6 +80,7 @@ pub struct AiPlugin;
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AiBusResource>()
+            .init_resource::<super::npc_decision::AiPlayerMode>()
             .add_systems(Startup, schema::declare_all)
             .add_systems(
                 Update,
@@ -90,7 +91,17 @@ impl Plugin for AiPlugin {
                 )
                     .in_set(AiTickSet::MetricProduce),
             )
-            // #173: NPC decision tick — SimpleNpcPolicy reads metrics and emits commands.
+            // Mark empires as AiControlled before the decision tick runs.
+            .add_systems(
+                Update,
+                (
+                    super::npc_decision::mark_npc_empires_ai_controlled,
+                    super::npc_decision::mark_player_ai_controlled,
+                )
+                    .before(AiTickSet::MetricProduce)
+                    .after(crate::time_system::advance_game_time),
+            )
+            // NPC decision tick — SimpleNpcPolicy reads metrics and emits commands.
             .add_systems(
                 Update,
                 super::npc_decision::npc_decision_tick.in_set(AiTickSet::Reason),

@@ -9,8 +9,10 @@ mod common;
 
 use bevy::prelude::*;
 use macrocosmo::ai::emit::AiBusWriter;
+use macrocosmo::ai::npc_decision::{AiControlled, AiPlayerMode};
 use macrocosmo::ai::schema::ids;
 use macrocosmo::ai::{AiBusResource, AiPlugin};
+use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo_ai::{MetricId, MetricSpec, Retention, WarningMode};
 
@@ -156,4 +158,111 @@ fn ai_plugin_declares_tier1_schema_on_startup() {
     assert!(bus.has_evidence_kind(&ids::evidence::direct_attack()));
     assert!(bus.has_evidence_kind(&ids::evidence::gift_given()));
     assert!(bus.has_evidence_kind(&ids::evidence::major_military_buildup()));
+}
+
+// ---------------------------------------------------------------------------
+// AiControlled / AiPlayerMode tests (#398)
+// ---------------------------------------------------------------------------
+
+/// NPC empires (Empire without PlayerEmpire) are automatically marked
+/// AiControlled after a tick.
+#[test]
+fn npc_empires_get_ai_controlled_marker() {
+    let mut app = minimal_ai_app();
+    // Spawn an NPC empire (Empire + Faction, no PlayerEmpire).
+    let npc = app
+        .world_mut()
+        .spawn((
+            Empire { name: "NPC".into() },
+            Faction::new("test_npc", "Test NPC"),
+        ))
+        .id();
+    app.update();
+    assert!(
+        app.world().get::<AiControlled>(npc).is_some(),
+        "NPC empire should have AiControlled after one tick"
+    );
+}
+
+/// Player empire is NOT marked AiControlled by default (AiPlayerMode(false)).
+#[test]
+fn player_empire_not_ai_controlled_by_default() {
+    let mut app = minimal_ai_app();
+    let player = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Player".into(),
+            },
+            PlayerEmpire,
+            Faction::new("player", "Player"),
+        ))
+        .id();
+    // Default AiPlayerMode is false.
+    app.update();
+    assert!(
+        app.world().get::<AiControlled>(player).is_none(),
+        "Player empire should NOT have AiControlled when AiPlayerMode is false"
+    );
+}
+
+/// Player empire IS marked AiControlled when AiPlayerMode(true).
+#[test]
+fn player_empire_ai_controlled_when_opt_in() {
+    let mut app = minimal_ai_app();
+    app.insert_resource(AiPlayerMode(true));
+    let player = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Player".into(),
+            },
+            PlayerEmpire,
+            Faction::new("player", "Player"),
+        ))
+        .id();
+    app.update();
+    // Commands are applied at end of tick; need another tick for the
+    // AiControlled component to be visible.
+    app.update();
+    assert!(
+        app.world().get::<AiControlled>(player).is_some(),
+        "Player empire should have AiControlled when AiPlayerMode(true)"
+    );
+}
+
+/// Both NPC and player empire have AiControlled when AiPlayerMode(true),
+/// and the decision tick processes both without panicking.
+#[test]
+fn ai_player_mode_ticks_both_empires() {
+    let mut app = minimal_ai_app();
+    app.insert_resource(AiPlayerMode(true));
+    app.world_mut().spawn((
+        Empire {
+            name: "Player".into(),
+        },
+        PlayerEmpire,
+        Faction::new("player", "Player"),
+    ));
+    app.world_mut().spawn((
+        Empire { name: "NPC".into() },
+        Faction::new("test_npc", "Test NPC"),
+    ));
+
+    // Several ticks — must not panic.
+    for t in 1..=10 {
+        app.world_mut().resource_mut::<GameClock>().elapsed = t;
+        app.update();
+    }
+
+    // Both should be AiControlled.
+    let ai_controlled_count = app
+        .world_mut()
+        .query_filtered::<Entity, With<AiControlled>>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        ai_controlled_count, 2,
+        "Both player and NPC empires should be AiControlled"
+    );
 }
