@@ -19,6 +19,7 @@ pub mod knowledge_api;
 pub mod knowledge_dispatch;
 pub mod knowledge_registry;
 pub mod lifecycle;
+pub mod log_buffer;
 pub mod map_api;
 pub mod modifier_api;
 pub mod negotiation_api;
@@ -44,6 +45,11 @@ impl Plugin for ScriptingPlugin {
         app.init_resource::<GameRng>()
             .init_resource::<crate::casus_belli::ActiveWars>()
             .add_systems(Startup, init_scripting)
+            .add_systems(Startup, init_log_buffer.after(init_scripting))
+            .add_systems(
+                Update,
+                log_buffer::drain_print_buffer.after(crate::time_system::advance_game_time),
+            )
             .add_systems(Startup, load_all_scripts.after(init_scripting))
             .add_systems(Startup, load_faction_type_registry.after(load_all_scripts))
             .add_systems(Startup, load_casus_belli_registry.after(load_all_scripts))
@@ -175,6 +181,13 @@ pub fn init_scripting(mut commands: Commands, rng: Res<GameRng>) {
     let engine = ScriptEngine::new_with_rng(rng.handle())
         .expect("Failed to initialize Lua scripting engine");
     commands.insert_resource(engine);
+}
+
+/// Startup system that creates the `LogBuffer` resource wired to the
+/// `ScriptEngine`'s shared print buffer. Must run after `init_scripting`.
+fn init_log_buffer(mut commands: Commands, engine: Res<ScriptEngine>) {
+    let buffer = log_buffer::LogBuffer::with_shared(engine.print_buffer());
+    commands.insert_resource(buffer);
 }
 
 /// Startup system that loads all Lua scripts via `scripts/init.lua` (if it exists),

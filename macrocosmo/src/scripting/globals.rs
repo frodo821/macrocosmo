@@ -3,14 +3,62 @@ use std::path::Path;
 
 use super::effect_scope;
 use super::helpers::extract_id_from_lua_value;
+use super::log_buffer::{LogEntry, LogSource, SharedPrintBuffer};
 
 /// Configure global tables and functions available to all Lua scripts.
+///
+/// When `print_buffer` is `Some`, Lua's `print` is replaced with a function
+/// that tees output to both stdout and the shared buffer (which a Bevy system
+/// drains into `LogBuffer` each frame). When `None`, print retains its default
+/// behaviour.
 pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
+    setup_globals_with_print_buffer(lua, scripts_dir, None)
+}
+
+/// Internal entry point that accepts an optional shared print buffer.
+pub fn setup_globals_with_print_buffer(
+    lua: &Lua,
+    scripts_dir: &Path,
+    print_buffer: Option<SharedPrintBuffer>,
+) -> Result<(), mlua::Error> {
     let globals = lua.globals();
 
     // --- Sandbox: disable dangerous globals ---
     globals.set("loadfile", mlua::Value::Nil)?;
     globals.set("dofile", mlua::Value::Nil)?;
+
+    // --- Redirect print() to shared buffer (tee to stdout) ---
+    if let Some(buffer) = print_buffer {
+        let print_fn = lua.create_function(move |_, args: mlua::MultiValue| {
+            let parts: Vec<String> = args
+                .iter()
+                .map(|v| match v {
+                    mlua::Value::Nil => "nil".to_string(),
+                    mlua::Value::Boolean(b) => b.to_string(),
+                    mlua::Value::Integer(i) => i.to_string(),
+                    mlua::Value::Number(n) => n.to_string(),
+                    mlua::Value::String(s) => s.to_string_lossy().to_string(),
+                    other => format!("{:?}", other),
+                })
+                .collect();
+            let line = parts.join("\t");
+
+            // Tee to stdout
+            println!("[lua] {}", line);
+
+            // Push into the shared buffer
+            if let Ok(mut buf) = buffer.lock() {
+                buf.push(LogEntry {
+                    text: line,
+                    source: LogSource::Print,
+                    timestamp: 0, // will be filled by drain system
+                });
+            }
+
+            Ok(())
+        })?;
+        globals.set("print", print_fn)?;
+    }
 
     // --- Set up require() search path using resolved absolute path ---
     let package: mlua::Table = globals.get("package")?;

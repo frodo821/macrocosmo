@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use super::game_rng::{GameRng, register_game_rand};
 use super::globals;
+use super::log_buffer::SharedPrintBuffer;
 
 /// Environment variable that, when set, forces [`resolve_scripts_dir`] to use
 /// the supplied path. Intended primarily for CI and distributed test runners
@@ -170,6 +171,8 @@ impl std::error::Error for ScriptsDirError {}
 pub struct ScriptEngine {
     lua: Lua,
     scripts_dir: PathBuf,
+    /// Shared buffer for Lua print output, used by the console UI.
+    print_buffer: SharedPrintBuffer,
 }
 
 impl ScriptEngine {
@@ -207,10 +210,15 @@ impl ScriptEngine {
                 | LuaStdLib::BIT,
             mlua::LuaOptions::default(),
         )?;
-        globals::setup_globals(&lua, &scripts_dir)?;
+        let print_buffer: SharedPrintBuffer = Arc::new(Mutex::new(Vec::new()));
+        globals::setup_globals_with_print_buffer(&lua, &scripts_dir, Some(print_buffer.clone()))?;
         register_game_rand(&lua, rng)?;
         info!("Lua scripts directory: {}", scripts_dir.display());
-        Ok(Self { lua, scripts_dir })
+        Ok(Self {
+            lua,
+            scripts_dir,
+            print_buffer,
+        })
     }
 
     /// Create a new ScriptEngine with an explicit scripts directory and a
@@ -225,6 +233,12 @@ impl ScriptEngine {
     /// The resolved scripts directory path.
     pub fn scripts_dir(&self) -> &Path {
         &self.scripts_dir
+    }
+
+    /// The shared print buffer handle. Used to construct `LogBuffer` with the
+    /// same underlying buffer so Lua print output appears in the console.
+    pub fn print_buffer(&self) -> SharedPrintBuffer {
+        self.print_buffer.clone()
     }
 
     /// Backward-compatible static method that delegates to `globals::setup_globals`.
