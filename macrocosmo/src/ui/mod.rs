@@ -1645,6 +1645,7 @@ fn draw_diplomacy_overlay_system(
     cb_registry: Res<CasusBelliRegistry>,
     option_registry: Res<DiplomaticOptionRegistry>,
     faction_registry: Res<crate::scripting::faction_api::FactionRegistry>,
+    known_factions: Res<crate::faction::KnownFactions>,
     empire_q: Query<Entity, With<PlayerEmpire>>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
 ) {
@@ -1656,9 +1657,10 @@ fn draw_diplomacy_overlay_system(
         return;
     };
 
-    // Build sorted FactionEntry list from Faction component (preset fields).
+    // #405: Build sorted FactionEntry list filtered to discovered factions only.
     let mut factions: Vec<diplomacy_panel::FactionEntry> = factions_q
         .iter()
+        .filter(|(e, _)| *e == player_entity || known_factions.is_known(*e))
         .map(|(e, f)| diplomacy_panel::FactionEntry {
             entity: e,
             name: f.name.clone(),

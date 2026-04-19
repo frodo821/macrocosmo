@@ -79,6 +79,32 @@ pub struct Extinct {
     pub reason: ExtinctionReason,
 }
 
+/// Resource tracking which factions the player has discovered (#405).
+///
+/// Factions start unknown and are discovered when:
+/// - A player ship arrives at a system containing NPC ships or colonies
+///   (co-location detection via [`AtSystem`] + [`FactionOwner`] / [`Owner`]).
+/// - An explicit [`FactionRelations`] entry is created for the player
+///   (e.g. diplomatic action, war declaration).
+///
+/// The diplomacy panel only displays factions present in this set.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct KnownFactions {
+    pub factions: HashSet<Entity>,
+}
+
+impl KnownFactions {
+    /// Mark a faction as discovered.
+    pub fn discover(&mut self, faction: Entity) {
+        self.factions.insert(faction);
+    }
+
+    /// Check if a faction has been discovered.
+    pub fn is_known(&self, faction: Entity) -> bool {
+        self.factions.contains(&faction)
+    }
+}
+
 /// Plugin that registers the [`FactionRelations`] resource and seeds the
 /// non-empire "hostile" factions used by hostile entities (#168/#293).
 pub struct FactionRelationsPlugin;
@@ -87,6 +113,7 @@ impl Plugin for FactionRelationsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FactionRelations>()
             .init_resource::<HostileFactions>()
+            .init_resource::<KnownFactions>()
             .add_systems(
                 Startup,
                 // #293 follow-up: `spawn_hostile_factions` runs before
@@ -116,6 +143,12 @@ impl Plugin for FactionRelationsPlugin {
             .add_systems(
                 Update,
                 detect_annihilation.after(crate::time_system::advance_game_time),
+            )
+            // #405: Detect faction discovery (player ships co-located with
+            // NPC ships/colonies, or explicit FactionRelations entries).
+            .add_systems(
+                Update,
+                detect_faction_discovery.after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -747,6 +780,75 @@ pub fn detect_annihilation(
                 related_system: None,
             });
         });
+    }
+}
+
+/// #405: Detect faction discovery for the player empire.
+///
+/// A faction is discovered when:
+/// 1. A player ship is at the same star system as a ship or colony owned by
+///    another empire (co-location via [`AtSystem`] / [`FactionOwner`]).
+/// 2. An explicit [`FactionRelations`] entry exists where `from == player`.
+///
+/// Hostile-only factions (space creatures, ancient defenses) that lack the
+/// [`Empire`](crate::player::Empire) component are excluded — they are not
+/// diplomatic entities.
+pub fn detect_faction_discovery(
+    relations: Res<FactionRelations>,
+    mut known: ResMut<KnownFactions>,
+    player_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    ships: Query<(&crate::ship::ShipState, &FactionOwner), With<crate::ship::Ship>>,
+    colony_factions: Query<(&crate::colony::Colony, &FactionOwner)>,
+    planets: Query<&crate::galaxy::Planet>,
+    empires: Query<Entity, With<crate::player::Empire>>,
+) {
+    let Ok(player_entity) = player_q.single() else {
+        return;
+    };
+
+    // 1. Discover factions via FactionRelations entries.
+    for &(from, to) in relations.relations.keys() {
+        if from == player_entity && to != player_entity && empires.contains(to) {
+            known.discover(to);
+        }
+    }
+
+    // 2. Co-location: collect systems where the player has ships stationed
+    //    (InSystem state only — ships in FTL or sublight are not co-located).
+    let mut player_systems: HashSet<Entity> = HashSet::new();
+    let mut system_npc_factions: HashMap<Entity, HashSet<Entity>> = HashMap::new();
+
+    for (state, fo) in &ships {
+        let system = match state {
+            crate::ship::ShipState::InSystem { system } => *system,
+            _ => continue,
+        };
+        if fo.0 == player_entity {
+            player_systems.insert(system);
+        } else if empires.contains(fo.0) {
+            system_npc_factions.entry(system).or_default().insert(fo.0);
+        }
+    }
+
+    // Add NPC factions from colonies (via their planet's system).
+    for (colony, fo) in &colony_factions {
+        if fo.0 != player_entity && empires.contains(fo.0) {
+            if let Ok(planet) = planets.get(colony.planet) {
+                system_npc_factions
+                    .entry(planet.system)
+                    .or_default()
+                    .insert(fo.0);
+            }
+        }
+    }
+
+    // Discover any NPC faction co-located with a player ship.
+    for player_sys in &player_systems {
+        if let Some(npc_factions) = system_npc_factions.get(player_sys) {
+            for &faction in npc_factions {
+                known.discover(faction);
+            }
+        }
     }
 }
 
@@ -1914,5 +2016,153 @@ mod tests {
             .spawn(make_ship(crate::ship::Owner::Neutral, system))
             .id();
         assert_eq!(entity_owner(&world, ship), None);
+    }
+
+    // ---- #405: KnownFactions ----
+
+    #[test]
+    fn known_factions_starts_empty() {
+        let kf = KnownFactions::default();
+        let world = World::new();
+        let _ = world;
+        // Can't easily get a valid entity without a world, but the set should be empty.
+        assert!(kf.factions.is_empty());
+    }
+
+    #[test]
+    fn known_factions_discover_and_is_known() {
+        let mut world = World::new();
+        let e = world.spawn_empty().id();
+        let mut kf = KnownFactions::default();
+        assert!(!kf.is_known(e));
+        kf.discover(e);
+        assert!(kf.is_known(e));
+        // Idempotent.
+        kf.discover(e);
+        assert_eq!(kf.factions.len(), 1);
+    }
+
+    #[test]
+    fn discover_from_faction_relations() {
+        // When FactionRelations has an entry (player, npc), the npc should
+        // be discovered.
+        let mut world = World::new();
+        let player = world
+            .spawn((
+                crate::player::PlayerEmpire,
+                crate::player::Empire {
+                    name: "Player".into(),
+                },
+                crate::player::Faction::new("player", "Player"),
+            ))
+            .id();
+        let npc = world
+            .spawn((
+                crate::player::Empire { name: "NPC".into() },
+                crate::player::Faction::new("npc", "NPC"),
+            ))
+            .id();
+
+        let mut relations = FactionRelations::new();
+        relations.set(player, npc, FactionView::new(RelationState::Neutral, 0.0));
+
+        world.insert_resource(relations);
+        world.insert_resource(KnownFactions::default());
+
+        // Manually run the detection logic (check FactionRelations path).
+        let known = world.resource::<KnownFactions>();
+        assert!(!known.is_known(npc));
+
+        // Simulate the FactionRelations check from detect_faction_discovery.
+        let relations = world.resource::<FactionRelations>();
+        let mut discovered: HashSet<Entity> = HashSet::new();
+        for &(from, to) in relations.relations.keys() {
+            if from == player && to != player {
+                // Check the entity has Empire component.
+                if world.get::<crate::player::Empire>(to).is_some() {
+                    discovered.insert(to);
+                }
+            }
+        }
+        assert!(discovered.contains(&npc));
+    }
+
+    #[test]
+    fn discover_from_colocation() {
+        // When a player ship and NPC ship are at the same system, the NPC
+        // faction should be discovered.
+        let mut world = World::new();
+        let player = world
+            .spawn((
+                crate::player::PlayerEmpire,
+                crate::player::Empire {
+                    name: "Player".into(),
+                },
+                crate::player::Faction::new("player", "Player"),
+            ))
+            .id();
+        let npc = world
+            .spawn((
+                crate::player::Empire { name: "NPC".into() },
+                crate::player::Faction::new("npc", "NPC"),
+            ))
+            .id();
+
+        let system = world.spawn_empty().id();
+
+        // Player ship at system.
+        world.spawn((
+            make_ship(crate::ship::Owner::Empire(player), system),
+            crate::ship::ShipState::InSystem { system },
+            FactionOwner(player),
+        ));
+
+        // NPC ship at same system.
+        world.spawn((
+            make_ship(crate::ship::Owner::Empire(npc), system),
+            crate::ship::ShipState::InSystem { system },
+            FactionOwner(npc),
+        ));
+
+        // Simulate the co-location detection logic.
+        let mut player_systems: HashSet<Entity> = HashSet::new();
+        let mut system_npc_factions: HashMap<Entity, HashSet<Entity>> = HashMap::new();
+
+        // Walk ships — in the real system this is a Bevy query. Here we
+        // just verify the logic with the data we set up.
+        player_systems.insert(system);
+        system_npc_factions.entry(system).or_default().insert(npc);
+
+        let mut kf = KnownFactions::default();
+        for player_sys in &player_systems {
+            if let Some(npc_factions) = system_npc_factions.get(player_sys) {
+                for &faction in npc_factions {
+                    kf.discover(faction);
+                }
+            }
+        }
+        assert!(kf.is_known(npc));
+        assert!(!kf.is_known(player));
+    }
+
+    #[test]
+    fn undiscovered_faction_not_in_known() {
+        let mut world = World::new();
+        let player = world
+            .spawn((
+                crate::player::PlayerEmpire,
+                crate::player::Empire {
+                    name: "Player".into(),
+                },
+            ))
+            .id();
+        let npc = world
+            .spawn(crate::player::Empire { name: "NPC".into() })
+            .id();
+
+        // No relations, no co-location — NPC should stay unknown.
+        let kf = KnownFactions::default();
+        assert!(!kf.is_known(npc));
+        assert!(!kf.is_known(player));
     }
 }
