@@ -2500,3 +2500,95 @@ fn test_hostile_viz_uses_factionowner() {
         k.data.hostile_strength
     );
 }
+
+// #219: Port (immobile station ship) participates in hostile combat and deals damage.
+#[test]
+fn test_port_station_participates_in_hostile_combat() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Port-Defense-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
+
+    // Spawn a hostile with low HP so the port can destroy it.
+    let hostile_entity =
+        common::spawn_raw_hostile(app.world_mut(), sys, 0.1, 10.0, 0.0, 0.0, "space_creature");
+
+    // Register a weapon module for the port's point defense turret.
+    app.world_mut()
+        .resource_mut::<macrocosmo::ship_design::ModuleRegistry>()
+        .insert(macrocosmo::ship_design::ModuleDefinition {
+            id: "point_defense_turret".to_string(),
+            name: "Point Defense Turret".to_string(),
+            description: String::new(),
+            slot_type: "weapon".to_string(),
+            modifiers: Vec::new(),
+            weapon: Some(macrocosmo::ship_design::WeaponStats {
+                track: 8.0,
+                precision: 0.80,
+                cooldown: 1,
+                range: 5.0,
+                shield_damage: 2.0,
+                shield_damage_div: 0.5,
+                shield_piercing: 0.0,
+                armor_damage: 1.5,
+                armor_damage_div: 0.5,
+                armor_piercing: 0.0,
+                hull_damage: 2.0,
+                hull_damage_div: 0.5,
+            }),
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+        });
+
+    // Spawn an immobile port station ship (speed=0, ftl=0) with the weapon.
+    app.world_mut().spawn((
+        Ship {
+            name: "Trade Port".to_string(),
+            design_id: "station_port_v1".to_string(),
+            hull_id: "station_port_hull".to_string(),
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: "point_defense_turret".to_string(),
+            }],
+            owner: Owner::Neutral,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+            fleet: None,
+        },
+        ShipState::InSystem { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: 300.0,
+            hull_max: 300.0,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+    ));
+
+    // Run one tick of combat.
+    advance_time(&mut app, 1);
+
+    // The hostile should be destroyed by the port's point defense.
+    assert!(
+        app.world().get_entity(hostile_entity).is_err(),
+        "Hostile should be destroyed by port's point defense turret"
+    );
+}

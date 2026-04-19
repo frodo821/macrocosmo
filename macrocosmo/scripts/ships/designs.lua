@@ -83,6 +83,7 @@ local station_port_v1 = define_ship_design {
     hull = station_hulls.station_port_hull,
     modules = {
         { slot_type = "utility", module = station_modules.port_dock },
+        { slot_type = "weapon", module = station_modules.point_defense_turret },
     },
 }
 
