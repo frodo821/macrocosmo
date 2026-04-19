@@ -2547,6 +2547,9 @@ fn test_port_station_participates_in_hostile_combat() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Spawn an immobile port station ship (speed=0, ftl=0) with the weapon.
