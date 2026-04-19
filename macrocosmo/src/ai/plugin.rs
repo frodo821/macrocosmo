@@ -89,10 +89,15 @@ impl Plugin for AiPlugin {
                 )
                     .in_set(AiTickSet::MetricProduce),
             )
-            // #173: NPC decision tick — hand-written no-op default policy.
+            // #173: NPC decision tick — SimpleNpcPolicy reads metrics and emits commands.
             .add_systems(
                 Update,
                 super::npc_decision::npc_decision_tick.in_set(AiTickSet::Reason),
+            )
+            // Command consumer — drains AI commands and converts to ECS actions.
+            .add_systems(
+                Update,
+                super::command_consumer::drain_ai_commands.in_set(AiTickSet::CommandDrain),
             )
             .configure_sets(
                 Update,
