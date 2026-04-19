@@ -303,11 +303,16 @@ pub fn draw_diplomacy_panel(
                                     }
                                 });
 
-                                // Lua-defined diplomatic options (from DiplomaticOptionRegistry)
+                                // Lua-defined diplomatic options (from DiplomaticOptionRegistry).
+                                // Exclude built-in options that are already rendered above
+                                // with proper relation-state checks (#404).
                                 let option_defs: Vec<&DiplomaticOptionDefinition> = option_registry
                                     .options
                                     .values()
-                                    .filter(|o| allowed_options.contains(&o.id))
+                                    .filter(|o| {
+                                        allowed_options.contains(&o.id)
+                                            && !is_builtin_diplomatic_option(&o.id)
+                                    })
                                     .collect();
 
                                 if !option_defs.is_empty() {
@@ -342,4 +347,44 @@ pub fn draw_diplomacy_panel(
         });
 
     action
+}
+
+/// Returns `true` for diplomatic option ids that are handled as built-in
+/// buttons with explicit relation-state prerequisites in the panel above.
+/// These must not appear a second time in the Lua-defined options section.
+fn is_builtin_diplomatic_option(id: &str) -> bool {
+    matches!(
+        id,
+        crate::faction::DIPLO_DECLARE_WAR
+            | crate::faction::DIPLO_BREAK_ALLIANCE
+            | crate::faction::DIPLO_PROPOSE_PEACE
+            | crate::faction::DIPLO_PROPOSE_ALLIANCE
+            | crate::faction::DIPLO_ACCEPT_PEACE
+            | crate::faction::DIPLO_ACCEPT_ALLIANCE
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_options_are_excluded_from_lua_section() {
+        // All built-in diplomatic option ids must be recognized so they are
+        // filtered out of the Lua-defined options list (regression for #404).
+        assert!(is_builtin_diplomatic_option("declare_war"));
+        assert!(is_builtin_diplomatic_option("break_alliance"));
+        assert!(is_builtin_diplomatic_option("propose_peace"));
+        assert!(is_builtin_diplomatic_option("propose_alliance"));
+        assert!(is_builtin_diplomatic_option("accept_peace"));
+        assert!(is_builtin_diplomatic_option("accept_alliance"));
+    }
+
+    #[test]
+    fn non_builtin_options_pass_through() {
+        assert!(!is_builtin_diplomatic_option("generic_negotiation"));
+        assert!(!is_builtin_diplomatic_option("trade_agreement"));
+        assert!(!is_builtin_diplomatic_option("cultural_exchange"));
+        assert!(!is_builtin_diplomatic_option(""));
+    }
 }
