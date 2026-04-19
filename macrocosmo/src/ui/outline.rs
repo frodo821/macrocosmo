@@ -4,9 +4,10 @@ use bevy_egui::egui;
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::ship::fleet::{Fleet, FleetMembers};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::ship_design::ShipDesignRegistry;
-use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedSystem};
+use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedShips, SelectedSystem};
 
 /// Helper: format a ship status string from ShipState.
 fn ship_status_label(state: &ShipState) -> &'static str {
@@ -145,6 +146,7 @@ fn draw_unowned_system_header(
 }
 
 /// Draw the ship list for an expanded system section.
+/// #407: Shift+click toggles multi-select via `SelectedShips`.
 fn draw_ship_list(
     ui: &mut egui::Ui,
     ship_entries: &[(Entity, String, String)],
@@ -157,6 +159,7 @@ fn draw_ship_list(
         Option<&SurveyData>,
     )>,
     selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
     design_registry: &ShipDesignRegistry,
 ) {
     if ship_entries.is_empty() {
@@ -168,7 +171,7 @@ fn draw_ship_list(
                 .map(|d| d.name.as_str())
                 .unwrap_or(design_id);
             let label = format!("  {} ({})", name, design_name);
-            let is_selected = selected_ship.0 == Some(*ship_entity);
+            let is_selected = selected_ships.contains(*ship_entity);
             let mut response = ui.selectable_label(is_selected, &label);
             if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
                 response = response.on_hover_ui(|ui| {
@@ -176,7 +179,13 @@ fn draw_ship_list(
                 });
             }
             if response.clicked() {
-                selected_ship.0 = Some(*ship_entity);
+                let shift_held = ui.input(|i| i.modifiers.shift);
+                if shift_held {
+                    selected_ships.toggle(*ship_entity);
+                } else {
+                    selected_ships.set_single(*ship_entity);
+                }
+                selected_ship.0 = selected_ships.primary();
                 // Don't touch selected_system -- selections are independent
             }
         }
@@ -208,9 +217,11 @@ pub fn draw_outline(
     )>,
     selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
     planets: &Query<&Planet>,
     expanded: &mut OutlineExpandedSystems,
     design_registry: &ShipDesignRegistry,
+    fleets: &Query<(Entity, &Fleet, &FleetMembers)>,
 ) {
     egui::SidePanel::left("outline_panel")
         .min_width(180.0)
@@ -282,13 +293,23 @@ pub fn draw_outline(
                                 &system_stations,
                                 ships,
                                 selected_ship,
+                                selected_ships,
                                 design_registry,
                             );
                         });
                     }
+                    // #407: Group docked ships by fleet
                     ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
                         let docked = ships_docked_at(*system_entity, ships);
-                        draw_ship_list(ui, &docked, ships, selected_ship, design_registry);
+                        draw_fleet_grouped_ship_list(
+                            ui,
+                            &docked,
+                            ships,
+                            selected_ship,
+                            selected_ships,
+                            design_registry,
+                            fleets,
+                        );
                     });
                 }
             }
@@ -361,12 +382,14 @@ pub fn draw_outline(
                                 ui.indent(
                                     format!("outline_unowned_ships_{:?}", system_entity),
                                     |ui| {
-                                        draw_ship_list(
+                                        draw_fleet_grouped_ship_list(
                                             ui,
                                             docked,
                                             ships,
                                             selected_ship,
+                                            selected_ships,
                                             design_registry,
+                                            fleets,
                                         );
                                     },
                                 );
@@ -403,7 +426,7 @@ pub fn draw_outline(
                     .show(ui, |ui| {
                         for (entity, name, _ship_type, status) in &in_transit {
                             let label = format!("{} [{}]", name, status);
-                            let is_selected = selected_ship.0 == Some(*entity);
+                            let is_selected = selected_ships.contains(*entity);
                             let mut response = ui.selectable_label(is_selected, &label);
                             if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
                                 let design_name = design_registry
@@ -415,7 +438,13 @@ pub fn draw_outline(
                                 });
                             }
                             if response.clicked() {
-                                selected_ship.0 = Some(*entity);
+                                let shift_held = ui.input(|i| i.modifiers.shift);
+                                if shift_held {
+                                    selected_ships.toggle(*entity);
+                                } else {
+                                    selected_ships.set_single(*entity);
+                                }
+                                selected_ship.0 = selected_ships.primary();
                             }
                         }
                     });
@@ -452,6 +481,99 @@ fn ships_docked_at(
         .collect();
     result.sort_by(|a, b| a.1.cmp(&b.1));
     result
+}
+
+/// #407: Draw ships grouped by fleet. Ships that share a fleet are shown
+/// under a collapsible fleet header; solo-fleet ships (fleet with 1 member)
+/// are shown directly without a header to avoid clutter.
+#[allow(clippy::too_many_arguments)]
+fn draw_fleet_grouped_ship_list(
+    ui: &mut egui::Ui,
+    ship_entries: &[(Entity, String, String)],
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
+    design_registry: &ShipDesignRegistry,
+    fleets: &Query<(Entity, &Fleet, &FleetMembers)>,
+) {
+    if ship_entries.is_empty() {
+        ui.label(egui::RichText::new("  (no ships)").weak().italics());
+        return;
+    }
+
+    // Group ship entries by fleet entity.
+    let mut fleet_groups: std::collections::BTreeMap<
+        Option<Entity>,
+        Vec<(Entity, String, String)>,
+    > = std::collections::BTreeMap::new();
+    for (entity, name, design_id) in ship_entries {
+        let fleet_entity = ships
+            .get(*entity)
+            .ok()
+            .and_then(|(_, ship, _, _, _, _)| ship.fleet);
+        fleet_groups.entry(fleet_entity).or_default().push((
+            *entity,
+            name.clone(),
+            design_id.clone(),
+        ));
+    }
+
+    // Partition into multi-ship fleets and solo ships.
+    let mut multi_fleets: Vec<(Entity, String, Vec<(Entity, String, String)>)> = Vec::new();
+    let mut solo_ships: Vec<(Entity, String, String)> = Vec::new();
+
+    for (fleet_opt, members) in &fleet_groups {
+        if let Some(fleet_entity) = fleet_opt {
+            if let Ok((_, fleet, fleet_members)) = fleets.get(*fleet_entity) {
+                if fleet_members.len() > 1 {
+                    multi_fleets.push((*fleet_entity, fleet.name.clone(), members.clone()));
+                    continue;
+                }
+            }
+        }
+        solo_ships.extend(members.iter().cloned());
+    }
+
+    // Draw multi-ship fleets with collapsible headers.
+    for (fleet_entity, fleet_name, members) in &multi_fleets {
+        let header_label = format!("{} ({} ships)", fleet_name, members.len());
+        egui::CollapsingHeader::new(
+            egui::RichText::new(&header_label)
+                .small()
+                .color(egui::Color32::from_rgb(150, 200, 255)),
+        )
+        .id_salt(format!("fleet_{:?}", fleet_entity))
+        .default_open(true)
+        .show(ui, |ui| {
+            draw_ship_list(
+                ui,
+                members,
+                ships,
+                selected_ship,
+                selected_ships,
+                design_registry,
+            );
+        });
+    }
+
+    // Draw solo ships directly.
+    if !solo_ships.is_empty() {
+        draw_ship_list(
+            ui,
+            &solo_ships,
+            ships,
+            selected_ship,
+            selected_ships,
+            design_registry,
+        );
+    }
 }
 
 /// #395: Collect immobile ships (stations) docked at a given system.

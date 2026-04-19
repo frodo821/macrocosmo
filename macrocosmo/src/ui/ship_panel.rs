@@ -19,7 +19,7 @@ use crate::ship::{
 use crate::ship_design::{HullRegistry, ShipDesignRegistry};
 use crate::time_system::GameClock;
 use crate::ui::{draw_modifier_breakdown, modified_value_label_with_tooltip};
-use crate::visualization::SelectedShip;
+use crate::visualization::{SelectedShip, SelectedShips};
 
 /// Action returned from draw_ship_panel when the player clicks "Scrap Ship".
 /// Processed in draw_all_ui where Commands is available for despawning.
@@ -117,6 +117,12 @@ pub struct ShipPanelActions {
     pub dock_at: Option<(Entity, Entity)>,
     /// #389: Undock ship from its current harbour. Payload: ship entity.
     pub undock: Option<Entity>,
+    /// #407: Form a new fleet from the multi-selected ships.
+    pub form_fleet: Option<Vec<Entity>>,
+    /// #407: Merge selected ships into one fleet.
+    pub merge_fleet: Option<Vec<Entity>>,
+    /// #407: Dissolve the selected fleet back into single-ship fleets.
+    pub dissolve_fleet: Option<Entity>,
 }
 
 /// #229: Display info about a deep-space structure close enough to the ship
@@ -490,6 +496,93 @@ struct ShipPanelData {
     mod_shield_max: Option<ModifiedValue>,
 }
 
+/// #407: Multi-select panel — when 2+ ships are selected, shows aggregate
+/// ship count, fleet management buttons (Form Fleet, Merge Fleet, Dissolve).
+fn draw_multi_select_panel(
+    ctx: &egui::Context,
+    selected_ships: &mut SelectedShips,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
+    fleets: &Query<&crate::ship::Fleet>,
+    fleet_members: &Query<&crate::ship::FleetMembers>,
+    design_registry: &ShipDesignRegistry,
+) -> ShipPanelActions {
+    let mut actions = ShipPanelActions::default();
+    let selected_entities: Vec<Entity> = selected_ships.iter().copied().collect();
+
+    egui::Window::new("Selected Ships")
+        .resizable(false)
+        .default_width(260.0)
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 40.0))
+        .show(ctx, |ui| {
+            ui.heading(format!("{} ships selected", selected_entities.len()));
+            ui.separator();
+
+            // List selected ships
+            for entity in &selected_entities {
+                if let Ok((_, ship, _, _, _, _)) = ships_query.get(*entity) {
+                    let design_name = design_registry
+                        .get(&ship.design_id)
+                        .map(|d| d.name.as_str())
+                        .unwrap_or(&ship.design_id);
+                    ui.label(format!("  {} ({})", ship.name, design_name));
+                }
+            }
+
+            ui.separator();
+
+            // Collect unique fleets of selected ships
+            let mut unique_fleets: Vec<Entity> = Vec::new();
+            for entity in &selected_entities {
+                if let Ok((_, ship, _, _, _, _)) = ships_query.get(*entity) {
+                    if let Some(fleet) = ship.fleet {
+                        if !unique_fleets.contains(&fleet) {
+                            unique_fleets.push(fleet);
+                        }
+                    }
+                }
+            }
+
+            // Form Fleet: visible when 2+ ships are selected
+            if selected_entities.len() >= 2 {
+                if ui.button("Form Fleet").clicked() {
+                    actions.form_fleet = Some(selected_entities.clone());
+                }
+            }
+
+            // Merge Fleet: visible when ships from 2+ different fleets selected
+            if unique_fleets.len() >= 2 {
+                if ui.button("Merge Fleets").clicked() {
+                    actions.merge_fleet = Some(selected_entities.clone());
+                }
+            }
+
+            // Dissolve Fleet: visible when exactly one multi-member fleet is selected
+            if unique_fleets.len() == 1 {
+                if let Ok(members) = fleet_members.get(unique_fleets[0]) {
+                    if members.len() > 1 {
+                        if ui.button("Dissolve Fleet").clicked() {
+                            actions.dissolve_fleet = Some(unique_fleets[0]);
+                        }
+                    }
+                }
+            }
+
+            ui.separator();
+            if ui.button("Clear Selection").clicked() {
+                selected_ships.clear();
+            }
+        });
+
+    actions
+}
+
 /// Draws the floating ship details panel when a ship is selected.
 /// #53: Simplified - command buttons moved to context menu
 /// #62: Detailed status display with progress bars and command queue
@@ -498,6 +591,7 @@ struct ShipPanelData {
 pub fn draw_ship_panel(
     ctx: &egui::Context,
     selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
     ships_query: &mut Query<(
         Entity,
         &mut Ship,
@@ -544,6 +638,19 @@ pub fn draw_ship_panel(
     hull_reg: &HullRegistry,
     ship_modifiers_query: &Query<&ShipModifiers>,
 ) -> ShipPanelActions {
+    // #407: Multi-select panel — when 2+ ships selected, show aggregate view
+    // instead of individual ship details.
+    if selected_ships.len() > 1 {
+        return draw_multi_select_panel(
+            ctx,
+            selected_ships,
+            ships_query,
+            fleets,
+            fleet_members,
+            design_registry,
+        );
+    }
+
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
         let (_, ship, state, cargo, ship_hp, survey_data) = ships_query.get(ship_entity).ok()?;
