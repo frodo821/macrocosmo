@@ -1,13 +1,22 @@
-//! Military metric emitters — read ship ECS state and emit to the AI bus.
+//! Metric emitters — read ECS state and emit to the AI bus.
 //!
-//! Phase 1 (#190): emits a single global view of the NPC empire's fleet.
-//! Per-faction scoping will land in a later phase.
+//! Phase 1 (#190): emits a single global view of the NPC empire's fleet and
+//! economy. Per-faction scoping will land in a later phase.
+
+use std::collections::HashSet;
 
 use bevy::prelude::*;
 
 use crate::ai::emit::AiBusWriter;
 use crate::ai::schema::ids::metric;
+use crate::colony::{
+    Buildings, Colony, FoodConsumption, Production, ResourceCapacity, ResourceStockpile,
+    SystemBuildings,
+};
+use crate::galaxy::{BASE_CARRYING_CAPACITY, Planet, StarSystem, SystemAttributes};
 use crate::ship::{CoreShip, Owner, Ship, ShipHitpoints, ShipModifiers, ShipState};
+use crate::technology::TechTree;
+use crate::time_system::GameClock;
 
 /// Emit military metrics for NPC empires.
 ///
@@ -92,6 +101,227 @@ pub fn emit_military_metrics(
         &metric::my_has_flagship(),
         if has_flagship { 1.0 } else { 0.0 },
     );
+}
+
+/// Emit economic metrics for NPC empires.
+///
+/// Registered under [`AiTickSet::MetricProduce`](super::AiTickSet::MetricProduce).
+/// Phase 1: aggregates all empire-owned colonies/systems into a single global view.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_economic_metrics(
+    mut writer: AiBusWriter,
+    clock: Res<GameClock>,
+    colonies: Query<(
+        &Colony,
+        &Production,
+        Option<&FoodConsumption>,
+        Option<&Buildings>,
+    )>,
+    stockpiles: Query<
+        (
+            &ResourceStockpile,
+            Option<&ResourceCapacity>,
+            Option<&SystemBuildings>,
+        ),
+        With<StarSystem>,
+    >,
+    planets: Query<&Planet>,
+    planet_attrs: Query<&SystemAttributes, With<Planet>>,
+    tech_tree: Option<Res<TechTree>>,
+) {
+    // --- Production rates (per hexadies) ---
+    let mut total_minerals_rate: f64 = 0.0;
+    let mut total_energy_rate: f64 = 0.0;
+    let mut total_food_rate: f64 = 0.0;
+    let mut total_research_rate: f64 = 0.0;
+    // Authority production is empire-level, tracked via AuthorityParams — skip for now.
+    // We approximate from production component if available.
+
+    // --- Population ---
+    let mut total_population: f64 = 0.0;
+    let mut total_growth_rate: f64 = 0.0;
+    let mut total_carrying_capacity: f64 = 0.0;
+
+    // --- Food ---
+    let mut total_food_consumption: f64 = 0.0;
+
+    // --- Territory ---
+    let mut colony_count: f64 = 0.0;
+    let mut colonized_systems: HashSet<Entity> = HashSet::new();
+
+    // --- Infrastructure (building slots) ---
+    let mut max_slots: f64 = 0.0;
+    let mut used_slots: f64 = 0.0;
+
+    for (colony, prod, food_consumption, buildings) in &colonies {
+        colony_count += 1.0;
+
+        // Production rates
+        total_minerals_rate += prod.minerals_per_hexadies.final_value().to_f64();
+        total_energy_rate += prod.energy_per_hexadies.final_value().to_f64();
+        total_food_rate += prod.food_per_hexadies.final_value().to_f64();
+        total_research_rate += prod.research_per_hexadies.final_value().to_f64();
+
+        // Population
+        total_population += colony.population;
+        total_growth_rate += colony.growth_rate;
+
+        // Carrying capacity from planet attributes
+        if let Ok(attrs) = planet_attrs.get(colony.planet) {
+            total_carrying_capacity += BASE_CARRYING_CAPACITY * attrs.habitability;
+        }
+
+        // Food consumption
+        if let Some(fc) = food_consumption {
+            total_food_consumption += fc.food_per_hexadies.final_value().to_f64();
+        }
+
+        // Track colonized systems
+        if let Some(sys) = colony.system(&planets) {
+            colonized_systems.insert(sys);
+        }
+
+        // Building slots
+        if let Some(bldgs) = buildings {
+            let total = bldgs.slots.len() as f64;
+            let occupied = bldgs.slots.iter().filter(|s| s.is_some()).count() as f64;
+            max_slots += total;
+            used_slots += occupied;
+        }
+    }
+
+    // Emit production metrics
+    writer.emit(&metric::net_production_minerals(), total_minerals_rate);
+    writer.emit(&metric::net_production_energy(), total_energy_rate);
+    writer.emit(&metric::net_production_food(), total_food_rate);
+    writer.emit(&metric::net_production_research(), total_research_rate);
+    // TODO: net_production_authority requires reading AuthorityParams from PlayerEmpire entity
+
+    // Emit population metrics
+    writer.emit(&metric::population_total(), total_population);
+    writer.emit(&metric::population_growth_rate(), total_growth_rate);
+    writer.emit(
+        &metric::population_carrying_capacity(),
+        total_carrying_capacity,
+    );
+    let pop_ratio = if total_carrying_capacity > 0.0 {
+        total_population / total_carrying_capacity
+    } else {
+        0.0
+    };
+    writer.emit(&metric::population_ratio(), pop_ratio);
+
+    // Emit food metrics
+    writer.emit(&metric::food_consumption_rate(), total_food_consumption);
+    writer.emit(
+        &metric::food_surplus(),
+        total_food_rate - total_food_consumption,
+    );
+
+    // Emit territory metrics
+    writer.emit(&metric::colony_count(), colony_count);
+    writer.emit(
+        &metric::colonized_system_count(),
+        colonized_systems.len() as f64,
+    );
+
+    // --- Stockpiles ---
+    let mut total_minerals: f64 = 0.0;
+    let mut total_energy: f64 = 0.0;
+    let mut total_food: f64 = 0.0;
+    let mut total_authority: f64 = 0.0;
+    let mut total_cap_minerals: f64 = 0.0;
+    let mut total_cap_energy: f64 = 0.0;
+    let mut total_cap_food: f64 = 0.0;
+    let mut total_authority_debt: f64 = 0.0;
+
+    // Infrastructure: system-level buildings
+    let mut systems_with_shipyard: f64 = 0.0;
+    let mut systems_with_port: f64 = 0.0;
+
+    for (stockpile, capacity, sys_buildings) in &stockpiles {
+        total_minerals += stockpile.minerals.to_f64();
+        total_energy += stockpile.energy.to_f64();
+        total_food += stockpile.food.to_f64();
+        total_authority += stockpile.authority.to_f64();
+
+        if let Some(cap) = capacity {
+            total_cap_minerals += cap.minerals.to_f64();
+            total_cap_energy += cap.energy.to_f64();
+            total_cap_food += cap.food.to_f64();
+        }
+
+        // Authority debt: systems where authority is zero but should be positive
+        // In the current model, authority deficit is binary (zero vs nonzero).
+        // We track the count of systems at zero as a proxy.
+        // TODO: Refine when authority becomes a signed value.
+
+        // System buildings
+        if let Some(sb) = sys_buildings {
+            if sb.has_building("shipyard") {
+                systems_with_shipyard += 1.0;
+            }
+            if sb.has_building("port") {
+                systems_with_port += 1.0;
+            }
+        }
+    }
+
+    writer.emit(&metric::stockpile_minerals(), total_minerals);
+    writer.emit(&metric::stockpile_energy(), total_energy);
+    writer.emit(&metric::stockpile_food(), total_food);
+    writer.emit(&metric::stockpile_authority(), total_authority);
+
+    let ratio_minerals = if total_cap_minerals > 0.0 {
+        (total_minerals / total_cap_minerals).min(1.0)
+    } else {
+        0.0
+    };
+    let ratio_energy = if total_cap_energy > 0.0 {
+        (total_energy / total_cap_energy).min(1.0)
+    } else {
+        0.0
+    };
+    let ratio_food = if total_cap_food > 0.0 {
+        (total_food / total_cap_food).min(1.0)
+    } else {
+        0.0
+    };
+    writer.emit(&metric::stockpile_ratio_minerals(), ratio_minerals);
+    writer.emit(&metric::stockpile_ratio_energy(), ratio_energy);
+    writer.emit(&metric::stockpile_ratio_food(), ratio_food);
+
+    // TODO: total_authority_debt — needs clearer definition of "debt" in current model
+    writer.emit(&metric::total_authority_debt(), total_authority_debt);
+
+    // Infrastructure metrics
+    writer.emit(&metric::systems_with_shipyard(), systems_with_shipyard);
+    writer.emit(&metric::systems_with_port(), systems_with_port);
+    writer.emit(&metric::max_building_slots(), max_slots);
+    writer.emit(&metric::used_building_slots(), used_slots);
+    writer.emit(&metric::free_building_slots(), max_slots - used_slots);
+    writer.emit(
+        &metric::can_build_ships(),
+        if systems_with_shipyard > 0.0 {
+            1.0
+        } else {
+            0.0
+        },
+    );
+
+    // Technology metrics
+    if let Some(ref tree) = tech_tree {
+        let researched = tree.researched.len() as f64;
+        let total = tree.technologies.len() as f64;
+        writer.emit(&metric::tech_total_researched(), researched);
+        let completion = if total > 0.0 { researched / total } else { 0.0 };
+        writer.emit(&metric::tech_completion_percent(), completion);
+        // TODO: tech_unlocks_available — requires walking prerequisites
+        // TODO: research_output_ratio — requires active research cost context
+    }
+
+    // Meta / time
+    writer.emit(&metric::game_elapsed_time(), clock.elapsed as f64);
 }
 
 #[cfg(test)]
@@ -243,5 +473,230 @@ mod tests {
         // hull=40/50, armor=15/20, shield=8/10 => current=63, max=80
         // vuln = 1 - 63/80 = 0.2125
         assert!((vuln - 0.2125).abs() < 1e-4);
+    }
+
+    // -- Economic emitter tests ------------------------------------------------
+
+    fn economic_test_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(GameClock::new(10));
+        app.insert_resource(GameSpeed::default());
+        app.insert_resource(AiBusResource::with_warning_mode(WarningMode::Silent));
+        {
+            let mut bus = app.world_mut().resource_mut::<AiBusResource>();
+            schema::declare_metrics_standalone(&mut bus.0);
+        }
+        app.add_systems(Update, emit_economic_metrics);
+        app
+    }
+
+    /// Spawn a minimal colony + star system for economic tests.
+    /// Returns (colony_entity, system_entity, planet_entity).
+    fn spawn_colony(
+        app: &mut App,
+        population: f64,
+        minerals_rate: f64,
+        energy_rate: f64,
+        stockpile_minerals: u64,
+        stockpile_energy: u64,
+        building_slots: usize,
+        occupied_slots: usize,
+    ) -> (Entity, Entity, Entity) {
+        use crate::colony::BuildingId;
+        use crate::modifier::ModifiedValue;
+
+        let system_entity = app
+            .world_mut()
+            .spawn((
+                StarSystem {
+                    name: "Test System".into(),
+                    surveyed: true,
+                    is_capital: false,
+                    star_type: "yellow_dwarf".into(),
+                },
+                ResourceStockpile {
+                    minerals: Amt::units(stockpile_minerals),
+                    energy: Amt::units(stockpile_energy),
+                    research: Amt::ZERO,
+                    food: Amt::units(100),
+                    authority: Amt::units(10),
+                },
+                ResourceCapacity::default(),
+            ))
+            .id();
+
+        let planet_entity = app
+            .world_mut()
+            .spawn((
+                Planet {
+                    name: "Test Planet".into(),
+                    system: system_entity,
+                    planet_type: "terrestrial".into(),
+                },
+                SystemAttributes {
+                    habitability: 0.8,
+                    mineral_richness: 0.5,
+                    energy_potential: 0.5,
+                    research_potential: 0.5,
+                    max_building_slots: building_slots as u8,
+                },
+            ))
+            .id();
+
+        let mut slots: Vec<Option<BuildingId>> = vec![None; building_slots];
+        for i in 0..occupied_slots.min(building_slots) {
+            slots[i] = Some(BuildingId::new("mine"));
+        }
+
+        let colony_entity = app
+            .world_mut()
+            .spawn((
+                Colony {
+                    planet: planet_entity,
+                    population,
+                    growth_rate: 0.01,
+                },
+                Production {
+                    minerals_per_hexadies: ModifiedValue::new(Amt::from_f64(minerals_rate)),
+                    energy_per_hexadies: ModifiedValue::new(Amt::from_f64(energy_rate)),
+                    research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                    food_per_hexadies: ModifiedValue::new(Amt::from_f64(5.0)),
+                },
+                Buildings { slots },
+                FoodConsumption {
+                    food_per_hexadies: ModifiedValue::new(Amt::from_f64(2.0)),
+                },
+            ))
+            .id();
+
+        (colony_entity, system_entity, planet_entity)
+    }
+
+    #[test]
+    fn emit_economic_metrics_colony_count() {
+        let mut app = economic_test_app();
+        spawn_colony(&mut app, 100.0, 10.0, 5.0, 500, 300, 4, 2);
+        spawn_colony(&mut app, 50.0, 5.0, 3.0, 200, 100, 3, 1);
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let count = bus.current(&metric::colony_count()).unwrap();
+        assert!((count - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn emit_economic_metrics_production_rates() {
+        let mut app = economic_test_app();
+        spawn_colony(&mut app, 100.0, 10.0, 5.0, 500, 300, 4, 0);
+        spawn_colony(&mut app, 50.0, 5.0, 3.0, 200, 100, 3, 0);
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let minerals = bus.current(&metric::net_production_minerals()).unwrap();
+        let energy = bus.current(&metric::net_production_energy()).unwrap();
+        // 10.0 + 5.0 = 15.0
+        assert!((minerals - 15.0).abs() < 0.01);
+        // 5.0 + 3.0 = 8.0
+        assert!((energy - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn emit_economic_metrics_stockpiles() {
+        let mut app = economic_test_app();
+        spawn_colony(&mut app, 100.0, 10.0, 5.0, 500, 300, 4, 0);
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let minerals = bus.current(&metric::stockpile_minerals()).unwrap();
+        let energy = bus.current(&metric::stockpile_energy()).unwrap();
+        assert!((minerals - 500.0).abs() < 0.01);
+        assert!((energy - 300.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn emit_economic_metrics_stockpile_ratios() {
+        let mut app = economic_test_app();
+        // Default ResourceCapacity: minerals=1000, energy=1000, food=500
+        spawn_colony(&mut app, 100.0, 10.0, 5.0, 500, 300, 4, 0);
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let ratio_m = bus.current(&metric::stockpile_ratio_minerals()).unwrap();
+        let ratio_e = bus.current(&metric::stockpile_ratio_energy()).unwrap();
+        // 500/1000 = 0.5
+        assert!((ratio_m - 0.5).abs() < 0.01);
+        // 300/1000 = 0.3
+        assert!((ratio_e - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn emit_economic_metrics_population() {
+        let mut app = economic_test_app();
+        spawn_colony(&mut app, 100.0, 10.0, 5.0, 500, 300, 4, 0);
+        spawn_colony(&mut app, 50.0, 5.0, 3.0, 200, 100, 3, 0);
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let pop = bus.current(&metric::population_total()).unwrap();
+        assert!((pop - 150.0).abs() < 1e-9);
+
+        let capacity = bus
+            .current(&metric::population_carrying_capacity())
+            .unwrap();
+        // 200.0 * 0.8 = 160.0 per colony, 2 colonies = 320.0
+        assert!((capacity - 320.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn emit_economic_metrics_food_surplus() {
+        let mut app = economic_test_app();
+        // food production = 5.0, food consumption = 2.0 → surplus = 3.0
+        spawn_colony(&mut app, 100.0, 10.0, 5.0, 500, 300, 4, 0);
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let surplus = bus.current(&metric::food_surplus()).unwrap();
+        assert!((surplus - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn emit_economic_metrics_building_slots() {
+        let mut app = economic_test_app();
+        // 4 slots, 2 occupied
+        spawn_colony(&mut app, 100.0, 10.0, 5.0, 500, 300, 4, 2);
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let max = bus.current(&metric::max_building_slots()).unwrap();
+        let used = bus.current(&metric::used_building_slots()).unwrap();
+        let free = bus.current(&metric::free_building_slots()).unwrap();
+        assert!((max - 4.0).abs() < 1e-9);
+        assert!((used - 2.0).abs() < 1e-9);
+        assert!((free - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn emit_economic_metrics_game_elapsed_time() {
+        let mut app = economic_test_app();
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let elapsed = bus.current(&metric::game_elapsed_time()).unwrap();
+        assert!((elapsed - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn emit_economic_metrics_no_colonies_emits_zeroes() {
+        let mut app = economic_test_app();
+        app.update();
+
+        let bus = app.world().resource::<AiBusResource>();
+        let count = bus.current(&metric::colony_count()).unwrap();
+        assert!((count - 0.0).abs() < 1e-9);
+        let minerals = bus.current(&metric::net_production_minerals()).unwrap();
+        assert!((minerals - 0.0).abs() < 1e-9);
+        let pop = bus.current(&metric::population_total()).unwrap();
+        assert!((pop - 0.0).abs() < 1e-9);
     }
 }
