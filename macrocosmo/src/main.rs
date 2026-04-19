@@ -42,17 +42,23 @@ fn main() {
     let cli = CliArgs::parse();
 
     let observer_mode = ObserverMode {
-        enabled: cli.no_player,
+        enabled: cli.no_player || cli.observer,
         seed: cli.seed,
         time_horizon: cli.time_horizon,
         initial_speed: cli.speed,
+        read_only: cli.observer,
     };
     let rng_seed = RngSeed(cli.seed);
 
     if observer_mode.enabled {
+        let source = if cli.observer {
+            "--observer"
+        } else {
+            "--no-player"
+        };
         info!(
-            "Starting in observer mode (--no-player): seed={:?}, time_horizon={:?}, speed={:?}",
-            observer_mode.seed, observer_mode.time_horizon, observer_mode.initial_speed
+            "Starting in observer mode ({source}): seed={:?}, time_horizon={:?}, speed={:?}, read_only={}",
+            observer_mode.seed, observer_mode.time_horizon, observer_mode.initial_speed, observer_mode.read_only
         );
     }
 

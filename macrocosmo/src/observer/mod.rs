@@ -34,6 +34,9 @@ pub struct ObserverMode {
     pub time_horizon: Option<i64>,
     /// Initial `GameSpeed.hexadies_per_second`. Applied at Startup.
     pub initial_speed: Option<f64>,
+    /// When `true`, the UI is read-only: context menus and ship panel
+    /// commands are suppressed. Set by `--observer`.
+    pub read_only: bool,
 }
 
 /// Current faction the observer is inspecting. One-way mirrored to
@@ -97,6 +100,11 @@ pub fn apply_initial_speed(mode: Res<ObserverMode>, mut speed: ResMut<GameSpeed>
     }
 }
 
+/// Run-condition: observer mode is active AND read-only.
+pub fn in_observer_read_only(o: Res<ObserverMode>) -> bool {
+    o.enabled && o.read_only
+}
+
 /// One-way mirror from `ObserverView.viewing` (Faction entity) to
 /// `AiDebugUi::GovernorState::faction` (`u32` from `to_ai_faction`). This
 /// makes the F10 Governor tab follow the top-bar selector.
@@ -113,5 +121,43 @@ pub fn sync_observer_view_to_governor(
     if let Some(faction_entity) = view.viewing {
         let id = crate::ai::convert::to_ai_faction(faction_entity);
         ui.governor.faction = id.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observer_mode_default_is_inactive() {
+        let mode = ObserverMode::default();
+        assert!(!mode.enabled);
+        assert!(!mode.read_only);
+        assert!(mode.seed.is_none());
+        assert!(mode.time_horizon.is_none());
+        assert!(mode.initial_speed.is_none());
+    }
+
+    #[test]
+    fn observer_mode_read_only_field() {
+        let mode = ObserverMode {
+            enabled: true,
+            read_only: true,
+            ..Default::default()
+        };
+        assert!(mode.enabled);
+        assert!(mode.read_only);
+    }
+
+    #[test]
+    fn observer_mode_no_player_without_read_only() {
+        // --no-player sets enabled=true but read_only=false
+        let mode = ObserverMode {
+            enabled: true,
+            read_only: false,
+            ..Default::default()
+        };
+        assert!(mode.enabled);
+        assert!(!mode.read_only);
     }
 }

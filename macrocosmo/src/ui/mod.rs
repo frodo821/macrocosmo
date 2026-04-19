@@ -26,7 +26,7 @@ use crate::components::Position;
 use crate::condition::ScopedFlags;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::FactionRelations;
-use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::modifier::ModifiedValue;
 use crate::notifications::{NotificationPriority, NotificationQueue};
@@ -350,10 +350,19 @@ fn compute_ui_state(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+    stars: Query<(
+        Entity,
+        &StarSystem,
+        &Position,
+        Option<&SystemAttributes>,
+        Option<&Sovereignty>,
+    )>,
     system_stockpiles: Query<(&ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
-    empire_q: Query<(&KnowledgeStore, &AuthorityParams), With<PlayerEmpire>>,
+    player_empire_q: Query<(&KnowledgeStore, &AuthorityParams), With<PlayerEmpire>>,
+    all_empire_q: Query<&AuthorityParams, With<crate::player::Empire>>,
     planets: Query<&Planet>,
+    observer_mode: Res<crate::observer::ObserverMode>,
+    observer_view: Res<crate::observer::ObserverView>,
 ) {
     crate::prof_span!("compute_ui_state");
     let player_info = player_q
@@ -364,7 +373,23 @@ fn compute_ui_state(
     ui_state.player_entity = player_info.map(|(e, _, _)| e);
     ui_state.player_aboard_ship = player_info.and_then(|(_, _, aboard)| aboard);
 
-    let Ok((knowledge, authority_params)) = empire_q.single() else {
+    // #398: In observer mode with a viewed empire, show that empire's
+    // ground-truth resource totals (no light-speed delay). In normal play,
+    // use the PlayerEmpire's KnowledgeStore as before.
+    if observer_mode.enabled {
+        compute_ui_state_observer(
+            &mut ui_state,
+            &colonies,
+            &stars,
+            &system_stockpiles,
+            &all_empire_q,
+            &planets,
+            &observer_view,
+        );
+        return;
+    }
+
+    let Ok((knowledge, authority_params)) = player_empire_q.single() else {
         return;
     };
 
@@ -427,7 +452,7 @@ fn compute_ui_state(
         }
         colony_count += 1;
         if let Some(sys) = colony.system(&planets) {
-            if let Ok((_, star, _, _)) = stars.get(sys) {
+            if let Ok((_, star, _, _, _)) = stars.get(sys) {
                 if star.is_capital {
                     has_capital = true;
                 }
@@ -455,12 +480,159 @@ fn compute_ui_state(
 
     // Capital stockpile for upfront cost checks (research)
     ui_state.capital_stockpile = None;
-    for (sys_entity, star, _, _) in stars.iter() {
+    for (sys_entity, star, _, _, _) in stars.iter() {
         if star.is_capital {
             if let Ok((s, _)) = system_stockpiles.get(sys_entity) {
                 ui_state.capital_stockpile = Some((s.minerals, s.energy));
             }
             break;
+        }
+    }
+}
+
+/// #398: Compute resource totals for the observed empire in observer mode.
+/// Uses ground-truth stockpile data (no KnowledgeStore delay) filtered by
+/// `Sovereignty` ownership.
+#[allow(clippy::too_many_arguments)]
+fn compute_ui_state_observer(
+    ui_state: &mut UiState,
+    colonies: &Query<(
+        Entity,
+        &Colony,
+        Option<&Production>,
+        Option<&BuildQueue>,
+        Option<&Buildings>,
+        Option<&BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
+    )>,
+    stars: &Query<(
+        Entity,
+        &StarSystem,
+        &Position,
+        Option<&SystemAttributes>,
+        Option<&Sovereignty>,
+    )>,
+    system_stockpiles: &Query<(&ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
+    all_empire_q: &Query<&AuthorityParams, With<crate::player::Empire>>,
+    planets: &Query<&Planet>,
+    observer_view: &crate::observer::ObserverView,
+) {
+    let viewed = match observer_view.viewing {
+        Some(e) => e,
+        None => {
+            // No empire selected — zero out everything.
+            ui_state.total_minerals = Amt::ZERO;
+            ui_state.total_energy = Amt::ZERO;
+            ui_state.total_food = Amt::ZERO;
+            ui_state.total_authority = Amt::ZERO;
+            ui_state.net_minerals = SignedAmt::ZERO;
+            ui_state.net_energy = SignedAmt::ZERO;
+            ui_state.net_food = SignedAmt::ZERO;
+            ui_state.net_authority = SignedAmt::ZERO;
+            ui_state.capital_stockpile = None;
+            return;
+        }
+    };
+
+    // Collect systems owned by the viewed empire.
+    let mut owned_systems: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+    for (sys_entity, _, _, _, sovereignty) in stars.iter() {
+        if let Some(sov) = sovereignty {
+            if sov.owner == Some(crate::ship::Owner::Empire(viewed)) {
+                owned_systems.insert(sys_entity);
+            }
+        }
+    }
+
+    // Ground-truth resource totals from owned systems' stockpiles.
+    let mut m = Amt::ZERO;
+    let mut e = Amt::ZERO;
+    let mut f = Amt::ZERO;
+    let mut a = Amt::ZERO;
+    for &sys in &owned_systems {
+        if let Ok((stockpile, _)) = system_stockpiles.get(sys) {
+            m = m.add(stockpile.minerals);
+            e = e.add(stockpile.energy);
+            f = f.add(stockpile.food);
+            a = a.add(stockpile.authority);
+        }
+    }
+    ui_state.total_minerals = m;
+    ui_state.total_energy = e;
+    ui_state.total_food = f;
+    ui_state.total_authority = a;
+
+    // Net income from colonies on owned systems.
+    let mut net_m = SignedAmt::ZERO;
+    let mut net_e = SignedAmt::ZERO;
+    let mut net_f = SignedAmt::ZERO;
+    let mut colony_count: u64 = 0;
+    let mut has_capital = false;
+    for (_, colony, production, _, _, _, maintenance, food_consumption) in colonies.iter() {
+        let sys = match colony.system(planets) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !owned_systems.contains(&sys) {
+            continue;
+        }
+        if let Some(prod) = production {
+            net_m = net_m.add(SignedAmt::from_amt(
+                prod.minerals_per_hexadies.final_value(),
+            ));
+            let energy_prod = SignedAmt::from_amt(prod.energy_per_hexadies.final_value());
+            let maint = maintenance
+                .map(|mc| SignedAmt::from_amt(mc.energy_per_hexadies.final_value()))
+                .unwrap_or(SignedAmt::ZERO);
+            net_e = net_e.add(energy_prod.add(SignedAmt(0 - maint.raw())));
+            let food_prod = SignedAmt::from_amt(prod.food_per_hexadies.final_value());
+            let food_cons = food_consumption
+                .map(|fc| SignedAmt::from_amt(fc.food_per_hexadies.final_value()))
+                .unwrap_or(SignedAmt::ZERO);
+            net_f = net_f.add(food_prod.add(SignedAmt(0 - food_cons.raw())));
+        }
+        colony_count += 1;
+        if let Ok((_, star, _, _, _)) = stars.get(sys) {
+            if star.is_capital {
+                has_capital = true;
+            }
+        }
+    }
+
+    // Authority net income from the viewed empire.
+    let non_capital_count = if has_capital {
+        colony_count.saturating_sub(1)
+    } else {
+        colony_count
+    };
+    if let Ok(authority_params) = all_empire_q.get(viewed) {
+        let auth_prod = SignedAmt::from_amt(authority_params.production.final_value());
+        let auth_cost = SignedAmt::from_amt(
+            authority_params
+                .cost_per_colony
+                .final_value()
+                .mul_u64(non_capital_count),
+        );
+        ui_state.net_authority = auth_prod.add(SignedAmt(0 - auth_cost.raw()));
+    } else {
+        ui_state.net_authority = SignedAmt::ZERO;
+    }
+
+    ui_state.net_minerals = net_m;
+    ui_state.net_energy = net_e;
+    ui_state.net_food = net_f;
+
+    // Capital stockpile for the viewed empire.
+    ui_state.capital_stockpile = None;
+    for &sys in &owned_systems {
+        if let Ok((_, star, _, _, _)) = stars.get(sys) {
+            if star.is_capital {
+                if let Ok((s, _)) = system_stockpiles.get(sys) {
+                    ui_state.capital_stockpile = Some((s.minerals, s.energy));
+                }
+                break;
+            }
         }
     }
 }
@@ -499,6 +671,7 @@ fn draw_top_bar_system(
     let observer_state = if observer_mode.enabled {
         Some(top_bar::ObserverBarState {
             enabled: true,
+            read_only: observer_mode.read_only,
             selected: &mut selected,
             factions: &factions,
         })
@@ -967,6 +1140,14 @@ fn draw_main_panels_system(
         &registries.hull_registry,
         &world.ship_modifiers,
     );
+
+    // #398: In observer read-only mode, suppress all ship panel actions
+    // and context menu so the player cannot issue commands. The ship panel
+    // itself still renders (info-only) above.
+    if selection.observer_mode.read_only {
+        selection.context_menu.open = false;
+        return;
+    }
 
     // Handle cancel current action
     if ship_panel_actions.cancel_current {
