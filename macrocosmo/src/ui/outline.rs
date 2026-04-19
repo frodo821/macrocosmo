@@ -147,6 +147,7 @@ fn draw_unowned_system_header(
 
 /// Draw the ship list for an expanded system section.
 /// #407: Shift+click toggles multi-select via `SelectedShips`.
+/// #408: Right-click context menu on each entry.
 fn draw_ship_list(
     ui: &mut egui::Ui,
     ship_entries: &[(Entity, String, String)],
@@ -161,6 +162,9 @@ fn draw_ship_list(
     selected_ship: &mut SelectedShip,
     selected_ships: &mut SelectedShips,
     design_registry: &ShipDesignRegistry,
+    parent_system: Option<Entity>,
+    selected_system: &mut SelectedSystem,
+    is_station: bool,
 ) {
     if ship_entries.is_empty() {
         ui.label(egui::RichText::new("  (no ships)").weak().italics());
@@ -170,14 +174,42 @@ fn draw_ship_list(
                 .get(design_id)
                 .map(|d| d.name.as_str())
                 .unwrap_or(design_id);
-            let label = format!("  {} ({})", name, design_name);
+            let label = if is_station {
+                // #406: Teal color for station entries
+                egui::RichText::new(format!("  {} ({})", name, design_name))
+                    .color(egui::Color32::from_rgb(0, 200, 180))
+            } else {
+                egui::RichText::new(format!("  {} ({})", name, design_name))
+            };
             let is_selected = selected_ships.contains(*ship_entity);
-            let mut response = ui.selectable_label(is_selected, &label);
+            let mut response = ui.selectable_label(is_selected, label);
             if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
                 response = response.on_hover_ui(|ui| {
                     ship_tooltip(ui, &ship, &state, &hp, design_name);
                 });
             }
+            // #408: Context menu on right-click
+            let can_survey = design_registry.can_survey(design_id);
+            let can_colonize = design_registry.can_colonize(design_id);
+            let ctx_name = name.clone();
+            let ctx_design_name = design_name.to_string();
+            let ctx_ship_entity = *ship_entity;
+            let ctx_parent = parent_system;
+            response.context_menu(|ui| {
+                draw_ship_context_menu(
+                    ui,
+                    &ctx_name,
+                    &ctx_design_name,
+                    ctx_ship_entity,
+                    ctx_parent,
+                    can_survey,
+                    can_colonize,
+                    is_station,
+                    selected_ship,
+                    selected_ships,
+                    selected_system,
+                );
+            });
             if response.clicked() {
                 let shift_held = ui.input(|i| i.modifiers.shift);
                 if shift_held {
@@ -188,6 +220,52 @@ fn draw_ship_list(
                 selected_ship.0 = selected_ships.primary();
                 // Don't touch selected_system -- selections are independent
             }
+        }
+    }
+}
+
+/// #408: Draw the context menu content for a ship/station entry in the outline.
+#[allow(clippy::too_many_arguments)]
+fn draw_ship_context_menu(
+    ui: &mut egui::Ui,
+    name: &str,
+    design_name: &str,
+    ship_entity: Entity,
+    parent_system: Option<Entity>,
+    can_survey: bool,
+    can_colonize: bool,
+    is_station: bool,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
+    selected_system: &mut SelectedSystem,
+) {
+    ui.label(egui::RichText::new(name).strong());
+    if is_station {
+        ui.label(format!("Station: {}", design_name));
+    } else {
+        ui.label(format!("Design: {}", design_name));
+    }
+    if can_survey {
+        ui.label("Capability: Survey");
+    }
+    if can_colonize {
+        ui.label("Capability: Colonize");
+    }
+    ui.separator();
+    let select_label = if is_station {
+        "Select station"
+    } else {
+        "Select ship"
+    };
+    if ui.button(select_label).clicked() {
+        selected_ships.set_single(ship_entity);
+        selected_ship.0 = selected_ships.primary();
+        ui.close_menu();
+    }
+    if let Some(sys) = parent_system {
+        if ui.button("Select system").clicked() {
+            selected_system.0 = Some(sys);
+            ui.close_menu();
         }
     }
 }
@@ -279,14 +357,17 @@ pub fn draw_outline(
                 );
 
                 if is_expanded {
-                    // #395: Show stations separately from ships
+                    // #395/#406: Show stations separately from ships with visual distinction
                     let system_stations = stations_at(*system_entity, ships);
+                    let docked = ships_docked_at(*system_entity, ships);
+                    let has_both = !system_stations.is_empty() && !docked.is_empty();
                     if !system_stations.is_empty() {
                         ui.indent(format!("outline_stations_{:?}", system_entity), |ui| {
+                            // #406: Anchor icon + teal color for stations header
                             ui.label(
-                                egui::RichText::new("Stations")
+                                egui::RichText::new("\u{2693} Stations")
                                     .small()
-                                    .color(egui::Color32::from_rgb(180, 160, 100)),
+                                    .color(egui::Color32::from_rgb(0, 200, 180)),
                             );
                             draw_ship_list(
                                 ui,
@@ -295,12 +376,26 @@ pub fn draw_outline(
                                 selected_ship,
                                 selected_ships,
                                 design_registry,
+                                Some(*system_entity),
+                                selected_system,
+                                true,
                             );
                         });
                     }
+                    // #406: Separator between stations and ships when both exist
+                    if has_both {
+                        ui.separator();
+                    }
                     // #407: Group docked ships by fleet
                     ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
-                        let docked = ships_docked_at(*system_entity, ships);
+                        // #406: Ships sub-header when both sections exist
+                        if has_both {
+                            ui.label(
+                                egui::RichText::new("\u{2694} Ships")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(200, 200, 120)),
+                            );
+                        }
                         draw_fleet_grouped_ship_list(
                             ui,
                             &docked,
@@ -309,6 +404,8 @@ pub fn draw_outline(
                             selected_ships,
                             design_registry,
                             fleets,
+                            Some(*system_entity),
+                            selected_system,
                         );
                     });
                 }
@@ -390,6 +487,8 @@ pub fn draw_outline(
                                             selected_ships,
                                             design_registry,
                                             fleets,
+                                            Some(*system_entity),
+                                            selected_system,
                                         );
                                     },
                                 );
@@ -424,19 +523,40 @@ pub fn draw_outline(
                 egui::CollapsingHeader::new("In Transit")
                     .default_open(true)
                     .show(ui, |ui| {
-                        for (entity, name, _ship_type, status) in &in_transit {
+                        for (entity, name, design_id, status) in &in_transit {
                             let label = format!("{} [{}]", name, status);
                             let is_selected = selected_ships.contains(*entity);
+                            let design_name = design_registry
+                                .get(design_id.as_str())
+                                .map(|d| d.name.clone())
+                                .unwrap_or_else(|| design_id.clone());
                             let mut response = ui.selectable_label(is_selected, &label);
                             if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
-                                let design_name = design_registry
-                                    .get(&ship.design_id)
-                                    .map(|d| d.name.as_str())
-                                    .unwrap_or(&ship.design_id);
                                 response = response.on_hover_ui(|ui| {
-                                    ship_tooltip(ui, &ship, &_state, &hp, design_name);
+                                    ship_tooltip(ui, &ship, &_state, &hp, &design_name);
                                 });
                             }
+                            // #408: Context menu on in-transit ships
+                            let can_survey = design_registry.can_survey(design_id);
+                            let can_colonize = design_registry.can_colonize(design_id);
+                            let ctx_name = name.clone();
+                            let ctx_design_name = design_name.clone();
+                            let ctx_entity = *entity;
+                            response.context_menu(|ui| {
+                                draw_ship_context_menu(
+                                    ui,
+                                    &ctx_name,
+                                    &ctx_design_name,
+                                    ctx_entity,
+                                    None, // no parent system for in-transit
+                                    can_survey,
+                                    can_colonize,
+                                    false,
+                                    selected_ship,
+                                    selected_ships,
+                                    selected_system,
+                                );
+                            });
                             if response.clicked() {
                                 let shift_held = ui.input(|i| i.modifiers.shift);
                                 if shift_held {
@@ -502,6 +622,8 @@ fn draw_fleet_grouped_ship_list(
     selected_ships: &mut SelectedShips,
     design_registry: &ShipDesignRegistry,
     fleets: &Query<(Entity, &Fleet, &FleetMembers)>,
+    parent_system: Option<Entity>,
+    selected_system: &mut SelectedSystem,
 ) {
     if ship_entries.is_empty() {
         ui.label(egui::RichText::new("  (no ships)").weak().italics());
@@ -559,6 +681,9 @@ fn draw_fleet_grouped_ship_list(
                 selected_ship,
                 selected_ships,
                 design_registry,
+                parent_system,
+                selected_system,
+                false,
             );
         });
     }
@@ -572,6 +697,9 @@ fn draw_fleet_grouped_ship_list(
             selected_ship,
             selected_ships,
             design_registry,
+            parent_system,
+            selected_system,
+            false,
         );
     }
 }
