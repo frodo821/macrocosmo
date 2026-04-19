@@ -44,6 +44,7 @@ pub mod npc_decision;
 pub mod plugin;
 pub mod schema;
 
+pub use npc_decision::{AiControlled, AiPlayerMode};
 pub use plugin::{AiBusResource, AiPlugin, AiTickSet};
 
 /// Re-export of the `macrocosmo-ai` crate. Callers should prefer

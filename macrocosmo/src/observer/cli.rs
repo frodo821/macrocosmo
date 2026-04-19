@@ -19,6 +19,10 @@ pub struct CliArgs {
     /// When `true`, run in observer mode — no Player entity spawned, N
     /// full NPC Empire entities spawned instead.
     pub no_player: bool,
+    /// When `true`, the player empire is also controlled by the AI policy.
+    /// Allows observing AI behavior on the player empire in both headed
+    /// and headless mode.
+    pub ai_player: bool,
     /// Optional deterministic seed for galaxy generation.
     pub seed: Option<u64>,
     /// Optional time horizon (hexadies). When reached in observer mode
@@ -39,6 +43,9 @@ OPTIONS:
     --no-player             Run in observer mode (no Player entity,
                             NPC factions only). Intended for AI balance
                             verification and demos.
+    --ai-player             Let the AI policy also control the player
+                            empire. Useful for observing AI behavior
+                            alongside normal gameplay or headless tests.
     --seed <N>              Deterministic seed for galaxy generation.
                             Works with or without --no-player.
     --time-horizon <H>      Auto-exit observer mode once GameClock.elapsed
@@ -86,6 +93,9 @@ impl CliArgs {
                 }
                 "--no-player" => {
                     out.no_player = true;
+                }
+                "--ai-player" => {
+                    out.ai_player = true;
                 }
                 "--seed" => {
                     let v = iter

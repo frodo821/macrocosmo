@@ -80,6 +80,7 @@ pub struct AiPlugin;
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AiBusResource>()
+            .init_resource::<super::npc_decision::AiPlayerMode>()
             .add_systems(Startup, schema::declare_all)
             .add_systems(
                 Update,
@@ -88,6 +89,16 @@ impl Plugin for AiPlugin {
                     super::emitters::emit_military_metrics,
                 )
                     .in_set(AiTickSet::MetricProduce),
+            )
+            // Mark empires as AiControlled before the decision tick runs.
+            .add_systems(
+                Update,
+                (
+                    super::npc_decision::mark_npc_empires_ai_controlled,
+                    super::npc_decision::mark_player_ai_controlled,
+                )
+                    .before(AiTickSet::MetricProduce)
+                    .after(crate::time_system::advance_game_time),
             )
             // #173: NPC decision tick — hand-written no-op default policy.
             .add_systems(

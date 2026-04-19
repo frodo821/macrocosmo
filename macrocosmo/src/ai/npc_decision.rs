@@ -22,6 +22,44 @@ use crate::ai::plugin::AiBusResource;
 use crate::player::{Empire, Faction, PlayerEmpire};
 use crate::time_system::GameClock;
 
+/// Marker component: this empire's decisions are made by the AI policy.
+/// Applied to NPC empires automatically, and optionally to the player
+/// empire when `--ai-player` is passed or `AiPlayerMode(true)` is set.
+#[derive(Component)]
+pub struct AiControlled;
+
+/// Resource that opts the player empire into AI control.
+/// Default is `false` — normal gameplay where the player makes decisions.
+/// Set to `true` to let the AI policy drive the player empire.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct AiPlayerMode(pub bool);
+
+/// System that marks all NPC empires (those with `Empire` but without
+/// `PlayerEmpire`) with `AiControlled`. Runs every frame to catch newly
+/// spawned empires.
+pub fn mark_npc_empires_ai_controlled(
+    mut commands: Commands,
+    empires: Query<Entity, (With<Empire>, Without<PlayerEmpire>, Without<AiControlled>)>,
+) {
+    for entity in &empires {
+        commands.entity(entity).insert(AiControlled);
+    }
+}
+
+/// System that marks the player empire with `AiControlled` when
+/// `AiPlayerMode(true)` is set.
+pub fn mark_player_ai_controlled(
+    mut commands: Commands,
+    mode: Res<AiPlayerMode>,
+    player: Query<Entity, (With<PlayerEmpire>, Without<AiControlled>)>,
+) {
+    if mode.0 {
+        for entity in &player {
+            commands.entity(entity).insert(AiControlled);
+        }
+    }
+}
+
 /// Trait implemented by pluggable NPC decision policies. Stateless policies
 /// are encouraged; stateful policies can live in a `Resource` and be read
 /// from the tick system.
@@ -50,18 +88,22 @@ impl NpcPolicy for NoOpPolicy {
 }
 
 /// System run under [`AiTickSet::Reason`](super::AiTickSet::Reason):
-/// walk every NPC empire (`Empire` without `PlayerEmpire`) and invoke the
+/// walk every empire marked [`AiControlled`] and invoke the
 /// currently-configured policy. Today the policy is [`NoOpPolicy`]; the
 /// call exists so that wiring regressions (NPCs not iterated, ordering
 /// broken) are caught by the integration tests in
 /// `tests/npc_empires_in_player_mode.rs`.
+///
+/// NPC empires are automatically marked `AiControlled` by
+/// [`mark_npc_empires_ai_controlled`]. The player empire is also marked
+/// when [`AiPlayerMode`]`(true)` is set.
 ///
 /// `_bus` is held to keep the parameter list forward-compatible with the
 /// future bus-emitting policy without a schema change.
 pub fn npc_decision_tick(
     clock: Res<GameClock>,
     _bus: ResMut<AiBusResource>,
-    npcs: Query<&Faction, (With<Empire>, Without<PlayerEmpire>)>,
+    npcs: Query<&Faction, With<AiControlled>>,
 ) {
     let now = clock.elapsed;
     let mut policy = NoOpPolicy;

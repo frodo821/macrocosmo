@@ -35,6 +35,7 @@ mod visualization;
 
 use bevy::prelude::*;
 
+use ai::AiPlayerMode;
 use observer::{CliArgs, ObserverMode, ObserverPlugin, RngSeed};
 
 fn main() {
@@ -55,9 +56,12 @@ fn main() {
         );
     }
 
+    let ai_player_mode = AiPlayerMode(cli.ai_player);
+
     let mut app = App::new();
     app.insert_resource(observer_mode)
         .insert_resource(rng_seed)
+        .insert_resource(ai_player_mode)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Macrocosmo".into(),
