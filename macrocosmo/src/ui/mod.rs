@@ -1,5 +1,6 @@
 pub mod ai_debug;
 pub mod bottom_bar;
+pub mod console;
 pub mod context_menu;
 pub mod diplomacy_panel;
 pub mod outline;
@@ -237,8 +238,10 @@ impl Plugin for UiPlugin {
             .init_resource::<overlays::ShipDesignerState>()
             .init_resource::<EguiWantsPointer>()
             .init_resource::<UiState>()
+            .init_resource::<console::ConsoleState>()
             .init_resource::<ai_debug::AiDebugUi>()
             .add_systems(Update, ai_debug::toggle_ai_debug)
+            .add_systems(Update, toggle_console)
             .add_systems(Update, toggle_diplomacy_panel)
             .add_systems(
                 EguiPrimaryContextPass,
@@ -263,6 +266,7 @@ impl Plugin for UiPlugin {
                     draw_choice_dialog_system,
                     ai_debug::sample_ai_debug_stream,
                     ai_debug::draw_ai_debug_system,
+                    draw_console_system,
                     draw_bottom_bar_system,
                 )
                     .chain(),
@@ -1631,6 +1635,20 @@ fn toggle_diplomacy_panel(keys: Res<ButtonInput<KeyCode>>, mut open: ResMut<Dipl
 }
 
 // ---------------------------------------------------------------------------
+// #310: toggle_console — Alt+F2 toggles the Lua console
+// ---------------------------------------------------------------------------
+
+fn toggle_console(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<console::ConsoleState>) {
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    if alt && keys.just_pressed(KeyCode::F2) {
+        state.visible = !state.visible;
+        if state.visible {
+            state.scroll_to_bottom = true;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #304: draw_diplomacy_overlay_system — diplomacy panel (floating window)
 // ---------------------------------------------------------------------------
 
@@ -1782,6 +1800,57 @@ fn draw_bottom_bar_system(
         return;
     };
     bottom_bar::draw_bottom_bar(ctx, command_log, &clock);
+}
+
+// ---------------------------------------------------------------------------
+// #310: draw_console_system — Lua console overlay
+// ---------------------------------------------------------------------------
+
+fn draw_console_system(
+    mut contexts: EguiContexts,
+    mut console_state: ResMut<console::ConsoleState>,
+    mut log_buffer: ResMut<crate::scripting::log_buffer::LogBuffer>,
+    clock: Res<GameClock>,
+    engine: Res<crate::scripting::ScriptEngine>,
+) {
+    crate::prof_span!("draw_console");
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    if let Some(input) = console::draw_console(ctx, &mut console_state, &log_buffer) {
+        // Echo the input
+        log_buffer.push(
+            input.clone(),
+            crate::scripting::log_buffer::LogSource::Console,
+            clock.elapsed,
+        );
+
+        // Evaluate the Lua expression. Try as expression first (return value),
+        // fall back to statement.
+        let lua = engine.lua();
+        let result = lua
+            .load(&format!("return {}", input))
+            .eval::<mlua::Value>()
+            .or_else(|_| lua.load(&input).eval::<mlua::Value>());
+
+        match result {
+            Ok(value) => {
+                // Don't log nil results for statement execution
+                if !matches!(value, mlua::Value::Nil) {
+                    let formatted = console::format_lua_value(&value);
+                    log_buffer.push(
+                        formatted,
+                        crate::scripting::log_buffer::LogSource::ConsoleResult,
+                        clock.elapsed,
+                    );
+                }
+            }
+            Err(e) => {
+                log_buffer.push_error(format!("{}", e), clock.elapsed);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
