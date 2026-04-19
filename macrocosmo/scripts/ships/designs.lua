@@ -6,6 +6,10 @@ local station_modules = require("ships.station_modules")
 -- #236: Ship design stats (hp/ftl_range/cost/maintenance/build_time/can_*)
 -- are derived from hull + modules at registry load time. Presets no longer
 -- author those fields — only id/name/hull/modules (and description) are read.
+--
+-- #138: Designs that use power-consuming modules must include a reactor
+-- module to satisfy the power budget constraint. Designs are validated
+-- at registry load time.
 
 -- Default designs matching current ShipType functionality
 local explorer_mk1 = define_ship_design {
@@ -36,6 +40,7 @@ local courier_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "sublight", module = modules.afterburner },
         { slot_type = "utility", module = modules.cargo_bay },
+        { slot_type = "reactor", module = modules.fusion_reactor },
     },
 }
 
@@ -58,6 +63,7 @@ local patrol_corvette = define_ship_design {
         { slot_type = "weapon", module = modules.weapon_laser },
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "defense", module = modules.armor_plating },
+        { slot_type = "reactor", module = modules.fusion_reactor },
     },
 }
 

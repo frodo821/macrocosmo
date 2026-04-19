@@ -262,6 +262,9 @@ mod tests {
             prerequisites: prereq,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: crate::ship_design::ModuleSize::Small,
         }
     }
 
@@ -622,6 +625,7 @@ mod tests {
         corvette.slots = vec![crate::ship_design::HullSlot {
             slot_type: "ftl".into(),
             count: 1,
+            max_size: crate::ship_design::ModuleSize::Large,
         }];
         hulls.insert(corvette);
 
@@ -638,6 +642,9 @@ mod tests {
             prerequisites: Some(Condition::Atom(ConditionAtom::has_tech("T2"))),
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: crate::ship_design::ModuleSize::Small,
         });
 
         let mut designs = ShipDesignRegistry::default();

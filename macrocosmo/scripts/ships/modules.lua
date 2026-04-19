@@ -11,6 +11,10 @@ local tech = require("tech")
 --   heavy (15-20):           ftl_drive, weapon_railgun, command_array,
 --                           colony_module
 -- These are deliberately coarse — fine balance is tracked in #61.
+--
+-- #138: `power_cost` / `power_output` / `size` fields support the power
+-- budget and module size constraint system. Only reactor modules produce
+-- power; all others consume it (or 0 for passive modules).
 
 -- FTL drive modules (ftl slot)
 local ftl_drive = define_module {
@@ -22,6 +26,7 @@ local ftl_drive = define_module {
     },
     cost = { minerals = 100, energy = 50 },
     build_time = 15,
+    power_cost = 0,
 }
 
 -- Sublight engine modules (sublight slot)
@@ -34,6 +39,7 @@ local afterburner = define_module {
     },
     cost = { minerals = 60, energy = 40 },
     build_time = 8,
+    power_cost = 1,
 }
 
 local ion_thruster = define_module {
@@ -45,6 +51,7 @@ local ion_thruster = define_module {
     },
     cost = { minerals = 40, energy = 30 },
     build_time = 6,
+    power_cost = 1,
 }
 
 -- Weapon modules (weapon slot)
@@ -52,6 +59,7 @@ local weapon_laser = define_module {
     id = "weapon_laser",
     name = "Laser Battery",
     slot_type = slot_types.weapon,
+    size = "small",
     prerequisites = has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 5.0, precision = 0.85, cooldown = 1, range = 10.0,
@@ -61,12 +69,14 @@ local weapon_laser = define_module {
     },
     cost = { minerals = 50, energy = 30 },
     build_time = 10,
+    power_cost = 2,
 }
 
 local weapon_railgun = define_module {
     id = "weapon_railgun",
     name = "Railgun",
     slot_type = slot_types.weapon,
+    size = "medium",
     prerequisites = has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 2.0, precision = 0.90, cooldown = 3, range = 20.0,
@@ -76,12 +86,14 @@ local weapon_railgun = define_module {
     },
     cost = { minerals = 100, energy = 50 },
     build_time = 15,
+    power_cost = 5,
 }
 
 local weapon_missile = define_module {
     id = "weapon_missile",
     name = "Missile Launcher",
     slot_type = slot_types.weapon,
+    size = "small",
     prerequisites = has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 8.0, precision = 0.70, cooldown = 2, range = 15.0,
@@ -91,6 +103,7 @@ local weapon_missile = define_module {
     },
     cost = { minerals = 80, energy = 60 },
     build_time = 12,
+    power_cost = 3,
 }
 
 -- Defense modules (defense slot)
@@ -98,18 +111,21 @@ local armor_plating = define_module {
     id = "armor_plating",
     name = "Armor Plating",
     slot_type = slot_types.defense,
+    size = "small",
     modifiers = {
         { target = "ship.armor_max", base_add = 30.0 },
         { target = "ship.speed", multiplier = -0.05 },
     },
     cost = { minerals = 80 },
     build_time = 10,
+    power_cost = 0,
 }
 
 local shield_generator = define_module {
     id = "shield_generator",
     name = "Shield Generator",
     slot_type = slot_types.defense,
+    size = "small",
     prerequisites = has_tech(tech.military.deflector_shields),
     modifiers = {
         { target = "ship.shield_max", base_add = 40.0 },
@@ -117,6 +133,7 @@ local shield_generator = define_module {
     },
     cost = { minerals = 60, energy = 50 },
     build_time = 12,
+    power_cost = 3,
 }
 
 -- Utility modules (utility slot)
@@ -129,6 +146,7 @@ local survey_equipment = define_module {
     },
     cost = { minerals = 60, energy = 40 },
     build_time = 8,
+    power_cost = 0,
 }
 
 local cargo_bay = define_module {
@@ -140,6 +158,7 @@ local cargo_bay = define_module {
     },
     cost = { minerals = 30 },
     build_time = 5,
+    power_cost = 0,
 }
 
 local colony_module = define_module {
@@ -151,6 +170,7 @@ local colony_module = define_module {
     },
     cost = { minerals = 300, energy = 200 },
     build_time = 20,
+    power_cost = 0,
 }
 
 -- #217: Scout module — enables the Scout command and extends passive sensor
@@ -166,13 +186,15 @@ local scout_module = define_module {
     },
     cost = { minerals = 80, energy = 50 },
     build_time = 8,
+    power_cost = 0,
 }
 
--- Power modules (power slot)
+-- Reactor modules (reactor slot)
 local fusion_reactor = define_module {
     id = "fusion_reactor",
     name = "Fusion Reactor",
-    slot_type = slot_types.power,
+    slot_type = slot_types.reactor,
+    power_output = 10,
     modifiers = {
         { target = "ship.shield_regen", base_add = 0.5 },
     },
@@ -180,17 +202,18 @@ local fusion_reactor = define_module {
     build_time = 10,
 }
 
--- Command modules (command slot)
+-- Communications modules (comms slot)
 local command_array = define_module {
     id = "command_array",
     name = "Fleet Command Array",
-    slot_type = slot_types.command,
+    slot_type = slot_types.comms,
     modifiers = {
         { target = "fleet.attack", multiplier = 0.05 },
         { target = "fleet.defense", multiplier = 0.05 },
     },
     cost = { minerals = 200, energy = 100 },
     build_time = 18,
+    power_cost = 2,
 }
 
 return {

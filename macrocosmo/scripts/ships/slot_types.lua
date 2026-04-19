@@ -7,8 +7,8 @@ local sublight = define_slot_type { id = "sublight", name = "Sublight Engine Slo
 local weapon = define_slot_type { id = "weapon", name = "Weapon Slot" }
 local defense = define_slot_type { id = "defense", name = "Defense Slot" }
 local utility = define_slot_type { id = "utility", name = "Utility Slot" }
-local power = define_slot_type { id = "power", name = "Power Slot" }
-local command = define_slot_type { id = "command", name = "Command Slot" }
+local reactor = define_slot_type { id = "reactor", name = "Reactor Slot" }
+local comms = define_slot_type { id = "comms", name = "Communications Slot" }
 
 return {
     ftl = ftl,
@@ -16,6 +16,6 @@ return {
     weapon = weapon,
     defense = defense,
     utility = utility,
-    power = power,
-    command = command,
+    reactor = reactor,
+    comms = comms,
 }

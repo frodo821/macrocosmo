@@ -1238,12 +1238,20 @@ pub fn spawn_mock_core_ship(world: &mut World, system: Entity, faction: Entity) 
 /// Lua preset content. Designs are built from these via `design_derived` so
 /// the test registry always reflects the canonical derivation formula.
 pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
-    use macrocosmo::ship_design::{HullDefinition, HullRegistry, HullSlot, ModuleModifier};
+    use macrocosmo::ship_design::{
+        HullDefinition, HullRegistry, HullSlot, ModuleModifier, ModuleSize,
+    };
     use std::collections::HashMap;
     let mut hulls = HullRegistry::default();
     let slot = |t: &str, c: u32| HullSlot {
         slot_type: t.to_string(),
         count: c,
+        max_size: ModuleSize::Large,
+    };
+    let slot_sized = |t: &str, c: u32, s: ModuleSize| HullSlot {
+        slot_type: t.to_string(),
+        count: c,
+        max_size: s,
     };
     hulls.insert(HullDefinition {
         id: "corvette".into(),
@@ -1255,10 +1263,10 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         slots: vec![
             slot("ftl", 1),
             slot("sublight", 1),
-            slot("weapon", 2),
-            slot("defense", 1),
+            slot_sized("weapon", 2, ModuleSize::Small),
+            slot_sized("defense", 1, ModuleSize::Small),
             slot("utility", 1),
-            slot("power", 1),
+            slot("reactor", 1),
         ],
         build_cost_minerals: Amt::units(200),
         build_cost_energy: Amt::units(100),
@@ -1279,11 +1287,11 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
         slots: vec![
             slot("ftl", 1),
             slot("sublight", 1),
-            slot("weapon", 3),
-            slot("defense", 2),
+            slot_sized("weapon", 3, ModuleSize::Medium),
+            slot_sized("defense", 2, ModuleSize::Medium),
             slot("utility", 2),
-            slot("power", 1),
-            slot("command", 1),
+            slot("reactor", 1),
+            slot("comms", 1),
         ],
         build_cost_minerals: Amt::units(400),
         build_cost_energy: Amt::units(200),
@@ -1305,8 +1313,8 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
             slot("ftl", 1),
             slot("sublight", 1),
             slot("utility", 2),
-            slot("weapon", 1),
-            slot("power", 1),
+            slot_sized("weapon", 1, ModuleSize::Small),
+            slot("reactor", 1),
         ],
         build_cost_minerals: Amt::units(150),
         build_cost_energy: Amt::units(80),
@@ -1341,7 +1349,7 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
             slot("ftl", 1),
             slot("sublight", 1),
             slot("utility", 2),
-            slot("power", 1),
+            slot("reactor", 1),
         ],
         build_cost_minerals: Amt::units(100),
         build_cost_energy: Amt::units(50),
@@ -1421,7 +1429,7 @@ pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
 }
 
 pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry {
-    use macrocosmo::ship_design::{ModuleDefinition, ModuleModifier, ModuleRegistry};
+    use macrocosmo::ship_design::{ModuleDefinition, ModuleModifier, ModuleRegistry, ModuleSize};
     let mut modules = ModuleRegistry::default();
     modules.insert(ModuleDefinition {
         id: "ftl_drive".into(),
@@ -1440,6 +1448,9 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
     });
     modules.insert(ModuleDefinition {
         id: "afterburner".into(),
@@ -1458,6 +1469,9 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
     });
     modules.insert(ModuleDefinition {
         id: "survey_equipment".into(),
@@ -1476,6 +1490,9 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
     });
     modules.insert(ModuleDefinition {
         id: "colony_module".into(),
@@ -1494,6 +1511,9 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
     });
     modules.insert(ModuleDefinition {
         id: "cargo_bay".into(),
@@ -1512,6 +1532,9 @@ pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry 
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
     });
     modules
 }
