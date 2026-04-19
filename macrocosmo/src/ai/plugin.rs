@@ -110,6 +110,17 @@ impl Plugin for AiPlugin {
                     .chain()
                     .after(crate::time_system::advance_game_time),
             );
+
+        #[cfg(feature = "ai-log")]
+        {
+            app.add_systems(Startup, super::debug_log::setup_ai_log);
+            app.add_systems(
+                Update,
+                super::debug_log::emit_world_state_log
+                    .in_set(AiTickSet::MetricProduce)
+                    .run_if(resource_exists::<super::debug_log::AiLogConfig>),
+            );
+        }
     }
 }
 

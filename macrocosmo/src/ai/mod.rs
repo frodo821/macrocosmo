@@ -39,6 +39,8 @@
 pub mod combat_projection;
 pub mod command_consumer;
 pub mod convert;
+#[cfg(feature = "ai-log")]
+pub mod debug_log;
 pub mod emit;
 pub mod emitters;
 pub mod npc_decision;

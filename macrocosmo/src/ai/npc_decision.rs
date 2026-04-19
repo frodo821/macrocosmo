@@ -152,11 +152,11 @@ pub fn npc_decision_tick(
     mut bus: ResMut<AiBusResource>,
     npcs: Query<(Entity, &Faction), (With<Empire>, Without<PlayerEmpire>)>,
     hostiles: Query<&AtSystem, With<Hostile>>,
+    #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
     let now = clock.elapsed;
     let mut policy = SimpleNpcPolicy;
 
-    // Collect systems with hostile entities (shared across all NPCs for Phase 1)
     let hostile_systems: Vec<Entity> = hostiles.iter().map(|at| at.0).collect();
     let context = NpcContext {
         hostile_systems: hostile_systems.clone(),
@@ -166,6 +166,11 @@ pub fn npc_decision_tick(
         let commands = policy.decide(&faction.id, entity, now, &bus.0, &context);
         for cmd in commands {
             bus.0.emit_command(cmd);
+        }
+
+        #[cfg(feature = "ai-log")]
+        if let Some(ref mut log) = log {
+            super::debug_log::write_decision_log(log, now, &faction.id, &bus);
         }
     }
 }
