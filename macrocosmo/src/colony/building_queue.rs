@@ -1,7 +1,11 @@
+use std::borrow::Cow;
+
 use bevy::prelude::*;
+use mlua::prelude::*;
 
 use crate::amount::Amt;
 use crate::components::Position;
+use crate::event_system::{BUILDING_LOST_EVENT, EventContext};
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem};
 use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
@@ -11,6 +15,74 @@ use crate::ship::{CargoItem, Owner, Ship, spawn_ship};
 use crate::time_system::GameClock;
 
 use super::{Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile, SystemBuildings};
+
+// ---------------------------------------------------------------------------
+// BuildingLostCtx — typed EventContext payload (#290)
+// ---------------------------------------------------------------------------
+
+/// Reason a building was lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildingLostCause {
+    Demolished,
+    Conquered,
+    Destroyed,
+}
+
+impl BuildingLostCause {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BuildingLostCause::Demolished => "demolished",
+            BuildingLostCause::Conquered => "conquered",
+            BuildingLostCause::Destroyed => "destroyed",
+        }
+    }
+}
+
+/// Typed [`EventContext`] payload for `macrocosmo:building_lost`.
+///
+/// Carries the building id, slot index, cause, and entity references for
+/// the colony and star system. The enrichment step in
+/// `dispatch_event_handlers` replaces `colony_entity` / `system_entity`
+/// with full Lua views before handlers fire.
+#[derive(Debug, Clone)]
+pub struct BuildingLostCtx {
+    pub date: i64,
+    pub building_id: String,
+    pub slot: usize,
+    pub cause: BuildingLostCause,
+    pub colony_entity: Entity,
+    pub system_entity: Entity,
+}
+
+impl EventContext for BuildingLostCtx {
+    fn event_id(&self) -> &str {
+        BUILDING_LOST_EVENT
+    }
+
+    fn to_lua_table(&self, lua: &Lua) -> LuaResult<LuaTable> {
+        let t = lua.create_table()?;
+        t.set("event_id", self.event_id())?;
+        t.set("date", self.date)?;
+        t.set("building_id", self.building_id.as_str())?;
+        t.set("slot", self.slot)?;
+        t.set("cause", self.cause.as_str())?;
+        t.set("colony_entity", self.colony_entity.to_bits())?;
+        t.set("system_entity", self.system_entity.to_bits())?;
+        Ok(t)
+    }
+
+    fn payload_get(&self, key: &str) -> Option<Cow<'_, str>> {
+        match key {
+            "date" => Some(Cow::Owned(self.date.to_string())),
+            "building_id" => Some(Cow::Borrowed(&self.building_id)),
+            "slot" => Some(Cow::Owned(self.slot.to_string())),
+            "cause" => Some(Cow::Borrowed(self.cause.as_str())),
+            "colony_entity" => Some(Cow::Owned(self.colony_entity.to_bits().to_string())),
+            "system_entity" => Some(Cow::Owned(self.system_entity.to_bits().to_string())),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Component, Default)]
 pub struct BuildQueue {
@@ -674,17 +746,17 @@ pub fn tick_building_queue(
                         Some(colony_entity),
                         clock.elapsed,
                     );
-                    let mut payload = std::collections::HashMap::new();
-                    payload.insert("cause".to_string(), "demolished".to_string());
-                    payload.insert("building_id".to_string(), building_name);
-                    payload.insert("slot".to_string(), slot_idx.to_string());
                     event_system.fire_event_with_payload(
                         Some(colony_entity),
                         clock.elapsed,
-                        Box::new(crate::event_system::LuaDefinedEventContext::new(
-                            "macrocosmo:building_lost",
-                            payload,
-                        )),
+                        Box::new(BuildingLostCtx {
+                            date: clock.elapsed,
+                            building_id: building_name,
+                            slot: slot_idx,
+                            cause: BuildingLostCause::Demolished,
+                            colony_entity,
+                            system_entity: sys,
+                        }),
                     );
                 }
             }
@@ -1052,5 +1124,77 @@ mod tests {
         assert!(!bq.is_demolishing(0));
         assert_eq!(bq.demolition_time_remaining(2), Some(5));
         assert_eq!(bq.demolition_time_remaining(0), None);
+    }
+
+    // ========================================================================
+    // #290: BuildingLostCtx unit tests
+    // ========================================================================
+
+    #[test]
+    fn building_lost_ctx_event_id() {
+        let ctx = BuildingLostCtx {
+            date: 10,
+            building_id: "mine".to_string(),
+            slot: 0,
+            cause: BuildingLostCause::Demolished,
+            colony_entity: Entity::from_raw_u32(1).unwrap(),
+            system_entity: Entity::from_raw_u32(2).unwrap(),
+        };
+        assert_eq!(ctx.event_id(), crate::event_system::BUILDING_LOST_EVENT);
+    }
+
+    #[test]
+    fn building_lost_ctx_payload_get() {
+        let ctx = BuildingLostCtx {
+            date: 42,
+            building_id: "power_plant".to_string(),
+            slot: 3,
+            cause: BuildingLostCause::Conquered,
+            colony_entity: Entity::from_raw_u32(5).unwrap(),
+            system_entity: Entity::from_raw_u32(10).unwrap(),
+        };
+        assert_eq!(ctx.payload_get("date").as_deref(), Some("42"));
+        assert_eq!(
+            ctx.payload_get("building_id").as_deref(),
+            Some("power_plant")
+        );
+        assert_eq!(ctx.payload_get("slot").as_deref(), Some("3"));
+        assert_eq!(ctx.payload_get("cause").as_deref(), Some("conquered"));
+        assert!(ctx.payload_get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn building_lost_ctx_to_lua_table_roundtrip() {
+        let lua = mlua::Lua::new();
+        let ctx = BuildingLostCtx {
+            date: 100,
+            building_id: "farm".to_string(),
+            slot: 1,
+            cause: BuildingLostCause::Destroyed,
+            colony_entity: Entity::from_raw_u32(7).unwrap(),
+            system_entity: Entity::from_raw_u32(8).unwrap(),
+        };
+        let tbl = ctx.to_lua_table(&lua).unwrap();
+        let event_id: String = tbl.get("event_id").unwrap();
+        assert_eq!(event_id, crate::event_system::BUILDING_LOST_EVENT);
+        let date: i64 = tbl.get("date").unwrap();
+        assert_eq!(date, 100);
+        let building_id: String = tbl.get("building_id").unwrap();
+        assert_eq!(building_id, "farm");
+        let slot: usize = tbl.get("slot").unwrap();
+        assert_eq!(slot, 1);
+        let cause: String = tbl.get("cause").unwrap();
+        assert_eq!(cause, "destroyed");
+        let colony_bits: u64 = tbl.get("colony_entity").unwrap();
+        assert_eq!(colony_bits, Entity::from_raw_u32(7).unwrap().to_bits());
+        let system_bits: u64 = tbl.get("system_entity").unwrap();
+        assert_eq!(system_bits, Entity::from_raw_u32(8).unwrap().to_bits());
+    }
+
+    #[test]
+    fn building_lost_cause_as_str() {
+        assert_eq!(BuildingLostCause::Demolished.as_str(), "demolished");
+        assert_eq!(BuildingLostCause::Conquered.as_str(), "conquered");
+        assert_eq!(BuildingLostCause::Destroyed.as_str(), "destroyed");
     }
 }

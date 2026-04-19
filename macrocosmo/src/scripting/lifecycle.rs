@@ -446,6 +446,7 @@ pub fn dispatch_event_handlers(world: &mut World) {
             // FleetView before entering the gamestate scope. We build the
             // views here while `world` is still directly accessible.
             enrich_fleet_transit_payload(lua, world, &fired, &payload_table);
+            enrich_building_lost_payload(lua, world, &fired, &payload_table);
 
             // #332: attach a live gamestate via Option B scope closures.
             // Event callbacks may mutate the world via setter methods
@@ -508,6 +509,40 @@ fn enrich_fleet_transit_payload(
         if let Some(entity) = Entity::try_from_bits(bits) {
             if let Ok(view) = views::build_fleet_view(lua, world, entity) {
                 let _ = payload_table.set("fleet", view);
+            }
+        }
+    }
+}
+
+/// #290: If the fired event is a building_lost event, enrich the payload
+/// table with `colony` (ColonyView) and `system` (SystemView) built from the
+/// entity ids stored in the context. Called before `dispatch_with_gamestate`
+/// while `world` is still directly accessible.
+fn enrich_building_lost_payload(
+    lua: &mlua::Lua,
+    world: &mut World,
+    fired: &crate::event_system::FiredEvent,
+    payload_table: &mlua::Table,
+) {
+    use crate::event_system::BUILDING_LOST_EVENT;
+    if fired.event_id.as_str() != BUILDING_LOST_EVENT {
+        return;
+    }
+    let colony_bits: Option<u64> = payload_table.get("colony_entity").ok();
+    let system_bits: Option<u64> = payload_table.get("system_entity").ok();
+
+    use crate::scripting::gamestate_scope::views;
+    if let Some(bits) = colony_bits {
+        if let Some(entity) = Entity::try_from_bits(bits) {
+            if let Ok(view) = views::build_colony_view(lua, world, entity) {
+                let _ = payload_table.set("colony", view);
+            }
+        }
+    }
+    if let Some(bits) = system_bits {
+        if let Some(entity) = Entity::try_from_bits(bits) {
+            if let Ok(view) = views::build_system_view(lua, world, entity) {
+                let _ = payload_table.set("system", view);
             }
         }
     }
@@ -1139,8 +1174,11 @@ mod tests {
 
     #[test]
     fn test_existing_event_scripts_still_work() {
-        // Regression: a pre-#263 event script that doesn't touch gamestate
-        // must still receive payload fields as before.
+        // Regression (#290): a pre-#263 event script that doesn't touch
+        // gamestate must still receive payload fields as before, even when
+        // the event is dispatched via the typed `BuildingLostCtx`.
+        use crate::colony::building_queue::{BuildingLostCause, BuildingLostCtx};
+
         let mut world = make_world();
         {
             let engine = world.resource::<ScriptEngine>();
@@ -1149,7 +1187,7 @@ mod tests {
                 .load(
                     r#"
                     _old_style_cause = nil
-                    on("macrocosmo:building_lost", { cause = "combat" }, function(evt)
+                    on("macrocosmo:building_lost", { cause = "destroyed" }, function(evt)
                         _old_style_cause = evt.cause
                     end)
                     "#,
@@ -1159,15 +1197,16 @@ mod tests {
         }
         {
             let mut es = world.resource_mut::<EventSystem>();
-            let mut payload = HashMap::new();
-            payload.insert("cause".to_string(), "combat".to_string());
-            payload.insert("building_id".to_string(), "mine".to_string());
-            let ctx = crate::event_system::LuaDefinedEventContext::new(
-                "macrocosmo:building_lost",
-                payload,
-            );
+            let ctx = BuildingLostCtx {
+                date: 1,
+                building_id: "mine".to_string(),
+                slot: 0,
+                cause: BuildingLostCause::Destroyed,
+                colony_entity: Entity::from_raw_u32(1).unwrap(),
+                system_entity: Entity::from_raw_u32(2).unwrap(),
+            };
             es.fired_log.push(FiredEvent {
-                event_id: "macrocosmo:building_lost".to_string(),
+                event_id: crate::event_system::BUILDING_LOST_EVENT.to_string(),
                 target: None,
                 fired_at: 1,
                 payload: Some(std::sync::Arc::new(ctx)),
@@ -1178,6 +1217,6 @@ mod tests {
 
         let engine = world.resource::<ScriptEngine>();
         let cause: String = engine.lua().globals().get("_old_style_cause").unwrap();
-        assert_eq!(cause, "combat");
+        assert_eq!(cause, "destroyed");
     }
 }

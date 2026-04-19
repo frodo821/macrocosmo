@@ -340,6 +340,13 @@ impl EventSystem {
 // Built-in events use "macrocosmo:" prefix.
 // Examples: "macrocosmo:building_lost", "macrocosmo:ship_lost", "macrocosmo:tech_researched"
 
+/// #290: Event id fired when a building is lost (demolished, conquered, or
+/// destroyed). Typed context: [`crate::colony::building_queue::BuildingLostCtx`].
+/// Payload keys: `cause` (`"demolished"` | `"conquered"` | `"destroyed"`),
+/// `building_id`, `slot` (index), `date` (hexadies), `colony_entity` (entity
+/// bits), `system_entity` (entity bits, when available).
+pub const BUILDING_LOST_EVENT: &str = "macrocosmo:building_lost";
+
 /// #281: Event id fired when a building/structure finishes construction or an
 /// upgrade path completes. Payload keys: `cause` (`"construction"` |
 /// `"upgrade"`), `building_id`, `slot` (when applicable), `system` (entity id
@@ -1178,10 +1185,12 @@ mod tests {
     /// Regression: an existing `macrocosmo:building_lost` subscriber written
     /// against the pre-#288 HashMap contract must keep seeing `evt.cause` /
     /// `evt.building_id` unchanged when the event is dispatched via the new
-    /// trait-object path. Covers the mechanical-migration guarantee in the
-    /// issue.
+    /// typed `BuildingLostCtx` path (#290). Proves backward compatibility
+    /// of the typed context with existing Lua handlers.
     #[test]
     fn test_existing_building_lost_handler_unchanged() {
+        use crate::colony::building_queue::{BuildingLostCause, BuildingLostCtx};
+
         let lua = Lua::new();
         crate::scripting::ScriptEngine::setup_globals(
             &lua,
@@ -1204,20 +1213,78 @@ mod tests {
         .exec()
         .unwrap();
 
-        let mut details = HashMap::new();
-        details.insert("cause".to_string(), "demolished".to_string());
-        details.insert("building_id".to_string(), "power_plant".to_string());
-        details.insert("slot".to_string(), "1".to_string());
-        let ctx = LuaDefinedEventContext::new("macrocosmo:building_lost", details);
+        let ctx = BuildingLostCtx {
+            date: 10,
+            building_id: "power_plant".to_string(),
+            slot: 1,
+            cause: BuildingLostCause::Demolished,
+            colony_entity: Entity::from_raw_u32(1).unwrap(),
+            system_entity: Entity::from_raw_u32(2).unwrap(),
+        };
 
         let count = EventBus::fire(&lua, &ctx);
         assert_eq!(count, 1);
 
         let cause: String = lua.globals().get("_seen_cause").unwrap();
         let bid: String = lua.globals().get("_seen_building_id").unwrap();
-        let slot: String = lua.globals().get("_seen_slot").unwrap();
+        let slot: usize = lua.globals().get("_seen_slot").unwrap();
         assert_eq!(cause, "demolished");
         assert_eq!(bid, "power_plant");
-        assert_eq!(slot, "1");
+        assert_eq!(slot, 1);
+    }
+
+    /// #290: `BuildingLostCtx` with a filter must match the structural
+    /// filter in `on(event_id, filter, fn)` — proving the typed context
+    /// is wire-compatible with filter-based subscriptions.
+    #[test]
+    fn test_building_lost_ctx_filter_match() {
+        use crate::colony::building_queue::{BuildingLostCause, BuildingLostCtx};
+
+        let lua = Lua::new();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
+
+        lua.load(
+            r#"
+            _demolished_seen = false
+            on("macrocosmo:building_lost", { cause = "demolished" }, function(evt)
+                _demolished_seen = true
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        // Fire with matching cause
+        let ctx = BuildingLostCtx {
+            date: 5,
+            building_id: "mine".to_string(),
+            slot: 0,
+            cause: BuildingLostCause::Demolished,
+            colony_entity: Entity::from_raw_u32(1).unwrap(),
+            system_entity: Entity::from_raw_u32(2).unwrap(),
+        };
+        let count = EventBus::fire(&lua, &ctx);
+        assert_eq!(count, 1);
+        let seen: bool = lua.globals().get("_demolished_seen").unwrap();
+        assert!(seen);
+
+        // Reset and fire with non-matching cause
+        lua.load(r#"_demolished_seen = false"#).exec().unwrap();
+        let ctx2 = BuildingLostCtx {
+            date: 6,
+            building_id: "mine".to_string(),
+            slot: 0,
+            cause: BuildingLostCause::Conquered,
+            colony_entity: Entity::from_raw_u32(1).unwrap(),
+            system_entity: Entity::from_raw_u32(2).unwrap(),
+        };
+        let count2 = EventBus::fire(&lua, &ctx2);
+        assert_eq!(count2, 0);
+        let seen2: bool = lua.globals().get("_demolished_seen").unwrap();
+        assert!(!seen2);
     }
 }
