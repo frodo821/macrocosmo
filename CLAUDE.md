@@ -196,6 +196,21 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 - BuildingRegistry resource loaded at startup; BuildingType enum still used for runtime logic (known tech debt — should migrate to capability-based)
 - Fallback: `create_initial_tech_tree()` if scripts are missing (for tests)
 
+### BRP (Bevy Remote Protocol) — `#[cfg(feature = "remote")]`
+
+`cargo run --features remote` で JSON-RPC 2.0 over HTTP (port 15702) が有効に。agent-driven テスト・外部監視用。
+
+**Custom methods** (`src/remote.rs`):
+- `macrocosmo/entity_screen_pos` — entity の world→screen 座標変換
+- `macrocosmo/advance_time` — game clock を N hexadies 進める
+- `macrocosmo/eval_lua` — ScriptEngine sandbox で Lua 評価
+- `macrocosmo/click` — 画面座標にマウスクリック注入 (left/right/middle, shift/ctrl)
+- `macrocosmo/key_press` — キーボード入力注入
+- `macrocosmo/hover` — カーソル移動
+- `macrocosmo/screenshot` — 現フレームを base64 PNG でキャプチャ
+- `macrocosmo/find_ui_element` — text/ID で UI 要素検索 → 座標返却
+- `macrocosmo/list_ui_elements` — 全 UI 要素の一覧
+
 ## Common Pitfalls
 
 1. **System ordering:** All game logic systems MUST use `.after(crate::time_system::advance_game_time)`. Without this, delta-based systems (tick_production, movement, etc.) may see delta=0 every frame if they run before the clock advances.

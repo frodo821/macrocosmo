@@ -1,14 +1,16 @@
 //! Custom BRP (Bevy Remote Protocol) commands for the macrocosmo remote testing framework.
 //!
-//! Provides the following JSON-RPC methods:
-//! - `macrocosmo/entity_screen_pos` — project an entity's world position to screen coordinates
-//! - `macrocosmo/advance_time` — increment the game clock
-//! - `macrocosmo/eval_lua` — evaluate arbitrary Lua code
-//! - `macrocosmo/click` — inject a mouse click at screen coordinates
-//! - `macrocosmo/key_press` — inject a keyboard key press
-//! - `macrocosmo/hover` — move the cursor without clicking
+//! Provides the following JSON-RPC methods (all gated behind `#[cfg(feature = "remote")]`):
 //!
-//! All gated behind `#[cfg(feature = "remote")]`.
+//! - `macrocosmo/entity_screen_pos` — project an entity's world position to screen coordinates
+//! - `macrocosmo/advance_time` — increment the game clock by N hexadies
+//! - `macrocosmo/eval_lua` — evaluate arbitrary Lua code in the ScriptEngine sandbox
+//! - `macrocosmo/click` — inject a mouse click at screen coordinates (left/right/middle, shift/ctrl)
+//! - `macrocosmo/key_press` — inject a keyboard key press
+//! - `macrocosmo/hover` — move the cursor to screen coordinates without clicking
+//! - `macrocosmo/screenshot` — capture the current frame as a base64-encoded PNG
+//! - `macrocosmo/find_ui_element` — find a registered UI element by text or semantic ID, returns screen coordinates
+//! - `macrocosmo/list_ui_elements` — list all registered UI elements with their positions and metadata
 
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
