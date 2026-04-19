@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use rand::Rng;
 
+use crate::ai::convert::to_ai_faction;
+use crate::ai::emit::AiBusWriter;
+use crate::ai::schema::ids::evidence;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
@@ -11,6 +14,7 @@ use crate::knowledge::{CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage}
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
 use crate::time_system::GameClock;
+use macrocosmo_ai::StandingEvidence;
 
 use super::combat_sim::{CombatConfig, CombatOutcome, ShipProfile, simulate_combat};
 use super::conquered::ConqueredCore;
@@ -208,6 +212,7 @@ pub fn resolve_combat(
     mut events: MessageWriter<GameEvent>,
     mut player_q: Query<(Entity, &mut StationedAt, Option<&AboardShip>), With<Player>>,
     mut fact_sys: FactSysParam,
+    mut bus: AiBusWriter,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -665,6 +670,43 @@ pub fn resolve_combat(
                 let config = CombatConfig::default();
                 let log = simulate_combat(&mut profiles_a, &mut profiles_b, &config, &mut rng);
 
+                // --- Emit standing evidence to AI bus ---
+                let ai_faction_a = to_ai_faction(faction_a);
+                let ai_faction_b = to_ai_faction(faction_b);
+                let now = bus.now();
+
+                // Both sides observe a direct attack from the other.
+                bus.emit_evidence(StandingEvidence::new(
+                    evidence::direct_attack(),
+                    ai_faction_a, // observer: faction A sees B attacking
+                    ai_faction_b, // target: faction B is the attacker
+                    1.0,
+                    now,
+                ));
+                bus.emit_evidence(StandingEvidence::new(
+                    evidence::direct_attack(),
+                    ai_faction_b, // observer: faction B sees A attacking
+                    ai_faction_a, // target: faction A is the attacker
+                    1.0,
+                    now,
+                ));
+
+                // Both sides observe hostile engagement.
+                bus.emit_evidence(StandingEvidence::new(
+                    evidence::hostile_engagement(),
+                    ai_faction_a,
+                    ai_faction_b,
+                    1.0,
+                    now,
+                ));
+                bus.emit_evidence(StandingEvidence::new(
+                    evidence::hostile_engagement(),
+                    ai_faction_b,
+                    ai_faction_a,
+                    1.0,
+                    now,
+                ));
+
                 // --- Write results back to ECS ---
 
                 // Apply HP changes from profiles_a (faction A ships).
@@ -697,6 +739,27 @@ pub fn resolve_combat(
                             destroyed_b.push((entity, ship.name.clone()));
                         }
                     }
+                }
+
+                // Emit fleet_loss evidence for each destroyed ship.
+                // Magnitude scales with the number of ships lost.
+                if !destroyed_a.is_empty() {
+                    bus.emit_evidence(StandingEvidence::new(
+                        evidence::fleet_loss(),
+                        ai_faction_a, // observer: faction A lost ships
+                        ai_faction_b, // target: faction B caused the loss
+                        destroyed_a.len() as f64,
+                        now,
+                    ));
+                }
+                if !destroyed_b.is_empty() {
+                    bus.emit_evidence(StandingEvidence::new(
+                        evidence::fleet_loss(),
+                        ai_faction_b, // observer: faction B lost ships
+                        ai_faction_a, // target: faction A caused the loss
+                        destroyed_b.len() as f64,
+                        now,
+                    ));
                 }
 
                 // Despawn destroyed ships + emit events.

@@ -41,9 +41,13 @@ use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionRelations, FactionView, HostileFactions, RelationState};
 use macrocosmo::galaxy::HostileHitpoints;
-use macrocosmo::player::PlayerEmpire;
+use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::ship::*;
 use macrocosmo::ship_design::{ModuleDefinition, ModuleRegistry, WeaponStats};
+
+use macrocosmo::ai::convert::to_ai_faction;
+use macrocosmo::ai::schema::ids::evidence;
+use macrocosmo::ai::AiBusResource;
 
 use common::{advance_time, spawn_test_system, test_app};
 
@@ -529,4 +533,202 @@ fn scenario_factionless_hostile_is_inert_regression_guard() {
             s,
         );
     }
+}
+
+// =============================================================================
+// Scenario — Ship-vs-ship combat emits standing evidence to AI bus
+// =============================================================================
+
+/// Two factions at war with ships in the same system. After combat runs,
+/// the AI bus must contain `direct_attack`, `hostile_engagement`, and
+/// `fleet_loss` evidence entries. Verifies the standing/threat pipeline
+/// receives evidence from combat events.
+#[test]
+fn ship_vs_ship_combat_emits_standing_evidence() {
+    // Use low hull so ships get destroyed quickly.
+    const SHIP_HULL: f64 = 5.0;
+
+    let mut app = test_app();
+    install_scenario_weapon(&mut app);
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Evidence-System",
+        [0.0, 0.0, 0.0],
+        0.7,
+        true,
+        false,
+    );
+
+    // Get the player faction entity.
+    let player_faction = {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<Entity, With<PlayerEmpire>>();
+        q.iter(app.world()).next().expect("player empire must exist")
+    };
+
+    // Spawn a second faction.
+    let enemy_faction = app
+        .world_mut()
+        .spawn(Faction::new("enemy_evidence_faction", "Enemy Evidence Faction"))
+        .id();
+
+    // Set both sides to War.
+    {
+        let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+        rel.set(
+            player_faction,
+            enemy_faction,
+            FactionView::new(RelationState::War, -80.0),
+        );
+        rel.set(
+            enemy_faction,
+            player_faction,
+            FactionView::new(RelationState::War, -80.0),
+        );
+    }
+
+    // Spawn a player ship (owner = player faction).
+    app.world_mut().spawn((
+        Ship {
+            name: "PlayerWarship".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: SCENARIO_WEAPON_ID.to_string(),
+            }],
+            owner: Owner::Empire(player_faction),
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+            fleet: None,
+        },
+        ShipState::InSystem { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: SHIP_HULL,
+            hull_max: SHIP_HULL,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Aggressive,
+    ));
+
+    // Spawn an enemy ship (owner = enemy faction).
+    app.world_mut().spawn((
+        Ship {
+            name: "EnemyWarship".to_string(),
+            design_id: "explorer_mk1".to_string(),
+            hull_id: "corvette".to_string(),
+            modules: vec![EquippedModule {
+                slot_type: "weapon".to_string(),
+                module_id: SCENARIO_WEAPON_ID.to_string(),
+            }],
+            owner: Owner::Empire(enemy_faction),
+            sublight_speed: 0.75,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: Entity::PLACEHOLDER,
+            design_revision: 0,
+            fleet: None,
+        },
+        ShipState::InSystem { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        ShipHitpoints {
+            hull: SHIP_HULL,
+            hull_max: SHIP_HULL,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        ShipModifiers::default(),
+        CommandQueue::default(),
+        Cargo::default(),
+        RulesOfEngagement::Aggressive,
+    ));
+
+    // Run one tick of combat.
+    advance_time(&mut app, 1);
+
+    // --- Verify evidence was emitted ---
+    let bus = app.world().resource::<AiBusResource>();
+    let ai_player = to_ai_faction(player_faction);
+    let ai_enemy = to_ai_faction(enemy_faction);
+
+    // Player should see direct_attack evidence from the enemy.
+    let player_evidence: Vec<_> = bus
+        .evidence_for(ai_player, 100, 200)
+        .filter(|e| e.target == ai_enemy)
+        .collect();
+    assert!(
+        !player_evidence.is_empty(),
+        "player faction should have evidence against enemy after combat"
+    );
+
+    // Check specific evidence kinds are present for the player.
+    let has_direct_attack = player_evidence
+        .iter()
+        .any(|e| e.kind == evidence::direct_attack());
+    let has_hostile_engagement = player_evidence
+        .iter()
+        .any(|e| e.kind == evidence::hostile_engagement());
+    assert!(
+        has_direct_attack,
+        "player should observe direct_attack from enemy"
+    );
+    assert!(
+        has_hostile_engagement,
+        "player should observe hostile_engagement from enemy"
+    );
+
+    // Enemy should also see evidence from the player.
+    let enemy_evidence: Vec<_> = bus
+        .evidence_for(ai_enemy, 100, 200)
+        .filter(|e| e.target == ai_player)
+        .collect();
+    assert!(
+        !enemy_evidence.is_empty(),
+        "enemy faction should have evidence against player after combat"
+    );
+    let enemy_has_direct_attack = enemy_evidence
+        .iter()
+        .any(|e| e.kind == evidence::direct_attack());
+    let enemy_has_hostile_engagement = enemy_evidence
+        .iter()
+        .any(|e| e.kind == evidence::hostile_engagement());
+    assert!(
+        enemy_has_direct_attack,
+        "enemy should observe direct_attack from player"
+    );
+    assert!(
+        enemy_has_hostile_engagement,
+        "enemy should observe hostile_engagement from player"
+    );
+
+    // With low hull (5.0) and weapon damage of 10.0, ships should be
+    // destroyed. Check that fleet_loss evidence was emitted for at least
+    // one side.
+    let all_evidence: Vec<_> = bus
+        .evidence_for(ai_player, 100, 200)
+        .chain(bus.evidence_for(ai_enemy, 100, 200))
+        .collect();
+    let has_fleet_loss = all_evidence
+        .iter()
+        .any(|e| e.kind == evidence::fleet_loss());
+    assert!(
+        has_fleet_loss,
+        "fleet_loss evidence should be emitted when ships are destroyed in combat"
+    );
 }
