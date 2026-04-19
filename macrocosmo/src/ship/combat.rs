@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use rand::Rng;
 
@@ -10,6 +12,7 @@ use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
 use crate::time_system::GameClock;
 
+use super::combat_sim::{CombatConfig, CombatOutcome, ShipProfile, simulate_combat};
 use super::conquered::ConqueredCore;
 use super::{
     CoreShip, DockedAt, Owner, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState,
@@ -82,6 +85,45 @@ fn apply_flat_damage_to_ship(hp: &mut ShipHitpoints, damage: f64) {
     // Hull takes the rest
     if remaining > 0.0 {
         hp.hull = (hp.hull - remaining).max(0.0);
+    }
+}
+
+/// Extract a [`ShipProfile`] from ECS components for use in the pure combat
+/// simulation.
+fn extract_ship_profile(
+    index: usize,
+    ship: &Ship,
+    hp: &ShipHitpoints,
+    mods: &ShipModifiers,
+    module_registry: &ModuleRegistry,
+    is_core: bool,
+    is_conquered_core: bool,
+) -> ShipProfile {
+    let mut weapons = Vec::new();
+    for equipped in &ship.modules {
+        if let Some(module_def) = module_registry.modules.get(&equipped.module_id) {
+            if let Some(weapon) = &module_def.weapon {
+                weapons.push(weapon.clone());
+            }
+        }
+    }
+
+    ShipProfile {
+        weapons,
+        hull: hp.hull,
+        hull_max: hp.hull_max,
+        armor: hp.armor,
+        armor_max: hp.armor_max,
+        shield: hp.shield,
+        shield_max: hp.shield_max,
+        shield_regen: hp.shield_regen,
+        evasion: mods.evasion.final_value().to_f64(),
+        speed: ship.sublight_speed,
+        shield_regen_cooldown: 0,
+        index,
+        name: ship.name.clone(),
+        is_core,
+        is_conquered_core,
     }
 }
 
@@ -479,6 +521,321 @@ pub fn resolve_combat(
                         detail: desc,
                     };
                     fact_sys.record(fact, op, clock.elapsed, &v);
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ship-vs-ship combat (#399): Faction warfare via simulate_combat.
+    // -----------------------------------------------------------------------
+
+    // Group empire-owned, non-docked, non-retreating ships by (system, faction).
+    let mut system_faction_ships: HashMap<(Entity, Entity), Vec<Entity>> = HashMap::new();
+    for (entity, ship, _hp, _mods, state, roe, _core, _conquered, docked_at) in ships.iter() {
+        if docked_at.is_some() {
+            continue;
+        }
+        let roe = roe.copied().unwrap_or_default();
+        if matches!(
+            roe,
+            RulesOfEngagement::Retreat | RulesOfEngagement::Evasive | RulesOfEngagement::Passive
+        ) {
+            continue;
+        }
+        let Owner::Empire(faction_entity) = ship.owner else {
+            continue;
+        };
+        let ShipState::InSystem { system } = state else {
+            continue;
+        };
+        system_faction_ships
+            .entry((*system, faction_entity))
+            .or_default()
+            .push(entity);
+    }
+
+    // Collect unique systems that have ships from 2+ factions.
+    let systems_with_ships: HashMap<Entity, Vec<Entity>> = {
+        let mut map: HashMap<Entity, Vec<Entity>> = HashMap::new();
+        for &(system, faction) in system_faction_ships.keys() {
+            let factions_in_system = map.entry(system).or_default();
+            if !factions_in_system.contains(&faction) {
+                factions_in_system.push(faction);
+            }
+        }
+        map
+    };
+
+    for (system_entity, factions_present) in &systems_with_ships {
+        if factions_present.len() < 2 {
+            continue;
+        }
+
+        let (system_name, system_pos_arr): (String, Option<[f64; 3]>) = systems
+            .get(*system_entity)
+            .map(|(_, s, p)| (s.name.clone(), Some(p.as_array())))
+            .unwrap_or_default();
+
+        // Check each pair of factions for war.
+        for i in 0..factions_present.len() {
+            for j in (i + 1)..factions_present.len() {
+                let faction_a = factions_present[i];
+                let faction_b = factions_present[j];
+
+                let view = relations.get_or_default(faction_a, faction_b);
+                if !view.is_at_war() {
+                    continue;
+                }
+
+                let ships_a = match system_faction_ships.get(&(*system_entity, faction_a)) {
+                    Some(s) => s.clone(),
+                    None => continue,
+                };
+                let ships_b = match system_faction_ships.get(&(*system_entity, faction_b)) {
+                    Some(s) => s.clone(),
+                    None => continue,
+                };
+
+                if ships_a.is_empty() || ships_b.is_empty() {
+                    continue;
+                }
+
+                // Extract profiles for both sides.
+                let mut profiles_a: Vec<ShipProfile> = Vec::new();
+                for (idx, &entity) in ships_a.iter().enumerate() {
+                    if let Ok((_e, ship, hp, mods, _state, _roe, core, conquered, _docked)) =
+                        ships.get(entity)
+                    {
+                        profiles_a.push(extract_ship_profile(
+                            idx,
+                            ship,
+                            hp,
+                            mods,
+                            &module_registry,
+                            core.is_some(),
+                            core.is_some() && conquered.is_some(),
+                        ));
+                    }
+                }
+
+                let mut profiles_b: Vec<ShipProfile> = Vec::new();
+                for (idx, &entity) in ships_b.iter().enumerate() {
+                    if let Ok((_e, ship, hp, mods, _state, _roe, core, conquered, _docked)) =
+                        ships.get(entity)
+                    {
+                        profiles_b.push(extract_ship_profile(
+                            idx,
+                            ship,
+                            hp,
+                            mods,
+                            &module_registry,
+                            core.is_some(),
+                            core.is_some() && conquered.is_some(),
+                        ));
+                    }
+                }
+
+                if profiles_a.is_empty() || profiles_b.is_empty() {
+                    continue;
+                }
+
+                // Run the simulation.
+                let config = CombatConfig::default();
+                let log = simulate_combat(&mut profiles_a, &mut profiles_b, &config, &mut rng);
+
+                // --- Write results back to ECS ---
+
+                // Apply HP changes from profiles_a (faction A ships).
+                let mut destroyed_a: Vec<(Entity, String)> = Vec::new();
+                for profile in &profiles_a {
+                    let entity = ships_a[profile.index];
+                    if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, _conquered, _docked)) =
+                        ships.get_mut(entity)
+                    {
+                        hp.hull = profile.hull;
+                        hp.armor = profile.armor;
+                        hp.shield = profile.shield;
+                        if hp.hull <= 0.0 && core.is_none() {
+                            destroyed_a.push((entity, ship.name.clone()));
+                        }
+                    }
+                }
+
+                // Apply HP changes from profiles_b (faction B ships).
+                let mut destroyed_b: Vec<(Entity, String)> = Vec::new();
+                for profile in &profiles_b {
+                    let entity = ships_b[profile.index];
+                    if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, _conquered, _docked)) =
+                        ships.get_mut(entity)
+                    {
+                        hp.hull = profile.hull;
+                        hp.armor = profile.armor;
+                        hp.shield = profile.shield;
+                        if hp.hull <= 0.0 && core.is_none() {
+                            destroyed_b.push((entity, ship.name.clone()));
+                        }
+                    }
+                }
+
+                // Despawn destroyed ships + emit events.
+                let faction_a_name = factions
+                    .get(faction_a)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|_| "Unknown".to_string());
+                let faction_b_name = factions
+                    .get(faction_b)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|_| "Unknown".to_string());
+
+                for (entity, name) in &destroyed_a {
+                    // Check if player is aboard.
+                    if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
+                        if let Some(aboard_ship) = aboard {
+                            if aboard_ship.ship == *entity {
+                                let capital_entity = systems
+                                    .iter()
+                                    .find(|(_, s, _)| s.is_capital)
+                                    .map(|(e, _, _)| e);
+                                if let Some(cap_entity) = capital_entity {
+                                    stationed.system = cap_entity;
+                                }
+                                commands
+                                    .entity(player_entity)
+                                    .remove::<crate::player::AboardShip>();
+                                events.write(GameEvent {
+                                    id: fact_sys.allocate_event_id(),
+                                    timestamp: clock.elapsed,
+                                    kind: GameEventKind::PlayerRespawn,
+                                    description: "Flagship destroyed! Respawned at capital."
+                                        .to_string(),
+                                    related_system: capital_entity,
+                                });
+                            }
+                        }
+                    }
+                    commands.entity(*entity).despawn();
+                    let event_id = fact_sys.allocate_event_id();
+                    let desc = format!(
+                        "{} ({}) destroyed by {} at {}",
+                        name, faction_a_name, faction_b_name, system_name
+                    );
+                    events.write(GameEvent {
+                        id: event_id,
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::CombatDefeat,
+                        description: desc.clone(),
+                        related_system: Some(*system_entity),
+                    });
+                    if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                        let fact = KnowledgeFact::CombatOutcome {
+                            event_id: Some(event_id),
+                            system: *system_entity,
+                            victor: CombatVictor::Hostile,
+                            detail: desc,
+                        };
+                        fact_sys.record(fact, op, clock.elapsed, &v);
+                    }
+                }
+
+                for (entity, name) in &destroyed_b {
+                    if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
+                        if let Some(aboard_ship) = aboard {
+                            if aboard_ship.ship == *entity {
+                                let capital_entity = systems
+                                    .iter()
+                                    .find(|(_, s, _)| s.is_capital)
+                                    .map(|(e, _, _)| e);
+                                if let Some(cap_entity) = capital_entity {
+                                    stationed.system = cap_entity;
+                                }
+                                commands
+                                    .entity(player_entity)
+                                    .remove::<crate::player::AboardShip>();
+                                events.write(GameEvent {
+                                    id: fact_sys.allocate_event_id(),
+                                    timestamp: clock.elapsed,
+                                    kind: GameEventKind::PlayerRespawn,
+                                    description: "Flagship destroyed! Respawned at capital."
+                                        .to_string(),
+                                    related_system: capital_entity,
+                                });
+                            }
+                        }
+                    }
+                    commands.entity(*entity).despawn();
+                    let event_id = fact_sys.allocate_event_id();
+                    let desc = format!(
+                        "{} ({}) destroyed by {} at {}",
+                        name, faction_b_name, faction_a_name, system_name
+                    );
+                    events.write(GameEvent {
+                        id: event_id,
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::CombatDefeat,
+                        description: desc.clone(),
+                        related_system: Some(*system_entity),
+                    });
+                    if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                        let fact = KnowledgeFact::CombatOutcome {
+                            event_id: Some(event_id),
+                            system: *system_entity,
+                            victor: CombatVictor::Hostile,
+                            detail: desc,
+                        };
+                        fact_sys.record(fact, op, clock.elapsed, &v);
+                    }
+                }
+
+                // Emit victory event based on outcome.
+                match &log.outcome {
+                    CombatOutcome::AttackerWon { .. } => {
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!(
+                            "{} victorious over {} at {}",
+                            faction_a_name, faction_b_name, system_name
+                        );
+                        events.write(GameEvent {
+                            id: event_id,
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::CombatVictory,
+                            description: desc.clone(),
+                            related_system: Some(*system_entity),
+                        });
+                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                            let fact = KnowledgeFact::CombatOutcome {
+                                event_id: Some(event_id),
+                                system: *system_entity,
+                                victor: CombatVictor::Player,
+                                detail: desc,
+                            };
+                            fact_sys.record(fact, op, clock.elapsed, &v);
+                        }
+                    }
+                    CombatOutcome::DefenderWon { .. } => {
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!(
+                            "{} victorious over {} at {}",
+                            faction_b_name, faction_a_name, system_name
+                        );
+                        events.write(GameEvent {
+                            id: event_id,
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::CombatVictory,
+                            description: desc.clone(),
+                            related_system: Some(*system_entity),
+                        });
+                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                            let fact = KnowledgeFact::CombatOutcome {
+                                event_id: Some(event_id),
+                                system: *system_entity,
+                                victor: CombatVictor::Player,
+                                detail: desc,
+                            };
+                            fact_sys.record(fact, op, clock.elapsed, &v);
+                        }
+                    }
+                    CombatOutcome::Stalemate => {} // No event for stalemate.
                 }
             }
         }
