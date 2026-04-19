@@ -85,6 +85,7 @@ fn corvette(weapon: WeaponStats, speed: f64) -> ShipProfile {
         name: String::new(),
         is_core: false,
         is_conquered_core: false,
+        retreat_threshold: 0.0,
     }
 }
 
@@ -105,6 +106,7 @@ fn shield_tank(weapon: WeaponStats, speed: f64) -> ShipProfile {
         name: String::new(),
         is_core: false,
         is_conquered_core: false,
+        retreat_threshold: 0.0,
     }
 }
 
@@ -125,6 +127,7 @@ fn armor_tank(weapon: WeaponStats, speed: f64) -> ShipProfile {
         name: String::new(),
         is_core: false,
         is_conquered_core: false,
+        retreat_threshold: 0.0,
     }
 }
 
@@ -145,6 +148,7 @@ fn interceptor(weapon: WeaponStats, speed: f64) -> ShipProfile {
         name: String::new(),
         is_core: false,
         is_conquered_core: false,
+        retreat_threshold: 0.0,
     }
 }
 
@@ -193,7 +197,10 @@ fn run_scenario(
                 defender_wins += 1;
                 total_def_surviving += surviving_fraction;
             }
-            CombatOutcome::Stalemate => {
+            CombatOutcome::AttackerRetreated { .. }
+            | CombatOutcome::DefenderRetreated { .. }
+            | CombatOutcome::MutualRetreat
+            | CombatOutcome::Stalemate => {
                 stalemates += 1;
             }
         }

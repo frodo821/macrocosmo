@@ -148,6 +148,7 @@ mod tests {
             name: String::new(),
             is_core: false,
             is_conquered_core: false,
+            retreat_threshold: 0.0,
         }
     }
 

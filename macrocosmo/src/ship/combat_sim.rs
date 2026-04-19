@@ -40,12 +40,21 @@ pub struct ShipProfile {
     pub is_core: bool,
     /// Conquered cores are indestructible — skip all damage.
     pub is_conquered_core: bool,
+    /// HP fraction (0.0–1.0) below which this ship's fleet retreats.
+    /// 0.0 = never retreat. Set based on ROE.
+    pub retreat_threshold: f64,
 }
 
 impl ShipProfile {
     /// Total remaining hit points across all layers.
+    /// Total remaining hit points across all layers.
     pub fn total_hp(&self) -> f64 {
         self.hull + self.armor + self.shield
+    }
+
+    /// Total maximum hit points across all layers.
+    pub fn total_max_hp(&self) -> f64 {
+        self.hull_max + self.armor_max + self.shield_max
     }
 
     pub fn is_alive(&self) -> bool {
@@ -97,6 +106,16 @@ pub enum CombatOutcome {
     DefenderWon {
         surviving_fraction: f64,
     },
+    /// Attacker fleet retreated (HP fell below retreat threshold).
+    AttackerRetreated {
+        surviving_fraction: f64,
+    },
+    /// Defender fleet retreated (HP fell below retreat threshold).
+    DefenderRetreated {
+        surviving_fraction: f64,
+    },
+    /// Both sides retreated simultaneously.
+    MutualRetreat,
     /// Both sides ran out of weapons or the turn limit was reached.
     Stalemate,
 }
@@ -216,6 +235,33 @@ fn fleet_has_weapons(fleet: &[ShipProfile]) -> bool {
     fleet.iter().any(|s| s.is_alive() && !s.weapons.is_empty())
 }
 
+/// Average retreat threshold across alive ships in the fleet.
+/// Returns 0.0 if no alive ships (no retreat).
+fn avg_retreat_threshold(fleet: &[ShipProfile]) -> f64 {
+    let (sum, count) = fleet
+        .iter()
+        .filter(|s| s.is_alive())
+        .fold((0.0, 0u32), |(s, c), ship| {
+            (s + ship.retreat_threshold, c + 1)
+        });
+    if count == 0 { 0.0 } else { sum / count as f64 }
+}
+
+/// Compute the fleet-wide average HP fraction for alive ships.
+fn fleet_hp_fraction(fleet: &[ShipProfile]) -> f64 {
+    let (total_hp, total_max) = fleet
+        .iter()
+        .filter(|s| s.is_alive())
+        .fold((0.0, 0.0), |(hp, mx), s| {
+            (hp + s.total_hp(), mx + s.total_max_hp())
+        });
+    if total_max <= 0.0 {
+        1.0
+    } else {
+        total_hp / total_max
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core simulation
 // ---------------------------------------------------------------------------
@@ -260,6 +306,12 @@ pub fn simulate_combat(
     let initial_attacker_count = attackers.len() as f64;
     let initial_defender_count = defenders.len() as f64;
 
+    // Track retreat state per side.
+    let mut attacker_retreating = false;
+    let mut defender_retreating = false;
+    let mut attacker_retreated = false;
+    let mut defender_retreated = false;
+
     for turn in 0..config.turns_per_tick {
         let att_alive = alive_count(attackers);
         let def_alive = alive_count(defenders);
@@ -269,47 +321,90 @@ pub fn simulate_combat(
             break;
         }
 
+        // --- 0. Retreat check (after damage from previous turn) ---
+        if !attacker_retreating {
+            let hp_frac = fleet_hp_fraction(attackers);
+            let threshold = avg_retreat_threshold(attackers);
+            if threshold > 0.0 && hp_frac < threshold {
+                attacker_retreating = true;
+            }
+        }
+        if !defender_retreating {
+            let hp_frac = fleet_hp_fraction(defenders);
+            let threshold = avg_retreat_threshold(defenders);
+            if threshold > 0.0 && hp_frac < threshold {
+                defender_retreating = true;
+            }
+        }
+
         // --- 1. Distance update ---
         let speed_a = avg_speed(attackers);
         let speed_b = avg_speed(defenders);
-        let pref_a = preferred_range(attackers);
-        let pref_b = preferred_range(defenders);
 
-        // Each side wants to move toward its preferred range.
-        // The faster side gets more influence over the distance.
-        let speed_diff = speed_a - speed_b;
-        if speed_diff.abs() > f64::EPSILON {
-            let delta = speed_diff.abs() * config.distance_step_factor;
-            if speed_diff > 0.0 {
-                // Attackers are faster — move toward attacker's preferred range.
-                if distance > pref_a {
-                    distance = (distance - delta).max(pref_a);
-                } else if distance < pref_a {
-                    distance = (distance + delta).min(pref_a);
-                }
+        if attacker_retreating || defender_retreating {
+            // Retreat movement: retreating side tries to increase distance.
+            // Pursuing side tries to decrease distance. Net effect based on
+            // speed difference.
+            let retreat_speed = if attacker_retreating && defender_retreating {
+                // Both retreating — distance increases by sum of speeds.
+                (speed_a + speed_b) * config.distance_step_factor
+            } else if attacker_retreating {
+                // Attacker retreats, defender pursues.
+                (speed_a - speed_b) * config.distance_step_factor
             } else {
-                // Defenders are faster — move toward defender's preferred range.
-                if distance > pref_b {
-                    distance = (distance - delta).max(pref_b);
-                } else if distance < pref_b {
-                    distance = (distance + delta).min(pref_b);
+                // Defender retreats, attacker pursues.
+                (speed_b - speed_a) * config.distance_step_factor
+            };
+            distance += retreat_speed;
+
+            // Check if retreat is successful (distance exceeds initial).
+            if distance > initial_distance {
+                if attacker_retreating && defender_retreating {
+                    attacker_retreated = true;
+                    defender_retreated = true;
+                } else if attacker_retreating {
+                    attacker_retreated = true;
+                } else {
+                    defender_retreated = true;
+                }
+                break;
+            }
+            // Clamp distance to non-negative.
+            distance = distance.max(0.0);
+        } else {
+            // Normal distance control (no retreat).
+            let pref_a = preferred_range(attackers);
+            let pref_b = preferred_range(defenders);
+
+            let speed_diff = speed_a - speed_b;
+            if speed_diff.abs() > f64::EPSILON {
+                let delta = speed_diff.abs() * config.distance_step_factor;
+                if speed_diff > 0.0 {
+                    if distance > pref_a {
+                        distance = (distance - delta).max(pref_a);
+                    } else if distance < pref_a {
+                        distance = (distance + delta).min(pref_a);
+                    }
+                } else {
+                    if distance > pref_b {
+                        distance = (distance - delta).max(pref_b);
+                    } else if distance < pref_b {
+                        distance = (distance + delta).min(pref_b);
+                    }
                 }
             }
+            distance = distance.clamp(0.0, initial_distance);
         }
-        distance = distance.clamp(0.0, initial_distance);
 
-        // --- 2. Weapon fire (simultaneous) ---
+        // --- 2. Weapon fire (simultaneous, fighting withdrawal) ---
         let mut weapons_fired: u32 = 0;
         let mut dmg_by_attacker: f64 = 0.0;
         let mut dmg_by_defender: f64 = 0.0;
 
-        // Fire weapons for both sides. Attacker fires first, then defender,
-        // but destruction is checked only after both sides have shot — so
-        // simultaneous fire is approximated.
+        // Both sides fire even during retreat (fighting withdrawal).
 
         // Attacker fires
         {
-            // Clone attacker weapon refs to avoid borrow conflict.
             let attacker_weapons: Vec<(Vec<WeaponStats>, f64)> = attackers
                 .iter()
                 .filter(|s| s.is_alive())
@@ -324,7 +419,6 @@ pub fn simulate_combat(
                     if weapon.cooldown > 0 && (turn as i64) % weapon.cooldown != 0 {
                         continue;
                     }
-                    // Find alive target.
                     let Some(target_idx) = find_weakest_alive_target(defenders) else {
                         break;
                     };
@@ -419,7 +513,17 @@ pub fn simulate_combat(
     // --- Determine outcome ---
     let att_alive = alive_count(attackers);
     let def_alive = alive_count(defenders);
-    let outcome = if att_alive > 0 && def_alive == 0 {
+    let outcome = if attacker_retreated && defender_retreated {
+        CombatOutcome::MutualRetreat
+    } else if attacker_retreated {
+        CombatOutcome::AttackerRetreated {
+            surviving_fraction: att_alive as f64 / initial_attacker_count,
+        }
+    } else if defender_retreated {
+        CombatOutcome::DefenderRetreated {
+            surviving_fraction: def_alive as f64 / initial_defender_count,
+        }
+    } else if att_alive > 0 && def_alive == 0 {
         CombatOutcome::AttackerWon {
             surviving_fraction: att_alive as f64 / initial_attacker_count,
         }
@@ -549,6 +653,7 @@ mod tests {
             name: String::new(),
             is_core: false,
             is_conquered_core: false,
+            retreat_threshold: 0.0,
         }
     }
 
@@ -585,8 +690,10 @@ mod tests {
                     "Railgun fleet should have more HP remaining in stalemate"
                 );
             }
-            CombatOutcome::DefenderWon { .. } => {
-                panic!("Laser fleet should not win against railgun fleet at equal speed");
+            other => {
+                panic!(
+                    "Laser fleet should not win/retreat against railgun fleet at equal speed, got {other:?}"
+                );
             }
         }
     }
@@ -656,6 +763,7 @@ mod tests {
                 name: String::new(),
                 is_core: false,
                 is_conquered_core: false,
+                retreat_threshold: 0.0,
             })
             .collect();
 
@@ -699,6 +807,7 @@ mod tests {
                 name: String::new(),
                 is_core: false,
                 is_conquered_core: false,
+                retreat_threshold: 0.0,
             })
             .collect();
 
@@ -746,6 +855,9 @@ mod tests {
                 log.outcome,
                 CombatOutcome::AttackerWon { .. }
                     | CombatOutcome::DefenderWon { .. }
+                    | CombatOutcome::AttackerRetreated { .. }
+                    | CombatOutcome::DefenderRetreated { .. }
+                    | CombatOutcome::MutualRetreat
                     | CombatOutcome::Stalemate
             ),
             "Should produce a valid outcome"
@@ -775,7 +887,7 @@ mod tests {
             match log.outcome {
                 CombatOutcome::AttackerWon { .. } => attacker_wins += 1,
                 CombatOutcome::DefenderWon { .. } => defender_wins += 1,
-                CombatOutcome::Stalemate => {}
+                _ => {} // Stalemate, retreat outcomes
             }
         }
         // With identical fleets, win rates should be roughly balanced.
@@ -882,6 +994,7 @@ mod tests {
             name: String::new(),
             is_core: false,
             is_conquered_core: false,
+            retreat_threshold: 0.0,
         }];
         let mut defenders = vec![ShipProfile {
             weapons: vec![long_weapon],
@@ -899,6 +1012,7 @@ mod tests {
             name: String::new(),
             is_core: false,
             is_conquered_core: false,
+            retreat_threshold: 0.0,
         }];
 
         let cfg = CombatConfig {
@@ -948,6 +1062,281 @@ mod tests {
         assert_eq!(
             std::mem::discriminant(&log1.outcome),
             std::mem::discriminant(&log2.outcome)
+        );
+    }
+
+    // --- Retreat tests ---
+
+    /// Fleet with retreat threshold 0.5 retreats when HP drops below 50%.
+    #[test]
+    fn retreat_triggered_when_hp_below_threshold() {
+        let mut rng = StdRng::seed_from_u64(42);
+
+        // Defenders have threshold 0.5 and are weaker — they should retreat.
+        let strong_weapon = make_weapon(20.0, 5.0, 1.0, 1, 10.0, 10.0, 10.0);
+        let weak_weapon = make_weapon(20.0, 5.0, 0.8, 1, 3.0, 3.0, 3.0);
+
+        let mut attackers: Vec<ShipProfile> = (0..4)
+            .map(|i| {
+                let mut s = make_ship(vec![strong_weapon.clone()], 3.0);
+                s.index = i;
+                s.retreat_threshold = 0.0; // never retreat
+                s
+            })
+            .collect();
+
+        let mut defenders: Vec<ShipProfile> = (0..4)
+            .map(|i| {
+                let mut s = make_ship(vec![weak_weapon.clone()], 2.0);
+                s.index = i;
+                s.retreat_threshold = 0.5;
+                s
+            })
+            .collect();
+
+        let cfg = CombatConfig {
+            turns_per_tick: 60,
+            distance_step_factor: 1.0,
+            ..Default::default()
+        };
+        let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
+
+        // Defenders should retreat (or be destroyed), not win.
+        assert!(
+            matches!(
+                log.outcome,
+                CombatOutcome::DefenderRetreated { .. } | CombatOutcome::AttackerWon { .. }
+            ),
+            "Defenders should retreat or be destroyed, got {:?}",
+            log.outcome
+        );
+    }
+
+    /// Aggressive fleet (threshold 0.25) fights longer than defensive (0.5).
+    #[test]
+    fn aggressive_fleet_fights_longer() {
+        let weapon = make_weapon(20.0, 5.0, 0.9, 1, 5.0, 5.0, 5.0);
+
+        // Run with threshold 0.5 (defensive)
+        let defensive_turns = {
+            let mut rng = StdRng::seed_from_u64(99);
+            let mut att: Vec<ShipProfile> = (0..3)
+                .map(|i| {
+                    let mut s = make_ship(vec![weapon.clone()], 2.0);
+                    s.index = i;
+                    s.retreat_threshold = 0.0;
+                    s
+                })
+                .collect();
+            let mut def: Vec<ShipProfile> = (0..3)
+                .map(|i| {
+                    let mut s = make_ship(vec![weapon.clone()], 2.0);
+                    s.index = i;
+                    s.retreat_threshold = 0.5;
+                    s
+                })
+                .collect();
+            let cfg = CombatConfig {
+                turns_per_tick: 100,
+                distance_step_factor: 1.0,
+                ..Default::default()
+            };
+            let log = simulate_combat(&mut att, &mut def, &cfg, &mut rng);
+            log.turns.len()
+        };
+
+        // Run with threshold 0.25 (aggressive)
+        let aggressive_turns = {
+            let mut rng = StdRng::seed_from_u64(99);
+            let mut att: Vec<ShipProfile> = (0..3)
+                .map(|i| {
+                    let mut s = make_ship(vec![weapon.clone()], 2.0);
+                    s.index = i;
+                    s.retreat_threshold = 0.0;
+                    s
+                })
+                .collect();
+            let mut def: Vec<ShipProfile> = (0..3)
+                .map(|i| {
+                    let mut s = make_ship(vec![weapon.clone()], 2.0);
+                    s.index = i;
+                    s.retreat_threshold = 0.25;
+                    s
+                })
+                .collect();
+            let cfg = CombatConfig {
+                turns_per_tick: 100,
+                distance_step_factor: 1.0,
+                ..Default::default()
+            };
+            let log = simulate_combat(&mut att, &mut def, &cfg, &mut rng);
+            log.turns.len()
+        };
+
+        assert!(
+            aggressive_turns >= defensive_turns,
+            "Aggressive fleet (threshold 0.25) should fight at least as long as defensive (0.5): aggressive={aggressive_turns}, defensive={defensive_turns}"
+        );
+    }
+
+    /// Retreat ROE (threshold 1.0) triggers retreat on first turn.
+    #[test]
+    fn retreat_roe_flees_immediately() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let weapon = make_weapon(20.0, 5.0, 0.9, 1, 5.0, 5.0, 5.0);
+
+        let mut attackers: Vec<ShipProfile> = (0..2)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 2.0);
+                s.index = i;
+                s.retreat_threshold = 0.0;
+                s
+            })
+            .collect();
+
+        // Defenders with retreat threshold 1.0 — should retreat immediately
+        // since any HP fraction < 1.0 triggers it (and it starts at 1.0, so
+        // after any damage at all it should trigger, or even at the start
+        // since the threshold check uses strict <).
+        let mut defenders: Vec<ShipProfile> = (0..2)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 3.0);
+                s.index = i;
+                s.retreat_threshold = 1.0;
+                s
+            })
+            .collect();
+
+        let cfg = CombatConfig {
+            turns_per_tick: 60,
+            distance_step_factor: 1.0,
+            ..Default::default()
+        };
+        let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
+
+        // With threshold 1.0, the fleet should try to retreat from the first
+        // turn (hp_frac starts at 1.0, threshold is 1.0, but the check is
+        // hp_frac < threshold, so it won't trigger until at least some damage
+        // is taken). After 1 turn of damage the fleet should be retreating.
+        // With speed advantage (3 > 2), retreat should succeed.
+        assert!(
+            matches!(
+                log.outcome,
+                CombatOutcome::DefenderRetreated { .. } | CombatOutcome::MutualRetreat
+            ),
+            "Fleet with retreat threshold 1.0 should retreat, got {:?}",
+            log.outcome
+        );
+        // Should resolve quickly (retreat + a few combat turns).
+        assert!(
+            log.turns.len() <= 30,
+            "Retreat should resolve quickly, took {} turns",
+            log.turns.len()
+        );
+    }
+
+    /// Fast fleet escapes successfully, slow fleet cannot retreat.
+    #[test]
+    fn fast_fleet_retreats_successfully() {
+        let weapon = make_weapon(20.0, 5.0, 0.9, 1, 8.0, 8.0, 8.0);
+
+        // Fast fleet (speed 5) vs slow fleet (speed 1) — fast should escape.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut attackers: Vec<ShipProfile> = (0..3)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 1.0);
+                s.index = i;
+                s.retreat_threshold = 0.0;
+                s
+            })
+            .collect();
+        let mut defenders: Vec<ShipProfile> = (0..3)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 5.0);
+                s.index = i;
+                s.retreat_threshold = 0.5;
+                s
+            })
+            .collect();
+
+        let cfg = CombatConfig {
+            turns_per_tick: 60,
+            distance_step_factor: 1.0,
+            ..Default::default()
+        };
+        let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
+
+        assert!(
+            matches!(log.outcome, CombatOutcome::DefenderRetreated { .. }),
+            "Fast fleet should retreat successfully, got {:?}",
+            log.outcome
+        );
+
+        // Slow fleet (speed 1) vs fast fleet (speed 5) — slow cannot escape.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut attackers2: Vec<ShipProfile> = (0..3)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 5.0);
+                s.index = i;
+                s.retreat_threshold = 0.0;
+                s
+            })
+            .collect();
+        let mut defenders2: Vec<ShipProfile> = (0..3)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 1.0);
+                s.index = i;
+                s.retreat_threshold = 0.5;
+                s
+            })
+            .collect();
+
+        let log2 = simulate_combat(&mut attackers2, &mut defenders2, &cfg, &mut rng);
+
+        // Slow fleet cannot outrun the pursuer, so it should be destroyed.
+        assert!(
+            matches!(log2.outcome, CombatOutcome::AttackerWon { .. }),
+            "Slow fleet should not be able to retreat from fast pursuers, got {:?}",
+            log2.outcome
+        );
+    }
+
+    /// Both sides retreat when both damaged enough.
+    #[test]
+    fn mutual_retreat_when_both_damaged() {
+        let weapon = make_weapon(20.0, 5.0, 0.9, 1, 8.0, 8.0, 8.0);
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut attackers: Vec<ShipProfile> = (0..3)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 3.0);
+                s.index = i;
+                s.retreat_threshold = 0.5;
+                s
+            })
+            .collect();
+        let mut defenders: Vec<ShipProfile> = (0..3)
+            .map(|i| {
+                let mut s = make_ship(vec![weapon.clone()], 3.0);
+                s.index = i;
+                s.retreat_threshold = 0.5;
+                s
+            })
+            .collect();
+
+        let cfg = CombatConfig {
+            turns_per_tick: 100,
+            distance_step_factor: 1.0,
+            ..Default::default()
+        };
+        let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
+
+        // Both sides have same threshold and equal forces — should eventually
+        // both retreat (mutual retreat) since they take similar damage.
+        assert!(
+            matches!(log.outcome, CombatOutcome::MutualRetreat),
+            "Equal forces with same retreat threshold should result in mutual retreat, got {:?}",
+            log.outcome
         );
     }
 }

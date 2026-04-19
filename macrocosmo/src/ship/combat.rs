@@ -90,6 +90,23 @@ fn apply_flat_damage_to_ship(hp: &mut ShipHitpoints, damage: f64) {
 
 /// Extract a [`ShipProfile`] from ECS components for use in the pure combat
 /// simulation.
+/// Map [`RulesOfEngagement`] to a fleet-level retreat HP-fraction threshold.
+///
+/// - `Aggressive`: 0.25 — fights until badly damaged.
+/// - `Defensive`:  0.50 — retreats at half HP.
+/// - `Evasive`:    0.75 — retreats early.
+/// - `Retreat`:    1.0  — immediate retreat (first turn).
+/// - `Passive`:    0.75 — avoids combat; retreats early if forced in.
+fn roe_to_retreat_threshold(roe: RulesOfEngagement) -> f64 {
+    match roe {
+        RulesOfEngagement::Aggressive => 0.25,
+        RulesOfEngagement::Defensive => 0.50,
+        RulesOfEngagement::Evasive => 0.75,
+        RulesOfEngagement::Retreat => 1.0,
+        RulesOfEngagement::Passive => 0.75,
+    }
+}
+
 fn extract_ship_profile(
     index: usize,
     ship: &Ship,
@@ -98,6 +115,7 @@ fn extract_ship_profile(
     module_registry: &ModuleRegistry,
     is_core: bool,
     is_conquered_core: bool,
+    roe: RulesOfEngagement,
 ) -> ShipProfile {
     let mut weapons = Vec::new();
     for equipped in &ship.modules {
@@ -124,6 +142,7 @@ fn extract_ship_profile(
         name: ship.name.clone(),
         is_core,
         is_conquered_core,
+        retreat_threshold: roe_to_retreat_threshold(roe),
     }
 }
 
@@ -604,7 +623,7 @@ pub fn resolve_combat(
                 // Extract profiles for both sides.
                 let mut profiles_a: Vec<ShipProfile> = Vec::new();
                 for (idx, &entity) in ships_a.iter().enumerate() {
-                    if let Ok((_e, ship, hp, mods, _state, _roe, core, conquered, _docked)) =
+                    if let Ok((_e, ship, hp, mods, _state, roe, core, conquered, _docked)) =
                         ships.get(entity)
                     {
                         profiles_a.push(extract_ship_profile(
@@ -615,13 +634,14 @@ pub fn resolve_combat(
                             &module_registry,
                             core.is_some(),
                             core.is_some() && conquered.is_some(),
+                            roe.copied().unwrap_or_default(),
                         ));
                     }
                 }
 
                 let mut profiles_b: Vec<ShipProfile> = Vec::new();
                 for (idx, &entity) in ships_b.iter().enumerate() {
-                    if let Ok((_e, ship, hp, mods, _state, _roe, core, conquered, _docked)) =
+                    if let Ok((_e, ship, hp, mods, _state, roe, core, conquered, _docked)) =
                         ships.get(entity)
                     {
                         profiles_b.push(extract_ship_profile(
@@ -632,6 +652,7 @@ pub fn resolve_combat(
                             &module_registry,
                             core.is_some(),
                             core.is_some() && conquered.is_some(),
+                            roe.copied().unwrap_or_default(),
                         ));
                     }
                 }
@@ -834,6 +855,55 @@ pub fn resolve_combat(
                             };
                             fact_sys.record(fact, op, clock.elapsed, &v);
                         }
+                    }
+                    CombatOutcome::AttackerRetreated { .. } => {
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!(
+                            "{} retreated from {} at {}",
+                            faction_a_name, faction_b_name, system_name
+                        );
+                        events.write(GameEvent {
+                            id: event_id,
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::CombatDefeat,
+                            description: desc.clone(),
+                            related_system: Some(*system_entity),
+                        });
+                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                            let fact = KnowledgeFact::CombatOutcome {
+                                event_id: Some(event_id),
+                                system: *system_entity,
+                                victor: CombatVictor::Hostile,
+                                detail: desc,
+                            };
+                            fact_sys.record(fact, op, clock.elapsed, &v);
+                        }
+                    }
+                    CombatOutcome::DefenderRetreated { .. } => {
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!(
+                            "{} retreated from {} at {}",
+                            faction_b_name, faction_a_name, system_name
+                        );
+                        events.write(GameEvent {
+                            id: event_id,
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::CombatVictory,
+                            description: desc.clone(),
+                            related_system: Some(*system_entity),
+                        });
+                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                            let fact = KnowledgeFact::CombatOutcome {
+                                event_id: Some(event_id),
+                                system: *system_entity,
+                                victor: CombatVictor::Player,
+                                detail: desc,
+                            };
+                            fact_sys.record(fact, op, clock.elapsed, &v);
+                        }
+                    }
+                    CombatOutcome::MutualRetreat => {
+                        // Both sides retreated — no victor.
                     }
                     CombatOutcome::Stalemate => {} // No event for stalemate.
                 }
