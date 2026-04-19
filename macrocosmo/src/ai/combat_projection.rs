@@ -144,6 +144,10 @@ mod tests {
             evasion: 2.0,
             speed,
             shield_regen_cooldown: 0,
+            index: 0,
+            name: String::new(),
+            is_core: false,
+            is_conquered_core: false,
         }
     }
 
