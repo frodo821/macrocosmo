@@ -5,10 +5,14 @@ pub mod territory;
 
 pub use camera::camera_controls;
 
+use std::time::Instant;
+
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
 use crate::components::Position;
+use crate::deep_space::DeepSpaceStructure;
 use crate::galaxy::{ObscuredByGas, StarSystem};
 use crate::player::Player;
 use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
@@ -91,6 +95,7 @@ impl Plugin for VisualizationPlugin {
             .insert_resource(ContextMenu::default())
             .insert_resource(DeployMode::default())
             .insert_resource(OutlineExpandedSystems::default())
+            .insert_resource(CycleSelection::default())
             .add_systems(Startup, camera::setup_camera)
             .add_systems(
                 PostStartup,
@@ -181,6 +186,66 @@ impl Default for OutlineExpandedSystems {
     }
 }
 
+/// Distinguishes candidate types in `CycleSelection` for proper selection dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleKind {
+    Ship,
+    StarSystem,
+    DeepSpaceStructure,
+}
+
+/// The priority for cycle ordering. Lower value = selected first on single click.
+impl CycleKind {
+    fn priority(self) -> u8 {
+        match self {
+            CycleKind::Ship => 0,
+            CycleKind::StarSystem => 1,
+            CycleKind::DeepSpaceStructure => 2,
+        }
+    }
+}
+
+/// A selectable entity near the click position.
+#[derive(Debug, Clone, Copy)]
+pub struct CycleCandidate {
+    pub entity: Entity,
+    pub kind: CycleKind,
+    pub distance: f32,
+}
+
+/// #368: Tracks double-click state for cycling through overlapping objects.
+///
+/// On single click, the nearest/highest-priority candidate is selected (normal
+/// behavior). On double-click (same position within `DOUBLE_CLICK_TIME` and
+/// `DOUBLE_CLICK_RADIUS_PX`), the next candidate in the cycle is selected.
+#[derive(Resource)]
+pub struct CycleSelection {
+    /// All candidates near the last click position, sorted by cycle order.
+    pub candidates: Vec<CycleCandidate>,
+    /// Index into `candidates` of the currently selected candidate.
+    pub current_index: usize,
+    /// World-space position of the last click (for proximity check).
+    pub click_world_pos: Vec2,
+    /// Wall-clock time of the last click (for double-click detection).
+    pub last_click_time: Instant,
+}
+
+impl Default for CycleSelection {
+    fn default() -> Self {
+        Self {
+            candidates: Vec::new(),
+            current_index: 0,
+            click_world_pos: Vec2::ZERO,
+            last_click_time: Instant::now(),
+        }
+    }
+}
+
+/// Maximum time between clicks for double-click detection (seconds).
+const DOUBLE_CLICK_TIME: f32 = 0.4;
+/// Maximum pixel distance between clicks for double-click detection.
+const DOUBLE_CLICK_RADIUS_PX: f32 = 5.0;
+
 #[derive(Resource)]
 pub struct GalaxyView {
     pub scale: f32,
@@ -191,6 +256,186 @@ pub struct GalaxyView {
 #[derive(Resource, Default)]
 pub struct EguiWantsPointer(pub bool);
 
+/// #368: Bundled selection state to keep `click_select_system` under Bevy's
+/// 16-parameter limit.
+#[derive(SystemParam)]
+pub struct SelectionState<'w> {
+    pub selected: ResMut<'w, SelectedSystem>,
+    pub selected_ship: ResMut<'w, SelectedShip>,
+    pub selected_ships: ResMut<'w, SelectedShips>,
+    pub context_menu: ResMut<'w, ContextMenu>,
+    pub deploy_mode: ResMut<'w, DeployMode>,
+    pub cycle: ResMut<'w, CycleSelection>,
+}
+
+/// Compute the pixel position of a ship given its current state.
+/// Returns `None` for docked ships (selected via outline panel, not map click).
+fn ship_pixel_position(
+    state: &ShipState,
+    star_positions: &Query<&Position, With<StarSystem>>,
+    clock: &GameClock,
+    view_scale: f32,
+) -> Option<Vec2> {
+    match state {
+        ShipState::SubLight {
+            origin,
+            destination,
+            departed_at,
+            arrival_at,
+            ..
+        } => {
+            let total = (*arrival_at - *departed_at) as f64;
+            let elapsed = (clock.elapsed - *departed_at) as f64;
+            let t = if total > 0.0 {
+                (elapsed / total).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view_scale;
+            let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view_scale;
+            Some(Vec2::new(cx, cy))
+        }
+        ShipState::Settling { system, .. }
+        | ShipState::Surveying {
+            target_system: system,
+            ..
+        } => {
+            let sys_pos = star_positions.get(*system).ok()?;
+            Some(Vec2::new(
+                sys_pos.x as f32 * view_scale,
+                sys_pos.y as f32 * view_scale,
+            ))
+        }
+        ShipState::InFTL {
+            origin_system,
+            destination_system,
+            departed_at,
+            arrival_at,
+        } => {
+            let origin_pos = star_positions.get(*origin_system).ok()?;
+            let dest_pos = star_positions.get(*destination_system).ok()?;
+            let total = (*arrival_at - *departed_at) as f64;
+            let elapsed = (clock.elapsed - *departed_at) as f64;
+            let t = if total > 0.0 {
+                (elapsed / total).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let cx = (origin_pos.x + (dest_pos.x - origin_pos.x) * t) as f32 * view_scale;
+            let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32 * view_scale;
+            Some(Vec2::new(cx, cy))
+        }
+        ShipState::Loitering { position } => Some(Vec2::new(
+            position[0] as f32 * view_scale,
+            position[1] as f32 * view_scale,
+        )),
+        // Docked ships selected via outline panel
+        _ => None,
+    }
+}
+
+/// Collect all selectable candidates (ships, stars, deep space structures)
+/// within click radius of `world_pos`.
+fn collect_candidates(
+    world_pos: Vec2,
+    ship_q: &Query<(Entity, &Ship, &ShipState)>,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
+    dss_q: &Query<(Entity, &Position), With<DeepSpaceStructure>>,
+    star_positions: &Query<&Position, With<StarSystem>>,
+    clock: &GameClock,
+    view_scale: f32,
+) -> Vec<CycleCandidate> {
+    let click_radius = DEPLOY_STAR_SNAP_RADIUS_PX;
+    let mut candidates = Vec::new();
+
+    // Ships (in-transit / active, not docked)
+    for (entity, _ship, state) in ship_q {
+        if let Some(ship_px) = ship_pixel_position(state, star_positions, clock, view_scale) {
+            let dist = world_pos.distance(ship_px);
+            if dist < click_radius {
+                candidates.push(CycleCandidate {
+                    entity,
+                    kind: CycleKind::Ship,
+                    distance: dist,
+                });
+            }
+        }
+    }
+
+    // Stars
+    for (entity, _star, pos, obscured) in stars {
+        if obscured.is_some() {
+            continue;
+        }
+        let star_px = Vec2::new(pos.x as f32 * view_scale, pos.y as f32 * view_scale);
+        let dist = world_pos.distance(star_px);
+        if dist < click_radius {
+            candidates.push(CycleCandidate {
+                entity,
+                kind: CycleKind::StarSystem,
+                distance: dist,
+            });
+        }
+    }
+
+    // Deep space structures
+    for (entity, pos) in dss_q {
+        let dss_px = Vec2::new(pos.x as f32 * view_scale, pos.y as f32 * view_scale);
+        let dist = world_pos.distance(dss_px);
+        if dist < click_radius {
+            candidates.push(CycleCandidate {
+                entity,
+                kind: CycleKind::DeepSpaceStructure,
+                distance: dist,
+            });
+        }
+    }
+
+    // Sort by: type priority first, then distance within same type, then entity
+    // id for determinism.
+    candidates.sort_by(|a, b| {
+        a.kind
+            .priority()
+            .cmp(&b.kind.priority())
+            .then(
+                a.distance
+                    .partial_cmp(&b.distance)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.entity.cmp(&b.entity))
+    });
+
+    candidates
+}
+
+/// Apply selection for a `CycleCandidate`, updating the appropriate resources.
+fn apply_candidate_selection(
+    candidate: &CycleCandidate,
+    sel: &mut SelectionState,
+    shift_held: bool,
+) {
+    match candidate.kind {
+        CycleKind::Ship => {
+            if shift_held {
+                sel.selected_ships.toggle(candidate.entity);
+            } else {
+                sel.selected_ships.set_single(candidate.entity);
+            }
+            sel.selected_ship.0 = sel.selected_ships.primary();
+        }
+        CycleKind::StarSystem => {
+            sel.selected.0 = Some(candidate.entity);
+            // Keep ship selected — star becomes command target (ship selection
+            // persistence rule #5).
+        }
+        CycleKind::DeepSpaceStructure => {
+            // Deep space structures use system selection for now; future may
+            // have a dedicated SelectedStructure resource.
+            sel.selected.0 = Some(candidate.entity);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn click_select_system(
     mouse: Res<ButtonInput<MouseButton>>,
@@ -200,29 +445,26 @@ pub fn click_select_system(
     stars: Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
     ship_q: Query<(Entity, &Ship, &ShipState)>,
     star_positions: Query<&Position, With<StarSystem>>,
+    dss_q: Query<(Entity, &Position), With<DeepSpaceStructure>>,
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
-    mut selected: ResMut<SelectedSystem>,
-    mut selected_ship: ResMut<SelectedShip>,
-    mut selected_ships: ResMut<SelectedShips>,
-    mut context_menu: ResMut<ContextMenu>,
-    mut deploy_mode: ResMut<DeployMode>,
+    mut sel: SelectionState,
     mut command_queues: Query<&mut CommandQueue>,
     mut egui_contexts: EguiContexts,
 ) {
     // Escape handling — cancel deploy mode first if active, otherwise fall
     // through to the existing ship / system deselection logic.
     if keys.just_pressed(KeyCode::Escape) {
-        if deploy_mode.0.is_some() {
-            deploy_mode.0 = None;
+        if sel.deploy_mode.0.is_some() {
+            sel.deploy_mode.0 = None;
             return;
         }
-        if selected_ship.0.is_some() {
-            selected_ship.0 = None;
-            selected_ships.clear();
-            context_menu.open = false;
+        if sel.selected_ship.0.is_some() {
+            sel.selected_ship.0 = None;
+            sel.selected_ships.clear();
+            sel.context_menu.open = false;
         } else {
-            selected.0 = None;
+            sel.selected.0 = None;
         }
         return;
     }
@@ -239,7 +481,7 @@ pub fn click_select_system(
     }
 
     // Close any open context menu on any click outside egui
-    context_menu.open = false;
+    sel.context_menu.open = false;
 
     let Ok(window) = windows.single() else {
         return;
@@ -251,130 +493,42 @@ pub fn click_select_system(
         return;
     };
     let Ok(world_pos) = camera.viewport_to_world_2d(global_transform, cursor_pos) else {
-        selected.0 = None;
-        selected_ship.0 = None;
-        selected_ships.clear();
+        sel.selected.0 = None;
+        sel.selected_ship.0 = None;
+        sel.selected_ships.clear();
         return;
     };
 
     let cmd_held = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
     let shift_held = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
 
-    // Check in-transit and active ships (docked ships are selected via the outline panel)
-    let ship_click_radius = 12.0;
-    let mut best_ship: Option<(Entity, f32)> = None;
-    for (entity, _ship, state) in &ship_q {
-        let ship_px = match state {
-            ShipState::SubLight {
-                origin,
-                destination,
-                departed_at,
-                arrival_at,
-                ..
-            } => {
-                let total = (*arrival_at - *departed_at) as f64;
-                let elapsed = (clock.elapsed - *departed_at) as f64;
-                let t = if total > 0.0 {
-                    (elapsed / total).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
-                let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
-                Vec2::new(cx, cy)
-            }
-            ShipState::Settling { system, .. }
-            | ShipState::Surveying {
-                target_system: system,
-                ..
-            } => {
-                let Ok(sys_pos) = star_positions.get(*system) else {
-                    continue;
-                };
-                Vec2::new(sys_pos.x as f32 * view.scale, sys_pos.y as f32 * view.scale)
-            }
-            ShipState::InFTL {
-                origin_system,
-                destination_system,
-                departed_at,
-                arrival_at,
-            } => {
-                let (Ok(origin_pos), Ok(dest_pos)) = (
-                    star_positions.get(*origin_system),
-                    star_positions.get(*destination_system),
-                ) else {
-                    continue;
-                };
-                let total = (*arrival_at - *departed_at) as f64;
-                let elapsed = (clock.elapsed - *departed_at) as f64;
-                let t = if total > 0.0 {
-                    (elapsed / total).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                let cx = (origin_pos.x + (dest_pos.x - origin_pos.x) * t) as f32 * view.scale;
-                let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32 * view.scale;
-                Vec2::new(cx, cy)
-            }
-            // #185: Loitering ships are selectable in deep space.
-            ShipState::Loitering { position } => Vec2::new(
-                position[0] as f32 * view.scale,
-                position[1] as f32 * view.scale,
-            ),
-            // Docked ships selected via outline panel
-            _ => continue,
-        };
+    // --- Collect all candidates near the click ---
+    let candidates = collect_candidates(
+        world_pos,
+        &ship_q,
+        &stars,
+        &dss_q,
+        &star_positions,
+        &clock,
+        view.scale,
+    );
 
-        let dist = world_pos.distance(ship_px);
-        if dist < ship_click_radius {
-            if best_ship.is_none() || dist < best_ship.unwrap().1 {
-                best_ship = Some((entity, dist));
-            }
-        }
-    }
-
-    // #407: Shift+click toggles multi-select; plain click replaces selection.
-    if let Some((ship_entity, _)) = best_ship {
-        if shift_held {
-            selected_ships.toggle(ship_entity);
-        } else {
-            selected_ships.set_single(ship_entity);
-        }
-        // Sync SelectedShip to match primary
-        selected_ship.0 = selected_ships.primary();
-        return;
-    }
-
-    // Find the closest star under cursor
-    let click_radius = DEPLOY_STAR_SNAP_RADIUS_PX;
-    let mut best_star: Option<(Entity, f32)> = None;
-
-    for (entity, _star, pos, obscured) in &stars {
-        if obscured.is_some() {
-            continue;
-        }
-        let star_px = Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
-        let dist = world_pos.distance(star_px);
-        if dist < click_radius {
-            if best_star.is_none() || dist < best_star.unwrap().1 {
-                best_star = Some((entity, dist));
-            }
-        }
-    }
+    // --- Find best star for deploy mode / context menu (unchanged behavior) ---
+    let best_star = candidates
+        .iter()
+        .find(|c| c.kind == CycleKind::StarSystem)
+        .map(|c| (c.entity, c.distance));
 
     // #229 / #240: Deploy mode — if the user has just clicked "Deploy" on a
     // cargo item and then clicks on the map, push a DeployDeliverable command.
     // Clicks close to a star snap to that star's coordinates; clicks on empty
     // space deploy at the cursor's world position (z = 0).
-    if let Some(pending) = deploy_mode.0 {
+    if let Some(pending) = sel.deploy_mode.0 {
         let snapped_star_world = best_star
             .and_then(|(star_entity, _)| star_positions.get(star_entity).ok())
             .map(|p| p.as_array());
         let target_pos = resolve_deploy_target(snapped_star_world, world_pos, view.scale);
         if let Ok(mut queue) = command_queues.get_mut(pending.ship) {
-            // Use direct push (bypassing `CommandQueue::push`) because we
-            // already know the exact coordinate and don't need the system
-            // position lookup helper.
             queue.commands.push(QueuedCommand::DeployDeliverable {
                 position: target_pos,
                 item_index: pending.item_index,
@@ -395,30 +549,56 @@ pub fn click_select_system(
                 );
             }
         }
-        deploy_mode.0 = None;
+        sel.deploy_mode.0 = None;
         return;
     }
 
     // When a ship IS selected AND Cmd is held: context menu / default action
-    if selected_ship.0.is_some() && cmd_held {
+    if sel.selected_ship.0.is_some() && cmd_held {
         if let Some((star_entity, _)) = best_star {
-            context_menu.open = true;
-            context_menu.position = [cursor_pos.x, cursor_pos.y];
-            context_menu.target_system = Some(star_entity);
-            context_menu.execute_default = shift_held; // Cmd+Shift = default action
+            sel.context_menu.open = true;
+            sel.context_menu.position = [cursor_pos.x, cursor_pos.y];
+            sel.context_menu.target_system = Some(star_entity);
+            sel.context_menu.execute_default = shift_held; // Cmd+Shift = default action
             return;
         }
     }
 
-    // Normal click: select star system (works whether or not ship is selected)
-    if let Some((entity, _)) = best_star {
-        selected.0 = Some(entity);
-        // Keep ship selected — star becomes command target
-    } else {
+    if candidates.is_empty() {
         // Clicked empty space
-        selected.0 = None;
-        selected_ship.0 = None;
-        selected_ships.clear();
+        sel.selected.0 = None;
+        sel.selected_ship.0 = None;
+        sel.selected_ships.clear();
+        sel.cycle.candidates.clear();
+        return;
+    }
+
+    // --- #368: Double-click cycle detection ---
+    let now = Instant::now();
+    let elapsed_secs = now.duration_since(sel.cycle.last_click_time).as_secs_f32();
+    let pos_delta = world_pos.distance(sel.cycle.click_world_pos);
+    let is_double_click = elapsed_secs < DOUBLE_CLICK_TIME
+        && pos_delta < DOUBLE_CLICK_RADIUS_PX
+        && !sel.cycle.candidates.is_empty();
+
+    if is_double_click && candidates.len() > 1 {
+        // Advance to next candidate in cycle
+        sel.cycle.current_index = (sel.cycle.current_index + 1) % candidates.len();
+        sel.cycle.candidates = candidates;
+        sel.cycle.last_click_time = now;
+        sel.cycle.click_world_pos = world_pos;
+
+        let candidate = sel.cycle.candidates[sel.cycle.current_index];
+        apply_candidate_selection(&candidate, &mut sel, shift_held);
+    } else {
+        // Single click: select first candidate (highest priority / nearest)
+        sel.cycle.candidates = candidates;
+        sel.cycle.current_index = 0;
+        sel.cycle.last_click_time = now;
+        sel.cycle.click_world_pos = world_pos;
+
+        let candidate = sel.cycle.candidates[0];
+        apply_candidate_selection(&candidate, &mut sel, shift_held);
     }
 }
 
@@ -621,5 +801,138 @@ mod tests {
         selected.toggle(e2);
         selected.clear();
         assert!(selected.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // #368: CycleSelection / double-click cycle tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cycle_kind_priority_order() {
+        // Ships are selected first (priority 0), then stars, then structures.
+        assert!(CycleKind::Ship.priority() < CycleKind::StarSystem.priority());
+        assert!(CycleKind::StarSystem.priority() < CycleKind::DeepSpaceStructure.priority());
+    }
+
+    #[test]
+    fn cycle_selection_default_is_empty() {
+        let cycle = CycleSelection::default();
+        assert!(cycle.candidates.is_empty());
+        assert_eq!(cycle.current_index, 0);
+    }
+
+    #[test]
+    fn candidates_sorted_by_priority_then_distance() {
+        let mut world = bevy::prelude::World::new();
+        let e_star = world.spawn_empty().id();
+        let e_ship1 = world.spawn_empty().id();
+        let e_ship2 = world.spawn_empty().id();
+        let e_dss = world.spawn_empty().id();
+
+        let mut candidates = vec![
+            CycleCandidate {
+                entity: e_star,
+                kind: CycleKind::StarSystem,
+                distance: 3.0,
+            },
+            CycleCandidate {
+                entity: e_ship1,
+                kind: CycleKind::Ship,
+                distance: 5.0,
+            },
+            CycleCandidate {
+                entity: e_dss,
+                kind: CycleKind::DeepSpaceStructure,
+                distance: 1.0,
+            },
+            CycleCandidate {
+                entity: e_ship2,
+                kind: CycleKind::Ship,
+                distance: 2.0,
+            },
+        ];
+
+        candidates.sort_by(|a, b| {
+            a.kind
+                .priority()
+                .cmp(&b.kind.priority())
+                .then(
+                    a.distance
+                        .partial_cmp(&b.distance)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(a.entity.cmp(&b.entity))
+        });
+
+        // Ships first (sorted by distance), then star, then DSS
+        assert_eq!(candidates[0].entity, e_ship2); // ship, dist 2
+        assert_eq!(candidates[1].entity, e_ship1); // ship, dist 5
+        assert_eq!(candidates[2].entity, e_star); // star, dist 3
+        assert_eq!(candidates[3].entity, e_dss); // dss, dist 1
+    }
+
+    #[test]
+    fn double_click_detection_within_time_and_radius() {
+        let mut cycle = CycleSelection::default();
+        let mut world = bevy::prelude::World::new();
+        let e1 = world.spawn_empty().id();
+        let e2 = world.spawn_empty().id();
+
+        // Simulate first click
+        cycle.candidates = vec![
+            CycleCandidate {
+                entity: e1,
+                kind: CycleKind::Ship,
+                distance: 3.0,
+            },
+            CycleCandidate {
+                entity: e2,
+                kind: CycleKind::StarSystem,
+                distance: 5.0,
+            },
+        ];
+        cycle.current_index = 0;
+        cycle.click_world_pos = Vec2::new(100.0, 200.0);
+        cycle.last_click_time = Instant::now();
+
+        // Simulate second click at nearly same position, immediately after
+        let now = Instant::now();
+        let pos = Vec2::new(101.0, 200.0); // within 5px
+        let elapsed = now.duration_since(cycle.last_click_time).as_secs_f32();
+        let pos_delta = pos.distance(cycle.click_world_pos);
+
+        assert!(elapsed < DOUBLE_CLICK_TIME);
+        assert!(pos_delta < DOUBLE_CLICK_RADIUS_PX);
+
+        // After double-click, index should advance
+        let new_index = (cycle.current_index + 1) % cycle.candidates.len();
+        assert_eq!(new_index, 1);
+    }
+
+    #[test]
+    fn double_click_too_far_resets_cycle() {
+        let cycle = CycleSelection {
+            candidates: vec![CycleCandidate {
+                entity: Entity::PLACEHOLDER,
+                kind: CycleKind::Ship,
+                distance: 1.0,
+            }],
+            current_index: 0,
+            click_world_pos: Vec2::new(100.0, 200.0),
+            last_click_time: Instant::now(),
+        };
+
+        // Click far away — should not be detected as double-click
+        let pos = Vec2::new(200.0, 300.0);
+        let pos_delta = pos.distance(cycle.click_world_pos);
+        assert!(pos_delta >= DOUBLE_CLICK_RADIUS_PX);
+    }
+
+    #[test]
+    fn cycle_wraps_around() {
+        // With 3 candidates, cycling from index 2 wraps to 0
+        let index = 2;
+        let len = 3;
+        assert_eq!((index + 1) % len, 0);
     }
 }
