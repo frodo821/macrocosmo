@@ -16,6 +16,9 @@ use super::overlays::ShipDesignerState;
 /// ComboBox for switching the currently inspected faction.
 pub struct ObserverBarState<'a> {
     pub enabled: bool,
+    /// When `true`, commands are disabled (god-view). Renders a
+    /// "[read-only]" tag next to the badge.
+    pub read_only: bool,
     pub selected: &'a mut Option<Entity>,
     pub factions: &'a [(Entity, String)],
 }
@@ -131,8 +134,13 @@ pub fn draw_top_bar(
             if let Some(obs) = observer {
                 if obs.enabled {
                     ui.separator();
+                    let badge_text = if obs.read_only {
+                        "Observer Mode [read-only]"
+                    } else {
+                        "Observer Mode"
+                    };
                     ui.label(
-                        egui::RichText::new("Observer Mode")
+                        egui::RichText::new(badge_text)
                             .strong()
                             .color(egui::Color32::from_rgb(230, 200, 90)),
                     );

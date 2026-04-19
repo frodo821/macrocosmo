@@ -118,6 +118,9 @@ pub struct MainPanelSelection<'w> {
     /// #390-T5: UI element registry for BRP introspection. `None` when the
     /// `remote` feature is not enabled (resource not inserted).
     pub ui_registry: Option<ResMut<'w, super::UiElementRegistry>>,
+    /// #398: Observer mode read-only flag. When `read_only` is true, context
+    /// menu and ship panel commands are suppressed.
+    pub observer_mode: Res<'w, crate::observer::ObserverMode>,
 }
 
 /// #229: Deliverable-pipeline resources used by the main panels: the Lua-

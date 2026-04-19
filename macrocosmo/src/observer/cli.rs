@@ -23,6 +23,10 @@ pub struct CliArgs {
     /// Allows observing AI behavior on the player empire in both headed
     /// and headless mode.
     pub ai_player: bool,
+    /// When `true`, run in observer mode with a player empire that is
+    /// AI-controlled. The UI shows all empires but commands are disabled.
+    /// Implies `ai_player = true`.
+    pub observer: bool,
     /// Optional deterministic seed for galaxy generation.
     pub seed: Option<u64>,
     /// Optional time horizon (hexadies). When reached in observer mode
@@ -46,6 +50,9 @@ OPTIONS:
     --ai-player             Let the AI policy also control the player
                             empire. Useful for observing AI behavior
                             alongside normal gameplay or headless tests.
+    --observer              God-view observer mode. The player empire is
+                            AI-controlled and commands are disabled. All
+                            empire activity is visible. Implies --ai-player.
     --seed <N>              Deterministic seed for galaxy generation.
                             Works with or without --no-player.
     --time-horizon <H>      Auto-exit observer mode once GameClock.elapsed
@@ -95,6 +102,10 @@ impl CliArgs {
                     out.no_player = true;
                 }
                 "--ai-player" => {
+                    out.ai_player = true;
+                }
+                "--observer" => {
+                    out.observer = true;
                     out.ai_player = true;
                 }
                 "--seed" => {
@@ -209,6 +220,23 @@ mod tests {
         assert!(err.contains("--no-player"));
         let err = parse(&["-h"]).expect_err("help surfaces via Err");
         assert!(err.contains("USAGE"));
+    }
+
+    #[test]
+    fn cli_parses_observer_flag() {
+        let a = parse(&["--observer"]).expect("parse ok");
+        assert!(a.observer);
+        assert!(a.ai_player, "--observer implies --ai-player");
+        assert!(!a.no_player);
+    }
+
+    #[test]
+    fn cli_observer_with_speed_and_seed() {
+        let a = parse(&["--observer", "--seed", "99", "--speed", "4"]).expect("parse ok");
+        assert!(a.observer);
+        assert!(a.ai_player);
+        assert_eq!(a.seed, Some(99));
+        assert_eq!(a.speed, Some(4.0));
     }
 
     #[test]
