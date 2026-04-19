@@ -37,6 +37,7 @@
 //! [`core`] so callers can refer to AI types via `crate::ai::core::…`.
 
 pub mod combat_projection;
+pub mod command_consumer;
 pub mod convert;
 pub mod emit;
 pub mod emitters;
