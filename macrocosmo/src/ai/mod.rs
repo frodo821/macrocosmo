@@ -36,8 +36,10 @@
 //! For convenience, the entire `macrocosmo-ai` crate is re-exported as
 //! [`core`] so callers can refer to AI types via `crate::ai::core::…`.
 
+pub mod combat_projection;
 pub mod convert;
 pub mod emit;
+pub mod emitters;
 pub mod npc_decision;
 pub mod plugin;
 pub mod schema;

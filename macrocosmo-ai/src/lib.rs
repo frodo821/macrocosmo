@@ -54,7 +54,7 @@ pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 pub use assessment::{
     Assessment, AssessmentConfig, EconomicBaseline, EconomicCapacityWeights, EconomicSnapshot,
     FleetSnapshot, ObjectiveKind, ResourceVector, TechLeadWeights, TechPositionSnapshot,
-    build_assessment, build_economic_snapshot, build_tech_position_snapshot,
+    build_assessment, build_economic_snapshot, build_fleet_snapshot, build_tech_position_snapshot,
     compute_economic_capacity, compute_feasibility, compute_fleet_readiness,
     compute_overall_confidence, compute_tech_lead, compute_threat_level,
     critical_violation_penalty, gather_trajectory_metric_ids, objective_kind,

@@ -251,7 +251,7 @@ fn print_results(results: &[ScenarioResult]) {
 #[test]
 fn combat_scenario_matrix() {
     let config = CombatConfig {
-        turns_per_tick: 120,
+        turns_per_tick: 1200,
         distance_step_factor: 1.0,
         ..Default::default()
     };

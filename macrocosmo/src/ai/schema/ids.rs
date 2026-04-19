@@ -47,6 +47,12 @@ pub mod metric {
     pub fn my_has_flagship() -> MetricId {
         MetricId::from("my_has_flagship")
     }
+    pub fn my_total_attack() -> MetricId {
+        MetricId::from("my_total_attack")
+    }
+    pub fn my_total_defense() -> MetricId {
+        MetricId::from("my_total_defense")
+    }
 
     // 1.2 Economy — Production ------------------------------------------
     pub fn net_production_minerals() -> MetricId {
