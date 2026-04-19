@@ -53,6 +53,9 @@ fn test_hostile_destroyed_when_hp_zero() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Spawn a strong explorer docked at that system with a weapon module
@@ -246,6 +249,9 @@ fn test_combat_takes_multiple_ticks() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Ship with a weapon module
@@ -340,6 +346,9 @@ fn test_shield_regenerates() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
     }
 
@@ -434,6 +443,9 @@ fn test_shield_regen_caps_at_max() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
     }
 
@@ -529,6 +541,9 @@ fn test_combat_damages_3_layers() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
         module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
             id: "shield_unit".to_string(),
@@ -547,6 +562,9 @@ fn test_combat_damages_3_layers() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
     }
 
@@ -720,6 +738,9 @@ fn test_weapon_cooldown() {
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: macrocosmo::ship_design::ModuleSize::Small,
     });
     module_reg.insert(macrocosmo::ship_design::ModuleDefinition {
         id: "slow_gun".to_string(),
@@ -746,6 +767,9 @@ fn test_weapon_cooldown() {
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: macrocosmo::ship_design::ModuleSize::Small,
     });
 
     // Hostile A: attacked by fast gun
@@ -902,6 +926,9 @@ fn test_shield_piercing() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Hostile with no attack
@@ -1030,6 +1057,9 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Ship with Retreat ROE — should NOT engage
@@ -1191,6 +1221,9 @@ fn test_aggressive_ships_engage_combat() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Ship with Aggressive ROE
@@ -1281,6 +1314,9 @@ fn test_defensive_ships_engage_combat_same_as_before() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Ship with Defensive ROE (default) — should still fight
@@ -1378,6 +1414,9 @@ fn test_mixed_roe_only_non_retreat_fight() {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 
     // Aggressive ship — will fight
@@ -1894,6 +1933,9 @@ fn install_test_weapon_module(app: &mut App) {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: macrocosmo::ship_design::ModuleSize::Small,
         });
 }
 

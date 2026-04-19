@@ -309,7 +309,12 @@ pub fn simulate_combat(
                     let target_evasion = defenders[target_idx].evasion;
                     let chance = hit_chance(weapon, target_evasion);
                     if rng.random::<f64>() < chance {
-                        let dmg = apply_damage_to_profile(&mut defenders[target_idx], weapon, rng, config.shield_regen_delay);
+                        let dmg = apply_damage_to_profile(
+                            &mut defenders[target_idx],
+                            weapon,
+                            rng,
+                            config.shield_regen_delay,
+                        );
                         dmg_by_attacker += dmg;
                     }
                     weapons_fired += 1;
@@ -339,7 +344,12 @@ pub fn simulate_combat(
                     let target_evasion = attackers[target_idx].evasion;
                     let chance = hit_chance(weapon, target_evasion);
                     if rng.random::<f64>() < chance {
-                        let dmg = apply_damage_to_profile(&mut attackers[target_idx], weapon, rng, config.shield_regen_delay);
+                        let dmg = apply_damage_to_profile(
+                            &mut attackers[target_idx],
+                            weapon,
+                            rng,
+                            config.shield_regen_delay,
+                        );
                         dmg_by_defender += dmg;
                     }
                     weapons_fired += 1;
@@ -520,6 +530,7 @@ mod tests {
         CombatConfig {
             turns_per_tick: 12,
             distance_step_factor: 1.0,
+            ..Default::default()
         }
     }
 
@@ -571,6 +582,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 30,
             distance_step_factor: 2.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -620,6 +632,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 24,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -658,6 +671,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 24,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -687,6 +701,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 24,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -720,6 +735,7 @@ mod tests {
             let cfg = CombatConfig {
                 turns_per_tick: 30,
                 distance_step_factor: 1.0,
+                ..Default::default()
             };
             let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
             match log.outcome {
@@ -781,6 +797,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 8,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 
@@ -845,6 +862,7 @@ mod tests {
         let cfg = CombatConfig {
             turns_per_tick: 6,
             distance_step_factor: 1.0,
+            ..Default::default()
         };
         let log = simulate_combat(&mut attackers, &mut defenders, &cfg, &mut rng);
 

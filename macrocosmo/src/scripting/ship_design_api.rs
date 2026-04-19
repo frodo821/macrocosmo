@@ -1,7 +1,7 @@
 use crate::amount::Amt;
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::ship_design::{
-    DesignSlotAssignment, HullDefinition, HullSlot, ModuleDefinition, ModuleModifier,
+    DesignSlotAssignment, HullDefinition, HullSlot, ModuleDefinition, ModuleModifier, ModuleSize,
     ModuleUpgradePath, ShipDesignDefinition, SlotTypeDefinition, WeaponStats,
 };
 
@@ -116,6 +116,14 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
         // invisible to the final sum.
         let build_time: i64 = table.get::<Option<i64>>("build_time")?.unwrap_or(0);
 
+        // #138: Power budget fields (default 0) and module size (default Small).
+        let power_cost: i32 = table.get::<Option<i32>>("power_cost")?.unwrap_or(0);
+        let power_output: i32 = table.get::<Option<i32>>("power_output")?.unwrap_or(0);
+        let size = table
+            .get::<Option<String>>("size")?
+            .map(|s| ModuleSize::from_str_loose(&s))
+            .unwrap_or(ModuleSize::Small);
+
         result.push(ModuleDefinition {
             id,
             name,
@@ -128,6 +136,9 @@ pub fn parse_modules(lua: &mlua::Lua) -> Result<Vec<ModuleDefinition>, mlua::Err
             prerequisites,
             upgrade_to,
             build_time,
+            power_cost,
+            power_output,
+            size,
         });
     }
 
@@ -243,7 +254,17 @@ fn parse_hull_slots(table: &mlua::Table) -> Result<Vec<HullSlot>, mlua::Error> {
                 let type_value: mlua::Value = slot_table.get("type")?;
                 let slot_type = crate::scripting::extract_ref_id(&type_value)?;
                 let count: u32 = slot_table.get::<Option<u32>>("count")?.unwrap_or(1);
-                slots.push(HullSlot { slot_type, count });
+                // #138: Optional `size` field — max module size this slot accepts.
+                // Defaults to Large (accept anything) when omitted.
+                let max_size = slot_table
+                    .get::<Option<String>>("size")?
+                    .map(|s| ModuleSize::from_str_loose(&s))
+                    .unwrap_or(ModuleSize::Large);
+                slots.push(HullSlot {
+                    slot_type,
+                    count,
+                    max_size,
+                });
             }
             Ok(slots)
         }
@@ -593,6 +614,100 @@ mod tests {
         let cheap = defs.iter().find(|d| d.id == "cheap_cargo").unwrap();
         assert_eq!(heavy.build_time, 15);
         assert_eq!(cheap.build_time, 5);
+    }
+
+    /// #138: power_cost, power_output, and size are parsed from Lua module
+    /// definitions. Missing fields default to 0/0/Small.
+    #[test]
+    fn test_parse_modules_reads_power_and_size() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_module {
+                id = "reactor",
+                name = "Reactor",
+                slot_type = "reactor",
+                power_output = 10,
+                cost = { minerals = 80 },
+            }
+            define_module {
+                id = "laser",
+                name = "Laser",
+                slot_type = "weapon",
+                power_cost = 3,
+                size = "medium",
+                cost = { minerals = 50 },
+            }
+            define_module {
+                id = "plain",
+                name = "Plain",
+                slot_type = "utility",
+                cost = { minerals = 10 },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_modules(lua).unwrap();
+        assert_eq!(defs.len(), 3);
+
+        let reactor = defs.iter().find(|d| d.id == "reactor").unwrap();
+        assert_eq!(reactor.power_output, 10);
+        assert_eq!(reactor.power_cost, 0);
+        assert_eq!(reactor.size, ModuleSize::Small);
+
+        let laser = defs.iter().find(|d| d.id == "laser").unwrap();
+        assert_eq!(laser.power_cost, 3);
+        assert_eq!(laser.power_output, 0);
+        assert_eq!(laser.size, ModuleSize::Medium);
+
+        let plain = defs.iter().find(|d| d.id == "plain").unwrap();
+        assert_eq!(plain.power_cost, 0);
+        assert_eq!(plain.power_output, 0);
+        assert_eq!(plain.size, ModuleSize::Small);
+    }
+
+    /// #138: hull slot `size` field is parsed as max_size.
+    #[test]
+    fn test_parse_hull_slot_size() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_hull {
+                id = "sized_hull",
+                name = "Sized Hull",
+                size = 1,
+                base_hp = 50,
+                slots = {
+                    { type = "weapon", size = "small", count = 2 },
+                    { type = "utility", count = 1 },
+                    { type = "defense", size = "large", count = 1 },
+                },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_hulls(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+
+        let hull = &defs[0];
+        assert_eq!(hull.slots.len(), 3);
+        // Weapon slot: size = "small"
+        assert_eq!(hull.slots[0].slot_type, "weapon");
+        assert_eq!(hull.slots[0].max_size, ModuleSize::Small);
+        // Utility slot: no size → defaults to Large
+        assert_eq!(hull.slots[1].slot_type, "utility");
+        assert_eq!(hull.slots[1].max_size, ModuleSize::Large);
+        // Defense slot: size = "large"
+        assert_eq!(hull.slots[2].slot_type, "defense");
+        assert_eq!(hull.slots[2].max_size, ModuleSize::Large);
     }
 
     #[test]

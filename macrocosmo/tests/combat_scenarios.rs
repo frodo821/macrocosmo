@@ -88,6 +88,9 @@ fn install_scenario_weapon(app: &mut App) {
         cost_minerals: Amt::ZERO,
         cost_energy: Amt::ZERO,
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: macrocosmo::ship_design::ModuleSize::Small,
         prerequisites: None,
         upgrade_to: Vec::new(),
     });

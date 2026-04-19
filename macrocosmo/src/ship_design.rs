@@ -5,6 +5,37 @@ use bevy::prelude::*;
 use crate::amount::Amt;
 use crate::condition::Condition;
 
+/// Module size tier — constrains which hull slots accept which modules.
+/// A module fits in a slot when `module.size <= slot.max_size`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
+pub enum ModuleSize {
+    #[default]
+    Small,
+    Medium,
+    Large,
+}
+
+impl std::fmt::Display for ModuleSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Small => write!(f, "small"),
+            Self::Medium => write!(f, "medium"),
+            Self::Large => write!(f, "large"),
+        }
+    }
+}
+
+impl ModuleSize {
+    /// Parse a size string (case-insensitive). Defaults to Small for unknown values.
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "medium" => Self::Medium,
+            "large" => Self::Large,
+            _ => Self::Small,
+        }
+    }
+}
+
 /// Defines a module slot type (weapon, utility, engine, special).
 #[derive(Clone, Debug)]
 pub struct SlotTypeDefinition {
@@ -32,6 +63,9 @@ impl SlotTypeRegistry {
 pub struct HullSlot {
     pub slot_type: String,
     pub count: u32,
+    /// Maximum module size this slot accepts (Small fits everywhere, Large only
+    /// in Large slots). Defaults to `ModuleSize::Large` (accept anything).
+    pub max_size: ModuleSize,
 }
 
 /// Defines a ship hull.
@@ -136,6 +170,13 @@ pub struct ModuleDefinition {
     /// hull. Defaults to 0 when Lua omits the field so existing content keeps
     /// compiling.
     pub build_time: i64,
+    /// #138: Power consumed by this module when installed (default 0).
+    pub power_cost: i32,
+    /// #138: Power produced by this module (only reactor modules, default 0).
+    pub power_output: i32,
+    /// #138: Module size tier (Small/Medium/Large, default Small).
+    /// Must be <= the slot's `max_size` to fit.
+    pub size: ModuleSize,
 }
 
 #[derive(Resource, Default)]
@@ -228,6 +269,19 @@ pub enum ShipDesignValidationError {
         available: u32,
         requested: u32,
     },
+    /// #138: Total power consumption exceeds total power output.
+    PowerBudgetExceeded {
+        design_id: String,
+        total_output: i32,
+        total_cost: i32,
+    },
+    /// #138: A module's size exceeds the slot's max_size.
+    ModuleTooLarge {
+        design_id: String,
+        module_id: String,
+        module_size: ModuleSize,
+        slot_max_size: ModuleSize,
+    },
 }
 
 impl std::fmt::Display for ShipDesignValidationError {
@@ -276,6 +330,25 @@ impl std::fmt::Display for ShipDesignValidationError {
                 "ship design '{}' fills {} '{}' slot(s) but hull '{}' only provides {}",
                 design_id, requested, slot_type, hull_id, available
             ),
+            Self::PowerBudgetExceeded {
+                design_id,
+                total_output,
+                total_cost,
+            } => write!(
+                f,
+                "ship design '{}' requires {} power but reactors only produce {}",
+                design_id, total_cost, total_output
+            ),
+            Self::ModuleTooLarge {
+                design_id,
+                module_id,
+                module_size,
+                slot_max_size,
+            } => write!(
+                f,
+                "ship design '{}' assigns {} module '{}' into a {} slot",
+                design_id, module_size, module_id, slot_max_size
+            ),
         }
     }
 }
@@ -300,6 +373,9 @@ impl ShipDesignDefinition {
 
         // Tally requested slot assignments per slot_type for overfill checks.
         let mut per_slot_count: HashMap<&str, u32> = HashMap::new();
+        // #138: Track power budget across all modules.
+        let mut total_power_output: i32 = 0;
+        let mut total_power_cost: i32 = 0;
 
         for assignment in &self.modules {
             // The slot_type on the assignment must exist on the hull.
@@ -333,6 +409,27 @@ impl ShipDesignDefinition {
                 });
             }
 
+            // #138: Check module size fits in the slot's max_size.
+            // Find the hull slot's max_size for this slot_type.
+            if let Some(hull_slot) = hull
+                .slots
+                .iter()
+                .find(|s| s.slot_type == assignment.slot_type)
+            {
+                if module.size > hull_slot.max_size {
+                    return Err(ShipDesignValidationError::ModuleTooLarge {
+                        design_id: self.id.clone(),
+                        module_id: assignment.module_id.clone(),
+                        module_size: module.size,
+                        slot_max_size: hull_slot.max_size,
+                    });
+                }
+            }
+
+            // #138: Accumulate power budget.
+            total_power_output += module.power_output;
+            total_power_cost += module.power_cost;
+
             *per_slot_count
                 .entry(assignment.slot_type.as_str())
                 .or_insert(0) += 1;
@@ -355,6 +452,15 @@ impl ShipDesignDefinition {
                     requested: *requested,
                 });
             }
+        }
+
+        // #138: Check power budget — total output must cover total cost.
+        if total_power_cost > total_power_output {
+            return Err(ShipDesignValidationError::PowerBudgetExceeded {
+                design_id: self.id.clone(),
+                total_output: total_power_output,
+                total_cost: total_power_cost,
+            });
         }
 
         Ok(())
@@ -839,10 +945,12 @@ mod tests {
                 HullSlot {
                     slot_type: "weapon".to_string(),
                     count: 2,
+                    max_size: ModuleSize::Large,
                 },
                 HullSlot {
                     slot_type: "ftl".to_string(),
                     count: 1,
+                    max_size: ModuleSize::Large,
                 },
             ],
             build_cost_minerals: Amt::units(200),
@@ -884,6 +992,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         });
 
         let ftl = registry.get("ftl_drive").unwrap();
@@ -973,6 +1084,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
 
         let derived = design_derived(&hull, &[&module]);
@@ -1019,6 +1133,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
         let survey = ModuleDefinition {
             id: "survey_equipment".to_string(),
@@ -1032,6 +1149,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
 
         let derived = design_derived(&hull, &[&ftl, &survey]);
@@ -1062,14 +1182,17 @@ mod tests {
                 HullSlot {
                     slot_type: "ftl".to_string(),
                     count: 1,
+                    max_size: ModuleSize::Large,
                 },
                 HullSlot {
                     slot_type: "weapon".to_string(),
                     count: 2,
+                    max_size: ModuleSize::Large,
                 },
                 HullSlot {
                     slot_type: "utility".to_string(),
                     count: 1,
+                    max_size: ModuleSize::Large,
                 },
             ],
             build_cost_minerals: Amt::units(200),
@@ -1095,6 +1218,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
         modules.insert(make("ftl_drive", "ftl"));
         modules.insert(make("weapon_laser", "weapon"));
@@ -1250,6 +1376,146 @@ mod tests {
             }
             other => panic!("expected SlotOverfilled, got {:?}", other),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // #138: Power budget validation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_power_budget_exceeded() {
+        let (mut hulls, mut modules) = validation_fixture();
+        // Add a reactor slot to the corvette.
+        hulls.get("corvette").unwrap();
+        let mut h = hulls.hulls.remove("corvette").unwrap();
+        h.slots.push(HullSlot {
+            slot_type: "reactor".to_string(),
+            count: 1,
+            max_size: ModuleSize::Large,
+        });
+        hulls.insert(h);
+
+        // Add a reactor module that outputs 5 power.
+        modules.insert(ModuleDefinition {
+            id: "reactor_small".to_string(),
+            name: "Small Reactor".to_string(),
+            description: String::new(),
+            slot_type: "reactor".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 5,
+            size: ModuleSize::Small,
+        });
+        // Give the weapon module a power cost of 3.
+        let mut wep = modules.modules.remove("weapon_laser").unwrap();
+        wep.power_cost = 3;
+        modules.insert(wep);
+
+        // Two weapons (6 power) + reactor (5 output) → exceeds budget.
+        let design = make_design(
+            "power_hungry",
+            vec![
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "reactor".into(),
+                    module_id: "reactor_small".into(),
+                },
+            ],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::PowerBudgetExceeded {
+                total_output,
+                total_cost,
+                ..
+            }) => {
+                assert_eq!(total_output, 5);
+                assert_eq!(total_cost, 6);
+            }
+            other => panic!("expected PowerBudgetExceeded, got {:?}", other),
+        }
+
+        // One weapon (3 power) + reactor (5 output) → valid.
+        let ok_design = make_design(
+            "power_ok",
+            vec![
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "reactor".into(),
+                    module_id: "reactor_small".into(),
+                },
+            ],
+        );
+        assert!(ok_design.validate(&hulls, &modules).is_ok());
+    }
+
+    // ---------------------------------------------------------------------
+    // #138: Module size constraint validation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_module_too_large() {
+        let (mut hulls, mut modules) = validation_fixture();
+        // Set the weapon slot to Small max size.
+        for slot in &mut hulls.hulls.get_mut("corvette").unwrap().slots {
+            if slot.slot_type == "weapon" {
+                slot.max_size = ModuleSize::Small;
+            }
+        }
+        // Make weapon_laser a Medium module.
+        let mut wep = modules.modules.remove("weapon_laser").unwrap();
+        wep.size = ModuleSize::Medium;
+        modules.insert(wep);
+
+        let design = make_design(
+            "too_big",
+            vec![DesignSlotAssignment {
+                slot_type: "weapon".into(),
+                module_id: "weapon_laser".into(),
+            }],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::ModuleTooLarge {
+                module_id,
+                module_size,
+                slot_max_size,
+                ..
+            }) => {
+                assert_eq!(module_id, "weapon_laser");
+                assert_eq!(module_size, ModuleSize::Medium);
+                assert_eq!(slot_max_size, ModuleSize::Small);
+            }
+            other => panic!("expected ModuleTooLarge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_allows_small_module_in_large_slot() {
+        let (hulls, modules) = validation_fixture();
+        // weapon slots default to Large max_size, weapon_laser defaults to Small size.
+        let design = make_design(
+            "small_in_large",
+            vec![DesignSlotAssignment {
+                slot_type: "weapon".into(),
+                module_id: "weapon_laser".into(),
+            }],
+        );
+        assert!(design.validate(&hulls, &modules).is_ok());
     }
 
     // ---------------------------------------------------------------------
@@ -1423,14 +1689,17 @@ mod tests {
                 HullSlot {
                     slot_type: "ftl".into(),
                     count: 1,
+                    max_size: ModuleSize::Large,
                 },
                 HullSlot {
                     slot_type: "sublight".into(),
                     count: 1,
+                    max_size: ModuleSize::Large,
                 },
                 HullSlot {
                     slot_type: "utility".into(),
                     count: 2,
+                    max_size: ModuleSize::Large,
                 },
             ],
             build_cost_minerals: Amt::units(100),
@@ -1472,6 +1741,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
         let afterburner = ModuleDefinition {
             id: "afterburner".into(),
@@ -1490,6 +1762,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
         let cargo_bay = ModuleDefinition {
             id: "cargo_bay".into(),
@@ -1508,6 +1783,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
         (courier_hull, ftl_drive, afterburner, cargo_bay)
     }
@@ -1549,6 +1827,7 @@ mod tests {
             slots: vec![HullSlot {
                 slot_type: "utility".into(),
                 count: 1,
+                max_size: ModuleSize::Large,
             }],
             build_cost_minerals: Amt::ZERO,
             build_cost_energy: Amt::ZERO,
@@ -1589,6 +1868,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
         let d = design_derived(&scout, &[&survey]);
         // (0 + 1.0) * (1 + 1.3) = 2.3
@@ -1619,6 +1901,7 @@ mod tests {
             slots: vec![HullSlot {
                 slot_type: "utility".into(),
                 count: 1,
+                max_size: ModuleSize::Large,
             }],
             build_cost_minerals: Amt::ZERO,
             build_cost_energy: Amt::ZERO,
@@ -1646,6 +1929,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
 
         // Without survey module → no survey capability.
@@ -1708,6 +1994,7 @@ mod tests {
             slots: vec![HullSlot {
                 slot_type: "utility".into(),
                 count: 4,
+                max_size: ModuleSize::Large,
             }],
             build_cost_minerals: Amt::ZERO,
             build_cost_energy: Amt::ZERO,
@@ -1733,6 +2020,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         }
     }
 

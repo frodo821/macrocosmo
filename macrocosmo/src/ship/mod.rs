@@ -1383,6 +1383,9 @@ mod tests {
             prerequisites: None,
             upgrade_to: Vec::new(),
             build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: crate::ship_design::ModuleSize::Small,
         });
         let modules = vec![EquippedModule {
             slot_type: "weapon".into(),

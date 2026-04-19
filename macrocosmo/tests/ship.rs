@@ -1679,10 +1679,12 @@ fn test_hull_modifiers_applied_to_ship() {
                 HullSlot {
                     slot_type: "utility".to_string(),
                     count: 2,
+                    max_size: macrocosmo::ship_design::ModuleSize::Large,
                 },
                 HullSlot {
                     slot_type: "ftl".to_string(),
                     count: 1,
+                    max_size: macrocosmo::ship_design::ModuleSize::Large,
                 },
             ],
             build_cost_minerals: Amt::units(150),
@@ -2229,6 +2231,7 @@ fn install_refit_fixture(app: &mut App) {
         slots: vec![HullSlot {
             slot_type: "weapon".into(),
             count: 1,
+            max_size: macrocosmo::ship_design::ModuleSize::Large,
         }],
         build_cost_minerals: Amt::units(200),
         build_cost_energy: Amt::units(100),
@@ -2253,6 +2256,9 @@ fn install_refit_fixture(app: &mut App) {
         prerequisites: None,
         upgrade_to: Vec::new(),
         build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: macrocosmo::ship_design::ModuleSize::Small,
     };
     modules.insert(mk("laser_mk1", 50, 20));
     modules.insert(mk("laser_mk2", 80, 30));
