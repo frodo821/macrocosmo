@@ -14,6 +14,7 @@ use crate::colony::{
     SystemBuildings,
 };
 use crate::galaxy::{BASE_CARRYING_CAPACITY, Planet, StarSystem, SystemAttributes};
+use crate::galaxy::{AtSystem, Hostile};
 use crate::ship::{CoreShip, Owner, Ship, ShipHitpoints, ShipModifiers, ShipState};
 use crate::technology::TechTree;
 use crate::time_system::GameClock;
@@ -31,6 +32,7 @@ pub fn emit_military_metrics(
         &ShipState,
         Option<&CoreShip>,
     )>,
+    hostiles: Query<&AtSystem, With<Hostile>>,
 ) {
     let mut total_ships: f64 = 0.0;
     let mut total_attack: f64 = 0.0;
@@ -100,6 +102,12 @@ pub fn emit_military_metrics(
     writer.emit(
         &metric::my_has_flagship(),
         if has_flagship { 1.0 } else { 0.0 },
+    );
+
+    let hostile_systems: HashSet<Entity> = hostiles.iter().map(|at| at.0).collect();
+    writer.emit(
+        &metric::systems_with_hostiles(),
+        hostile_systems.len() as f64,
     );
 }
 
