@@ -94,6 +94,76 @@ pub struct DestroyedShipRegistry {
     pub records: Vec<DestroyedShipRecord>,
 }
 
+/// #392: 4-tier system visibility model.
+///
+/// | Tier | Condition | Visible |
+/// |---|---|---|
+/// | Catalogued | All stars initially | Star position/type/name only |
+/// | Surveyed | Survey done, no connection | Planet details/resources (frozen) |
+/// | Connected | Survey + ship presence | Planet + ship + resources (light-delayed) |
+/// | Local | Own ship in system | Everything (real-time) |
+///
+/// For V1: Local == Connected (relay/courier connection detection deferred).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SystemVisibilityTier {
+    Catalogued,
+    Surveyed,
+    Connected,
+    Local,
+}
+
+impl SystemVisibilityTier {
+    /// Can see planet details (types, habitability, resources snapshot).
+    pub fn can_see_planets(&self) -> bool {
+        *self >= Self::Surveyed
+    }
+
+    /// Can see ship presence and movements.
+    pub fn can_see_ships(&self) -> bool {
+        *self >= Self::Connected
+    }
+
+    /// Can see resource stockpile data.
+    pub fn can_see_resources(&self) -> bool {
+        *self >= Self::Surveyed
+    }
+
+    /// Real-time data (no light-speed delay applied).
+    pub fn is_real_time(&self) -> bool {
+        *self == Self::Local
+    }
+}
+
+/// #392: Per-system visibility tier map, attached to each empire entity.
+///
+/// Systems not present in the map default to `Catalogued`.
+#[derive(Component, Default, Debug, Clone)]
+pub struct SystemVisibilityMap {
+    tiers: HashMap<Entity, SystemVisibilityTier>,
+}
+
+impl SystemVisibilityMap {
+    pub fn get(&self, system: Entity) -> SystemVisibilityTier {
+        self.tiers
+            .get(&system)
+            .copied()
+            .unwrap_or(SystemVisibilityTier::Catalogued)
+    }
+
+    pub fn set(&mut self, system: Entity, tier: SystemVisibilityTier) {
+        self.tiers.insert(system, tier);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Entity, &SystemVisibilityTier)> {
+        self.tiers.iter()
+    }
+}
+
+/// #392: Tracks the previous system a ship was in, so `update_visibility_tiers`
+/// can recalculate both the old and new system when a ship moves.
+#[derive(Component, Default)]
+pub struct TrackedShipSystem(pub Option<Entity>);
+
 pub struct KnowledgePlugin;
 
 impl Plugin for KnowledgePlugin {
@@ -102,7 +172,8 @@ impl Plugin for KnowledgePlugin {
             .init_resource::<DestroyedShipRegistry>()
             .add_systems(
                 Startup,
-                initialize_capital_knowledge
+                (initialize_capital_knowledge, initialize_visibility_tiers)
+                    .chain()
                     .after(crate::galaxy::generate_galaxy)
                     .after(crate::player::spawn_player)
                     .after(crate::player::spawn_player_empire),
@@ -116,6 +187,16 @@ impl Plugin for KnowledgePlugin {
             .add_systems(
                 Update,
                 (rebuild_relay_network, snapshot_production_knowledge)
+                    .after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
+                (
+                    ensure_tracked_ship_system,
+                    bevy::ecs::schedule::ApplyDeferred,
+                    update_visibility_tiers,
+                )
+                    .chain()
                     .after(crate::time_system::advance_game_time),
             );
     }
@@ -313,6 +394,161 @@ impl KnowledgeStore {
     /// #175: Iterate over all ship snapshots.
     pub fn iter_ships(&self) -> impl Iterator<Item = (&Entity, &ShipSnapshot)> {
         self.ship_snapshots.iter()
+    }
+}
+
+/// #392: Auto-add `TrackedShipSystem` to any ship entity that has `Ship` +
+/// `ShipState` but is missing the tracker. Runs every frame but the `Without`
+/// filter keeps it cheap after the initial pass.
+pub fn ensure_tracked_ship_system(
+    mut commands: Commands,
+    ships: Query<(Entity, &ShipState), (With<Ship>, Without<TrackedShipSystem>)>,
+) {
+    for (entity, state) in &ships {
+        let current_system = system_from_ship_state(state);
+        commands
+            .entity(entity)
+            .insert(TrackedShipSystem(current_system));
+    }
+}
+
+/// Extract the system entity a ship is currently in, if any.
+fn system_from_ship_state(state: &ShipState) -> Option<Entity> {
+    match state {
+        ShipState::InSystem { system } => Some(*system),
+        ShipState::Surveying { target_system, .. } => Some(*target_system),
+        ShipState::Settling { system, .. } => Some(*system),
+        ShipState::Refitting { system, .. } => Some(*system),
+        ShipState::Scouting { target_system, .. } => Some(*target_system),
+        ShipState::SubLight { .. } | ShipState::InFTL { .. } | ShipState::Loitering { .. } => None,
+    }
+}
+
+/// #392: Determine the visibility tier for a given system from the player's perspective.
+///
+/// `star_surveyed` indicates whether the live `StarSystem.surveyed` flag is set
+/// (ground truth). This is checked alongside the KnowledgeStore snapshot so
+/// that newly-surveyed systems (where the snapshot hasn't arrived yet) still
+/// get the correct tier.
+fn determine_tier_for_system(
+    system: Entity,
+    player_empire_entity: Entity,
+    ships: &Query<(Entity, &Ship, &ShipState)>,
+    knowledge: &KnowledgeStore,
+    star_surveyed: bool,
+) -> SystemVisibilityTier {
+    // Check if any player-owned ship is physically present in the system.
+    let has_own_ship = ships.iter().any(|(_, ship, state)| {
+        let is_player_ship =
+            matches!(ship.owner, crate::ship::Owner::Empire(e) if e == player_empire_entity);
+        if !is_player_ship {
+            return false;
+        }
+        system_from_ship_state(state) == Some(system)
+    });
+
+    if has_own_ship {
+        // V1: Local == Connected when ship is present.
+        return SystemVisibilityTier::Local;
+    }
+
+    // Check if system was surveyed — either from live StarSystem component
+    // or from KnowledgeStore snapshot (whichever is true).
+    let is_surveyed = star_surveyed
+        || knowledge
+            .get(system)
+            .map(|k| k.data.surveyed)
+            .unwrap_or(false);
+
+    if is_surveyed {
+        SystemVisibilityTier::Surveyed
+    } else {
+        SystemVisibilityTier::Catalogued
+    }
+}
+
+/// #392: Initialize visibility tiers for all star systems at game start.
+/// Runs after `initialize_capital_knowledge` so the KnowledgeStore already
+/// has the capital entry.
+fn initialize_visibility_tiers(
+    mut empire_q: Query<
+        (Entity, &KnowledgeStore, &mut SystemVisibilityMap),
+        With<crate::player::PlayerEmpire>,
+    >,
+    ships: Query<(Entity, &Ship, &ShipState)>,
+    systems: Query<(Entity, &StarSystem)>,
+) {
+    let Ok((empire_entity, knowledge, mut vis_map)) = empire_q.single_mut() else {
+        warn!("Visibility init: no player empire found");
+        return;
+    };
+
+    for (system_entity, star) in &systems {
+        let tier = determine_tier_for_system(
+            system_entity,
+            empire_entity,
+            &ships,
+            knowledge,
+            star.surveyed,
+        );
+        vis_map.set(system_entity, tier);
+    }
+
+    info!(
+        "System visibility tiers initialized for {} systems",
+        systems.iter().count()
+    );
+}
+
+/// #392: Event-driven visibility tier update. Runs when any ship's `ShipState`
+/// changes, recalculating tiers only for the affected systems (old + new).
+pub fn update_visibility_tiers(
+    mut empire_q: Query<
+        (Entity, &KnowledgeStore, &mut SystemVisibilityMap),
+        With<crate::player::PlayerEmpire>,
+    >,
+    mut changed_ships: Query<
+        (Entity, &Ship, &ShipState, &mut TrackedShipSystem),
+        Or<(Changed<ShipState>, Added<TrackedShipSystem>)>,
+    >,
+    all_ships: Query<(Entity, &Ship, &ShipState)>,
+    star_systems: Query<&StarSystem>,
+) {
+    let Ok((empire_entity, knowledge, mut vis_map)) = empire_q.single_mut() else {
+        return;
+    };
+
+    // Collect systems that need recalculation.
+    let mut affected_systems: Vec<Entity> = Vec::new();
+
+    for (_entity, _ship, state, mut tracked) in &mut changed_ships {
+        let new_system = system_from_ship_state(state);
+        let old_system = tracked.0;
+
+        // Update tracker.
+        tracked.0 = new_system;
+
+        if let Some(old) = old_system {
+            if !affected_systems.contains(&old) {
+                affected_systems.push(old);
+            }
+        }
+        if let Some(new) = new_system {
+            if !affected_systems.contains(&new) {
+                affected_systems.push(new);
+            }
+        }
+    }
+
+    // Recalculate tier for each affected system.
+    for system in affected_systems {
+        let star_surveyed = star_systems
+            .get(system)
+            .map(|s| s.surveyed)
+            .unwrap_or(false);
+        let tier =
+            determine_tier_for_system(system, empire_entity, &all_ships, knowledge, star_surveyed);
+        vis_map.set(system, tier);
     }
 }
 
@@ -586,7 +822,10 @@ pub fn propagate_knowledge(
         Option<&crate::colony::SystemBuildings>,
     )>,
     positions: Query<&Position>,
-    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        (&mut KnowledgeStore, Option<&SystemVisibilityMap>),
+        With<crate::player::PlayerEmpire>,
+    >,
     colonies: ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
     planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
@@ -604,7 +843,7 @@ pub fn propagate_knowledge(
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     crate::prof_span!("propagate_knowledge");
-    let Ok(mut store) = empire_q.single_mut() else {
+    let Ok((mut store, vis_map_opt)) = empire_q.single_mut() else {
         return;
     };
     let stationed = match player_q.iter().next() {
@@ -640,6 +879,23 @@ pub fn propagate_knowledge(
     }
 
     for (entity, star, sys_pos, stockpile, sys_buildings) in &systems {
+        // #392: Only propagate system knowledge to systems with tier >= Surveyed.
+        // Catalogued-only systems (no survey data) get no knowledge snapshots.
+        // V1: Surveyed/Connected/Local all receive light-speed updates;
+        // the Surveyed-vs-Connected distinction (frozen vs. live) is deferred
+        // to V2 when relay/courier connection detection is implemented.
+        //
+        // When the visibility map has no entry for a system (e.g. before
+        // `update_visibility_tiers` has processed it), fall back to the
+        // star's live `surveyed` flag so new/migrated entities still receive
+        // knowledge on the first tick.
+        if let Some(vis_map) = vis_map_opt {
+            let tier = vis_map.get(entity);
+            if !tier.can_see_planets() && !star.surveyed {
+                continue;
+            }
+        }
+
         let distance = physics::distance_ly(player_pos, sys_pos);
         let delay = physics::light_delay_hexadies(distance);
         let observed_at = clock.elapsed - delay;
@@ -688,6 +944,9 @@ pub fn propagate_knowledge(
     let player_pos_arr = player_pos.as_array();
     for (ship_entity, ship, state, hp) in &ships {
         // Compute the ship's current world position as an [f64; 3].
+        // NOTE (#392 V2): Ship snapshot visibility gating by tier (>= Connected)
+        // is deferred. V1 continues to propagate all ship snapshots via
+        // light-speed delay. The display layer handles tier-based filtering.
         let ship_pos_arr: Option<[f64; 3]> = match state {
             ShipState::InSystem { system } => positions.get(*system).ok().map(|p| p.as_array()),
             ShipState::Surveying { target_system, .. } => {
@@ -993,5 +1252,125 @@ mod tests {
         let entity = world.spawn_empty().id();
         let store = KnowledgeStore::default();
         assert_eq!(store.info_age(entity, 100), None);
+    }
+
+    // --- #392: SystemVisibilityTier tests ---
+
+    #[test]
+    fn visibility_tier_ordering() {
+        assert!(SystemVisibilityTier::Catalogued < SystemVisibilityTier::Surveyed);
+        assert!(SystemVisibilityTier::Surveyed < SystemVisibilityTier::Connected);
+        assert!(SystemVisibilityTier::Connected < SystemVisibilityTier::Local);
+    }
+
+    #[test]
+    fn visibility_tier_capabilities() {
+        let c = SystemVisibilityTier::Catalogued;
+        assert!(!c.can_see_planets());
+        assert!(!c.can_see_ships());
+        assert!(!c.can_see_resources());
+        assert!(!c.is_real_time());
+
+        let s = SystemVisibilityTier::Surveyed;
+        assert!(s.can_see_planets());
+        assert!(!s.can_see_ships());
+        assert!(s.can_see_resources());
+        assert!(!s.is_real_time());
+
+        let conn = SystemVisibilityTier::Connected;
+        assert!(conn.can_see_planets());
+        assert!(conn.can_see_ships());
+        assert!(conn.can_see_resources());
+        assert!(!conn.is_real_time());
+
+        let local = SystemVisibilityTier::Local;
+        assert!(local.can_see_planets());
+        assert!(local.can_see_ships());
+        assert!(local.can_see_resources());
+        assert!(local.is_real_time());
+    }
+
+    #[test]
+    fn visibility_map_defaults_to_catalogued() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        let map = SystemVisibilityMap::default();
+        assert_eq!(map.get(entity), SystemVisibilityTier::Catalogued);
+    }
+
+    #[test]
+    fn visibility_map_set_and_get() {
+        let mut world = World::new();
+        let sys_a = world.spawn_empty().id();
+        let sys_b = world.spawn_empty().id();
+        let mut map = SystemVisibilityMap::default();
+        map.set(sys_a, SystemVisibilityTier::Surveyed);
+        map.set(sys_b, SystemVisibilityTier::Local);
+        assert_eq!(map.get(sys_a), SystemVisibilityTier::Surveyed);
+        assert_eq!(map.get(sys_b), SystemVisibilityTier::Local);
+    }
+
+    #[test]
+    fn determine_tier_surveyed_when_no_ship_but_surveyed() {
+        let mut world = World::new();
+        let system = world.spawn_empty().id();
+        let mut store = KnowledgeStore::default();
+        let mut snapshot = SystemSnapshot::default();
+        snapshot.surveyed = true;
+        store.update(SystemKnowledge {
+            system,
+            observed_at: 0,
+            received_at: 0,
+            data: snapshot,
+            source: ObservationSource::Direct,
+        });
+
+        assert!(store.get(system).unwrap().data.surveyed);
+        // With no ship present and surveyed=true in KnowledgeStore,
+        // determine_tier_for_system would return Surveyed.
+    }
+
+    #[test]
+    fn system_from_ship_state_extracts_system() {
+        let mut world = World::new();
+        let sys = world.spawn_empty().id();
+
+        assert_eq!(
+            system_from_ship_state(&ShipState::InSystem { system: sys }),
+            Some(sys)
+        );
+        assert_eq!(
+            system_from_ship_state(&ShipState::Surveying {
+                target_system: sys,
+                started_at: 0,
+                completes_at: 10,
+            }),
+            Some(sys)
+        );
+        assert_eq!(
+            system_from_ship_state(&ShipState::Settling {
+                system: sys,
+                planet: None,
+                started_at: 0,
+                completes_at: 10,
+            }),
+            Some(sys)
+        );
+        assert_eq!(
+            system_from_ship_state(&ShipState::SubLight {
+                origin: [0.0, 0.0, 0.0],
+                destination: [1.0, 1.0, 0.0],
+                target_system: Some(sys),
+                departed_at: 0,
+                arrival_at: 100,
+            }),
+            None
+        );
+        assert_eq!(
+            system_from_ship_state(&ShipState::Loitering {
+                position: [5.0, 5.0, 0.0],
+            }),
+            None
+        );
     }
 }

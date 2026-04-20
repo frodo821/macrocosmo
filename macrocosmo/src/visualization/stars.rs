@@ -7,7 +7,7 @@ use crate::colony::{BuildingRegistry, Buildings, Colony, SystemBuildings};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
 use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, ObscuredByGas, Planet, StarSystem};
-use crate::knowledge::KnowledgeStore;
+use crate::knowledge::{KnowledgeStore, SystemVisibilityMap, SystemVisibilityTier};
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Ship, ShipState};
 use crate::technology::GlobalParams;
@@ -146,7 +146,7 @@ pub fn update_star_colors(
         Option<&StarGlow>,
         Option<&BaseStarSize>,
     )>,
-    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
+    empire_q: Query<(&KnowledgeStore, Option<&SystemVisibilityMap>), With<PlayerEmpire>>,
     colonies: Query<&Colony>,
     planets: Query<&Planet>,
     clock: Res<GameClock>,
@@ -154,7 +154,7 @@ pub fn update_star_colors(
     player_q: Query<&StationedAt, With<Player>>,
 ) {
     crate::prof_span!("update_star_colors");
-    let Ok(knowledge) = empire_q.single() else {
+    let Ok((knowledge, vis_map_opt)) = empire_q.single() else {
         return;
     };
     let player_system = player_q.iter().next().map(|s| s.system);
@@ -206,10 +206,24 @@ pub fn update_star_colors(
                 is_capital: star.is_capital,
             };
             let base_color = star_color(&effective_star, is_colonized, obscured.is_some());
-            let alpha_multiplier = match knowledge.info_age(vis.system_entity, clock.elapsed) {
-                None => 1.0, // No knowledge: keep base color as-is (already dim for unknown)
-                Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
-                Some(age) => (1.0 - (age as f32 - 60.0) / 600.0).clamp(0.3, 1.0),
+            // #392: Tier-based alpha multiplier. Catalogued systems are extra
+            // dim; surveyed systems use knowledge age fading.
+            let tier =
+                vis_map_opt
+                    .map(|vm| vm.get(vis.system_entity))
+                    .unwrap_or(if effective_surveyed {
+                        SystemVisibilityTier::Surveyed
+                    } else {
+                        SystemVisibilityTier::Catalogued
+                    });
+            let alpha_multiplier = if tier == SystemVisibilityTier::Catalogued {
+                0.3 // Catalogued: faint star point only
+            } else {
+                match knowledge.info_age(vis.system_entity, clock.elapsed) {
+                    None => 1.0,
+                    Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
+                    Some(age) => (1.0 - (age as f32 - 60.0) / 600.0).clamp(0.3, 1.0),
+                }
             };
             let [r, g, b, a] = base_color.to_srgba().to_f32_array();
 
@@ -243,7 +257,15 @@ pub fn draw_galaxy_overlay(
     selected: Res<SelectedSystem>,
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
-    empire_params_q: Query<(Entity, &GlobalParams, &KnowledgeStore), With<PlayerEmpire>>,
+    empire_params_q: Query<
+        (
+            Entity,
+            &GlobalParams,
+            &KnowledgeStore,
+            Option<&SystemVisibilityMap>,
+        ),
+        With<PlayerEmpire>,
+    >,
     system_buildings: Query<(Entity, &SystemBuildings)>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
@@ -275,7 +297,8 @@ pub fn draw_galaxy_overlay(
         );
     }
 
-    let Ok((viewer_empire, global_params, knowledge)) = empire_params_q.single() else {
+    let Ok((viewer_empire, global_params, knowledge, vis_map_opt)) = empire_params_q.single()
+    else {
         return;
     };
     let Ok(stationed) = player_q.single() else {
@@ -299,8 +322,20 @@ pub fn draw_galaxy_overlay(
         .filter_map(|(c, _)| c.system(&planets))
         .collect();
 
-    // Draw rings around colonized stars
+    // Draw rings around colonized stars (only for >= Surveyed tier)
     for (entity, star, star_pos) in &stars {
+        // #392: Skip overlay elements for Catalogued-only systems
+        let tier = vis_map_opt.map(|vm| vm.get(entity)).unwrap_or_else(|| {
+            if star.surveyed {
+                SystemVisibilityTier::Surveyed
+            } else {
+                SystemVisibilityTier::Catalogued
+            }
+        });
+        if !tier.can_see_planets() {
+            continue;
+        }
+
         let is_colonized = if entity == player_system {
             local_colonized.contains(&entity)
         } else {
@@ -342,7 +377,19 @@ pub fn draw_galaxy_overlay(
     );
 
     // #176: Survey lines use KnowledgeStore for remote systems
+    // #392: Only draw for systems with tier >= Surveyed
     for (entity, star, star_pos) in &stars {
+        let tier = vis_map_opt.map(|vm| vm.get(entity)).unwrap_or_else(|| {
+            if star.surveyed {
+                SystemVisibilityTier::Surveyed
+            } else {
+                SystemVisibilityTier::Catalogued
+            }
+        });
+        if !tier.can_see_planets() {
+            continue;
+        }
+
         let is_surveyed = if entity == player_system {
             star.surveyed
         } else {

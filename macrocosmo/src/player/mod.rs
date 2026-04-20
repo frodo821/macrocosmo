@@ -8,7 +8,7 @@ use crate::components::Position;
 use crate::condition::ScopedFlags;
 use crate::empire::CommsParams;
 use crate::galaxy::StarSystem;
-use crate::knowledge::KnowledgeStore;
+use crate::knowledge::{KnowledgeStore, SystemVisibilityMap};
 use crate::physics;
 use crate::ship::{Ship, ShipState};
 use crate::technology::{
@@ -61,6 +61,7 @@ pub fn spawn_player_empire(mut commands: Commands) {
             GameFlags::default(),
             GlobalParams::default(),
             KnowledgeStore::default(),
+            SystemVisibilityMap::default(),
             CommandLog::default(),
             ScopedFlags::default(),
             PendingColonyTechModifiers::default(),

@@ -232,6 +232,7 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
                 technology::GlobalParams::default(),
                 technology::PendingColonyTechModifiers::default(),
                 KnowledgeStore::default(),
+                macrocosmo::knowledge::SystemVisibilityMap::default(),
                 CommandLog::default(),
                 ScopedFlags::default(),
                 macrocosmo::empire::CommsParams::default(),
@@ -591,6 +592,19 @@ pub fn test_app() -> App {
     // orders and on the pristine population count. Before the dispatcher
     // refactor this was a lucky side-effect of the ship schedule's
     // topological order.
+    // #392: Visibility tier tracking — must run before propagate_knowledge
+    // so the tier map is populated when knowledge propagation gates on it.
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::knowledge::ensure_tracked_ship_system,
+            bevy::ecs::schedule::ApplyDeferred,
+            macrocosmo::knowledge::update_visibility_tiers,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(propagate_knowledge),
+    );
     app.add_systems(
         Update,
         propagate_knowledge
@@ -896,6 +910,17 @@ pub fn full_test_app() -> App {
     app.add_systems(Update, apply_pending_colonization_orders);
 
     // --- Knowledge system (from KnowledgePlugin) ---
+    // #392: Visibility tier tracking — must run before propagate_knowledge.
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::knowledge::ensure_tracked_ship_system,
+            bevy::ecs::schedule::ApplyDeferred,
+            macrocosmo::knowledge::update_visibility_tiers,
+        )
+            .chain()
+            .before(propagate_knowledge),
+    );
     app.add_systems(Update, propagate_knowledge);
     app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
 
