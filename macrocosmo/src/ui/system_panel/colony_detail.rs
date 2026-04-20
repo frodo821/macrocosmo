@@ -4,7 +4,7 @@ use bevy_egui::egui;
 use crate::amount::{Amt, SignedAmt};
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, ConstructionParams,
-    FoodConsumption, MaintenanceCost, Production, ResourceStockpile,
+    FoodConsumption, MaintenanceCost, Production, ResourceStockpile, SlotAssignment,
 };
 use crate::communication::{
     BuildingKind, BuildingScope, ColonyCommand, PendingColonyDispatch, PendingColonyDispatches,
@@ -57,7 +57,7 @@ pub(super) fn draw_colony_detail(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     construction_params: &ConstructionParams,
     planets: &Query<&crate::galaxy::Planet>,
     _hull_registry: &crate::ship_design::HullRegistry,
@@ -302,7 +302,7 @@ fn draw_overview_tab(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     construction_params: &ConstructionParams,
     planets: &Query<&crate::galaxy::Planet>,
     design_registry: &crate::ship_design::ShipDesignRegistry,

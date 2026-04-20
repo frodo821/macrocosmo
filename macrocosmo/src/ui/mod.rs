@@ -20,6 +20,7 @@ use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams,
     FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile,
+    SlotAssignment,
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
@@ -902,14 +903,17 @@ fn draw_main_panels_system(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    mut ships_query: Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    )>,
+    mut ships_query: Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     mut command_queues: Query<&mut CommandQueue>,
     empire_q: Query<
         (
@@ -2145,7 +2149,7 @@ fn apply_design_refit(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     design_registry: &ShipDesignRegistry,
     hull_registry: &HullRegistry,

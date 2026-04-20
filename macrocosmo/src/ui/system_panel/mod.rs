@@ -136,7 +136,7 @@ pub fn draw_system_panel(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     positions: &Query<&Position>,
     knowledge: &KnowledgeStore,
     clock: &GameClock,

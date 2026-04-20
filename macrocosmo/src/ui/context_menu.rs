@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::Colony;
+use crate::colony::{Colony, SlotAssignment};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::physics;
@@ -44,7 +44,7 @@ pub fn draw_context_menu(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     command_queues: &mut Query<&mut CommandQueue>,
     positions: &Query<&Position>,
     clock: &GameClock,

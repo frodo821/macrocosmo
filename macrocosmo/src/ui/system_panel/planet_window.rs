@@ -3,7 +3,7 @@ use bevy_egui::egui;
 
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption,
-    MaintenanceCost, Production, ResourceCapacity, ResourceStockpile,
+    MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SlotAssignment,
 };
 use crate::communication::PendingColonyDispatches;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
@@ -55,7 +55,7 @@ pub(super) fn draw_planet_window(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,

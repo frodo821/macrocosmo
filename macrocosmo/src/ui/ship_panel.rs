@@ -4,7 +4,8 @@ use bevy_egui::egui;
 use crate::amount::Amt;
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption,
-    MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
+    MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SlotAssignment,
+    SystemBuildingQueue,
 };
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
@@ -388,7 +389,7 @@ pub(super) fn ships_docked_at(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
@@ -418,7 +419,7 @@ pub(super) fn stations_docked_at(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
@@ -507,7 +508,7 @@ fn draw_multi_select_panel(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     fleets: &Query<&crate::ship::Fleet>,
     fleet_members: &Query<&crate::ship::FleetMembers>,
     design_registry: &ShipDesignRegistry,
@@ -598,7 +599,7 @@ pub fn draw_ship_panel(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
+    ), Without<SlotAssignment>>,
     clock: &GameClock,
     colonies: &mut Query<(
         Entity,
