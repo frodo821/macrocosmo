@@ -415,11 +415,15 @@ pub fn collect_route_snapshots(
                 }
                 _ => false,
             };
+            let surveyed = knowledge
+                .and_then(|k| k.get(entity))
+                .map(|k| k.data.surveyed)
+                .unwrap_or(star.surveyed);
             RouteSystemSnapshot {
                 index: i,
                 entity,
                 pos: pos.as_array(),
-                surveyed: star.surveyed,
+                surveyed,
                 hostile_known,
             }
         })

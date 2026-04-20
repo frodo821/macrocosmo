@@ -2197,13 +2197,8 @@ mod tests {
         let empire = app
             .world_mut()
             .spawn((
-                crate::player::Empire,
-                crate::player::Faction {
-                    name: "TestEmpire".into(),
-                    faction_type_id: "default".into(),
-                    can_diplomacy: true,
-                    is_player: false,
-                },
+                crate::player::Empire { name: "TestEmpire".into() },
+                crate::player::Faction::new("default", "TestEmpire"),
             ))
             .id();
 
@@ -2213,7 +2208,6 @@ mod tests {
                 surveyed: true,
                 is_capital: false,
                 star_type: "yellow_dwarf".into(),
-                ..Default::default()
             },
             crate::galaxy::Sovereignty {
                 owner: Some(crate::ship::Owner::Empire(empire)),
@@ -2238,13 +2232,8 @@ mod tests {
         let empire = app
             .world_mut()
             .spawn((
-                crate::player::Empire,
-                crate::player::Faction {
-                    name: "Doomed".into(),
-                    faction_type_id: "default".into(),
-                    can_diplomacy: true,
-                    is_player: false,
-                },
+                crate::player::Empire { name: "Doomed".into() },
+                crate::player::Faction::new("default", "Doomed"),
             ))
             .id();
 
@@ -2263,13 +2252,8 @@ mod tests {
         let empire = app
             .world_mut()
             .spawn((
-                crate::player::Empire,
-                crate::player::Faction {
-                    name: "GracePeriod".into(),
-                    faction_type_id: "default".into(),
-                    can_diplomacy: true,
-                    is_player: false,
-                },
+                crate::player::Empire { name: "GracePeriod".into() },
+                crate::player::Faction::new("default", "GracePeriod"),
             ))
             .id();
 
