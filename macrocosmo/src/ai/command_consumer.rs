@@ -28,7 +28,7 @@ pub fn drain_ai_commands(
     ships: Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     sovereignty: Query<(Entity, &Sovereignty), With<StarSystem>>,
     hostiles: Query<&AtSystem, With<Hostile>>,
-    npcs: Query<(Entity, &Faction), (With<Empire>, Without<PlayerEmpire>)>,
+    empires: Query<(Entity, &Faction), With<Empire>>,
     mut move_writer: MessageWriter<MoveRequested>,
     mut next_cmd_id: ResMut<NextCommandId>,
     clock: Res<GameClock>,
@@ -46,7 +46,7 @@ pub fn drain_ai_commands(
                 &cmd.issuer,
                 &cmd.params,
                 &ships,
-                &npcs,
+                &empires,
                 &mut move_writer,
                 &mut next_cmd_id,
                 clock.elapsed,
@@ -57,7 +57,7 @@ pub fn drain_ai_commands(
                 &ships,
                 &hostiles,
                 &sovereignty,
-                &npcs,
+                &empires,
                 &mut move_writer,
                 &mut next_cmd_id,
                 clock.elapsed,
@@ -89,9 +89,9 @@ pub fn drain_ai_commands(
 /// Find the empire entity for a given AI FactionId.
 fn find_empire_entity(
     issuer: &macrocosmo_ai::FactionId,
-    npcs: &Query<(Entity, &Faction), (With<Empire>, Without<PlayerEmpire>)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
 ) -> Option<Entity> {
-    for (entity, _faction) in npcs {
+    for (entity, _faction) in empires {
         if to_ai_faction(entity) == *issuer {
             return Some(entity);
         }
@@ -105,7 +105,7 @@ fn handle_attack_target(
     issuer: &macrocosmo_ai::FactionId,
     params: &macrocosmo_ai::CommandParams,
     ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
-    npcs: &Query<(Entity, &Faction), (With<Empire>, Without<PlayerEmpire>)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
     move_writer: &mut MessageWriter<MoveRequested>,
     next_cmd_id: &mut NextCommandId,
     now: i64,
@@ -118,7 +118,7 @@ fn handle_attack_target(
         }
     };
 
-    let empire_entity = match find_empire_entity(issuer, npcs) {
+    let empire_entity = match find_empire_entity(issuer, empires) {
         Some(e) => e,
         None => {
             warn!("attack_target: no empire found for faction {:?}", issuer);
@@ -167,12 +167,12 @@ fn handle_retreat(
     ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     hostiles: &Query<&AtSystem, With<Hostile>>,
     sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
-    npcs: &Query<(Entity, &Faction), (With<Empire>, Without<PlayerEmpire>)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
     move_writer: &mut MessageWriter<MoveRequested>,
     next_cmd_id: &mut NextCommandId,
     now: i64,
 ) {
-    let empire_entity = match find_empire_entity(issuer, npcs) {
+    let empire_entity = match find_empire_entity(issuer, empires) {
         Some(e) => e,
         None => return,
     };
