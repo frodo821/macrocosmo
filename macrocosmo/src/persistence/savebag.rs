@@ -4215,6 +4215,7 @@ pub enum SavedGameEventKind {
     WarDeclared,
     WarEnded,
     FactionAnnihilated,
+    ShipDestroyed,
 }
 impl From<&GameEventKind> for SavedGameEventKind {
     fn from(v: &GameEventKind) -> Self {
@@ -4238,6 +4239,7 @@ impl From<&GameEventKind> for SavedGameEventKind {
             GameEventKind::WarDeclared => Self::WarDeclared,
             GameEventKind::WarEnded => Self::WarEnded,
             GameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
+            GameEventKind::ShipDestroyed => Self::ShipDestroyed,
         }
     }
 }
@@ -4263,6 +4265,7 @@ impl From<SavedGameEventKind> for GameEventKind {
             SavedGameEventKind::WarDeclared => Self::WarDeclared,
             SavedGameEventKind::WarEnded => Self::WarEnded,
             SavedGameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
+            SavedGameEventKind::ShipDestroyed => Self::ShipDestroyed,
         }
     }
 }

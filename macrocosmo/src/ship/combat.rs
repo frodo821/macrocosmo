@@ -494,13 +494,13 @@ pub fn resolve_combat(
                     }
                 }
                 commands.entity(*entity).despawn();
-                // #249: Per-ship CombatDefeat, dual-written.
+                // #409: Per-ship destruction uses ShipDestroyed (not CombatDefeat).
                 let event_id = fact_sys.allocate_event_id();
                 let desc = format!("{} destroyed in combat at {}", name, system_name);
                 events.write(GameEvent {
                     id: event_id,
                     timestamp: clock.elapsed,
-                    kind: GameEventKind::CombatDefeat,
+                    kind: GameEventKind::ShipDestroyed,
                     description: desc.clone(),
                     related_system: Some(*system_entity),
                 });
@@ -807,7 +807,7 @@ pub fn resolve_combat(
                     events.write(GameEvent {
                         id: event_id,
                         timestamp: clock.elapsed,
-                        kind: GameEventKind::CombatDefeat,
+                        kind: GameEventKind::ShipDestroyed,
                         description: desc.clone(),
                         related_system: Some(*system_entity),
                     });
@@ -856,7 +856,7 @@ pub fn resolve_combat(
                     events.write(GameEvent {
                         id: event_id,
                         timestamp: clock.elapsed,
-                        kind: GameEventKind::CombatDefeat,
+                        kind: GameEventKind::ShipDestroyed,
                         description: desc.clone(),
                         related_system: Some(*system_entity),
                     });

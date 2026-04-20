@@ -67,9 +67,64 @@ pub enum GameEventKind {
     WarEnded,
     /// #324: A faction has been annihilated (no Core ships, no colonies).
     FactionAnnihilated,
+    /// #409: A ship has been destroyed in combat.
+    ShipDestroyed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventCategory {
+    Combat,
+    Exploration,
+    Colony,
+    Ship,
+    Diplomatic,
+    Resource,
+}
+
+impl EventCategory {
+    pub fn color(&self) -> [u8; 3] {
+        match self {
+            EventCategory::Combat => [220, 80, 80],
+            EventCategory::Exploration => [80, 200, 120],
+            EventCategory::Colony => [230, 200, 90],
+            EventCategory::Ship => [100, 180, 230],
+            EventCategory::Diplomatic => [180, 130, 230],
+            EventCategory::Resource => [230, 160, 60],
+        }
+    }
 }
 
 impl GameEventKind {
+    pub fn category(&self) -> EventCategory {
+        match self {
+            GameEventKind::CombatVictory
+            | GameEventKind::CombatDefeat
+            | GameEventKind::HostileDetected
+            | GameEventKind::CoreConquered
+            | GameEventKind::ShipDestroyed => EventCategory::Combat,
+
+            GameEventKind::SurveyComplete
+            | GameEventKind::SurveyDiscovery
+            | GameEventKind::AnomalyDiscovered => EventCategory::Exploration,
+
+            GameEventKind::ColonyEstablished
+            | GameEventKind::ColonyFailed
+            | GameEventKind::BuildingDemolished => EventCategory::Colony,
+
+            GameEventKind::ShipArrived
+            | GameEventKind::ShipBuilt
+            | GameEventKind::ShipScrapped
+            | GameEventKind::PlayerRespawn => EventCategory::Ship,
+
+            GameEventKind::CasusBelli
+            | GameEventKind::WarDeclared
+            | GameEventKind::WarEnded
+            | GameEventKind::FactionAnnihilated => EventCategory::Diplomatic,
+
+            GameEventKind::ResourceAlert => EventCategory::Resource,
+        }
+    }
+
     /// Whether this event kind should auto-pause the game.
     pub fn should_pause(&self) -> bool {
         match self {
@@ -86,7 +141,8 @@ impl GameEventKind {
             | GameEventKind::CasusBelli
             | GameEventKind::WarDeclared
             | GameEventKind::WarEnded
-            | GameEventKind::FactionAnnihilated => true,
+            | GameEventKind::FactionAnnihilated
+            | GameEventKind::ShipDestroyed => true,
 
             GameEventKind::ShipArrived
             | GameEventKind::ShipBuilt
@@ -217,6 +273,13 @@ mod tests {
         assert!(GameEventKind::CasusBelli.should_pause());
         assert!(GameEventKind::WarDeclared.should_pause());
         assert!(GameEventKind::WarEnded.should_pause());
+        assert!(GameEventKind::ShipDestroyed.should_pause());
+    }
+
+    #[test]
+    fn ship_destroyed_is_distinct_from_combat_defeat() {
+        assert_ne!(GameEventKind::ShipDestroyed, GameEventKind::CombatDefeat);
+        assert!(GameEventKind::ShipDestroyed.should_pause());
     }
 
     #[test]
@@ -226,5 +289,52 @@ mod tests {
         assert!(!GameEventKind::BuildingDemolished.should_pause());
         assert!(!GameEventKind::ShipScrapped.should_pause());
         assert!(!GameEventKind::ResourceAlert.should_pause());
+    }
+
+    #[test]
+    fn all_event_kinds_have_category() {
+        let all_kinds = [
+            GameEventKind::ShipArrived,
+            GameEventKind::SurveyComplete,
+            GameEventKind::SurveyDiscovery,
+            GameEventKind::ColonyEstablished,
+            GameEventKind::ShipBuilt,
+            GameEventKind::BuildingDemolished,
+            GameEventKind::CombatVictory,
+            GameEventKind::CombatDefeat,
+            GameEventKind::HostileDetected,
+            GameEventKind::ShipScrapped,
+            GameEventKind::ResourceAlert,
+            GameEventKind::PlayerRespawn,
+            GameEventKind::ColonyFailed,
+            GameEventKind::AnomalyDiscovered,
+            GameEventKind::CoreConquered,
+            GameEventKind::CasusBelli,
+            GameEventKind::WarDeclared,
+            GameEventKind::WarEnded,
+            GameEventKind::FactionAnnihilated,
+            GameEventKind::ShipDestroyed,
+        ];
+        for kind in &all_kinds {
+            let _cat = kind.category();
+        }
+    }
+
+    #[test]
+    fn category_colors_are_distinct() {
+        use std::collections::HashSet;
+        let categories = [
+            EventCategory::Combat,
+            EventCategory::Exploration,
+            EventCategory::Colony,
+            EventCategory::Ship,
+            EventCategory::Diplomatic,
+            EventCategory::Resource,
+        ];
+        let mut colors = HashSet::new();
+        for cat in &categories {
+            assert!(colors.insert(cat.color()), "Duplicate color for {:?}", cat);
+        }
+        assert_eq!(colors.len(), categories.len());
     }
 }

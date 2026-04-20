@@ -25,7 +25,7 @@ use crate::colony::{
 use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::condition::ScopedFlags;
-use crate::events::{GameEvent, GameEventKind};
+use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::FactionRelations;
 use crate::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
@@ -1791,17 +1791,13 @@ fn draw_diplomacy_overlay_system(
 
 fn draw_bottom_bar_system(
     mut contexts: EguiContexts,
-    clock: Res<GameClock>,
-    empire_q: Query<&CommandLog, With<PlayerEmpire>>,
+    event_log: Res<EventLog>,
 ) {
     crate::prof_span!("draw_bottom_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok(command_log) = empire_q.single() else {
-        return;
-    };
-    bottom_bar::draw_bottom_bar(ctx, command_log, &clock);
+    bottom_bar::draw_bottom_bar(ctx, &event_log);
 }
 
 // ---------------------------------------------------------------------------
