@@ -10,7 +10,10 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, StarSystem};
-use crate::knowledge::{CombatVictor, FactSysParam, KnowledgeFact, PlayerVantage};
+use crate::knowledge::{
+    CombatVictor, DestroyedShipRecord, DestroyedShipRegistry, FactSysParam, KnowledgeFact,
+    PlayerVantage,
+};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
 use crate::time_system::GameClock;
@@ -213,6 +216,7 @@ pub fn resolve_combat(
     mut player_q: Query<(Entity, &mut StationedAt, Option<&AboardShip>), With<Player>>,
     mut fact_sys: FactSysParam,
     mut bus: AiBusWriter,
+    mut destroyed_registry: ResMut<DestroyedShipRegistry>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -429,7 +433,7 @@ pub fn resolve_combat(
         if hostile_str > 0.0 && !docked_ships.is_empty() {
             let total_damage = hostile_str * combat_turns as f64;
             let damage_per_ship = total_damage / docked_ships.len() as f64;
-            let mut destroyed_ships: Vec<(Entity, String)> = Vec::new();
+            let mut destroyed_ships: Vec<(Entity, String, String)> = Vec::new();
 
             for &ship_entity in &docked_ships {
                 if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, conquered, _docked)) =
@@ -461,12 +465,23 @@ pub fn resolve_combat(
                             }
                         }
                     } else if hp.hull <= 0.0 {
-                        destroyed_ships.push((ship_entity, ship.name.clone()));
+                        destroyed_ships.push((ship_entity, ship.name.clone(), ship.design_id.clone()));
                     }
                 }
             }
 
-            for (entity, name) in &destroyed_ships {
+            for (entity, name, design_id) in &destroyed_ships {
+                // #409: Record destruction for light-speed delayed snapshot update.
+                if let Some(pos) = system_pos_arr {
+                    destroyed_registry.records.push(DestroyedShipRecord {
+                        entity: *entity,
+                        destruction_pos: pos,
+                        destruction_tick: clock.elapsed,
+                        name: name.clone(),
+                        design_id: design_id.clone(),
+                        last_known_system: Some(*system_entity),
+                    });
+                }
                 // #59: Check if player is aboard this ship — respawn at capital
                 if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
                     if let Some(aboard_ship) = aboard {
@@ -710,7 +725,7 @@ pub fn resolve_combat(
                 // --- Write results back to ECS ---
 
                 // Apply HP changes from profiles_a (faction A ships).
-                let mut destroyed_a: Vec<(Entity, String)> = Vec::new();
+                let mut destroyed_a: Vec<(Entity, String, String)> = Vec::new();
                 for profile in &profiles_a {
                     let entity = ships_a[profile.index];
                     if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, _conquered, _docked)) =
@@ -720,13 +735,13 @@ pub fn resolve_combat(
                         hp.armor = profile.armor;
                         hp.shield = profile.shield;
                         if hp.hull <= 0.0 && core.is_none() {
-                            destroyed_a.push((entity, ship.name.clone()));
+                            destroyed_a.push((entity, ship.name.clone(), ship.design_id.clone()));
                         }
                     }
                 }
 
                 // Apply HP changes from profiles_b (faction B ships).
-                let mut destroyed_b: Vec<(Entity, String)> = Vec::new();
+                let mut destroyed_b: Vec<(Entity, String, String)> = Vec::new();
                 for profile in &profiles_b {
                     let entity = ships_b[profile.index];
                     if let Ok((_e, ship, mut hp, _mods, _state, _roe, core, _conquered, _docked)) =
@@ -736,7 +751,7 @@ pub fn resolve_combat(
                         hp.armor = profile.armor;
                         hp.shield = profile.shield;
                         if hp.hull <= 0.0 && core.is_none() {
-                            destroyed_b.push((entity, ship.name.clone()));
+                            destroyed_b.push((entity, ship.name.clone(), ship.design_id.clone()));
                         }
                     }
                 }
@@ -772,7 +787,18 @@ pub fn resolve_combat(
                     .map(|f| f.name.clone())
                     .unwrap_or_else(|_| "Unknown".to_string());
 
-                for (entity, name) in &destroyed_a {
+                for (entity, name, design_id) in &destroyed_a {
+                    // #409: Record destruction for light-speed delayed snapshot update.
+                    if let Some(pos) = system_pos_arr {
+                        destroyed_registry.records.push(DestroyedShipRecord {
+                            entity: *entity,
+                            destruction_pos: pos,
+                            destruction_tick: clock.elapsed,
+                            name: name.clone(),
+                            design_id: design_id.clone(),
+                            last_known_system: Some(*system_entity),
+                        });
+                    }
                     // Check if player is aboard.
                     if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
                         if let Some(aboard_ship) = aboard {
@@ -822,7 +848,18 @@ pub fn resolve_combat(
                     }
                 }
 
-                for (entity, name) in &destroyed_b {
+                for (entity, name, design_id) in &destroyed_b {
+                    // #409: Record destruction for light-speed delayed snapshot update.
+                    if let Some(pos) = system_pos_arr {
+                        destroyed_registry.records.push(DestroyedShipRecord {
+                            entity: *entity,
+                            destruction_pos: pos,
+                            destruction_tick: clock.elapsed,
+                            name: name.clone(),
+                            design_id: design_id.clone(),
+                            last_known_system: Some(*system_entity),
+                        });
+                    }
                     if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
                         if let Some(aboard_ship) = aboard {
                             if aboard_ship.ship == *entity {

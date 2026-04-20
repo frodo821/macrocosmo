@@ -4431,6 +4431,33 @@ impl SavedAlertCooldowns {
 }
 
 // ---------------------------------------------------------------------------
+// #409: Destroyed ship records (pending light-speed notification)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedDestroyedShipRecord {
+    pub entity_bits: u64,
+    pub destruction_pos: [f64; 3],
+    pub destruction_tick: i64,
+    pub name: String,
+    pub design_id: String,
+    pub last_known_system_bits: Option<u64>,
+}
+
+impl SavedDestroyedShipRecord {
+    pub fn into_live(self, map: &EntityMap) -> crate::knowledge::DestroyedShipRecord {
+        crate::knowledge::DestroyedShipRecord {
+            entity: remap_entity(self.entity_bits, map),
+            destruction_pos: self.destruction_pos,
+            destruction_tick: self.destruction_tick,
+            name: self.name,
+            design_id: self.design_id,
+            last_known_system: self.last_known_system_bits.map(|b| remap_entity(b, map)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SavedComponentBag (Phase A + Phase B)
 // ---------------------------------------------------------------------------
 

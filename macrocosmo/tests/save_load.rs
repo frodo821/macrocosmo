@@ -352,6 +352,7 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
             pending_fact_queue: None,
             event_log: None,
             notification_queue: None,
+            destroyed_ship_registry: None,
         },
         entities: Vec::new(),
     };

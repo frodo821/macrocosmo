@@ -5,6 +5,8 @@ use bevy::prelude::*;
 use super::{GalaxyView, SelectedShip};
 use crate::components::Position;
 use crate::galaxy::StarSystem;
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
+use crate::player::PlayerEmpire;
 use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState, ShipStats};
 use crate::time_system::GameClock;
 
@@ -73,6 +75,7 @@ pub fn draw_ships(
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
     selected_ship: Res<SelectedShip>,
+    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
 ) {
     // Group docked ships by system so we can offset them.
     // #395: Immobile ships (stations / infrastructure) are excluded entirely —
@@ -501,6 +504,47 @@ pub fn draw_ships(
                         prev_pos = target_screen;
                     }
                 }
+            }
+        }
+    }
+
+    // #409: Ghost rendering for destroyed ships whose destruction hasn't
+    // reached the player yet via light-speed. These ships are despawned
+    // (no live entity) but their KnowledgeStore snapshot still shows them
+    // alive at their last known position.
+    if let Ok(store) = empire_q.single() {
+        let live_entities: std::collections::HashSet<Entity> =
+            ships.iter().map(|(e, ..)| e).collect();
+
+        for (_, snapshot) in store.iter_ships() {
+            if live_entities.contains(&snapshot.entity) {
+                continue;
+            }
+            if snapshot.last_known_state == ShipSnapshotState::Destroyed {
+                continue;
+            }
+
+            let pos = match &snapshot.last_known_state {
+                ShipSnapshotState::Loitering { position } => {
+                    Some(Vec2::new(
+                        position[0] as f32 * view.scale,
+                        position[1] as f32 * view.scale,
+                    ))
+                }
+                _ => snapshot.last_known_system.and_then(|sys| {
+                    stars.get(sys).ok().map(|p| {
+                        Vec2::new(p.x as f32 * view.scale, p.y as f32 * view.scale)
+                    })
+                }),
+            };
+
+            if let Some(pos) = pos {
+                let (r, g, b) = ship_color_rgb(&snapshot.design_id);
+                // Semi-transparent ghost marker
+                gizmos.circle_2d(pos, 3.0, Color::srgba(r, g, b, 0.3));
+                // Pulsing outer ring to indicate "last known"
+                let pulse = (clock.as_years_f64() as f32 * 2.0).sin() * 0.15 + 0.2;
+                gizmos.circle_2d(pos, 5.0, Color::srgba(r, g, b, pulse));
             }
         }
     }

@@ -394,6 +394,7 @@ pub fn test_app() -> App {
     // #233: Notification pipeline resources consumed by detect_hostiles_system
     // and friends. Instantiated without the full NotificationsPlugin because
     // the plugin registers egui-coupled systems that tests don't want.
+    app.init_resource::<macrocosmo::knowledge::DestroyedShipRegistry>();
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
     app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
     // #249: EventId allocator + dedupe set must exist whenever a system that
@@ -750,6 +751,7 @@ pub fn full_test_app() -> App {
     app.add_plugins(macrocosmo::ship::command_events::CommandEventsPlugin);
 
     // --- #233 Notification pipeline resources ---
+    app.init_resource::<macrocosmo::knowledge::DestroyedShipRegistry>();
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
     app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
     // #249: EventId allocator + dedupe set must exist whenever a system that

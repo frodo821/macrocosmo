@@ -495,6 +495,14 @@ fn apply_deferred_resources(world: &mut World, save: &GameSave, map: &EntityMap)
     if let Some(fq) = &save.resources.pending_fact_queue {
         world.insert_resource(fq.clone().into_live(map));
     }
+    // #409: Destroyed ship registry.
+    if let Some(records) = &save.resources.destroyed_ship_registry {
+        let mut registry = crate::knowledge::DestroyedShipRegistry::default();
+        for r in records {
+            registry.records.push(r.clone().into_live(map));
+        }
+        world.insert_resource(registry);
+    }
 }
 
 /// Rebuild [`FactionRelations`] with the freshly-allocated entities. The

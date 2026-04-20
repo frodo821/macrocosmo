@@ -69,11 +69,31 @@ pub enum ObservationSource {
 /// "VERY OLD" cutoff used by the system panel.
 pub const STALE_THRESHOLD_HEXADIES: i64 = 600;
 
+/// #409: Record of a ship destroyed in combat, pending light-speed notification.
+#[derive(Clone, Debug)]
+pub struct DestroyedShipRecord {
+    pub entity: Entity,
+    pub destruction_pos: [f64; 3],
+    pub destruction_tick: i64,
+    pub name: String,
+    pub design_id: String,
+    pub last_known_system: Option<Entity>,
+}
+
+/// #409: Registry of ships destroyed but whose destruction hasn't reached the
+/// player yet (light-speed delay). Once light arrives, the corresponding
+/// `ShipSnapshot` is marked `Destroyed` and the record is removed.
+#[derive(Resource, Default, Clone, Debug)]
+pub struct DestroyedShipRegistry {
+    pub records: Vec<DestroyedShipRecord>,
+}
+
 pub struct KnowledgePlugin;
 
 impl Plugin for KnowledgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RelayNetwork>()
+            .init_resource::<DestroyedShipRegistry>()
             .add_systems(
                 Startup,
                 initialize_capital_knowledge
@@ -82,6 +102,11 @@ impl Plugin for KnowledgePlugin {
                     .after(crate::player::spawn_player_empire),
             )
             .add_systems(Update, propagate_knowledge)
+            .add_systems(
+                Update,
+                update_destroyed_ship_knowledge
+                    .after(propagate_knowledge),
+            )
             .add_systems(
                 Update,
                 (rebuild_relay_network, snapshot_production_knowledge)
@@ -757,6 +782,50 @@ pub fn propagate_knowledge(
             source: ObservationSource::Direct,
         });
     }
+}
+
+/// #409: Check destroyed ship records and mark their snapshots as `Destroyed`
+/// once light-speed delay from the destruction site to the player has elapsed.
+pub fn update_destroyed_ship_knowledge(
+    clock: Res<GameClock>,
+    player_q: Query<&StationedAt, With<Player>>,
+    positions: Query<&Position>,
+    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut registry: ResMut<DestroyedShipRegistry>,
+) {
+    let Ok(mut store) = empire_q.single_mut() else {
+        return;
+    };
+    let Some(stationed) = player_q.iter().next() else {
+        return;
+    };
+    let Ok(player_pos) = positions.get(stationed.system) else {
+        return;
+    };
+    let player_pos_arr = player_pos.as_array();
+
+    registry.records.retain(|record| {
+        let distance = physics::distance_ly_arr(player_pos_arr, record.destruction_pos);
+        let delay = physics::light_delay_hexadies(distance);
+        let arrives_at = record.destruction_tick + delay;
+
+        if clock.elapsed >= arrives_at {
+            store.update_ship(ShipSnapshot {
+                entity: record.entity,
+                name: record.name.clone(),
+                design_id: record.design_id.clone(),
+                last_known_state: ShipSnapshotState::Destroyed,
+                last_known_system: record.last_known_system,
+                observed_at: record.destruction_tick,
+                hp: 0.0,
+                hp_max: 0.0,
+                source: ObservationSource::Direct,
+            });
+            false // remove from registry
+        } else {
+            true // keep — light hasn't arrived yet
+        }
+    });
 }
 
 /// #176: Separate system to snapshot production rates into KnowledgeStore.

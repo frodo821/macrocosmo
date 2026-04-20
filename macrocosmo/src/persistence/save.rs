@@ -46,7 +46,7 @@ use crate::galaxy::{
     Anomalies, AtSystem, Biome, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints,
     HostileStats, ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
-use crate::knowledge::{KnowledgeStore, PendingFactQueue};
+use crate::knowledge::{DestroyedShipRegistry, KnowledgeStore, PendingFactQueue};
 use crate::notifications::NotificationQueue;
 use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, StationedAt};
 use crate::scripting::game_rng::GameRng;
@@ -134,6 +134,9 @@ pub struct SavedResources {
     pub event_log: Option<SavedEventLog>,
     /// Phase B — on-screen notification banners (Resource).
     pub notification_queue: Option<SavedNotificationQueue>,
+    /// #409: Ships destroyed but whose destruction info hasn't reached the player yet.
+    #[serde(default)]
+    pub destroyed_ship_registry: Option<Vec<SavedDestroyedShipRecord>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +268,7 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
     let fact_queue = world.get_resource::<PendingFactQueue>();
     let event_log = world.get_resource::<EventLog>();
     let notifications = world.get_resource::<NotificationQueue>();
+    let destroyed_registry = world.get_resource::<DestroyedShipRegistry>();
 
     Ok(SavedResources {
         game_clock_elapsed: clock.map(|c| c.elapsed).unwrap_or(0),
@@ -299,6 +303,23 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
                 }
             }
             SavedFactionRelations { relations: out }
+        }),
+        destroyed_ship_registry: destroyed_registry.map(|reg| {
+            reg.records
+                .iter()
+                .filter_map(|r| {
+                    let entity_id = entity_map.save_id(r.entity)?;
+                    let system_id = r.last_known_system.and_then(|s| entity_map.save_id(s));
+                    Some(SavedDestroyedShipRecord {
+                        entity_bits: entity_id,
+                        destruction_pos: r.destruction_pos,
+                        destruction_tick: r.destruction_tick,
+                        name: r.name.clone(),
+                        design_id: r.design_id.clone(),
+                        last_known_system_bits: system_id,
+                    })
+                })
+                .collect()
         }),
     })
 }
