@@ -79,8 +79,13 @@ pub struct AiPlugin;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
+        // Ensure MoveRequested message is registered (drain_ai_commands writes it).
+        // Idempotent if CommandEventsPlugin already registered it.
+        app.add_message::<crate::ship::command_events::MoveRequested>();
+        app.init_resource::<crate::ship::command_events::NextCommandId>();
         app.init_resource::<AiBusResource>()
             .init_resource::<super::npc_decision::AiPlayerMode>()
+            .init_resource::<super::npc_decision::LastAiDecisionTick>()
             .add_systems(Startup, schema::declare_all)
             .add_systems(
                 Update,

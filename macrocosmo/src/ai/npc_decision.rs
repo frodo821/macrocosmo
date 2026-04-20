@@ -185,14 +185,25 @@ impl NpcPolicy for SimpleNpcPolicy {
 /// walk every empire marked [`AiControlled`] and invoke [`SimpleNpcPolicy`].
 /// NPC empires are auto-marked by [`mark_npc_empires_ai_controlled`].
 /// The player empire is also marked when [`AiPlayerMode`]`(true)` is set.
+/// Tracks the last game tick at which AI decisions were made, so the
+/// policy runs once per hexadies advance, not every render frame.
+#[derive(Resource, Default)]
+pub struct LastAiDecisionTick(pub i64);
+
 pub fn npc_decision_tick(
     clock: Res<GameClock>,
+    mut last_tick: ResMut<LastAiDecisionTick>,
     mut bus: ResMut<AiBusResource>,
     npcs: Query<(Entity, &Faction), With<AiControlled>>,
     hostiles: Query<&AtSystem, With<Hostile>>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
     let now = clock.elapsed;
+    if now <= last_tick.0 {
+        return;
+    }
+    last_tick.0 = now;
+
     let mut policy = SimpleNpcPolicy;
 
     let hostile_systems: Vec<Entity> = hostiles.iter().map(|at| at.0).collect();
