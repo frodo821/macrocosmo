@@ -144,11 +144,19 @@ fn build_seed_world() -> World {
         },
     ));
     let _earth_colony = world
-        .spawn(Colony {
-            planet: earth,
-            population: 1_000.0,
-            growth_rate: 0.01,
-        })
+        .spawn((
+            Colony {
+                planet: earth,
+                growth_rate: 0.01,
+            },
+            macrocosmo::species::ColonyPopulation {
+                species: vec![macrocosmo::species::ColonySpecies {
+                    species_id: "human".to_string(),
+                    population: 1_000,
+                }],
+                growth_accumulator: 0.0,
+            },
+        ))
         .id();
 
     // Touch alpha_centauri so it's not optimised away.
@@ -639,7 +647,6 @@ fn test_save_load_preserves_knowledge_store() {
             position: [0.0, 0.0, 0.0],
             surveyed: true,
             colonized: true,
-            population: 1_000.0,
             ..Default::default()
         },
         source: ObservationSource::Direct,
@@ -1480,8 +1487,8 @@ fn save_load_round_trips_colony_faction_owner() {
     // Find the reloaded colony and its FactionOwner. Remapping means the
     // loaded entity ids differ from src ids, but the relationship is
     // preserved through the EntityMap.
-    let (dst_colony, dst_owner) = dst
-        .query::<(&Colony, &FactionOwner)>()
+    let (dst_colony_entity, _dst_colony, dst_owner) = dst
+        .query::<(Entity, &Colony, &FactionOwner)>()
         .iter(&dst)
         .next()
         .expect("loaded world must have a colony carrying FactionOwner");
@@ -1491,7 +1498,10 @@ fn save_load_round_trips_colony_faction_owner() {
         dst.get::<PlayerEmpire>(dst_owner.0).is_some(),
         "FactionOwner must point at the reloaded PlayerEmpire entity"
     );
-    assert_eq!(dst_colony.population, 1_000.0);
+    // Population is now tracked in ColonyPopulation, not Colony
+    let dst_pop = dst.get::<macrocosmo::species::ColonyPopulation>(dst_colony_entity)
+        .expect("loaded colony must have ColonyPopulation");
+    assert_eq!(dst_pop.total(), 1_000);
 }
 
 #[test]

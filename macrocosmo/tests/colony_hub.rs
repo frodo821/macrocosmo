@@ -242,7 +242,6 @@ fn test_save_migration_inserts_hub() {
         .spawn((
             macrocosmo::colony::Colony {
                 planet,
-                population: 50.0,
                 growth_rate: 0.01,
             },
             Buildings {
@@ -312,7 +311,6 @@ fn test_save_migration_capital_gets_capital_building() {
         .spawn((
             macrocosmo::colony::Colony {
                 planet,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Buildings {

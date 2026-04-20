@@ -111,7 +111,6 @@ fn scenario_world() -> World {
     world.spawn((
         Colony {
             planet: planet_earth,
-            population: 100.0,
             growth_rate: 0.02,
         },
         Buildings {
@@ -125,6 +124,13 @@ fn scenario_world() -> World {
             energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
             research_per_hexadies: ModifiedValue::new(Amt::units(2)),
             food_per_hexadies: ModifiedValue::new(Amt::units(8)),
+        },
+        macrocosmo::species::ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 100,
+            }],
+            growth_accumulator: 0.0,
         },
     ));
 

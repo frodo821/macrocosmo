@@ -145,7 +145,6 @@ fn spawn_simple_colony(app: &mut App, sys: Entity, pop: u32) -> Entity {
         .spawn((
             Colony {
                 planet,
-                population: pop as f64,
                 growth_rate: 0.0,
             },
             Production {
@@ -167,6 +166,7 @@ fn spawn_simple_colony(app: &mut App, sys: Entity, pop: u32) -> Entity {
                     species_id: "human".to_string(),
                     population: pop,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs::default(),
             ColonyJobRates::default(),
@@ -560,7 +560,6 @@ fn test_existing_balance_preserved() {
     app.world_mut().spawn((
         Colony {
             planet,
-            population: 0.0,
             growth_rate: 0.0,
         },
         Production {
@@ -585,6 +584,7 @@ fn test_existing_balance_preserved() {
                 species_id: "human".into(),
                 population: 0,
             }],
+            growth_accumulator: 0.0,
         },
         ColonyJobs::default(),
         ColonyJobRates::default(),
@@ -694,7 +694,6 @@ fn spawn_colony_with_building(
         .spawn((
             Colony {
                 planet,
-                population: pop as f64,
                 growth_rate: 0.0,
             },
             Production {
@@ -714,6 +713,7 @@ fn spawn_colony_with_building(
                     species_id: "human".into(),
                     population: pop,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs {
                 slots: vec![JobSlot::fixed("miner", 0), JobSlot::fixed("farmer", 0)],

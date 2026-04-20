@@ -139,6 +139,7 @@ pub(super) fn draw_colony_detail(
             system_entity,
             planet_attrs,
             colonies,
+            colony_pop_view,
             system_stockpiles,
             ships_query,
             construction_params,
@@ -281,6 +282,12 @@ fn draw_overview_tab(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
+    colony_pop_view: &Query<(
+        Entity,
+        Option<&ColonyPopulation>,
+        Option<&ColonyJobs>,
+        Option<&crate::colony::ColonyJobRates>,
+    )>,
     system_stockpiles: &mut Query<
         (
             &mut ResourceStockpile,
@@ -303,7 +310,7 @@ fn draw_overview_tab(
     dispatches: &mut PendingColonyDispatches,
 ) {
     for (
-        _colony_entity,
+        colony_entity,
         colony,
         production,
         _build_queue,
@@ -316,6 +323,13 @@ fn draw_overview_tab(
         if colony.planet != planet_entity {
             continue;
         }
+
+        let colony_pop = colony_pop_view
+            .get(colony_entity)
+            .ok()
+            .and_then(|(_, p, _, _)| p)
+            .map(|p| p.total() as f64)
+            .unwrap_or(0.0);
 
         // #69: Show population with carrying capacity
         let carrying_cap = {
@@ -334,7 +348,7 @@ fn draw_overview_tab(
         };
         ui.label(format!(
             "Population: {:.0} / {:.0}",
-            colony.population, carrying_cap
+            colony_pop, carrying_cap
         ));
 
         if let Some(prod) = production {

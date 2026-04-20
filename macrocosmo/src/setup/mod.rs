@@ -413,7 +413,6 @@ fn spawn_colony_on_planet(
         .spawn((
             Colony {
                 planet: planet_entity,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             // #250: zero-base production; all output comes from building/job
@@ -437,6 +436,7 @@ fn spawn_colony_on_planet(
                     species_id: "human".to_string(),
                     population: 100,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs::default(),
             crate::colony::ColonyJobRates::default(),
@@ -893,7 +893,6 @@ mod tests {
         world.spawn((
             Colony {
                 planet,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {

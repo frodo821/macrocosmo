@@ -102,7 +102,6 @@ pub fn spawn_capital_colony(
         .spawn((
             Colony {
                 planet: planet_entity,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             // #250: Production starts at zero; all output comes from buildings
@@ -127,6 +126,7 @@ pub fn spawn_capital_colony(
                     species_id: "human".to_string(),
                     population: 100,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs::default(),
             ColonyJobRates::default(),
@@ -168,6 +168,7 @@ pub fn tick_colonization_queue(
     last_tick: Res<LastProductionTick>,
     mut systems_with_queue: Query<(Entity, &mut ColonizationQueue, &mut ResourceStockpile)>,
     mut colonies: Query<&mut Colony>,
+    mut colony_pops: Query<&mut ColonyPopulation>,
     // #297 (S-2): Read FactionOwner off the source colony so the new
     // colony inherits administrative ownership. Separate read-only query
     // to avoid a mutable-vs-immutable conflict with `colonies`.
@@ -226,9 +227,13 @@ pub fn tick_colonization_queue(
             let order = cq.orders.remove(idx);
 
             // Transfer population from source colony
-            if let Ok(mut source) = colonies.get_mut(order.source_colony) {
-                let transfer = order.initial_population.min(source.population - 1.0);
-                source.population -= transfer;
+            if let Ok(mut source_pop) = colony_pops.get_mut(order.source_colony) {
+                let transfer = (order.initial_population.round() as u32)
+                    .min(source_pop.total().saturating_sub(1));
+                // Remove `transfer` pops from the first species that has enough
+                if let Some(sp) = source_pop.species.first_mut() {
+                    sp.population = sp.population.saturating_sub(transfer);
+                }
             }
 
             // Get planet attributes.
@@ -275,7 +280,6 @@ pub fn tick_colonization_queue(
                 .spawn((
                     Colony {
                         planet: order.target_planet,
-                        population: order.initial_population,
                         growth_rate: 0.005,
                     },
                     // #250: see comment in spawn_capital_colony above.
@@ -296,6 +300,7 @@ pub fn tick_colonization_queue(
                             species_id: "human".to_string(),
                             population: pop_count,
                         }],
+                        growth_accumulator: 0.0,
                     },
                     ColonyJobs::default(),
                     ColonyJobRates::default(),

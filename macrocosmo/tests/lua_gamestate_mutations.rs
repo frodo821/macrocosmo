@@ -78,7 +78,6 @@ fn make_mutation_world() -> World {
     world.spawn((
         Colony {
             planet,
-            population: 50.0,
             growth_rate: 0.01,
         },
         Production {

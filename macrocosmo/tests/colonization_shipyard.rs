@@ -58,7 +58,6 @@ fn setup_colonization_order(app: &mut App) -> (Entity, Entity) {
         .spawn((
             macrocosmo::colony::Colony {
                 planet: source_planet,
-                population: 50.0,
                 growth_rate: 0.01,
             },
             FactionOwner(empire),

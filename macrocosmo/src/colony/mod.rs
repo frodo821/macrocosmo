@@ -131,7 +131,6 @@ impl Plugin for ColonyPlugin {
 #[derive(Component)]
 pub struct Colony {
     pub planet: Entity,
-    pub population: f64,
     pub growth_rate: f64,
 }
 

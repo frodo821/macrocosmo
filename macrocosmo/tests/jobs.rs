@@ -39,7 +39,6 @@ fn test_job_auto_assignment() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 10.0,
                 growth_rate: 0.01,
             },
             Production {
@@ -61,6 +60,7 @@ fn test_job_auto_assignment() {
                     species_id: "human".to_string(),
                     population: 10,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs {
                 slots: vec![
@@ -152,14 +152,13 @@ fn test_job_auto_assignment_excess_population() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 15.0,
                 growth_rate: 0.01,
             },
             Production {
                 minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
                 energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
                 research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::units(10)), // enough food to prevent starvation
             },
             BuildQueue::default(),
             Buildings {
@@ -174,6 +173,7 @@ fn test_job_auto_assignment_excess_population() {
                     species_id: "human".to_string(),
                     population: 15,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs {
                 slots: vec![

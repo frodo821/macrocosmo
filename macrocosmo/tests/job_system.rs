@@ -182,7 +182,6 @@ fn spawn_colony_with(
         .spawn((
             Colony {
                 planet,
-                population: population as f64,
                 growth_rate: 0.0,
             },
             Production {
@@ -204,6 +203,7 @@ fn spawn_colony_with(
                     species_id: "human".to_string(),
                     population,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs {
                 slots: job_slots
@@ -657,7 +657,6 @@ fn spawn_capital_like_colony(
         .spawn((
             Colony {
                 planet,
-                population: population as f64,
                 growth_rate: 0.01,
             },
             Production {
@@ -682,6 +681,7 @@ fn spawn_capital_like_colony(
                     species_id: "human".to_string(),
                     population,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs::default(),
             ColonyJobRates::default(),

@@ -112,7 +112,6 @@ fn build_seed_world() -> World {
         .id();
     world.spawn(Colony {
         planet: earth,
-        population: 1_000.0,
         growth_rate: 0.01,
     });
     world

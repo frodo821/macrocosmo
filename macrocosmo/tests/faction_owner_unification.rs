@@ -201,7 +201,6 @@ fn tick_colonization_queue_inherits_source_colony_owner() {
         .spawn((
             Colony {
                 planet: source_planet,
-                population: 500.0,
                 growth_rate: 0.005,
             },
             FactionOwner(empire_a),

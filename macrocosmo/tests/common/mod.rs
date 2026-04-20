@@ -1181,7 +1181,6 @@ pub fn spawn_test_colony(
         .spawn((
             Colony {
                 planet,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {
@@ -1198,6 +1197,13 @@ pub fn spawn_test_colony(
             ProductionFocus::default(),
             MaintenanceCost::default(),
             FoodConsumption::default(),
+            macrocosmo::species::ColonyPopulation {
+                species: vec![macrocosmo::species::ColonySpecies {
+                    species_id: "human".to_string(),
+                    population: 100,
+                }],
+                growth_accumulator: 0.0,
+            },
         ))
         .id()
 }

@@ -491,7 +491,6 @@ mod tests {
             .spawn((
                 Colony {
                     planet,
-                    population: 10.0,
                     growth_rate: 0.0,
                 },
                 BuildQueue::default(),
@@ -607,7 +606,6 @@ mod tests {
             .spawn((
                 Colony {
                     planet: planet_b,
-                    population: 5.0,
                     growth_rate: 0.0,
                 },
                 BuildQueue::default(),

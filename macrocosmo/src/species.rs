@@ -48,6 +48,10 @@ pub struct ColonySpecies {
 #[derive(Component, Default)]
 pub struct ColonyPopulation {
     pub species: Vec<ColonySpecies>,
+    /// Sub-integer growth accumulated over ticks. When |accumulator| >= 1.0,
+    /// one individual is added/removed from a species chosen by growth-rate
+    /// weighted random selection.
+    pub growth_accumulator: f64,
 }
 
 impl ColonyPopulation {
@@ -260,6 +264,7 @@ mod tests {
                     population: 20,
                 },
             ],
+            growth_accumulator: 0.0,
         };
         assert_eq!(pop.total(), 100);
     }
@@ -283,6 +288,7 @@ mod tests {
                     population: 25,
                 },
             ],
+            growth_accumulator: 0.0,
         };
         assert!((pop.species_ratio("human") - 0.75).abs() < 1e-10);
         assert!((pop.species_ratio("alien") - 0.25).abs() < 1e-10);
@@ -324,6 +330,7 @@ mod tests {
                 species_id: "human".to_string(),
                 population: 12,
             }],
+            growth_accumulator: 0.0,
         };
         let jobs = ColonyJobs {
             slots: vec![

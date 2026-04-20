@@ -830,7 +830,11 @@ pub(crate) mod views {
         };
         t.set("id", entity.to_bits())?;
         t.set("entity", entity.to_bits())?;
-        t.set("population", colony.population)?;
+        let pop = eref
+            .get::<crate::species::ColonyPopulation>()
+            .map(|p| p.total() as f64)
+            .unwrap_or(0.0);
+        t.set("population", pop)?;
         t.set("growth_rate", colony.growth_rate)?;
         t.set("planet_id", colony.planet.to_bits())?;
 

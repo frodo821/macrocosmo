@@ -384,6 +384,7 @@ pub type ColonySnapshotQuery<'w, 's> = Query<
         Option<&'static crate::colony::BuildingQueue>,
         Option<&'static crate::colony::MaintenanceCost>,
         Option<&'static crate::colony::FoodConsumption>,
+        Option<&'static crate::species::ColonyPopulation>,
     ),
 >;
 
@@ -402,7 +403,7 @@ pub fn build_system_snapshot(
     crate::prof_span!("build_system_snapshot");
     let is_colonized = colonies
         .iter()
-        .any(|(_, c, _, _, _, _, _)| c.system(planets) == Some(entity));
+        .any(|(_, c, _, _, _, _, _, _)| c.system(planets) == Some(entity));
 
     // Resource snapshot from StarSystem's stockpile (#106)
     let (minerals, energy, food, authority) = stockpile
@@ -483,7 +484,7 @@ fn build_colony_snapshots(
 ) -> Vec<ColonySnapshot> {
     use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
     let mut out = Vec::new();
-    for (colony_entity, colony, production, buildings, bq, maintenance, food) in colonies.iter() {
+    for (colony_entity, colony, production, buildings, bq, maintenance, food, col_pop) in colonies.iter() {
         if colony.system(planets) != Some(system) {
             continue;
         }
@@ -547,7 +548,7 @@ fn build_colony_snapshots(
             colony_entity,
             planet_entity: colony.planet,
             planet_name,
-            population: colony.population,
+            population: col_pop.map(|p| p.total() as f64).unwrap_or(0.0),
             carrying_cap_hint,
             production_minerals: production
                 .map(|p| p.minerals_per_hexadies.final_value())

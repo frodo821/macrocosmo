@@ -139,7 +139,6 @@ fn all_systems_no_query_conflict() {
     app.world_mut().spawn((
         Colony {
             planet: capital_planet,
-            population: 100.0,
             growth_rate: 0.01,
         },
         Production {

@@ -415,6 +415,7 @@ impl SavedPortFacility {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedColony {
     pub planet_bits: u64,
+    #[serde(default)]
     pub population: f64,
     pub growth_rate: f64,
 }
@@ -423,14 +424,13 @@ impl SavedColony {
     pub fn from_live(v: &Colony) -> Self {
         Self {
             planet_bits: v.planet.to_bits(),
-            population: v.population,
+            population: 0.0,
             growth_rate: v.growth_rate,
         }
     }
     pub fn into_live(self, map: &EntityMap) -> Colony {
         Colony {
             planet: remap_entity(self.planet_bits, map),
-            population: self.population,
             growth_rate: self.growth_rate,
         }
     }
@@ -2187,6 +2187,8 @@ impl SavedColonySpecies {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedColonyPopulation {
     pub species: Vec<SavedColonySpecies>,
+    #[serde(default)]
+    pub growth_accumulator: f64,
 }
 impl SavedColonyPopulation {
     pub fn from_live(v: &ColonyPopulation) -> Self {
@@ -2196,6 +2198,7 @@ impl SavedColonyPopulation {
                 .iter()
                 .map(SavedColonySpecies::from_live)
                 .collect(),
+            growth_accumulator: v.growth_accumulator,
         }
     }
     pub fn into_live(self) -> ColonyPopulation {
@@ -2205,6 +2208,7 @@ impl SavedColonyPopulation {
                 .into_iter()
                 .map(SavedColonySpecies::into_live)
                 .collect(),
+            growth_accumulator: self.growth_accumulator,
         }
     }
 }

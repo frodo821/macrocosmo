@@ -1395,7 +1395,6 @@ fn draw_main_panels_system(
         .iter()
         .map(|(_, c, _, _, _, _, _, _)| Colony {
             planet: c.planet,
-            population: c.population,
             growth_rate: c.growth_rate,
         })
         .collect();

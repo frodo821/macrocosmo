@@ -247,7 +247,6 @@ pub fn process_settling(
                 .spawn((
                     Colony {
                         planet: planet_entity,
-                        population: 10.0,
                         growth_rate: 0.005,
                     },
                     // #250: zero-base production; all output comes from building/
@@ -270,6 +269,7 @@ pub fn process_settling(
                             species_id: "human".to_string(),
                             population: 10,
                         }],
+                        growth_accumulator: 0.0,
                     },
                     ColonyJobs::default(),
                     ColonyJobRates::default(),

@@ -354,7 +354,6 @@ fn test_food_depletion_alert() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {
@@ -411,7 +410,6 @@ fn test_energy_depletion_alert() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {
@@ -484,7 +482,6 @@ fn test_alert_cooldown() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {

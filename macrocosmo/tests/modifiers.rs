@@ -51,7 +51,6 @@ fn test_modifier_affects_production_output() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -166,7 +165,6 @@ fn test_maintenance_modifier_affects_energy() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -255,7 +253,6 @@ fn test_food_consumption_modifier() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 100.0,
             growth_rate: 0.0,
         },
         Production {
@@ -270,6 +267,13 @@ fn test_food_consumption_modifier() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         food_consumption,
+        macrocosmo::species::ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 100,
+            }],
+            growth_accumulator: 0.0,
+        },
     ));
 
     // Run one update so sync_food_consumption sets the base
@@ -342,7 +346,6 @@ fn test_authority_params_modifier() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {

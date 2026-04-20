@@ -124,6 +124,7 @@ pub fn emit_economic_metrics(
         &Production,
         Option<&FoodConsumption>,
         Option<&Buildings>,
+        Option<&crate::species::ColonyPopulation>,
     )>,
     stockpiles: Query<
         (
@@ -161,7 +162,7 @@ pub fn emit_economic_metrics(
     let mut max_slots: f64 = 0.0;
     let mut used_slots: f64 = 0.0;
 
-    for (colony, prod, food_consumption, buildings) in &colonies {
+    for (colony, prod, food_consumption, buildings, col_pop) in &colonies {
         colony_count += 1.0;
 
         // Production rates
@@ -171,7 +172,7 @@ pub fn emit_economic_metrics(
         total_research_rate += prod.research_per_hexadies.final_value().to_f64();
 
         // Population
-        total_population += colony.population;
+        total_population += col_pop.map(|p| p.total() as f64).unwrap_or(0.0);
         total_growth_rate += colony.growth_rate;
 
         // Carrying capacity from planet attributes
@@ -562,7 +563,6 @@ mod tests {
             .spawn((
                 Colony {
                     planet: planet_entity,
-                    population,
                     growth_rate: 0.01,
                 },
                 Production {
@@ -574,6 +574,13 @@ mod tests {
                 Buildings { slots },
                 FoodConsumption {
                     food_per_hexadies: ModifiedValue::new(Amt::from_f64(2.0)),
+                },
+                crate::species::ColonyPopulation {
+                    species: vec![crate::species::ColonySpecies {
+                        species_id: "human".to_string(),
+                        population: population as u32,
+                    }],
+                    growth_accumulator: 0.0,
                 },
             ))
             .id();

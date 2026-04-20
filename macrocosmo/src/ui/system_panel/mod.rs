@@ -404,6 +404,7 @@ pub fn draw_system_panel(
                                         planet_entities,
                                         planets,
                                         colonies,
+                                        colony_pop_view,
                                         colonization_queues,
                                         colonization_actions_out,
                                         deep_space_structures,
@@ -744,6 +745,12 @@ fn draw_right_panel(
         Option<&mut BuildingQueue>,
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
+    )>,
+    colony_pop_q: &Query<(
+        Entity,
+        Option<&crate::species::ColonyPopulation>,
+        Option<&crate::species::ColonyJobs>,
+        Option<&crate::colony::ColonyJobRates>,
     )>,
     colonization_queues: &Query<&ColonizationQueue>,
     colonization_actions_out: &mut Vec<ColonizationAction>,
@@ -1497,9 +1504,15 @@ fn draw_right_panel(
 
             let source_colony: Option<Entity> = colonies
                 .iter()
-                .find(|(_, c, _, _, _, _, _, _)| {
+                .find(|(e, c, _, _, _, _, _, _)| {
+                    let pop = colony_pop_q
+                        .get(*e)
+                        .ok()
+                        .and_then(|(_, p, _, _)| p)
+                        .map(|p| p.total() as f64)
+                        .unwrap_or(0.0);
                     c.system(planets) == Some(sel_entity)
-                        && c.population > crate::colony::COLONIZATION_MIN_POPULATION
+                        && pop > crate::colony::COLONIZATION_MIN_POPULATION
                 })
                 .map(|(e, _, _, _, _, _, _, _)| e);
 

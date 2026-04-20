@@ -325,7 +325,6 @@ fn test_build_queue_spawns_ship() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 100.0,
             growth_rate: 0.01,
         },
         Production {

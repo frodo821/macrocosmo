@@ -110,7 +110,6 @@ fn spawn_colony_on(world: &mut World, planet: Entity) -> Entity {
     world
         .spawn(Colony {
             planet,
-            population: 100.0,
             growth_rate: 0.01,
         })
         .id()

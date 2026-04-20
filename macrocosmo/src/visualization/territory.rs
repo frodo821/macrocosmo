@@ -222,7 +222,7 @@ fn spawn_territory_quad(
 }
 
 fn sync_territory_material(
-    colony_q: Query<&Colony>,
+    colony_q: Query<(&Colony, Option<&crate::species::ColonyPopulation>)>,
     planets: Query<&Planet>,
     positions: Query<&Position>,
     ships: Query<(&Ship, &ShipState, &ShipHitpoints)>,
@@ -266,7 +266,7 @@ fn sync_territory_material(
         // Reset colony data
         mat.colony_data = ColonyDataGpu::default();
 
-        for colony in colony_q.iter() {
+        for (colony, col_pop) in colony_q.iter() {
             if colony_count >= MAX_COLONIES {
                 break;
             }
@@ -291,7 +291,7 @@ fn sync_territory_material(
             let garrison_hp = garrison_by_system.get(&system).copied().unwrap_or(0.0);
             let freshness = authority_freshness(knowledge.info_age(system, clock.elapsed));
             let authority_ly2 =
-                colony_effective_authority(colony.population as f32, garrison_hp, freshness);
+                colony_effective_authority(col_pop.map(|p| p.total() as f32).unwrap_or(0.0), garrison_hp, freshness);
             // Convert ly² authority to world-unit² authority so that the
             // shader's `strength / dist_sq` comparison (which runs in
             // world coordinates) has matching units.

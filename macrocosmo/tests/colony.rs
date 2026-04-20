@@ -7,6 +7,7 @@ use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::ship::*;
+use macrocosmo::species::ColonyPopulation;
 
 use common::{advance_time, find_planet, spawn_test_colony, spawn_test_system, test_app};
 
@@ -82,7 +83,6 @@ fn test_production_accumulates_resources() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 50.0,
             growth_rate: 0.005,
         },
         Production {
@@ -152,7 +152,6 @@ fn test_building_queue_completes_construction() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -229,7 +228,6 @@ fn test_demolish_building_removes_from_slot() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -302,7 +300,6 @@ fn test_demolish_refunds_resources() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -382,7 +379,6 @@ fn test_demolish_takes_time() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -472,7 +468,6 @@ fn test_farm_produces_food() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -489,6 +484,13 @@ fn test_farm_produces_food() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 10,
+            }],
+            growth_accumulator: 0.0,
+        },
     ));
 
     // Advance 10 hexadies
@@ -555,7 +557,6 @@ fn test_authority_deficit_penalizes_food_production() {
     app.world_mut().spawn((
         Colony {
             planet: planet_cap_sys,
-            population: 1.0,
             growth_rate: 0.0,
         },
         Production {
@@ -601,7 +602,6 @@ fn test_authority_deficit_penalizes_food_production() {
         app.world_mut().spawn((
             Colony {
                 planet: planet_sys,
-                population: 1.0,
                 growth_rate: 0.0,
             },
             Production {
@@ -668,7 +668,6 @@ fn test_maintenance_deducts_energy_integration() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -741,7 +740,6 @@ fn test_population_capped_by_carrying_capacity() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 70.0,
             growth_rate: 0.05,
         },
         Production {
@@ -754,6 +752,13 @@ fn test_population_capped_by_carrying_capacity() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 10,
+            }],
+            growth_accumulator: 0.0,
+        },
     ));
 
     // Advance in 1-hexady steps for stable Euler integration
@@ -761,18 +766,19 @@ fn test_population_capped_by_carrying_capacity() {
         advance_time(&mut app, 1);
     }
 
-    let mut q = app.world_mut().query::<&Colony>();
-    let colony = q.iter(app.world()).next().unwrap();
+    let mut q = app.world_mut().query::<&ColonyPopulation>();
+    let pop = q.iter(app.world()).next().unwrap();
+    let population = pop.total() as f64;
 
     assert!(
-        colony.population <= 81.0,
+        population <= 81.0,
         "Population should not exceed carrying capacity ~80, got {}",
-        colony.population
+        population
     );
     assert!(
-        colony.population > 60.0,
+        population > 60.0,
         "Population should have grown toward K, got {}",
-        colony.population
+        population
     );
 }
 
@@ -803,7 +809,6 @@ fn test_habitability_affects_growth_rate() {
         (
             Colony {
                 planet: planet_entity,
-                population: 10.0,
                 growth_rate: 0.05,
             },
             Production {
@@ -816,6 +821,13 @@ fn test_habitability_affects_growth_rate() {
             ProductionFocus::default(),
             MaintenanceCost::default(),
             FoodConsumption::default(),
+            ColonyPopulation {
+                species: vec![macrocosmo::species::ColonySpecies {
+                    species_id: "human".to_string(),
+                    population: 10,
+                }],
+                growth_accumulator: 0.0,
+            },
         )
     };
 
@@ -833,18 +845,18 @@ fn test_habitability_affects_growth_rate() {
 
     let ideal_pop = ideal_app
         .world_mut()
-        .query::<&Colony>()
+        .query::<&ColonyPopulation>()
         .iter(ideal_app.world())
         .next()
         .unwrap()
-        .population;
+        .total() as f64;
     let marginal_pop = marginal_app
         .world_mut()
-        .query::<&Colony>()
+        .query::<&ColonyPopulation>()
         .iter(marginal_app.world())
         .next()
         .unwrap()
-        .population;
+        .total() as f64;
 
     assert!(
         ideal_pop > marginal_pop,
@@ -885,7 +897,6 @@ fn test_food_limits_carrying_capacity() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 40.0,
             growth_rate: 0.05,
         },
         Production {
@@ -898,19 +909,27 @@ fn test_food_limits_carrying_capacity() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 10,
+            }],
+            growth_accumulator: 0.0,
+        },
     ));
 
     for _ in 0..600 {
         advance_time(&mut app, 1);
     }
 
-    let mut q = app.world_mut().query::<&Colony>();
-    let colony = q.iter(app.world()).next().unwrap();
+    let mut q = app.world_mut().query::<&ColonyPopulation>();
+    let pop = q.iter(app.world()).next().unwrap();
+    let population = pop.total() as f64;
 
     assert!(
-        colony.population <= 51.0,
+        population <= 51.0,
         "Population should be capped by food K=50, got {}",
-        colony.population
+        population
     );
 }
 
@@ -949,7 +968,6 @@ fn test_resource_capacity_clamps_stockpile() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -1016,7 +1034,6 @@ fn test_production_focus_weights() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -1092,7 +1109,6 @@ fn test_build_queue_partial_resources() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -1178,7 +1194,6 @@ fn test_build_queue_requires_shipyard() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -1262,7 +1277,6 @@ fn test_starvation_reduces_population() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 100.0,
             growth_rate: 0.01,
         },
         Production {
@@ -1277,17 +1291,25 @@ fn test_starvation_reduces_population() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 100,
+            }],
+            growth_accumulator: 0.0,
+        },
     ));
 
     advance_time(&mut app, 1);
 
-    let mut q = app.world_mut().query::<&Colony>();
-    let colony = q.iter(app.world()).next().unwrap();
+    let mut q = app.world_mut().query::<&ColonyPopulation>();
+    let pop = q.iter(app.world()).next().unwrap();
+    let population = pop.total() as f64;
 
     assert!(
-        colony.population < 100.0,
+        population < 100.0,
         "Population should decrease during starvation, got {}",
-        colony.population
+        population
     );
 }
 
@@ -1321,7 +1343,6 @@ fn test_starvation_population_floor() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 1.5,
             growth_rate: 0.01,
         },
         Production {
@@ -1336,6 +1357,13 @@ fn test_starvation_population_floor() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 10,
+            }],
+            growth_accumulator: 0.0,
+        },
     ));
 
     // Advance many hexadies with starvation
@@ -1343,13 +1371,14 @@ fn test_starvation_population_floor() {
         advance_time(&mut app, 1);
     }
 
-    let mut q = app.world_mut().query::<&Colony>();
-    let colony = q.iter(app.world()).next().unwrap();
+    let mut q = app.world_mut().query::<&ColonyPopulation>();
+    let pop = q.iter(app.world()).next().unwrap();
+    let population = pop.total() as f64;
 
     assert!(
-        colony.population >= 1.0,
+        population >= 1.0,
         "Population should never drop below 1.0, got {}",
-        colony.population
+        population
     );
 }
 
@@ -1379,7 +1408,6 @@ fn test_capital_produces_authority() {
         .spawn((
             Colony {
                 planet: planet_cap_sys,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {
@@ -1437,7 +1465,6 @@ fn test_empire_scale_authority_cost() {
         .spawn((
             Colony {
                 planet: planet_cap_sys,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {
@@ -1473,7 +1500,6 @@ fn test_empire_scale_authority_cost() {
     app.world_mut().spawn((
         Colony {
             planet: planet_remote_sys,
-            population: 50.0,
             growth_rate: 0.005,
         },
         Production {
@@ -1553,7 +1579,6 @@ fn test_authority_deficit_reduces_non_capital_production() {
     app.world_mut().spawn((
         Colony {
             planet: planet_cap_sys,
-            population: 100.0,
             growth_rate: 0.01,
         },
         Production {
@@ -1590,7 +1615,6 @@ fn test_authority_deficit_reduces_non_capital_production() {
         .spawn((
             Colony {
                 planet: planet_remote_sys,
-                population: 50.0,
                 growth_rate: 0.005,
             },
             Production {
@@ -1625,7 +1649,6 @@ fn test_authority_deficit_reduces_non_capital_production() {
     app.world_mut().spawn((
         Colony {
             planet: planet_remote_sys2,
-            population: 50.0,
             growth_rate: 0.005,
         },
         Production {
@@ -1659,7 +1682,6 @@ fn test_authority_deficit_reduces_non_capital_production() {
     app.world_mut().spawn((
         Colony {
             planet: planet_remote_sys3,
-            population: 50.0,
             growth_rate: 0.005,
         },
         Production {
@@ -1848,7 +1870,6 @@ fn test_134_existing_shipyard_gating_still_works() {
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -1937,7 +1958,6 @@ fn test_construction_does_not_progress_when_stockpile_empty() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 10.0,
                 growth_rate: 0.0,
             },
             Production {
@@ -2032,7 +2052,6 @@ fn test_upgrade_does_not_progress_when_stockpile_empty() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 10.0,
                 growth_rate: 0.0,
             },
             Production {
@@ -2132,7 +2151,6 @@ fn test_upgrade_completes_when_resources_finally_arrive() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 10.0,
                 growth_rate: 0.0,
             },
             Production {
@@ -2251,7 +2269,6 @@ fn test_zero_cost_upgrade_progresses_on_time() {
         .spawn((
             Colony {
                 planet: planet_sys,
-                population: 10.0,
                 growth_rate: 0.0,
             },
             Production {
