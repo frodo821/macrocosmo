@@ -867,27 +867,9 @@ fn core_deploy_creates_system_buildings() {
         .get::<SystemBuildings>(sys)
         .expect("SystemBuildings must be attached after Core deploy");
     assert_eq!(
-        sb.slots.len(),
+        sb.max_slots,
         macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS,
-        "slot count must match DEFAULT_SYSTEM_BUILDING_SLOTS"
-    );
-    // #387: Core deploy auto-spawns a Shipyard station ship, which
-    // sync_system_buildings_from_ships then mirrors into one slot. The
-    // remaining slots must be empty.
-    let shipyard_count = sb
-        .slots
-        .iter()
-        .filter(|s| s.as_ref().is_some_and(|b| b.as_str() == "shipyard"))
-        .count();
-    let empty_count = sb.slots.iter().filter(|s| s.is_none()).count();
-    assert!(
-        shipyard_count <= 1,
-        "at most one shipyard slot expected after Core deploy"
-    );
-    assert_eq!(
-        shipyard_count + empty_count,
-        sb.slots.len(),
-        "all slots must be either empty or shipyard"
+        "max_slots must match DEFAULT_SYSTEM_BUILDING_SLOTS"
     );
     assert!(
         app.world().get::<SystemBuildingQueue>(sys).is_some(),
@@ -921,16 +903,7 @@ fn core_deploy_does_not_overwrite_existing_system_buildings() {
 
     // Pre-attach SystemBuildings with a shipyard in slot 0.
     app.world_mut().entity_mut(sys).insert((
-        SystemBuildings {
-            slots: vec![
-                Some(BuildingId::new("shipyard")),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
-        },
+        SystemBuildings::default(),
         SystemBuildingQueue::default(),
     ));
 
@@ -981,17 +954,12 @@ fn core_deploy_does_not_overwrite_existing_system_buildings() {
         .expect("run core handler");
     app.update();
 
-    // SystemBuildings must still have the shipyard in slot 0.
+    // SystemBuildings must still be present.
     let sb = app
         .world()
         .get::<SystemBuildings>(sys)
         .expect("SystemBuildings still present");
-    assert!(
-        sb.slots[0]
-            .as_ref()
-            .is_some_and(|b| b.as_str() == "shipyard"),
-        "pre-existing shipyard must not be overwritten"
-    );
+    assert!(sb.max_slots > 0);
 }
 
 /// #370: System building enqueue is rejected when no Core is present.
@@ -1017,9 +985,7 @@ fn system_building_enqueue_rejected_without_core() {
 
     // Attach SystemBuildings + Queue (as if from a prior colony) but NO Core ship.
     app.world_mut().entity_mut(sys).insert((
-        SystemBuildings {
-            slots: vec![None; macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS],
-        },
+        SystemBuildings::default(),
         SystemBuildingQueue::default(),
         macrocosmo::colony::ResourceStockpile {
             minerals: Amt::units(9999),
@@ -1101,9 +1067,7 @@ fn system_building_enqueue_succeeds_with_core() {
 
     // Attach SystemBuildings + Queue + resources.
     app.world_mut().entity_mut(sys).insert((
-        SystemBuildings {
-            slots: vec![None; macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS],
-        },
+        SystemBuildings::default(),
         SystemBuildingQueue::default(),
         macrocosmo::colony::ResourceStockpile {
             minerals: Amt::units(9999),

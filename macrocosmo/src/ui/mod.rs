@@ -20,7 +20,6 @@ use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams,
     FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile,
-    SystemBuildingQueue, SystemBuildings,
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
@@ -1018,6 +1017,7 @@ fn draw_main_panels_system(
         &world.planets,
         &world.planet_entities,
         &mut world.system_buildings,
+        &world.station_ships,
         &registries.hull_registry,
         &registries.module_registry,
         &registries.design_registry,

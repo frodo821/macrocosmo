@@ -310,17 +310,27 @@ fn test_build_queue_spawns_ship() {
             authority: Amt::ZERO,
         },
         ResourceCapacity::default(),
-        SystemBuildings {
-            slots: vec![
-                Some(BuildingId::new("shipyard")),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
-        },
+        SystemBuildings::default(),
         SystemBuildingQueue::default(),
+    ));
+    // Spawn a station ship representing the shipyard so the build queue proceeds.
+    app.world_mut().spawn((
+        Ship {
+            name: "Shipyard".into(),
+            design_id: "station_shipyard_v1".into(),
+            hull_id: "station".into(),
+            modules: Vec::new(),
+            owner: macrocosmo::ship::Owner::Neutral,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            player_aboard: false,
+            home_port: sys,
+            design_revision: 0,
+            fleet: None,
+        },
+        ShipState::InSystem { system: sys },
+        Position::from([0.0, 0.0, 0.0]),
+        macrocosmo::colony::SlotAssignment(0),
     ));
     app.world_mut().spawn((
         Colony {

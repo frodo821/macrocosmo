@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 use crate::colony::{
     ColonizationQueue, ColonyJobRates, DeliverableStockpile, ResourceCapacity, ResourceStockpile,
-    SystemBuildingQueue, SystemBuildings,
+    SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
@@ -38,8 +38,18 @@ pub struct MainPanelWorldQueries<'w, 's> {
         'w,
         's,
         (
-            Option<&'static mut SystemBuildings>,
+            Option<&'static SystemBuildings>,
             Option<&'static mut SystemBuildingQueue>,
+        ),
+    >,
+    pub station_ships: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static crate::ship::Ship,
+            &'static crate::ship::ShipState,
+            &'static SlotAssignment,
         ),
     >,
     pub colonization_queues: Query<'w, 's, &'static ColonizationQueue>,

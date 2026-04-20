@@ -530,11 +530,11 @@ pub fn poll_pending_routes(
     balance: Res<crate::technology::GameBalance>,
     mut ships: Query<
         (Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position),
-        With<PendingRoute>,
+        (With<PendingRoute>, Without<crate::colony::SlotAssignment>),
     >,
     mut pending_q: Query<&mut PendingRoute>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-    system_buildings: Query<&crate::colony::SystemBuildings>,
+    routing_station_ships: Query<(Entity, &Ship, &ShipState, &crate::colony::SlotAssignment)>,
     mut pending_count: ResMut<RouteCalculationsPending>,
     building_registry: Res<crate::colony::BuildingRegistry>,
     // #334 Phase 1: emit the terminal CommandExecuted for the MoveRequested
@@ -758,10 +758,7 @@ pub fn poll_pending_routes(
                     }
                     continue;
                 };
-                let port_params = system_buildings
-                    .get(docked_system)
-                    .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
-                    .unwrap_or(PortParams::NONE);
+                let port_params = PortParams::from_station_ships(docked_system, &routing_station_ships, &building_registry);
                 match crate::ship::movement::start_ftl_travel_full(
                     &mut state,
                     ship,

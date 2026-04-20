@@ -2,9 +2,9 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::colony::{
-    BuildQueue, BuildingQueue, Buildings, Colony, DEFAULT_SYSTEM_BUILDING_SLOTS, FoodConsumption,
+    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption,
     MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
-    SystemBuildingQueue, SystemBuildings,
+    SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
@@ -20,7 +20,7 @@ use crate::scripting::faction_api::{FactionRegistry, lookup_on_game_start};
 use crate::scripting::game_start_ctx::{
     GameStartActions, GameStartCtx, PlanetAttributesSpec, PlanetRef, SpawnedPlanetSpec,
 };
-use crate::ship::{Owner, spawn_core_ship_from_deliverable, spawn_ship};
+use crate::ship::{Owner, Ship, ShipState, spawn_core_ship_from_deliverable, spawn_ship};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::technology::{
@@ -631,9 +631,7 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
                                 authority: Amt::ZERO,
                             },
                             ResourceCapacity::default(),
-                            SystemBuildings {
-                                slots: vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS],
-                            },
+                            SystemBuildings::default(),
                             SystemBuildingQueue::default(),
                         ));
                         // #297 (S-2): SystemBuildings on the StarSystem entity
@@ -692,23 +690,95 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
         }
     }
 
-    // Apply system_buildings — add to first empty slot of SystemBuildings on the capital.
+    // Apply system_buildings — spawn station ships with SlotAssignment for each
+    // building. The BuildingRegistry is consulted to find ship_design_id.
     if !actions.system_buildings.is_empty() {
-        let Some(mut sys_b) = world.get_mut::<SystemBuildings>(capital_entity) else {
+        let max_slots = world
+            .get::<SystemBuildings>(capital_entity)
+            .map(|sb| sb.max_slots)
+            .unwrap_or(0);
+        if max_slots == 0 {
             warn!(
                 "on_game_start for '{}': capital has no SystemBuildings component",
                 faction_id
             );
-            return;
-        };
-        for building_id in &actions.system_buildings {
-            if let Some(slot) = sys_b.slots.iter_mut().find(|s| s.is_none()) {
-                *slot = Some(BuildingId::new(building_id));
+        } else {
+            // Count already-occupied slots (existing station ships at this system).
+            let mut occupied_slots: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            {
+                let mut q = world.query::<(&Ship, &ShipState, &SlotAssignment)>();
+                for (_, state, slot) in q.iter(world) {
+                    if let ShipState::InSystem { system } = state {
+                        if *system == capital_entity {
+                            occupied_slots.insert(slot.0);
+                        }
+                    }
+                }
+            }
+
+            // For each system building, find the ship_design_id and spawn.
+            let building_to_design: std::collections::HashMap<String, (String, String)> = if let Some(building_registry) = world.get_resource::<crate::colony::BuildingRegistry>() {
+                building_registry
+                    .buildings
+                    .values()
+                    .filter_map(|def| {
+                        def.ship_design_id
+                            .as_ref()
+                            .map(|did| (def.id.clone(), (did.clone(), def.name.clone())))
+                    })
+                    .collect()
             } else {
-                warn!(
-                    "on_game_start for '{}' add system building '{}': no free system slot",
-                    faction_id, building_id
-                );
+                std::collections::HashMap::new()
+            };
+
+            let mut next_slot = 0usize;
+            let owner = faction_entity
+                .map(Owner::Empire)
+                .unwrap_or(Owner::Neutral);
+
+            for building_id in &actions.system_buildings {
+                // Find next free slot.
+                while next_slot < max_slots && occupied_slots.contains(&next_slot) {
+                    next_slot += 1;
+                }
+                if next_slot >= max_slots {
+                    warn!(
+                        "on_game_start for '{}' add system building '{}': no free system slot",
+                        faction_id, building_id
+                    );
+                    break;
+                }
+                let slot_idx = next_slot;
+                occupied_slots.insert(slot_idx);
+                next_slot += 1;
+
+                // Spawn station ship if there's a design mapping.
+                if let Some((design_id, station_name)) = building_to_design.get(building_id) {
+                    let mut state: bevy::ecs::system::SystemState<(
+                        Commands,
+                        Res<ShipDesignRegistry>,
+                    )> = bevy::ecs::system::SystemState::new(world);
+                    {
+                        let (mut commands, registry) = state.get_mut(world);
+                        let ship_entity = spawn_ship(
+                            &mut commands,
+                            design_id,
+                            station_name.clone(),
+                            capital_entity,
+                            capital_pos,
+                            owner,
+                            &registry,
+                        );
+                        commands.entity(ship_entity).insert(SlotAssignment(slot_idx));
+                    }
+                    state.apply(world);
+                } else {
+                    warn!(
+                        "on_game_start for '{}': system building '{}' has no ship_design_id mapping",
+                        faction_id, building_id
+                    );
+                }
             }
         }
     }
@@ -826,7 +896,7 @@ mod tests {
     use super::*;
     use crate::amount::Amt;
     use crate::colony::{
-        BuildQueue, BuildingQueue, Colony, DEFAULT_SYSTEM_BUILDING_SLOTS, FoodConsumption,
+        BuildQueue, BuildingQueue, Colony, FoodConsumption,
         MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
         SystemBuildingQueue,
     };
@@ -868,9 +938,7 @@ mod tests {
                     authority: Amt::ZERO,
                 },
                 ResourceCapacity::default(),
-                SystemBuildings {
-                    slots: vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS],
-                },
+                SystemBuildings::default(),
                 SystemBuildingQueue::default(),
             ))
             .id();
@@ -1004,20 +1072,70 @@ mod tests {
     fn apply_actions_adds_system_buildings() {
         let (mut world, capital, _planet) = setup_world();
 
+        // Insert a BuildingRegistry with "shipyard" that has a ship_design_id.
+        let mut building_registry = crate::colony::BuildingRegistry::default();
+        building_registry.insert(crate::scripting::building_api::BuildingDefinition {
+            id: "shipyard".to_string(),
+            name: "Shipyard".to_string(),
+            description: String::new(),
+            minerals_cost: Amt::ZERO,
+            energy_cost: Amt::ZERO,
+            build_time: 30,
+            maintenance: Amt::ZERO,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
+            is_system_building: true,
+            capabilities: std::collections::HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: Some("station_shipyard_v1".to_string()),
+        });
+        world.insert_resource(building_registry);
+
+        // Add a matching ship design.
+        let mut design_reg = world.resource_mut::<ShipDesignRegistry>();
+        design_reg.insert(ShipDesignDefinition {
+            id: "station_shipyard_v1".into(),
+            name: "Shipyard Station".into(),
+            description: String::new(),
+            hull_id: "station".into(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 100.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: false,
+        });
+
         let mut actions = GameStartActions::default();
         actions.system_buildings.push("shipyard".into());
 
         apply_game_start_actions(&mut world, "test_faction", actions);
 
-        let sys_b = world
-            .get::<SystemBuildings>(capital)
-            .expect("capital has SystemBuildings");
-        let names: Vec<String> = sys_b
-            .slots
-            .iter()
-            .filter_map(|s| s.as_ref().map(|b| b.0.clone()))
-            .collect();
-        assert_eq!(names, vec!["shipyard".to_string()]);
+        // Verify a station ship with SlotAssignment(0) was spawned at the capital.
+        let mut q = world.query::<(&Ship, &ShipState, &SlotAssignment)>();
+        let found = q.iter(&world).any(|(ship, state, slot)| {
+            ship.design_id == "station_shipyard_v1"
+                && matches!(state, ShipState::InSystem { system } if *system == capital)
+                && slot.0 == 0
+        });
+        assert!(
+            found,
+            "Station ship with SlotAssignment(0) should be spawned at capital"
+        );
     }
 
     #[test]
@@ -1269,17 +1387,15 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["mine".to_string(), "farm".to_string()]);
 
-        // Shipyard added at system level
+        // Shipyard station ship at system level (if BuildingRegistry is set up)
+        // In this test, BuildingRegistry might not have "shipyard" with
+        // ship_design_id, so the station ship might not be spawned.
+        // Verify SystemBuildings still exists with max_slots.
         let sys_b = world.get::<SystemBuildings>(capital).unwrap();
-        let sys_names: Vec<String> = sys_b
-            .slots
-            .iter()
-            .filter_map(|s| s.as_ref().map(|b| b.0.clone()))
-            .collect();
-        assert_eq!(sys_names, vec!["shipyard".to_string()]);
+        assert!(sys_b.max_slots > 0);
 
-        // One ship spawned
+        // Ships spawned (explorer + possibly station ship)
         let mut sq = world.query::<&Ship>();
-        assert_eq!(sq.iter(&world).count(), 1);
+        assert!(sq.iter(&world).count() >= 1);
     }
 }

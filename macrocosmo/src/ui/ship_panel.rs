@@ -5,7 +5,6 @@ use crate::amount::Amt;
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption,
     MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
-    SystemBuildings,
 };
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};

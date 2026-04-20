@@ -30,7 +30,7 @@ use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, ColonizationQueue, Colony,
     ColonyJobRates, ConstructionParams, DeliverableStockpile, FoodConsumption, LastProductionTick,
     MaintenanceCost, PendingColonizationOrder, Production, ProductionFocus, ResourceCapacity,
-    ResourceStockpile, SystemBuildingQueue, SystemBuildings,
+    ResourceStockpile, SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
 use crate::communication::{CommandLog, PendingCommand};
 use crate::components::{MovementState, Position};
@@ -81,7 +81,8 @@ use super::savebag::*;
 // #298 (S-4): `conquered_core` field added.
 // #280: Colony Hub migration (hub_t1/planetary_capital_t3 into slot 0).
 // #388 (G): Added `docked_at` field + station ship migration.
-pub const SAVE_VERSION: u32 = 5;
+// SlotAssignment refactor: `slot_assignment` field + SystemBuildings→max_slots.
+pub const SAVE_VERSION: u32 = 6;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -570,6 +571,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     // #388 (G): Persist DockedAt harbour reference.
     if let Some(docked_at) = e_ref.get::<DockedAt>() {
         bag.docked_at = Some(docked_at.0.to_bits());
+    }
+    // SlotAssignment on station ships.
+    if let Some(sa) = e_ref.get::<SlotAssignment>() {
+        bag.slot_assignment = Some(SavedSlotAssignment::from_live(sa));
     }
 
     // Pending command entities

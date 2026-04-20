@@ -596,12 +596,7 @@ fn remote_system_level_dispatch_delayed() {
     run_until_arrival(&mut app, arrives_at);
 
     let sbq = app.world().get::<SystemBuildingQueue>(target_sys).unwrap();
-    let sys_bldgs = app
-        .world()
-        .get::<macrocosmo::colony::SystemBuildings>(target_sys)
-        .unwrap();
-    let present = sbq.queue.iter().any(|o| o.target_slot == 0)
-        || sys_bldgs.slots.get(0).and_then(|s| s.as_ref()).is_some();
+    let present = sbq.queue.iter().any(|o| o.target_slot == 0);
     assert!(
         present,
         "remote system-level command should apply once clock reaches arrives_at"

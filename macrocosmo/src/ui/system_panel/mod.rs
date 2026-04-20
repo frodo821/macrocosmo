@@ -8,7 +8,7 @@ use crate::amount::Amt;
 use crate::colony::{
     BuildOrder, BuildQueue, BuildingQueue, Buildings, ColonizationQueue, Colony,
     ConstructionParams, DeliverableStockpile, FoodConsumption, MaintenanceCost, Production,
-    ResourceCapacity, ResourceStockpile, SystemBuildingQueue, SystemBuildings,
+    ResourceCapacity, ResourceStockpile, SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
 use crate::components::Position;
 use crate::condition::{EvalContext, ScopeData};
@@ -144,9 +144,10 @@ pub fn draw_system_panel(
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
     system_buildings_q: &mut Query<(
-        Option<&mut SystemBuildings>,
+        Option<&SystemBuildings>,
         Option<&mut SystemBuildingQueue>,
     )>,
+    station_ships_q: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
@@ -488,6 +489,7 @@ pub fn draw_system_panel(
                                             module_registry,
                                             design_registry,
                                             system_buildings_q,
+                                            station_ships_q,
                                             construction_params,
                                             building_registry,
                                             &colonized_planets,
@@ -825,9 +827,10 @@ fn draw_right_panel(
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
     system_buildings_q: &mut Query<(
-        Option<&mut SystemBuildings>,
+        Option<&SystemBuildings>,
         Option<&mut SystemBuildingQueue>,
     )>,
+    station_ships_q: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     construction_params: &ConstructionParams,
     building_registry: &BuildingRegistry,
     colonized_planets: &std::collections::HashSet<Entity>,
@@ -919,7 +922,13 @@ fn draw_right_panel(
     }
 
     // === System Buildings ===
-    if let Ok((Some(sys_bldgs), sys_bldg_queue)) = system_buildings_q.get_mut(sel_entity) {
+    if let Ok((Some(sys_bldgs), sys_bldg_queue)) = system_buildings_q.get(sel_entity) {
+        let sys_slots = crate::colony::system_buildings::slots_view(
+            sel_entity,
+            sys_bldgs.max_slots,
+            station_ships_q,
+            building_registry,
+        );
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new("System Buildings")
@@ -979,7 +988,7 @@ fn draw_right_panel(
             })
             .unwrap_or_default();
 
-        for (i, slot) in sys_bldgs.slots.iter().enumerate() {
+        for (i, slot) in sys_slots.iter().enumerate() {
             let is_demolishing = sys_bldg_queue
                 .as_ref()
                 .map(|bq| bq.is_demolishing(i))
@@ -1169,12 +1178,12 @@ fn draw_right_panel(
         // Build system building buttons
         // #370: System building construction requires an Infrastructure Core.
         if system_has_core {
-            if let Ok((Some(sys_bldgs_read), sys_bq_read)) = system_buildings_q.get(sel_entity) {
-                let pending_slots: Vec<usize> = sys_bq_read
+            {
+                let pending_slots: Vec<usize> = sys_bldg_queue
+                    .as_ref()
                     .map(|bq| bq.queue.iter().map(|o| o.target_slot).collect())
                     .unwrap_or_default();
-                let empty_slot = sys_bldgs_read
-                    .slots
+                let empty_slot = sys_slots
                     .iter()
                     .enumerate()
                     .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
@@ -1227,12 +1236,12 @@ fn draw_right_panel(
 
     // === #134: Ship Build Queue + Build Ship (system-level) ===
     {
-        // Determine shipyard availability via capability check on system buildings.
-        let has_shipyard = system_buildings_q
-            .get(sel_entity)
-            .ok()
-            .and_then(|(sb, _)| sb.map(|sb| sb.has_shipyard(building_registry)))
-            .unwrap_or(false);
+        // Determine shipyard availability via capability check on station ships.
+        let has_shipyard = crate::colony::system_buildings::system_has_shipyard(
+            sel_entity,
+            station_ships_q,
+            building_registry,
+        );
 
         // Collect colonies in this system along with a snapshot of their build queues.
         // Also remember the first colony entity, which we will use as the host for
@@ -1968,11 +1977,15 @@ fn format_planet_type(planet_type: &str) -> String {
 /// regression tests can verify it without needing an egui context.
 pub fn ship_build_host_colony(
     system_entity: Entity,
-    system_buildings: &SystemBuildings,
+    station_ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     building_registry: &BuildingRegistry,
     colonies: &[(Entity, Entity)], // (colony_entity, system_entity) pairs
 ) -> Option<Entity> {
-    if !system_buildings.has_shipyard(building_registry) {
+    if !crate::colony::system_buildings::system_has_shipyard(
+        system_entity,
+        station_ships,
+        building_registry,
+    ) {
         return None;
     }
     colonies

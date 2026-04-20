@@ -11,10 +11,10 @@ use crate::galaxy::{Planet, StarSystem};
 use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::scripting::building_api::BuildingId;
-use crate::ship::{CargoItem, Owner, Ship, spawn_ship};
+use crate::ship::{CargoItem, Owner, Ship, ShipState, spawn_ship};
 use crate::time_system::GameClock;
 
-use super::{Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile, SystemBuildings};
+use super::{Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile};
 
 // ---------------------------------------------------------------------------
 // BuildingLostCtx — typed EventContext payload (#290)
@@ -372,7 +372,7 @@ pub fn tick_build_queue(
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
-    system_buildings: Query<&SystemBuildings>,
+    bq_station_ships: Query<(Entity, &Ship, &ShipState, &super::SlotAssignment)>,
     mut events: MessageWriter<GameEvent>,
     empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
     player_q: Query<(&StationedAt, Option<&AboardShip>), With<Player>>,
@@ -428,9 +428,11 @@ pub fn tick_build_queue(
 
         // #35: Skip ship construction if system has no shipyard capability.
         // Deliverables also require a shipyard.
-        let has_shipyard = system_buildings
-            .get(sys)
-            .is_ok_and(|sb| sb.has_shipyard(&building_registry));
+        let has_shipyard = super::system_buildings::system_has_shipyard(
+            sys,
+            &bq_station_ships,
+            &building_registry,
+        );
         if !build_queue.queue.is_empty() && !has_shipyard {
             warn!("System lacks a Shipyard; skipping construction");
             continue;
