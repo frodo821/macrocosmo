@@ -240,6 +240,12 @@ pub fn sync_building_modifiers(
     job_registry: Res<JobRegistry>,
     planets: Query<&Planet>,
     system_buildings: Query<(Entity, &super::SystemBuildings)>,
+    station_ships: Query<(
+        Entity,
+        &crate::ship::Ship,
+        &crate::ship::ShipState,
+        &super::SlotAssignment,
+    )>,
     mut colonies: Query<(
         &Colony,
         &Buildings,
@@ -248,9 +254,11 @@ pub fn sync_building_modifiers(
         Option<&mut ColonyJobs>,
     )>,
 ) {
-    // Build a map: system entity -> list of SystemBuildings slot entries.
-    let sys_to_buildings: std::collections::HashMap<Entity, &super::SystemBuildings> =
-        system_buildings.iter().collect();
+    // Build system → max_slots map for slot-based systems.
+    let sys_entities: std::collections::HashMap<Entity, usize> = system_buildings
+        .iter()
+        .map(|(e, sb)| (e, sb.max_slots))
+        .collect();
 
     // Throwaway rates bucket used when the colony lacks a ColonyJobRates
     // component (slot-bearing buildings become no-ops, `rates.clear()` resets).
@@ -297,10 +305,21 @@ pub fn sync_building_modifiers(
         }
 
         // 4. Walk system-level buildings belonging to this colony's system.
+        //    Now queries station ships with SlotAssignment instead of
+        //    SystemBuildings.slots.
         if let Some(sys_entity) = colony.system(&planets) {
-            if let Some(sys_bldgs) = sys_to_buildings.get(&sys_entity) {
-                for slot in &sys_bldgs.slots {
-                    if let Some(bid) = slot {
+            if sys_entities.contains_key(&sys_entity) {
+                let reverse = super::system_buildings::build_reverse_design_map(&registry);
+                for (_ship_entity, ship, state, _slot) in &station_ships {
+                    let in_system = match state {
+                        crate::ship::ShipState::InSystem { system: s } => *s == sys_entity,
+                        crate::ship::ShipState::Refitting { system: s, .. } => *s == sys_entity,
+                        _ => false,
+                    };
+                    if !in_system {
+                        continue;
+                    }
+                    if let Some(bid) = reverse.get(&ship.design_id) {
                         let Some(def) = registry.get(bid.as_str()) else {
                             continue;
                         };

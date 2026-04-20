@@ -33,6 +33,17 @@ pub type ApplyColoniesQuery<'w, 's> = Query<
 pub type ApplySystemBuildingsQuery<'w, 's> =
     Query<'w, 's, (&'static SystemBuildings, &'static mut SystemBuildingQueue)>;
 
+pub type ApplyStationShipQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static crate::ship::Ship,
+        &'static crate::ship::ShipState,
+        &'static super::SlotAssignment,
+    ),
+>;
+
 /// #275: Read-only `Planet` lookup used by `CancelBuildingOrder` to scope
 /// the order-id search to colonies in the target system.
 pub type ApplyPlanetsQuery<'w, 's> = Query<'w, 's, &'static crate::galaxy::Planet>;
@@ -57,6 +68,7 @@ pub fn apply_remote_command(
     sys_buildings_q: &mut ApplySystemBuildingsQuery,
     planets: &ApplyPlanetsQuery,
     system_has_core: bool,
+    station_ships: &ApplyStationShipQuery,
 ) {
     match cmd {
         RemoteCommand::BuildShip { .. } | RemoteCommand::SetProductionFocus { .. } => {
@@ -71,6 +83,7 @@ pub fn apply_remote_command(
             colonies,
             sys_buildings_q,
             system_has_core,
+            station_ships,
         ),
         RemoteCommand::ShipBuild {
             host_colony,
@@ -241,6 +254,7 @@ fn apply_building_command(
     colonies: &mut ApplyColoniesQuery,
     sys_buildings_q: &mut ApplySystemBuildingsQuery,
     system_has_core: bool,
+    station_ships: &ApplyStationShipQuery,
 ) {
     match &cc.kind {
         BuildingKind::Queue {
@@ -335,14 +349,20 @@ fn apply_building_command(
                 }
             }
             BuildingScope::System => {
-                let Ok((sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system) else {
+                let Ok((_sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system) else {
                     warn!(
                         "Demolish (system): target_system {:?} has no SystemBuildings/Queue",
                         target_system
                     );
                     return;
                 };
-                let Some(Some(bid)) = sys_buildings.slots.get(*target_slot).cloned() else {
+                // Look up the building in the target slot via station ships.
+                let Some(bid) = super::system_buildings::building_id_in_slot(
+                    target_system,
+                    *target_slot,
+                    station_ships,
+                    br,
+                ) else {
                     warn!(
                         "Demolish (system): slot {} is empty or out of bounds",
                         target_slot
@@ -432,7 +452,7 @@ fn apply_building_command(
                     }
                 }
                 BuildingScope::System => {
-                    let Ok((sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system)
+                    let Ok((_sys_buildings, mut sbq)) = sys_buildings_q.get_mut(target_system)
                     else {
                         warn!(
                             "Upgrade (system): target_system {:?} missing components",
@@ -440,8 +460,12 @@ fn apply_building_command(
                         );
                         return;
                     };
-                    let Some(Some(source_bid)) = sys_buildings.slots.get(*slot_index).cloned()
-                    else {
+                    let Some(source_bid) = super::system_buildings::building_id_in_slot(
+                        target_system,
+                        *slot_index,
+                        station_ships,
+                        br,
+                    ) else {
                         warn!("Upgrade (system): slot {} empty or OOB", slot_index);
                         return;
                     };

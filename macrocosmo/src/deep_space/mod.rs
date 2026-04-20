@@ -888,6 +888,7 @@ pub fn relay_knowledge_propagate_system(
         &crate::ship::ShipState,
         &crate::components::Position,
         &crate::ship::ShipHitpoints,
+        Option<&crate::colony::SlotAssignment>,
     )>,
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
     positions: Query<&crate::components::Position>,
@@ -905,7 +906,6 @@ pub fn relay_knowledge_propagate_system(
         &crate::galaxy::StarSystem,
         &crate::components::Position,
         Option<&crate::colony::ResourceStockpile>,
-        Option<&crate::colony::SystemBuildings>,
     )>,
     colonies: crate::knowledge::ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
@@ -988,7 +988,7 @@ pub fn relay_knowledge_propagate_system(
         }
 
         // For each ship, check it's in the source relay's range and snapshot it.
-        for (ship_entity, ship, state, ship_pos, hp) in &ships {
+        for (ship_entity, ship, state, ship_pos, hp, _slot) in &ships {
             let dist = crate::physics::distance_ly(source_pos, ship_pos);
             if source_range > 0.0 && dist > source_range {
                 continue;
@@ -1075,7 +1075,7 @@ pub fn relay_knowledge_propagate_system(
             }
         }
 
-        for (sys_entity, star, sys_pos, stockpile, sys_buildings) in &system_q {
+        for (sys_entity, star, sys_pos, stockpile) in &system_q {
             let dist = crate::physics::distance_ly(source_pos, sys_pos);
             if source_range > 0.0 && dist > source_range {
                 continue;
@@ -1089,17 +1089,29 @@ pub fn relay_knowledge_propagate_system(
                 continue;
             }
 
+            // Compute port/shipyard from the ships query (which includes Option<SlotAssignment>).
+            let reverse = crate::colony::system_buildings::build_reverse_design_map(&building_registry);
+            let relay_has_port = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
+                slot.is_some()
+                    && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
+                    && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("port"))
+            });
+            let relay_has_shipyard = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
+                slot.is_some()
+                    && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
+                    && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("shipyard"))
+            });
             let snapshot = crate::knowledge::build_system_snapshot(
                 sys_entity,
                 star,
                 sys_pos,
                 stockpile,
-                sys_buildings,
+                relay_has_port,
+                relay_has_shipyard,
                 &colonies,
                 &planets,
                 &planet_attrs,
                 &hostile_map,
-                &building_registry,
             );
 
             store.update(crate::knowledge::SystemKnowledge {

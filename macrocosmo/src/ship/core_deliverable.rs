@@ -27,7 +27,7 @@
 
 use bevy::prelude::*;
 
-use crate::colony::{DEFAULT_SYSTEM_BUILDING_SLOTS, SystemBuildingQueue, SystemBuildings};
+use crate::colony::{SystemBuildingQueue, SystemBuildings};
 use crate::components::Position;
 use crate::faction::FactionOwner;
 use crate::galaxy::{AtSystem, StarSystem};
@@ -245,9 +245,7 @@ pub fn handle_core_deploy_requested(
         // system building construction — colony is NOT required.
         if existing_system_buildings.get(system).is_err() {
             commands.entity(system).insert((
-                SystemBuildings {
-                    slots: vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS],
-                },
+                SystemBuildings::default(),
                 SystemBuildingQueue::default(),
             ));
             // Tag the StarSystem with FactionOwner so the administrative owner

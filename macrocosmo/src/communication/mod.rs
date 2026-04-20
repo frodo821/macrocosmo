@@ -500,6 +500,7 @@ pub fn process_pending_commands(
     mut sys_buildings_q: crate::colony::remote::ApplySystemBuildingsQuery,
     planets: crate::colony::remote::ApplyPlanetsQuery,
     core_ships: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
+    station_ships: crate::colony::remote::ApplyStationShipQuery,
 ) {
     let Ok((mut command_log, construction_params)) = empire_q.single_mut() else {
         return;
@@ -530,6 +531,7 @@ pub fn process_pending_commands(
                 &mut sys_buildings_q,
                 &planets,
                 system_has_core,
+                &station_ships,
             );
 
             for entry in command_log.entries.iter_mut() {

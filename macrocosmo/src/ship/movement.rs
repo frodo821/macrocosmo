@@ -311,16 +311,30 @@ impl PortParams {
         travel_time_factor: 1.0,
     };
 
-    /// Create PortParams from SystemBuildings and BuildingRegistry.
-    pub fn from_system_buildings(
-        sb: &crate::colony::SystemBuildings,
+    /// Create PortParams from station ships query and BuildingRegistry.
+    pub fn from_station_ships(
+        system: Entity,
+        station_ships: &Query<(
+            Entity,
+            &crate::ship::Ship,
+            &crate::ship::ShipState,
+            &crate::colony::SlotAssignment,
+        )>,
         registry: &crate::scripting::building_api::BuildingRegistry,
     ) -> Self {
-        if sb.has_port(registry) {
+        if crate::colony::system_buildings::system_has_port(system, station_ships, registry) {
             PortParams {
                 has_port: true,
-                ftl_range_bonus: sb.port_ftl_range_bonus(registry),
-                travel_time_factor: sb.port_travel_time_factor(registry),
+                ftl_range_bonus: crate::colony::system_buildings::port_ftl_range_bonus(
+                    system,
+                    station_ships,
+                    registry,
+                ),
+                travel_time_factor: crate::colony::system_buildings::port_travel_time_factor(
+                    system,
+                    station_ships,
+                    registry,
+                ),
             }
         } else {
             Self::NONE

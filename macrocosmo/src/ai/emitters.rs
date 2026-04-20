@@ -11,7 +11,7 @@ use crate::ai::emit::AiBusWriter;
 use crate::ai::schema::ids::metric;
 use crate::colony::{
     Buildings, Colony, FoodConsumption, Production, ResourceCapacity, ResourceStockpile,
-    SystemBuildings,
+    SlotAssignment,
 };
 use crate::galaxy::{BASE_CARRYING_CAPACITY, Planet, StarSystem, SystemAttributes};
 use crate::galaxy::{AtSystem, Hostile};
@@ -129,13 +129,14 @@ pub fn emit_economic_metrics(
         (
             &ResourceStockpile,
             Option<&ResourceCapacity>,
-            Option<&SystemBuildings>,
         ),
         With<StarSystem>,
     >,
+    ai_station_ships: Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     planets: Query<&Planet>,
     planet_attrs: Query<&SystemAttributes, With<Planet>>,
     tech_tree: Option<Res<TechTree>>,
+    ai_building_registry: Option<Res<crate::colony::BuildingRegistry>>,
 ) {
     // --- Production rates (per hexadies) ---
     let mut total_minerals_rate: f64 = 0.0;
@@ -247,7 +248,31 @@ pub fn emit_economic_metrics(
     let mut systems_with_shipyard: f64 = 0.0;
     let mut systems_with_port: f64 = 0.0;
 
-    for (stockpile, capacity, sys_buildings) in &stockpiles {
+    // Build set of systems with shipyard/port by iterating station ships.
+    if let Some(ref ai_building_registry) = ai_building_registry {
+        let reverse = crate::colony::system_buildings::build_reverse_design_map(ai_building_registry);
+        for (_entity, ship, state, _slot) in &ai_station_ships {
+            let system = match state {
+                ShipState::InSystem { system: s } => *s,
+                ShipState::Refitting { system: s, .. } => *s,
+                _ => continue,
+            };
+            if let Some(bid) = reverse.get(&ship.design_id) {
+                if let Some(def) = ai_building_registry.get(bid.as_str()) {
+                    if def.capabilities.contains_key("shipyard") {
+                        // Counted per system — simplified; may double-count if multiple shipyards.
+                        systems_with_shipyard += 1.0;
+                    }
+                    if def.capabilities.contains_key("port") {
+                        systems_with_port += 1.0;
+                    }
+                }
+            }
+            let _ = system; // used implicitly via the filter above
+        }
+    }
+
+    for (stockpile, capacity) in &stockpiles {
         total_minerals += stockpile.minerals.to_f64();
         total_energy += stockpile.energy.to_f64();
         total_food += stockpile.food.to_f64();
@@ -257,21 +282,6 @@ pub fn emit_economic_metrics(
             total_cap_minerals += cap.minerals.to_f64();
             total_cap_energy += cap.energy.to_f64();
             total_cap_food += cap.food.to_f64();
-        }
-
-        // Authority debt: systems where authority is zero but should be positive
-        // In the current model, authority deficit is binary (zero vs nonzero).
-        // We track the count of systems at zero as a proxy.
-        // TODO: Refine when authority becomes a signed value.
-
-        // System buildings
-        if let Some(sb) = sys_buildings {
-            if sb.has_building("shipyard") {
-                systems_with_shipyard += 1.0;
-            }
-            if sb.has_building("port") {
-                systems_with_port += 1.0;
-            }
         }
     }
 

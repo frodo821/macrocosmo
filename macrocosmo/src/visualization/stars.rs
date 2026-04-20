@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use super::GalaxyView;
-use crate::colony::{BuildingRegistry, Buildings, Colony, SystemBuildings};
+use crate::colony::{BuildingRegistry, Buildings, Colony, SlotAssignment};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
 use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, ObscuredByGas, Planet, StarSystem};
@@ -244,7 +244,7 @@ pub fn draw_galaxy_overlay(
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
     empire_params_q: Query<(Entity, &GlobalParams, &KnowledgeStore), With<PlayerEmpire>>,
-    system_buildings: Query<(Entity, &SystemBuildings)>,
+    station_ships: Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
     galaxy_config: Option<Res<GalaxyConfig>>,
@@ -469,11 +469,13 @@ pub fn draw_galaxy_overlay(
     {
         // Collect port systems: local from ECS, remote from knowledge
         let mut port_system_entities: Vec<Entity> = Vec::new();
-        // Local system ports (real-time)
-        for (entity, sb) in &system_buildings {
-            if entity == player_system && sb.has_port(&building_registry) {
-                port_system_entities.push(entity);
-            }
+        // Local system ports (real-time, via station ships)
+        if crate::colony::system_buildings::system_has_port(
+            player_system,
+            &station_ships,
+            &building_registry,
+        ) {
+            port_system_entities.push(player_system);
         }
         // Remote system ports (from KnowledgeStore)
         for (_entity, k) in knowledge.iter() {

@@ -550,7 +550,6 @@ pub fn test_app() -> App {
             // runs end-to-end.
             tick_system_building_queue,
             // #386: Derive SystemBuildings from station Ship entities.
-            macrocosmo::colony::sync_system_buildings_from_ships,
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
@@ -867,7 +866,6 @@ pub fn full_test_app() -> App {
             // #260: Mirror the production chain; see test_app comment above.
             tick_system_building_queue,
             // #386: Derive SystemBuildings from station Ship entities.
-            macrocosmo::colony::sync_system_buildings_from_ships,
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
@@ -1162,9 +1160,7 @@ pub fn spawn_test_colony(
     // Add SystemBuildings and SystemBuildingQueue to the StarSystem if not already present
     if world.get::<SystemBuildings>(system).is_none() {
         world.entity_mut(system).insert((
-            SystemBuildings {
-                slots: system_building_slots,
-            },
+            SystemBuildings::default(),
             SystemBuildingQueue::default(),
         ));
     }

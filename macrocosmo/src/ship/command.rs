@@ -20,10 +20,10 @@ pub fn process_pending_ship_commands(
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
     balance: Res<crate::technology::GameBalance>,
     pending: Query<(Entity, &PendingShipCommand)>,
-    mut ships: Query<(&mut Ship, &mut ShipState, &Position)>,
+    mut ships: Query<(&mut Ship, &mut ShipState, &Position), Without<crate::colony::SlotAssignment>>,
     mut command_queues: Query<&mut CommandQueue>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
-    system_buildings: Query<&crate::colony::SystemBuildings>,
+    cmd_station_ships: Query<(Entity, &Ship, &ShipState, &crate::colony::SlotAssignment)>,
     _planets: Query<&crate::galaxy::Planet>,
     design_registry: Res<ShipDesignRegistry>,
     building_registry: Res<crate::colony::BuildingRegistry>,
@@ -85,10 +85,7 @@ pub fn process_pending_ship_commands(
                     continue;
                 };
                 // Try FTL first, fall back to sublight
-                let port_params = system_buildings
-                    .get(docked_system)
-                    .map(|sb| PortParams::from_system_buildings(sb, &building_registry))
-                    .unwrap_or(PortParams::NONE);
+                let port_params = PortParams::from_station_ships(docked_system, &cmd_station_ships, &building_registry);
                 match start_ftl_travel_full(
                     &mut state,
                     &ship,

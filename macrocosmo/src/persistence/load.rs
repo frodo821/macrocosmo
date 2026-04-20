@@ -443,6 +443,10 @@ fn apply_component_bag(
         let harbour = map.entity(bits).unwrap_or(Entity::PLACEHOLDER);
         ec.insert(crate::ship::DockedAt(harbour));
     }
+    // Restore SlotAssignment on station ships.
+    if let Some(sa) = &bag.slot_assignment {
+        ec.insert(sa.clone().into_live());
+    }
 
     // Pending command entities
     if let Some(p) = &bag.pending_ship_command {
@@ -662,191 +666,102 @@ fn migrate_colony_hub_slot_zero(world: &mut World) {
     }
 }
 
-/// #388 (G): Post-load migration that auto-spawns station Ship entities for
-/// SystemBuildings whose filled slots reference a `BuildingDefinition` with a
-/// `ship_design_id`, but no corresponding station Ship exists in the system.
-///
-/// This handles old saves that have `SystemBuildings` slots but predate the
-/// station-ship unification (#372-E).
+/// Post-load migration: ensure all station ships have a `SlotAssignment`.
+/// Older saves may have station ships (from the #386/#388 migrations) without
+/// `SlotAssignment`. This assigns slots based on system membership order.
 fn migrate_station_ships(world: &mut World) {
+    use crate::colony::SlotAssignment;
     use crate::colony::SystemBuildings;
-    use crate::components::Position;
-    use crate::faction::FactionOwner;
     use crate::scripting::building_api::BuildingRegistry;
-    use crate::ship::{
-        Cargo, CommandQueue, Fleet, FleetMembers, Owner, RulesOfEngagement, Ship, ShipHitpoints,
-        ShipModifiers, ShipState, ShipStats,
-    };
-    use crate::ship_design::ShipDesignRegistry;
+    use crate::ship::{Ship, ShipState};
 
     // Check if registries exist — they may not in minimal test worlds.
     let has_building_reg = world.get_resource::<BuildingRegistry>().is_some();
-    let has_design_reg = world.get_resource::<ShipDesignRegistry>().is_some();
-    if !has_building_reg || !has_design_reg {
+    if !has_building_reg {
         return;
     }
 
-    // Build a lookup from building_id → (design_id, building_name) from the
-    // registry, extracted into owned data so we don't hold a borrow on world.
-    let building_to_design: std::collections::HashMap<String, (String, String)> = {
+    // Build reverse index: design_id → building_id.
+    let design_to_building: std::collections::HashSet<String> = {
         let building_registry = world.resource::<BuildingRegistry>();
-        let design_registry = world.resource::<ShipDesignRegistry>();
         building_registry
             .buildings
             .values()
-            .filter_map(|def| {
-                def.ship_design_id.as_ref().and_then(|did| {
-                    // Only include if the design actually exists.
-                    if design_registry.get(did).is_some() {
-                        Some((def.id.clone(), (did.clone(), def.name.clone())))
-                    } else {
-                        None
-                    }
-                })
-            })
+            .filter_map(|def| def.ship_design_id.clone())
             .collect()
     };
 
-    if building_to_design.is_empty() {
+    if design_to_building.is_empty() {
         return;
     }
 
-    // Collect systems that need station ships spawned.
-    // For each (system_entity, design_id, building_name, position, owner):
-    let mut to_spawn: Vec<(Entity, String, String, Position, Owner)> = Vec::new();
+    // Collect system max_slots.
+    let system_max_slots: std::collections::HashMap<Entity, usize> = {
+        let mut q = world.query::<(Entity, &SystemBuildings)>();
+        q.iter(world).map(|(e, sb)| (e, sb.max_slots)).collect()
+    };
+
+    // Find station ships without SlotAssignment.
+    let mut to_assign: Vec<(Entity, Entity)> = Vec::new(); // (ship_entity, system_entity)
     {
-        // Collect existing station ships per system: (system_entity, design_id).
-        let mut existing_stations: std::collections::HashSet<(Entity, String)> =
-            std::collections::HashSet::new();
-        {
-            let mut q = world.query::<(&Ship, &ShipState)>();
-            for (ship, state) in q.iter(world) {
-                if let ShipState::InSystem { system } = state {
-                    existing_stations.insert((*system, ship.design_id.clone()));
-                }
+        let mut q = world.query_filtered::<(Entity, &Ship, &ShipState), Without<SlotAssignment>>();
+        for (entity, ship, state) in q.iter(world) {
+            if !design_to_building.contains(&ship.design_id) {
+                continue;
             }
-        }
-
-        let mut q = world.query::<(Entity, &SystemBuildings, &Position, Option<&FactionOwner>)>();
-        for (system_entity, sys_buildings, position, faction_owner) in q.iter(world) {
-            for slot in &sys_buildings.slots {
-                if let Some(bid) = slot {
-                    if let Some((design_id, building_name)) = building_to_design.get(bid.as_str()) {
-                        // Check if a station ship of this design already exists.
-                        if existing_stations.contains(&(system_entity, design_id.clone())) {
-                            continue;
-                        }
-                        let owner = faction_owner
-                            .map(|fo| Owner::Empire(fo.0))
-                            .unwrap_or(Owner::Neutral);
-                        to_spawn.push((
-                            system_entity,
-                            design_id.clone(),
-                            building_name.clone(),
-                            *position,
-                            owner,
-                        ));
-                        // Mark as existing so duplicate slots don't double-spawn.
-                        existing_stations.insert((system_entity, design_id.clone()));
-                    }
-                }
-            }
+            let system = match state {
+                ShipState::InSystem { system } => *system,
+                ShipState::Refitting { system, .. } => *system,
+                _ => continue,
+            };
+            to_assign.push((entity, system));
         }
     }
 
-    if to_spawn.is_empty() {
+    if to_assign.is_empty() {
         return;
     }
 
-    let mut spawned = 0usize;
-    for (system_entity, design_id, station_name, position, owner) in to_spawn {
-        // Read design stats from registry.
-        let (hull_hp, hull_id, sublight_speed, ftl_range, design_revision, modules) = {
-            let design_registry = world.resource::<ShipDesignRegistry>();
-            let design = design_registry.get(&design_id);
-            let hull_hp = design.map(|d| d.hp).unwrap_or(50.0);
-            let hull_id = design
-                .map(|d| d.hull_id.as_str())
-                .unwrap_or("corvette")
-                .to_string();
-            let sublight_speed = design.map(|d| d.sublight_speed).unwrap_or(0.75);
-            let ftl_range = design.map(|d| d.ftl_range).unwrap_or(10.0);
-            let design_revision = design.map(|d| d.revision).unwrap_or(0);
-            let modules = design
-                .map(crate::ship_design::design_equipped_modules)
-                .unwrap_or_default();
-            (
-                hull_hp,
-                hull_id,
-                sublight_speed,
-                ftl_range,
-                design_revision,
-                modules,
-            )
-        };
-
-        // Spawn ship + fleet entities directly on World (no Commands available).
-        let ship_entity = world.spawn_empty().id();
-        let fleet_entity = world.spawn_empty().id();
-        let ship_name = station_name.clone();
-        world.entity_mut(ship_entity).insert((
-            Ship {
-                name: station_name,
-                design_id: design_id.clone(),
-                hull_id,
-                modules,
-                owner,
-                sublight_speed,
-                ftl_range,
-                player_aboard: false,
-                home_port: system_entity,
-                design_revision,
-                fleet: Some(fleet_entity),
-            },
-            ShipState::InSystem {
-                system: system_entity,
-            },
-            position,
-            CommandQueue::default(),
-            Cargo::default(),
-            ShipHitpoints {
-                hull: hull_hp,
-                hull_max: hull_hp,
-                armor: 0.0,
-                armor_max: 0.0,
-                shield: 0.0,
-                shield_max: 0.0,
-                shield_regen: 0.0,
-            },
-            ShipModifiers::default(),
-            ShipStats::default(),
-            RulesOfEngagement::default(),
-            crate::ship::transit_events::LastDockedSystem(Some(system_entity)),
-            SaveId(ship_entity.to_bits()),
-            SaveableMarker,
-        ));
-        world.entity_mut(fleet_entity).insert((
-            Fleet {
-                name: ship_name,
-                flagship: Some(ship_entity),
-            },
-            FleetMembers(vec![ship_entity]),
-            SaveId(fleet_entity.to_bits()),
-            SaveableMarker,
-        ));
-        if let Owner::Empire(e) = owner {
-            world.entity_mut(ship_entity).insert(FactionOwner(e));
+    // Collect already-assigned slots per system.
+    let mut system_slots: std::collections::HashMap<Entity, std::collections::HashSet<usize>> =
+        std::collections::HashMap::new();
+    {
+        let mut q = world.query::<(&ShipState, &SlotAssignment)>();
+        for (state, slot) in q.iter(world) {
+            let system = match state {
+                ShipState::InSystem { system } => *system,
+                ShipState::Refitting { system, .. } => *system,
+                _ => continue,
+            };
+            system_slots.entry(system).or_default().insert(slot.0);
         }
-        spawned += 1;
-        info!(
-            "#388 migration: spawned station ship '{}' for system building at system {:?}",
-            design_id, system_entity
-        );
     }
-    if spawned > 0 {
+
+    let mut migrated = 0usize;
+    for (ship_entity, system_entity) in to_assign {
+        let max_slots = system_max_slots
+            .get(&system_entity)
+            .copied()
+            .unwrap_or(crate::colony::DEFAULT_SYSTEM_BUILDING_SLOTS);
+        let occupied = system_slots.entry(system_entity).or_default();
+        let slot = (0..max_slots).find(|i| !occupied.contains(i));
+        if let Some(slot_idx) = slot {
+            occupied.insert(slot_idx);
+            world
+                .entity_mut(ship_entity)
+                .insert(SlotAssignment(slot_idx));
+            migrated += 1;
+        } else {
+            warn!(
+                "migrate_station_ships: no free slot for station ship {:?} at system {:?}",
+                ship_entity, system_entity
+            );
+        }
+    }
+    if migrated > 0 {
         info!(
-            "#388 migration: spawned {} station ships for existing system buildings",
-            spawned
+            "SlotAssignment migration: assigned {} station ships to slots",
+            migrated
         );
     }
 }

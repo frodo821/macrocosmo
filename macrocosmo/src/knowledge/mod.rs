@@ -359,12 +359,12 @@ pub fn build_system_snapshot(
     star: &StarSystem,
     sys_pos: &Position,
     stockpile: Option<&ResourceStockpile>,
-    sys_buildings: Option<&crate::colony::SystemBuildings>,
+    has_port: bool,
+    has_shipyard: bool,
     colonies: &ColonySnapshotQuery,
     planets: &Query<&crate::galaxy::Planet>,
     planet_attrs: &Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
     hostile_map: &HashMap<Entity, f64>,
-    building_registry: &crate::colony::BuildingRegistry,
 ) -> SystemSnapshot {
     crate::prof_span!("build_system_snapshot");
     let is_colonized = colonies
@@ -381,14 +381,6 @@ pub fn build_system_snapshot(
     let hostile = hostile_map.get(&entity);
     let has_hostile = hostile.is_some();
     let hostile_strength = hostile.copied().unwrap_or(0.0);
-
-    // #176: System buildings info (capability-based check via BuildingRegistry)
-    let has_port = sys_buildings
-        .map(|sb| sb.has_port(building_registry))
-        .unwrap_or(false);
-    let has_shipyard = sys_buildings
-        .map(|sb| sb.has_shipyard(building_registry))
-        .unwrap_or(false);
 
     // #176: System attributes — derive from best planet in the system
     let best_attrs = planet_attrs
@@ -549,7 +541,12 @@ pub fn propagate_knowledge(
         &StarSystem,
         &Position,
         Option<&ResourceStockpile>,
-        Option<&crate::colony::SystemBuildings>,
+    )>,
+    station_ships: Query<(
+        Entity,
+        &crate::ship::Ship,
+        &crate::ship::ShipState,
+        &crate::colony::SlotAssignment,
     )>,
     positions: Query<&Position>,
     mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
@@ -605,7 +602,7 @@ pub fn propagate_knowledge(
         }
     }
 
-    for (entity, star, sys_pos, stockpile, sys_buildings) in &systems {
+    for (entity, star, sys_pos, stockpile) in &systems {
         let distance = physics::distance_ly(player_pos, sys_pos);
         let delay = physics::light_delay_hexadies(distance);
         let observed_at = clock.elapsed - delay;
@@ -622,17 +619,27 @@ pub fn propagate_knowledge(
             continue;
         }
 
+        let sys_has_port = crate::colony::system_buildings::system_has_port(
+            entity,
+            &station_ships,
+            &building_registry,
+        );
+        let sys_has_shipyard = crate::colony::system_buildings::system_has_shipyard(
+            entity,
+            &station_ships,
+            &building_registry,
+        );
         let snapshot = build_system_snapshot(
             entity,
             star,
             sys_pos,
             stockpile,
-            sys_buildings,
+            sys_has_port,
+            sys_has_shipyard,
             &colonies,
             &planets,
             &planet_attrs,
             &hostile_map,
-            &building_registry,
         );
 
         store.update(SystemKnowledge {

@@ -75,9 +75,7 @@ fn setup_colonization_order(app: &mut App) -> (Entity, Entity) {
             authority: Amt::ZERO,
         },
         ResourceCapacity::default(),
-        macrocosmo::colony::SystemBuildings {
-            slots: vec![None; macrocosmo::colony::DEFAULT_SYSTEM_BUILDING_SLOTS],
-        },
+        macrocosmo::colony::SystemBuildings::default(),
         macrocosmo::colony::SystemBuildingQueue::default(),
     ));
 

@@ -1510,9 +1510,7 @@ fn save_load_round_trips_system_buildings_faction_owner() {
         .map(|(e, _)| e)
         .unwrap();
     src.entity_mut(sol)
-        .insert(macrocosmo::colony::SystemBuildings {
-            slots: vec![None; 4],
-        });
+        .insert(macrocosmo::colony::SystemBuildings::default());
 
     let bytes = round_trip_bytes(&mut src);
     let mut dst = World::new();
@@ -1666,8 +1664,12 @@ fn test_old_save_without_docked_at_loads_fine() {
     assert!(ship_count > 0, "ships must survive load without DockedAt");
 }
 
+/// The old migration test verified station ship spawning from SystemBuildings.slots.
+/// After the SlotAssignment refactor, the migration now assigns SlotAssignment
+/// to existing station ships that lack one. This test verifies that behavior.
 #[test]
-fn test_migration_spawns_station_ships_for_existing_buildings() {
+fn test_migration_assigns_slot_to_station_ships_without_slot_assignment() {
+    use macrocosmo::colony::SlotAssignment;
     use macrocosmo::scripting::building_api::{BuildingDefinition, BuildingRegistry};
     use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
 
@@ -1679,23 +1681,43 @@ fn test_migration_spawns_station_ships_for_existing_buildings() {
         .map(|(e, _)| e)
         .unwrap();
 
-    // Add SystemBuildings with a filled slot referencing a building that has a
-    // ship_design_id, but do NOT spawn the corresponding station ship.
-    src.entity_mut(sol).insert(SystemBuildings {
-        slots: vec![Some(BuildingId::new("shipyard")), None, None, None],
-    });
+    // Add SystemBuildings to the system.
+    src.entity_mut(sol).insert(SystemBuildings::default());
+
+    // Spawn a station ship WITHOUT SlotAssignment (simulates old save).
+    let station = src
+        .spawn((
+            Ship {
+                name: "Shipyard".into(),
+                design_id: "station_shipyard_v1".into(),
+                hull_id: "station".into(),
+                modules: Vec::new(),
+                owner: macrocosmo::ship::Owner::Neutral,
+                sublight_speed: 0.0,
+                ftl_range: 0.0,
+                player_aboard: false,
+                home_port: sol,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sol },
+            macrocosmo::components::Position::from([0.0, 0.0, 0.0]),
+            macrocosmo::persistence::SaveId(99999),
+            macrocosmo::persistence::SaveableMarker,
+        ))
+        .id();
+    // Explicitly DO NOT insert SlotAssignment.
+    let _ = station;
 
     let bytes = round_trip_bytes(&mut src);
 
     // Load into a world that has the required registries.
     let mut dst = World::new();
-
-    // Insert a BuildingRegistry with a "shipyard" entry that has ship_design_id.
     let mut building_reg = BuildingRegistry::default();
     building_reg.insert(BuildingDefinition {
         id: "shipyard".into(),
         name: "Shipyard".into(),
-        description: "A shipyard".into(),
+        description: "".into(),
         minerals_cost: Amt::ZERO,
         energy_cost: Amt::ZERO,
         build_time: 10,
@@ -1716,14 +1738,12 @@ fn test_migration_spawns_station_ships_for_existing_buildings() {
         ship_design_id: Some("station_shipyard_v1".into()),
     });
     dst.insert_resource(building_reg);
-
-    // Insert a ShipDesignRegistry with the referenced design.
     let mut design_reg = ShipDesignRegistry::default();
     design_reg.insert(ShipDesignDefinition {
         id: "station_shipyard_v1".into(),
         name: "Station Shipyard".into(),
-        description: "A station shipyard".into(),
-        hull_id: "station_shipyard_hull".into(),
+        description: "".into(),
+        hull_id: "station".into(),
         modules: Vec::new(),
         can_survey: false,
         can_colonize: false,
@@ -1741,28 +1761,22 @@ fn test_migration_spawns_station_ships_for_existing_buildings() {
 
     load_game_from_reader(&mut dst, &bytes[..]).expect("load");
 
-    // After migration, a station ship with design_id "station_shipyard_v1"
-    // should exist in the Sol system.
-    let sol_dst = dst
-        .query::<(Entity, &StarSystem)>()
+    // After migration, the station ship should have a SlotAssignment.
+    let mut found_with_slot = false;
+    for (ship, _state, slot) in dst
+        .query::<(&Ship, &ShipState, Option<&SlotAssignment>)>()
         .iter(&dst)
-        .find(|(_, s)| s.name == "Sol")
-        .map(|(e, _)| e)
-        .unwrap();
-
-    let mut station_found = false;
-    for (ship, state) in dst.query::<(&Ship, &ShipState)>().iter(&dst) {
+    {
         if ship.design_id == "station_shipyard_v1" {
-            if let ShipState::InSystem { system } = state {
-                if *system == sol_dst {
-                    station_found = true;
-                    assert_eq!(ship.name, "Shipyard", "station ship name from building def");
-                }
-            }
+            assert!(
+                slot.is_some(),
+                "migration must assign SlotAssignment to station ships"
+            );
+            found_with_slot = true;
         }
     }
     assert!(
-        station_found,
-        "migration must auto-spawn station ship for SystemBuildings with ship_design_id"
+        found_with_slot,
+        "station ship must exist after load and have SlotAssignment"
     );
 }

@@ -377,12 +377,10 @@ fn port_repair_skips_conquered_core() {
 
     // Add a Port to the system
     {
-        let registry = app.world().resource::<BuildingRegistry>().clone();
-        let mut slots: Vec<Option<BuildingId>> = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
-        // Use the test registry's port id directly
-        slots[0] = Some(BuildingId("port".into()));
-        let sb = SystemBuildings { slots };
-        app.world_mut().entity_mut(sys).insert(sb);
+        let _registry = app.world().resource::<BuildingRegistry>().clone();
+        app.world_mut()
+            .entity_mut(sys)
+            .insert(SystemBuildings::default());
     }
 
     let core = spawn_core_at(app.world_mut(), sys, 1.0, 100.0, empire);

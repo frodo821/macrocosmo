@@ -1969,27 +1969,50 @@ impl SavedBuildings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSystemBuildings {
+    /// Pre-refactor: slot data. Ignored on load (station ships are the SSoT).
+    #[serde(default)]
     pub slots: Vec<Option<String>>,
+    /// Post-refactor: just the capacity.
+    #[serde(default = "default_system_building_max_slots")]
+    pub max_slots: usize,
+}
+
+fn default_system_building_max_slots() -> usize {
+    crate::colony::DEFAULT_SYSTEM_BUILDING_SLOTS
 }
 
 impl SavedSystemBuildings {
     pub fn from_live(v: &SystemBuildings) -> Self {
         Self {
-            slots: v
-                .slots
-                .iter()
-                .map(|s| s.as_ref().map(|b| b.0.clone()))
-                .collect(),
+            slots: Vec::new(),
+            max_slots: v.max_slots,
         }
     }
     pub fn into_live(self) -> SystemBuildings {
-        SystemBuildings {
-            slots: self
-                .slots
-                .into_iter()
-                .map(|s| s.map(BuildingId::new))
-                .collect(),
-        }
+        // If max_slots was not in the save (old format), derive from slots length.
+        let max_slots = if self.max_slots > 0 {
+            self.max_slots
+        } else if !self.slots.is_empty() {
+            self.slots.len()
+        } else {
+            crate::colony::DEFAULT_SYSTEM_BUILDING_SLOTS
+        };
+        SystemBuildings { max_slots }
+    }
+}
+
+/// SlotAssignment on station ships — which system building slot this ship occupies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSlotAssignment {
+    pub slot: usize,
+}
+
+impl SavedSlotAssignment {
+    pub fn from_live(v: &crate::colony::SlotAssignment) -> Self {
+        Self { slot: v.0 }
+    }
+    pub fn into_live(self) -> crate::colony::SlotAssignment {
+        crate::colony::SlotAssignment(self.slot)
     }
 }
 
@@ -4526,6 +4549,9 @@ pub struct SavedComponentBag {
     /// so the component can be restored on load with entity remap.
     #[serde(default)]
     pub docked_at: Option<u64>,
+    /// Station ship's system building slot assignment.
+    #[serde(default)]
+    pub slot_assignment: Option<SavedSlotAssignment>,
     // Pending command entities (free-standing entities, not attached to a "body")
     pub pending_ship_command: Option<SavedPendingShipCommand>,
     pub pending_diplomatic_action: Option<SavedPendingDiplomaticAction>,

@@ -15,9 +15,9 @@ use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
 use super::{
-    BuildQueue, BuildingQueue, Buildings, Colony, DEFAULT_SYSTEM_BUILDING_SLOTS, FoodConsumption,
+    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption,
     LastProductionTick, MaintenanceCost, Production, ProductionFocus, ResourceCapacity,
-    ResourceStockpile, SystemBuildingQueue, SystemBuildings,
+    ResourceStockpile, SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
 
 /// #114: Default cost/time to colonize a new planet from an existing colony in the same system.
@@ -96,7 +96,6 @@ pub fn spawn_capital_colony(
 
     let num_slots = attributes.max_building_slots as usize;
     let slots = vec![None; num_slots];
-    let system_slots = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
 
     let colony_entity = commands
         .spawn((
@@ -142,9 +141,7 @@ pub fn spawn_capital_colony(
             authority: Amt::ZERO,
         },
         ResourceCapacity::default(),
-        SystemBuildings {
-            slots: system_slots,
-        },
+        SystemBuildings::default(),
         SystemBuildingQueue::default(),
     ));
     // #297 (S-2): Tag Colony and StarSystem with their administrative
@@ -340,7 +337,7 @@ pub fn tick_colonization_queue(
                     .get(system_entity)
                     .copied()
                     .unwrap_or(Position::from([0.0, 0.0, 0.0]));
-                crate::ship::spawn_ship(
+                let ship_entity = crate::ship::spawn_ship(
                     &mut commands,
                     "station_shipyard_v1",
                     "Shipyard".to_string(),
@@ -349,6 +346,10 @@ pub fn tick_colonization_queue(
                     owner,
                     &design_registry,
                 );
+                // Assign the first free slot (or slot 0 if no SystemBuildings yet).
+                commands
+                    .entity(ship_entity)
+                    .insert(SlotAssignment(0));
                 info!(
                     "Auto-spawned Shipyard station at {} on colonization",
                     planet_name
