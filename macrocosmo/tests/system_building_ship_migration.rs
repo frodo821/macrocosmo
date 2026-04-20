@@ -247,3 +247,96 @@ fn test_station_ship_has_correct_owner() {
         "Station ship FactionOwner should match the system's owner empire"
     );
 }
+
+/// #413: Regression test — completing a Port build must not destroy an
+/// existing Shipyard in the same system. The bug was that
+/// `tick_system_building_queue` blindly wrote the completed building into
+/// `target_slot` (slot 0), overwriting the Shipyard that had been placed
+/// there by `sync_system_buildings_from_ships`. The fix makes completion
+/// fall back to the first empty slot when the target is already occupied.
+#[test]
+fn test_port_completion_does_not_destroy_shipyard() {
+    let mut app = test_app();
+
+    let empire = {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<bevy::prelude::Entity, bevy::prelude::With<macrocosmo::player::PlayerEmpire>>();
+        q.iter(app.world()).next().unwrap()
+    };
+
+    let system = spawn_test_system(app.world_mut(), Some(empire));
+
+    // Step 1: Build a Shipyard (instant completion) — fills slot 0.
+    {
+        let mut sbq = app
+            .world_mut()
+            .get_mut::<SystemBuildingQueue>(system)
+            .unwrap();
+        sbq.push_build_order(BuildingOrder {
+            order_id: 0,
+            building_id: BuildingId::new("shipyard"),
+            target_slot: 0,
+            minerals_remaining: Amt::ZERO,
+            energy_remaining: Amt::ZERO,
+            build_time_remaining: 0,
+        });
+    }
+    advance_time(&mut app, 1);
+
+    // Verify Shipyard is in slot 0.
+    {
+        let sb = app.world().get::<SystemBuildings>(system).unwrap();
+        assert_eq!(
+            sb.slots[0].as_ref().map(|b| b.0.as_str()),
+            Some("shipyard"),
+            "Shipyard should occupy slot 0 after build"
+        );
+    }
+
+    // Step 2: Queue a Port build that also targets slot 0 (simulating the
+    // race where the slot was empty at queue-time but got filled before
+    // completion).
+    {
+        let mut sbq = app
+            .world_mut()
+            .get_mut::<SystemBuildingQueue>(system)
+            .unwrap();
+        sbq.push_build_order(BuildingOrder {
+            order_id: 0,
+            building_id: BuildingId::new("port"),
+            target_slot: 0, // same slot as Shipyard — this is the bug trigger
+            minerals_remaining: Amt::ZERO,
+            energy_remaining: Amt::ZERO,
+            build_time_remaining: 0,
+        });
+    }
+    advance_time(&mut app, 1);
+
+    // Step 3: Both Shipyard AND Port must coexist.
+    let sb = app.world().get::<SystemBuildings>(system).unwrap();
+    let has_shipyard = sb.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == "shipyard"));
+    let has_port = sb.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == "port"));
+    assert!(
+        has_shipyard,
+        "Shipyard must still exist after Port completion (slots: {:?})",
+        sb.slots
+    );
+    assert!(
+        has_port,
+        "Port must exist after completion (slots: {:?})",
+        sb.slots
+    );
+
+    // Verify both station ships exist.
+    let shipyard_count = count_station_ships(app.world_mut(), "station_shipyard_v1", system);
+    let port_count = count_station_ships(app.world_mut(), "station_port_v1", system);
+    assert_eq!(
+        shipyard_count, 1,
+        "Shipyard station ship must survive Port construction"
+    );
+    assert_eq!(
+        port_count, 1,
+        "Port station ship must be spawned on completion"
+    );
+}

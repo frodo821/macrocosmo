@@ -408,13 +408,34 @@ pub fn tick_system_building_queue(
             {
                 let completed = bq.queue.remove(0);
                 if completed.target_slot < buildings.slots.len() {
+                    // #413: Find a safe slot for the completed building.
+                    // The originally-targeted slot may have been filled by
+                    // sync_system_buildings_from_ships (e.g. auto-spawned
+                    // Shipyard from colonization) between queue time and
+                    // completion. Fall back to the first empty slot.
+                    let actual_slot =
+                        if buildings.slots[completed.target_slot].is_none() {
+                            Some(completed.target_slot)
+                        } else {
+                            buildings
+                                .slots
+                                .iter()
+                                .position(|s| s.is_none())
+                        };
+                    let Some(actual_slot) = actual_slot else {
+                        warn!(
+                            "System building '{}' completed but no empty slot available in system {:?} — skipping placement",
+                            completed.building_id, system_entity
+                        );
+                        continue;
+                    };
                     info!(
                         "System building '{}' completed in slot {}",
-                        completed.building_id, completed.target_slot
+                        completed.building_id, actual_slot
                     );
                     let completed_id = completed.building_id.0.clone();
-                    let completed_slot = completed.target_slot;
-                    buildings.slots[completed.target_slot] = Some(completed.building_id);
+                    let completed_slot = actual_slot;
+                    buildings.slots[actual_slot] = Some(completed.building_id);
                     // #281: Fire macrocosmo:building_built for system-level
                     // construction. `colony` is omitted since system
                     // buildings attach to the StarSystem entity itself.
