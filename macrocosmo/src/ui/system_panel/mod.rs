@@ -170,6 +170,7 @@ pub fn draw_system_panel(
     dispatches: &mut crate::communication::PendingColonyDispatches,
     remote_commands: &Query<&crate::communication::PendingCommand>,
     system_has_core: bool,
+    visibility_tier: Option<crate::knowledge::SystemVisibilityTier>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -301,125 +302,207 @@ pub fn draw_system_panel(
                     egui::RichText::new("Unsurveyed").color(egui::Color32::from_rgb(200, 150, 100)),
                 );
             }
+
+            // #392: Visibility tier badge
+            if let Some(tier) = visibility_tier {
+                use crate::knowledge::SystemVisibilityTier;
+                let (tier_label, tier_color) = match tier {
+                    SystemVisibilityTier::Catalogued => {
+                        ("Catalogued", egui::Color32::from_rgb(120, 120, 140))
+                    }
+                    SystemVisibilityTier::Surveyed => {
+                        ("Survey Data", egui::Color32::from_rgb(180, 160, 100))
+                    }
+                    SystemVisibilityTier::Connected => {
+                        ("Connected", egui::Color32::from_rgb(100, 180, 200))
+                    }
+                    SystemVisibilityTier::Local => {
+                        ("Local", egui::Color32::from_rgb(100, 200, 100))
+                    }
+                };
+                ui.separator();
+                ui.label(egui::RichText::new(tier_label).color(tier_color).small());
+            }
         });
         ui.separator();
 
-        // === Three-column layout ===
-        let available_width = ui.available_width();
-        let available_height = ui.available_height();
-        let left_width = (available_width * 0.22).clamp(180.0, 320.0);
-        let right_width = (available_width * 0.25).clamp(200.0, 380.0);
-        let center_width = (available_width - left_width - right_width - 16.0).max(200.0);
+        // #392: For Catalogued-only systems, show a minimal view
+        let is_catalogued = visibility_tier
+            .map(|t| t == crate::knowledge::SystemVisibilityTier::Catalogued)
+            .unwrap_or(!effective_surveyed);
+        if is_catalogued {
+            ui.add_space(40.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("Uncharted System")
+                        .heading()
+                        .color(egui::Color32::from_rgb(180, 160, 100)),
+                );
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(
+                        "No survey data available. Dispatch a survey ship to explore this system.",
+                    )
+                    .color(egui::Color32::from_rgb(140, 140, 160)),
+                );
+                ui.add_space(10.0);
+                if let Ok((_, stationed, _)) = player_q.single() {
+                    if let Ok(player_pos) = positions.get(stationed.system) {
+                        let dist = physics::distance_ly(player_pos, star_pos);
+                        ui.label(
+                            egui::RichText::new(format!("Distance: {:.1} ly", dist))
+                                .color(egui::Color32::from_rgb(120, 120, 140)),
+                        );
+                    }
+                }
+            });
+            // Skip the three-column detailed view
+        }
 
-        ui.horizontal_top(|ui| {
-            // === LEFT PANEL: System info ===
-            ui.allocate_ui_with_layout(
-                egui::vec2(left_width, available_height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(15, 15, 28))
-                        .inner_margin(6.0)
-                        .rounding(4.0)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("system_panel_left")
-                                .max_height(available_height - 8.0)
-                                .show(ui, |ui| {
-                                    draw_left_panel(
-                                        ui,
-                                        sel_entity,
-                                        star,
-                                        star_pos,
-                                        is_local_system,
-                                        effective_surveyed,
-                                        k_data,
-                                        knowledge,
-                                        clock,
-                                        player_q,
-                                        positions,
-                                        &system_planets,
-                                        selected_planet,
-                                        &stockpile_info,
-                                        anomalies_q,
-                                        deliverable_stockpiles,
-                                        selected_ship_docked_here,
-                                        system_actions_out,
-                                    );
-                                });
-                        });
-                },
-            );
+        // Show Surveyed banner for remote surveyed systems (frozen snapshot)
+        let is_surveyed_not_connected = visibility_tier
+            .map(|t| t == crate::knowledge::SystemVisibilityTier::Surveyed)
+            .unwrap_or(false);
+        if is_surveyed_not_connected {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Survey snapshot -- no active connection")
+                        .color(egui::Color32::from_rgb(180, 160, 100))
+                        .small(),
+                );
+                if let Some(k) = k_data {
+                    let age = clock.elapsed - k.observed_at;
+                    let years = age as f64 / crate::time_system::HEXADIES_PER_YEAR as f64;
+                    ui.label(
+                        egui::RichText::new(format!("({:.1} yr old)", years))
+                            .color(egui::Color32::from_rgb(140, 140, 160))
+                            .small(),
+                    );
+                }
+            });
+            ui.separator();
+        }
 
-            // === CENTER: System map ===
-            ui.allocate_ui_with_layout(
-                egui::vec2(center_width, available_height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(6, 6, 14))
-                        .inner_margin(4.0)
-                        .rounding(4.0)
-                        .show(ui, |ui| {
-                            draw_system_map(
-                                ui,
-                                &star.star_type,
-                                &system_planets,
-                                selected_planet,
-                                &docked_ships,
-                                design_registry,
-                            );
-                        });
-                },
-            );
+        if is_catalogued {
+            // Early return — skip the detailed panels below
+        } else {
+            // === Three-column layout ===
+            let available_width = ui.available_width();
+            let available_height = ui.available_height();
+            let left_width = (available_width * 0.22).clamp(180.0, 320.0);
+            let right_width = (available_width * 0.25).clamp(200.0, 380.0);
+            let center_width = (available_width - left_width - right_width - 16.0).max(200.0);
 
-            // === RIGHT PANEL: Actions ===
-            ui.allocate_ui_with_layout(
-                egui::vec2(right_width, available_height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(15, 15, 28))
-                        .inner_margin(6.0)
-                        .rounding(4.0)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("system_panel_right")
-                                .max_height(available_height - 8.0)
-                                .show(ui, |ui| {
-                                    draw_right_panel(
-                                        ui,
-                                        sel_entity,
-                                        star_pos,
-                                        selected_ship,
-                                        &docked_ships,
-                                        &docked_stations,
-                                        hull_registry,
-                                        module_registry,
-                                        design_registry,
-                                        system_buildings_q,
-                                        construction_params,
-                                        building_registry,
-                                        &colonized_planets,
-                                        planet_entities,
-                                        planets,
-                                        colonies,
-                                        colonization_queues,
-                                        colonization_actions_out,
-                                        deep_space_structures,
-                                        structure_registry,
-                                        deliverable_avail,
-                                        system_actions_out,
-                                        dispatches,
-                                        remote_commands,
-                                        clock.elapsed,
-                                        system_has_core,
-                                    );
-                                });
-                        });
-                },
-            );
-        });
+            ui.horizontal_top(|ui| {
+                // === LEFT PANEL: System info ===
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_width, available_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        egui::Frame::NONE
+                            .fill(egui::Color32::from_rgb(15, 15, 28))
+                            .inner_margin(6.0)
+                            .rounding(4.0)
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("system_panel_left")
+                                    .max_height(available_height - 8.0)
+                                    .show(ui, |ui| {
+                                        draw_left_panel(
+                                            ui,
+                                            sel_entity,
+                                            star,
+                                            star_pos,
+                                            is_local_system,
+                                            effective_surveyed,
+                                            k_data,
+                                            knowledge,
+                                            clock,
+                                            player_q,
+                                            positions,
+                                            &system_planets,
+                                            selected_planet,
+                                            &stockpile_info,
+                                            anomalies_q,
+                                            deliverable_stockpiles,
+                                            selected_ship_docked_here,
+                                            system_actions_out,
+                                        );
+                                    });
+                            });
+                    },
+                );
+
+                // === CENTER: System map ===
+                ui.allocate_ui_with_layout(
+                    egui::vec2(center_width, available_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        egui::Frame::NONE
+                            .fill(egui::Color32::from_rgb(6, 6, 14))
+                            .inner_margin(4.0)
+                            .rounding(4.0)
+                            .show(ui, |ui| {
+                                draw_system_map(
+                                    ui,
+                                    &star.star_type,
+                                    &system_planets,
+                                    selected_planet,
+                                    &docked_ships,
+                                    design_registry,
+                                );
+                            });
+                    },
+                );
+
+                // === RIGHT PANEL: Actions ===
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_width, available_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        egui::Frame::NONE
+                            .fill(egui::Color32::from_rgb(15, 15, 28))
+                            .inner_margin(6.0)
+                            .rounding(4.0)
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("system_panel_right")
+                                    .max_height(available_height - 8.0)
+                                    .show(ui, |ui| {
+                                        draw_right_panel(
+                                            ui,
+                                            sel_entity,
+                                            star_pos,
+                                            selected_ship,
+                                            &docked_ships,
+                                            &docked_stations,
+                                            hull_registry,
+                                            module_registry,
+                                            design_registry,
+                                            system_buildings_q,
+                                            construction_params,
+                                            building_registry,
+                                            &colonized_planets,
+                                            planet_entities,
+                                            planets,
+                                            colonies,
+                                            colonization_queues,
+                                            colonization_actions_out,
+                                            deep_space_structures,
+                                            structure_registry,
+                                            deliverable_avail,
+                                            system_actions_out,
+                                            dispatches,
+                                            remote_commands,
+                                            clock.elapsed,
+                                            system_has_core,
+                                        );
+                                    });
+                            });
+                    },
+                );
+            });
+        } // else (not catalogued) — end of three-column layout
     });
 
     if close_system_view {

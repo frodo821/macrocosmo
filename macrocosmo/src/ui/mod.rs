@@ -918,6 +918,7 @@ fn draw_main_panels_system(
             &ResearchPool,
             &ResearchQueue,
             &AuthorityParams,
+            Option<&crate::knowledge::SystemVisibilityMap>,
         ),
         With<PlayerEmpire>,
     >,
@@ -937,6 +938,7 @@ fn draw_main_panels_system(
         _research_pool,
         _research_queue,
         _authority_params,
+        vis_map_opt,
     )) = empire_q.single()
     else {
         return;
@@ -988,6 +990,12 @@ fn draw_main_panels_system(
         .0
         .map(|sys| world.core_ships.iter().any(|(at, _)| at.0 == sys))
         .unwrap_or(false);
+    // #392: Compute visibility tier for selected system
+    let selected_vis_tier = selection.selected_system.0.map(|sys| {
+        vis_map_opt
+            .map(|vm| vm.get(sys))
+            .unwrap_or(crate::knowledge::SystemVisibilityTier::Catalogued)
+    });
     system_panel::draw_system_panel(
         ctx,
         &mut selection.selected_system,
@@ -1023,6 +1031,7 @@ fn draw_main_panels_system(
         &mut deliverables_res.colony_dispatches,
         &world.remote_commands,
         selected_system_has_core,
+        selected_vis_tier,
     );
 
     for action in colonization_actions {
