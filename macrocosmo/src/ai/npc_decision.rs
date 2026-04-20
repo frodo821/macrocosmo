@@ -129,8 +129,15 @@ impl NpcPolicy for NoOpPolicy {
 ///
 /// Known limitation: metrics are global (not per-faction) in Phase 1; the
 /// policy treats them as "self" metrics for each NPC.
-#[derive(Default, Debug, Clone, Copy)]
-pub struct SimpleNpcPolicy;
+/// Minimum hexadies between consecutive non-empty decisions for a faction.
+/// Prevents re-issuing the same command while the previous one is still
+/// being processed (route computation is async).
+const DECISION_COOLDOWN_HEXADIES: i64 = 5;
+
+#[derive(Default)]
+pub struct SimpleNpcPolicy {
+    last_decision: std::collections::HashMap<Entity, i64>,
+}
 
 impl NpcPolicy for SimpleNpcPolicy {
     fn decide(
@@ -141,6 +148,13 @@ impl NpcPolicy for SimpleNpcPolicy {
         bus: &macrocosmo_ai::AiBus,
         context: &NpcContext,
     ) -> Vec<Command> {
+        // Cooldown: skip if we decided recently.
+        if let Some(&last) = self.last_decision.get(&faction_entity) {
+            if now - last < DECISION_COOLDOWN_HEXADIES {
+                return Vec::new();
+            }
+        }
+
         let mut commands = Vec::new();
         let faction_id = to_ai_faction(faction_entity);
 
@@ -177,6 +191,9 @@ impl NpcPolicy for SimpleNpcPolicy {
             commands.push(cmd);
         }
 
+        if !commands.is_empty() {
+            self.last_decision.insert(faction_entity, now);
+        }
         commands
     }
 }
@@ -196,6 +213,7 @@ pub fn npc_decision_tick(
     mut bus: ResMut<AiBusResource>,
     npcs: Query<(Entity, &Faction), With<AiControlled>>,
     hostiles: Query<&AtSystem, With<Hostile>>,
+    mut policy: Local<SimpleNpcPolicy>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
     let now = clock.elapsed;
@@ -203,8 +221,6 @@ pub fn npc_decision_tick(
         return;
     }
     last_tick.0 = now;
-
-    let mut policy = SimpleNpcPolicy;
 
     let hostile_systems: Vec<Entity> = hostiles.iter().map(|at| at.0).collect();
     let context = NpcContext {
@@ -270,7 +286,7 @@ mod tests {
             hostile_systems: vec![hostile_sys],
         };
 
-        let mut policy = SimpleNpcPolicy;
+        let mut policy = SimpleNpcPolicy::default();
         let cmds = policy.decide(
             "test_faction",
             Entity::from_raw_u32(1).unwrap(),
@@ -305,7 +321,7 @@ mod tests {
             hostile_systems: vec![],
         };
 
-        let mut policy = SimpleNpcPolicy;
+        let mut policy = SimpleNpcPolicy::default();
         let cmds = policy.decide(
             "test_faction",
             Entity::from_raw_u32(1).unwrap(),
@@ -332,7 +348,7 @@ mod tests {
             hostile_systems: vec![],
         };
 
-        let mut policy = SimpleNpcPolicy;
+        let mut policy = SimpleNpcPolicy::default();
         let cmds = policy.decide(
             "test_faction",
             Entity::from_raw_u32(1).unwrap(),
@@ -359,7 +375,7 @@ mod tests {
             hostile_systems: vec![],
         };
 
-        let mut policy = SimpleNpcPolicy;
+        let mut policy = SimpleNpcPolicy::default();
         let cmds = policy.decide(
             "test_faction",
             Entity::from_raw_u32(1).unwrap(),
@@ -386,7 +402,7 @@ mod tests {
             hostile_systems: vec![hostile_sys],
         };
 
-        let mut policy = SimpleNpcPolicy;
+        let mut policy = SimpleNpcPolicy::default();
         let cmds = policy.decide(
             "test_faction",
             Entity::from_raw_u32(1).unwrap(),
