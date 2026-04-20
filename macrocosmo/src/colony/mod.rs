@@ -108,6 +108,14 @@ impl Plugin for ColonyPlugin {
             )
             // #386: Derive SystemBuildings from station Ship entities after
             // the building queue tick has spawned/despawned station ships.
+            // #413: ApplyDeferred ensures station ships spawned by
+            // tick_system_building_queue are visible to the sync system.
+            .add_systems(
+                Update,
+                bevy::ecs::schedule::ApplyDeferred
+                    .after(tick_system_building_queue)
+                    .before(sync_system_buildings_from_ships),
+            )
             .add_systems(
                 Update,
                 sync_system_buildings_from_ships
