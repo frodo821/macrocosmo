@@ -748,6 +748,14 @@ pub fn detect_annihilation(
         if has_colony {
             continue;
         }
+        // #415: Skip factions that have never been active (no on_game_start,
+        // no homeworld assigned yet — e.g. NPC stubs awaiting #189).
+        // An inactive faction owns nothing, but that doesn't mean it was
+        // annihilated — it simply hasn't entered the game yet.
+        if active_wars.wars_involving(empire_entity).is_empty() {
+            // No sovereignty, no colony, never been at war — not yet active.
+            continue;
+        }
 
         // --- Empire is annihilated ---
         info!(
@@ -2237,10 +2245,23 @@ mod tests {
             ))
             .id();
 
+        // Must be involved in a war to be considered "was once active".
+        // Inactive empires (no war, no sovereignty, no colony) are skipped.
+        let dummy_enemy = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<crate::casus_belli::ActiveWars>()
+            .wars
+            .push(crate::casus_belli::ActiveWar {
+                cb_id: "test".into(),
+                attacker: dummy_enemy,
+                defender: empire,
+                started_at: 0,
+            });
+
         app.update();
         assert!(
             app.world().get::<Extinct>(empire).is_some(),
-            "Empire without sovereignty or colonies should be annihilated"
+            "Empire at war without sovereignty or colonies should be annihilated"
         );
     }
 
