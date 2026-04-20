@@ -708,13 +708,17 @@ pub fn faction_can_diplomacy(
 
 /// System that detects empire annihilation each tick.
 ///
-/// An empire is considered annihilated when it owns **no** Core ships and
-/// **no** colonies. When detected, the [`Extinct`] component is attached,
-/// all active wars involving the faction are ended, and relations with
-/// the faction are frozen (no further standing or state changes).
+/// An empire is considered annihilated when it owns **no** sovereign star
+/// systems (via [`Sovereignty`]) and **no** colonies. When detected, the
+/// [`Extinct`] component is attached, all active wars involving the faction
+/// are ended, and relations with the faction are frozen (no further standing
+/// or state changes).
 ///
 /// Factions that already carry `Extinct` are skipped to prevent
 /// re-detection.
+///
+/// A grace period (hd 0) is enforced to avoid false positives during the
+/// first frame before all startup systems have flushed their commands.
 pub fn detect_annihilation(
     mut commands: Commands,
     clock: Res<crate::time_system::GameClock>,
@@ -722,16 +726,21 @@ pub fn detect_annihilation(
         (Entity, &crate::player::Faction),
         (With<crate::player::Empire>, Without<Extinct>),
     >,
-    core_ships: Query<&FactionOwner, With<crate::ship::CoreShip>>,
+    sovereignties: Query<&crate::galaxy::Sovereignty, With<crate::galaxy::StarSystem>>,
     colonies: Query<&FactionOwner, With<crate::colony::Colony>>,
     mut active_wars: ResMut<crate::casus_belli::ActiveWars>,
     mut relations: ResMut<FactionRelations>,
     mut next_event_id: ResMut<crate::knowledge::NextEventId>,
 ) {
+    if clock.elapsed <= 0 {
+        return;
+    }
+
     for (empire_entity, faction) in &empires {
-        // Check if this empire owns any Core ship.
-        let has_core = core_ships.iter().any(|fo| fo.0 == empire_entity);
-        if has_core {
+        let has_sovereignty = sovereignties.iter().any(|sov| {
+            sov.owner == Some(crate::ship::Owner::Empire(empire_entity))
+        });
+        if has_sovereignty {
             continue;
         }
         // Check if this empire owns any colony.
@@ -2164,5 +2173,110 @@ mod tests {
         let kf = KnownFactions::default();
         assert!(!kf.is_known(npc));
         assert!(!kf.is_known(player));
+    }
+
+    // ---- #415: detect_annihilation regression tests ----
+
+    fn annihilation_test_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<crate::time_system::GameClock>();
+        app.init_resource::<crate::casus_belli::ActiveWars>();
+        app.init_resource::<FactionRelations>();
+        app.init_resource::<crate::knowledge::NextEventId>();
+        app.add_systems(Update, detect_annihilation);
+        app
+    }
+
+    #[test]
+    fn annihilation_skips_empire_with_sovereignty() {
+        let mut app = annihilation_test_app();
+        app.world_mut()
+            .resource_mut::<crate::time_system::GameClock>()
+            .elapsed = 1;
+
+        let empire = app
+            .world_mut()
+            .spawn((
+                crate::player::Empire,
+                crate::player::Faction {
+                    name: "TestEmpire".into(),
+                    faction_type_id: "default".into(),
+                    can_diplomacy: true,
+                    is_player: false,
+                },
+            ))
+            .id();
+
+        app.world_mut().spawn((
+            crate::galaxy::StarSystem {
+                name: "Sol".into(),
+                surveyed: true,
+                is_capital: false,
+                star_type: "yellow_dwarf".into(),
+                ..Default::default()
+            },
+            crate::galaxy::Sovereignty {
+                owner: Some(crate::ship::Owner::Empire(empire)),
+                ..Default::default()
+            },
+        ));
+
+        app.update();
+        assert!(
+            app.world().get::<Extinct>(empire).is_none(),
+            "Empire with sovereignty should NOT be annihilated"
+        );
+    }
+
+    #[test]
+    fn annihilation_marks_empire_without_sovereignty_or_colony() {
+        let mut app = annihilation_test_app();
+        app.world_mut()
+            .resource_mut::<crate::time_system::GameClock>()
+            .elapsed = 1;
+
+        let empire = app
+            .world_mut()
+            .spawn((
+                crate::player::Empire,
+                crate::player::Faction {
+                    name: "Doomed".into(),
+                    faction_type_id: "default".into(),
+                    can_diplomacy: true,
+                    is_player: false,
+                },
+            ))
+            .id();
+
+        app.update();
+        assert!(
+            app.world().get::<Extinct>(empire).is_some(),
+            "Empire without sovereignty or colonies should be annihilated"
+        );
+    }
+
+    #[test]
+    fn annihilation_skips_at_hd_zero() {
+        let mut app = annihilation_test_app();
+        // clock.elapsed == 0 by default
+
+        let empire = app
+            .world_mut()
+            .spawn((
+                crate::player::Empire,
+                crate::player::Faction {
+                    name: "GracePeriod".into(),
+                    faction_type_id: "default".into(),
+                    can_diplomacy: true,
+                    is_player: false,
+                },
+            ))
+            .id();
+
+        app.update();
+        assert!(
+            app.world().get::<Extinct>(empire).is_none(),
+            "Annihilation should be skipped at hd 0 (grace period)"
+        );
     }
 }
