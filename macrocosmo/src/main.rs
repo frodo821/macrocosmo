@@ -62,7 +62,8 @@ fn main() {
         );
     }
 
-    let ai_player_mode = AiPlayerMode(cli.ai_player);
+    // --no-player implies --ai-player: the player empire is AI-driven.
+    let ai_player_mode = AiPlayerMode(cli.ai_player || cli.no_player);
 
     let mut app = App::new();
     app.insert_resource(observer_mode)
