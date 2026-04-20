@@ -214,17 +214,25 @@ pub fn draw_system_panel(
     system_planets.sort_by(|a, b| a.1.cmp(&b.1));
 
     // Auto-select planet: if no planet selected or selected planet not in this system,
-    // pick first colonized planet, or first planet
-    let current_planet_valid = selected_planet
-        .0
-        .map(|pe| system_planets.iter().any(|(e, _, _, _, _)| *e == pe))
-        .unwrap_or(false);
-    if !current_planet_valid {
-        selected_planet.0 = system_planets
-            .iter()
-            .find(|(_, _, _, colonized, _)| *colonized)
-            .or(system_planets.first())
-            .map(|(e, _, _, _, _)| *e);
+    // pick first colonized planet, or first planet.
+    // #392: Only auto-select for Surveyed+ systems (Catalogued hides planets).
+    let is_catalogued_tier = visibility_tier
+        .map(|t| t == crate::knowledge::SystemVisibilityTier::Catalogued)
+        .unwrap_or(!star.surveyed);
+    if is_catalogued_tier {
+        selected_planet.0 = None;
+    } else {
+        let current_planet_valid = selected_planet
+            .0
+            .map(|pe| system_planets.iter().any(|(e, _, _, _, _)| *e == pe))
+            .unwrap_or(false);
+        if !current_planet_valid {
+            selected_planet.0 = system_planets
+                .iter()
+                .find(|(_, _, _, colonized, _)| *colonized)
+                .or(system_planets.first())
+                .map(|(e, _, _, _, _)| *e);
+        }
     }
 
     // #176: Survey status from knowledge for remote systems
@@ -511,6 +519,11 @@ pub fn draw_system_panel(
     }
 
     // === Planet Info Window (independent floating window) ===
+    // #392: Only show planet window for Surveyed+ systems.
+    let show_planet_window = visibility_tier
+        .map(|t| t >= crate::knowledge::SystemVisibilityTier::Surveyed)
+        .unwrap_or(effective_surveyed);
+    if show_planet_window {
     draw_planet_window(
         ctx,
         sel_entity,
@@ -535,6 +548,7 @@ pub fn draw_system_panel(
         k_data,
         clock.elapsed,
     );
+    } // show_planet_window
 }
 
 // ---------------------------------------------------------------------------
