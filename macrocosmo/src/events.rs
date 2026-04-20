@@ -69,6 +69,8 @@ pub enum GameEventKind {
     FactionAnnihilated,
     /// #409: A ship has been destroyed in combat.
     ShipDestroyed,
+    /// #409: A ship has not returned by expected time — presumed missing.
+    ShipMissing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,7 +103,8 @@ impl GameEventKind {
             | GameEventKind::CombatDefeat
             | GameEventKind::HostileDetected
             | GameEventKind::CoreConquered
-            | GameEventKind::ShipDestroyed => EventCategory::Combat,
+            | GameEventKind::ShipDestroyed
+            | GameEventKind::ShipMissing => EventCategory::Combat,
 
             GameEventKind::SurveyComplete
             | GameEventKind::SurveyDiscovery
@@ -142,7 +145,8 @@ impl GameEventKind {
             | GameEventKind::WarDeclared
             | GameEventKind::WarEnded
             | GameEventKind::FactionAnnihilated
-            | GameEventKind::ShipDestroyed => true,
+            | GameEventKind::ShipDestroyed
+            | GameEventKind::ShipMissing => true,
 
             GameEventKind::ShipArrived
             | GameEventKind::ShipBuilt
@@ -274,6 +278,7 @@ mod tests {
         assert!(GameEventKind::WarDeclared.should_pause());
         assert!(GameEventKind::WarEnded.should_pause());
         assert!(GameEventKind::ShipDestroyed.should_pause());
+        assert!(GameEventKind::ShipMissing.should_pause());
     }
 
     #[test]
@@ -314,6 +319,7 @@ mod tests {
             GameEventKind::WarEnded,
             GameEventKind::FactionAnnihilated,
             GameEventKind::ShipDestroyed,
+            GameEventKind::ShipMissing,
         ];
         for kind in &all_kinds {
             let _cat = kind.category();

@@ -539,12 +539,19 @@ pub fn draw_ships(
             };
 
             if let Some(pos) = pos {
-                let (r, g, b) = ship_color_rgb(&snapshot.design_id);
-                // Semi-transparent ghost marker
-                gizmos.circle_2d(pos, 3.0, Color::srgba(r, g, b, 0.3));
-                // Pulsing outer ring to indicate "last known"
-                let pulse = (clock.as_years_f64() as f32 * 2.0).sin() * 0.15 + 0.2;
-                gizmos.circle_2d(pos, 5.0, Color::srgba(r, g, b, pulse));
+                if snapshot.last_known_state == ShipSnapshotState::Missing {
+                    // Amber "?" pulsing marker for missing ships
+                    let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.2 + 0.6;
+                    gizmos.circle_2d(pos, 4.0, Color::srgba(1.0, 0.7, 0.1, pulse));
+                    gizmos.circle_2d(pos, 6.5, Color::srgba(1.0, 0.7, 0.1, pulse * 0.4));
+                } else {
+                    let (r, g, b) = ship_color_rgb(&snapshot.design_id);
+                    // Semi-transparent ghost marker
+                    gizmos.circle_2d(pos, 3.0, Color::srgba(r, g, b, 0.3));
+                    // Pulsing outer ring to indicate "last known"
+                    let pulse = (clock.as_years_f64() as f32 * 2.0).sin() * 0.15 + 0.2;
+                    gizmos.circle_2d(pos, 5.0, Color::srgba(r, g, b, pulse));
+                }
             }
         }
     }

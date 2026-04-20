@@ -317,6 +317,7 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
                         name: r.name.clone(),
                         design_id: r.design_id.clone(),
                         last_known_system_bits: system_id,
+                        marked_missing: r.marked_missing,
                     })
                 })
                 .collect()

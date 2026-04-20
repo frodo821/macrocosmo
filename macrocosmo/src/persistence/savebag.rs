@@ -2943,6 +2943,7 @@ pub enum SavedShipSnapshotState {
     Settling,
     Refitting,
     Destroyed,
+    Missing,
     Loitering {
         position: [f64; 3],
     },
@@ -2956,6 +2957,7 @@ impl From<&ShipSnapshotState> for SavedShipSnapshotState {
             ShipSnapshotState::Settling => Self::Settling,
             ShipSnapshotState::Refitting => Self::Refitting,
             ShipSnapshotState::Destroyed => Self::Destroyed,
+            ShipSnapshotState::Missing => Self::Missing,
             ShipSnapshotState::Loitering { position } => Self::Loitering {
                 position: *position,
             },
@@ -2971,6 +2973,7 @@ impl From<SavedShipSnapshotState> for ShipSnapshotState {
             SavedShipSnapshotState::Settling => Self::Settling,
             SavedShipSnapshotState::Refitting => Self::Refitting,
             SavedShipSnapshotState::Destroyed => Self::Destroyed,
+            SavedShipSnapshotState::Missing => Self::Missing,
             SavedShipSnapshotState::Loitering { position } => Self::Loitering { position },
         }
     }
@@ -4216,6 +4219,7 @@ pub enum SavedGameEventKind {
     WarEnded,
     FactionAnnihilated,
     ShipDestroyed,
+    ShipMissing,
 }
 impl From<&GameEventKind> for SavedGameEventKind {
     fn from(v: &GameEventKind) -> Self {
@@ -4240,6 +4244,7 @@ impl From<&GameEventKind> for SavedGameEventKind {
             GameEventKind::WarEnded => Self::WarEnded,
             GameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
             GameEventKind::ShipDestroyed => Self::ShipDestroyed,
+            GameEventKind::ShipMissing => Self::ShipMissing,
         }
     }
 }
@@ -4266,6 +4271,7 @@ impl From<SavedGameEventKind> for GameEventKind {
             SavedGameEventKind::WarEnded => Self::WarEnded,
             SavedGameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
             SavedGameEventKind::ShipDestroyed => Self::ShipDestroyed,
+            SavedGameEventKind::ShipMissing => Self::ShipMissing,
         }
     }
 }
@@ -4442,6 +4448,8 @@ pub struct SavedDestroyedShipRecord {
     pub name: String,
     pub design_id: String,
     pub last_known_system_bits: Option<u64>,
+    #[serde(default)]
+    pub marked_missing: bool,
 }
 
 impl SavedDestroyedShipRecord {
@@ -4453,6 +4461,7 @@ impl SavedDestroyedShipRecord {
             name: self.name,
             design_id: self.design_id,
             last_known_system: self.last_known_system_bits.map(|b| remap_entity(b, map)),
+            marked_missing: self.marked_missing,
         }
     }
 }

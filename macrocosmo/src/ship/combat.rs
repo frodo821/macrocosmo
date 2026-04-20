@@ -480,6 +480,7 @@ pub fn resolve_combat(
                         name: name.clone(),
                         design_id: design_id.clone(),
                         last_known_system: Some(*system_entity),
+                        marked_missing: false,
                     });
                 }
                 // #59: Check if player is aboard this ship — respawn at capital
@@ -797,6 +798,7 @@ pub fn resolve_combat(
                             name: name.clone(),
                             design_id: design_id.clone(),
                             last_known_system: Some(*system_entity),
+                            marked_missing: false,
                         });
                     }
                     // Check if player is aboard.
@@ -858,6 +860,7 @@ pub fn resolve_combat(
                             name: name.clone(),
                             design_id: design_id.clone(),
                             last_known_system: Some(*system_entity),
+                            marked_missing: false,
                         });
                     }
                     if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {

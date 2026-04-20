@@ -78,7 +78,13 @@ pub struct DestroyedShipRecord {
     pub name: String,
     pub design_id: String,
     pub last_known_system: Option<Entity>,
+    /// Set to `true` once the "Missing" notification has been emitted.
+    pub marked_missing: bool,
 }
+
+/// Grace period (in hexadies) before a destroyed ship is considered "missing."
+/// Roughly 1 month of game time — the player notices "it should have returned."
+pub const MISSING_GRACE_HEXADIES: i64 = 5;
 
 /// #409: Registry of ships destroyed but whose destruction hasn't reached the
 /// player yet (light-speed delay). Once light arrives, the corresponding
@@ -225,6 +231,8 @@ pub enum ShipSnapshotState {
     Settling,
     Refitting,
     Destroyed,
+    /// #409: Ship has not returned by expected time — presumed lost.
+    Missing,
     /// #185: Ship is loitering at a deep-space coordinate (not in any system).
     Loitering {
         position: [f64; 3],
@@ -784,14 +792,17 @@ pub fn propagate_knowledge(
     }
 }
 
-/// #409: Check destroyed ship records and mark their snapshots as `Destroyed`
-/// once light-speed delay from the destruction site to the player has elapsed.
+/// #409: Check destroyed ship records. Two-phase transition:
+/// 1. After `MISSING_GRACE_HEXADIES` → mark snapshot as Missing, emit ShipMissing event
+/// 2. After full light-speed delay → mark snapshot as Destroyed, remove record
 pub fn update_destroyed_ship_knowledge(
     clock: Res<GameClock>,
     player_q: Query<&StationedAt, With<Player>>,
     positions: Query<&Position>,
     mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
     mut registry: ResMut<DestroyedShipRegistry>,
+    mut events: MessageWriter<crate::events::GameEvent>,
+    mut next_id: ResMut<NextEventId>,
 ) {
     let Ok(mut store) = empire_q.single_mut() else {
         return;
@@ -804,7 +815,7 @@ pub fn update_destroyed_ship_knowledge(
     };
     let player_pos_arr = player_pos.as_array();
 
-    registry.records.retain(|record| {
+    registry.records.retain_mut(|record| {
         let distance = physics::distance_ly_arr(player_pos_arr, record.destruction_pos);
         let delay = physics::light_delay_hexadies(distance);
         let arrives_at = record.destruction_tick + delay;
@@ -822,8 +833,31 @@ pub fn update_destroyed_ship_knowledge(
                 source: ObservationSource::Direct,
             });
             false // remove from registry
+        } else if !record.marked_missing
+            && clock.elapsed >= record.destruction_tick + MISSING_GRACE_HEXADIES
+        {
+            record.marked_missing = true;
+            store.update_ship(ShipSnapshot {
+                entity: record.entity,
+                name: record.name.clone(),
+                design_id: record.design_id.clone(),
+                last_known_state: ShipSnapshotState::Missing,
+                last_known_system: record.last_known_system,
+                observed_at: clock.elapsed,
+                hp: 0.0,
+                hp_max: 0.0,
+                source: ObservationSource::Direct,
+            });
+            events.write(crate::events::GameEvent::new(
+                &mut next_id,
+                clock.elapsed,
+                crate::events::GameEventKind::ShipMissing,
+                format!("{} has not returned — presumed missing", record.name),
+                record.last_known_system,
+            ));
+            true // keep — still waiting for light
         } else {
-            true // keep — light hasn't arrived yet
+            true // keep — not yet missing or already marked
         }
     });
 }
