@@ -7,8 +7,13 @@
 //!   `MoveRequested` for the target system.
 //! - `retreat` → find ships in hostile systems, emit `MoveRequested` back to
 //!   the faction's home system (system with most colonies).
-//! - `fortify_system`, `reposition`, `blockade` → log only (Phase 1).
+//! - `build_ship` → queue ship construction at a system with a shipyard.
+//! - `fortify_system` → queue a default combat ship at a system with a shipyard.
+//! - `research_focus` → set the empire's active research target.
+//! - `build_structure` → queue a building at a colony.
+//! - `reposition` / `blockade` → move ships to a target system.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use macrocosmo_ai::CommandValue;
@@ -16,13 +21,33 @@ use macrocosmo_ai::CommandValue;
 use crate::ai::convert::{from_ai_system, to_ai_faction};
 use crate::ai::emit::AiBusDrainer;
 use crate::ai::schema::ids::command as cmd_ids;
-use crate::galaxy::{AtSystem, Hostile, Sovereignty, StarSystem};
+use crate::amount::Amt;
+use crate::colony::building_queue::{BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings};
+use crate::colony::{BuildingRegistry, Colony};
+use crate::galaxy::{AtSystem, Hostile, Planet, Sovereignty, StarSystem};
 use crate::player::{Empire, Faction};
 use crate::ship::command_events::{
     ColonizeRequested, CommandId, MoveRequested, NextCommandId, SurveyRequested,
 };
 use crate::ship::{CommandQueue, Owner, Ship, ShipState};
+use crate::ship_design::ShipDesignRegistry;
+use crate::colony::system_buildings::{SlotAssignment, system_has_shipyard};
+use crate::technology::{ResearchQueue, TechId, TechTree};
 use crate::time_system::GameClock;
+
+/// Extra queries needed by build / research / structure commands, bundled
+/// into a `SystemParam` to keep `drain_ai_commands` under Bevy's 16-param
+/// limit.
+#[derive(SystemParam)]
+pub struct BuildResearchParams<'w, 's> {
+    design_registry: Option<Res<'w, ShipDesignRegistry>>,
+    building_registry: Option<Res<'w, BuildingRegistry>>,
+    build_queues: Query<'w, 's, &'static mut BuildQueue>,
+    station_ships: Query<'w, 's, (Entity, &'static Ship, &'static ShipState, &'static SlotAssignment)>,
+    empire_tech: Query<'w, 's, (&'static mut TechTree, &'static mut ResearchQueue), With<Empire>>,
+    colonies: Query<'w, 's, (Entity, &'static Colony, &'static Buildings, &'static mut BuildingQueue)>,
+    planets: Query<'w, 's, &'static Planet>,
+}
 
 /// Drain AI commands from the bus and apply them to the game world.
 pub fn drain_ai_commands(
@@ -36,6 +61,7 @@ pub fn drain_ai_commands(
     mut colonize_writer: Option<MessageWriter<ColonizeRequested>>,
     mut next_cmd_id: ResMut<NextCommandId>,
     clock: Res<GameClock>,
+    mut build_research: BuildResearchParams,
 ) {
     let commands = drainer.drain_commands();
     if commands.is_empty() {
@@ -90,20 +116,56 @@ pub fn drain_ai_commands(
                     clock.elapsed,
                 );
             }
+        } else if kind_str == cmd_ids::build_ship().as_str() {
+            handle_build_ship(
+                &cmd.issuer,
+                &cmd.params,
+                &sovereignty,
+                &empires,
+                &mut build_research,
+            );
         } else if kind_str == cmd_ids::fortify_system().as_str() {
-            info!(
-                "AI command fortify_system from faction {:?} (Phase 1: log only)",
-                cmd.issuer
+            handle_fortify_system(
+                &cmd.issuer,
+                &cmd.params,
+                &sovereignty,
+                &empires,
+                &mut build_research,
+            );
+        } else if kind_str == cmd_ids::research_focus().as_str() {
+            handle_research_focus(
+                &cmd.issuer,
+                &cmd.params,
+                &empires,
+                &mut build_research,
+            );
+        } else if kind_str == cmd_ids::build_structure().as_str() {
+            handle_build_structure(
+                &cmd.issuer,
+                &cmd.params,
+                &sovereignty,
+                &empires,
+                &mut build_research,
             );
         } else if kind_str == cmd_ids::reposition().as_str() {
-            info!(
-                "AI command reposition from faction {:?} (Phase 1: log only)",
-                cmd.issuer
+            handle_reposition(
+                &cmd.issuer,
+                &cmd.params,
+                &ships,
+                &empires,
+                &mut move_writer,
+                &mut next_cmd_id,
+                clock.elapsed,
             );
         } else if kind_str == cmd_ids::blockade().as_str() {
-            info!(
-                "AI command blockade from faction {:?} (Phase 1: log only)",
-                cmd.issuer
+            handle_blockade(
+                &cmd.issuer,
+                &cmd.params,
+                &ships,
+                &empires,
+                &mut move_writer,
+                &mut next_cmd_id,
+                clock.elapsed,
             );
         } else {
             debug!(
@@ -321,6 +383,490 @@ fn handle_colonize_system(
         info!(
             "colonize_system: dispatched {} ships from faction {:?} to system {:?}",
             dispatched, issuer, target_system
+        );
+    }
+}
+
+/// Queue a ship build order at a system owned by the faction that has a
+/// shipyard. Returns true if the order was queued successfully.
+fn queue_ship_at_shipyard(
+    empire_entity: Entity,
+    design_id: &str,
+    target_system: Option<Entity>,
+    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
+    br: &mut BuildResearchParams,
+) -> bool {
+    let Some(ref design_registry) = br.design_registry else {
+        warn!("build_ship/fortify: ShipDesignRegistry not available");
+        return false;
+    };
+    let Some(design) = design_registry.get(design_id) else {
+        warn!("build_ship/fortify: unknown design '{}'", design_id);
+        return false;
+    };
+    if !design.is_direct_buildable {
+        warn!(
+            "build_ship/fortify: design '{}' is not direct-buildable (installation hull)",
+            design_id
+        );
+        return false;
+    }
+
+    let building_registry = br.building_registry.as_deref();
+
+    // Find a system with a shipyard owned by this empire.
+    // Prefer the specified target_system if it qualifies.
+    let owned_systems: Vec<Entity> = sovereignty
+        .iter()
+        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
+        .map(|(e, _)| e)
+        .collect();
+
+    let shipyard_system = if let Some(target) = target_system {
+        // Verify target is owned and has a shipyard
+        if owned_systems.contains(&target) && has_shipyard_check(target, &br.station_ships, building_registry) {
+            Some(target)
+        } else {
+            // Fall back to any owned system with a shipyard
+            owned_systems
+                .iter()
+                .find(|&&sys| has_shipyard_check(sys, &br.station_ships, building_registry))
+                .copied()
+        }
+    } else {
+        owned_systems
+            .iter()
+            .find(|&&sys| has_shipyard_check(sys, &br.station_ships, building_registry))
+            .copied()
+    };
+
+    let Some(sys_entity) = shipyard_system else {
+        debug!("build_ship/fortify: no system with shipyard found for empire {:?}", empire_entity);
+        return false;
+    };
+
+    let build_time = design_registry.build_time(design_id);
+    let order = BuildOrder {
+        order_id: 0,
+        kind: BuildKind::default(),
+        design_id: design_id.to_string(),
+        display_name: design.name.clone(),
+        minerals_cost: design.build_cost_minerals,
+        minerals_invested: Amt::ZERO,
+        energy_cost: design.build_cost_energy,
+        energy_invested: Amt::ZERO,
+        build_time_total: build_time,
+        build_time_remaining: build_time,
+    };
+
+    if let Ok(mut build_queue) = br.build_queues.get_mut(sys_entity) {
+        build_queue.push_order(order);
+        info!(
+            "build_ship/fortify: queued '{}' at system {:?} for empire {:?}",
+            design_id, sys_entity, empire_entity
+        );
+        true
+    } else {
+        debug!("build_ship/fortify: system {:?} has no BuildQueue component", sys_entity);
+        false
+    }
+}
+
+/// Check if a system has a shipyard capability. Wraps `system_has_shipyard`
+/// from `colony::system_buildings`, handling the case where the
+/// `BuildingRegistry` may not be available.
+fn has_shipyard_check(
+    system: Entity,
+    station_ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
+    building_registry: Option<&BuildingRegistry>,
+) -> bool {
+    let Some(registry) = building_registry else {
+        return false;
+    };
+    system_has_shipyard(system, station_ships, registry)
+}
+
+/// Handle `build_ship`: queue construction of the specified ship design at
+/// a system with a shipyard owned by the faction.
+///
+/// Params:
+/// - `design_id` (Str): the ship design to build.
+/// - `target_system` (System, optional): preferred system to build at.
+fn handle_build_ship(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    br: &mut BuildResearchParams,
+) {
+    let design_id = match params.get("design_id") {
+        Some(CommandValue::Str(s)) => s.to_string(),
+        _ => {
+            warn!("build_ship command missing design_id param");
+            return;
+        }
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => {
+            warn!("build_ship: no empire found for faction {:?}", issuer);
+            return;
+        }
+    };
+
+    let target_system = params
+        .get("target_system")
+        .and_then(|v| match v {
+            CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
+            _ => None,
+        });
+
+    queue_ship_at_shipyard(empire_entity, &design_id, target_system, sovereignty, br);
+}
+
+/// Handle `fortify_system`: queue construction of a default combat ship
+/// design at a system with a shipyard. If no specific design is given,
+/// picks the first direct-buildable design from the registry that is not a
+/// survey or colony ship.
+///
+/// Params:
+/// - `target_system` (System, optional): the system to fortify.
+/// - `design_id` (Str, optional): specific design to build. Auto-picks if absent.
+fn handle_fortify_system(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    br: &mut BuildResearchParams,
+) {
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => {
+            warn!("fortify_system: no empire found for faction {:?}", issuer);
+            return;
+        }
+    };
+
+    let target_system = params
+        .get("target_system")
+        .and_then(|v| match v {
+            CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
+            _ => None,
+        });
+
+    // Determine which design to build
+    let design_id = match params.get("design_id") {
+        Some(CommandValue::Str(s)) => s.to_string(),
+        _ => {
+            // Auto-pick a combat design: direct-buildable, not survey, not colony
+            let Some(ref registry) = br.design_registry else {
+                warn!("fortify_system: ShipDesignRegistry not available");
+                return;
+            };
+            let combat_design = registry
+                .designs
+                .values()
+                .find(|d| d.is_direct_buildable && !d.can_survey && !d.can_colonize);
+            match combat_design {
+                Some(d) => d.id.clone(),
+                None => {
+                    // Fallback: any direct-buildable design
+                    match registry.designs.values().find(|d| d.is_direct_buildable) {
+                        Some(d) => d.id.clone(),
+                        None => {
+                            debug!("fortify_system: no buildable designs in registry");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    queue_ship_at_shipyard(empire_entity, &design_id, target_system, sovereignty, br);
+}
+
+/// Handle `research_focus`: set the empire's active research target.
+///
+/// Params:
+/// - `tech_id` (Str, optional): the tech to research. If absent, auto-picks
+///   the first available tech whose prerequisites are met.
+fn handle_research_focus(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    br: &mut BuildResearchParams,
+) {
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => {
+            warn!("research_focus: no empire found for faction {:?}", issuer);
+            return;
+        }
+    };
+
+    let Ok((tech_tree, mut research_queue)) = br.empire_tech.get_mut(empire_entity) else {
+        debug!(
+            "research_focus: empire {:?} has no TechTree/ResearchQueue",
+            empire_entity
+        );
+        return;
+    };
+
+    let tech_id = match params.get("tech_id") {
+        Some(CommandValue::Str(s)) => {
+            let tid = TechId(s.to_string());
+            if !tech_tree.can_research(&tid) {
+                debug!(
+                    "research_focus: tech '{}' is not researchable for empire {:?}",
+                    s, empire_entity
+                );
+                return;
+            }
+            tid
+        }
+        _ => {
+            // Auto-pick: find the first tech that can be researched
+            let available = tech_tree
+                .technologies
+                .keys()
+                .find(|tid| tech_tree.can_research(tid))
+                .cloned();
+            match available {
+                Some(tid) => tid,
+                None => {
+                    debug!(
+                        "research_focus: no available techs for empire {:?}",
+                        empire_entity
+                    );
+                    return;
+                }
+            }
+        }
+    };
+
+    research_queue.start_research(tech_id.clone());
+    info!(
+        "research_focus: empire {:?} now researching '{}'",
+        empire_entity, tech_id.0
+    );
+}
+
+/// Handle `build_structure`: queue a building at a colony owned by the faction.
+///
+/// Params:
+/// - `building_id` (Str): the building to construct.
+/// - `target_system` (System, optional): preferred system.
+/// - `colony_entity` (Entity, optional): specific colony to build at.
+fn handle_build_structure(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    br: &mut BuildResearchParams,
+) {
+    let building_id_str = match params.get("building_id") {
+        Some(CommandValue::Str(s)) => s.to_string(),
+        _ => {
+            warn!("build_structure command missing building_id param");
+            return;
+        }
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => {
+            warn!("build_structure: no empire found for faction {:?}", issuer);
+            return;
+        }
+    };
+
+    let Some(ref building_registry) = br.building_registry else {
+        warn!("build_structure: BuildingRegistry not available");
+        return;
+    };
+
+    let Some(building_def) = building_registry.get(&building_id_str) else {
+        warn!("build_structure: unknown building '{}'", building_id_str);
+        return;
+    };
+
+    // System buildings (shipyard, port, etc.) are not built through
+    // BuildingQueue — they go through SystemBuildingQueue. This handler
+    // only supports planet-level buildings.
+    if building_def.is_system_building {
+        debug!(
+            "build_structure: '{}' is a system building, not handled by this command",
+            building_id_str
+        );
+        return;
+    }
+
+    let minerals_cost = building_def.minerals_cost;
+    let energy_cost = building_def.energy_cost;
+    let build_time = building_def.build_time;
+
+    // Determine target system for ownership check
+    let target_system = params
+        .get("target_system")
+        .and_then(|v| match v {
+            CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
+            _ => None,
+        });
+
+    // Collect owned systems
+    let owned_systems: std::collections::HashSet<Entity> = sovereignty
+        .iter()
+        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
+        .map(|(e, _)| e)
+        .collect();
+
+    // Find a colony with an empty building slot
+    let bid = crate::scripting::building_api::BuildingId::new(&building_id_str);
+    let mut built = false;
+    for (colony_entity, colony, buildings, mut building_queue) in br.colonies.iter_mut() {
+        // Check colony is in an owned system
+        let colony_system = colony.system(&br.planets);
+        let Some(sys) = colony_system else { continue };
+        if !owned_systems.contains(&sys) {
+            continue;
+        }
+        if let Some(ref target) = target_system {
+            if sys != *target {
+                continue;
+            }
+        }
+
+        // Find an empty slot
+        let empty_slot = buildings.slots.iter().position(|s| s.is_none());
+        let Some(slot_idx) = empty_slot else { continue };
+
+        building_queue.push_build_order(BuildingOrder {
+            order_id: 0,
+            building_id: bid.clone(),
+            target_slot: slot_idx,
+            minerals_remaining: minerals_cost,
+            energy_remaining: energy_cost,
+            build_time_remaining: build_time,
+        });
+        info!(
+            "build_structure: queued '{}' at colony {:?} (slot {}) for empire {:?}",
+            building_id_str, colony_entity, slot_idx, empire_entity
+        );
+        built = true;
+        break;
+    }
+
+    if !built {
+        debug!(
+            "build_structure: no colony with empty slot found for building '{}' (empire {:?})",
+            building_id_str, empire_entity
+        );
+    }
+}
+
+/// Handle `reposition`: move specified ships to a target system.
+///
+/// Params:
+/// - `target_system` (System): destination system.
+/// - `ship_count` / `ship_N` (indexed list): ships to move.
+fn handle_reposition(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    move_writer: &mut MessageWriter<MoveRequested>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    dispatch_ships_to_target("reposition", issuer, params, ships, empires, move_writer, next_cmd_id, now);
+}
+
+/// Handle `blockade`: move specified ships to a target system (tactical positioning).
+///
+/// Params:
+/// - `target_system` (System): destination system.
+/// - `ship_count` / `ship_N` (indexed list): ships to move.
+fn handle_blockade(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    move_writer: &mut MessageWriter<MoveRequested>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    dispatch_ships_to_target("blockade", issuer, params, ships, empires, move_writer, next_cmd_id, now);
+}
+
+/// Shared logic for reposition / blockade: dispatch listed ships to a
+/// target system (same pattern as `handle_attack_target`).
+fn dispatch_ships_to_target(
+    cmd_name: &str,
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    move_writer: &mut MessageWriter<MoveRequested>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let target_system = match params.get("target_system") {
+        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
+        _ => {
+            warn!("{} command missing target_system param", cmd_name);
+            return;
+        }
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => {
+            warn!("{}: no empire found for faction {:?}", cmd_name, issuer);
+            return;
+        }
+    };
+
+    let selected_ships = extract_ship_list(params);
+    if selected_ships.is_empty() {
+        debug!(
+            "{}: no ships specified by policy for faction {:?}",
+            cmd_name, issuer
+        );
+        return;
+    }
+
+    let mut dispatched = 0;
+    for ship_entity in selected_ships {
+        let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
+            continue;
+        };
+        if ship.owner != Owner::Empire(empire_entity) {
+            continue;
+        }
+        if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
+            continue;
+        }
+        if let ShipState::InSystem { system } = state {
+            if *system == target_system {
+                continue;
+            }
+        }
+
+        move_writer.write(MoveRequested {
+            command_id: next_cmd_id.allocate(),
+            ship: ship_entity,
+            target: target_system,
+            issued_at: now,
+        });
+        dispatched += 1;
+    }
+
+    if dispatched > 0 {
+        info!(
+            "{}: dispatched {} ships from faction {:?} to system {:?}",
+            cmd_name, dispatched, issuer, target_system
         );
     }
 }
@@ -612,5 +1158,575 @@ mod tests {
 
         app.add_systems(Update, drain_ai_commands);
         app.update();
+    }
+
+    /// Helper: create a minimal ShipDesignRegistry with a combat design.
+    fn test_design_registry() -> ShipDesignRegistry {
+        use crate::ship_design::ShipDesignDefinition;
+        let mut registry = ShipDesignRegistry::default();
+        registry.insert(ShipDesignDefinition {
+            id: "corvette_mk1".into(),
+            name: "Corvette Mk1".into(),
+            description: String::new(),
+            hull_id: "corvette".into(),
+            modules: vec![],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::new(0, 500),
+            build_cost_minerals: Amt::units(100),
+            build_cost_energy: Amt::units(50),
+            build_time: 30,
+            hp: 100.0,
+            sublight_speed: 0.1,
+            ftl_range: 5.0,
+            revision: 0,
+            is_direct_buildable: true,
+        });
+        registry
+    }
+
+    /// Helper: create a BuildingRegistry with a test mine building.
+    fn test_building_registry() -> BuildingRegistry {
+        use crate::scripting::building_api::{BuildingDefinition, CapabilityParams};
+        use std::collections::HashMap;
+        let mut registry = BuildingRegistry::default();
+        registry.insert(BuildingDefinition {
+            id: "mine".into(),
+            name: "Mine".into(),
+            description: String::new(),
+            minerals_cost: Amt::units(50),
+            energy_cost: Amt::units(10),
+            build_time: 15,
+            maintenance: Amt::ZERO,
+            production_bonus_minerals: Amt::units(5),
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
+            is_system_building: false,
+            capabilities: HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: None,
+        });
+        registry
+    }
+
+    #[test]
+    fn build_ship_queues_order_at_shipyard_system() {
+        use std::collections::HashMap;
+        use crate::scripting::building_api::{BuildingDefinition, BuildingId, CapabilityParams};
+
+        let mut app = test_app();
+        // Insert design + building registries
+        app.insert_resource(test_design_registry());
+
+        // Building registry with shipyard capability
+        let mut breg = BuildingRegistry::default();
+        let mut shipyard_caps = HashMap::new();
+        shipyard_caps.insert(
+            "shipyard".to_string(),
+            CapabilityParams {
+                params: {
+                    let mut m = HashMap::new();
+                    m.insert("concurrent_builds".to_string(), 1.0);
+                    m
+                },
+            },
+        );
+        breg.insert(BuildingDefinition {
+            id: "shipyard".into(),
+            name: "Shipyard".into(),
+            description: String::new(),
+            minerals_cost: Amt::ZERO,
+            energy_cost: Amt::ZERO,
+            build_time: 30,
+            maintenance: Amt::ZERO,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
+            is_system_building: true,
+            capabilities: shipyard_caps,
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: Some("station_shipyard_v1".into()),
+        });
+        app.insert_resource(breg);
+
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire { name: "Test NPC".into() },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Home".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+                Sovereignty {
+                    owner: Some(Owner::Empire(empire_entity)),
+                    control_score: 1.0,
+                },
+                BuildQueue::default(),
+            ))
+            .id();
+
+        // Spawn a station ship with shipyard capability at that system
+        world.spawn((
+            Ship {
+                name: "Shipyard Station".into(),
+                design_id: "station_shipyard_v1".into(),
+                hull_id: "station".into(),
+                modules: vec![],
+                owner: Owner::Empire(empire_entity),
+                sublight_speed: 0.0,
+                ftl_range: 0.0,
+                ruler_aboard: false,
+                home_port: sys_entity,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys_entity },
+            SlotAssignment(0),
+            CommandQueue::default(),
+        ));
+
+        // Emit build_ship command
+        let cmd = Command::new(cmd_ids::build_ship(), faction_id, 10)
+            .with_param("design_id", CommandValue::Str("corvette_mk1".into()));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.add_systems(Update, drain_ai_commands);
+        app.update();
+
+        // Check that a build order was added
+        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        assert_eq!(queue.queue.len(), 1, "should have 1 build order");
+        assert_eq!(queue.queue[0].design_id, "corvette_mk1");
+    }
+
+    #[test]
+    fn research_focus_sets_active_research() {
+        use crate::technology::{TechCost, Technology};
+
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let tech_tree = TechTree::from_vec(vec![Technology {
+            id: TechId("test_tech".into()),
+            name: "Test Tech".into(),
+            description: String::new(),
+            branch: "test".into(),
+            cost: TechCost {
+                research: Amt::units(100),
+                minerals: Amt::ZERO,
+                energy: Amt::ZERO,
+            },
+            prerequisites: vec![],
+            dangerous: false,
+        }]);
+
+        let empire_entity = world
+            .spawn((
+                Empire { name: "Test NPC".into() },
+                Faction::new("test_npc", "Test NPC"),
+                tech_tree,
+                ResearchQueue::default(),
+            ))
+            .id();
+
+        let faction_id = to_ai_faction(empire_entity);
+
+        let cmd = Command::new(cmd_ids::research_focus(), faction_id, 10)
+            .with_param("tech_id", CommandValue::Str("test_tech".into()));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.add_systems(Update, drain_ai_commands);
+        app.update();
+
+        let rq = app.world().get::<ResearchQueue>(empire_entity).unwrap();
+        assert_eq!(
+            rq.current,
+            Some(TechId("test_tech".into())),
+            "should be researching test_tech"
+        );
+    }
+
+    #[test]
+    fn research_focus_auto_picks_available_tech() {
+        use crate::technology::{TechCost, Technology};
+
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let tech_tree = TechTree::from_vec(vec![Technology {
+            id: TechId("auto_pick_tech".into()),
+            name: "Auto Pick".into(),
+            description: String::new(),
+            branch: "test".into(),
+            cost: TechCost {
+                research: Amt::units(100),
+                minerals: Amt::ZERO,
+                energy: Amt::ZERO,
+            },
+            prerequisites: vec![],
+            dangerous: false,
+        }]);
+
+        let empire_entity = world
+            .spawn((
+                Empire { name: "Test NPC".into() },
+                Faction::new("test_npc", "Test NPC"),
+                tech_tree,
+                ResearchQueue::default(),
+            ))
+            .id();
+
+        let faction_id = to_ai_faction(empire_entity);
+
+        // No tech_id param — should auto-pick
+        let cmd = Command::new(cmd_ids::research_focus(), faction_id, 10);
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.add_systems(Update, drain_ai_commands);
+        app.update();
+
+        let rq = app.world().get::<ResearchQueue>(empire_entity).unwrap();
+        assert!(rq.current.is_some(), "should have auto-picked a tech");
+    }
+
+    #[test]
+    fn build_structure_queues_building_at_colony() {
+        let mut app = test_app();
+        app.insert_resource(test_building_registry());
+
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire { name: "Test NPC".into() },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Home".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+                Sovereignty {
+                    owner: Some(Owner::Empire(empire_entity)),
+                    control_score: 1.0,
+                },
+            ))
+            .id();
+
+        let planet_entity = world
+            .spawn(Planet {
+                name: "Test Planet".into(),
+                planet_type: "terran".into(),
+                system: sys_entity,
+            })
+            .id();
+
+        world.spawn((
+            Colony {
+                planet: planet_entity,
+                growth_rate: 0.01,
+            },
+            Buildings {
+                slots: vec![None, None, None],
+            },
+            BuildingQueue::default(),
+        ));
+
+        let cmd = Command::new(cmd_ids::build_structure(), faction_id, 10)
+            .with_param("building_id", CommandValue::Str("mine".into()));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.add_systems(Update, drain_ai_commands);
+        app.update();
+
+        // Verify a building order was queued
+        let mut found = false;
+        for (_, _, _, bq) in app.world_mut().query::<(Entity, &Colony, &Buildings, &BuildingQueue)>().iter(app.world()) {
+            if !bq.queue.is_empty() {
+                assert_eq!(bq.queue[0].building_id.as_str(), "mine");
+                assert_eq!(bq.queue[0].target_slot, 0);
+                found = true;
+            }
+        }
+        assert!(found, "should have queued a building order");
+    }
+
+    #[test]
+    fn reposition_dispatches_ships() {
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire { name: "Test NPC".into() },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+
+        let faction_id = to_ai_faction(empire_entity);
+
+        let origin = world
+            .spawn((
+                StarSystem {
+                    name: "Origin".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+            ))
+            .id();
+
+        let target = world
+            .spawn((
+                StarSystem {
+                    name: "Target".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([10.0, 0.0, 0.0]),
+            ))
+            .id();
+
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "NPC Ship".into(),
+                    design_id: "corvette".into(),
+                    hull_id: "corvette".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire_entity),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: origin,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system: origin },
+                CommandQueue::default(),
+            ))
+            .id();
+
+        let target_ref = crate::ai::convert::to_ai_system(target);
+        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
+        let cmd = Command::new(cmd_ids::reposition(), faction_id, 10)
+            .with_param("target_system", CommandValue::System(target_ref))
+            .with_param("ship_count", CommandValue::I64(1))
+            .with_param("ship_0", CommandValue::Entity(ship_ref));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.insert_resource(MoveCount(0));
+        app.add_systems(Update, (drain_ai_commands, count_moves).chain());
+        app.update();
+
+        let count = app.world().resource::<MoveCount>().0;
+        assert_eq!(count, 1, "reposition should emit 1 MoveRequested");
+    }
+
+    #[test]
+    fn blockade_dispatches_ships() {
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire { name: "Test NPC".into() },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+
+        let faction_id = to_ai_faction(empire_entity);
+
+        let origin = world
+            .spawn((
+                StarSystem {
+                    name: "Origin".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+            ))
+            .id();
+
+        let target = world
+            .spawn((
+                StarSystem {
+                    name: "Target".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([10.0, 0.0, 0.0]),
+            ))
+            .id();
+
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "NPC Ship".into(),
+                    design_id: "corvette".into(),
+                    hull_id: "corvette".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire_entity),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: origin,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system: origin },
+                CommandQueue::default(),
+            ))
+            .id();
+
+        let target_ref = crate::ai::convert::to_ai_system(target);
+        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
+        let cmd = Command::new(cmd_ids::blockade(), faction_id, 10)
+            .with_param("target_system", CommandValue::System(target_ref))
+            .with_param("ship_count", CommandValue::I64(1))
+            .with_param("ship_0", CommandValue::Entity(ship_ref));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.insert_resource(MoveCount(0));
+        app.add_systems(Update, (drain_ai_commands, count_moves).chain());
+        app.update();
+
+        let count = app.world().resource::<MoveCount>().0;
+        assert_eq!(count, 1, "blockade should emit 1 MoveRequested");
+    }
+
+    #[test]
+    fn fortify_system_auto_picks_combat_design() {
+        use std::collections::HashMap;
+        use crate::scripting::building_api::{BuildingDefinition, CapabilityParams};
+
+        let mut app = test_app();
+        app.insert_resource(test_design_registry());
+
+        // Building registry with shipyard
+        let mut breg = BuildingRegistry::default();
+        let mut caps = HashMap::new();
+        caps.insert("shipyard".to_string(), CapabilityParams { params: HashMap::new() });
+        breg.insert(BuildingDefinition {
+            id: "shipyard".into(),
+            name: "Shipyard".into(),
+            description: String::new(),
+            minerals_cost: Amt::ZERO,
+            energy_cost: Amt::ZERO,
+            build_time: 30,
+            maintenance: Amt::ZERO,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
+            is_system_building: true,
+            capabilities: caps,
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: Some("station_shipyard_v1".into()),
+        });
+        app.insert_resource(breg);
+
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire { name: "Test NPC".into() },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Home".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+                Sovereignty {
+                    owner: Some(Owner::Empire(empire_entity)),
+                    control_score: 1.0,
+                },
+                BuildQueue::default(),
+            ))
+            .id();
+
+        // Shipyard station ship
+        world.spawn((
+            Ship {
+                name: "Shipyard Station".into(),
+                design_id: "station_shipyard_v1".into(),
+                hull_id: "station".into(),
+                modules: vec![],
+                owner: Owner::Empire(empire_entity),
+                sublight_speed: 0.0,
+                ftl_range: 0.0,
+                ruler_aboard: false,
+                home_port: sys_entity,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InSystem { system: sys_entity },
+            SlotAssignment(0),
+            CommandQueue::default(),
+        ));
+
+        // No design_id param — should auto-pick combat design
+        let cmd = Command::new(cmd_ids::fortify_system(), faction_id, 10);
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.add_systems(Update, drain_ai_commands);
+        app.update();
+
+        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        assert_eq!(queue.queue.len(), 1, "fortify should queue 1 ship");
+        assert_eq!(queue.queue[0].design_id, "corvette_mk1");
     }
 }
