@@ -163,9 +163,7 @@ impl mlua::UserData for GalaxyGenerateCtx {
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method(
             "spawn_empty_system",
-            |_,
-             this,
-             (name, position, star_type): (String, mlua::Table, mlua::Value)| {
+            |_, this, (name, position, star_type): (String, mlua::Table, mlua::Value)| {
                 let pos = parse_position(&position)?;
                 let star_type_id = extract_id_from_lua_value(&star_type)?;
                 let mut actions = this.actions.lock().unwrap();
@@ -248,9 +246,7 @@ impl mlua::UserData for GalaxyGenerateCtx {
         // `Bridge-NNN` name.
         methods.add_method(
             "insert_bridge_at",
-            |_,
-             this,
-             (position, star_type): (mlua::Table, Option<mlua::Value>)| {
+            |_, this, (position, star_type): (mlua::Table, Option<mlua::Value>)| {
                 let pos = parse_position(&position)?;
                 let star_type_id = match star_type {
                     Some(v) => extract_id_from_lua_value(&v)?,
@@ -407,10 +403,7 @@ impl FtlGraph {
     }
 }
 
-fn resolve_system_index(
-    value: &mlua::Value,
-    node_count: usize,
-) -> Result<usize, mlua::Error> {
+fn resolve_system_index(value: &mlua::Value, node_count: usize) -> Result<usize, mlua::Error> {
     let idx = match value {
         mlua::Value::Integer(i) => *i as usize,
         mlua::Value::Number(f) => *f as usize,
@@ -489,9 +482,7 @@ impl mlua::UserData for FtlGraph {
             // Group nodes by root. Use a stable ordering: first-seen root.
             let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
             for (i, r) in roots.iter().enumerate() {
-                if let Some((_, members)) =
-                    groups.iter_mut().find(|(root, _)| root == r)
-                {
+                if let Some((_, members)) = groups.iter_mut().find(|(root, _)| root == r) {
                     members.push(i);
                 } else {
                     groups.push((*r, vec![i]));
@@ -500,7 +491,10 @@ impl mlua::UserData for FtlGraph {
             for (gi, (_, members)) in groups.iter().enumerate() {
                 let inner = lua.create_table()?;
                 for (mi, &node_idx) in members.iter().enumerate() {
-                    inner.set(mi as i64 + 1, node_to_lua_table(lua, &this.nodes[node_idx])?)?;
+                    inner.set(
+                        mi as i64 + 1,
+                        node_to_lua_table(lua, &this.nodes[node_idx])?,
+                    )?;
                 }
                 outer.set(gi as i64 + 1, inner)?;
             }
@@ -674,9 +668,7 @@ impl mlua::UserData for ChooseCapitalsCtx {
         // Also tolerates faction as a reference table (if factions ever get _def_type).
         methods.add_method(
             "assign_capital",
-            |_,
-             this,
-             (sys_ref, faction): (mlua::Value, mlua::Value)| {
+            |_, this, (sys_ref, faction): (mlua::Value, mlua::Value)| {
                 let system_index = match sys_ref {
                     mlua::Value::Integer(i) => i as usize,
                     mlua::Value::Number(f) => f as usize,
@@ -826,9 +818,7 @@ impl mlua::UserData for InitializeSystemCtx {
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method(
             "spawn_planet",
-            |_,
-             this,
-             (name, planet_type, attrs): (String, mlua::Value, Option<mlua::Table>)| {
+            |_, this, (name, planet_type, attrs): (String, mlua::Value, Option<mlua::Table>)| {
                 let type_id = extract_id_from_lua_value(&planet_type)?;
                 let attributes = match attrs {
                     Some(t) => parse_planet_attrs(&t)?,
@@ -948,7 +938,10 @@ mod tests {
         let ctx = GalaxyGenerateCtx::new(test_settings());
         lua.globals().set("ctx", ctx.clone()).unwrap();
 
-        let radius: f64 = lua.load("return ctx.settings.galaxy_radius").eval().unwrap();
+        let radius: f64 = lua
+            .load("return ctx.settings.galaxy_radius")
+            .eval()
+            .unwrap();
         assert!((radius - 80.0).abs() < 1e-10);
         let num: i64 = lua.load("return ctx.settings.num_systems").eval().unwrap();
         assert_eq!(num, 100);
@@ -1092,10 +1085,7 @@ mod tests {
         assert_eq!(actions.spawned_planets[0].name, "Earth");
         assert_eq!(actions.spawned_planets[0].planet_type, "terrestrial");
         assert_eq!(actions.spawned_planets[0].attrs.habitability, Some(1.0));
-        assert_eq!(
-            actions.spawned_planets[0].attrs.max_building_slots,
-            Some(6)
-        );
+        assert_eq!(actions.spawned_planets[0].attrs.max_building_slots, Some(6));
         assert_eq!(actions.spawned_planets[1].name, "Mars");
     }
 
@@ -1165,7 +1155,9 @@ mod tests {
         );
         lua.globals().set("ctx", ctx.clone()).unwrap();
 
-        lua.load(r#"ctx:override_default_planets()"#).exec().unwrap();
+        lua.load(r#"ctx:override_default_planets()"#)
+            .exec()
+            .unwrap();
         let actions = ctx.take_actions();
         assert!(actions.override_default_planets);
         assert!(actions.spawned_planets.is_empty());

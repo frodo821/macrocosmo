@@ -13,8 +13,9 @@
 use bevy::prelude::*;
 
 use crate::events::{GameEvent, GameEventKind};
+use crate::knowledge::{EventId, KnowledgeFact, NotifiedEventIds, PendingFactQueue, PerceivedFact};
 use crate::scripting::ScriptEngine;
-use crate::time_system::GameSpeed;
+use crate::time_system::{GameClock, GameSpeed};
 
 /// Severity / behavior class for a banner notification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +35,10 @@ impl NotificationPriority {
     /// Returns `true` if this priority should be displayed as a banner
     /// (Medium and High). Low priority is log-only.
     pub fn shows_banner(&self) -> bool {
-        matches!(self, NotificationPriority::Medium | NotificationPriority::High)
+        matches!(
+            self,
+            NotificationPriority::Medium | NotificationPriority::High
+        )
     }
 
     /// Real-time TTL for the banner, or `None` if the banner is sticky and
@@ -200,9 +204,13 @@ pub fn priority_for_event_kind(kind: &GameEventKind) -> Option<NotificationPrior
         GameEventKind::ColonyEstablished => Some(NotificationPriority::High),
         GameEventKind::CombatVictory => Some(NotificationPriority::High),
         GameEventKind::CombatDefeat => Some(NotificationPriority::High),
+        GameEventKind::ShipDestroyed => Some(NotificationPriority::High),
+        GameEventKind::ShipMissing => Some(NotificationPriority::High),
         GameEventKind::HostileDetected => Some(NotificationPriority::High),
         GameEventKind::PlayerRespawn => Some(NotificationPriority::High),
         GameEventKind::ResourceAlert => Some(NotificationPriority::Medium),
+        GameEventKind::CoreConquered => Some(NotificationPriority::High),
+        GameEventKind::CasusBelli => Some(NotificationPriority::High),
         // Other events are routine and do not deserve a banner.
         _ => None,
     }
@@ -226,17 +234,54 @@ fn title_for_event_kind(kind: &GameEventKind) -> &'static str {
         GameEventKind::ShipScrapped => "Ship Scrapped",
         GameEventKind::ColonyFailed => "Colony Failed",
         GameEventKind::AnomalyDiscovered => "Anomaly Discovered",
+        GameEventKind::CoreConquered => "Core Conquered",
+        GameEventKind::CasusBelli => "Casus Belli",
+        GameEventKind::WarDeclared => "War Declared",
+        GameEventKind::WarEnded => "War Ended",
+        GameEventKind::FactionAnnihilated => "Faction Annihilated",
+        GameEventKind::ShipDestroyed => "Ship Destroyed",
+        GameEventKind::ShipMissing => "Ship Missing",
     }
 }
 
-/// System that mirrors important `GameEvent`s into the notification queue.
+/// #233: Whitelist of `GameEventKind` variants still routed through the
+/// legacy `GameEvent → NotificationQueue` path. All other world-facing kinds
+/// now flow through `PendingFactQueue` (light-speed / relay-delayed).
+///
+/// The whitelist is intentionally narrow: only events whose information
+/// *cannot* be delayed without breaking the gameplay contract. The player
+/// respawn is an engine-level fact (not a remote observation) and the
+/// resource alert is a capital-aggregated warning with no light-speed origin.
+pub fn is_legacy_whitelisted(kind: &GameEventKind) -> bool {
+    matches!(
+        kind,
+        GameEventKind::PlayerRespawn | GameEventKind::ResourceAlert,
+    )
+}
+
+/// System that mirrors **whitelisted** `GameEvent`s into the notification
+/// queue (#233). Non-whitelisted world events are routed through the
+/// `PendingFactQueue` pipeline instead — this system intentionally ignores
+/// them to avoid double-notifications in the dual-write transition window.
+///
 /// Runs alongside (not instead of) `collect_events` so the event log is
-/// preserved.
+/// preserved for every `GameEvent`.
 pub fn auto_notify_from_events(
     mut reader: MessageReader<GameEvent>,
     mut queue: ResMut<NotificationQueue>,
+    mut notified: ResMut<NotifiedEventIds>,
 ) {
     for event in reader.read() {
+        if !is_legacy_whitelisted(&event.kind) {
+            continue;
+        }
+        // #249: Dedupe — if a paired KnowledgeFact already surfaced a banner
+        // for this id (or will later), skip this one. `EventId::default()`
+        // (== 0) is the pre-migration "no id" sentinel; treat it as never
+        // previously notified so legacy code paths keep working.
+        if event.id != EventId::default() && !notified.try_notify(event.id) {
+            continue;
+        }
         if let Some(priority) = priority_for_event_kind(&event.kind) {
             queue.push(
                 title_for_event_kind(&event.kind).to_string(),
@@ -245,6 +290,76 @@ pub fn auto_notify_from_events(
                 priority,
                 event.related_system,
             );
+        }
+    }
+}
+
+/// #233 / #354 / #345: Standalone fact-to-banner drainer (legacy test-only).
+///
+/// **Historical note**: This system **used** to be the production drain
+/// in `NotificationsPlugin`; K-5 (#354) moved the production drain into
+/// `scripting::knowledge_dispatch::dispatch_knowledge_observed` so that
+/// all fact variants (core + scripted) flow through the same
+/// `@observed` dispatch path (plan §3.5 Commit 4, §0.5 9.5). ESC-2
+/// (#345) adds the ESC Notifications tab + `push_notification` Lua
+/// bridge as a *second* consumer of the same `@observed` dispatch.
+///
+/// This function is **not registered by any production plugin** —
+/// `NotificationsPlugin` no longer adds it to the schedule, and
+/// `ScriptingPlugin::dispatch_knowledge_observed` is the sole drain
+/// for `PendingFactQueue` in production. The function is retained
+/// only as:
+/// * A **regression harness** for the 17 banner tests in
+///   `tests/notification_knowledge_pipeline.rs`, which exercise the
+///   banner semantics (light-speed delay, relay path, #249 EventId
+///   dedupe, priority mapping, whitelist split) without spinning up
+///   the full Lua scripting plugin. Those tests wire
+///   `notify_from_knowledge_facts` manually via
+///   `app.add_systems(Update, notify_from_knowledge_facts)`.
+/// * A fallback for future headless / server-mode hosts that
+///   deliberately exclude the scripting plugin.
+///
+/// **Do not re-register this system in any plugin.** Doing so would
+/// double-drain `PendingFactQueue` alongside
+/// `dispatch_knowledge_observed` and both break the ESC Lua bridge
+/// (by draining facts before they reach `*@observed` subscribers) and
+/// double-push banners. The `notification_knowledge_pipeline` tests
+/// deliberately run in isolation for this reason — they never
+/// construct a full `ScriptingPlugin` / `NotificationsPlugin` stack.
+///
+/// The function still skips `Scripted` variants so tests that set up a
+/// mixed queue do not produce spurious "Knowledge" banners.
+pub fn notify_from_knowledge_facts(
+    clock: Res<GameClock>,
+    mut queue: ResMut<PendingFactQueue>,
+    mut notifications: ResMut<NotificationQueue>,
+    mut notified: ResMut<NotifiedEventIds>,
+    mut speed: ResMut<GameSpeed>,
+) {
+    let ready = queue.drain_ready(clock.elapsed);
+    for PerceivedFact { fact, .. } in ready {
+        // Scripted facts never produce a banner through this drainer —
+        // they must go through the Lua subscriber path. Swallow the
+        // fact silently so tests that mix variants don't double-drain.
+        if matches!(fact, KnowledgeFact::Scripted { .. }) {
+            continue;
+        }
+        // #249: Dedupe by EventId. If a banner already fired for this id
+        // (either from `auto_notify_from_events` or a sibling fact with the
+        // same id), drop this push silently. The fact is still drained — we
+        // just don't surface a second banner.
+        if let Some(eid) = fact.event_id() {
+            if !notified.try_notify(eid) {
+                continue;
+            }
+        }
+        let priority = fact.priority();
+        let title = fact.title().to_string();
+        let description = fact.description();
+        let related = fact.related_system();
+        let id = notifications.push(title, description, None, priority, related);
+        if id.is_some() && priority.pauses_game() {
+            speed.pause();
         }
     }
 }
@@ -302,16 +417,36 @@ pub fn drain_pending_notifications(
 
 /// Plugin wiring up the notification queue, the per-frame TTL ticker, and
 /// the auto-mapping from `GameEvent` to banners.
+///
+/// #354 K-5: `notify_from_knowledge_facts` is no longer registered
+/// here — the fact drain has moved into
+/// `scripting::knowledge_dispatch::dispatch_knowledge_observed` which
+/// handles both core + scripted variants in one pass (plan §0.5 9.5).
+/// The `sweep_notified_event_ids` order dependency on the dispatcher
+/// is declared via `.after(dispatch_knowledge_observed)` below so the
+/// NotifiedEventIds map is still trimmed each frame.
 pub struct NotificationsPlugin;
 
 impl Plugin for NotificationsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(NotificationQueue::new())
+            .init_resource::<PendingFactQueue>()
             .add_systems(Update, (tick_notifications, auto_notify_from_events))
             .add_systems(
                 Update,
-                drain_pending_notifications
-                    .after(crate::time_system::advance_game_time),
+                (
+                    drain_pending_notifications,
+                    // #249: Frees notified ids each frame so the dedupe
+                    // map doesn't grow unbounded. Must run after
+                    // `auto_notify_from_events` AND the K-5 dispatcher
+                    // (which is the new production drain) have flipped
+                    // entries to `true`.
+                    crate::knowledge::sweep_notified_event_ids,
+                )
+                    .chain()
+                    .after(crate::time_system::advance_game_time)
+                    .after(auto_notify_from_events)
+                    .after(crate::scripting::knowledge_dispatch::dispatch_knowledge_observed),
             );
     }
 }
@@ -499,15 +634,31 @@ mod tests {
     /// Integration: GameEvents flow into the NotificationQueue through the
     /// auto_notify_from_events system without affecting the event log
     /// pipeline.
+    ///
+    /// #233: Only the whitelisted kinds (PlayerRespawn, ResourceAlert) still
+    /// surface through the legacy `GameEvent → notification` mapping; other
+    /// world events are routed through `PendingFactQueue`.
     #[test]
-    fn auto_notify_pushes_for_high_priority_events() {
+    fn auto_notify_pushes_for_whitelisted_events() {
         let mut app = App::new();
         app.add_message::<GameEvent>();
         app.insert_resource(NotificationQueue::new());
+        app.init_resource::<NotifiedEventIds>();
         app.add_systems(Update, auto_notify_from_events);
 
-        // Emit a high-priority event
+        // PlayerRespawn → whitelisted; still banners.
         app.world_mut().write_message(GameEvent {
+            id: EventId::default(),
+            timestamp: 0,
+            kind: GameEventKind::PlayerRespawn,
+            description: "Flagship destroyed".into(),
+            related_system: None,
+        });
+        // #233: SurveyDiscovery is no longer whitelisted — it must be routed
+        // through the fact queue, so the notification queue should stay empty
+        // for this path.
+        app.world_mut().write_message(GameEvent {
+            id: EventId::default(),
             timestamp: 0,
             kind: GameEventKind::SurveyDiscovery,
             description: "Found ruins".into(),
@@ -515,6 +666,7 @@ mod tests {
         });
         // Routine event — must NOT show banner
         app.world_mut().write_message(GameEvent {
+            id: EventId::default(),
             timestamp: 0,
             kind: GameEventKind::ShipBuilt,
             description: "Built corvette".into(),
@@ -525,8 +677,25 @@ mod tests {
 
         let queue = app.world().resource::<NotificationQueue>();
         assert_eq!(queue.items.len(), 1);
-        assert_eq!(queue.items[0].title, "Discovery");
-        assert_eq!(queue.items[0].description, "Found ruins");
+        assert_eq!(queue.items[0].title, "Player Respawn");
         assert_eq!(queue.items[0].priority, NotificationPriority::High);
+    }
+
+    #[test]
+    fn legacy_whitelist_covers_player_respawn_and_resource_alert() {
+        assert!(is_legacy_whitelisted(&GameEventKind::PlayerRespawn));
+        assert!(is_legacy_whitelisted(&GameEventKind::ResourceAlert));
+    }
+
+    #[test]
+    fn legacy_whitelist_excludes_world_events() {
+        assert!(!is_legacy_whitelisted(&GameEventKind::SurveyComplete));
+        assert!(!is_legacy_whitelisted(&GameEventKind::SurveyDiscovery));
+        assert!(!is_legacy_whitelisted(&GameEventKind::ColonyEstablished));
+        assert!(!is_legacy_whitelisted(&GameEventKind::CombatVictory));
+        assert!(!is_legacy_whitelisted(&GameEventKind::CombatDefeat));
+        assert!(!is_legacy_whitelisted(&GameEventKind::HostileDetected));
+        assert!(!is_legacy_whitelisted(&GameEventKind::AnomalyDiscovered));
+        assert!(!is_legacy_whitelisted(&GameEventKind::ColonyFailed));
     }
 }

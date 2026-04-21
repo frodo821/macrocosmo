@@ -71,7 +71,10 @@ pub fn sync_maintenance_modifiers(
         ship_costs_by_system
             .entry(effective_port)
             .or_default()
-            .push((format!("ship_maint_{:?}", entity), design_registry.maintenance(&ship.design_id)));
+            .push((
+                format!("ship_maint_{:?}", entity),
+                design_registry.maintenance(&ship.design_id),
+            ));
     }
 
     for (colony, mut maint, buildings) in &mut colonies {
@@ -83,8 +86,14 @@ pub fn sync_maintenance_modifiers(
             for (slot_idx, slot) in buildings.slots.iter().enumerate() {
                 let id = format!("building_maint_{}", slot_idx);
                 if let Some(bid) = slot {
-                    let cost = registry.get(bid.as_str()).map(|d| d.maintenance).unwrap_or(Amt::ZERO);
-                    let name = registry.get(bid.as_str()).map(|d| d.name.as_str()).unwrap_or(bid.as_str());
+                    let cost = registry
+                        .get(bid.as_str())
+                        .map(|d| d.maintenance)
+                        .unwrap_or(Amt::ZERO);
+                    let name = registry
+                        .get(bid.as_str())
+                        .map(|d| d.name.as_str())
+                        .unwrap_or(bid.as_str());
                     if cost != Amt::ZERO {
                         maint.energy_per_hexadies.push_modifier(Modifier {
                             id: id.clone(),
@@ -198,9 +207,12 @@ pub fn tick_maintenance(
     }
 
     // Collect maintenance costs per system
-    let mut system_maintenance: std::collections::HashMap<Entity, Amt> = std::collections::HashMap::new();
+    let mut system_maintenance: std::collections::HashMap<Entity, Amt> =
+        std::collections::HashMap::new();
     for (colony, maint, buildings) in &colonies {
-        let Some(sys) = colony.system(&planets) else { continue };
+        let Some(sys) = colony.system(&planets) else {
+            continue;
+        };
 
         let total_maintenance = if let Some(maint) = maint {
             maint.energy_per_hexadies.final_value()
@@ -209,7 +221,12 @@ pub fn tick_maintenance(
             if let Some(buildings) = buildings {
                 for slot in &buildings.slots {
                     if let Some(bid) = slot {
-                        total = total.add(registry.get(bid.as_str()).map(|d| d.maintenance).unwrap_or(Amt::ZERO));
+                        total = total.add(
+                            registry
+                                .get(bid.as_str())
+                                .map(|d| d.maintenance)
+                                .unwrap_or(Amt::ZERO),
+                        );
                     }
                 }
             }

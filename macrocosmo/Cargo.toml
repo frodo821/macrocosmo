@@ -4,7 +4,75 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bevy = "0.18.1"
+# Bevy default features を落として、本 project で実際に使う subset だけ有効化する。
+# 未使用 (grep confirmed): animation / bevy_audio / bevy_gltf / bevy_pbr / bevy_gilrs /
+# bevy_scene / bevy_text / bevy_ui / bevy_state / bevy_input_focus / bevy_picking +
+# picking backends / png / vorbis / webgl2 / hdr / tonemapping_luts / smaa_luts /
+# custom_cursor / zstd_rust。egui で UI / text を担当するため bevy_ui 系は不要。
+#
+# IMPORTANT: `bevy_gizmos` は API レイヤ (Gizmos SystemParam, gizmos.circle_2d 等)
+# のみを提供し、実際に画面へ描画するレンダリングは `bevy_gizmos_render` 側にある。
+# 両方 enable しないと gizmo 呼び出しは silent no-op になり、map 上の船・経路・
+# overlay 等がすべて invisible になる (#364 regression)。
+bevy = { version = "0.18.1", default-features = false, features = [
+    "bevy_asset",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_log",
+    "bevy_render",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_text",
+    "bevy_window",
+    "bevy_winit",
+    "default_font",
+    "multi_threaded",
+    "std",
+    "sysinfo_plugin",
+    "wayland",
+    "x11",
+    "dynamic_linking",
+] }
 bevy_egui = "0.39.1"
 mlua = { version = "0.11", features = ["luajit", "vendored", "send"] }
 rand = "0.9"
+rand_xoshiro = { version = "0.7", features = ["serde"] }
+serde_json = "1"
+serde.workspace = true
+postcard.workspace = true
+macrocosmo-ai = { path = "../macrocosmo-ai", features = ["playthrough"] }
+base64 = { version = "0.22", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+[features]
+# Default build carries no profiling overhead.
+default = []
+
+# #397: AI debug logging. Writes JSONL decision + world-state logs under
+# `logs/` for offline analysis. Zero cost when disabled — all log code is
+# `#[cfg(feature = "ai-log")]`-gated.
+ai-log = []
+
+# #284: development-only profiling feature. Enables:
+#   - `bevy/trace_tracy` — Tracy profiler integration (CPU spans + GPU
+#     `RenderQueue` row). The `prof_span!` macro expands to
+#     `info_span!(...).entered()` only when this feature is on; otherwise
+#     it is a no-op so default builds carry zero overhead.
+#   - `bevy/debug` — human-readable system names in Tracy for Bevy's
+#     built-in schedules (`Update`, `EguiPrimaryContextPass`, etc.).
+# See `docs/profiling.md` for the workflow.
+profile = ["bevy/trace_tracy", "bevy/debug"]
+
+# #390: Bevy Remote Protocol for automated UI testing via JSON-RPC.
+# Enables `bevy/bevy_remote` which provides BRP over HTTP (default port 15702).
+remote = ["bevy/bevy_remote", "dep:base64", "dep:image"]
+
+[dev-dependencies]
+# #173: activate `mock` + `playthrough` features on the AI crate for
+# integration tests only. The production binary never sees the `mock`
+# feature — `ai-core-isolation.yml` CI enforces that the direction
+# remains `macrocosmo → macrocosmo-ai` and that no production code
+# depends on the mock module.
+macrocosmo-ai = { path = "../macrocosmo-ai", features = ["mock", "playthrough"] }

@@ -92,7 +92,10 @@ pub fn parse_predefined_systems(
 ) -> Result<Vec<PredefinedSystemDefinition>, mlua::Error> {
     use super::helpers::extract_id_from_lua_value;
 
-    let defs: mlua::Table = match lua.globals().get::<mlua::Value>("_predefined_system_definitions")? {
+    let defs: mlua::Table = match lua
+        .globals()
+        .get::<mlua::Value>("_predefined_system_definitions")?
+    {
         mlua::Value::Table(t) => t,
         _ => return Ok(Vec::new()),
     };
@@ -128,10 +131,11 @@ pub fn parse_predefined_systems(
             }
         }
 
-        let capital_for_faction: Option<String> = match table.get::<mlua::Value>("capital_for_faction")? {
-            mlua::Value::Nil => None,
-            v => Some(extract_id_from_lua_value(&v)?),
-        };
+        let capital_for_faction: Option<String> =
+            match table.get::<mlua::Value>("capital_for_faction")? {
+                mlua::Value::Nil => None,
+                v => Some(extract_id_from_lua_value(&v)?),
+            };
 
         out.push(PredefinedSystemDefinition {
             id,
@@ -166,7 +170,10 @@ pub fn parse_map_types(lua: &mlua::Lua) -> Result<Vec<MapTypeDefinition>, mlua::
         let description: String = table
             .get::<Option<String>>("description")?
             .unwrap_or_default();
-        let has_generator = matches!(table.get::<mlua::Value>("generator")?, mlua::Value::Function(_));
+        let has_generator = matches!(
+            table.get::<mlua::Value>("generator")?,
+            mlua::Value::Function(_)
+        );
         out.push(MapTypeDefinition {
             id,
             name,
@@ -348,7 +355,10 @@ mod tests {
     #[test]
     fn active_map_type_roundtrip() {
         let engine = load(r#"set_active_map_type("my_map")"#);
-        assert_eq!(read_active_map_type(engine.lua()).as_deref(), Some("my_map"));
+        assert_eq!(
+            read_active_map_type(engine.lua()).as_deref(),
+            Some("my_map")
+        );
     }
 
     #[test]
@@ -376,8 +386,16 @@ mod tests {
             define_map_type { id = "no_gen", name = "x" }
             "#,
         );
-        assert!(lookup_map_type_generator(engine.lua(), "no_gen").unwrap().is_none());
-        assert!(lookup_map_type_generator(engine.lua(), "does_not_exist").unwrap().is_none());
+        assert!(
+            lookup_map_type_generator(engine.lua(), "no_gen")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            lookup_map_type_generator(engine.lua(), "does_not_exist")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

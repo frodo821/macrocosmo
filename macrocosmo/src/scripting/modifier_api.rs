@@ -1,5 +1,62 @@
 use crate::amount::SignedAmt;
-use crate::modifier::{ModifiedValue, Modifier};
+use crate::modifier::{ModifiedValue, Modifier, ParsedModifier};
+
+/// Parse a `modifiers = { { target = "...", base_add = N, ... }, ... }` array
+/// into a `Vec<ParsedModifier>`.
+///
+/// If `self_job_id` is `Some`, any modifier whose `target` has **no** `job:`
+/// prefix and which addresses a colony-scoped field (`colony.<x>`) gets
+/// auto-prefixed to `job:<self_job_id>::<target>` so the modifier lands in the
+/// right per-job bucket. This matches the `define_job { modifiers = ... }`
+/// convention documented in #241.
+pub fn parse_parsed_modifiers(
+    table: &mlua::Table,
+    field: &str,
+    self_job_id: Option<&str>,
+) -> Result<Vec<ParsedModifier>, mlua::Error> {
+    let value: mlua::Value = table.get(field)?;
+    let Some(arr) = (match value {
+        mlua::Value::Table(t) => Some(t),
+        mlua::Value::Nil => None,
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "Expected table or nil for '{field}' field, got {:?}",
+                other
+            )));
+        }
+    }) else {
+        return Ok(Vec::new());
+    };
+
+    let mut result = Vec::new();
+    for pair in arr.pairs::<i64, mlua::Table>() {
+        let (_, entry) = pair?;
+        let target_raw: String = entry.get("target")?;
+        let base_add: f64 = entry.get::<Option<f64>>("base_add")?.unwrap_or(0.0);
+        let multiplier: f64 = entry.get::<Option<f64>>("multiplier")?.unwrap_or(0.0);
+        let add: f64 = entry.get::<Option<f64>>("add")?.unwrap_or(0.0);
+
+        // Auto-prefix in define_job { modifiers = { target = "colony.x", ... } }
+        // If the author already wrote "job:...", leave it alone.
+        let target = if let Some(job_id) = self_job_id {
+            if target_raw.starts_with("job:") {
+                target_raw
+            } else {
+                format!("job:{}::{}", job_id, target_raw)
+            }
+        } else {
+            target_raw
+        };
+
+        result.push(ParsedModifier {
+            target,
+            base_add,
+            multiplier,
+            add,
+        });
+    }
+    Ok(result)
+}
 
 /// Parse a Lua table into a Modifier.
 pub fn parse_modifier_table(

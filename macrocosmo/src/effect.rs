@@ -86,10 +86,7 @@ impl DescriptiveEffect {
             } => {
                 format!("Triggers: {event_id}")
             }
-            DescriptiveEffect::Hidden {
-                label,
-                inner: _,
-            } => label.clone(),
+            DescriptiveEffect::Hidden { label, inner: _ } => label.clone(),
         }
     }
 }

@@ -65,6 +65,8 @@ pub struct GameStartActions {
     pub planet_attribute_overrides: Vec<(PlanetRef, PlanetAttributesSpec)>,
     /// System-level attribute overrides (name, star_type, surveyed).
     pub system_attributes: Option<SystemAttributesSpec>,
+    /// Whether to spawn a Core ship (infrastructure_core_v1) at the capital system.
+    pub spawn_core: bool,
 }
 
 /// Parse a Lua table into a `PlanetAttributesSpec`.
@@ -133,7 +135,9 @@ impl mlua::UserData for PlanetHandle {
         methods.add_method("set_attributes", |_, this, table: mlua::Table| {
             let spec = parse_planet_attrs(&table)?;
             let mut actions = this.actions.lock().unwrap();
-            actions.planet_attribute_overrides.push((this.planet_ref, spec));
+            actions
+                .planet_attribute_overrides
+                .push((this.planet_ref, spec));
             Ok(())
         });
 
@@ -217,9 +221,7 @@ impl mlua::UserData for SystemHandle {
         // returning a PlanetHandle that subsequent calls can reference.
         methods.add_method(
             "spawn_planet",
-            |_,
-             this,
-             (name, planet_type, attrs): (String, mlua::Value, Option<mlua::Table>)| {
+            |_, this, (name, planet_type, attrs): (String, mlua::Value, Option<mlua::Table>)| {
                 let type_id = extract_id_from_lua_value(&planet_type)?;
                 let attributes = match attrs {
                     Some(t) => parse_planet_attrs(&t)?,
@@ -240,6 +242,14 @@ impl mlua::UserData for SystemHandle {
                 })
             },
         );
+
+        // system:spawn_core() — records intent to spawn a Core ship (infrastructure_core_v1)
+        // at the capital system on game start.
+        methods.add_method("spawn_core", |_, this, ()| {
+            let mut actions = this.actions.lock().unwrap();
+            actions.spawn_core = true;
+            Ok(())
+        });
 
         // system:set_attributes({ name=..., star_type=..., surveyed=... })
         methods.add_method("set_attributes", |_, this, table: mlua::Table| {
@@ -351,8 +361,14 @@ mod tests {
         let actions = ctx.take_actions();
         assert_eq!(actions.system_buildings, vec!["shipyard".to_string()]);
         assert_eq!(actions.ships.len(), 2);
-        assert_eq!(actions.ships[0], ("explorer_mk1".into(), "Explorer I".into()));
-        assert_eq!(actions.ships[1], ("colony_ship_mk1".into(), "Colony Ship I".into()));
+        assert_eq!(
+            actions.ships[0],
+            ("explorer_mk1".into(), "Explorer I".into())
+        );
+        assert_eq!(
+            actions.ships[1],
+            ("colony_ship_mk1".into(), "Colony Ship I".into())
+        );
     }
 
     #[test]
@@ -475,7 +491,10 @@ mod tests {
         assert_eq!(actions.spawned_planets.len(), 2);
         assert_eq!(actions.spawned_planets[0].name, "Earth");
         assert_eq!(actions.spawned_planets[0].planet_type, "terrestrial");
-        assert_eq!(actions.spawned_planets[0].attributes.habitability, Some(1.0));
+        assert_eq!(
+            actions.spawned_planets[0].attributes.habitability,
+            Some(1.0)
+        );
         assert_eq!(
             actions.spawned_planets[0].attributes.mineral_richness,
             Some(0.7)
@@ -485,7 +504,10 @@ mod tests {
             Some(6)
         );
         assert_eq!(actions.spawned_planets[1].name, "Mars");
-        assert_eq!(actions.spawned_planets[1].attributes.habitability, Some(0.4));
+        assert_eq!(
+            actions.spawned_planets[1].attributes.habitability,
+            Some(0.4)
+        );
         assert_eq!(actions.colonize_planet, Some(PlanetRef::Spawned(1)));
         assert_eq!(actions.planet_buildings.len(), 2);
         assert_eq!(
@@ -603,5 +625,22 @@ mod tests {
         assert_eq!(result.get::<bool>("e_spawned").unwrap(), false);
         assert_eq!(result.get::<i64>("s_idx").unwrap(), 1);
         assert_eq!(result.get::<bool>("s_spawned").unwrap(), true);
+    }
+
+    #[test]
+    fn test_spawn_core_records_flag() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        let ctx = GameStartCtx::new("humanity_empire".into());
+        lua.globals().set("ctx", ctx.clone()).unwrap();
+
+        // Default is false
+        let actions = ctx.take_actions();
+        assert!(!actions.spawn_core);
+
+        // After calling spawn_core(), flag is true
+        lua.load(r#"ctx.system:spawn_core()"#).exec().unwrap();
+        let actions = ctx.take_actions();
+        assert!(actions.spawn_core);
     }
 }

@@ -1,4 +1,6 @@
+mod ai;
 mod amount;
+mod casus_belli;
 mod choice;
 mod colony;
 mod communication;
@@ -6,20 +8,26 @@ mod components;
 mod condition;
 mod deep_space;
 mod effect;
+mod empire;
 mod event_system;
 mod events;
 mod faction;
 mod galaxy;
 mod knowledge;
 mod modifier;
+mod negotiation;
 mod notifications;
+mod observer;
 mod physics;
 mod player;
+mod profiling;
+#[cfg(feature = "remote")]
+mod remote;
 mod scripting;
 mod setup;
-mod species;
 mod ship;
 mod ship_design;
+mod species;
 mod technology;
 mod time_system;
 mod ui;
@@ -27,8 +35,40 @@ mod visualization;
 
 use bevy::prelude::*;
 
+use ai::AiPlayerMode;
+use observer::{CliArgs, ObserverMode, ObserverPlugin, RngSeed};
+
 fn main() {
-    App::new()
+    let cli = CliArgs::parse();
+
+    let observer_mode = ObserverMode {
+        enabled: cli.no_player || cli.observer,
+        seed: cli.seed,
+        time_horizon: cli.time_horizon,
+        initial_speed: cli.speed,
+        read_only: cli.observer,
+    };
+    let rng_seed = RngSeed(cli.seed);
+
+    if observer_mode.enabled {
+        let source = if cli.observer {
+            "--observer"
+        } else {
+            "--no-player"
+        };
+        info!(
+            "Starting in observer mode ({source}): seed={:?}, time_horizon={:?}, speed={:?}, read_only={}",
+            observer_mode.seed, observer_mode.time_horizon, observer_mode.initial_speed, observer_mode.read_only
+        );
+    }
+
+    // --no-player implies --ai-player: the player empire is AI-driven.
+    let ai_player_mode = AiPlayerMode(cli.ai_player || cli.no_player);
+
+    let mut app = App::new();
+    app.insert_resource(observer_mode)
+        .insert_resource(rng_seed)
+        .insert_resource(ai_player_mode)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Macrocosmo".into(),
@@ -59,7 +99,23 @@ fn main() {
             notifications::NotificationsPlugin,
             faction::FactionRelationsPlugin,
             choice::ChoicesPlugin,
+            ai::AiPlugin,
+            casus_belli::CasusBelliPlugin,
+            ObserverPlugin,
         ))
-        .add_plugins(ui::UiPlugin)
-        .run();
+        .add_plugins(ui::UiPlugin);
+
+    #[cfg(feature = "remote")]
+    {
+        app.add_plugins(remote::remote_plugin());
+        app.add_plugins(bevy::remote::http::RemoteHttpPlugin::default());
+        app.init_resource::<remote::PendingInputReleases>();
+        app.init_resource::<remote::ScreenshotBuffer>();
+        app.init_resource::<ui::UiElementRegistry>();
+        app.add_systems(PreUpdate, remote::release_pending_inputs);
+        app.add_systems(PreUpdate, remote::clear_ui_element_registry);
+        info!("BRP remote server enabled on localhost:15702");
+    }
+
+    app.run();
 }

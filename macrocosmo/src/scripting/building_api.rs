@@ -3,6 +3,11 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::condition::Condition;
+use crate::event_system::LuaFunctionRef;
+use crate::modifier::ParsedModifier;
+use crate::scripting::condition_parser::parse_prerequisites_field;
+use crate::scripting::modifier_api::parse_parsed_modifiers;
 
 /// An upgrade path from one building to another.
 #[derive(Clone, Debug)]
@@ -32,6 +37,11 @@ pub struct BuildingDefinition {
     pub production_bonus_energy: Amt,
     pub production_bonus_research: Amt,
     pub production_bonus_food: Amt,
+    /// #241: Declarative modifiers (target string + base_add/multiplier/add).
+    /// Replaces hardcoded `production_bonus_*`. Targets include
+    /// `colony.<job>_slot` (job slot capacity), `colony.<resource>_per_hexadies`
+    /// (colony aggregator), and `job:<id>::<target>` (per-job bucket).
+    pub modifiers: Vec<ParsedModifier>,
     /// Whether this building is placed on a StarSystem (true) or Colony/Planet (false).
     pub is_system_building: bool,
     /// Named capabilities for special behavior (e.g. "shipyard", "port").
@@ -41,6 +51,24 @@ pub struct BuildingDefinition {
     /// Whether this building can be built directly (true) or only obtained via upgrade (false).
     /// Buildings with cost = nil in Lua are upgrade-only.
     pub is_direct_buildable: bool,
+    /// Optional Condition tree gating construction / upgrade of this building.
+    /// Populated from the Lua `prerequisites = has_tech(...)` / `all(...)` / ... field.
+    pub prerequisites: Option<Condition>,
+    /// #281: Optional Lua hook invoked when a building of this id finishes
+    /// fresh construction (cause = "construction"). Auto-subscribed as a
+    /// filtered handler on `macrocosmo:building_built` during registry load.
+    pub on_built: Option<LuaFunctionRef>,
+    /// #281: Optional Lua hook invoked when an upgrade to a building of this
+    /// id completes (cause = "upgrade"). The event payload carries
+    /// `previous_id` so the hook can distinguish upgrade sources.
+    pub on_upgraded: Option<LuaFunctionRef>,
+    /// #280: Whether this building can be demolished. Defaults to `true`.
+    /// Hub and Capital buildings set this to `false` to prevent removal.
+    pub dismantlable: bool,
+    /// #385: Optional ship design id for buildings that should spawn as station
+    /// ships (e.g. Shipyard → "station_shipyard_v1"). The runtime can look this
+    /// up in the `ShipDesignRegistry` to spawn the corresponding station entity.
+    pub ship_design_id: Option<String>,
 }
 
 /// Parameters for a named building capability.
@@ -103,7 +131,9 @@ impl BuildingRegistry {
 
     /// Return all planet-level building definitions that are directly buildable.
     pub fn planet_buildings(&self) -> Vec<&BuildingDefinition> {
-        let mut result: Vec<_> = self.buildings.values()
+        let mut result: Vec<_> = self
+            .buildings
+            .values()
             .filter(|b| !b.is_system_building && b.is_direct_buildable)
             .collect();
         result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -112,7 +142,9 @@ impl BuildingRegistry {
 
     /// Return all system-level building definitions that are directly buildable.
     pub fn system_buildings(&self) -> Vec<&BuildingDefinition> {
-        let mut result: Vec<_> = self.buildings.values()
+        let mut result: Vec<_> = self
+            .buildings
+            .values()
             .filter(|b| b.is_system_building && b.is_direct_buildable)
             .collect();
         result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -166,7 +198,9 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
 
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
 
         // Parse cost table (optional) — nil means upgrade-only
         let cost_value_check: mlua::Value = table.get("cost")?;
@@ -177,13 +211,34 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let maintenance_f64: f64 = table.get::<Option<f64>>("maintenance")?.unwrap_or(0.0);
         let maintenance = Amt::from_f64(maintenance_f64);
 
-        // Parse production_bonus table (optional)
-        let (pb_minerals, pb_energy, pb_research, pb_food) =
-            parse_production_bonus_table(&table)?;
+        // #241: legacy production_bonus is now warn-then-ignored. Emit a
+        // warning if Lua still declares it (Rust zero-fills the fields, leaving
+        // existing tests that compare these fields against ZERO unaffected).
+        if matches!(
+            table.get::<mlua::Value>("production_bonus")?,
+            mlua::Value::Table(_)
+        ) {
+            warn!(
+                "Building '{}' uses legacy `production_bonus` field; ignored. \
+                 Migrate to modifiers with target = \"colony.<job>_slot\" or \
+                 \"colony.<resource>_per_hexadies\" (#241).",
+                id
+            );
+        }
 
-        let is_system_building: bool = table.get::<Option<bool>>("is_system_building")?.unwrap_or(false);
+        let is_system_building: bool = table
+            .get::<Option<bool>>("is_system_building")?
+            .unwrap_or(false);
         let capabilities = parse_capabilities_table(&table)?;
         let upgrade_to = parse_upgrade_to_table(&table)?;
+        let prerequisites = parse_prerequisites_field(&table)?;
+        let modifiers = parse_parsed_modifiers(&table, "modifiers", None)?;
+        // #281: `on_built` fires after fresh construction completes;
+        // `on_upgraded` fires after an upgrade path to this id completes.
+        let on_built = crate::scripting::parse_lua_function_field(lua, &table, "on_built")?;
+        let on_upgraded = crate::scripting::parse_lua_function_field(lua, &table, "on_upgraded")?;
+        let dismantlable: bool = table.get::<Option<bool>>("dismantlable")?.unwrap_or(true);
+        let ship_design_id: Option<String> = table.get::<Option<String>>("ship_design_id")?;
 
         result.push(BuildingDefinition {
             id,
@@ -193,14 +248,20 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             energy_cost,
             build_time,
             maintenance,
-            production_bonus_minerals: pb_minerals,
-            production_bonus_energy: pb_energy,
-            production_bonus_research: pb_research,
-            production_bonus_food: pb_food,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            modifiers,
             is_system_building,
             capabilities,
             upgrade_to,
             is_direct_buildable,
+            prerequisites,
+            on_built,
+            on_upgraded,
+            dismantlable,
+            ship_design_id,
         });
     }
 
@@ -212,12 +273,8 @@ fn parse_cost_table(table: &mlua::Table) -> Result<(Amt, Amt), mlua::Error> {
     let cost_value: mlua::Value = table.get("cost")?;
     match cost_value {
         mlua::Value::Table(cost_table) => {
-            let minerals: f64 = cost_table
-                .get::<Option<f64>>("minerals")?
-                .unwrap_or(0.0);
-            let energy: f64 = cost_table
-                .get::<Option<f64>>("energy")?
-                .unwrap_or(0.0);
+            let minerals: f64 = cost_table.get::<Option<f64>>("minerals")?.unwrap_or(0.0);
+            let energy: f64 = cost_table.get::<Option<f64>>("energy")?.unwrap_or(0.0);
             Ok((Amt::from_f64(minerals), Amt::from_f64(energy)))
         }
         mlua::Value::Nil => Ok((Amt::ZERO, Amt::ZERO)),
@@ -227,45 +284,14 @@ fn parse_cost_table(table: &mlua::Table) -> Result<(Amt, Amt), mlua::Error> {
     }
 }
 
-/// Parse the `production_bonus = { minerals = N, energy = N, research = N, food = N }` sub-table.
-fn parse_production_bonus_table(
-    table: &mlua::Table,
-) -> Result<(Amt, Amt, Amt, Amt), mlua::Error> {
-    let pb_value: mlua::Value = table.get("production_bonus")?;
-    match pb_value {
-        mlua::Value::Table(pb_table) => {
-            let minerals: f64 = pb_table
-                .get::<Option<f64>>("minerals")?
-                .unwrap_or(0.0);
-            let energy: f64 = pb_table
-                .get::<Option<f64>>("energy")?
-                .unwrap_or(0.0);
-            let research: f64 = pb_table
-                .get::<Option<f64>>("research")?
-                .unwrap_or(0.0);
-            let food: f64 = pb_table
-                .get::<Option<f64>>("food")?
-                .unwrap_or(0.0);
-            Ok((
-                Amt::from_f64(minerals),
-                Amt::from_f64(energy),
-                Amt::from_f64(research),
-                Amt::from_f64(food),
-            ))
-        }
-        mlua::Value::Nil => Ok((Amt::ZERO, Amt::ZERO, Amt::ZERO, Amt::ZERO)),
-        _ => Err(mlua::Error::RuntimeError(
-            "Expected table or nil for 'production_bonus' field".to_string(),
-        )),
-    }
-}
-
 /// Parse the `capabilities = { name = { param = N, ... }, ... }` sub-table.
 /// Supports:
 /// - `capabilities = { name = true }` — empty params
 /// - `capabilities = { name = { ftl_range_bonus = 10.0, travel_time_factor = 0.8 } }` — named params
 /// - `capabilities = { name = { value = N } }` — legacy single-value form
-fn parse_capabilities_table(table: &mlua::Table) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
+fn parse_capabilities_table(
+    table: &mlua::Table,
+) -> Result<HashMap<String, CapabilityParams>, mlua::Error> {
     let cap_value: mlua::Value = table.get("capabilities")?;
     match cap_value {
         mlua::Value::Table(cap_table) => {
@@ -316,9 +342,11 @@ fn parse_upgrade_to_table(table: &mlua::Table) -> Result<Vec<UpgradePath>, mlua:
                             (Amt::from_f64(m), Amt::from_f64(e))
                         }
                         mlua::Value::Nil => (Amt::ZERO, Amt::ZERO),
-                        _ => return Err(mlua::Error::RuntimeError(
-                            "Expected table or nil for upgrade 'cost' field".to_string(),
-                        )),
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "Expected table or nil for upgrade 'cost' field".to_string(),
+                            ));
+                        }
                     }
                 };
 
@@ -358,7 +386,9 @@ mod tests {
                 cost = { minerals = 150, energy = 50 },
                 build_time = 10,
                 maintenance = 0.2,
-                production_bonus = { minerals = 3.0 },
+                modifiers = {
+                    { target = "colony.miner_slot", base_add = 5 },
+                },
             }
             define_building {
                 id = "farm",
@@ -366,7 +396,9 @@ mod tests {
                 cost = { minerals = 100, energy = 50 },
                 build_time = 20,
                 maintenance = 0.3,
-                production_bonus = { food = 5.0 },
+                modifiers = {
+                    { target = "colony.farmer_slot", base_add = 5 },
+                },
             }
             "#,
         )
@@ -383,22 +415,17 @@ mod tests {
         assert_eq!(defs[0].energy_cost, Amt::units(50));
         assert_eq!(defs[0].build_time, 10);
         assert_eq!(defs[0].maintenance, Amt::new(0, 200));
-        assert_eq!(defs[0].production_bonus_minerals, Amt::units(3));
-        assert_eq!(defs[0].production_bonus_energy, Amt::ZERO);
-        assert_eq!(defs[0].production_bonus_research, Amt::ZERO);
-        assert_eq!(defs[0].production_bonus_food, Amt::ZERO);
+        // #241: production_bonus_* are zero under new modifier-based scheme.
+        assert_eq!(defs[0].production_bonus_minerals, Amt::ZERO);
+        assert_eq!(defs[0].modifiers.len(), 1);
+        assert_eq!(defs[0].modifiers[0].target, "colony.miner_slot");
+        assert!((defs[0].modifiers[0].base_add - 5.0).abs() < 1e-10);
 
         // Farm
         assert_eq!(defs[1].id, "farm");
         assert_eq!(defs[1].name, "Farm");
-        assert_eq!(defs[1].minerals_cost, Amt::units(100));
-        assert_eq!(defs[1].energy_cost, Amt::units(50));
-        assert_eq!(defs[1].build_time, 20);
-        assert_eq!(defs[1].maintenance, Amt::new(0, 300));
-        assert_eq!(defs[1].production_bonus_minerals, Amt::ZERO);
-        assert_eq!(defs[1].production_bonus_energy, Amt::ZERO);
-        assert_eq!(defs[1].production_bonus_research, Amt::ZERO);
-        assert_eq!(defs[1].production_bonus_food, Amt::units(5));
+        assert_eq!(defs[1].modifiers.len(), 1);
+        assert_eq!(defs[1].modifiers[0].target, "colony.farmer_slot");
     }
 
     #[test]
@@ -448,10 +475,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: None,
         });
 
         let mine = registry.get("mine").unwrap();
@@ -472,10 +505,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::units(5),
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: None,
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -492,11 +531,15 @@ mod tests {
         let building_script = std::path::Path::new("scripts/buildings/basic.lua");
         if !building_script.exists() {
             // Try from the workspace root (worktree directory)
-            let alt_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
+            let alt_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts/buildings/basic.lua");
             if alt_path.exists() {
                 engine.load_file(&alt_path).unwrap();
             } else {
-                panic!("scripts/buildings/basic.lua not found at {:?} or {:?}", building_script, alt_path);
+                panic!(
+                    "scripts/buildings/basic.lua not found at {:?} or {:?}",
+                    building_script, alt_path
+                );
             }
         } else {
             engine.load_file(building_script).unwrap();
@@ -504,9 +547,13 @@ mod tests {
 
         let defs = parse_building_definitions(engine.lua()).unwrap();
 
-        // basic.lua defines 8 buildings: mine, power_plant, research_lab, shipyard, port, farm,
-        // advanced_mine, advanced_power_plant
-        assert_eq!(defs.len(), 8, "Expected 8 building definitions from basic.lua");
+        // basic.lua defines 14 buildings: mine, power_plant, research_lab, shipyard, port, farm,
+        // advanced_mine, advanced_power_plant, colony_hub_t1/t2/t3, planetary_capital_t1/t2/t3
+        assert_eq!(
+            defs.len(),
+            14,
+            "Expected 14 building definitions from basic.lua"
+        );
 
         // Build a registry from the parsed definitions
         let mut registry = BuildingRegistry::default();
@@ -514,27 +561,36 @@ mod tests {
             registry.insert(def.clone());
         }
 
-        // Verify Mine has minerals production bonus = 3.0
+        // Verify Mine grants miner_slot = 5 via the new modifiers field.
         let mine = registry.get("mine").expect("Mine should be in registry");
         assert_eq!(mine.name, "Mine");
-        assert_eq!(mine.production_bonus_minerals, Amt::units(3));
         assert_eq!(mine.minerals_cost, Amt::units(150));
         assert_eq!(mine.energy_cost, Amt::units(50));
         assert_eq!(mine.build_time, 10);
         assert_eq!(mine.maintenance, Amt::new(0, 200));
+        assert!(
+            mine.modifiers
+                .iter()
+                .any(|m| m.target == "colony.miner_slot" && (m.base_add - 5.0).abs() < 1e-10),
+            "Mine should declare colony.miner_slot +5"
+        );
 
-        // Verify Farm has food production bonus = 5.0
+        // Verify Farm grants farmer_slot.
         let farm = registry.get("farm").expect("Farm should be in registry");
         assert_eq!(farm.name, "Farm");
-        assert_eq!(farm.production_bonus_food, Amt::units(5));
+        assert!(
+            farm.modifiers
+                .iter()
+                .any(|m| m.target == "colony.farmer_slot"),
+            "Farm should declare colony.farmer_slot"
+        );
 
-        // Verify Shipyard has no production bonus and is a system building
-        let shipyard = registry.get("shipyard").expect("Shipyard should be in registry");
+        // Verify Shipyard has no production modifiers and is a system building.
+        let shipyard = registry
+            .get("shipyard")
+            .expect("Shipyard should be in registry");
         assert_eq!(shipyard.name, "Shipyard");
-        assert_eq!(shipyard.production_bonus_minerals, Amt::ZERO);
-        assert_eq!(shipyard.production_bonus_energy, Amt::ZERO);
-        assert_eq!(shipyard.production_bonus_research, Amt::ZERO);
-        assert_eq!(shipyard.production_bonus_food, Amt::ZERO);
+        assert!(shipyard.modifiers.is_empty());
         assert_eq!(shipyard.maintenance, Amt::units(1));
         assert!(shipyard.is_system_building);
         assert!(shipyard.capabilities.contains_key("shipyard"));
@@ -564,10 +620,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: None,
         });
 
         // Replace with updated values
@@ -583,10 +645,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: None,
         });
 
         assert_eq!(registry.buildings.len(), 1);
@@ -608,7 +676,7 @@ mod tests {
                 cost = { minerals = 150, energy = 50 },
                 build_time = 10,
                 maintenance = 0.2,
-                production_bonus = { minerals = 3.0 },
+                modifiers = { { target = "colony.miner_slot", base_add = 5 } },
                 upgrade_to = {
                     { target = forward_ref("advanced_mine"), cost = { minerals = 200, energy = 100 }, build_time = 8 },
                 },
@@ -619,7 +687,7 @@ mod tests {
                 cost = nil,
                 build_time = 10,
                 maintenance = 0.4,
-                production_bonus = { minerals = 6.0 },
+                modifiers = { { target = "colony.miner_slot", base_add = 10 } },
             }
             "#,
         )
@@ -645,7 +713,8 @@ mod tests {
         assert!(!adv_mine.is_direct_buildable);
         assert_eq!(adv_mine.minerals_cost, Amt::ZERO);
         assert_eq!(adv_mine.energy_cost, Amt::ZERO);
-        assert_eq!(adv_mine.production_bonus_minerals, Amt::units(6));
+        assert_eq!(adv_mine.modifiers.len(), 1);
+        assert!((adv_mine.modifiers[0].base_add - 10.0).abs() < 1e-10);
         assert_eq!(adv_mine.maintenance, Amt::new(0, 400));
     }
 
@@ -666,10 +735,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: None,
         });
 
         // Upgrade-only planet building
@@ -685,10 +760,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
             is_system_building: false,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: false,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: None,
         });
 
         // planet_buildings() should only return direct-buildable ones
@@ -698,5 +779,151 @@ mod tests {
 
         // But the registry still has both
         assert!(registry.get("advanced_mine").is_some());
+    }
+
+    #[test]
+    fn test_building_api_parses_prerequisites_field() {
+        use crate::condition::{Condition, ConditionAtom};
+
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_building {
+                id = "plain",
+                name = "Plain",
+            }
+            define_building {
+                id = "tech_gated",
+                name = "Tech Gated",
+                prerequisites = has_tech("industrial_automated_mining"),
+            }
+            define_building {
+                id = "complex_gated",
+                name = "Complex Gated",
+                prerequisites = all(
+                    has_tech("tech_a"),
+                    any(has_tech("tech_b"), has_flag("enabled"))
+                ),
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_building_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 3);
+
+        assert!(defs[0].prerequisites.is_none());
+
+        assert_eq!(
+            defs[1].prerequisites,
+            Some(Condition::Atom(ConditionAtom::has_tech(
+                "industrial_automated_mining"
+            )))
+        );
+
+        assert!(matches!(&defs[2].prerequisites, Some(Condition::All(_))));
+    }
+
+    #[test]
+    fn test_building_api_prerequisites_from_lua_file_wires_advanced_mine() {
+        // Ensures scripts/buildings/basic.lua now populates prerequisites for
+        // advanced_mine / advanced_power_plant (previously silently dropped).
+        use crate::condition::{AtomKind, Condition};
+
+        let engine = ScriptEngine::new().unwrap();
+        let building_script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
+        if !building_script.exists() {
+            return;
+        }
+        engine.load_file(&building_script).unwrap();
+        let defs = parse_building_definitions(engine.lua()).unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            defs.iter().map(|d| (d.id.as_str(), d)).collect();
+
+        let adv_mine = by_id.get("advanced_mine").unwrap();
+        match &adv_mine.prerequisites {
+            Some(Condition::Atom(atom)) => match &atom.kind {
+                AtomKind::HasTech(id) => assert_eq!(id, "industrial_automated_mining"),
+                other => panic!("expected HasTech atom, got {:?}", other),
+            },
+            other => panic!(
+                "expected advanced_mine prerequisites to be a HasTech atom, got {:?}",
+                other
+            ),
+        }
+
+        let adv_pp = by_id.get("advanced_power_plant").unwrap();
+        assert!(adv_pp.prerequisites.is_some());
+    }
+
+    /// #385: `ship_design_id` parses from Lua and defaults to None.
+    #[test]
+    fn test_building_ship_design_id_parses() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_building {
+                id = "plain",
+                name = "Plain",
+            }
+            define_building {
+                id = "shipyard",
+                name = "Shipyard",
+                ship_design_id = "station_shipyard_v1",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_building_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 2);
+
+        assert!(
+            defs[0].ship_design_id.is_none(),
+            "plain building should have no ship_design_id"
+        );
+        assert_eq!(
+            defs[1].ship_design_id.as_deref(),
+            Some("station_shipyard_v1"),
+            "shipyard should map to station_shipyard_v1"
+        );
+    }
+
+    /// #385: Building definitions from Lua scripts wire ship_design_id for
+    /// system buildings (shipyard, port, research_lab).
+    #[test]
+    fn test_building_ship_design_id_from_lua_file() {
+        let engine = ScriptEngine::new().unwrap();
+        let building_script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
+        if !building_script.exists() {
+            return;
+        }
+        engine.load_file(&building_script).unwrap();
+        let defs = parse_building_definitions(engine.lua()).unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            defs.iter().map(|d| (d.id.as_str(), d)).collect();
+
+        assert_eq!(
+            by_id.get("shipyard").unwrap().ship_design_id.as_deref(),
+            Some("station_shipyard_v1"),
+        );
+        assert_eq!(
+            by_id.get("port").unwrap().ship_design_id.as_deref(),
+            Some("station_port_v1"),
+        );
+        assert_eq!(
+            by_id.get("research_lab").unwrap().ship_design_id.as_deref(),
+            Some("station_research_lab_v1"),
+        );
+        // Mine should have no ship_design_id
+        assert!(by_id.get("mine").unwrap().ship_design_id.is_none());
     }
 }

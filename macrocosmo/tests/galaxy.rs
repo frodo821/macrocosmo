@@ -41,6 +41,7 @@ fn test_galaxy_generation_uses_types() {
             research: 1.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
     app.insert_resource(planet_reg);
 
@@ -64,11 +65,7 @@ fn test_galaxy_generation_uses_types() {
     }
 
     // Verify all planets have planet_type set
-    let planet_count = app
-        .world_mut()
-        .query::<&Planet>()
-        .iter(app.world())
-        .count();
+    let planet_count = app.world_mut().query::<&Planet>().iter(app.world()).count();
     assert!(planet_count > 0, "Should have generated planets");
 
     for planet in app.world_mut().query::<&Planet>().iter(app.world()) {
@@ -116,6 +113,7 @@ fn test_system_modifiers_on_star_systems() {
             research: 1.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
     app.insert_resource(planet_reg);
 

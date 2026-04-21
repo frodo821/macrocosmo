@@ -4,25 +4,33 @@ use bevy_egui::egui;
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::ship::fleet::{Fleet, FleetMembers};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::ship_design::ShipDesignRegistry;
-use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedSystem};
+use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedShips, SelectedSystem};
 
 /// Helper: format a ship status string from ShipState.
 fn ship_status_label(state: &ShipState) -> &'static str {
     match state {
-        ShipState::Docked { .. } => "Docked",
+        ShipState::InSystem { .. } => "Docked",
         ShipState::SubLight { .. } => "Sub-light",
         ShipState::InFTL { .. } => "In FTL",
         ShipState::Surveying { .. } => "Surveying",
         ShipState::Settling { .. } => "Settling",
         ShipState::Refitting { .. } => "Refitting",
         ShipState::Loitering { .. } => "Loitering",
+        ShipState::Scouting { .. } => "Scouting",
     }
 }
 
 /// Draw a ship tooltip on hover.
-fn ship_tooltip(ui: &mut egui::Ui, ship: &Ship, state: &ShipState, hp: &ShipHitpoints, design_name: &str) {
+fn ship_tooltip(
+    ui: &mut egui::Ui,
+    ship: &Ship,
+    state: &ShipState,
+    hp: &ShipHitpoints,
+    design_name: &str,
+) {
     ui.label(egui::RichText::new(&ship.name).strong());
     ui.label(format!("Design: {}", design_name));
     ui.label(format!("Status: {}", ship_status_label(state)));
@@ -138,34 +146,126 @@ fn draw_unowned_system_header(
 }
 
 /// Draw the ship list for an expanded system section.
+/// #407: Shift+click toggles multi-select via `SelectedShips`.
+/// #408: Right-click context menu on each entry.
 fn draw_ship_list(
     ui: &mut egui::Ui,
     ship_entries: &[(Entity, String, String)],
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
     design_registry: &ShipDesignRegistry,
+    parent_system: Option<Entity>,
+    selected_system: &mut SelectedSystem,
+    is_station: bool,
 ) {
     if ship_entries.is_empty() {
-        ui.label(
-            egui::RichText::new("  (no ships)")
-                .weak()
-                .italics(),
-        );
+        ui.label(egui::RichText::new("  (no ships)").weak().italics());
     } else {
         for (ship_entity, name, design_id) in ship_entries {
-            let design_name = design_registry.get(design_id).map(|d| d.name.as_str()).unwrap_or(design_id);
-            let label = format!("  {} ({})", name, design_name);
-            let is_selected = selected_ship.0 == Some(*ship_entity);
-            let mut response = ui.selectable_label(is_selected, &label);
+            let design_name = design_registry
+                .get(design_id)
+                .map(|d| d.name.as_str())
+                .unwrap_or(design_id);
+            let label = if is_station {
+                // #406: Teal color for station entries
+                egui::RichText::new(format!("  {} ({})", name, design_name))
+                    .color(egui::Color32::from_rgb(0, 200, 180))
+            } else {
+                egui::RichText::new(format!("  {} ({})", name, design_name))
+            };
+            let is_selected = selected_ships.contains(*ship_entity);
+            let mut response = ui.selectable_label(is_selected, label);
             if let Ok((_, ship, state, _, hp, _)) = ships.get(*ship_entity) {
                 response = response.on_hover_ui(|ui| {
                     ship_tooltip(ui, &ship, &state, &hp, design_name);
                 });
             }
+            // #408: Context menu on right-click
+            let can_survey = design_registry.can_survey(design_id);
+            let can_colonize = design_registry.can_colonize(design_id);
+            let ctx_name = name.clone();
+            let ctx_design_name = design_name.to_string();
+            let ctx_ship_entity = *ship_entity;
+            let ctx_parent = parent_system;
+            response.context_menu(|ui| {
+                draw_ship_context_menu(
+                    ui,
+                    &ctx_name,
+                    &ctx_design_name,
+                    ctx_ship_entity,
+                    ctx_parent,
+                    can_survey,
+                    can_colonize,
+                    is_station,
+                    selected_ship,
+                    selected_ships,
+                    selected_system,
+                );
+            });
             if response.clicked() {
-                selected_ship.0 = Some(*ship_entity);
+                let shift_held = ui.input(|i| i.modifiers.shift);
+                if shift_held {
+                    selected_ships.toggle(*ship_entity);
+                } else {
+                    selected_ships.set_single(*ship_entity);
+                }
+                selected_ship.0 = selected_ships.primary();
                 // Don't touch selected_system -- selections are independent
             }
+        }
+    }
+}
+
+/// #408: Draw the context menu content for a ship/station entry in the outline.
+#[allow(clippy::too_many_arguments)]
+fn draw_ship_context_menu(
+    ui: &mut egui::Ui,
+    name: &str,
+    design_name: &str,
+    ship_entity: Entity,
+    parent_system: Option<Entity>,
+    can_survey: bool,
+    can_colonize: bool,
+    is_station: bool,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
+    selected_system: &mut SelectedSystem,
+) {
+    ui.label(egui::RichText::new(name).strong());
+    if is_station {
+        ui.label(format!("Station: {}", design_name));
+    } else {
+        ui.label(format!("Design: {}", design_name));
+    }
+    if can_survey {
+        ui.label("Capability: Survey");
+    }
+    if can_colonize {
+        ui.label("Capability: Colonize");
+    }
+    ui.separator();
+    let select_label = if is_station {
+        "Select station"
+    } else {
+        "Select ship"
+    };
+    if ui.button(select_label).clicked() {
+        selected_ships.set_single(ship_entity);
+        selected_ship.0 = selected_ships.primary();
+        ui.close_menu();
+    }
+    if let Some(sys) = parent_system {
+        if ui.button("Select system").clicked() {
+            selected_system.0 = Some(sys);
+            ui.close_menu();
         }
     }
 }
@@ -185,12 +285,21 @@ pub fn draw_outline(
         Option<&crate::colony::MaintenanceCost>,
         Option<&crate::colony::FoodConsumption>,
     )>,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
     selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
     planets: &Query<&Planet>,
     expanded: &mut OutlineExpandedSystems,
     design_registry: &ShipDesignRegistry,
+    fleets: &Query<(Entity, &Fleet, &FleetMembers)>,
 ) {
     egui::SidePanel::left("outline_panel")
         .min_width(180.0)
@@ -213,9 +322,7 @@ pub fn draw_outline(
             }
 
             // Sort: capital first, then alphabetical
-            owned_systems.sort_by(|a, b| {
-                b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1))
-            });
+            owned_systems.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
 
             // Auto-expand capital system on first encounter
             for (entity, _, is_capital) in &owned_systems {
@@ -250,9 +357,56 @@ pub fn draw_outline(
                 );
 
                 if is_expanded {
+                    // #395/#406: Show stations separately from ships with visual distinction
+                    let system_stations = stations_at(*system_entity, ships);
+                    let docked = ships_docked_at(*system_entity, ships);
+                    let has_both = !system_stations.is_empty() && !docked.is_empty();
+                    if !system_stations.is_empty() {
+                        ui.indent(format!("outline_stations_{:?}", system_entity), |ui| {
+                            // #406: Anchor icon + teal color for stations header
+                            ui.label(
+                                egui::RichText::new("\u{2693} Stations")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(0, 200, 180)),
+                            );
+                            draw_ship_list(
+                                ui,
+                                &system_stations,
+                                ships,
+                                selected_ship,
+                                selected_ships,
+                                design_registry,
+                                Some(*system_entity),
+                                selected_system,
+                                true,
+                            );
+                        });
+                    }
+                    // #406: Separator between stations and ships when both exist
+                    if has_both {
+                        ui.separator();
+                    }
+                    // #407: Group docked ships by fleet
                     ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
-                        let docked = ships_docked_at(*system_entity, ships);
-                        draw_ship_list(ui, &docked, ships, selected_ship, design_registry);
+                        // #406: Ships sub-header when both sections exist
+                        if has_both {
+                            ui.label(
+                                egui::RichText::new("\u{2694} Ships")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(200, 200, 120)),
+                            );
+                        }
+                        draw_fleet_grouped_ship_list(
+                            ui,
+                            &docked,
+                            ships,
+                            selected_ship,
+                            selected_ships,
+                            design_registry,
+                            fleets,
+                            Some(*system_entity),
+                            selected_system,
+                        );
                     });
                 }
             }
@@ -262,10 +416,14 @@ pub fn draw_outline(
                 owned_systems.iter().map(|(e, _, _)| *e).collect();
 
             // "Stationed Elsewhere" section for ships docked at unowned systems
+            // #395: Immobile ships (stations) are excluded here.
             let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
                 Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
-                if let ShipState::Docked { system } = &*state {
+                if ship.is_immobile() {
+                    continue;
+                }
+                if let ShipState::InSystem { system } = &*state {
                     if !owned_system_entities.contains(system) {
                         // Find or create entry for this system
                         if let Ok((_, star, _, _)) = stars.get(*system) {
@@ -273,7 +431,9 @@ pub fn draw_outline(
                                 .iter_mut()
                                 .find(|(e, _, _)| *e == *system)
                             {
-                                entry.2.push((entity, ship.name.clone(), ship.design_id.clone()));
+                                entry
+                                    .2
+                                    .push((entity, ship.name.clone(), ship.design_id.clone()));
                             } else {
                                 unowned_system_ships.push((
                                     *system,
@@ -303,8 +463,7 @@ pub fn draw_outline(
                         }
 
                         for (system_entity, system_name, docked) in &unowned_system_ships {
-                            let is_system_selected =
-                                selected_system.0 == Some(*system_entity);
+                            let is_system_selected = selected_system.0 == Some(*system_entity);
 
                             let is_expanded = draw_unowned_system_header(
                                 ui,
@@ -317,25 +476,43 @@ pub fn draw_outline(
                             );
 
                             if is_expanded {
-                                ui.indent(format!("outline_unowned_ships_{:?}", system_entity), |ui| {
-                                    draw_ship_list(ui, docked, ships, selected_ship, design_registry);
-                                });
+                                ui.indent(
+                                    format!("outline_unowned_ships_{:?}", system_entity),
+                                    |ui| {
+                                        draw_fleet_grouped_ship_list(
+                                            ui,
+                                            docked,
+                                            ships,
+                                            selected_ship,
+                                            selected_ships,
+                                            design_registry,
+                                            fleets,
+                                            Some(*system_entity),
+                                            selected_system,
+                                        );
+                                    },
+                                );
                             }
                         }
                     });
             }
 
             // "In Transit" section for ships not docked
+            // #395: Immobile ships are excluded (they should never be in transit).
             let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
+                if ship.is_immobile() {
+                    continue;
+                }
                 let status = match &*state {
-                    ShipState::Docked { .. } => continue,
+                    ShipState::InSystem { .. } => continue,
                     ShipState::SubLight { .. } => "Moving",
                     ShipState::InFTL { .. } => "FTL",
                     ShipState::Surveying { .. } => "Surveying",
                     ShipState::Settling { .. } => "Settling",
                     ShipState::Refitting { .. } => continue,
                     ShipState::Loitering { .. } => "Loitering",
+                    ShipState::Scouting { .. } => "Scouting",
                 };
                 in_transit.push((entity, ship.name.clone(), ship.design_id.clone(), status));
             }
@@ -346,18 +523,48 @@ pub fn draw_outline(
                 egui::CollapsingHeader::new("In Transit")
                     .default_open(true)
                     .show(ui, |ui| {
-                        for (entity, name, _ship_type, status) in &in_transit {
+                        for (entity, name, design_id, status) in &in_transit {
                             let label = format!("{} [{}]", name, status);
-                            let is_selected = selected_ship.0 == Some(*entity);
+                            let is_selected = selected_ships.contains(*entity);
+                            let design_name = design_registry
+                                .get(design_id.as_str())
+                                .map(|d| d.name.clone())
+                                .unwrap_or_else(|| design_id.clone());
                             let mut response = ui.selectable_label(is_selected, &label);
                             if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
-                                let design_name = design_registry.get(&ship.design_id).map(|d| d.name.as_str()).unwrap_or(&ship.design_id);
                                 response = response.on_hover_ui(|ui| {
-                                    ship_tooltip(ui, &ship, &_state, &hp, design_name);
+                                    ship_tooltip(ui, &ship, &_state, &hp, &design_name);
                                 });
                             }
+                            // #408: Context menu on in-transit ships
+                            let can_survey = design_registry.can_survey(design_id);
+                            let can_colonize = design_registry.can_colonize(design_id);
+                            let ctx_name = name.clone();
+                            let ctx_design_name = design_name.clone();
+                            let ctx_entity = *entity;
+                            response.context_menu(|ui| {
+                                draw_ship_context_menu(
+                                    ui,
+                                    &ctx_name,
+                                    &ctx_design_name,
+                                    ctx_entity,
+                                    None, // no parent system for in-transit
+                                    can_survey,
+                                    can_colonize,
+                                    false,
+                                    selected_ship,
+                                    selected_ships,
+                                    selected_system,
+                                );
+                            });
                             if response.clicked() {
-                                selected_ship.0 = Some(*entity);
+                                let shift_held = ui.input(|i| i.modifiers.shift);
+                                if shift_held {
+                                    selected_ships.toggle(*entity);
+                                } else {
+                                    selected_ships.set_single(*entity);
+                                }
+                                selected_ship.0 = selected_ships.primary();
                             }
                         }
                     });
@@ -365,15 +572,157 @@ pub fn draw_outline(
         });
 }
 
-/// Helper to collect ships docked at a given system.
+/// Helper to collect mobile ships docked at a given system.
+/// #395: Immobile ships (stations) are excluded — they appear in the "Stations" section.
 fn ships_docked_at(
     system: Entity,
-    ships: &Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _, _, _)| {
-            if let ShipState::Docked { system: s } = &*state {
+            if ship.is_immobile() {
+                return None;
+            }
+            if let ShipState::InSystem { system: s } = &*state {
+                if *s == system {
+                    return Some((e, ship.name.clone(), ship.design_id.clone()));
+                }
+            }
+            None
+        })
+        .collect();
+    result.sort_by(|a, b| a.1.cmp(&b.1));
+    result
+}
+
+/// #407: Draw ships grouped by fleet. Ships that share a fleet are shown
+/// under a collapsible fleet header; solo-fleet ships (fleet with 1 member)
+/// are shown directly without a header to avoid clutter.
+#[allow(clippy::too_many_arguments)]
+fn draw_fleet_grouped_ship_list(
+    ui: &mut egui::Ui,
+    ship_entries: &[(Entity, String, String)],
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
+    design_registry: &ShipDesignRegistry,
+    fleets: &Query<(Entity, &Fleet, &FleetMembers)>,
+    parent_system: Option<Entity>,
+    selected_system: &mut SelectedSystem,
+) {
+    if ship_entries.is_empty() {
+        ui.label(egui::RichText::new("  (no ships)").weak().italics());
+        return;
+    }
+
+    // Group ship entries by fleet entity.
+    let mut fleet_groups: std::collections::BTreeMap<
+        Option<Entity>,
+        Vec<(Entity, String, String)>,
+    > = std::collections::BTreeMap::new();
+    for (entity, name, design_id) in ship_entries {
+        let fleet_entity = ships
+            .get(*entity)
+            .ok()
+            .and_then(|(_, ship, _, _, _, _)| ship.fleet);
+        fleet_groups.entry(fleet_entity).or_default().push((
+            *entity,
+            name.clone(),
+            design_id.clone(),
+        ));
+    }
+
+    // Partition into multi-ship fleets and solo ships.
+    let mut multi_fleets: Vec<(Entity, String, Vec<(Entity, String, String)>)> = Vec::new();
+    let mut solo_ships: Vec<(Entity, String, String)> = Vec::new();
+
+    for (fleet_opt, members) in &fleet_groups {
+        if let Some(fleet_entity) = fleet_opt {
+            if let Ok((_, fleet, fleet_members)) = fleets.get(*fleet_entity) {
+                if fleet_members.len() > 1 {
+                    multi_fleets.push((*fleet_entity, fleet.name.clone(), members.clone()));
+                    continue;
+                }
+            }
+        }
+        solo_ships.extend(members.iter().cloned());
+    }
+
+    // Draw multi-ship fleets with collapsible headers.
+    for (fleet_entity, fleet_name, members) in &multi_fleets {
+        let header_label = format!("{} ({} ships)", fleet_name, members.len());
+        egui::CollapsingHeader::new(
+            egui::RichText::new(&header_label)
+                .small()
+                .color(egui::Color32::from_rgb(150, 200, 255)),
+        )
+        .id_salt(format!("fleet_{:?}", fleet_entity))
+        .default_open(true)
+        .show(ui, |ui| {
+            draw_ship_list(
+                ui,
+                members,
+                ships,
+                selected_ship,
+                selected_ships,
+                design_registry,
+                parent_system,
+                selected_system,
+                false,
+            );
+        });
+    }
+
+    // Draw solo ships directly.
+    if !solo_ships.is_empty() {
+        draw_ship_list(
+            ui,
+            &solo_ships,
+            ships,
+            selected_ship,
+            selected_ships,
+            design_registry,
+            parent_system,
+            selected_system,
+            false,
+        );
+    }
+}
+
+/// #395: Collect immobile ships (stations) docked at a given system.
+fn stations_at(
+    system: Entity,
+    ships: &Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    )>,
+) -> Vec<(Entity, String, String)> {
+    let mut result: Vec<(Entity, String, String)> = ships
+        .iter()
+        .filter_map(|(e, ship, state, _, _, _)| {
+            if !ship.is_immobile() {
+                return None;
+            }
+            if let ShipState::InSystem { system: s } = &*state {
                 if *s == system {
                     return Some((e, ship.name.clone(), ship.design_id.clone()));
                 }

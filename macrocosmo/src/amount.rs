@@ -5,7 +5,19 @@
 
 const SCALE: u64 = 1000;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Amt(pub u64);
 
 impl Amt {
@@ -180,7 +192,19 @@ const SIGNED_SCALE: i64 = 1000;
 
 /// Signed fixed-point amount. 1 displayed unit = 1000 internal units.
 /// Used for modifier values that can be negative (e.g., -20% = SignedAmt(-200)).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct SignedAmt(pub i64);
 
 impl SignedAmt {
@@ -392,8 +416,14 @@ mod tests {
 
     #[test]
     fn signed_add() {
-        assert_eq!(SignedAmt::units(3).add(SignedAmt::units(-5)), SignedAmt::units(-2));
-        assert_eq!(SignedAmt::units(-1).add(SignedAmt::units(1)), SignedAmt::ZERO);
+        assert_eq!(
+            SignedAmt::units(3).add(SignedAmt::units(-5)),
+            SignedAmt::units(-2)
+        );
+        assert_eq!(
+            SignedAmt::units(-1).add(SignedAmt::units(1)),
+            SignedAmt::ZERO
+        );
     }
 
     #[test]
@@ -481,8 +511,14 @@ mod tests {
         assert_eq!(SignedAmt::units(-1234).display_compact(), "-1.2k");
         assert_eq!(SignedAmt::units(-3_400_000).display_compact(), "-3.4M");
         assert_eq!(SignedAmt::units(1_234_567_890).display_compact(), "+1.2G");
-        assert_eq!(SignedAmt::units(-1_234_567_890_123).display_compact(), "-1.2T");
-        assert_eq!(SignedAmt::units(1_234_567_890_123_456).display_compact(), "+1.2P");
+        assert_eq!(
+            SignedAmt::units(-1_234_567_890_123).display_compact(),
+            "-1.2T"
+        );
+        assert_eq!(
+            SignedAmt::units(1_234_567_890_123_456).display_compact(),
+            "+1.2P"
+        );
     }
 
     #[test]

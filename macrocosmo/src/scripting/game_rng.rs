@@ -4,26 +4,26 @@
 //! random draws funnel through a single, replayable Bevy resource. This is
 //! a prerequisite for future deterministic replays / save-game seeding.
 //!
-//! The RNG handle is wrapped in `Arc<Mutex<SmallRng>>` so it can be cloned
+//! The RNG handle is wrapped in `Arc<Mutex<Xoshiro256PlusPlus>>` so it can be cloned
 //! into Lua callbacks (which can fire from any system at any time).
 
 use bevy::prelude::*;
 use mlua::prelude::*;
-use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rand_xoshiro::Xoshiro256PlusPlus;
 use std::sync::{Arc, Mutex};
 
 /// Game-managed RNG for Lua scripts. Wrapped in `Arc<Mutex<_>>` so it can
 /// be shared with Lua callbacks (which can fire at any time).
 #[derive(Resource, Clone)]
 pub struct GameRng {
-    inner: Arc<Mutex<SmallRng>>,
+    inner: Arc<Mutex<Xoshiro256PlusPlus>>,
 }
 
 impl Default for GameRng {
     fn default() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(SmallRng::from_os_rng())),
+            inner: Arc::new(Mutex::new(Xoshiro256PlusPlus::from_os_rng())),
         }
     }
 }
@@ -32,13 +32,21 @@ impl GameRng {
     /// Construct a deterministic RNG from a u64 seed.
     pub fn from_seed(seed: u64) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(SmallRng::seed_from_u64(seed))),
+            inner: Arc::new(Mutex::new(Xoshiro256PlusPlus::seed_from_u64(seed))),
+        }
+    }
+
+    /// Construct a [`GameRng`] from an already-initialised Xoshiro256++
+    /// generator (e.g. when restoring from a save snapshot).
+    pub fn from_xoshiro(rng: Xoshiro256PlusPlus) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(rng)),
         }
     }
 
     /// Get a clone of the shared RNG handle (for passing to Lua callbacks
     /// or other long-lived consumers).
-    pub fn handle(&self) -> Arc<Mutex<SmallRng>> {
+    pub fn handle(&self) -> Arc<Mutex<Xoshiro256PlusPlus>> {
         Arc::clone(&self.inner)
     }
 }
@@ -52,7 +60,7 @@ impl GameRng {
 /// - `game_rand.chance(p) -> bool` (true with probability `p`)
 /// - `game_rand.choice(table) -> any` (uniform pick from sequence)
 /// - `game_rand.weighted({ {weight=N, value=X}, ... }) -> any`
-pub fn register_game_rand(lua: &Lua, rng: Arc<Mutex<SmallRng>>) -> LuaResult<()> {
+pub fn register_game_rand(lua: &Lua, rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> LuaResult<()> {
     let table = lua.create_table()?;
 
     // game_rand.range(min, max) -> f64 in [min, max)
@@ -180,10 +188,7 @@ mod tests {
     fn range_returns_value_in_bounds() {
         let lua = make_lua_with_rng(1);
         for _ in 0..100 {
-            let v: f64 = lua
-                .load("return game_rand.range(2.5, 7.5)")
-                .eval()
-                .unwrap();
+            let v: f64 = lua.load("return game_rand.range(2.5, 7.5)").eval().unwrap();
             assert!(v >= 2.5 && v < 7.5, "got {v}");
         }
     }
@@ -203,10 +208,7 @@ mod tests {
         let mut saw_min = false;
         let mut saw_max = false;
         for _ in 0..2000 {
-            let v: i64 = lua
-                .load("return game_rand.range_int(1, 6)")
-                .eval()
-                .unwrap();
+            let v: i64 = lua.load("return game_rand.range_int(1, 6)").eval().unwrap();
             assert!((1..=6).contains(&v), "got {v}");
             if v == 1 {
                 saw_min = true;
@@ -216,16 +218,16 @@ mod tests {
             }
         }
         assert!(saw_min, "never saw lower bound 1");
-        assert!(saw_max, "never saw upper bound 6 (range should be inclusive)");
+        assert!(
+            saw_max,
+            "never saw upper bound 6 (range should be inclusive)"
+        );
     }
 
     #[test]
     fn range_int_singleton_works() {
         let lua = make_lua_with_rng(3);
-        let v: i64 = lua
-            .load("return game_rand.range_int(7, 7)")
-            .eval()
-            .unwrap();
+        let v: i64 = lua.load("return game_rand.range_int(7, 7)").eval().unwrap();
         assert_eq!(v, 7);
     }
 
@@ -312,9 +314,7 @@ mod tests {
     #[test]
     fn weighted_empty_table_errors() {
         let lua = make_lua_with_rng(10);
-        let res = lua
-            .load("return game_rand.weighted({})")
-            .eval::<LuaValue>();
+        let res = lua.load("return game_rand.weighted({})").eval::<LuaValue>();
         assert!(res.is_err());
     }
 

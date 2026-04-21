@@ -1,14 +1,18 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile};
-use crate::scripting::building_api::BuildingRegistry;
+use crate::colony::{
+    BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption,
+    MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SlotAssignment,
+};
+use crate::communication::PendingColonyDispatches;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::scripting::building_api::BuildingRegistry;
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
-use crate::visualization::{SelectedPlanet};
+use crate::visualization::SelectedPlanet;
 
-use super::format_planet_type;
 use super::colony_detail::draw_colony_detail;
+use super::format_planet_type;
 
 /// Draws the floating planet info window when a planet is selected.
 /// Shows planet attributes, colony detail, buildings, and build queue.
@@ -18,7 +22,12 @@ pub(super) fn draw_planet_window(
     system_entity: Entity,
     selected_planet: &mut SelectedPlanet,
     colonized_planets: &std::collections::HashSet<Entity>,
-    stars: &Query<(Entity, &StarSystem, &crate::components::Position, Option<&SystemAttributes>)>,
+    stars: &Query<(
+        Entity,
+        &StarSystem,
+        &crate::components::Position,
+        Option<&SystemAttributes>,
+    )>,
     colonies: &mut Query<(
         Entity,
         &Colony,
@@ -29,8 +38,24 @@ pub(super) fn draw_planet_window(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    system_stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
-    ships_query: &mut Query<(Entity, &mut Ship, &mut ShipState, Option<&mut Cargo>, &ShipHitpoints, Option<&SurveyData>)>,
+    colony_pop_view: &Query<(
+        Entity,
+        Option<&crate::species::ColonyPopulation>,
+        Option<&crate::species::ColonyJobs>,
+        Option<&crate::colony::ColonyJobRates>,
+    )>,
+    system_stockpiles: &mut Query<
+        (&mut ResourceStockpile, Option<&ResourceCapacity>),
+        With<StarSystem>,
+    >,
+    ships_query: &mut Query<(
+        Entity,
+        &mut Ship,
+        &mut ShipState,
+        Option<&mut Cargo>,
+        &ShipHitpoints,
+        Option<&SurveyData>,
+    ), Without<SlotAssignment>>,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
@@ -38,6 +63,12 @@ pub(super) fn draw_planet_window(
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
     building_registry: &BuildingRegistry,
+    job_registry: &crate::species::JobRegistry,
+    colony_panel_tab: &mut crate::ui::ColonyPanelTab,
+    dispatches: &mut PendingColonyDispatches,
+    is_local_system: bool,
+    k_data: Option<&crate::knowledge::SystemKnowledge>,
+    clock_elapsed: i64,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
         return;
@@ -51,7 +82,10 @@ pub(super) fn draw_planet_window(
         return;
     }
 
-    let is_surveyed = stars.get(system_entity).map(|(_, s, _, _)| s.surveyed).unwrap_or(false);
+    let is_surveyed = stars
+        .get(system_entity)
+        .map(|(_, s, _, _)| s.surveyed)
+        .unwrap_or(false);
     let planet_name = sel_planet.name.clone();
     let planet_type = format_planet_type(&sel_planet.planet_type);
 
@@ -69,10 +103,26 @@ pub(super) fn draw_planet_window(
             if is_surveyed {
                 if let Some(attrs) = attrs {
                     ui.label(egui::RichText::new("Attributes").strong());
-                    ui.label(format!("Habitability: {} ({:.0}%)", crate::galaxy::habitability_label(attrs.habitability), attrs.habitability * 100.0));
-                    ui.label(format!("Minerals: {} ({:.0}%)", crate::galaxy::resource_label(attrs.mineral_richness), attrs.mineral_richness * 100.0));
-                    ui.label(format!("Energy: {} ({:.0}%)", crate::galaxy::resource_label(attrs.energy_potential), attrs.energy_potential * 100.0));
-                    ui.label(format!("Research: {} ({:.0}%)", crate::galaxy::resource_label(attrs.research_potential), attrs.research_potential * 100.0));
+                    ui.label(format!(
+                        "Habitability: {} ({:.0}%)",
+                        crate::galaxy::habitability_label(attrs.habitability),
+                        attrs.habitability * 100.0
+                    ));
+                    ui.label(format!(
+                        "Minerals: {} ({:.0}%)",
+                        crate::galaxy::resource_label(attrs.mineral_richness),
+                        attrs.mineral_richness * 100.0
+                    ));
+                    ui.label(format!(
+                        "Energy: {} ({:.0}%)",
+                        crate::galaxy::resource_label(attrs.energy_potential),
+                        attrs.energy_potential * 100.0
+                    ));
+                    ui.label(format!(
+                        "Research: {} ({:.0}%)",
+                        crate::galaxy::resource_label(attrs.research_potential),
+                        attrs.research_potential * 100.0
+                    ));
                     ui.label(format!("Building slots: {}", attrs.max_building_slots));
                     ui.separator();
                 }
@@ -84,7 +134,10 @@ pub(super) fn draw_planet_window(
             // Colony detail (if colonized)
             let has_colony_on_planet = colonized_planets.contains(&sel_planet_entity);
             if has_colony_on_planet {
-                let planet_attrs = planet_entities.get(sel_planet_entity).ok().and_then(|(_, _, a)| a);
+                let planet_attrs = planet_entities
+                    .get(sel_planet_entity)
+                    .ok()
+                    .and_then(|(_, _, a)| a);
 
                 egui::ScrollArea::vertical()
                     .max_height(500.0)
@@ -95,6 +148,7 @@ pub(super) fn draw_planet_window(
                             system_entity,
                             planet_attrs,
                             colonies,
+                            colony_pop_view,
                             system_stockpiles,
                             ships_query,
                             construction_params,
@@ -103,6 +157,12 @@ pub(super) fn draw_planet_window(
                             module_registry,
                             design_registry,
                             building_registry,
+                            job_registry,
+                            colony_panel_tab,
+                            dispatches,
+                            is_local_system,
+                            k_data,
+                            clock_elapsed,
                         );
                     });
             } else {

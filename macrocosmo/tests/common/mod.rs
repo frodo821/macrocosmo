@@ -1,94 +1,210 @@
-use bevy::prelude::*;
+// #247: Committed fixture loader (`load_fixture`) + `fixtures_dir`.
+// Kept as a sub-module so individual integration tests can opt in via
+// `use common::fixture::load_fixture;`.
+pub mod fixture;
+
 use bevy::input::mouse::AccumulatedMouseScroll;
+use bevy::prelude::*;
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
-use macrocosmo::scripting::building_api::BuildingId;
-use macrocosmo::species;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
+use macrocosmo::condition::ScopedFlags;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
-use macrocosmo::galaxy::{Anomalies, Planet, Sovereignty, StarSystem, SystemAttributes, SystemModifiers};
+use macrocosmo::galaxy::{
+    Anomalies, Planet, Sovereignty, StarSystem, SystemAttributes, SystemModifiers,
+};
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
-use macrocosmo::condition::ScopedFlags;
+use macrocosmo::faction::FactionOwner;
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
+use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::ship::*;
+use macrocosmo::species;
 use macrocosmo::technology::{self, TechKnowledge};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
 
 /// Create a BuildingRegistry populated with the standard 6 building definitions for tests.
+///
+/// #241: Uses the new `modifiers` field (target strings) to represent production
+/// contributions. Buildings in tests are modelled as "automation" buildings —
+/// they push directly into `colony.<resource>_per_hexadies` aggregators without
+/// requiring pops to be assigned, so existing production-balance tests continue
+/// to work. Real (Lua) buildings primarily grant job slots; see
+/// `scripts/buildings/basic.lua`.
 pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
+    use macrocosmo::modifier::ParsedModifier;
     use macrocosmo::scripting::building_api::{BuildingDefinition, CapabilityParams};
     use std::collections::HashMap;
+    let pm = |target: &str, base_add: f64| ParsedModifier {
+        target: target.to_string(),
+        base_add,
+        multiplier: 0.0,
+        add: 0.0,
+    };
     let mut registry = macrocosmo::colony::BuildingRegistry::default();
     registry.insert(BuildingDefinition {
-        id: "mine".into(), name: "Mine".into(), description: String::new(),
-        minerals_cost: Amt::units(150), energy_cost: Amt::units(50), build_time: 10,
+        id: "mine".into(),
+        name: "Mine".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(150),
+        energy_cost: Amt::units(50),
+        build_time: 10,
         maintenance: Amt::new(0, 200),
-        production_bonus_minerals: Amt::units(3), production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
-        is_system_building: false, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.minerals_per_hexadies", 3.0)],
+        is_system_building: false,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
+        prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
+        dismantlable: true,
+        ship_design_id: None,
     });
     registry.insert(BuildingDefinition {
-        id: "power_plant".into(), name: "PowerPlant".into(), description: String::new(),
-        minerals_cost: Amt::units(50), energy_cost: Amt::units(150), build_time: 10,
+        id: "power_plant".into(),
+        name: "PowerPlant".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(50),
+        energy_cost: Amt::units(150),
+        build_time: 10,
         maintenance: Amt::ZERO,
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::units(3),
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
-        is_system_building: false, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.energy_per_hexadies", 3.0)],
+        is_system_building: false,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
+        prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
+        dismantlable: true,
+        ship_design_id: None,
     });
     registry.insert(BuildingDefinition {
-        id: "research_lab".into(), name: "ResearchLab".into(), description: String::new(),
-        minerals_cost: Amt::units(100), energy_cost: Amt::units(100), build_time: 15,
+        id: "research_lab".into(),
+        name: "ResearchLab".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(100),
+        energy_cost: Amt::units(100),
+        build_time: 15,
         maintenance: Amt::new(0, 500),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::units(2), production_bonus_food: Amt::ZERO,
-        is_system_building: true, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.research_per_hexadies", 2.0)],
+        is_system_building: true,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
+        prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
+        dismantlable: true,
+        ship_design_id: Some("station_research_lab_v1".into()),
     });
     let mut shipyard_caps = HashMap::new();
-    shipyard_caps.insert("shipyard".to_string(), CapabilityParams {
-        params: { let mut m = HashMap::new(); m.insert("concurrent_builds".to_string(), 1.0); m },
-    });
+    shipyard_caps.insert(
+        "shipyard".to_string(),
+        CapabilityParams {
+            params: {
+                let mut m = HashMap::new();
+                m.insert("concurrent_builds".to_string(), 1.0);
+                m
+            },
+        },
+    );
     registry.insert(BuildingDefinition {
-        id: "shipyard".into(), name: "Shipyard".into(), description: String::new(),
-        minerals_cost: Amt::units(300), energy_cost: Amt::units(200), build_time: 30,
+        id: "shipyard".into(),
+        name: "Shipyard".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(300),
+        energy_cost: Amt::units(200),
+        build_time: 30,
         maintenance: Amt::units(1),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
-        is_system_building: true, capabilities: shipyard_caps,
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
+        modifiers: Vec::new(),
+        is_system_building: true,
+        capabilities: shipyard_caps,
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
+        prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
+        dismantlable: true,
+        ship_design_id: Some("station_shipyard_v1".into()),
     });
     let mut port_caps = HashMap::new();
-    port_caps.insert("port".to_string(), CapabilityParams {
-        params: {
-            let mut m = HashMap::new();
-            m.insert("ftl_range_bonus".to_string(), 10.0);
-            m.insert("travel_time_factor".to_string(), 0.8);
-            m
+    port_caps.insert(
+        "port".to_string(),
+        CapabilityParams {
+            params: {
+                let mut m = HashMap::new();
+                m.insert("ftl_range_bonus".to_string(), 10.0);
+                m.insert("travel_time_factor".to_string(), 0.8);
+                m
+            },
         },
-    });
+    );
     registry.insert(BuildingDefinition {
-        id: "port".into(), name: "Port".into(), description: String::new(),
-        minerals_cost: Amt::units(400), energy_cost: Amt::units(300), build_time: 40,
+        id: "port".into(),
+        name: "Port".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(400),
+        energy_cost: Amt::units(300),
+        build_time: 40,
         maintenance: Amt::new(0, 500),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::ZERO,
-        is_system_building: true, capabilities: port_caps,
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
+        modifiers: Vec::new(),
+        is_system_building: true,
+        capabilities: port_caps,
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
+        prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
+        dismantlable: true,
+        ship_design_id: Some("station_port_v1".into()),
     });
     registry.insert(BuildingDefinition {
-        id: "farm".into(), name: "Farm".into(), description: String::new(),
-        minerals_cost: Amt::units(100), energy_cost: Amt::units(50), build_time: 20,
+        id: "farm".into(),
+        name: "Farm".into(),
+        description: String::new(),
+        minerals_cost: Amt::units(100),
+        energy_cost: Amt::units(50),
+        build_time: 20,
         maintenance: Amt::new(0, 300),
-        production_bonus_minerals: Amt::ZERO, production_bonus_energy: Amt::ZERO,
-        production_bonus_research: Amt::ZERO, production_bonus_food: Amt::units(5),
-        is_system_building: false, capabilities: HashMap::new(),
-        upgrade_to: Vec::new(), is_direct_buildable: true,
+        production_bonus_minerals: Amt::ZERO,
+        production_bonus_energy: Amt::ZERO,
+        production_bonus_research: Amt::ZERO,
+        production_bonus_food: Amt::ZERO,
+        modifiers: vec![pm("colony.food_per_hexadies", 5.0)],
+        is_system_building: false,
+        capabilities: HashMap::new(),
+        upgrade_to: Vec::new(),
+        is_direct_buildable: true,
+        prerequisites: None,
+        on_built: None,
+        on_upgraded: None,
+        dismantlable: true,
+        ship_design_id: None,
     });
     registry
 }
@@ -98,39 +214,56 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
 pub fn spawn_test_empire(world: &mut World) -> Entity {
     world
         .spawn((
-            Empire {
-                name: "Test Empire".into(),
-            },
-            PlayerEmpire,
-            Faction {
-                id: "humanity_empire".into(),
-                name: "Test Empire".into(),
-            },
-            technology::TechTree::default(),
-            technology::ResearchQueue::default(),
-            technology::ResearchPool::default(),
-            technology::RecentlyResearched::default(),
-            AuthorityParams::default(),
-            ConstructionParams::default(),
-            technology::EmpireModifiers::default(),
-            technology::GameFlags::default(),
-            technology::GlobalParams::default(),
-            KnowledgeStore::default(),
-            CommandLog::default(),
-            ScopedFlags::default(),
+            (
+                Empire {
+                    name: "Test Empire".into(),
+                },
+                PlayerEmpire,
+                Faction::new("humanity_empire", "Test Empire"),
+                technology::TechTree::default(),
+                technology::ResearchQueue::default(),
+                technology::ResearchPool::default(),
+                technology::RecentlyResearched::default(),
+                AuthorityParams::default(),
+                ConstructionParams::default(),
+            ),
+            (
+                technology::EmpireModifiers::default(),
+                technology::GameFlags::default(),
+                technology::GlobalParams::default(),
+                technology::PendingColonyTechModifiers::default(),
+                KnowledgeStore::default(),
+                macrocosmo::knowledge::SystemVisibilityMap::default(),
+                CommandLog::default(),
+                ScopedFlags::default(),
+                macrocosmo::empire::CommsParams::default(),
+            ),
         ))
         .id()
 }
 
-/// Test helper for #168: spawn passive hostile factions, seed Neutral/-100
-/// relations against the test empire, and attach `FactionOwner` to every
-/// existing `HostilePresence`. Tests that want combat to actually trigger
-/// must call this after spawning their hostiles and ships.
+/// Set the empire's viewer system for knowledge propagation tests.
+/// Must be called after spawning a capital/home system.
+pub fn set_empire_viewer_system(world: &mut World, empire: Entity, system: Entity) {
+    world
+        .entity_mut(empire)
+        .insert(macrocosmo::player::EmpireViewerSystem(system));
+}
+
+/// Test helper for #168: spawn passive hostile factions and seed
+/// Neutral/-100 relations against the test empire. **Must be called
+/// before spawning hostile entities** so `spawn_test_hostile` can attach
+/// the correct `FactionOwner` at spawn time (#293 follow-up: no backfill
+/// system exists in production either).
+///
+/// Idempotent: if `HostileFactions` is already populated, reuses the
+/// existing faction entities. Also re-homes every `Owner::Neutral` ship
+/// onto the test empire so they participate in combat under the
+/// Faction-gated logic.
 ///
 /// Returns `(space_creature_faction, ancient_defense_faction)` entities.
 pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
-    use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState};
-    use macrocosmo::galaxy::{HostilePresence, HostileType};
+    use macrocosmo::faction::{FactionRelations, FactionView, HostileFactions, RelationState};
 
     // Find or create the player empire.
     let empire = {
@@ -143,19 +276,13 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     let mut hf = world.resource::<HostileFactions>().clone();
     if hf.space_creature.is_none() {
         let e = world
-            .spawn(Faction {
-                id: "space_creature_faction".into(),
-                name: "Space Creatures".into(),
-            })
+            .spawn(Faction::new("space_creature_faction", "Space Creatures"))
             .id();
         hf.space_creature = Some(e);
     }
     if hf.ancient_defense.is_none() {
         let e = world
-            .spawn(Faction {
-                id: "ancient_defense_faction".into(),
-                name: "Ancient Defenses".into(),
-            })
+            .spawn(Faction::new("ancient_defense_faction", "Ancient Defenses"))
             .id();
         hf.ancient_defense = Some(e);
     }
@@ -166,27 +293,26 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     // Seed default hostile relations: Neutral + -100 standing both directions.
     {
         let mut rel = world.resource_mut::<FactionRelations>();
-        rel.set(empire, space_creature, FactionView::new(RelationState::Neutral, -100.0));
-        rel.set(space_creature, empire, FactionView::new(RelationState::Neutral, -100.0));
-        rel.set(empire, ancient_defense, FactionView::new(RelationState::Neutral, -100.0));
-        rel.set(ancient_defense, empire, FactionView::new(RelationState::Neutral, -100.0));
-    }
-
-    // Attach FactionOwner to every existing HostilePresence based on hostile_type.
-    let assignments: Vec<(Entity, Entity)> = {
-        let mut q = world.query::<(Entity, &HostilePresence)>();
-        q.iter(world)
-            .map(|(e, h)| {
-                let owner = match h.hostile_type {
-                    HostileType::SpaceCreature => space_creature,
-                    HostileType::AncientDefense => ancient_defense,
-                };
-                (e, owner)
-            })
-            .collect()
-    };
-    for (entity, owner) in assignments {
-        world.entity_mut(entity).insert(FactionOwner(owner));
+        rel.set(
+            empire,
+            space_creature,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        rel.set(
+            space_creature,
+            empire,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        rel.set(
+            empire,
+            ancient_defense,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
+        rel.set(
+            ancient_defense,
+            empire,
+            FactionView::new(RelationState::Neutral, -100.0),
+        );
     }
 
     // Re-home every Neutral ship onto the test empire so they participate in
@@ -208,12 +334,55 @@ pub fn setup_test_hostile_factions(world: &mut World) -> (Entity, Entity) {
     (space_creature, ancient_defense)
 }
 
+/// #293 follow-up: spawn a hostile entity with custom stats and the
+/// correct `FactionOwner` attached. Auto-initializes `HostileFactions`
+/// by calling `setup_test_hostile_factions` if not already populated,
+/// so call order is not load-bearing.
+pub fn spawn_raw_hostile(
+    world: &mut World,
+    sys: Entity,
+    hp: f64,
+    max_hp: f64,
+    strength: f64,
+    evasion: f64,
+    faction_id: &'static str,
+) -> Entity {
+    use macrocosmo::faction::{FactionOwner, HostileFactions};
+    use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
+    let needs_setup = {
+        let hf = world.resource::<HostileFactions>();
+        hf.space_creature.is_none() || hf.ancient_defense.is_none()
+    };
+    if needs_setup {
+        let _ = setup_test_hostile_factions(world);
+    }
+    let hf = *world.resource::<HostileFactions>();
+    let faction_entity = match faction_id {
+        "space_creature" => hf.space_creature.unwrap(),
+        "ancient_defense" => hf.ancient_defense.unwrap(),
+        other => panic!("unknown faction_id {:?}", other),
+    };
+    world
+        .spawn((
+            AtSystem(sys),
+            HostileHitpoints { hp, max_hp },
+            HostileStats { strength, evasion },
+            Hostile,
+            FactionOwner(faction_entity),
+        ))
+        .id()
+}
+
 /// Build a headless Bevy App with game logic systems but no rendering.
 pub fn test_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
+    // GameClock is inserted above so AiPlugin's Startup schema::declare_all
+    // (which does not yet use GameClock, but AiBusWriter SystemParams rely
+    // on it at runtime) always observes the test clock.
+    app.add_plugins(macrocosmo::ai::AiPlugin);
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
@@ -223,8 +392,8 @@ pub fn test_app() -> App {
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
     app.insert_resource(create_test_building_registry());
-    app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
-    app.init_resource::<macrocosmo::ship_design::HullRegistry>();
+    app.insert_resource(create_test_module_registry());
+    app.insert_resource(create_test_hull_registry());
     app.insert_resource(create_test_design_registry());
     app.init_resource::<macrocosmo::faction::FactionRelations>();
     app.init_resource::<macrocosmo::faction::HostileFactions>();
@@ -232,10 +401,37 @@ pub fn test_app() -> App {
     // values so tests exercise the same baseline behaviour).
     app.init_resource::<technology::GameBalance>();
     app.add_message::<GameEvent>();
+    // #233: Notification pipeline resources consumed by detect_hostiles_system
+    // and friends. Instantiated without the full NotificationsPlugin because
+    // the plugin registers egui-coupled systems that tests don't want.
+    app.init_resource::<macrocosmo::knowledge::DestroyedShipRegistry>();
+    app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
+    app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
+    // #249: EventId allocator + dedupe set must exist whenever a system that
+    // uses `FactSysParam` / `NextEventId` runs.
+    app.init_resource::<macrocosmo::knowledge::NextEventId>();
+    app.init_resource::<macrocosmo::knowledge::NotifiedEventIds>();
+    app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+    // #268: Courier command relay resources.
+    app.init_resource::<macrocosmo::communication::AppliedCommandIds>();
+    app.init_resource::<macrocosmo::communication::NextRemoteCommandId>();
+    // #334 Phase 2 (Commit 2): `PendingCoreDeploys` resource retired —
+    // `CoreDeployRequested` messages flow through `CommandEventsPlugin`.
+    app.init_resource::<macrocosmo::scripting::GameRng>();
+    // #334 Phase 1: command-dispatch message types + allocator.
+    app.add_plugins(macrocosmo::ship::command_events::CommandEventsPlugin);
     app.add_systems(Update, macrocosmo::time_system::advance_game_time);
+    // #334 Phase 1: primary ship pipeline, split into two `add_systems`
+    // calls so we stay under the 20-arm IntoScheduleConfigs limit. The
+    // second call runs the per-variant handlers; the third call sequences
+    // scout / combat / repair / pursuit / fleet cleanup after them.
+    //
+    // #334 Phase 3 (Commit 3): legacy `process_command_queue` deleted;
+    // ordering hooks retargeted to `handlers::handle_attack_requested`
+    // (the last handler in the `.chain()` above).
     app.add_systems(
         Update,
         (
@@ -250,16 +446,67 @@ pub fn test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
-            process_command_queue,
-            resolve_combat,
-            tick_ship_repair,
-            macrocosmo::ship::pursuit::detect_hostiles_system,
+            // #334: dispatcher runs first in this chain so its messages
+            // are visible to handlers registered immediately below.
+            macrocosmo::ship::dispatcher::dispatch_queued_commands,
         )
             .chain()
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
-    // #128: Poll route tasks after Commands from process_command_queue are flushed.
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::ship::handlers::handle_move_requested,
+            macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
+            // #334 Phase 2 (Commit 1): deliverable handlers.
+            macrocosmo::ship::handlers::handle_load_deliverable_requested,
+            macrocosmo::ship::handlers::handle_deploy_deliverable_requested,
+            // #334 Phase 2 (Commit 3): transfer / scrapyard handlers.
+            macrocosmo::ship::handlers::handle_transfer_to_structure_requested,
+            macrocosmo::ship::handlers::handle_load_from_scrapyard_requested,
+            // #334 Phase 2 (Commit 4): survey / colonize handlers.
+            macrocosmo::ship::handlers::handle_survey_requested,
+            macrocosmo::ship::handlers::handle_colonize_requested,
+            // #334 Phase 3 (Commit 1): Scout handler.
+            macrocosmo::ship::handlers::handle_scout_requested,
+            // #334 Phase 3 (Commit 2): AttackRequested skeleton (no-op
+            // foundation for #219 / #220).
+            macrocosmo::ship::handlers::handle_attack_requested,
+            // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
+            // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
+            macrocosmo::ship::handle_core_deploy_requested,
+        )
+            .chain()
+            .after(macrocosmo::ship::dispatcher::dispatch_queued_commands)
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    app.add_systems(
+        Update,
+        (
+            // #217: Scout observation + report. Chained after the Scout
+            // handler so a Scout that began transitioning to Scouting
+            // this tick doesn't get double-processed.
+            macrocosmo::ship::scout::tick_scout_observation,
+            macrocosmo::ship::scout::process_scout_report,
+            resolve_combat,
+            // #298 (S-4): Conquered Core systems.
+            macrocosmo::ship::conquered::check_conquered_transition,
+            macrocosmo::ship::conquered::enforce_conquered_hp_lock,
+            macrocosmo::ship::conquered::tick_conquered_recovery,
+            tick_ship_repair,
+            macrocosmo::ship::pursuit::detect_hostiles_system,
+            // #287 (γ-1): Reconcile FleetMembers after ship despawns.
+            macrocosmo::ship::fleet::prune_empty_fleets,
+        )
+            .chain()
+            .after(macrocosmo::ship::handlers::handle_attack_requested)
+            .after(macrocosmo::ship::handlers::handle_scout_requested)
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    // #128: Poll route tasks after Commands emitted by handlers are flushed.
     app.add_systems(
         Update,
         (
@@ -267,7 +514,29 @@ pub fn test_app() -> App {
             macrocosmo::ship::routing::poll_pending_routes,
         )
             .chain()
-            .after(process_command_queue)
+            .after(macrocosmo::ship::handlers::handle_attack_requested)
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    // #291: Fleet departure detection — fires `macrocosmo:fleet_system_left`.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::transit_events::detect_fleet_departures
+            .after(sublight_movement_system)
+            .after(process_ftl_travel)
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested)
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(advance_production_tick),
+    );
+    // #334 Phase 1: CommandExecuted → CommandLog bridge.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::bridges::bridge_command_executed_to_log
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested)
             .after(macrocosmo::time_system::advance_game_time)
             .before(advance_production_tick),
     );
@@ -277,13 +546,24 @@ pub fn test_app() -> App {
             tick_timed_effects,
             tick_authority,
             sync_building_modifiers,
+            species::sync_job_assignment,
+            sync_species_modifiers,
             sync_maintenance_modifiers,
             sync_food_consumption,
+            // #250: rate aggregation is delta-independent; runs every tick.
+            macrocosmo::colony::aggregate_job_contributions,
             tick_production,
             tick_maintenance,
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            // #260: Pre-existing gap — `tick_system_building_queue` is part of
+            // ColonyPlugin in production but was missing from the test fixture,
+            // so any test exercising system-building construction saw the
+            // queue frozen. Added here so the system-building regression test
+            // runs end-to-end.
+            tick_system_building_queue,
+            // #386: Derive SystemBuildings from station Ship entities.
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
@@ -293,10 +573,19 @@ pub fn test_app() -> App {
     );
     app.add_systems(
         Update,
+        apply_pending_colonization_orders.after(macrocosmo::time_system::advance_game_time),
+    );
+    // #303 (S-10): Sovereignty change detection + cascade + event firing.
+    app.init_resource::<macrocosmo::colony::PendingSovereigntyChanges>();
+    app.add_systems(
+        Update,
         (
-            species::sync_job_assignment,
-            apply_pending_colonization_orders,
-        ).after(macrocosmo::time_system::advance_game_time),
+            update_sovereignty,
+            macrocosmo::colony::cascade_sovereignty_changes,
+            macrocosmo::colony::fire_sovereignty_events,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time),
     );
     app.add_systems(
         Update,
@@ -304,7 +593,34 @@ pub fn test_app() -> App {
             .after(macrocosmo::time_system::advance_game_time)
             .after(tick_timed_effects),
     );
-    app.add_systems(Update, propagate_knowledge);
+    // #334 Phase 1: pin propagate_knowledge to run BEFORE the colony tick
+    // chain (tick_building_queue / tick_population_growth / …) so
+    // knowledge snapshots capture the pre-tick state — tests in
+    // `tests/knowledge.rs` assert on queued-but-not-yet-completed build
+    // orders and on the pristine population count. Before the dispatcher
+    // refactor this was a lucky side-effect of the ship schedule's
+    // topological order.
+    // #392: Visibility tier tracking — must run before propagate_knowledge
+    // so the tier map is populated when knowledge propagation gates on it.
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::knowledge::ensure_tracked_ship_system,
+            bevy::ecs::schedule::ApplyDeferred,
+            macrocosmo::knowledge::update_visibility_tiers,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time)
+            .before(propagate_knowledge),
+    );
+    app.add_systems(
+        Update,
+        propagate_knowledge
+            .before(tick_building_queue)
+            .before(tick_population_growth)
+            .before(tick_production)
+            .before(tick_maintenance),
+    );
     app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
     // #118: Sensor Buoy detection
     app.init_resource::<macrocosmo::deep_space::StructureRegistry>();
@@ -314,6 +630,8 @@ pub fn test_app() -> App {
             macrocosmo::deep_space::sensor_buoy_detect_system,
             macrocosmo::deep_space::verify_relay_pairings_system,
             macrocosmo::deep_space::relay_knowledge_propagate_system,
+            macrocosmo::deep_space::tick_platform_upgrade,
+            macrocosmo::deep_space::tick_scrapyard_despawn,
         )
             .after(macrocosmo::time_system::advance_game_time)
             .after(sublight_movement_system)
@@ -328,11 +646,48 @@ pub fn test_app() -> App {
             .after(process_ftl_travel),
     );
 
-    // #171: Light-speed delayed diplomatic actions (drains arrived
-    // PendingDiplomaticAction entities into FactionRelations).
+    // #171 / #325: Light-speed delayed diplomatic events (drains arrived
+    // DiplomaticEvent entities, applies builtin state changes and delivers
+    // to DiplomaticInbox).
     app.add_systems(
         Update,
-        macrocosmo::faction::tick_diplomatic_actions
+        macrocosmo::faction::tick_diplomatic_events
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+
+    // #324: Annihilation detection (no Core ships + no colonies → Extinct).
+    app.init_resource::<macrocosmo::casus_belli::ActiveWars>();
+    app.add_systems(
+        Update,
+        macrocosmo::faction::detect_annihilation.after(macrocosmo::time_system::advance_game_time),
+    );
+
+    // #384: Harbour lifecycle systems (dock/undock, position sync, combat ROE, modifier sync).
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::ship::harbour::auto_undock_on_move_command
+                .before(sublight_movement_system)
+                .before(process_ftl_travel),
+            macrocosmo::ship::harbour::sync_docked_position
+                .after(sublight_movement_system)
+                .after(process_ftl_travel),
+            macrocosmo::ship::harbour::force_undock_on_harbour_destroy.after(resolve_combat),
+        )
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::ship::harbour::auto_undock_on_combat_roe.before(resolve_combat),
+            macrocosmo::ship::harbour::auto_return_dock_after_combat.after(resolve_combat),
+        )
+            .after(macrocosmo::time_system::advance_game_time),
+    );
+    app.add_systems(
+        Update,
+        macrocosmo::ship::harbour::sync_docked_modifiers
+            .after(sync_ship_module_modifiers)
             .after(macrocosmo::time_system::advance_game_time),
     );
 
@@ -370,6 +725,11 @@ pub fn full_test_app() -> App {
     // --- Core resources ---
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
+    // AI integration plugin (#203) — AiBusResource + ordered AiTickSet sets.
+    // Added here after GameClock is inserted so AiBusWriter SystemParams can
+    // read it, and so `full_test_app` can detect Query conflicts (B0001)
+    // introduced by AI systems at CI time.
+    app.add_plugins(macrocosmo::ai::AiPlugin);
     app.insert_resource(LastProductionTick(0));
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
@@ -377,8 +737,8 @@ pub fn full_test_app() -> App {
     app.init_resource::<species::JobRegistry>();
     app.init_resource::<AlertCooldowns>();
     app.insert_resource(create_test_building_registry());
-    app.init_resource::<macrocosmo::ship_design::ModuleRegistry>();
-    app.init_resource::<macrocosmo::ship_design::HullRegistry>();
+    app.insert_resource(create_test_module_registry());
+    app.insert_resource(create_test_hull_registry());
     app.insert_resource(create_test_design_registry());
     app.init_resource::<macrocosmo::faction::FactionRelations>();
     app.init_resource::<macrocosmo::faction::HostileFactions>();
@@ -390,7 +750,7 @@ pub fn full_test_app() -> App {
     app.insert_resource(visualization::SelectedSystem::default());
     app.insert_resource(visualization::SelectedShip::default());
     app.insert_resource(visualization::ContextMenu::default());
-    app.insert_resource(visualization::GalaxyView { scale: 5.0 });
+    app.insert_resource(visualization::GalaxyView { scale: 20.0 });
 
     // --- Input resources (needed by visualization + time_system + player systems) ---
     app.insert_resource(ButtonInput::<KeyCode>::default());
@@ -402,8 +762,28 @@ pub fn full_test_app() -> App {
 
     // --- Routing resource ---
     app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
+    // #268: Courier command relay resources.
+    app.init_resource::<macrocosmo::communication::AppliedCommandIds>();
+    app.init_resource::<macrocosmo::communication::NextRemoteCommandId>();
+    // #296 (S-3) / #334 Phase 2 (Commit 2): the `PendingCoreDeploys` resource
+    // was retired in favour of `CoreDeployRequested` messages — only the RNG
+    // stays.
+    app.init_resource::<macrocosmo::scripting::GameRng>();
+    // #334 Phase 1: command-dispatch message types + allocator.
+    app.add_plugins(macrocosmo::ship::command_events::CommandEventsPlugin);
+
+    // --- #233 Notification pipeline resources ---
+    app.init_resource::<macrocosmo::knowledge::DestroyedShipRegistry>();
+    app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
+    app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
+    // #249: EventId allocator + dedupe set must exist whenever a system that
+    // uses `FactSysParam` / `NextEventId` runs.
+    app.init_resource::<macrocosmo::knowledge::NextEventId>();
+    app.init_resource::<macrocosmo::knowledge::NotifiedEventIds>();
+    app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
 
     // --- Ship systems (from ShipPlugin) ---
+    // #334 Phase 1: split into two calls to stay under the 20-arm limit.
     app.add_systems(
         Update,
         (
@@ -418,13 +798,56 @@ pub fn full_test_app() -> App {
             process_refitting,
             process_pending_ship_commands,
             tick_courier_routes,
-            process_command_queue,
-            resolve_combat,
-            tick_ship_repair,
-            macrocosmo::ship::pursuit::detect_hostiles_system,
+            // #334 Phase 1/2: dispatcher runs first; handlers are registered
+            // separately below to stay under the 20-arm IntoScheduleConfigs limit.
+            macrocosmo::ship::dispatcher::dispatch_queued_commands,
         ),
     );
-    // #128: Poll route tasks after Commands from process_command_queue are flushed.
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::ship::handlers::handle_move_requested,
+            macrocosmo::ship::handlers::handle_move_to_coordinates_requested,
+            // #334 Phase 2 (Commit 1): deliverable handlers.
+            macrocosmo::ship::handlers::handle_load_deliverable_requested,
+            macrocosmo::ship::handlers::handle_deploy_deliverable_requested,
+            // #334 Phase 2 (Commit 3): transfer / scrapyard handlers.
+            macrocosmo::ship::handlers::handle_transfer_to_structure_requested,
+            macrocosmo::ship::handlers::handle_load_from_scrapyard_requested,
+            // #334 Phase 2 (Commit 4): survey / colonize handlers.
+            macrocosmo::ship::handlers::handle_survey_requested,
+            macrocosmo::ship::handlers::handle_colonize_requested,
+            // #334 Phase 3 (Commit 1): Scout handler.
+            macrocosmo::ship::handlers::handle_scout_requested,
+            // #334 Phase 3 (Commit 2): AttackRequested skeleton (no-op
+            // foundation for #219 / #220).
+            macrocosmo::ship::handlers::handle_attack_requested,
+            // #334 Phase 2 (Commit 2): Core deploy message handler, replaces
+            // the legacy `resolve_core_deploys` + `PendingCoreDeploys` path.
+            macrocosmo::ship::handle_core_deploy_requested,
+        )
+            .chain()
+            .after(macrocosmo::ship::dispatcher::dispatch_queued_commands),
+    );
+    app.add_systems(
+        Update,
+        (
+            // #217: Scout observation + delivery.
+            macrocosmo::ship::scout::tick_scout_observation,
+            macrocosmo::ship::scout::process_scout_report,
+            resolve_combat,
+            // #298 (S-4): Conquered Core systems.
+            macrocosmo::ship::conquered::check_conquered_transition,
+            macrocosmo::ship::conquered::enforce_conquered_hp_lock,
+            macrocosmo::ship::conquered::tick_conquered_recovery,
+            tick_ship_repair,
+            macrocosmo::ship::pursuit::detect_hostiles_system,
+            // #287 (γ-1): Reconcile FleetMembers after ship despawns.
+            macrocosmo::ship::fleet::prune_empty_fleets,
+        )
+            .after(macrocosmo::ship::handlers::handle_attack_requested),
+    );
+    // #128: Poll route tasks after Commands emitted by handlers are flushed.
     app.add_systems(
         Update,
         (
@@ -432,7 +855,25 @@ pub fn full_test_app() -> App {
             macrocosmo::ship::routing::poll_pending_routes,
         )
             .chain()
-            .after(process_command_queue),
+            .after(macrocosmo::ship::handlers::handle_attack_requested),
+    );
+    // #291: Fleet departure detection (full_test_app).
+    app.add_systems(
+        Update,
+        macrocosmo::ship::transit_events::detect_fleet_departures
+            .after(sublight_movement_system)
+            .after(process_ftl_travel)
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested),
+    );
+    // #334 Phase 1: CommandExecuted → CommandLog bridge.
+    app.add_systems(
+        Update,
+        macrocosmo::ship::bridges::bridge_command_executed_to_log
+            .after(macrocosmo::ship::routing::poll_pending_routes)
+            .after(macrocosmo::ship::handlers::handle_move_requested)
+            .after(macrocosmo::ship::handlers::handle_move_to_coordinates_requested),
     );
 
     // --- Colony systems (from ColonyPlugin) ---
@@ -442,25 +883,51 @@ pub fn full_test_app() -> App {
             tick_timed_effects,
             tick_authority,
             sync_building_modifiers,
+            species::sync_job_assignment,
+            sync_species_modifiers,
             sync_maintenance_modifiers,
             sync_food_consumption,
+            // #250: rate aggregation is delta-independent; runs every tick.
+            macrocosmo::colony::aggregate_job_contributions,
             tick_production,
             tick_maintenance,
             tick_population_growth,
             tick_build_queue,
             tick_building_queue,
+            // #260: Mirror the production chain; see test_app comment above.
+            tick_system_building_queue,
+            // #386: Derive SystemBuildings from station Ship entities.
             tick_colonization_queue,
             check_resource_alerts,
             advance_production_tick,
         )
             .chain(),
     );
-    app.add_systems(Update, (update_sovereignty, apply_pending_colonization_orders));
-
-    // --- Species systems (from SpeciesPlugin) ---
-    app.add_systems(Update, species::sync_job_assignment);
+    // #303 (S-10): Sovereignty change detection + cascade + event firing.
+    app.init_resource::<macrocosmo::colony::PendingSovereigntyChanges>();
+    app.add_systems(
+        Update,
+        (
+            update_sovereignty,
+            macrocosmo::colony::cascade_sovereignty_changes,
+            macrocosmo::colony::fire_sovereignty_events,
+        )
+            .chain(),
+    );
+    app.add_systems(Update, apply_pending_colonization_orders);
 
     // --- Knowledge system (from KnowledgePlugin) ---
+    // #392: Visibility tier tracking — must run before propagate_knowledge.
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::knowledge::ensure_tracked_ship_system,
+            bevy::ecs::schedule::ApplyDeferred,
+            macrocosmo::knowledge::update_visibility_tiers,
+        )
+            .chain()
+            .before(propagate_knowledge),
+    );
     app.add_systems(Update, propagate_knowledge);
     app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
 
@@ -472,17 +939,22 @@ pub fn full_test_app() -> App {
             macrocosmo::deep_space::sensor_buoy_detect_system,
             macrocosmo::deep_space::verify_relay_pairings_system,
             macrocosmo::deep_space::relay_knowledge_propagate_system,
+            macrocosmo::deep_space::tick_platform_upgrade,
+            macrocosmo::deep_space::tick_scrapyard_despawn,
         ),
     );
 
     // --- Communication systems (from CommunicationPlugin) ---
+    app.init_resource::<communication::PendingColonyDispatches>();
     app.add_systems(
         Update,
         (
             communication::process_messages,
             communication::process_courier_ships,
+            communication::dispatch_pending_colony_commands,
             communication::process_pending_commands,
-        ),
+        )
+            .chain(),
     );
 
     // --- Technology resources ---
@@ -503,8 +975,7 @@ pub fn full_test_app() -> App {
     // it will early-return. Registered here for query-conflict detection.
     app.add_systems(
         Update,
-        technology::apply_tech_effects
-            .after(technology::tick_research),
+        technology::apply_tech_effects.after(technology::tick_research),
     );
     app.add_systems(
         Update,
@@ -524,10 +995,7 @@ pub fn full_test_app() -> App {
             macrocosmo::events::auto_pause_on_event,
         ),
     );
-    app.add_systems(
-        Update,
-        macrocosmo::event_system::tick_events,
-    );
+    app.add_systems(Update, macrocosmo::event_system::tick_events);
 
     // --- Time systems (from GameTimePlugin) ---
     app.add_systems(
@@ -543,15 +1011,27 @@ pub fn full_test_app() -> App {
     app.add_systems(Update, macrocosmo::player::update_player_location);
 
     // --- Visualization systems (excluding Gizmos-dependent ones) ---
+    app.add_systems(Update, (visualization::camera_controls,));
+
+    // --- Faction systems (#171 / #325) ---
+    app.add_systems(Update, macrocosmo::faction::tick_diplomatic_events);
+
+    // #324: Annihilation detection.
+    app.init_resource::<macrocosmo::casus_belli::ActiveWars>();
+    app.add_systems(Update, macrocosmo::faction::detect_annihilation);
+
+    // #384: Harbour lifecycle systems.
     app.add_systems(
         Update,
         (
-            visualization::camera_controls,
+            macrocosmo::ship::harbour::auto_undock_on_move_command,
+            macrocosmo::ship::harbour::sync_docked_position,
+            macrocosmo::ship::harbour::force_undock_on_harbour_destroy,
+            macrocosmo::ship::harbour::auto_undock_on_combat_roe,
+            macrocosmo::ship::harbour::auto_return_dock_after_combat,
+            macrocosmo::ship::harbour::sync_docked_modifiers,
         ),
     );
-
-    // --- Faction systems (#171) ---
-    app.add_systems(Update, macrocosmo::faction::tick_diplomatic_actions);
 
     // Spawn the empire entity
     spawn_test_empire(app.world_mut());
@@ -569,16 +1049,31 @@ pub fn full_test_app() -> App {
 /// want to verify the un-migrated behavior should run their own `app.update()`
 /// directly instead of using `advance_time`.
 pub fn advance_time(app: &mut App, hexadies: i64) {
-    let needs_migration = {
+    // #293: detect hostile entities lacking FactionOwner via either the
+    // legacy `HostilePresence` component or the new `Hostile` marker.
+    // #309: also migrate when there are `Hostile` entities alongside
+    // `Owner::Neutral` ships that have not yet been re-homed onto the test
+    // empire — `spawn_raw_hostile` attaches `FactionOwner` at spawn time,
+    // so the FactionOwner check alone can miss late-spawned neutral ships.
+    let has_hostile = {
         let mut q = app
             .world_mut()
-            .query_filtered::<Entity, (
-                With<macrocosmo::galaxy::HostilePresence>,
-                Without<macrocosmo::faction::FactionOwner>,
-            )>();
+            .query_filtered::<Entity, With<macrocosmo::galaxy::Hostile>>();
         q.iter(app.world()).next().is_some()
     };
-    if needs_migration {
+    let has_faction_ownerless_hostile = {
+        let mut q = app.world_mut().query_filtered::<Entity, (
+            With<macrocosmo::galaxy::Hostile>,
+            Without<macrocosmo::faction::FactionOwner>,
+        )>();
+        q.iter(app.world()).next().is_some()
+    };
+    let has_neutral_ship = {
+        let mut q = app.world_mut().query::<&macrocosmo::ship::Ship>();
+        q.iter(app.world())
+            .any(|s| matches!(s.owner, macrocosmo::ship::Owner::Neutral))
+    };
+    if has_faction_ownerless_hostile || (has_hostile && has_neutral_ship) {
         setup_test_hostile_factions(app.world_mut());
     }
 
@@ -672,7 +1167,8 @@ pub fn spawn_test_colony(
 
     // Separate buildings into planet and system buildings
     let mut planet_buildings = Vec::new();
-    let mut system_building_slots: Vec<Option<BuildingId>> = vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
+    let mut system_building_slots: Vec<Option<BuildingId>> =
+        vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS];
     let mut sys_slot_idx = 0;
     for b in &buildings {
         if let Some(bid) = b {
@@ -706,34 +1202,48 @@ pub fn spawn_test_colony(
     // Add SystemBuildings and SystemBuildingQueue to the StarSystem if not already present
     if world.get::<SystemBuildings>(system).is_none() {
         world.entity_mut(system).insert((
-            SystemBuildings { slots: system_building_slots },
+            SystemBuildings::default(),
             SystemBuildingQueue::default(),
         ));
     }
 
-    world
-        .spawn((
-            Colony {
-                planet,
-                population: 100.0,
-                growth_rate: 0.01,
-            },
-            Production {
-                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            },
-            BuildQueue {
-                queue: Vec::new(),
-            },
-            Buildings { slots: planet_buildings },
-            BuildingQueue::default(),
-            ProductionFocus::default(),
-            MaintenanceCost::default(),
-            FoodConsumption::default(),
-        ))
-        .id()
+    // Find the empire entity to set FactionOwner
+    let empire = {
+        let mut q = world.query_filtered::<Entity, With<Empire>>();
+        q.iter(world).next()
+    };
+
+    let mut entity_commands = world.spawn((
+        Colony {
+            planet,
+            growth_rate: 0.01,
+        },
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue::default(),
+        Buildings {
+            slots: planet_buildings,
+        },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+        macrocosmo::species::ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 100,
+            }],
+            growth_accumulator: 0.0,
+        },
+    ));
+    if let Some(empire_entity) = empire {
+        entity_commands.insert(FactionOwner(empire_entity));
+    }
+    entity_commands.id()
 }
 
 /// Find the first planet entity belonging to a star system.
@@ -756,85 +1266,449 @@ pub fn find_planet(world: &mut World, system: Entity) -> Entity {
 /// Find the player empire entity in the world.
 pub fn empire_entity(world: &mut World) -> Entity {
     let mut query = world.query_filtered::<Entity, With<PlayerEmpire>>();
-    query.single(world).expect("No player empire found in test world")
+    query
+        .single(world)
+        .expect("No player empire found in test world")
 }
 
-/// Create a ShipDesignRegistry populated with the standard 4 ship designs for tests.
-pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegistry {
-    use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
-    let mut registry = ShipDesignRegistry::default();
-    registry.insert(ShipDesignDefinition {
-        id: "explorer_mk1".to_string(),
-        name: "Explorer Mk.I".to_string(),
+/// #295 (S-1) / #296 (S-3): Spawn a mock "Core ship" bearing
+/// `(CoreShip, AtSystem, FactionOwner)` so `update_sovereignty` /
+/// `system_owner` see the system as owned by `faction`.
+///
+/// As of #296 the `CoreShip` marker is REQUIRED — without it the
+/// `system_owner` query (now `With<CoreShip>`) would skip the entity.
+pub fn spawn_mock_core_ship(world: &mut World, system: Entity, faction: Entity) -> Entity {
+    use macrocosmo::faction::FactionOwner;
+    use macrocosmo::galaxy::AtSystem;
+    use macrocosmo::ship::CoreShip;
+    world
+        .spawn((CoreShip, AtSystem(system), FactionOwner(faction)))
+        .id()
+}
+
+/// #236: Test fixture builders for hull + module registries that mirror the
+/// Lua preset content. Designs are built from these via `design_derived` so
+/// the test registry always reflects the canonical derivation formula.
+pub fn create_test_hull_registry() -> macrocosmo::ship_design::HullRegistry {
+    use macrocosmo::ship_design::{
+        HullDefinition, HullRegistry, HullSlot, ModuleModifier, ModuleSize,
+    };
+    use std::collections::HashMap;
+    let mut hulls = HullRegistry::default();
+    let slot = |t: &str, c: u32| HullSlot {
+        slot_type: t.to_string(),
+        count: c,
+        max_size: ModuleSize::Large,
+    };
+    let slot_sized = |t: &str, c: u32, s: ModuleSize| HullSlot {
+        slot_type: t.to_string(),
+        count: c,
+        max_size: s,
+    };
+    hulls.insert(HullDefinition {
+        id: "corvette".into(),
+        name: "Corvette".into(),
         description: String::new(),
-        hull_id: "corvette".to_string(),
-        modules: Vec::new(),
-        can_survey: true,
-        can_colonize: false,
-        maintenance: Amt::new(0, 500),
+        base_hp: 50.0,
+        base_speed: 0.75,
+        base_evasion: 30.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot_sized("weapon", 2, ModuleSize::Small),
+            slot_sized("defense", 1, ModuleSize::Small),
+            slot("utility", 1),
+            slot("reactor", 1),
+        ],
         build_cost_minerals: Amt::units(200),
         build_cost_energy: Amt::units(100),
         build_time: 60,
-        hp: 50.0,
-        sublight_speed: 0.75,
-        ftl_range: 10.0,
-        revision: 0,
+        maintenance: Amt::new(0, 500),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 1,
+        is_capital: false,
     });
-    registry.insert(ShipDesignDefinition {
-        id: "colony_ship_mk1".to_string(),
-        name: "Colony Ship Mk.I".to_string(),
+    hulls.insert(HullDefinition {
+        id: "frigate".into(),
+        name: "Frigate".into(),
         description: String::new(),
-        hull_id: "frigate".to_string(),
-        modules: Vec::new(),
-        can_survey: false,
-        can_colonize: true,
-        maintenance: Amt::units(1),
-        build_cost_minerals: Amt::units(500),
-        build_cost_energy: Amt::units(300),
+        base_hp: 120.0,
+        base_speed: 0.5,
+        base_evasion: 15.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot_sized("weapon", 3, ModuleSize::Medium),
+            slot_sized("defense", 2, ModuleSize::Medium),
+            slot("utility", 2),
+            slot("reactor", 1),
+            slot("comms", 1),
+        ],
+        build_cost_minerals: Amt::units(400),
+        build_cost_energy: Amt::units(200),
         build_time: 120,
-        hp: 100.0,
-        sublight_speed: 0.5,
-        ftl_range: 15.0,
-        revision: 0,
+        maintenance: Amt::units(1),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 2,
+        is_capital: false,
     });
-    registry.insert(ShipDesignDefinition {
-        id: "courier_mk1".to_string(),
-        name: "Courier Mk.I".to_string(),
+    hulls.insert(HullDefinition {
+        id: "scout_hull".into(),
+        name: "Scout Hull".into(),
         description: String::new(),
-        hull_id: "courier_hull".to_string(),
-        modules: Vec::new(),
-        can_survey: false,
-        can_colonize: false,
-        maintenance: Amt::new(0, 300),
-        build_cost_minerals: Amt::units(100),
-        build_cost_energy: Amt::units(50),
-        build_time: 30,
-        hp: 35.0,
-        sublight_speed: 0.80,
-        ftl_range: 0.0,
-        revision: 0,
-    });
-    registry.insert(ShipDesignDefinition {
-        id: "scout_mk1".to_string(),
-        name: "Scout Mk.I".to_string(),
-        description: String::new(),
-        hull_id: "scout_hull".to_string(),
-        modules: Vec::new(),
-        can_survey: true,
-        can_colonize: false,
-        maintenance: Amt::new(0, 400),
+        base_hp: 40.0,
+        base_speed: 0.85,
+        base_evasion: 35.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot("utility", 2),
+            slot_sized("weapon", 1, ModuleSize::Small),
+            slot("reactor", 1),
+        ],
         build_cost_minerals: Amt::units(150),
         build_cost_energy: Amt::units(80),
         build_time: 45,
-        hp: 40.0,
-        sublight_speed: 0.85,
-        ftl_range: 10.0,
-        revision: 0,
+        maintenance: Amt::new(0, 400),
+        modifiers: vec![
+            ModuleModifier {
+                target: "ship.survey_speed".into(),
+                base_add: 0.0,
+                multiplier: 1.3,
+                add: 0.0,
+            },
+            ModuleModifier {
+                target: "ship.speed".into(),
+                base_add: 0.0,
+                multiplier: 1.15,
+                add: 0.0,
+            },
+        ],
+        prerequisites: None,
+        size: 1,
+        is_capital: false,
     });
+    hulls.insert(HullDefinition {
+        id: "courier_hull".into(),
+        name: "Courier Hull".into(),
+        description: String::new(),
+        base_hp: 35.0,
+        base_speed: 0.80,
+        base_evasion: 25.0,
+        slots: vec![
+            slot("ftl", 1),
+            slot("sublight", 1),
+            slot("utility", 2),
+            slot("reactor", 1),
+        ],
+        build_cost_minerals: Amt::units(100),
+        build_cost_energy: Amt::units(50),
+        build_time: 30,
+        maintenance: Amt::new(0, 300),
+        modifiers: vec![
+            ModuleModifier {
+                target: "ship.cargo_capacity".into(),
+                base_add: 0.0,
+                multiplier: 1.5,
+                add: 0.0,
+            },
+            ModuleModifier {
+                target: "ship.ftl_range".into(),
+                base_add: 0.0,
+                multiplier: 1.2,
+                add: 0.0,
+            },
+        ],
+        prerequisites: None,
+        size: 1,
+        is_capital: false,
+    });
+    // #386: Station hulls for system building → Ship migration tests.
+    hulls.insert(HullDefinition {
+        id: "station_shipyard_hull".into(),
+        name: "Station Shipyard Hull".into(),
+        description: String::new(),
+        base_hp: 200.0,
+        base_speed: 0.0,
+        base_evasion: 0.0,
+        slots: vec![slot("utility", 1)],
+        build_cost_minerals: Amt::units(300),
+        build_cost_energy: Amt::units(200),
+        build_time: 30,
+        maintenance: Amt::units(1),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 20,
+        is_capital: false,
+    });
+    hulls.insert(HullDefinition {
+        id: "station_port_hull".into(),
+        name: "Station Port Hull".into(),
+        description: String::new(),
+        base_hp: 150.0,
+        base_speed: 0.0,
+        base_evasion: 0.0,
+        slots: vec![slot("utility", 1)],
+        build_cost_minerals: Amt::units(400),
+        build_cost_energy: Amt::units(300),
+        build_time: 40,
+        maintenance: Amt::new(0, 500),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 15,
+        is_capital: false,
+    });
+    hulls.insert(HullDefinition {
+        id: "station_research_lab_hull".into(),
+        name: "Station Research Lab Hull".into(),
+        description: String::new(),
+        base_hp: 100.0,
+        base_speed: 0.0,
+        base_evasion: 0.0,
+        slots: vec![slot("utility", 1)],
+        build_cost_minerals: Amt::units(100),
+        build_cost_energy: Amt::units(100),
+        build_time: 15,
+        maintenance: Amt::new(0, 500),
+        modifiers: vec![],
+        prerequisites: None,
+        size: 10,
+        is_capital: false,
+    });
+    hulls
+}
+
+pub fn create_test_module_registry() -> macrocosmo::ship_design::ModuleRegistry {
+    use macrocosmo::ship_design::{ModuleDefinition, ModuleModifier, ModuleRegistry, ModuleSize};
+    let mut modules = ModuleRegistry::default();
+    modules.insert(ModuleDefinition {
+        id: "ftl_drive".into(),
+        name: "FTL Drive".into(),
+        description: String::new(),
+        slot_type: "ftl".into(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.ftl_range".into(),
+            base_add: 15.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(100),
+        cost_energy: Amt::units(50),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
+        build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
+    });
+    modules.insert(ModuleDefinition {
+        id: "afterburner".into(),
+        name: "Afterburner".into(),
+        description: String::new(),
+        slot_type: "sublight".into(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.speed".into(),
+            base_add: 0.0,
+            multiplier: 0.2,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(60),
+        cost_energy: Amt::units(40),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
+        build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
+    });
+    modules.insert(ModuleDefinition {
+        id: "survey_equipment".into(),
+        name: "Survey Equipment".into(),
+        description: String::new(),
+        slot_type: "utility".into(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.survey_speed".into(),
+            base_add: 1.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(60),
+        cost_energy: Amt::units(40),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
+        build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
+    });
+    modules.insert(ModuleDefinition {
+        id: "colony_module".into(),
+        name: "Colony Module".into(),
+        description: String::new(),
+        slot_type: "utility".into(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.colonize_speed".into(),
+            base_add: 1.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(300),
+        cost_energy: Amt::units(200),
+        prerequisites: None,
+        upgrade_to: Vec::new(),
+        build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
+    });
+    modules.insert(ModuleDefinition {
+        id: "cargo_bay".into(),
+        name: "Cargo Bay".into(),
+        description: String::new(),
+        slot_type: "utility".into(),
+        modifiers: vec![ModuleModifier {
+            target: "ship.cargo_capacity".into(),
+            base_add: 500.0,
+            multiplier: 0.0,
+            add: 0.0,
+        }],
+        weapon: None,
+        cost_minerals: Amt::units(30),
+        cost_energy: Amt::ZERO,
+        prerequisites: None,
+        upgrade_to: Vec::new(),
+        build_time: 0,
+        power_cost: 0,
+        power_output: 0,
+        size: ModuleSize::Small,
+    });
+    modules
+}
+
+/// Build a ShipDesignDefinition from hull + module IDs, with derived stats
+/// computed via `design_derived`. Used by the test fixture.
+fn build_derived_design(
+    id: &str,
+    name: &str,
+    hull_id: &str,
+    module_assignments: &[(&str, &str)],
+    hulls: &macrocosmo::ship_design::HullRegistry,
+    modules: &macrocosmo::ship_design::ModuleRegistry,
+) -> macrocosmo::ship_design::ShipDesignDefinition {
+    use macrocosmo::ship_design::{DesignSlotAssignment, ShipDesignDefinition};
+    let assignments: Vec<DesignSlotAssignment> = module_assignments
+        .iter()
+        .map(|(s, m)| DesignSlotAssignment {
+            slot_type: s.to_string(),
+            module_id: m.to_string(),
+        })
+        .collect();
+    let mut def = ShipDesignDefinition {
+        id: id.into(),
+        name: name.into(),
+        description: String::new(),
+        hull_id: hull_id.into(),
+        modules: assignments,
+        can_survey: false,
+        can_colonize: false,
+        maintenance: Amt::ZERO,
+        build_cost_minerals: Amt::ZERO,
+        build_cost_energy: Amt::ZERO,
+        build_time: 0,
+        hp: 0.0,
+        sublight_speed: 0.0,
+        ftl_range: 0.0,
+        revision: 0,
+        is_direct_buildable: true,
+    };
+    macrocosmo::ship_design::apply_derived_to_definition(&mut def, hulls, modules);
+    def
+}
+
+/// Create a ShipDesignRegistry populated with the standard ship designs for
+/// tests. #236: All stats are derived from `create_test_hull_registry` +
+/// `create_test_module_registry` via `design_derived` — never hand-authored.
+pub fn create_test_design_registry() -> macrocosmo::ship_design::ShipDesignRegistry {
+    use macrocosmo::ship_design::ShipDesignRegistry;
+    let hulls = create_test_hull_registry();
+    let modules = create_test_module_registry();
+    let mut registry = ShipDesignRegistry::default();
+
+    registry.insert(build_derived_design(
+        "explorer_mk1",
+        "Explorer Mk.I",
+        "corvette",
+        &[("ftl", "ftl_drive"), ("utility", "survey_equipment")],
+        &hulls,
+        &modules,
+    ));
+    registry.insert(build_derived_design(
+        "colony_ship_mk1",
+        "Colony Ship Mk.I",
+        "frigate",
+        &[("ftl", "ftl_drive"), ("utility", "colony_module")],
+        &hulls,
+        &modules,
+    ));
+    registry.insert(build_derived_design(
+        "courier_mk1",
+        "Courier Mk.I",
+        "courier_hull",
+        &[
+            ("ftl", "ftl_drive"),
+            ("sublight", "afterburner"),
+            ("utility", "cargo_bay"),
+        ],
+        &hulls,
+        &modules,
+    ));
+    registry.insert(build_derived_design(
+        "scout_mk1",
+        "Scout Mk.I",
+        "scout_hull",
+        &[("ftl", "ftl_drive"), ("utility", "survey_equipment")],
+        &hulls,
+        &modules,
+    ));
+    // #386: Station designs for system building → Ship migration tests.
+    registry.insert(build_derived_design(
+        "station_shipyard_v1",
+        "Orbital Shipyard",
+        "station_shipyard_hull",
+        &[],
+        &hulls,
+        &modules,
+    ));
+    registry.insert(build_derived_design(
+        "station_port_v1",
+        "Trade Port",
+        "station_port_hull",
+        &[],
+        &hulls,
+        &modules,
+    ));
+    registry.insert(build_derived_design(
+        "station_research_lab_v1",
+        "Research Station",
+        "station_research_lab_hull",
+        &[],
+        &hulls,
+        &modules,
+    ));
     registry
 }
 
 /// Spawn a ship with all standard components at the given system.
+/// #287 (γ-1): Mirrors the `spawn_ship()` invariant — every ship is
+/// attached to a freshly-auto-created 1-ship Fleet (Fleet + FleetMembers
+/// + Ship.fleet back-pointer). Tests that never query the fleet see
+/// no behavioral change.
 pub fn spawn_test_ship(
     world: &mut World,
     name: &str,
@@ -843,37 +1717,50 @@ pub fn spawn_test_ship(
     pos: [f64; 3],
 ) -> Entity {
     let design_registry = create_test_design_registry();
-    let design = design_registry.get(design_id).expect(&format!("unknown test design: {}", design_id));
+    let design = design_registry
+        .get(design_id)
+        .expect(&format!("unknown test design: {}", design_id));
     let hull_hp = design.hp;
-    world
-        .spawn((
-            Ship {
-                name: name.to_string(),
-                design_id: design.id.clone(),
-                hull_id: design.hull_id.clone(),
-                modules: Vec::new(),
-                owner: Owner::Neutral,
-                sublight_speed: design.sublight_speed,
-                ftl_range: design.ftl_range,
-                player_aboard: false,
-                home_port: system,
-                design_revision: 0,
-            },
-            ShipState::Docked { system },
-            Position::from(pos),
-            ShipHitpoints {
-                hull: hull_hp,
-                hull_max: hull_hp,
-                armor: 0.0,
-                armor_max: 0.0,
-                shield: 0.0,
-                shield_max: 0.0,
-                shield_regen: 0.0,
-            },
-            CommandQueue::default(),
-            Cargo::default(),
-            ShipModifiers::default(),
-            RulesOfEngagement::default(),
-        ))
-        .id()
+    let ship_entity = world.spawn_empty().id();
+    let fleet_entity = world.spawn_empty().id();
+    world.entity_mut(ship_entity).insert((
+        Ship {
+            name: name.to_string(),
+            design_id: design.id.clone(),
+            hull_id: design.hull_id.clone(),
+            modules: Vec::new(),
+            owner: Owner::Neutral,
+            sublight_speed: design.sublight_speed,
+            ftl_range: design.ftl_range,
+            player_aboard: false,
+            home_port: system,
+            design_revision: 0,
+            fleet: Some(fleet_entity),
+        },
+        ShipState::InSystem { system },
+        Position::from(pos),
+        ShipHitpoints {
+            hull: hull_hp,
+            hull_max: hull_hp,
+            armor: 0.0,
+            armor_max: 0.0,
+            shield: 0.0,
+            shield_max: 0.0,
+            shield_regen: 0.0,
+        },
+        CommandQueue::default(),
+        Cargo::default(),
+        ShipModifiers::default(),
+        macrocosmo::ship::ShipStats::default(),
+        RulesOfEngagement::default(),
+        macrocosmo::ship::transit_events::LastDockedSystem(Some(system)),
+    ));
+    world.entity_mut(fleet_entity).insert((
+        Fleet {
+            name: name.to_string(),
+            flagship: Some(ship_entity),
+        },
+        FleetMembers(vec![ship_entity]),
+    ));
+    ship_entity
 }

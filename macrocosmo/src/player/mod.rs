@@ -1,27 +1,47 @@
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use crate::colony::{AuthorityParams, ConstructionParams};
 use crate::communication::CommandLog;
 use crate::components::Position;
-use crate::galaxy::StarSystem;
-use crate::ship::{Ship, ShipState};
-use crate::knowledge::KnowledgeStore;
-use crate::physics;
 use crate::condition::ScopedFlags;
+use crate::empire::CommsParams;
+use crate::galaxy::StarSystem;
+use crate::knowledge::{KnowledgeStore, SystemVisibilityMap};
+use crate::physics;
+use crate::ship::{Ship, ShipState};
 use crate::technology::{
-    EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
-    TechTree,
+    EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
+    ResearchPool, ResearchQueue, TechTree,
 };
 
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player_empire)
-            .add_systems(Startup, spawn_player.after(crate::galaxy::generate_galaxy))
-            .add_systems(Update, update_player_location
-                .after(crate::time_system::advance_game_time))
-            .add_systems(Update, log_player_info);
+        use crate::observer::not_in_observer_mode;
+
+        app.add_systems(Startup, spawn_player_empire.run_if(not_in_observer_mode))
+            .add_systems(
+                Startup,
+                spawn_player
+                    .after(crate::galaxy::generate_galaxy)
+                    .run_if(not_in_observer_mode),
+            )
+            .add_systems(
+                Update,
+                update_player_location
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(not_in_observer_mode),
+            )
+            .add_systems(Update, log_player_info.run_if(not_in_observer_mode))
+            .add_systems(
+                Update,
+                sync_player_viewer_system
+                    .after(update_player_location)
+                    .run_if(not_in_observer_mode),
+            );
     }
 }
 
@@ -29,26 +49,30 @@ impl Plugin for PlayerPlugin {
 /// This must run before any system that queries for PlayerEmpire.
 pub fn spawn_player_empire(mut commands: Commands) {
     commands.spawn((
-        Empire {
-            name: "Human Federation".into(),
-        },
-        PlayerEmpire,
-        Faction {
-            id: "humanity_empire".into(),
-            name: "Terran Federation".into(),
-        },
-        TechTree::default(),
-        ResearchQueue::default(),
-        ResearchPool::default(),
-        RecentlyResearched::default(),
-        AuthorityParams::default(),
-        ConstructionParams::default(),
-        EmpireModifiers::default(),
-        GameFlags::default(),
-        GlobalParams::default(),
-        KnowledgeStore::default(),
-        CommandLog::default(),
-        ScopedFlags::default(),
+        (
+            Empire {
+                name: "Human Federation".into(),
+            },
+            PlayerEmpire,
+            Faction::new("humanity_empire", "Terran Federation"),
+            TechTree::default(),
+            ResearchQueue::default(),
+            ResearchPool::default(),
+            RecentlyResearched::default(),
+            AuthorityParams::default(),
+            ConstructionParams::default(),
+        ),
+        (
+            EmpireModifiers::default(),
+            GameFlags::default(),
+            GlobalParams::default(),
+            KnowledgeStore::default(),
+            SystemVisibilityMap::default(),
+            CommandLog::default(),
+            ScopedFlags::default(),
+            PendingColonyTechModifiers::default(),
+            CommsParams::default(),
+        ),
     ));
     info!("Player empire entity spawned");
 }
@@ -79,18 +103,46 @@ pub struct Empire {
 #[derive(Component)]
 pub struct PlayerEmpire;
 
+/// The star system used as the light-speed reference point for an empire's
+/// knowledge propagation. For the player empire this tracks `StationedAt`;
+/// for NPC empires it is set to the capital system at spawn.
+#[derive(Component)]
+pub struct EmpireViewerSystem(pub Entity);
+
 /// Faction identity component. Defines which faction an empire belongs to.
 /// The `id` matches a FactionDefinition loaded from Lua scripts.
+///
+/// Preset fields (`can_diplomacy`, `allowed_diplomatic_options`) are copied
+/// from [`crate::scripting::faction_api::FactionDefinition`] at spawn time.
+/// Runtime code reads these fields directly instead of looking up the
+/// faction type registry.
 #[derive(Component, Clone, Debug)]
 pub struct Faction {
     pub id: String,
     pub name: String,
+    /// Whether this faction can engage in formal diplomacy (treaties,
+    /// declarations, etc.). Copied from `FactionDefinition.can_diplomacy`
+    /// at spawn time. Defaults to `false`.
+    pub can_diplomacy: bool,
+    /// Set of diplomatic option ids available to this faction.
+    /// Populated from `FactionDefinition.allowed_diplomatic_options`
+    /// at spawn time. Empty by default.
+    pub allowed_diplomatic_options: HashSet<String>,
 }
 
-pub fn spawn_player(
-    mut commands: Commands,
-    capitals: Query<(Entity, &StarSystem)>,
-) {
+impl Faction {
+    /// Convenience constructor with default preset fields.
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            can_diplomacy: false,
+            allowed_diplomatic_options: HashSet::new(),
+        }
+    }
+}
+
+pub fn spawn_player(mut commands: Commands, capitals: Query<(Entity, &StarSystem)>) {
     for (entity, system) in &capitals {
         if system.is_capital {
             commands.spawn((Player, StationedAt { system: entity }));
@@ -142,6 +194,21 @@ pub fn log_player_info(
     }
 }
 
+/// Sync `EmpireViewerSystem` on the player empire to match the player's
+/// current `StationedAt` system. NPC empires keep their initial value.
+pub fn sync_player_viewer_system(
+    player_q: Query<&StationedAt, With<Player>>,
+    mut empire_q: Query<&mut EmpireViewerSystem, With<PlayerEmpire>>,
+) {
+    let Ok(stationed) = player_q.single() else {
+        return;
+    };
+    let Ok(mut viewer) = empire_q.single_mut() else {
+        return;
+    };
+    viewer.0 = stationed.system;
+}
+
 /// Update player's StationedAt when aboard a ship that docks at a new system.
 /// Only updates on dock — while in transit, StationedAt stays at the last docked system.
 pub fn update_player_location(
@@ -150,7 +217,7 @@ pub fn update_player_location(
 ) {
     for (aboard, mut stationed) in &mut player_q {
         if let Ok(state) = ships.get(aboard.ship) {
-            if let ShipState::Docked { system } = state {
+            if let ShipState::InSystem { system } = state {
                 stationed.system = *system;
             }
             // In transit states (SubLight, InFTL, etc.): keep StationedAt at last docked system

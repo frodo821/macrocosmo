@@ -12,10 +12,10 @@
 
 use bevy::prelude::*;
 use macrocosmo::galaxy::{Planet, StarSystem};
+use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::galaxy_api::{
     PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition, StarTypeRegistry,
 };
-use macrocosmo::scripting::ScriptEngine;
 
 /// Build a pair of registries with two distinct star/planet types so tests
 /// can tell which Lua-provided id was used.
@@ -57,6 +57,7 @@ fn test_registries() -> (StarTypeRegistry, PlanetTypeRegistry) {
             research: 1.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
     planet_reg.types.push(PlanetTypeDefinition {
         id: "gas_giant".into(),
@@ -70,6 +71,7 @@ fn test_registries() -> (StarTypeRegistry, PlanetTypeRegistry) {
             research: 0.0,
         },
         weight: 1.0,
+        default_biome: None,
     });
 
     (star_reg, planet_reg)
@@ -144,7 +146,11 @@ fn on_galaxy_generate_empty_replaces_phase_a() {
         .iter(app.world())
         .map(|s| s.name.clone())
         .collect();
-    assert_eq!(star_names.len(), 3, "expected exactly 3 systems, got {star_names:?}");
+    assert_eq!(
+        star_names.len(),
+        3,
+        "expected exactly 3 systems, got {star_names:?}"
+    );
     assert!(star_names.contains(&"Alpha".into()));
     assert!(star_names.contains(&"Beta".into()));
     assert!(star_names.contains(&"Gamma".into()));
@@ -303,11 +309,7 @@ fn all_three_hooks_combined() {
     assert_eq!(systems.len(), 4);
 
     // Exactly one capital, and it should be Sys-3 (the one Lua picked).
-    let capitals: Vec<&String> = systems
-        .iter()
-        .filter(|(_, c)| *c)
-        .map(|(n, _)| n)
-        .collect();
+    let capitals: Vec<&String> = systems.iter().filter(|(_, c)| *c).map(|(n, _)| n).collect();
     assert_eq!(capitals.len(), 1);
     assert_eq!(capitals[0], "Sys-3");
 
@@ -389,7 +391,11 @@ fn unknown_star_type_is_skipped() {
         .iter(app.world())
         .map(|s| s.name.clone())
         .collect();
-    assert_eq!(names.len(), 2, "Bad should have been skipped, got {names:?}");
+    assert_eq!(
+        names.len(),
+        2,
+        "Bad should have been skipped, got {names:?}"
+    );
     assert!(names.contains(&"Good".into()));
     assert!(names.contains(&"AlsoGood".into()));
 }

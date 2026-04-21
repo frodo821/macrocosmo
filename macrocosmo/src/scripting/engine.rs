@@ -1,11 +1,12 @@
 use bevy::prelude::*;
 use mlua::prelude::*;
-use rand::rngs::SmallRng;
+use rand_xoshiro::Xoshiro256PlusPlus;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use super::game_rng::{register_game_rand, GameRng};
+use super::game_rng::{GameRng, register_game_rand};
 use super::globals;
+use super::log_buffer::SharedPrintBuffer;
 
 /// Environment variable that, when set, forces [`resolve_scripts_dir`] to use
 /// the supplied path. Intended primarily for CI and distributed test runners
@@ -153,10 +154,7 @@ pub struct ScriptsDirError {
 
 impl std::fmt::Display for ScriptsDirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Could not locate a valid scripts/ directory (checked: "
-        )?;
+        write!(f, "Could not locate a valid scripts/ directory (checked: ")?;
         for (i, p) in self.tried.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -173,6 +171,8 @@ impl std::error::Error for ScriptsDirError {}
 pub struct ScriptEngine {
     lua: Lua,
     scripts_dir: PathBuf,
+    /// Shared buffer for Lua print output, used by the console UI.
+    print_buffer: SharedPrintBuffer,
 }
 
 impl ScriptEngine {
@@ -190,7 +190,7 @@ impl ScriptEngine {
     ///
     /// The scripts directory is auto-resolved via [`resolve_scripts_dir`].
     /// Call [`Self::new_with_rng_and_dir`] to pin it explicitly (tests, CI).
-    pub fn new_with_rng(rng: Arc<Mutex<SmallRng>>) -> Result<Self, mlua::Error> {
+    pub fn new_with_rng(rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> Result<Self, mlua::Error> {
         Self::new_with_rng_and_dir(rng, resolve_scripts_dir())
     }
 
@@ -198,19 +198,27 @@ impl ScriptEngine {
     /// directory. Intended for tests and CI — production code should use
     /// [`Self::new_with_rng`] so the auto-resolution logic takes effect.
     pub fn new_with_rng_and_dir(
-        rng: Arc<Mutex<SmallRng>>,
+        rng: Arc<Mutex<Xoshiro256PlusPlus>>,
         scripts_dir: PathBuf,
     ) -> Result<Self, mlua::Error> {
         // Sandbox: only load safe libraries (no io, os, debug, ffi)
         let lua = Lua::new_with(
-            LuaStdLib::TABLE | LuaStdLib::STRING | LuaStdLib::MATH
-                | LuaStdLib::PACKAGE | LuaStdLib::BIT,
+            LuaStdLib::TABLE
+                | LuaStdLib::STRING
+                | LuaStdLib::MATH
+                | LuaStdLib::PACKAGE
+                | LuaStdLib::BIT,
             mlua::LuaOptions::default(),
         )?;
-        globals::setup_globals(&lua, &scripts_dir)?;
+        let print_buffer: SharedPrintBuffer = Arc::new(Mutex::new(Vec::new()));
+        globals::setup_globals_with_print_buffer(&lua, &scripts_dir, Some(print_buffer.clone()))?;
         register_game_rand(&lua, rng)?;
         info!("Lua scripts directory: {}", scripts_dir.display());
-        Ok(Self { lua, scripts_dir })
+        Ok(Self {
+            lua,
+            scripts_dir,
+            print_buffer,
+        })
     }
 
     /// Create a new ScriptEngine with an explicit scripts directory and a
@@ -225,6 +233,12 @@ impl ScriptEngine {
     /// The resolved scripts directory path.
     pub fn scripts_dir(&self) -> &Path {
         &self.scripts_dir
+    }
+
+    /// The shared print buffer handle. Used to construct `LogBuffer` with the
+    /// same underlying buffer so Lua print output appears in the console.
+    pub fn print_buffer(&self) -> SharedPrintBuffer {
+        self.print_buffer.clone()
     }
 
     /// Backward-compatible static method that delegates to `globals::setup_globals`.

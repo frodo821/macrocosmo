@@ -142,8 +142,10 @@ function M.initialize_default_capital(ctx, opts)
     ctx.system:clear_planets()
 
     -- 3) Spawn the home planet + colonize + add starter buildings.
+    --    #280: Place planetary_capital_t3 first (slot 0) before other buildings.
     local home = ctx.system:spawn_planet(home_name, home_type, home_attrs)
     home:colonize(ctx.faction)
+    home:add_building("planetary_capital_t3")
     for _, building in ipairs(starter_buildings) do
         home:add_building(building)
     end
@@ -158,6 +160,9 @@ function M.initialize_default_capital(ctx, opts)
     for _, building in ipairs(starter_system_buildings) do
         ctx.system:add_building(building)
     end
+
+    -- 5b) Spawn a sovereignty Core in the capital system (#299).
+    ctx.system:spawn_core()
 
     -- 6) Spawn starter ships.
     for _, entry in ipairs(starter_ships) do

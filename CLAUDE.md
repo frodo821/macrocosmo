@@ -140,6 +140,17 @@ tests/                   # 382 tests (275 unit + 107 integration, 11 test files)
 - `click_select_system` excluded from full_test_app (needs EguiContexts)
 - **Always add regression tests with bug fixes**
 
+### Save-file Fixtures (#247)
+- `tests/fixtures/*.bin` — committed postcard-encoded saves that pin the on-disk wire format (currently `minimal_game.bin`, 732 B)
+- `common::fixture::load_fixture(path)` — decode a fixture into a fresh `bevy::App` for assertions
+- `load_minimal_game_fixture_smoke` in `tests/fixtures_smoke.rs` is the format-stability guard — it fails if `SAVE_VERSION` bumps or `SavedComponentBag` gains a non-backwards-compatible field
+- **To regenerate the fixture** after an intentional format bump, run the `#[ignore]` test:
+  ```bash
+  cargo test -p macrocosmo --test fixtures_smoke \
+      regenerate_minimal_game_fixture -- --ignored
+  ```
+  Then commit the updated binary in the same PR as the format change
+
 ### Lua Scripting
 
 **Single entrypoint.** `scripts/init.lua` is the sole entrypoint for all Lua definitions. It uses `require()` to load subsystems in dependency order. Individual plugins no longer call `load_directory()` — they only parse accumulators after `load_all_scripts` runs.
@@ -180,8 +191,25 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 
 **Script path resolution.** `resolve_scripts_dir()` searches: 1) `MACROCOSMO_SCRIPTS_DIR` env var (CI / test override), 2) next to executable, 3) executable ancestors (walks upward looking for `scripts/init.lua`), 4) CWD ancestors, 5) `CARGO_MANIFEST_DIR` (last-resort fallback — this path is baked in at compile time, so it only wins when every other lookup fails and a warning is logged). A directory is considered valid only if it contains `init.lua`. `try_resolve_scripts_dir()` surfaces a descriptive `ScriptsDirError` instead of falling back to a literal `"scripts"` path. Tests and CI can bypass resolution entirely via `ScriptEngine::new_with_scripts_dir(path)` / `ScriptEngine::new_with_rng_and_dir(rng, path)`. Absolute path used for `package.path`.
 
+**Lua gamestate view (#263 / #289).** Event callbacks receive `evt.gamestate` — a snapshot-per-event sealed Lua table rooted at `gs = {clock, empires/empire_ids/player_empire, systems/system_ids, planets/planet_ids, ships/ship_ids, fleets/fleet_ids, colonies/colony_ids}`. Each entity view exposes id/name plus typed payload fields: SystemView adds `position/planet_ids/colony_ids/owner_empire_id/modifiers`, ColonyView adds `owner_empire_id/building_slots/building_ids/production`, ShipView adds `fleet_id/hp/modules/state` (tag-union `{kind, ...}` covering all 8 `ShipState` variants), FleetView proxies owner/state/origin/destination through its flagship until FleetState lands (γ-2 #287). Sealed tables reject writes with a `read-only` Lua error; `*_ids` arrays are unsealed so `ipairs` works. The builder lives in `macrocosmo/src/scripting/gamestate_view.rs`; new fields must be wrapped in `seal_table` (leaf / map) or left as raw arrays.
+
 - BuildingRegistry resource loaded at startup; BuildingType enum still used for runtime logic (known tech debt — should migrate to capability-based)
 - Fallback: `create_initial_tech_tree()` if scripts are missing (for tests)
+
+### BRP (Bevy Remote Protocol) — `#[cfg(feature = "remote")]`
+
+`cargo run --features remote` で JSON-RPC 2.0 over HTTP (port 15702) が有効に。agent-driven テスト・外部監視用。
+
+**Custom methods** (`src/remote.rs`):
+- `macrocosmo/entity_screen_pos` — entity の world→screen 座標変換
+- `macrocosmo/advance_time` — game clock を N hexadies 進める
+- `macrocosmo/eval_lua` — ScriptEngine sandbox で Lua 評価
+- `macrocosmo/click` — 画面座標にマウスクリック注入 (left/right/middle, shift/ctrl)
+- `macrocosmo/key_press` — キーボード入力注入
+- `macrocosmo/hover` — カーソル移動
+- `macrocosmo/screenshot` — 現フレームを base64 PNG でキャプチャ
+- `macrocosmo/find_ui_element` — text/ID で UI 要素検索 → 座標返却
+- `macrocosmo/list_ui_elements` — 全 UI 要素の一覧
 
 ## Common Pitfalls
 
@@ -196,6 +224,7 @@ define_ship_design { hull = hulls.corvette, modules = { ... } }
 9. **New game elements must be Lua-defined:** Rust provides the engine/framework, Lua defines specific content. No hardcoded enum variants for game content.
 10. **Use ModifiedValue for game-affecting numbers.** When touching a numeric value that could be affected by tech, modules, events, or modifiers, make it a `ModifiedValue` (or `ScopedModifiers`). Don't refactor untouched code, but apply this when adding/changing features.
 11. **Ship design fields are computed from hull + modules.** `ShipDesignDefinition` stats (hp, speed, ftl_range, build_cost, maintenance) must be calculated from hull + module definitions at registry time, not directly specified in Lua. `can_survey` = `survey_speed > 0`, `can_colonize` = `colonization_speed > 0` (no capability flags).
+12. **NPC empire AI (#173).** NPC empires spawn in both player and observer mode via `setup::run_all_factions_on_game_start` (ordered `.after(run_faction_on_game_start)`). The decision hook is `ai::npc_decision::npc_decision_tick`, registered under `AiTickSet::Reason`; today it invokes `NoOpPolicy` — future Lua / `macrocosmo-ai` policies plug in by replacing that call. The `macrocosmo-ai::mock` feature is **dev-dependency-only** (see `macrocosmo/Cargo.toml [dev-dependencies]`); production never activates it, and `ai-core-isolation.yml` CI enforces the `macrocosmo → macrocosmo-ai` direction. Real multi-tier planning (campaign / Nash / feasibility) lands under #189.
 
 ## Game Design Principles
 

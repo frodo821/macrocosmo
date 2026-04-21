@@ -60,8 +60,16 @@ mod tests {
 
     #[test]
     fn distance_ly_known_positions() {
-        let a = Position { x: 3.0, y: 4.0, z: 0.0 };
-        let b = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let a = Position {
+            x: 3.0,
+            y: 4.0,
+            z: 0.0,
+        };
+        let b = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert!((distance_ly(&a, &b) - 5.0).abs() < 1e-10);
     }
 

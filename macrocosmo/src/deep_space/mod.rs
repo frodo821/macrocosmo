@@ -1,3 +1,32 @@
+//! # Deep-space structures + deliverable placement (#223)
+//!
+//! This module hosts the data model and systems for entities that live at
+//! arbitrary galactic coordinates outside star systems:
+//!
+//! * `DeepSpaceStructure` — the minimal marker component for any such entity.
+//! * `DeliverableDefinition` (aliased as `StructureDefinition`) — Lua-loaded
+//!   schema describing capabilities, HP, prerequisites, optional upgrade
+//!   graph (`upgrade_to` / `upgrade_from`), and the optional
+//!   `DeliverableMetadata` that marks a definition as shipyard-buildable.
+//! * `DeliverableRegistry` — one-per-App resource holding every definition,
+//!   plus a cached `effective_edges` map combining explicit `upgrade_to`
+//!   edges with self-declared `upgrade_from` edges for forward-ref isolation.
+//! * `ConstructionPlatform` / `Scrapyard` / `LifetimeCost` — runtime
+//!   components that track transitional states:
+//!     - `ConstructionPlatform` gates capabilities while the structure is
+//!       still assembling; `TransferToStructure` from a ship fills
+//!       `accumulated`, and `tick_platform_upgrade` swaps
+//!       `definition_id → target_id` once a target's cost is covered.
+//!     - `Scrapyard` is installed by `dismantle_structure` and holds a
+//!       `remaining = lifetime_cost × scrap_refund` pool. A ship's
+//!       `LoadFromScrapyard` command drains it; when empty,
+//!       `tick_scrapyard_despawn` removes the entity.
+//!     - `LifetimeCost` accumulates every cost invested so far (initial
+//!       deploy cost + every upgrade cost), used for scrap refund scaling.
+//!
+//! The shipyard → cargo → deploy path lives in `src/colony/building_queue.rs`
+//! (`tick_build_queue` dispatching on `BuildKind::Deliverable`) and
+//! `src/ship/deliverable_ops.rs` (command processors).
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -44,7 +73,10 @@ pub struct FTLCommRelay {
 
 impl FTLCommRelay {
     pub fn new(paired_with: Entity, direction: CommDirection) -> Self {
-        Self { paired_with, direction }
+        Self {
+            paired_with,
+            direction,
+        }
     }
 }
 
@@ -71,8 +103,7 @@ pub fn pair_relay_command(
     if a == b {
         return Err("cannot pair a relay with itself");
     }
-    if world.get::<DeepSpaceStructure>(a).is_none()
-        || world.get::<DeepSpaceStructure>(b).is_none()
+    if world.get::<DeepSpaceStructure>(a).is_none() || world.get::<DeepSpaceStructure>(b).is_none()
     {
         return Err("both entities must be DeepSpaceStructure");
     }
@@ -120,39 +151,191 @@ pub struct CapabilityParams {
     // Extensible: add more fields as needed.
 }
 
-/// Data-driven definition of a structure type, loaded from Lua or hardcoded fallback.
+/// #223: An edge in the deliverable upgrade graph — a platform kit can be
+/// upgraded to `target_id` by spending `cost` over `build_time` hexadies.
 #[derive(Clone, Debug)]
-pub struct StructureDefinition {
+pub struct UpgradeEdge {
+    pub target_id: String,
+    pub cost: ResourceCost,
+    pub build_time: i64,
+}
+
+/// #223: Shipyard-specific metadata. Present only when the deliverable was
+/// declared via `define_deliverable` (i.e. can be built directly at a shipyard
+/// and transported in a ship's Cargo). World-only structures declared via
+/// `define_structure` leave this as `None`.
+#[derive(Clone, Debug, Default)]
+pub struct DeliverableMetadata {
+    pub cost: ResourceCost,
+    pub build_time: i64,
+    pub cargo_size: u32,
+    /// 0.0..=1.0 — fraction of lifetime_cost returned as Scrapyard resources on dismantle.
+    pub scrap_refund: f32,
+    /// #296 (S-3): When `Some(design_id)`, deploying this deliverable spawns
+    /// an immobile [`crate::ship::Ship`] (the "Core ship") instead of a
+    /// [`DeepSpaceStructure`]. The referenced design must resolve to
+    /// `sublight_speed = 0` / `ftl_range = 0`. `None` retains the legacy
+    /// structure-spawn behaviour.
+    pub spawns_as_ship: Option<String>,
+}
+
+/// #223: Unified definition covering both world-side structures and
+/// shipyard-buildable deliverables. The `deliverable` field distinguishes them:
+///   - `Some(_)` — shipyard-buildable (via `define_deliverable`)
+///   - `None`    — world-spawn only / upgrade output (via `define_structure`)
+#[derive(Clone, Debug)]
+pub struct DeliverableDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
     pub max_hp: f64,
-    pub cost: ResourceCost,
-    pub build_time: i64, // hexadies
-    pub energy_drain: Amt, // per hexady maintenance
-    pub prerequisites: Option<Condition>,
+    pub energy_drain: Amt,
     pub capabilities: HashMap<String, CapabilityParams>,
+    pub prerequisites: Option<Condition>,
+
+    /// `Some(_)` when the deliverable is shipyard-buildable.
+    pub deliverable: Option<DeliverableMetadata>,
+
+    /// Outgoing upgrade edges: starting from this deliverable, it can become
+    /// one of these targets by paying the edge cost.
+    pub upgrade_to: Vec<UpgradeEdge>,
+
+    /// Optional self-declared inbound edge: "this deliverable can be reached
+    /// from `source` by paying `cost`." Preserves referential churn isolation
+    /// (a new target may self-declare without touching the platform def).
+    ///
+    /// When set, `target_id` holds the upstream source id and the edge cost/
+    /// build_time describe the upstream→this transition. Cf. `upgrade_to`
+    /// which describes this→downstream transitions.
+    pub upgrade_from: Option<UpgradeEdge>,
+
+    /// #281: Optional Lua hook invoked when this structure finishes
+    /// construction. Auto-subscribed as a filtered handler on
+    /// `macrocosmo:building_built` during `load_structure_definitions`.
+    pub on_built: Option<crate::event_system::LuaFunctionRef>,
+    /// #281: Reserved for future deep-space upgrade paths. Parsed from Lua
+    /// and auto-subscribed on `macrocosmo:building_built` with
+    /// `cause = "upgrade"` filter, but the current deep-space completion
+    /// path fires `cause = "construction"` exclusively.
+    pub on_upgraded: Option<crate::event_system::LuaFunctionRef>,
 }
 
-/// Registry of all structure definitions.
+impl DeliverableDefinition {
+    /// Convenience: the direct shipyard build cost if this deliverable can be
+    /// built at a shipyard; otherwise `None` (upgrade-only output).
+    pub fn shipyard_cost(&self) -> Option<&ResourceCost> {
+        self.deliverable.as_ref().map(|m| &m.cost)
+    }
+
+    /// Convenience: shipyard build time in hexadies (`None` if not buildable).
+    pub fn shipyard_build_time(&self) -> Option<i64> {
+        self.deliverable.as_ref().map(|m| m.build_time)
+    }
+
+    /// Returns `true` if this deliverable carries the `construction_platform`
+    /// capability marker, meaning on-deploy it enters a waiting state until
+    /// an upgrade target is selected and resources are delivered.
+    pub fn is_construction_platform(&self) -> bool {
+        self.capabilities.contains_key("construction_platform")
+    }
+}
+
+/// Back-compat alias: existing code continues to use `StructureDefinition`.
+pub type StructureDefinition = DeliverableDefinition;
+
+/// Registry of all deliverable/structure definitions.
+///
+/// `effective_edges[source_id]` holds the merged outbound upgrade edges for
+/// `source_id`, built once during `load_structure_definitions` by combining
+/// each definition's `upgrade_to[*]` with any other definition's self-declared
+/// `upgrade_from` that names `source_id`. `upgrade_to` wins on conflict.
 #[derive(Resource, Default)]
-pub struct StructureRegistry {
-    pub definitions: HashMap<String, StructureDefinition>,
+pub struct DeliverableRegistry {
+    pub definitions: HashMap<String, DeliverableDefinition>,
+    pub effective_edges: HashMap<String, Vec<UpgradeEdge>>,
 }
 
-impl StructureRegistry {
-    /// Look up a structure definition by id.
-    pub fn get(&self, id: &str) -> Option<&StructureDefinition> {
+/// Back-compat alias.
+pub type StructureRegistry = DeliverableRegistry;
+
+impl DeliverableRegistry {
+    /// Look up a structure/deliverable definition by id.
+    pub fn get(&self, id: &str) -> Option<&DeliverableDefinition> {
         self.definitions.get(id)
     }
 
-    /// Insert a structure definition, replacing any existing one with the same id.
-    pub fn insert(&mut self, def: StructureDefinition) {
+    /// Insert a definition, replacing any existing one with the same id.
+    /// NOTE: This does NOT automatically rebuild `effective_edges`; call
+    /// `rebuild_effective_edges` after batch-inserts.
+    pub fn insert(&mut self, def: DeliverableDefinition) {
         self.definitions.insert(def.id.clone(), def);
+    }
+
+    /// Outbound upgrade edges effective at runtime for `source_id`. Uses the
+    /// cached `effective_edges` table if populated, otherwise falls back to
+    /// the definition's own `upgrade_to` list (which excludes inverse
+    /// `upgrade_from` self-declarations).
+    pub fn outgoing_edges(&self, source_id: &str) -> &[UpgradeEdge] {
+        if let Some(v) = self.effective_edges.get(source_id) {
+            return v.as_slice();
+        }
+        self.definitions
+            .get(source_id)
+            .map(|d| d.upgrade_to.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Rebuild `effective_edges` by merging `upgrade_to[*]` with inverse
+    /// `upgrade_from` self-declarations from every other definition. On
+    /// conflict (same source→target declared twice), the `upgrade_to`
+    /// declaration wins; a warning is logged at the caller level.
+    ///
+    /// Returns a list of non-fatal validation warnings as `(source, target)`
+    /// tuples describing conflicts, so the caller can `log::warn!` them.
+    pub fn rebuild_effective_edges(&mut self) -> Vec<(String, String)> {
+        let mut merged: HashMap<String, Vec<UpgradeEdge>> = HashMap::new();
+        let mut conflicts: Vec<(String, String)> = Vec::new();
+
+        // First pass: collect all `upgrade_to` edges.
+        for (source_id, def) in &self.definitions {
+            for edge in &def.upgrade_to {
+                merged
+                    .entry(source_id.clone())
+                    .or_default()
+                    .push(edge.clone());
+            }
+        }
+
+        // Second pass: inverse `upgrade_from` (self-declared inbound edge on target).
+        for (target_id, def) in &self.definitions {
+            if let Some(uf) = &def.upgrade_from {
+                let source_id = uf.target_id.clone(); // for upgrade_from, target_id holds the SOURCE.
+                let inverse_edge = UpgradeEdge {
+                    target_id: target_id.clone(),
+                    cost: uf.cost.clone(),
+                    build_time: uf.build_time,
+                };
+                let entry = merged.entry(source_id.clone()).or_default();
+                // Does an `upgrade_to` edge for the same target already exist?
+                if entry.iter().any(|e| e.target_id == *target_id) {
+                    // Conflict — `upgrade_to` wins, we skip the inverse edge.
+                    conflicts.push((source_id, target_id.clone()));
+                } else {
+                    entry.push(inverse_edge);
+                }
+            }
+        }
+
+        self.effective_edges = merged;
+        conflicts
     }
 }
 
 /// Default structure definitions used when Lua scripts are not available (e.g. in tests).
+///
+/// All three defaults are shipyard-buildable deliverables (they carry
+/// `DeliverableMetadata`) so existing tests and fallback startup continue to
+/// see the same practical behaviour as before #223.
 pub fn default_structure_definitions() -> Vec<StructureDefinition> {
     use crate::condition::ConditionAtom;
 
@@ -162,28 +345,32 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             name: "Sensor Buoy".to_string(),
             description: "Detects sublight vessel movements.".to_string(),
             max_hp: 20.0,
-            cost: ResourceCost {
-                minerals: Amt::units(50),
-                energy: Amt::units(30),
-            },
-            build_time: 15,
             capabilities: HashMap::from([(
                 "detect_sublight".to_string(),
                 CapabilityParams { range: 3.0 },
             )]),
             energy_drain: Amt::milli(100),
             prerequisites: None,
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(50),
+                    energy: Amt::units(30),
+                },
+                build_time: 15,
+                cargo_size: 1,
+                scrap_refund: 0.5,
+                spawns_as_ship: None,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         },
         StructureDefinition {
             id: "ftl_comm_relay".to_string(),
             name: "FTL Comm Relay".to_string(),
             description: "Enables faster-than-light communication across systems.".to_string(),
             max_hp: 50.0,
-            cost: ResourceCost {
-                minerals: Amt::units(200),
-                energy: Amt::units(150),
-            },
-            build_time: 30,
             capabilities: HashMap::from([(
                 "ftl_comm_relay".to_string(),
                 CapabilityParams { range: 5.0 },
@@ -192,17 +379,26 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
                 "ftl_communications",
             ))),
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(200),
+                    energy: Amt::units(150),
+                },
+                build_time: 30,
+                cargo_size: 2,
+                scrap_refund: 0.4,
+                spawns_as_ship: None,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         },
         StructureDefinition {
             id: "interdictor".to_string(),
             name: "Interdictor".to_string(),
             description: "Disrupts FTL travel within its interdiction range.".to_string(),
             max_hp: 80.0,
-            cost: ResourceCost {
-                minerals: Amt::units(300),
-                energy: Amt::units(200),
-            },
-            build_time: 45,
             capabilities: HashMap::from([(
                 "ftl_interdiction".to_string(),
                 CapabilityParams { range: 5.0 },
@@ -211,8 +407,264 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
             prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
                 "ftl_interdiction_tech",
             ))),
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(300),
+                    energy: Amt::units(200),
+                },
+                build_time: 45,
+                cargo_size: 3,
+                scrap_refund: 0.3,
+                spawns_as_ship: None,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         },
     ]
+}
+
+/// #223: Tracks the total resource cost ever invested into a `DeepSpaceStructure`
+/// entity. Starts at the deliverable's `cost` when deployed; is incremented by
+/// `UpgradeEdge.cost` every time the structure is upgraded via a
+/// `ConstructionPlatform`. When the structure is dismantled, the resulting
+/// `Scrapyard.remaining = lifetime_cost * scrap_refund`.
+#[derive(Component, Clone, Debug, Default)]
+pub struct LifetimeCost(pub ResourceCost);
+
+/// #223: Marker component on a freshly-deployed construction platform that is
+/// awaiting upgrade resources. While this is present, the structure's
+/// capabilities are gated OFF (it's still "under construction"). Once enough
+/// resources accumulate, the structure upgrades to `target_id` and this
+/// component is removed.
+///
+/// `target_id.is_none()` means the player hasn't yet chosen which upgrade edge
+/// to pursue; transfers are refused until a target is selected. UI can default
+/// `target_id` to the sole edge when `upgrade_to` has exactly one element.
+#[derive(Component, Clone, Debug, Default)]
+pub struct ConstructionPlatform {
+    pub target_id: Option<String>,
+    pub accumulated: ResourceCost,
+}
+
+/// #223: Marker component on a dismantled structure. While present, the
+/// structure's capabilities are gated OFF. A co-located ship can drain the
+/// `remaining` pool into its own Cargo via `QueuedCommand::LoadFromScrapyard`.
+/// When `remaining.is_zero()`, the entity is despawned next tick by
+/// `tick_scrapyard_despawn`.
+#[derive(Component, Clone, Debug)]
+pub struct Scrapyard {
+    pub remaining: ResourceCost,
+    pub original_definition_id: String,
+}
+
+impl ResourceCost {
+    pub fn is_zero(&self) -> bool {
+        self.minerals == Amt::ZERO && self.energy == Amt::ZERO
+    }
+
+    /// Saturating add of `other` into self (consumes `other`).
+    pub fn add_assign_saturating(&mut self, other: &ResourceCost) {
+        self.minerals = self.minerals.add(other.minerals);
+        self.energy = self.energy.add(other.energy);
+    }
+
+    /// Returns true iff `self` covers (≥) every component of `other`.
+    pub fn covers(&self, other: &ResourceCost) -> bool {
+        self.minerals >= other.minerals && self.energy >= other.energy
+    }
+
+    /// Multiply by a scalar in 0..=1 (used for scrap refund).
+    pub fn scale(&self, factor: f32) -> ResourceCost {
+        let f = factor.clamp(0.0, 1.0) as f64;
+        ResourceCost {
+            minerals: Amt::from_f64(self.minerals.to_f64() * f),
+            energy: Amt::from_f64(self.energy.to_f64() * f),
+        }
+    }
+}
+
+/// #223: Spawn a new `DeepSpaceStructure` entity at the given position with the
+/// given owner, according to the definition identified by `definition_id`.
+///
+/// Behaviour:
+///   - The entity always gets: `DeepSpaceStructure`, `Position`,
+///     `StructureHitpoints` (at max_hp), `LifetimeCost` (initial = def's
+///     shipyard cost if present, else zero).
+///   - If the definition has the `construction_platform` capability marker,
+///     a `ConstructionPlatform` component is added. The `target_id` defaults
+///     to the single `upgrade_to` edge's target when there is exactly one;
+///     otherwise it is `None` (awaiting player selection).
+///   - Otherwise the entity is fully active: its capabilities fire on the
+///     next tick.
+pub fn spawn_deliverable_entity(
+    commands: &mut Commands,
+    definition_id: &str,
+    position: [f64; 3],
+    owner: Owner,
+    registry: &StructureRegistry,
+) -> Option<Entity> {
+    let def = registry.get(definition_id)?;
+
+    let initial_cost = def
+        .deliverable
+        .as_ref()
+        .map(|m| m.cost.clone())
+        .unwrap_or_default();
+
+    let mut ent = commands.spawn((
+        DeepSpaceStructure {
+            definition_id: definition_id.to_string(),
+            name: def.name.clone(),
+            owner,
+        },
+        crate::components::Position::from(position),
+        StructureHitpoints {
+            current: def.max_hp,
+            max: def.max_hp,
+        },
+        LifetimeCost(initial_cost),
+    ));
+
+    // #297 (S-2): Empire-owned structures carry `FactionOwner` alongside
+    // the legacy `DeepSpaceStructure.owner` field. Neutral structures
+    // (pre-deliverable scaffolds, tests) stay unaffiliated.
+    if let Owner::Empire(e) = owner {
+        ent.insert(crate::faction::FactionOwner(e));
+    }
+
+    if def.is_construction_platform() {
+        let target_id = if def.upgrade_to.len() == 1 {
+            Some(def.upgrade_to[0].target_id.clone())
+        } else {
+            None
+        };
+        ent.insert(ConstructionPlatform {
+            target_id,
+            accumulated: ResourceCost::default(),
+        });
+    }
+
+    Some(ent.id())
+}
+
+/// #223: Apply player-scheduled upgrades: for each `ConstructionPlatform` that
+/// has `accumulated >= target.cost`, swap the definition_id to the target,
+/// bump the `LifetimeCost`, and remove the `ConstructionPlatform`.
+#[allow(clippy::too_many_arguments)]
+pub fn tick_platform_upgrade(
+    mut commands: Commands,
+    registry: Res<StructureRegistry>,
+    clock: Res<crate::time_system::GameClock>,
+    mut events: MessageWriter<crate::events::GameEvent>,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
+    mut platforms: Query<(
+        Entity,
+        &mut DeepSpaceStructure,
+        &mut LifetimeCost,
+        &mut ConstructionPlatform,
+    )>,
+    positions: Query<&crate::components::Position>,
+    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    player_aboard_q: Query<&crate::player::AboardShip, With<crate::player::Player>>,
+    mut fact_sys: crate::knowledge::FactSysParam,
+) {
+    use crate::knowledge::{KnowledgeFact, PlayerVantage};
+    let player_system = player_q.iter().next().map(|s| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| positions.get(s).ok())
+        .map(|p| p.as_array());
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
+    for (entity, mut structure, mut lifetime, mut platform) in platforms.iter_mut() {
+        let Some(target_id) = platform.target_id.clone() else {
+            continue;
+        };
+        // Find the edge: from structure.definition_id → target_id.
+        let edges = registry.outgoing_edges(&structure.definition_id);
+        let Some(edge) = edges.iter().find(|e| e.target_id == target_id) else {
+            continue;
+        };
+
+        if !platform.accumulated.covers(&edge.cost) {
+            continue;
+        }
+
+        // Upgrade! Consume edge.cost from accumulated; the remainder stays so
+        // a subsequent upgrade (rare today, but possible) is not penalised.
+        platform.accumulated.minerals = platform.accumulated.minerals.sub(edge.cost.minerals);
+        platform.accumulated.energy = platform.accumulated.energy.sub(edge.cost.energy);
+
+        // Update the structure identity.
+        if let Some(new_def) = registry.get(&target_id) {
+            let old_name = structure.name.clone();
+            let old_definition_id = structure.definition_id.clone();
+            structure.definition_id = target_id.clone();
+            structure.name = new_def.name.clone();
+            // Bump lifetime cost by the edge cost.
+            lifetime.0.add_assign_saturating(&edge.cost);
+            // #249: Dual-write platform upgrade event.
+            let event_id = fact_sys.allocate_event_id();
+            let desc = format!("Platform upgraded: {} → {}", old_name, new_def.name,);
+            events.write(crate::events::GameEvent {
+                id: event_id,
+                timestamp: clock.elapsed,
+                kind: crate::events::GameEventKind::ShipBuilt,
+                description: desc.clone(),
+                related_system: None,
+            });
+            // #281: Fire macrocosmo:building_built for deep-space structure
+            // completion (platform → target). Treated as cause="construction"
+            // since the platform is an ephemeral kit, not a first-class
+            // structure the player had "built" in the modding sense.
+            // `previous_id` carries the platform/kit id so hooks can still
+            // chain off the specific construction path.
+            let mut payload = std::collections::HashMap::new();
+            payload.insert("cause".to_string(), "construction".to_string());
+            payload.insert("building_id".to_string(), target_id.clone());
+            payload.insert("previous_id".to_string(), old_definition_id);
+            event_system.fire_event_with_payload(
+                Some(entity),
+                clock.elapsed,
+                Box::new(crate::event_system::LuaDefinedEventContext::new(
+                    crate::event_system::BUILDING_BUILT_EVENT,
+                    payload,
+                )),
+            );
+            let origin_pos: Option<[f64; 3]> = positions.get(entity).ok().map(|p| p.as_array());
+            if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                let fact = KnowledgeFact::StructureBuilt {
+                    event_id: Some(event_id),
+                    system: None,
+                    kind: "platform_upgrade".into(),
+                    name: new_def.name.clone(),
+                    destroyed: false,
+                    detail: desc,
+                };
+                fact_sys.record(fact, op, clock.elapsed, &v);
+            }
+            info!(
+                "Deep-space structure {:?} upgraded → {}",
+                entity, new_def.name,
+            );
+        }
+
+        // Remove the construction marker so capabilities fire next tick.
+        commands.entity(entity).remove::<ConstructionPlatform>();
+    }
+}
+
+/// #223: Despawn any `Scrapyard` whose resources have been drained by a ship.
+pub fn tick_scrapyard_despawn(mut commands: Commands, scrapyards: Query<(Entity, &Scrapyard)>) {
+    for (entity, scrap) in &scrapyards {
+        if scrap.remaining.is_zero() {
+            commands.entity(entity).despawn();
+        }
+    }
 }
 
 pub struct DeepSpacePlugin;
@@ -230,6 +682,8 @@ impl Plugin for DeepSpacePlugin {
                     sensor_buoy_detect_system,
                     verify_relay_pairings_system,
                     relay_knowledge_propagate_system,
+                    tick_platform_upgrade,
+                    tick_scrapyard_despawn,
                 )
                     .after(crate::time_system::advance_game_time)
                     .after(crate::ship::sublight_movement_system)
@@ -256,7 +710,10 @@ impl Plugin for DeepSpacePlugin {
 pub fn sensor_buoy_detect_system(
     clock: Res<crate::time_system::GameClock>,
     registry: Res<StructureRegistry>,
-    structures: Query<(&DeepSpaceStructure, &crate::components::Position)>,
+    structures: Query<
+        (&DeepSpaceStructure, &crate::components::Position),
+        (Without<ConstructionPlatform>, Without<Scrapyard>),
+    >,
     ships: Query<(
         Entity,
         &crate::ship::Ship,
@@ -266,19 +723,33 @@ pub fn sensor_buoy_detect_system(
     )>,
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
     positions: Query<&crate::components::Position>,
-    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::Empire>>,
 ) {
-    use crate::knowledge::{ShipSnapshot, ShipSnapshotState};
+    use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
-    let Ok(mut store) = empire_q.single_mut() else {
-        return;
-    };
+    // TODO(#418): sensor buoy observations should be scoped per-empire based on
+    // structure ownership. For now, all empires receive observations from all
+    // sensor buoys (matching the pre-#418 single-empire behaviour).
     let Some(stationed) = player_q.iter().next() else {
         return;
     };
     let Ok(player_pos) = positions.get(stationed.system) else {
         return;
     };
+
+    // Pre-collect ship snapshots so we can write to multiple empire stores.
+    struct BuoySnapshot {
+        ship_entity: Entity,
+        name: String,
+        design_id: String,
+        snapshot_state: ShipSnapshotState,
+        last_system: Option<Entity>,
+        observed_at: i64,
+        hp: f64,
+        hp_max: f64,
+    }
+
+    let mut snapshots: Vec<BuoySnapshot> = Vec::new();
 
     for (structure, buoy_pos) in &structures {
         let Some(def) = registry.get(&structure.definition_id) else {
@@ -312,17 +783,9 @@ pub fn sensor_buoy_detect_system(
                 continue;
             }
 
-            // Skip if existing knowledge is at least as fresh.
-            if store
-                .get_ship(ship_entity)
-                .is_some_and(|existing| existing.observed_at >= observed_at)
-            {
-                continue;
-            }
-
             let (snapshot_state, last_system) = match state {
-                crate::ship::ShipState::Docked { system } => {
-                    (ShipSnapshotState::Docked, Some(*system))
+                crate::ship::ShipState::InSystem { system } => {
+                    (ShipSnapshotState::InSystem, Some(*system))
                 }
                 crate::ship::ShipState::SubLight { target_system, .. } => {
                     (ShipSnapshotState::InTransit, *target_system)
@@ -341,20 +804,49 @@ pub fn sensor_buoy_detect_system(
                 }
                 // #185: Loitering ship — encode position in snapshot state.
                 crate::ship::ShipState::Loitering { position } => (
-                    ShipSnapshotState::Loitering { position: *position },
+                    ShipSnapshotState::Loitering {
+                        position: *position,
+                    },
                     None,
                 ),
+                // #217: Scouting ship — display like Surveying for sensor observers.
+                crate::ship::ShipState::Scouting { target_system, .. } => {
+                    (ShipSnapshotState::Surveying, Some(*target_system))
+                }
             };
 
-            store.update_ship(ShipSnapshot {
-                entity: ship_entity,
+            snapshots.push(BuoySnapshot {
+                ship_entity,
                 name: ship.name.clone(),
                 design_id: ship.design_id.clone(),
-                last_known_state: snapshot_state,
-                last_known_system: last_system,
+                snapshot_state,
+                last_system,
                 observed_at,
                 hp: hp.hull,
                 hp_max: hp.hull_max,
+            });
+        }
+    }
+
+    // Write snapshots to all empire knowledge stores.
+    for mut store in &mut empire_q {
+        for snap in &snapshots {
+            if store
+                .get_ship(snap.ship_entity)
+                .is_some_and(|existing| existing.observed_at >= snap.observed_at)
+            {
+                continue;
+            }
+            store.update_ship(ShipSnapshot {
+                entity: snap.ship_entity,
+                name: snap.name.clone(),
+                design_id: snap.design_id.clone(),
+                last_known_state: snap.snapshot_state.clone(),
+                last_known_system: snap.last_system,
+                observed_at: snap.observed_at,
+                hp: snap.hp,
+                hp_max: snap.hp_max,
+                source: ObservationSource::Direct,
             });
         }
     }
@@ -404,24 +896,60 @@ pub fn relay_knowledge_propagate_system(
     clock: Res<crate::time_system::GameClock>,
     registry: Res<StructureRegistry>,
     // All relays, paired with their position + structure data.
-    relays: Query<(Entity, &DeepSpaceStructure, &crate::components::Position, &FTLCommRelay)>,
-    // Any relay (incl. un-sending side) — used to look up partner position.
-    relay_positions: Query<&crate::components::Position, With<DeepSpaceStructure>>,
-    // Partner's structure definition for its range.
-    partner_structures: Query<&DeepSpaceStructure>,
+    // #223: Relays gated behind a ConstructionPlatform or a Scrapyard do not
+    // propagate knowledge — they're in a non-operational transitional state.
+    relays: Query<
+        (
+            Entity,
+            &DeepSpaceStructure,
+            &crate::components::Position,
+            &FTLCommRelay,
+        ),
+        (Without<ConstructionPlatform>, Without<Scrapyard>),
+    >,
+    // Any relay (incl. un-sending side) — used to look up partner position
+    // and structure definition. #293: fused to free a system-param slot.
+    partner_q: Query<(&DeepSpaceStructure, &crate::components::Position)>,
     ships: Query<(
         Entity,
         &crate::ship::Ship,
         &crate::ship::ShipState,
         &crate::components::Position,
         &crate::ship::ShipHitpoints,
+        Option<&crate::colony::SlotAssignment>,
     )>,
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
     positions: Query<&crate::components::Position>,
-    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        (Entity, &mut crate::knowledge::KnowledgeStore),
+        With<crate::player::Empire>,
+    >,
     // #145: Forbidden regions that block FTL comm propagation.
     ftl_comm_blocking_regions: Query<&crate::galaxy::ForbiddenRegion>,
+    // #216: Star system data for FTL-relayed SystemKnowledge updates. Mirrors
+    // the queries used by `propagate_knowledge` so the snapshot payload is
+    // identical to the direct-light path.
+    system_q: Query<(
+        Entity,
+        &crate::galaxy::StarSystem,
+        &crate::components::Position,
+        Option<&crate::colony::ResourceStockpile>,
+    )>,
+    colonies: crate::knowledge::ColonySnapshotQuery,
+    planets: Query<&crate::galaxy::Planet>,
+    planet_attrs: Query<(&crate::galaxy::Planet, &crate::galaxy::SystemAttributes)>,
+    hostiles: Query<
+        (
+            &crate::galaxy::AtSystem,
+            &crate::galaxy::HostileStats,
+            Option<&crate::faction::FactionOwner>,
+        ),
+        With<crate::galaxy::Hostile>,
+    >,
+    faction_relations: Res<crate::faction::FactionRelations>,
+    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
+    crate::prof_span!("relay_knowledge_propagate_system");
     // Build region blockers (pairs segment check); only regions carrying the
     // `blocks_ftl_comm` capability matter here.
     let comm_blockers: Vec<crate::galaxy::RegionBlockSnapshot> = ftl_comm_blocking_regions
@@ -429,11 +957,10 @@ pub fn relay_knowledge_propagate_system(
         .filter(|r| r.has_capability("blocks_ftl_comm"))
         .map(crate::galaxy::RegionBlockSnapshot::from_region)
         .collect();
-    use crate::knowledge::{ShipSnapshot, ShipSnapshotState};
+    use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
-    let Ok(mut store) = empire_q.single_mut() else {
-        return;
-    };
+    // TODO(#418): relay knowledge should be scoped per-empire based on
+    // structure ownership. For now, all empires receive relay observations.
     let Some(stationed) = player_q.iter().next() else {
         return;
     };
@@ -448,12 +975,21 @@ pub fn relay_knowledge_propagate_system(
         Some(cap.range)
     };
 
+    // Pre-collect ship snapshots and system knowledge for later writing to all empires.
+    let mut ship_snapshots: Vec<ShipSnapshot> = Vec::new();
+
+    struct SystemKnowledgeEntry {
+        system: Entity,
+        observed_at: i64,
+        received_at: i64,
+        data: crate::knowledge::SystemSnapshot,
+    }
+    let mut system_snapshots: Vec<SystemKnowledgeEntry> = Vec::new();
+
+    // Collect empire entities for per-empire hostile map filtering.
+    let empire_entities: Vec<Entity> = empire_q.iter().map(|(e, _)| e).collect();
+
     for (_source_entity, source_structure, source_pos, relay) in &relays {
-        // Every FTLCommRelay component SENDS from the holder to `paired_with`.
-        // `direction` is informational for UI/future ROE; both variants send.
-        // Strict OneWay semantics are enforced by `pair_relay_command` at
-        // setup time (the receiver has its FTLCommRelay removed), so this
-        // loop needs no special-casing beyond the component's presence.
         let _ = relay.direction;
 
         let Some(source_range) = relay_range_for(source_structure) else {
@@ -461,26 +997,18 @@ pub fn relay_knowledge_propagate_system(
         };
 
         let partner_entity = relay.paired_with;
-        let Ok(partner_structure) = partner_structures.get(partner_entity) else {
-            // Dangling pair — verify_relay_pairings_system will clean up.
-            continue;
-        };
-        let Ok(partner_pos) = relay_positions.get(partner_entity) else {
+        let Ok((partner_structure, partner_pos)) = partner_q.get(partner_entity) else {
             continue;
         };
         let Some(partner_range) = relay_range_for(partner_structure) else {
             continue;
         };
 
-        // Check player-in-partner-range.
         let player_to_partner = crate::physics::distance_ly(player_pos, partner_pos);
         if partner_range > 0.0 && player_to_partner > partner_range {
             continue;
         }
 
-        // #145: If any forbidden region with `blocks_ftl_comm` intersects the
-        // pair segment, skip this pair entirely — knowledge falls back to
-        // light-speed propagation (handled elsewhere, not here).
         let source_arr = source_pos.as_array();
         let partner_arr = partner_pos.as_array();
         if comm_blockers
@@ -491,26 +1019,17 @@ pub fn relay_knowledge_propagate_system(
         }
 
         // For each ship, check it's in the source relay's range and snapshot it.
-        for (ship_entity, ship, state, ship_pos, hp) in &ships {
+        for (ship_entity, ship, state, ship_pos, hp, _slot) in &ships {
             let dist = crate::physics::distance_ly(source_pos, ship_pos);
             if source_range > 0.0 && dist > source_range {
                 continue;
             }
 
-            // FTL speed ~ instant: observed_at = clock.elapsed.
             let observed_at = clock.elapsed;
 
-            // Skip if existing knowledge is at least as fresh.
-            if store
-                .get_ship(ship_entity)
-                .is_some_and(|existing| existing.observed_at >= observed_at)
-            {
-                continue;
-            }
-
             let (snapshot_state, last_system) = match state {
-                crate::ship::ShipState::Docked { system } => {
-                    (ShipSnapshotState::Docked, Some(*system))
+                crate::ship::ShipState::InSystem { system } => {
+                    (ShipSnapshotState::InSystem, Some(*system))
                 }
                 crate::ship::ShipState::SubLight { target_system, .. } => {
                     (ShipSnapshotState::InTransit, *target_system)
@@ -528,12 +1047,17 @@ pub fn relay_knowledge_propagate_system(
                     (ShipSnapshotState::Refitting, Some(*system))
                 }
                 crate::ship::ShipState::Loitering { position } => (
-                    ShipSnapshotState::Loitering { position: *position },
+                    ShipSnapshotState::Loitering {
+                        position: *position,
+                    },
                     None,
                 ),
+                crate::ship::ShipState::Scouting { target_system, .. } => {
+                    (ShipSnapshotState::Surveying, Some(*target_system))
+                }
             };
 
-            store.update_ship(ShipSnapshot {
+            ship_snapshots.push(ShipSnapshot {
                 entity: ship_entity,
                 name: ship.name.clone(),
                 design_id: ship.design_id.clone(),
@@ -542,9 +1066,239 @@ pub fn relay_knowledge_propagate_system(
                 observed_at,
                 hp: hp.hull,
                 hp_max: hp.hull_max,
+                source: ObservationSource::Relay,
+            });
+        }
+
+        // #216: FTL-relayed SystemKnowledge.
+        let observed_at = clock.elapsed;
+        // #293: Build hostile map using the first empire entity for faction
+        // relations filtering. TODO(#418): per-empire hostile maps.
+        let mut hostile_map: std::collections::HashMap<Entity, f64> =
+            std::collections::HashMap::new();
+        if let Some(&first_empire) = empire_entities.first() {
+            for (at_system, stats, owner) in &hostiles {
+                let include = match owner {
+                    Some(o) => faction_relations
+                        .get_or_default(first_empire, o.0)
+                        .can_attack_aggressive(),
+                    None => true,
+                };
+                if include {
+                    *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+                }
+            }
+        }
+
+        for (sys_entity, star, sys_pos, stockpile) in &system_q {
+            let dist = crate::physics::distance_ly(source_pos, sys_pos);
+            if source_range > 0.0 && dist > source_range {
+                continue;
+            }
+
+            let reverse = crate::colony::system_buildings::build_reverse_design_map(&building_registry);
+            let relay_has_port = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
+                slot.is_some()
+                    && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
+                    && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("port"))
+            });
+            let relay_has_shipyard = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
+                slot.is_some()
+                    && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
+                    && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("shipyard"))
+            });
+            let snapshot = crate::knowledge::build_system_snapshot(
+                sys_entity,
+                star,
+                sys_pos,
+                stockpile,
+                relay_has_port,
+                relay_has_shipyard,
+                &colonies,
+                &planets,
+                &planet_attrs,
+                &hostile_map,
+            );
+
+            system_snapshots.push(SystemKnowledgeEntry {
+                system: sys_entity,
+                observed_at,
+                received_at: clock.elapsed,
+                data: snapshot,
             });
         }
     }
+
+    // Write collected snapshots to all empire knowledge stores.
+    for (_empire_entity, mut store) in &mut empire_q {
+        for snap in &ship_snapshots {
+            if store
+                .get_ship(snap.entity)
+                .is_some_and(|existing| existing.observed_at >= snap.observed_at)
+            {
+                continue;
+            }
+            store.update_ship(snap.clone());
+        }
+        for sys_snap in &system_snapshots {
+            if store
+                .get(sys_snap.system)
+                .is_some_and(|existing| existing.observed_at >= sys_snap.observed_at)
+            {
+                continue;
+            }
+            store.update(crate::knowledge::SystemKnowledge {
+                system: sys_snap.system,
+                observed_at: sys_snap.observed_at,
+                received_at: sys_snap.received_at,
+                data: sys_snap.data.clone(),
+                source: ObservationSource::Relay,
+            });
+        }
+    }
+}
+
+/// #223: Validation outcome for a loaded deliverable registry.
+#[derive(Debug, Default, Clone)]
+pub struct DeliverableValidationReport {
+    /// Warnings: conflicts or style issues; do NOT fail loading.
+    pub warnings: Vec<String>,
+    /// Errors: fatal — the offending definition should be rejected.
+    pub errors: Vec<String>,
+}
+
+impl DeliverableValidationReport {
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+/// #223: Run registry-wide validation on the deliverable graph per the 5 rules
+/// from issue #223:
+///
+/// 1. Both-sides conflict warning: target T declares `upgrade_from` AND some X
+///    references T in `upgrade_to[*]` — `upgrade_to` wins, emit a warning.
+/// 2. Cost mismatch warning: the two declarations of the same edge disagree on
+///    `cost` or `build_time` — warn; `upgrade_to` wins.
+/// 3. Dangling reference (target or source id not in registry) — ERROR.
+/// 4. Unreachable node (no shipyard cost AND no inbound edge) — ERROR.
+/// 5. `construction_platform` capability without any outgoing edge (from its
+///    own `upgrade_to` or any other definition's `upgrade_from`) — ERROR.
+///
+/// Also (re)builds `effective_edges` on the registry as a side effect so that
+/// runtime callers can read merged outbound edges from a single table.
+pub fn validate_and_build_edges(registry: &mut DeliverableRegistry) -> DeliverableValidationReport {
+    let mut report = DeliverableValidationReport::default();
+
+    let ids: std::collections::HashSet<String> = registry.definitions.keys().cloned().collect();
+
+    // Rule 3: dangling refs (collected first so rule 2 can skip edges with
+    // missing endpoints without misreporting them as "conflict").
+    for (src_id, def) in &registry.definitions {
+        for edge in &def.upgrade_to {
+            if !ids.contains(&edge.target_id) {
+                report.errors.push(format!(
+                    "deliverable '{src_id}' upgrade_to references unknown target '{}'",
+                    edge.target_id
+                ));
+            }
+        }
+        if let Some(uf) = &def.upgrade_from {
+            if !ids.contains(&uf.target_id) {
+                report.errors.push(format!(
+                    "deliverable '{src_id}' upgrade_from references unknown source '{}'",
+                    uf.target_id
+                ));
+            }
+        }
+    }
+
+    // Rule 1 + 2: conflict detection between upgrade_to and inverse upgrade_from.
+    // For every target T with `upgrade_from` set, look up the claimed source X.
+    // If X also has an `upgrade_to` pointing to T, it's a style conflict; if
+    // the cost or build_time disagree, append a cost-mismatch warning.
+    for (target_id, t_def) in &registry.definitions {
+        let Some(uf) = &t_def.upgrade_from else {
+            continue;
+        };
+        let source_id = &uf.target_id;
+        let Some(s_def) = registry.definitions.get(source_id) else {
+            continue; // rule 3 already reported the dangling source
+        };
+        if let Some(to_edge) = s_def.upgrade_to.iter().find(|e| e.target_id == *target_id) {
+            report.warnings.push(format!(
+                "upgrade edge '{source_id}' -> '{target_id}' declared on BOTH sides \
+                 (upgrade_to and upgrade_from); using upgrade_to values"
+            ));
+            if to_edge.cost.minerals != uf.cost.minerals
+                || to_edge.cost.energy != uf.cost.energy
+                || to_edge.build_time != uf.build_time
+            {
+                report.warnings.push(format!(
+                    "upgrade edge '{source_id}' -> '{target_id}' has mismatched cost/build_time \
+                     between upgrade_to and upgrade_from; upgrade_to wins"
+                ));
+            }
+        }
+    }
+
+    // Rule 4: unreachable nodes.
+    // A deliverable is "reachable" if it has shipyard cost OR any inbound edge
+    // (via someone's upgrade_to, or via its own upgrade_from).
+    let mut inbound: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for def in registry.definitions.values() {
+        for e in &def.upgrade_to {
+            inbound.insert(e.target_id.clone());
+        }
+    }
+    for (id, def) in &registry.definitions {
+        let shipyard_buildable = def.deliverable.is_some();
+        let has_upgrade_from = def.upgrade_from.is_some();
+        let has_upstream = inbound.contains(id);
+        if !shipyard_buildable && !has_upgrade_from && !has_upstream {
+            report.errors.push(format!(
+                "deliverable '{id}' is unreachable: has no shipyard cost and no inbound upgrade edge"
+            ));
+        }
+    }
+
+    // Rule 5: construction_platform capability requires >=1 outgoing edge.
+    // Outgoing = own upgrade_to OR any other def's self-declared upgrade_from
+    // pointing at us.
+    let mut outbound_from: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for def in registry.definitions.values() {
+        if !def.upgrade_to.is_empty() {
+            outbound_from.insert(def.id.clone());
+        }
+    }
+    for def in registry.definitions.values() {
+        if let Some(uf) = &def.upgrade_from {
+            outbound_from.insert(uf.target_id.clone());
+        }
+    }
+    for (id, def) in &registry.definitions {
+        if def.is_construction_platform() && !outbound_from.contains(id) {
+            report.errors.push(format!(
+                "deliverable '{id}' has construction_platform capability but no outgoing \
+                 upgrade edge — it cannot be upgraded to anything"
+            ));
+        }
+    }
+
+    // Build `effective_edges` regardless; callers check `report.is_ok()`.
+    let conflicts = registry.rebuild_effective_edges();
+    for (s, t) in conflicts {
+        // rebuild_effective_edges may also detect conflicts via both-sides
+        // declaration; surface them here only if we haven't already above.
+        let msg = format!(
+            "upgrade edge '{s}' -> '{t}' declared on BOTH sides (upgrade_to and upgrade_from); using upgrade_to values"
+        );
+        if !report.warnings.iter().any(|w| w == &msg) {
+            report.warnings.push(msg);
+        }
+    }
+
+    report
 }
 
 /// Parse structure definitions from Lua accumulators, falling back to defaults.
@@ -553,6 +1307,12 @@ pub fn load_structure_definitions(
     engine: Res<crate::scripting::ScriptEngine>,
     mut registry: ResMut<StructureRegistry>,
 ) {
+    let insert_defaults = |registry: &mut StructureRegistry| {
+        for def in default_structure_definitions() {
+            registry.insert(def);
+        }
+    };
+
     match crate::scripting::structure_api::parse_structure_definitions(engine.lua()) {
         Ok(defs) if !defs.is_empty() => {
             let count = defs.len();
@@ -563,16 +1323,21 @@ pub fn load_structure_definitions(
         }
         Ok(_) => {
             info!("No structure definitions found in scripts; using defaults");
-            for def in default_structure_definitions() {
-                registry.insert(def);
-            }
+            insert_defaults(&mut registry);
         }
         Err(e) => {
             warn!("Failed to parse structure definitions: {e}; using defaults");
-            for def in default_structure_definitions() {
-                registry.insert(def);
-            }
+            insert_defaults(&mut registry);
         }
+    }
+
+    // #223: Validate the loaded graph and (re)build effective_edges.
+    let report = validate_and_build_edges(&mut registry);
+    for w in &report.warnings {
+        warn!("Deliverable registry: {w}");
+    }
+    for e in &report.errors {
+        error!("Deliverable registry: {e}");
     }
 }
 
@@ -629,19 +1394,29 @@ mod tests {
             name: "Advanced Sensor Buoy".to_string(),
             description: "Enhanced sensor buoy.".to_string(),
             max_hp: 40.0,
-            cost: ResourceCost {
-                minerals: Amt::units(100),
-                energy: Amt::units(60),
-            },
-            build_time: 20,
             capabilities: HashMap::from([
-                ("detect_sublight".to_string(), CapabilityParams { range: 5.0 }),
+                (
+                    "detect_sublight".to_string(),
+                    CapabilityParams { range: 5.0 },
+                ),
                 ("detect_ftl".to_string(), CapabilityParams { range: 3.0 }),
             ]),
             energy_drain: Amt::milli(200),
-            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech(
-                "advanced_sensors",
-            ))),
+            prerequisites: Some(Condition::Atom(ConditionAtom::has_tech("advanced_sensors"))),
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(100),
+                    energy: Amt::units(60),
+                },
+                build_time: 20,
+                cargo_size: 1,
+                scrap_refund: 0.5,
+                spawns_as_ship: None,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         });
 
         assert_eq!(registry.definitions.len(), 3);
@@ -656,22 +1431,25 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
 
-        let entity = app.world_mut().spawn((
-            DeepSpaceStructure {
-                definition_id: "sensor_buoy".to_string(),
-                name: "Buoy Alpha".to_string(),
-                owner: Owner::Neutral,
-            },
-            StructureHitpoints {
-                current: 20.0,
-                max: 20.0,
-            },
-            Position {
-                x: 10.0,
-                y: 5.0,
-                z: 0.0,
-            },
-        )).id();
+        let entity = app
+            .world_mut()
+            .spawn((
+                DeepSpaceStructure {
+                    definition_id: "sensor_buoy".to_string(),
+                    name: "Buoy Alpha".to_string(),
+                    owner: Owner::Neutral,
+                },
+                StructureHitpoints {
+                    current: 20.0,
+                    max: 20.0,
+                },
+                Position {
+                    x: 10.0,
+                    y: 5.0,
+                    z: 0.0,
+                },
+            ))
+            .id();
 
         let world = app.world();
         let dss = world.get::<DeepSpaceStructure>(entity).unwrap();
@@ -772,6 +1550,215 @@ mod tests {
         assert!(pair_relay_command(&mut world, a, b, CommDirection::Bidirectional).is_err());
     }
 
+    // --- #223: Validation tests ---
+
+    fn mk_def(id: &str) -> StructureDefinition {
+        StructureDefinition {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            max_hp: 10.0,
+            capabilities: HashMap::new(),
+            energy_drain: Amt::ZERO,
+            prerequisites: None,
+            deliverable: None,
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
+        }
+    }
+
+    fn mk_buildable(id: &str, minerals: u64) -> StructureDefinition {
+        let mut def = mk_def(id);
+        def.deliverable = Some(DeliverableMetadata {
+            cost: ResourceCost {
+                minerals: Amt::units(minerals),
+                energy: Amt::ZERO,
+            },
+            build_time: 10,
+            cargo_size: 1,
+            scrap_refund: 0.5,
+            spawns_as_ship: None,
+        });
+        def
+    }
+
+    fn mk_platform(id: &str) -> StructureDefinition {
+        let mut def = mk_buildable(id, 100);
+        def.capabilities.insert(
+            "construction_platform".to_string(),
+            CapabilityParams::default(),
+        );
+        def
+    }
+
+    #[test]
+    fn test_validate_dangling_target_errors() {
+        let mut reg = DeliverableRegistry::default();
+        let mut src = mk_buildable("kit", 100);
+        src.upgrade_to.push(UpgradeEdge {
+            target_id: "ghost".to_string(),
+            cost: ResourceCost::default(),
+            build_time: 10,
+        });
+        reg.insert(src);
+        let report = validate_and_build_edges(&mut reg);
+        assert!(!report.is_ok());
+        assert!(report.errors.iter().any(|e| e.contains("ghost")));
+    }
+
+    #[test]
+    fn test_validate_unreachable_errors() {
+        let mut reg = DeliverableRegistry::default();
+        // isolated: not buildable, no inbound edge.
+        reg.insert(mk_def("orphan"));
+        let report = validate_and_build_edges(&mut reg);
+        assert!(!report.is_ok());
+        assert!(report.errors.iter().any(|e| e.contains("orphan")));
+    }
+
+    #[test]
+    fn test_validate_construction_platform_without_edges_errors() {
+        let mut reg = DeliverableRegistry::default();
+        reg.insert(mk_platform("platform"));
+        let report = validate_and_build_edges(&mut reg);
+        assert!(!report.is_ok());
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("construction_platform"))
+        );
+    }
+
+    #[test]
+    fn test_validate_upgrade_conflict_warning() {
+        let mut reg = DeliverableRegistry::default();
+        let mut kit = mk_platform("kit");
+        kit.upgrade_to.push(UpgradeEdge {
+            target_id: "active".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(kit);
+
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(active);
+
+        let report = validate_and_build_edges(&mut reg);
+        assert!(report.is_ok());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("declared on BOTH sides"))
+        );
+    }
+
+    #[test]
+    fn test_validate_cost_mismatch_warning() {
+        let mut reg = DeliverableRegistry::default();
+        let mut kit = mk_platform("kit");
+        kit.upgrade_to.push(UpgradeEdge {
+            target_id: "active".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(kit);
+
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(200), // mismatch!
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(active);
+
+        let report = validate_and_build_edges(&mut reg);
+        assert!(report.is_ok());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("mismatched cost/build_time"))
+        );
+    }
+
+    #[test]
+    fn test_effective_edges_upgrade_to_wins_on_conflict() {
+        let mut reg = DeliverableRegistry::default();
+        let mut kit = mk_platform("kit");
+        kit.upgrade_to.push(UpgradeEdge {
+            target_id: "active".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(100),
+                energy: Amt::ZERO,
+            },
+            build_time: 30,
+        });
+        reg.insert(kit);
+
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(999), // loser
+                energy: Amt::ZERO,
+            },
+            build_time: 99,
+        });
+        reg.insert(active);
+
+        let _ = validate_and_build_edges(&mut reg);
+        let edges = reg.outgoing_edges("kit");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target_id, "active");
+        assert_eq!(edges[0].cost.minerals, Amt::units(100));
+        assert_eq!(edges[0].build_time, 30);
+    }
+
+    #[test]
+    fn test_effective_edges_inverse_upgrade_from_merged() {
+        // If no `upgrade_to` declares the edge, the inverse `upgrade_from`
+        // should be promoted into `effective_edges` for routing.
+        let mut reg = DeliverableRegistry::default();
+        reg.insert(mk_platform("kit"));
+        let mut active = mk_def("active");
+        active.upgrade_from = Some(UpgradeEdge {
+            target_id: "kit".to_string(),
+            cost: ResourceCost {
+                minerals: Amt::units(500),
+                energy: Amt::ZERO,
+            },
+            build_time: 42,
+        });
+        reg.insert(active);
+        let _ = validate_and_build_edges(&mut reg);
+        let edges = reg.outgoing_edges("kit");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target_id, "active");
+        assert_eq!(edges[0].cost.minerals, Amt::units(500));
+        assert_eq!(edges[0].build_time, 42);
+    }
+
     #[test]
     fn test_verify_relay_pairings_unpair_on_partner_despawn() {
         use crate::components::Position;
@@ -779,22 +1766,36 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_systems(Update, verify_relay_pairings_system);
 
-        let a = app.world_mut().spawn((
-            DeepSpaceStructure {
-                definition_id: "ftl_comm_relay".into(),
-                name: "A".into(),
-                owner: Owner::Neutral,
-            },
-            Position { x: 0.0, y: 0.0, z: 0.0 },
-        )).id();
-        let b = app.world_mut().spawn((
-            DeepSpaceStructure {
-                definition_id: "ftl_comm_relay".into(),
-                name: "B".into(),
-                owner: Owner::Neutral,
-            },
-            Position { x: 5.0, y: 0.0, z: 0.0 },
-        )).id();
+        let a = app
+            .world_mut()
+            .spawn((
+                DeepSpaceStructure {
+                    definition_id: "ftl_comm_relay".into(),
+                    name: "A".into(),
+                    owner: Owner::Neutral,
+                },
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ))
+            .id();
+        let b = app
+            .world_mut()
+            .spawn((
+                DeepSpaceStructure {
+                    definition_id: "ftl_comm_relay".into(),
+                    name: "B".into(),
+                    owner: Owner::Neutral,
+                },
+                Position {
+                    x: 5.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ))
+            .id();
 
         pair_relay_command(app.world_mut(), a, b, CommDirection::Bidirectional).unwrap();
 

@@ -1,23 +1,148 @@
+use std::borrow::Cow;
+
 use bevy::prelude::*;
+use mlua::prelude::*;
 
 use crate::amount::Amt;
+use crate::components::Position;
+use crate::event_system::{BUILDING_LOST_EVENT, EventContext};
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem};
-use crate::components::Position;
+use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
+use crate::player::{AboardShip, Player, StationedAt};
 use crate::scripting::building_api::BuildingId;
-use crate::ship::{spawn_ship, Owner, Ship};
+use crate::ship::{CargoItem, Owner, Ship, ShipState, spawn_ship};
 use crate::time_system::GameClock;
 
-use super::{
-    Colony, LastProductionTick, ResourceStockpile, SystemBuildings,
-};
+use super::{Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile};
 
-#[derive(Component)]
+// ---------------------------------------------------------------------------
+// BuildingLostCtx — typed EventContext payload (#290)
+// ---------------------------------------------------------------------------
+
+/// Reason a building was lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildingLostCause {
+    Demolished,
+    Conquered,
+    Destroyed,
+}
+
+impl BuildingLostCause {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BuildingLostCause::Demolished => "demolished",
+            BuildingLostCause::Conquered => "conquered",
+            BuildingLostCause::Destroyed => "destroyed",
+        }
+    }
+}
+
+/// Typed [`EventContext`] payload for `macrocosmo:building_lost`.
+///
+/// Carries the building id, slot index, cause, and entity references for
+/// the colony and star system. The enrichment step in
+/// `dispatch_event_handlers` replaces `colony_entity` / `system_entity`
+/// with full Lua views before handlers fire.
+#[derive(Debug, Clone)]
+pub struct BuildingLostCtx {
+    pub date: i64,
+    pub building_id: String,
+    pub slot: usize,
+    pub cause: BuildingLostCause,
+    pub colony_entity: Entity,
+    pub system_entity: Entity,
+}
+
+impl EventContext for BuildingLostCtx {
+    fn event_id(&self) -> &str {
+        BUILDING_LOST_EVENT
+    }
+
+    fn to_lua_table(&self, lua: &Lua) -> LuaResult<LuaTable> {
+        let t = lua.create_table()?;
+        t.set("event_id", self.event_id())?;
+        t.set("date", self.date)?;
+        t.set("building_id", self.building_id.as_str())?;
+        t.set("slot", self.slot)?;
+        t.set("cause", self.cause.as_str())?;
+        t.set("colony_entity", self.colony_entity.to_bits())?;
+        t.set("system_entity", self.system_entity.to_bits())?;
+        Ok(t)
+    }
+
+    fn payload_get(&self, key: &str) -> Option<Cow<'_, str>> {
+        match key {
+            "date" => Some(Cow::Owned(self.date.to_string())),
+            "building_id" => Some(Cow::Borrowed(&self.building_id)),
+            "slot" => Some(Cow::Owned(self.slot.to_string())),
+            "cause" => Some(Cow::Borrowed(self.cause.as_str())),
+            "colony_entity" => Some(Cow::Owned(self.colony_entity.to_bits().to_string())),
+            "system_entity" => Some(Cow::Owned(self.system_entity.to_bits().to_string())),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Component, Default)]
 pub struct BuildQueue {
     pub queue: Vec<BuildOrder>,
+    /// #275: Monotonic counter used to stamp stable `BuildOrder::order_id`
+    /// values. Starts at 1 so that 0 is reserved as a "manufactured / never
+    /// pushed via helper" sentinel for test scaffolding. Wraps on overflow
+    /// — practically unreachable.
+    pub next_order_id: u64,
+}
+
+impl BuildQueue {
+    /// #275: Push a new order, auto-assigning a unique `order_id`. Returns
+    /// the assigned id so the caller can correlate (e.g. dispatch a cancel
+    /// later). Ignores any id pre-set on `order`.
+    pub fn push_order(&mut self, mut order: BuildOrder) -> u64 {
+        if self.next_order_id == 0 {
+            self.next_order_id = 1;
+        }
+        let id = self.next_order_id;
+        self.next_order_id = self.next_order_id.wrapping_add(1);
+        order.order_id = id;
+        self.queue.push(order);
+        id
+    }
+
+    /// #275: Remove the first order matching `order_id`. Returns the
+    /// removed `BuildOrder` if found, or `None` if no match (e.g. the
+    /// order already completed / was cancelled by a racing arrival).
+    pub fn remove_order(&mut self, order_id: u64) -> Option<BuildOrder> {
+        let pos = self.queue.iter().position(|o| o.order_id == order_id)?;
+        Some(self.queue.remove(pos))
+    }
+}
+
+/// #223: What kind of thing a `BuildOrder` builds.
+///
+/// Keeping `Ship` as the default preserves existing call sites (the previous
+/// queue only built ships). `Deliverable` adds the new path used by #223:
+/// completed deliverables are pushed into the system's `DeliverableStockpile`
+/// instead of spawning a `Ship` entity.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum BuildKind {
+    #[default]
+    Ship,
+    Deliverable {
+        cargo_size: u32,
+    },
 }
 
 pub struct BuildOrder {
+    /// #275: Stable id assigned at push time. Used by cancel commands to
+    /// survive queue shifts under light-speed delay (the index at
+    /// send-time may not match the index at arrival). Pushing via
+    /// `BuildQueue::push_order` auto-assigns; manually constructed orders
+    /// (test scaffolding, save-game restores) carry the caller's value.
+    pub order_id: u64,
+    /// #223: What this order builds (Ship or Deliverable). Defaults to Ship
+    /// for back-compat with existing construction sites.
+    pub kind: BuildKind,
     pub design_id: String,
     pub display_name: String,
     pub minerals_cost: Amt,
@@ -38,13 +163,26 @@ impl BuildOrder {
     }
 
     /// Returns the build time in hexadies for a given design_id.
-    pub fn build_time_for(design_id: &str, design_registry: &crate::ship_design::ShipDesignRegistry) -> i64 {
+    pub fn build_time_for(
+        design_id: &str,
+        design_registry: &crate::ship_design::ShipDesignRegistry,
+    ) -> i64 {
         design_registry.build_time(design_id)
     }
 }
 
 // BuildingType enum has been removed. Use BuildingId + BuildingRegistry instead.
 // BuildingId is defined in scripting::building_api.
+
+/// #275: Tag returned by `BuildingQueue::cancel_order` / `SystemBuildingQueue::cancel_order`
+/// identifying which sub-queue the cancelled order lived in. Primarily for log
+/// context; callers rarely branch on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelledOrderKind {
+    Construction,
+    Demolition,
+    Upgrade,
+}
 
 #[derive(Component)]
 pub struct Buildings {
@@ -54,14 +192,22 @@ pub struct Buildings {
 impl Buildings {
     /// Check if any slot contains a building with the given id.
     pub fn has_building(&self, id: &str) -> bool {
-        self.slots.iter().any(|s| s.as_ref().is_some_and(|b| b.0 == id))
+        self.slots
+            .iter()
+            .any(|s| s.as_ref().is_some_and(|b| b.0 == id))
     }
 
     /// Check if any building in slots has the given capability (looked up via BuildingRegistry).
-    pub fn has_capability(&self, capability: &str, registry: &crate::scripting::building_api::BuildingRegistry) -> bool {
+    pub fn has_capability(
+        &self,
+        capability: &str,
+        registry: &crate::scripting::building_api::BuildingRegistry,
+    ) -> bool {
         self.slots.iter().any(|slot| {
             slot.as_ref().is_some_and(|id| {
-                registry.get(id.as_str()).is_some_and(|def| def.capabilities.contains_key(capability))
+                registry
+                    .get(id.as_str())
+                    .is_some_and(|def| def.capabilities.contains_key(capability))
             })
         })
     }
@@ -82,9 +228,16 @@ pub struct BuildingQueue {
     pub queue: Vec<BuildingOrder>,
     pub demolition_queue: Vec<DemolitionOrder>,
     pub upgrade_queue: Vec<UpgradeOrder>,
+    /// #275: Shared monotonic counter for `order_id` across all three
+    /// sub-queues (construction / demolition / upgrade). A single counter
+    /// lets the cancel command carry a single opaque `order_id` without
+    /// the caller having to remember which sub-queue holds it.
+    pub next_order_id: u64,
 }
 
 pub struct BuildingOrder {
+    /// #275: Stable id (see `BuildOrder::order_id`).
+    pub order_id: u64,
     pub building_id: BuildingId,
     pub target_slot: usize,
     pub minerals_remaining: Amt,
@@ -93,6 +246,8 @@ pub struct BuildingOrder {
 }
 
 pub struct DemolitionOrder {
+    /// #275: Stable id (see `BuildOrder::order_id`).
+    pub order_id: u64,
     pub target_slot: usize,
     pub building_id: BuildingId,
     pub time_remaining: i64,
@@ -104,6 +259,8 @@ pub struct DemolitionOrder {
 /// During the upgrade, the original building remains active. On completion,
 /// the slot's building ID is replaced with the target.
 pub struct UpgradeOrder {
+    /// #275: Stable id (see `BuildOrder::order_id`).
+    pub order_id: u64,
     pub slot_index: usize,
     pub target_id: BuildingId,
     pub minerals_remaining: Amt,
@@ -112,6 +269,69 @@ pub struct UpgradeOrder {
 }
 
 impl BuildingQueue {
+    fn allocate_order_id(&mut self) -> u64 {
+        if self.next_order_id == 0 {
+            self.next_order_id = 1;
+        }
+        let id = self.next_order_id;
+        self.next_order_id = self.next_order_id.wrapping_add(1);
+        id
+    }
+
+    /// #275: Push a construction order, auto-assigning `order_id`. Returns
+    /// the assigned id.
+    pub fn push_build_order(&mut self, mut order: BuildingOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.queue.push(order);
+        id
+    }
+
+    /// #275: Push a demolition order, auto-assigning `order_id`.
+    pub fn push_demolition_order(&mut self, mut order: DemolitionOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.demolition_queue.push(order);
+        id
+    }
+
+    /// #275: Push an upgrade order, auto-assigning `order_id`.
+    pub fn push_upgrade_order(&mut self, mut order: UpgradeOrder) -> u64 {
+        let id = self.allocate_order_id();
+        order.order_id = id;
+        self.upgrade_queue.push(order);
+        id
+    }
+
+    /// #275: Find and remove an order across all three sub-queues by
+    /// `order_id`. Returns the sub-queue the order lived in (for caller
+    /// logging) or `None` if no match. Invested resources are NOT
+    /// refunded on construction cancel; demolitions are cancelled before
+    /// they refund (no double-refund risk).
+    pub fn cancel_order(&mut self, order_id: u64) -> Option<CancelledOrderKind> {
+        if let Some(pos) = self.queue.iter().position(|o| o.order_id == order_id) {
+            self.queue.remove(pos);
+            return Some(CancelledOrderKind::Construction);
+        }
+        if let Some(pos) = self
+            .demolition_queue
+            .iter()
+            .position(|o| o.order_id == order_id)
+        {
+            self.demolition_queue.remove(pos);
+            return Some(CancelledOrderKind::Demolition);
+        }
+        if let Some(pos) = self
+            .upgrade_queue
+            .iter()
+            .position(|o| o.order_id == order_id)
+        {
+            self.upgrade_queue.remove(pos);
+            return Some(CancelledOrderKind::Upgrade);
+        }
+        None
+    }
+
     /// Check if a given slot is currently being demolished.
     pub fn is_demolishing(&self, slot: usize) -> bool {
         self.demolition_queue.iter().any(|d| d.target_slot == slot)
@@ -119,7 +339,8 @@ impl BuildingQueue {
 
     /// Get the remaining demolition time for a slot, if any.
     pub fn demolition_time_remaining(&self, slot: usize) -> Option<i64> {
-        self.demolition_queue.iter()
+        self.demolition_queue
+            .iter()
             .find(|d| d.target_slot == slot)
             .map(|d| d.time_remaining)
     }
@@ -136,28 +357,53 @@ impl BuildingQueue {
 }
 
 /// #32: build_time_remaining countdown, #35: shipyard check
+/// #223: Deliverable orders land in the system's DeliverableStockpile rather
+/// than spawning Ship entities.
+#[allow(clippy::too_many_arguments)]
 pub fn tick_build_queue(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
-    mut colonies: Query<(&Colony, &mut BuildQueue)>,
+    mut colonies: Query<(&Colony, &mut BuildQueue, &crate::faction::FactionOwner)>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
+    mut deliverable_stockpiles: Query<&mut DeliverableStockpile, With<StarSystem>>,
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
-    system_buildings: Query<&SystemBuildings>,
+    bq_station_ships: Query<(Entity, &Ship, &ShipState, &super::SlotAssignment)>,
     mut events: MessageWriter<GameEvent>,
-    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    player_q: Query<(&StationedAt, Option<&AboardShip>), With<Player>>,
+    mut fact_sys: FactSysParam,
 ) {
-    let ship_owner = empire_q
-        .single()
-        .map(Owner::Empire)
-        .unwrap_or(Owner::Neutral);
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
+    }
+
+    // #249: Player vantage snapshot (once per tick).
+    let player_info = player_q.iter().next();
+    let player_system = player_info.map(|(s, _)| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| positions.get(s).ok())
+        .map(|p| p.as_array());
+    let player_aboard = player_info.map(|(_, a)| a.is_some()).unwrap_or(false);
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
+
+    // Per-order completion info (#223).
+    enum Completion {
+        Ship {
+            design_id: String,
+            display_name: String,
+        },
+        Deliverable {
+            definition_id: String,
+            display_name: String,
+        },
     }
 
     // Collect build queue processing results
@@ -165,28 +411,38 @@ pub fn tick_build_queue(
         system: Entity,
         minerals_consumed: Amt,
         energy_consumed: Amt,
-        completed_ships: Vec<(String, String)>, // (design_id, display_name)
+        completed: Vec<Completion>,
+        ship_owner: Owner,
     }
 
     let mut results: Vec<BuildResult> = Vec::new();
 
-    for (colony, mut build_queue) in &mut colonies {
-        let Some(sys) = colony.system(&planets) else { continue };
+    for (colony, mut build_queue, faction_owner) in &mut colonies {
+        let Some(sys) = colony.system(&planets) else {
+            continue;
+        };
 
-        // #35: Skip ship construction if system has no shipyard capability
-        let has_shipyard = system_buildings.get(sys).is_ok_and(|sb| sb.has_shipyard(&building_registry));
+        // #35: Skip ship construction if system has no shipyard capability.
+        // Deliverables also require a shipyard.
+        let has_shipyard = super::system_buildings::system_has_shipyard(
+            sys,
+            &bq_station_ships,
+            &building_registry,
+        );
         if !build_queue.queue.is_empty() && !has_shipyard {
-            warn!("System lacks a Shipyard; skipping ship construction");
+            warn!("System lacks a Shipyard; skipping construction");
             continue;
         }
 
         // Get current stockpile amounts for this system
-        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let Ok(stockpile) = stockpiles.get(sys) else {
+            continue;
+        };
         let mut available_minerals = stockpile.minerals;
         let mut available_energy = stockpile.energy;
         let mut total_minerals_consumed = Amt::ZERO;
         let mut total_energy_consumed = Amt::ZERO;
-        let mut completed_ships = Vec::new();
+        let mut completed: Vec<Completion> = Vec::new();
 
         for _ in 0..delta {
             if build_queue.queue.is_empty() {
@@ -210,8 +466,19 @@ pub fn tick_build_queue(
             order.build_time_remaining -= 1;
 
             if build_queue.queue[0].is_complete() {
-                let completed = build_queue.queue.remove(0);
-                completed_ships.push((completed.design_id, completed.display_name));
+                let completed_order = build_queue.queue.remove(0);
+                match completed_order.kind {
+                    BuildKind::Ship => completed.push(Completion::Ship {
+                        design_id: completed_order.design_id,
+                        display_name: completed_order.display_name,
+                    }),
+                    BuildKind::Deliverable { .. } => {
+                        completed.push(Completion::Deliverable {
+                            definition_id: completed_order.design_id,
+                            display_name: completed_order.display_name,
+                        });
+                    }
+                }
             }
         }
 
@@ -219,35 +486,103 @@ pub fn tick_build_queue(
             system: sys,
             minerals_consumed: total_minerals_consumed,
             energy_consumed: total_energy_consumed,
-            completed_ships,
+            completed,
+            ship_owner: Owner::Empire(faction_owner.0),
         });
     }
 
-    // Apply stockpile changes and spawn ships
+    // Apply stockpile changes and spawn ships / enqueue deliverables
     for result in results {
         if let Ok(mut stockpile) = stockpiles.get_mut(result.system) {
             stockpile.minerals = stockpile.minerals.sub(result.minerals_consumed);
             stockpile.energy = stockpile.energy.sub(result.energy_consumed);
         }
-        for (design_id, display_name) in result.completed_ships {
-            if let Ok(pos) = positions.get(result.system) {
-                spawn_ship(
-                    &mut commands,
-                    &design_id,
-                    display_name.clone(),
-                    result.system,
-                    *pos,
-                    ship_owner,
-                    &design_registry,
-                );
-                let sys_name = stars.get(result.system).map(|s| s.name.clone()).unwrap_or_default();
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ShipBuilt,
-                    description: format!("{} built at {}", display_name, sys_name),
-                    related_system: Some(result.system),
-                });
-                info!("Ship built and launched: {}", display_name);
+        for c in result.completed {
+            let sys_name = stars
+                .get(result.system)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            match c {
+                Completion::Ship {
+                    design_id,
+                    display_name,
+                } => {
+                    if let Ok(pos) = positions.get(result.system) {
+                        spawn_ship(
+                            &mut commands,
+                            &design_id,
+                            display_name.clone(),
+                            result.system,
+                            *pos,
+                            result.ship_owner,
+                            &design_registry,
+                        );
+                        // #249: Dual-write ShipBuilt — routine, low-priority.
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!("{} built at {}", display_name, sys_name);
+                        events.write(GameEvent {
+                            id: event_id,
+                            timestamp: clock.elapsed,
+                            kind: GameEventKind::ShipBuilt,
+                            description: desc.clone(),
+                            related_system: Some(result.system),
+                        });
+                        let origin_pos: Option<[f64; 3]> =
+                            positions.get(result.system).ok().map(|p| p.as_array());
+                        if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                            let fact = KnowledgeFact::StructureBuilt {
+                                event_id: Some(event_id),
+                                system: Some(result.system),
+                                kind: "ship".into(),
+                                name: display_name.clone(),
+                                destroyed: false,
+                                detail: desc,
+                            };
+                            fact_sys.record(fact, op, clock.elapsed, &v);
+                        }
+                        info!("Ship built and launched: {}", display_name);
+                    }
+                }
+                Completion::Deliverable {
+                    definition_id,
+                    display_name,
+                } => {
+                    // #223: Push the new CargoItem into the system's DeliverableStockpile.
+                    // If the component doesn't yet exist, add one via commands.
+                    let item = CargoItem::Deliverable {
+                        definition_id: definition_id.clone(),
+                    };
+                    if let Ok(mut dstock) = deliverable_stockpiles.get_mut(result.system) {
+                        dstock.push(item);
+                    } else {
+                        commands
+                            .entity(result.system)
+                            .insert(DeliverableStockpile { items: vec![item] });
+                    }
+                    let event_id = fact_sys.allocate_event_id();
+                    let desc = format!("Deliverable '{}' produced at {}", display_name, sys_name);
+                    events.write(GameEvent {
+                        id: event_id,
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::ShipBuilt,
+                        description: desc.clone(),
+                        related_system: Some(result.system),
+                    });
+                    let origin_pos: Option<[f64; 3]> =
+                        positions.get(result.system).ok().map(|p| p.as_array());
+                    if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                        let fact = KnowledgeFact::StructureBuilt {
+                            event_id: Some(event_id),
+                            system: Some(result.system),
+                            kind: "deliverable".into(),
+                            name: display_name.clone(),
+                            destroyed: false,
+                            detail: desc,
+                        };
+                        fact_sys.record(fact, op, clock.elapsed, &v);
+                    }
+                    info!("Deliverable produced: {} @ {}", display_name, sys_name);
+                }
             }
         }
     }
@@ -260,6 +595,7 @@ pub fn tick_building_queue(
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     planets: Query<&Planet>,
     mut event_system: ResMut<crate::event_system::EventSystem>,
+    building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -273,13 +609,18 @@ pub fn tick_building_queue(
         minerals_refunded: Amt,
         energy_refunded: Amt,
     }
-    let mut system_deltas: std::collections::HashMap<Entity, SystemDelta> = std::collections::HashMap::new();
+    let mut system_deltas: std::collections::HashMap<Entity, SystemDelta> =
+        std::collections::HashMap::new();
 
     for (colony_entity, colony, mut bq, mut buildings) in &mut query {
-        let Some(sys) = colony.system(&planets) else { continue };
+        let Some(sys) = colony.system(&planets) else {
+            continue;
+        };
 
         // Get available resources from system stockpile
-        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let Ok(stockpile) = stockpiles.get(sys) else {
+            continue;
+        };
         let mut available_minerals = stockpile.minerals;
         let mut available_energy = stockpile.energy;
 
@@ -291,8 +632,12 @@ pub fn tick_building_queue(
 
         // Also account for deltas already accumulated for this system by previous colonies
         if let Some(existing) = system_deltas.get(&sys) {
-            available_minerals = available_minerals.sub(existing.minerals_consumed).add(existing.minerals_refunded);
-            available_energy = available_energy.sub(existing.energy_consumed).add(existing.energy_refunded);
+            available_minerals = available_minerals
+                .sub(existing.minerals_consumed)
+                .add(existing.minerals_refunded);
+            available_energy = available_energy
+                .sub(existing.energy_consumed)
+                .add(existing.energy_refunded);
         }
 
         // --- Process construction queue ---
@@ -312,7 +657,19 @@ pub fn tick_building_queue(
             available_energy = available_energy.sub(energy_transfer);
             energy_consumed = energy_consumed.add(energy_transfer);
 
-            order.build_time_remaining -= 1;
+            // #232: Only advance the countdown when resources actually moved
+            // this tick, or when no resources are needed anymore. Otherwise
+            // a starved build would have its timer drain past zero while
+            // the completion check (which also requires 0 remaining cost)
+            // keeps blocking completion.
+            let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+            let no_more_needed =
+                order.minerals_remaining == Amt::ZERO && order.energy_remaining == Amt::ZERO;
+            super::build_tick::maybe_tick_build_time(
+                &mut order.build_time_remaining,
+                transferred,
+                no_more_needed,
+            );
 
             if bq.queue[0].minerals_remaining == Amt::ZERO
                 && bq.queue[0].energy_remaining == Amt::ZERO
@@ -324,7 +681,27 @@ pub fn tick_building_queue(
                         "Building '{}' completed in slot {}",
                         completed.building_id, completed.target_slot
                     );
+                    let completed_id = completed.building_id.0.clone();
+                    let completed_slot = completed.target_slot;
                     buildings.slots[completed.target_slot] = Some(completed.building_id);
+                    // #281: Fire macrocosmo:building_built for planet-level
+                    // construction. Payload carries cause/building_id/system/
+                    // colony/slot so Lua filter handlers (incl. definition
+                    // `on_built` hooks) can react to the specific building.
+                    let mut payload = std::collections::HashMap::new();
+                    payload.insert("cause".to_string(), "construction".to_string());
+                    payload.insert("building_id".to_string(), completed_id);
+                    payload.insert("slot".to_string(), completed_slot.to_string());
+                    payload.insert("system".to_string(), sys.to_bits().to_string());
+                    payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
+                    event_system.fire_event_with_payload(
+                        Some(colony_entity),
+                        clock.elapsed,
+                        Box::new(crate::event_system::LuaDefinedEventContext::new(
+                            crate::event_system::BUILDING_BUILT_EVENT,
+                            payload,
+                        )),
+                    );
                 } else {
                     warn!(
                         "Building '{}' completed but target slot {} is out of range (max {})",
@@ -345,7 +722,11 @@ pub fn tick_building_queue(
             }
         }
         for slot_idx in completed_demolitions {
-            if let Some(pos) = bq.demolition_queue.iter().position(|d| d.target_slot == slot_idx) {
+            if let Some(pos) = bq
+                .demolition_queue
+                .iter()
+                .position(|d| d.target_slot == slot_idx)
+            {
                 let completed = bq.demolition_queue.remove(pos);
                 if slot_idx < buildings.slots.len() {
                     let building_name = buildings.slots[slot_idx]
@@ -364,15 +745,17 @@ pub fn tick_building_queue(
                         Some(colony_entity),
                         clock.elapsed,
                     );
-                    let mut payload = std::collections::HashMap::new();
-                    payload.insert("cause".to_string(), "demolished".to_string());
-                    payload.insert("building_id".to_string(), building_name);
-                    payload.insert("slot".to_string(), slot_idx.to_string());
                     event_system.fire_event_with_payload(
-                        "macrocosmo:building_lost",
                         Some(colony_entity),
                         clock.elapsed,
-                        payload,
+                        Box::new(BuildingLostCtx {
+                            date: clock.elapsed,
+                            building_id: building_name,
+                            slot: slot_idx,
+                            cause: BuildingLostCause::Demolished,
+                            colony_entity,
+                            system_entity: sys,
+                        }),
                     );
                 }
             }
@@ -392,7 +775,16 @@ pub fn tick_building_queue(
                 available_energy = available_energy.sub(energy_transfer);
                 energy_consumed = energy_consumed.add(energy_transfer);
 
-                upgrade.build_time_remaining -= 1;
+                // #232: See construction-queue branch above — only tick the
+                // timer when progress is happening or no progress is needed.
+                let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
+                    && upgrade.energy_remaining == Amt::ZERO;
+                super::build_tick::maybe_tick_build_time(
+                    &mut upgrade.build_time_remaining,
+                    transferred,
+                    no_more_needed,
+                );
 
                 if upgrade.minerals_remaining == Amt::ZERO
                     && upgrade.energy_remaining == Amt::ZERO
@@ -416,11 +808,37 @@ pub fn tick_building_queue(
                     "Building upgrade completed: {} -> {} in slot {}",
                     old_name, completed.target_id, completed.slot_index
                 );
-                event_system.fire_event(
-                    "building_upgraded",
+                event_system.fire_event("building_upgraded", Some(colony_entity), clock.elapsed);
+                // #281: Fire macrocosmo:building_built with cause="upgrade" so
+                // Lua definition `on_upgraded` hooks (and external filters)
+                // see the completion alongside the legacy
+                // `building_upgraded` event.
+                let mut payload = std::collections::HashMap::new();
+                payload.insert("cause".to_string(), "upgrade".to_string());
+                payload.insert("building_id".to_string(), completed.target_id.0.clone());
+                payload.insert("previous_id".to_string(), old_name);
+                payload.insert("slot".to_string(), completed.slot_index.to_string());
+                payload.insert("system".to_string(), sys.to_bits().to_string());
+                payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
+                event_system.fire_event_with_payload(
                     Some(colony_entity),
                     clock.elapsed,
+                    Box::new(crate::event_system::LuaDefinedEventContext::new(
+                        crate::event_system::BUILDING_BUILT_EVENT,
+                        payload,
+                    )),
                 );
+                // #280: If the upgraded building has colony_hub capability,
+                // expand the colony's slot count to match fixed_slots.
+                if let Some(new_def) = building_registry.get(completed.target_id.as_str()) {
+                    if let Some(hub_cap) = new_def.capabilities.get("colony_hub") {
+                        let fixed = hub_cap.get_or("fixed_slots", 0.0) as usize;
+                        if fixed > buildings.slots.len() {
+                            buildings.slots.resize(fixed, None);
+                            info!("Colony hub upgrade expanded slots to {}", fixed);
+                        }
+                    }
+                }
             }
         }
 
@@ -439,8 +857,14 @@ pub fn tick_building_queue(
     // Apply all stockpile changes
     for (sys, delta) in system_deltas {
         if let Ok(mut stockpile) = stockpiles.get_mut(sys) {
-            stockpile.minerals = stockpile.minerals.sub(delta.minerals_consumed).add(delta.minerals_refunded);
-            stockpile.energy = stockpile.energy.sub(delta.energy_consumed).add(delta.energy_refunded);
+            stockpile.minerals = stockpile
+                .minerals
+                .sub(delta.minerals_consumed)
+                .add(delta.minerals_refunded);
+            stockpile.energy = stockpile
+                .energy
+                .sub(delta.energy_consumed)
+                .add(delta.energy_refunded);
         }
     }
 }
@@ -468,6 +892,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 10.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         registry.insert(ShipDesignDefinition {
             id: "colony_ship_mk1".to_string(),
@@ -485,6 +910,7 @@ mod tests {
             sublight_speed: 0.5,
             ftl_range: 15.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         registry.insert(ShipDesignDefinition {
             id: "courier_mk1".to_string(),
@@ -502,13 +928,21 @@ mod tests {
             sublight_speed: 0.80,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         registry
     }
 
-    fn make_order(minerals_cost: Amt, minerals_invested: Amt, energy_cost: Amt, energy_invested: Amt) -> BuildOrder {
+    fn make_order(
+        minerals_cost: Amt,
+        minerals_invested: Amt,
+        energy_cost: Amt,
+        energy_invested: Amt,
+    ) -> BuildOrder {
         let build_time = 60;
         BuildOrder {
+            order_id: 0,
+            kind: BuildKind::default(),
             design_id: "explorer_mk1".to_string(),
             display_name: "Explorer".to_string(),
             minerals_cost,
@@ -522,25 +956,45 @@ mod tests {
 
     #[test]
     fn build_order_complete_when_both_met() {
-        let order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(50));
+        let order = make_order(
+            Amt::units(100),
+            Amt::units(100),
+            Amt::units(50),
+            Amt::units(50),
+        );
         assert!(order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_minerals_short() {
-        let order = make_order(Amt::units(100), Amt::units(80), Amt::units(50), Amt::units(50));
+        let order = make_order(
+            Amt::units(100),
+            Amt::units(80),
+            Amt::units(50),
+            Amt::units(50),
+        );
         assert!(!order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_energy_short() {
-        let order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(30));
+        let order = make_order(
+            Amt::units(100),
+            Amt::units(100),
+            Amt::units(50),
+            Amt::units(30),
+        );
         assert!(!order.is_complete());
     }
 
     #[test]
     fn build_order_incomplete_time_remaining() {
-        let mut order = make_order(Amt::units(100), Amt::units(100), Amt::units(50), Amt::units(50));
+        let mut order = make_order(
+            Amt::units(100),
+            Amt::units(100),
+            Amt::units(50),
+            Amt::units(50),
+        );
         order.build_time_remaining = 5;
         assert!(!order.is_complete());
     }
@@ -574,7 +1028,11 @@ mod tests {
     #[test]
     fn has_shipyard_true() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("shipyard")),
+                None,
+            ],
         };
         assert!(buildings.has_shipyard());
     }
@@ -582,24 +1040,40 @@ mod tests {
     #[test]
     fn has_shipyard_false() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("power_plant")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("power_plant")),
+                None,
+            ],
         };
         assert!(!buildings.has_shipyard());
     }
 
     #[test]
     fn production_focus_labels() {
-        assert_eq!(super::super::ProductionFocus::balanced().label(), "Balanced");
-        assert_eq!(super::super::ProductionFocus::minerals().label(), "Minerals");
+        assert_eq!(
+            super::super::ProductionFocus::balanced().label(),
+            "Balanced"
+        );
+        assert_eq!(
+            super::super::ProductionFocus::minerals().label(),
+            "Minerals"
+        );
         assert_eq!(super::super::ProductionFocus::energy().label(), "Energy");
-        assert_eq!(super::super::ProductionFocus::research().label(), "Research");
+        assert_eq!(
+            super::super::ProductionFocus::research().label(),
+            "Research"
+        );
     }
 
     #[test]
     fn build_order_build_time_for() {
         let registry = test_design_registry();
         assert_eq!(BuildOrder::build_time_for("explorer_mk1", &registry), 60);
-        assert_eq!(BuildOrder::build_time_for("colony_ship_mk1", &registry), 120);
+        assert_eq!(
+            BuildOrder::build_time_for("colony_ship_mk1", &registry),
+            120
+        );
         assert_eq!(BuildOrder::build_time_for("courier_mk1", &registry), 30);
         assert_eq!(BuildOrder::build_time_for("unknown", &registry), 60);
     }
@@ -609,7 +1083,11 @@ mod tests {
     #[test]
     fn has_port_true() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("port")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("port")),
+                None,
+            ],
         };
         assert!(buildings.has_port());
     }
@@ -617,7 +1095,11 @@ mod tests {
     #[test]
     fn has_port_false() {
         let buildings = Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("shipyard")),
+                None,
+            ],
         };
         assert!(!buildings.has_port());
     }
@@ -627,6 +1109,7 @@ mod tests {
         let bq = BuildingQueue {
             queue: Vec::new(),
             demolition_queue: vec![DemolitionOrder {
+                order_id: 0,
                 target_slot: 2,
                 building_id: BuildingId::new("mine"),
                 time_remaining: 5,
@@ -634,10 +1117,83 @@ mod tests {
                 energy_refund: Amt::ZERO,
             }],
             upgrade_queue: Vec::new(),
+            next_order_id: 0,
         };
         assert!(bq.is_demolishing(2));
         assert!(!bq.is_demolishing(0));
         assert_eq!(bq.demolition_time_remaining(2), Some(5));
         assert_eq!(bq.demolition_time_remaining(0), None);
+    }
+
+    // ========================================================================
+    // #290: BuildingLostCtx unit tests
+    // ========================================================================
+
+    #[test]
+    fn building_lost_ctx_event_id() {
+        let ctx = BuildingLostCtx {
+            date: 10,
+            building_id: "mine".to_string(),
+            slot: 0,
+            cause: BuildingLostCause::Demolished,
+            colony_entity: Entity::from_raw_u32(1).unwrap(),
+            system_entity: Entity::from_raw_u32(2).unwrap(),
+        };
+        assert_eq!(ctx.event_id(), crate::event_system::BUILDING_LOST_EVENT);
+    }
+
+    #[test]
+    fn building_lost_ctx_payload_get() {
+        let ctx = BuildingLostCtx {
+            date: 42,
+            building_id: "power_plant".to_string(),
+            slot: 3,
+            cause: BuildingLostCause::Conquered,
+            colony_entity: Entity::from_raw_u32(5).unwrap(),
+            system_entity: Entity::from_raw_u32(10).unwrap(),
+        };
+        assert_eq!(ctx.payload_get("date").as_deref(), Some("42"));
+        assert_eq!(
+            ctx.payload_get("building_id").as_deref(),
+            Some("power_plant")
+        );
+        assert_eq!(ctx.payload_get("slot").as_deref(), Some("3"));
+        assert_eq!(ctx.payload_get("cause").as_deref(), Some("conquered"));
+        assert!(ctx.payload_get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn building_lost_ctx_to_lua_table_roundtrip() {
+        let lua = mlua::Lua::new();
+        let ctx = BuildingLostCtx {
+            date: 100,
+            building_id: "farm".to_string(),
+            slot: 1,
+            cause: BuildingLostCause::Destroyed,
+            colony_entity: Entity::from_raw_u32(7).unwrap(),
+            system_entity: Entity::from_raw_u32(8).unwrap(),
+        };
+        let tbl = ctx.to_lua_table(&lua).unwrap();
+        let event_id: String = tbl.get("event_id").unwrap();
+        assert_eq!(event_id, crate::event_system::BUILDING_LOST_EVENT);
+        let date: i64 = tbl.get("date").unwrap();
+        assert_eq!(date, 100);
+        let building_id: String = tbl.get("building_id").unwrap();
+        assert_eq!(building_id, "farm");
+        let slot: usize = tbl.get("slot").unwrap();
+        assert_eq!(slot, 1);
+        let cause: String = tbl.get("cause").unwrap();
+        assert_eq!(cause, "destroyed");
+        let colony_bits: u64 = tbl.get("colony_entity").unwrap();
+        assert_eq!(colony_bits, Entity::from_raw_u32(7).unwrap().to_bits());
+        let system_bits: u64 = tbl.get("system_entity").unwrap();
+        assert_eq!(system_bits, Entity::from_raw_u32(8).unwrap().to_bits());
+    }
+
+    #[test]
+    fn building_lost_cause_as_str() {
+        assert_eq!(BuildingLostCause::Demolished.as_str(), "demolished");
+        assert_eq!(BuildingLostCause::Conquered.as_str(), "conquered");
+        assert_eq!(BuildingLostCause::Destroyed.as_str(), "destroyed");
     }
 }

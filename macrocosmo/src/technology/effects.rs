@@ -3,17 +3,47 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use mlua::Lua;
 
+use crate::amount::SignedAmt;
 use crate::condition::ScopedFlags;
 use crate::effect::DescriptiveEffect;
-use crate::modifier::Modifier;
-use crate::amount::SignedAmt;
-use crate::player::PlayerEmpire;
-use crate::scripting::effect_scope::{collect_effects, EffectScope};
+use crate::modifier::{Modifier, ParsedModifier};
+use crate::player::Empire;
 use crate::scripting::ScriptEngine;
+use crate::scripting::effect_scope::{EffectScope, collect_effects};
 use crate::technology::tree::TechId;
-use crate::technology::{GameBalance, GameFlags, GlobalParams};
+use crate::technology::{EmpireModifiers, GameBalance, GameFlags, GlobalParams};
 
 use super::research::RecentlyResearched;
+
+/// #245: Queue of tech-sourced modifiers whose `target` refers to a colony
+/// aggregator (`colony.*_per_hexadies`), a job slot (`colony.<job>_slot`), or
+/// a per-job rate bucket (`job:<id>::...`). `apply_tech_effects` appends one
+/// entry per matching `DescriptiveEffect::PushModifier` encountered during a
+/// tech's `on_researched` callback; `sync_tech_colony_modifiers` then
+/// broadcasts those modifiers into every colony every tick.
+///
+/// The append-only semantics make late-spawning colonies idempotently pick
+/// up already-researched tech effects on their first tick.
+#[derive(Component, Default, Debug, Clone)]
+pub struct PendingColonyTechModifiers {
+    pub entries: Vec<(TechId, ParsedModifier)>,
+}
+
+impl PendingColonyTechModifiers {
+    pub fn push(&mut self, tech_id: TechId, pm: ParsedModifier) {
+        // Replace any existing entry with the same (tech_id, target) so that
+        // repeated research (or preview drains) remain idempotent.
+        if let Some(existing) = self
+            .entries
+            .iter_mut()
+            .find(|(t, m)| t == &tech_id && m.target == pm.target)
+        {
+            existing.1 = pm;
+        } else {
+            self.entries.push((tech_id, pm));
+        }
+    }
+}
 
 /// Stores the effects applied by each researched technology, for UI display.
 #[derive(Resource, Default)]
@@ -88,10 +118,7 @@ pub fn build_tech_effects_preview(
         let result = match func.call::<mlua::Value>(scope.clone()) {
             Ok(v) => v,
             Err(e) => {
-                debug!(
-                    "preview: on_researched for tech {} failed: {e}",
-                    tech_id.0
-                );
+                debug!("preview: on_researched for tech {} failed: {e}", tech_id.0);
                 continue;
             }
         };
@@ -105,12 +132,13 @@ pub fn build_tech_effects_preview(
                 continue;
             }
         };
-        // Drain side-effect tables that the callback may have populated, so
-        // they don't leak into real research later. (Real research re-runs
-        // the callback through `apply_tech_effects`, which both collects and
-        // applies; the preview pass must leave game state untouched.)
-        let _ = drain_pending_global_mods(lua);
-        let _ = crate::scripting::lifecycle::drain_pending_flags(lua);
+        // #332-B3: the legacy `_pending_*` queues used to be populated by
+        // the deprecated global `modify_global(...)` / `set_flag(name)`
+        // helpers. The tech `on_researched` callback tree now only emits
+        // `EffectScope` descriptors (preview-safe by construction — they
+        // are collected, not applied), so no side-effect drain is needed.
+        // The global helpers are removed in B4; leaving the drain here
+        // would be defensive noise that mistracks the invariant.
 
         if !effects.is_empty() {
             preview.effects.insert(tech_id, effects);
@@ -123,51 +151,11 @@ pub fn build_tech_effects_preview(
     );
 }
 
-/// Drain `_pending_global_mods` from Lua and return (param_name, value) pairs.
-pub fn drain_pending_global_mods(lua: &Lua) -> Vec<(String, f64)> {
-    let Ok(mods) = lua.globals().get::<mlua::Table>("_pending_global_mods") else {
-        return Vec::new();
-    };
-    let Ok(len) = mods.len() else {
-        return Vec::new();
-    };
-    if len == 0 {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    for i in 1..=len {
-        if let Ok(entry) = mods.get::<mlua::Table>(i) {
-            if let (Ok(param), Ok(value)) = (
-                entry.get::<String>("param"),
-                entry.get::<f64>("value"),
-            ) {
-                result.push((param, value));
-            }
-        }
-    }
-
-    // Clear the table
-    if let Ok(new_table) = lua.create_table() {
-        let _ = lua.globals().set("_pending_global_mods", new_table);
-    }
-
-    result
-}
-
-/// Apply a global param modification to GlobalParams.
-fn apply_global_mod(params: &mut GlobalParams, param_name: &str, value: f64) {
-    match param_name {
-        "sublight_speed_bonus" => params.sublight_speed_bonus += value,
-        "ftl_speed_multiplier" => params.ftl_speed_multiplier += value,
-        "ftl_range_bonus" => params.ftl_range_bonus += value,
-        "survey_range_bonus" => params.survey_range_bonus += value,
-        "build_speed_multiplier" => params.build_speed_multiplier *= 1.0 + value,
-        _ => {
-            warn!("Unknown global param: {param_name}");
-        }
-    }
-}
+// #332-B4: removed `drain_pending_global_mods` and `apply_global_mod`.
+// The legacy `modify_global(param, value)` global helper that
+// populated `_pending_global_mods` is retired in favour of the
+// gamestate setter path and `EffectScope` descriptors; there are no
+// remaining production callers.
 
 /// System that executes `on_researched` Lua callbacks for recently completed techs.
 ///
@@ -188,8 +176,11 @@ pub fn apply_tech_effects(
             &mut GameFlags,
             &mut ScopedFlags,
             &mut GlobalParams,
+            &mut EmpireModifiers,
+            Option<&mut PendingColonyTechModifiers>,
+            Option<&mut crate::empire::CommsParams>,
         ),
-        With<PlayerEmpire>,
+        With<Empire>,
     >,
     mut balance: ResMut<GameBalance>,
     mut effects_log: ResMut<TechEffectsLog>,
@@ -198,98 +189,124 @@ pub fn apply_tech_effects(
         return;
     };
 
-    let Ok((recently, mut game_flags, mut scoped_flags, mut global_params)) =
-        empire_q.single_mut()
-    else {
-        return;
-    };
+    for (
+        recently,
+        mut game_flags,
+        mut scoped_flags,
+        mut global_params,
+        mut empire_modifiers,
+        mut pending_colony_mods,
+        mut comms_params,
+    ) in &mut empire_q
+    {
+        // Fallback storage if the empire entity lacks `PendingColonyTechModifiers`
+        // (e.g. legacy test fixtures). In that case colony-targeted modifiers have
+        // no one to broadcast them, so we drop them with a warning and the
+        // subsequent routing still logs its own diagnostic.
+        let mut scratch_pending = PendingColonyTechModifiers::default();
+        let pending_ref: &mut PendingColonyTechModifiers = match &mut pending_colony_mods {
+            Some(p) => &mut *p,
+            None => &mut scratch_pending,
+        };
+        // #233: Same fallback for CommsParams. Legacy empire entities without the
+        // component get a scratch bucket; the field values still "apply" but have
+        // no runtime effect, preserving forward-compat for old fixtures.
+        let mut scratch_comms = crate::empire::CommsParams::default();
+        let comms_ref: &mut crate::empire::CommsParams = match &mut comms_params {
+            Some(c) => &mut *c,
+            None => &mut scratch_comms,
+        };
 
-    if recently.techs.is_empty() {
-        return;
-    }
+        if recently.techs.is_empty() {
+            continue;
+        }
 
-    let lua = engine.lua();
+        let lua = engine.lua();
 
-    // Get the _tech_definitions table
-    let Ok(tech_defs) = lua.globals().get::<mlua::Table>("_tech_definitions") else {
-        warn!("_tech_definitions table not found in Lua globals");
-        return;
-    };
-
-    for tech_id in &recently.techs {
-        // Find this tech's definition in _tech_definitions
-        let on_researched_fn = find_on_researched(&tech_defs, &tech_id.0);
-        let Some(func) = on_researched_fn else {
-            debug!("No on_researched callback for tech {}", tech_id.0);
+        // Get the _tech_definitions table
+        let Ok(tech_defs) = lua.globals().get::<mlua::Table>("_tech_definitions") else {
+            warn!("_tech_definitions table not found in Lua globals");
             continue;
         };
 
-        // Create EffectScope and call the callback
-        let scope = EffectScope::new();
-        let result = func.call::<mlua::Value>(scope.clone());
+        for tech_id in &recently.techs {
+            // Find this tech's definition in _tech_definitions
+            let on_researched_fn = find_on_researched(&tech_defs, &tech_id.0);
+            let Some(func) = on_researched_fn else {
+                debug!("No on_researched callback for tech {}", tech_id.0);
+                continue;
+            };
 
-        let effects = match result {
-            Ok(return_value) => match collect_effects(&scope, return_value) {
-                Ok(effects) => effects,
+            // Create EffectScope and call the callback
+            let scope = EffectScope::new();
+            let result = func.call::<mlua::Value>(scope.clone());
+
+            let effects = match result {
+                Ok(return_value) => match collect_effects(&scope, return_value) {
+                    Ok(effects) => effects,
+                    Err(e) => {
+                        warn!("Failed to collect effects for tech {}: {e}", tech_id.0);
+                        continue;
+                    }
+                },
                 Err(e) => {
-                    warn!("Failed to collect effects for tech {}: {e}", tech_id.0);
+                    warn!("on_researched callback failed for tech {}: {e}", tech_id.0);
                     continue;
                 }
-            },
-            Err(e) => {
-                warn!("on_researched callback failed for tech {}: {e}", tech_id.0);
+            };
+
+            if effects.is_empty() {
                 continue;
             }
-        };
 
-        if effects.is_empty() {
-            continue;
+            // Apply each effect
+            for effect in &effects {
+                apply_effect(
+                    effect,
+                    &mut game_flags,
+                    &mut scoped_flags,
+                    &mut global_params,
+                    &mut balance,
+                    &mut empire_modifiers,
+                    pending_ref,
+                    comms_ref,
+                    tech_id,
+                );
+            }
+
+            info!("Applied {} effects for tech {}", effects.len(), tech_id.0);
+
+            // Log for UI display
+            effects_log.effects.insert(tech_id.clone(), effects);
+
+            // #332-B3: dropped the `_pending_global_mods` / `_pending_flags`
+            // drain. The legacy global `modify_global` / `set_flag` helpers
+            // have no production Lua callers (tech callbacks use
+            // `EffectScope` descriptors exclusively, which are already
+            // applied above); B4 removes the globals outright.
         }
 
-        // Apply each effect
-        for effect in &effects {
-            apply_effect(
-                effect,
-                &mut game_flags,
-                &mut scoped_flags,
-                &mut global_params,
-                &mut balance,
-                &tech_id.0,
+        if !scratch_pending.entries.is_empty() {
+            warn!(
+                "PendingColonyTechModifiers component missing on empire entity; {} colony-targeted tech modifier(s) dropped (setup issue)",
+                scratch_pending.entries.len()
             );
-        }
-
-        info!(
-            "Applied {} effects for tech {}",
-            effects.len(),
-            tech_id.0
-        );
-
-        // Log for UI display
-        effects_log.effects.insert(tech_id.clone(), effects);
-
-        // Drain any pending global mods that the callback may have set via modify_global()
-        let pending_mods = drain_pending_global_mods(lua);
-        for (param, value) in pending_mods {
-            apply_global_mod(&mut global_params, &param, value);
-        }
-
-        // Drain any pending flags set via set_flag()
-        let pending_flags = crate::scripting::lifecycle::drain_pending_flags(lua);
-        for flag in &pending_flags {
-            game_flags.set(flag);
-            scoped_flags.set(flag);
         }
     }
 }
 
 /// Apply a single DescriptiveEffect to game state.
+#[allow(clippy::too_many_arguments)]
 fn apply_effect(
     effect: &DescriptiveEffect,
     game_flags: &mut GameFlags,
     scoped_flags: &mut ScopedFlags,
     global_params: &mut GlobalParams,
     balance: &mut GameBalance,
-    source_tech_id: &str,
+    empire_modifiers: &mut EmpireModifiers,
+    pending_colony_mods: &mut PendingColonyTechModifiers,
+    comms_params: &mut crate::empire::CommsParams,
+    source_tech_id: &TechId,
 ) {
     match effect {
         DescriptiveEffect::PushModifier {
@@ -302,10 +319,10 @@ fn apply_effect(
             // #160: Route "balance.*" targets to GameBalance's modifier stack.
             if let Some(field_name) = target.strip_prefix("balance.") {
                 if let Some(mv) = balance.field_mut(field_name) {
-                    let modifier_id = format!("tech:{}:{}", source_tech_id, target);
+                    let modifier_id = format!("tech:{}:{}", source_tech_id.0, target);
                     mv.push_modifier(Modifier {
                         id: modifier_id,
-                        label: format!("From tech '{}'", source_tech_id),
+                        label: format!("From tech '{}'", source_tech_id.0),
                         base_add: SignedAmt::from_f64(*base_add),
                         multiplier: SignedAmt::from_f64(*multiplier),
                         add: SignedAmt::from_f64(*add),
@@ -314,23 +331,29 @@ fn apply_effect(
                     });
                 } else {
                     warn!(
-                        "Unknown balance target '{target}' from tech '{source_tech_id}'"
+                        "Unknown balance target '{target}' from tech '{}'",
+                        source_tech_id.0
                     );
                 }
             } else {
-                // Map other well-known modifier targets to GlobalParams fields
-                apply_modifier_to_params(global_params, target, *base_add, *multiplier, *add);
+                route_tech_modifier(
+                    target,
+                    *base_add,
+                    *multiplier,
+                    *add,
+                    global_params,
+                    empire_modifiers,
+                    pending_colony_mods,
+                    comms_params,
+                    source_tech_id,
+                );
             }
         }
         DescriptiveEffect::PopModifier { .. } => {
             // PopModifier is for removing temporary modifiers; not applicable at tech level
             debug!("PopModifier in on_researched is a no-op (tech effects are permanent)");
         }
-        DescriptiveEffect::SetFlag {
-            name,
-            value,
-            ..
-        } => {
+        DescriptiveEffect::SetFlag { name, value, .. } => {
             if *value {
                 game_flags.set(name);
                 scoped_flags.set(name);
@@ -342,7 +365,254 @@ fn apply_effect(
             info!("Tech effect requests event fire: {event_id} (not yet wired to EventSystem)");
         }
         DescriptiveEffect::Hidden { inner, .. } => {
-            apply_effect(inner, game_flags, scoped_flags, global_params, balance, source_tech_id);
+            apply_effect(
+                inner,
+                game_flags,
+                scoped_flags,
+                global_params,
+                balance,
+                empire_modifiers,
+                pending_colony_mods,
+                comms_params,
+                source_tech_id,
+            );
+        }
+    }
+}
+
+/// #245: Route a single tech-sourced modifier (non-`balance.*`) to its
+/// destination:
+/// - `ship.*`, `sensor.range`, `construction.speed` → `GlobalParams`
+/// - `population.growth` → `EmpireModifiers`
+/// - `colony.*_per_hexadies`, `colony.<job>_slot`, `job:*::*` →
+///   `PendingColonyTechModifiers` (broadcast to every colony each tick by
+///   `sync_tech_colony_modifiers`)
+/// - `combat.*`, `diplomacy.*` → warn (target systems not yet implemented)
+/// - Unknown targets → debug (harmless, future work)
+#[allow(clippy::too_many_arguments)]
+fn route_tech_modifier(
+    target: &str,
+    base_add: f64,
+    multiplier: f64,
+    add: f64,
+    global_params: &mut GlobalParams,
+    empire_modifiers: &mut EmpireModifiers,
+    pending_colony_mods: &mut PendingColonyTechModifiers,
+    comms_params: &mut crate::empire::CommsParams,
+    source_tech_id: &TechId,
+) {
+    // 1) Ship/sensor/construction targets → GlobalParams (legacy routes kept).
+    match target {
+        "ship.sublight_speed"
+        | "ship.ftl_speed"
+        | "ship.ftl_range"
+        | "sensor.range"
+        | "construction.speed" => {
+            apply_modifier_to_params(global_params, target, base_add, multiplier, add);
+            return;
+        }
+        _ => {}
+    }
+
+    // 1b) #233: FTL Comm Relay modifiers → CommsParams.
+    match target {
+        "empire.comm_relay_range"
+        | "empire.comm_relay_inv_latency"
+        | "fleet.comm_relay_range"
+        | "fleet.comm_relay_inv_latency" => {
+            let modifier_id = format!("tech:{}:{}", source_tech_id.0, target);
+            let modifier = Modifier {
+                id: modifier_id,
+                label: format!("From tech '{}'", source_tech_id.0),
+                base_add: SignedAmt::from_f64(base_add),
+                multiplier: SignedAmt::from_f64(multiplier),
+                add: SignedAmt::from_f64(add),
+                expires_at: None,
+                on_expire_event: None,
+            };
+            let slot = match target {
+                "empire.comm_relay_range" => &mut comms_params.empire_relay_range,
+                "empire.comm_relay_inv_latency" => &mut comms_params.empire_relay_inv_latency,
+                "fleet.comm_relay_range" => &mut comms_params.fleet_relay_range,
+                "fleet.comm_relay_inv_latency" => &mut comms_params.fleet_relay_inv_latency,
+                _ => unreachable!(),
+            };
+            slot.push_modifier(modifier);
+            return;
+        }
+        _ => {}
+    }
+
+    // 2) Population growth → EmpireModifiers.
+    if target == "population.growth" {
+        let modifier_id = format!("tech:{}:{}", source_tech_id.0, target);
+        empire_modifiers.population_growth.push_modifier(Modifier {
+            id: modifier_id,
+            label: format!("From tech '{}'", source_tech_id.0),
+            base_add: SignedAmt::from_f64(base_add),
+            multiplier: SignedAmt::from_f64(multiplier),
+            add: SignedAmt::from_f64(add),
+            expires_at: None,
+            on_expire_event: None,
+        });
+        return;
+    }
+
+    // 3) Colony-scoped targets → PendingColonyTechModifiers queue.
+    let is_job_scoped = target.starts_with("job:") && target.contains("::");
+    let is_colony_agg = matches!(
+        target,
+        "colony.minerals_per_hexadies"
+            | "colony.energy_per_hexadies"
+            | "colony.food_per_hexadies"
+            | "colony.research_per_hexadies"
+            | "colony.authority_per_hexadies"
+    );
+    let is_colony_slot = target.starts_with("colony.") && target.ends_with("_slot");
+    if is_job_scoped || is_colony_agg || is_colony_slot {
+        pending_colony_mods.push(
+            source_tech_id.clone(),
+            ParsedModifier {
+                target: target.to_string(),
+                base_add,
+                multiplier,
+                add,
+            },
+        );
+        return;
+    }
+
+    // 4) combat.* / diplomacy.* — system not yet wired (scope of #245 is colony
+    // broadcast only). Warn once per call so balance-related mods don't go
+    // silent.
+    if target.starts_with("combat.") || target.starts_with("diplomacy.") {
+        warn!(
+            "Tech '{}' targets '{}'; {} system not yet implemented (no-op)",
+            source_tech_id.0,
+            target,
+            if target.starts_with("combat.") {
+                "combat"
+            } else {
+                "diplomacy"
+            }
+        );
+        return;
+    }
+
+    // 5) Legacy / unrecognised targets. Catches `production.minerals`-style
+    // strings from un-migrated scripts so the regression is visible.
+    warn!(
+        "Tech '{}' has unrouted modifier target '{}'; ignored",
+        source_tech_id.0, target
+    );
+}
+
+/// #245: Broadcast every `(TechId, ParsedModifier)` entry in
+/// `PendingColonyTechModifiers` into every colony's `Production`,
+/// `ColonyJobRates`, and `ColonyJobs` components.
+///
+/// `ModifiedValue::push_modifier` replaces any existing modifier with the same
+/// id, so running this every tick is idempotent: the same tech pushes the
+/// same id each tick, numerical values don't drift. This also means colonies
+/// spawned after the tech was researched pick up the modifier on their first
+/// tick without any retroactive bookkeeping.
+///
+/// Modifier ids follow the `tech:<tech_id>:<target>` convention, matching the
+/// balance/ship-route ids used elsewhere in the effect pipeline.
+///
+/// Target handling:
+/// - `colony.<X>_per_hexadies` → pushed into `Production.<X>_per_hexadies`.
+/// - `job:<job_id>::<target>` → pushed into the matching bucket of
+///   `ColonyJobRates`.
+/// - `colony.<job_id>_slot` → increases `JobSlot.capacity` beyond the building
+///   baseline. A new slot is appended if the colony didn't have one yet.
+pub fn sync_tech_colony_modifiers(
+    pending_q: Query<&PendingColonyTechModifiers, With<Empire>>,
+    mut colonies: Query<(
+        &mut crate::colony::Production,
+        Option<&mut crate::colony::ColonyJobRates>,
+        Option<&mut crate::species::ColonyJobs>,
+    )>,
+) {
+    // Collect all pending entries from all empires.
+    // TODO(#418): scope colony modifier application per-empire via FactionOwner.
+    let mut all_entries: Vec<(&TechId, &ParsedModifier)> = Vec::new();
+    for pending in &pending_q {
+        for (tech_id, pm) in &pending.entries {
+            all_entries.push((tech_id, pm));
+        }
+    }
+    if all_entries.is_empty() {
+        return;
+    }
+    // Build a pseudo-pending to iterate below.
+    let pending_entries = all_entries;
+
+    for (mut prod, mut rates_opt, mut jobs_opt) in &mut colonies {
+        for (tech_id, pm) in &pending_entries {
+            let modifier_id = format!("tech:{}:{}", tech_id.0, pm.target);
+
+            // job:<id>::<inner_target> → ColonyJobRates bucket.
+            if let Some((job_id, inner_target)) = pm.job_scope() {
+                let Some(rates) = rates_opt.as_mut() else {
+                    debug!(
+                        "Colony lacks ColonyJobRates; skipping tech job mod '{}'",
+                        pm.target
+                    );
+                    continue;
+                };
+                let bucket = rates.bucket_mut(job_id, inner_target);
+                bucket.push_modifier(pm.to_modifier(modifier_id, format!("Tech '{}'", tech_id.0)));
+                continue;
+            }
+
+            // colony.<job_id>_slot → JobSlot.capacity (additive on top of
+            // building-sourced capacity). Only integer slot counts are
+            // meaningful; fractional parts are truncated.
+            if let Some(slot_rest) = pm
+                .target
+                .strip_prefix("colony.")
+                .and_then(|r| r.strip_suffix("_slot"))
+            {
+                let Some(jobs) = jobs_opt.as_mut() else {
+                    continue;
+                };
+                let contribution = (pm.base_add + pm.add).max(0.0).floor() as u32;
+                if contribution == 0 {
+                    continue;
+                }
+                let job_id = slot_rest.to_string();
+                if let Some(slot) = jobs.slots.iter_mut().find(|s| s.job_id == job_id) {
+                    // Re-applying: clamp to (building_cap + contribution) to
+                    // keep the push idempotent across ticks. The delta is
+                    // stored outside `capacity_from_buildings` so building
+                    // re-sync doesn't wipe it.
+                    let building_cap = slot.capacity_from_buildings;
+                    let external_before = slot.capacity.saturating_sub(building_cap);
+                    let external_after = external_before.max(contribution);
+                    slot.capacity = building_cap.saturating_add(external_after);
+                } else {
+                    jobs.slots.push(crate::species::JobSlot {
+                        job_id,
+                        capacity: contribution,
+                        assigned: 0,
+                        capacity_from_buildings: 0,
+                    });
+                }
+                continue;
+            }
+
+            // colony.<X>_per_hexadies → Production aggregator.
+            let bucket = match pm.target.as_str() {
+                "colony.minerals_per_hexadies" => Some(&mut prod.minerals_per_hexadies),
+                "colony.energy_per_hexadies" => Some(&mut prod.energy_per_hexadies),
+                "colony.food_per_hexadies" => Some(&mut prod.food_per_hexadies),
+                "colony.research_per_hexadies" => Some(&mut prod.research_per_hexadies),
+                _ => None,
+            };
+            if let Some(mv) = bucket {
+                mv.push_modifier(pm.to_modifier(modifier_id, format!("Tech '{}'", tech_id.0)));
+            }
         }
     }
 }
@@ -383,18 +653,13 @@ fn apply_modifier_to_params(
         // for display but don't currently have GlobalParams fields.
         // They will be consumed by more granular modifier systems in the future.
         _ => {
-            debug!(
-                "Modifier target '{target}' stored in TechEffectsLog (no GlobalParams mapping)"
-            );
+            debug!("Modifier target '{target}' stored in TechEffectsLog (no GlobalParams mapping)");
         }
     }
 }
 
 /// Find the on_researched function for a tech by scanning _tech_definitions.
-fn find_on_researched(
-    tech_defs: &mlua::Table,
-    tech_id: &str,
-) -> Option<mlua::Function> {
+fn find_on_researched(tech_defs: &mlua::Table, tech_id: &str) -> Option<mlua::Function> {
     let len = tech_defs.len().ok()?;
     for i in 1..=len {
         let Ok(def) = tech_defs.get::<mlua::Table>(i) else {
@@ -419,50 +684,11 @@ mod tests {
     use super::*;
     use crate::scripting::ScriptEngine;
 
-    #[test]
-    fn test_drain_pending_global_mods() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        lua.load(
-            r#"
-            modify_global("sublight_speed_bonus", 0.5)
-            modify_global("ftl_range_bonus", 2.0)
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let mods = drain_pending_global_mods(lua);
-        assert_eq!(mods.len(), 2);
-        assert_eq!(mods[0].0, "sublight_speed_bonus");
-        assert!((mods[0].1 - 0.5).abs() < 1e-10);
-        assert_eq!(mods[1].0, "ftl_range_bonus");
-        assert!((mods[1].1 - 2.0).abs() < 1e-10);
-
-        // After draining, should be empty
-        let mods_after = drain_pending_global_mods(lua);
-        assert!(mods_after.is_empty());
-    }
-
-    #[test]
-    fn test_drain_pending_global_mods_empty() {
-        let engine = ScriptEngine::new().unwrap();
-        let lua = engine.lua();
-
-        let mods = drain_pending_global_mods(lua);
-        assert!(mods.is_empty());
-    }
-
-    #[test]
-    fn test_apply_global_mod() {
-        let mut params = GlobalParams::default();
-        apply_global_mod(&mut params, "sublight_speed_bonus", 0.5);
-        assert!((params.sublight_speed_bonus - 0.5).abs() < 1e-10);
-
-        apply_global_mod(&mut params, "ftl_range_bonus", 3.0);
-        assert!((params.ftl_range_bonus - 3.0).abs() < 1e-10);
-    }
+    // #332-B4: removed `test_drain_pending_global_mods` /
+    // `test_drain_pending_global_mods_empty` / `test_apply_global_mod`
+    // — the helpers they exercised (`drain_pending_global_mods`,
+    // `apply_global_mod`) are gone along with the `modify_global`
+    // global that populated the queue.
 
     #[test]
     fn test_find_on_researched() {
@@ -582,6 +808,8 @@ mod tests {
         let mut scoped_flags = ScopedFlags::default();
         let mut global_params = GlobalParams::default();
         let mut balance = GameBalance::default();
+        let mut empire_mods = EmpireModifiers::default();
+        let mut pending = PendingColonyTechModifiers::default();
 
         let effect = DescriptiveEffect::SetFlag {
             name: "test_flag".into(),
@@ -589,7 +817,19 @@ mod tests {
             description: None,
         };
 
-        apply_effect(&effect, &mut game_flags, &mut scoped_flags, &mut global_params, &mut balance, "test_tech");
+        let tech_id = TechId("test_tech".into());
+        let mut comms = crate::empire::CommsParams::default();
+        apply_effect(
+            &effect,
+            &mut game_flags,
+            &mut scoped_flags,
+            &mut global_params,
+            &mut balance,
+            &mut empire_mods,
+            &mut pending,
+            &mut comms,
+            &tech_id,
+        );
 
         assert!(game_flags.check("test_flag"));
         assert!(scoped_flags.check("test_flag"));
@@ -602,6 +842,8 @@ mod tests {
         let mut scoped_flags = ScopedFlags::default();
         let mut global_params = GlobalParams::default();
         let mut balance = GameBalance::default();
+        let mut empire_mods = EmpireModifiers::default();
+        let mut pending = PendingColonyTechModifiers::default();
 
         let effect = DescriptiveEffect::PushModifier {
             target: "balance.survey_duration".into(),
@@ -611,7 +853,19 @@ mod tests {
             description: None,
         };
 
-        apply_effect(&effect, &mut game_flags, &mut scoped_flags, &mut global_params, &mut balance, "shrink_survey");
+        let tech_id = TechId("shrink_survey".into());
+        let mut comms = crate::empire::CommsParams::default();
+        apply_effect(
+            &effect,
+            &mut game_flags,
+            &mut scoped_flags,
+            &mut global_params,
+            &mut balance,
+            &mut empire_mods,
+            &mut pending,
+            &mut comms,
+            &tech_id,
+        );
 
         // survey_duration base = 30, mult = 1.0 + (-0.5) = 0.5 → 15
         assert_eq!(balance.survey_duration(), 15);
@@ -623,6 +877,8 @@ mod tests {
         let mut scoped_flags = ScopedFlags::default();
         let mut global_params = GlobalParams::default();
         let mut balance = GameBalance::default();
+        let mut empire_mods = EmpireModifiers::default();
+        let mut pending = PendingColonyTechModifiers::default();
 
         let effect = DescriptiveEffect::PushModifier {
             target: "balance.nonexistent_field".into(),
@@ -633,7 +889,19 @@ mod tests {
         };
 
         // Should not panic; logs a warning and leaves balance untouched.
-        apply_effect(&effect, &mut game_flags, &mut scoped_flags, &mut global_params, &mut balance, "buggy_tech");
+        let tech_id = TechId("buggy_tech".into());
+        let mut comms = crate::empire::CommsParams::default();
+        apply_effect(
+            &effect,
+            &mut game_flags,
+            &mut scoped_flags,
+            &mut global_params,
+            &mut balance,
+            &mut empire_mods,
+            &mut pending,
+            &mut comms,
+            &tech_id,
+        );
 
         assert_eq!(balance.survey_duration(), 30);
     }
@@ -740,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_does_not_leak_pending_global_mods() {
+    fn preview_captures_scope_effect_without_applying() {
         use crate::technology::tree::{TechCost, Technology};
         let tree = crate::technology::TechTree::from_vec(vec![Technology {
             id: TechId("speedy".into()),
@@ -752,9 +1020,11 @@ mod tests {
             dangerous: false,
         }]);
 
-        // The callback uses both scope methods (which the preview *should*
-        // capture) and modify_global / set_flag (which the preview must
-        // drain so they don't leak into the next real research event).
+        // The callback uses scope methods (which the preview *should*
+        // capture). #332-B3 removed the preview drain of the legacy
+        // `_pending_*` queues because `EffectScope` is the sole callback
+        // path; the `modify_global` / `set_flag` globals are retired in
+        // B4.
         let engine = ScriptEngine::new().unwrap();
         engine
             .lua()
@@ -765,8 +1035,6 @@ mod tests {
                 name = "Speedy",
                 on_researched = function(scope)
                     scope:push_modifier("ship.sublight_speed", { add = 0.5, description = "Speed +0.5" })
-                    modify_global("sublight_speed_bonus", 0.5)
-                    set_flag("speedy_unlocked")
                 end,
             }
             "#,
@@ -781,15 +1049,7 @@ mod tests {
         app.add_systems(Update, build_tech_effects_preview);
         app.update();
 
-        // Side-effect tables must be empty after the preview pass.
-        let engine = app.world().resource::<ScriptEngine>();
-        let lua = engine.lua();
-        let pending_mods: mlua::Table = lua.globals().get("_pending_global_mods").unwrap();
-        assert_eq!(pending_mods.len().unwrap(), 0);
-        let pending_flags: mlua::Table = lua.globals().get("_pending_flags").unwrap();
-        assert_eq!(pending_flags.len().unwrap(), 0);
-
-        // But the preview captured the scope effect.
+        // The preview captured the scope effect.
         let preview = app.world().resource::<TechEffectsPreview>();
         let effects = preview.for_tech(&TechId("speedy".into()));
         assert_eq!(effects.len(), 1);

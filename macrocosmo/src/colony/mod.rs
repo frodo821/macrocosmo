@@ -8,11 +8,13 @@ pub use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::scripting::building_api::parse_building_definitions;
 
 pub mod authority;
+pub mod build_tick;
 pub mod building_queue;
 pub mod colonization;
 pub mod maintenance;
 pub mod population;
 pub mod production;
+pub mod remote;
 pub mod system_buildings;
 
 pub use authority::*;
@@ -21,6 +23,7 @@ pub use colonization::*;
 pub use maintenance::*;
 pub use population::*;
 pub use production::*;
+pub use remote::apply_remote_command;
 pub use system_buildings::*;
 
 pub struct ColonyPlugin;
@@ -33,46 +36,95 @@ impl Plugin for ColonyPlugin {
         app.init_resource::<LastProductionTick>()
             .init_resource::<BuildingRegistry>()
             .init_resource::<AlertCooldowns>()
+            .init_resource::<PendingSovereigntyChanges>()
             .add_systems(
                 Startup,
                 (
                     load_building_registry.after(crate::scripting::load_all_scripts),
-                    spawn_capital_colony.after(crate::galaxy::generate_galaxy),
+                    // #297 (S-2): `spawn_capital_colony` now consults
+                    // `PlayerEmpire` so the capital Colony + StarSystem get
+                    // `FactionOwner` tagged at spawn. Explicit ordering
+                    // guarantees the empire entity exists first.
+                    spawn_capital_colony
+                        .after(crate::galaxy::generate_galaxy)
+                        .after(crate::player::spawn_player_empire),
                 ),
+            )
+            // #250: Prime the colony sync pipeline at the end of Startup so
+            // the UI's first frame shows correct production rates. Without
+            // this, sync only runs on Update and `aggregate_job_contributions`
+            // first fires after Startup completes — meaning the first render
+            // reads Production with only the legacy base value loaded.
+            .add_systems(
+                Startup,
+                (
+                    sync_building_modifiers,
+                    crate::species::sync_job_assignment,
+                    sync_species_modifiers,
+                    aggregate_job_contributions,
+                )
+                    .chain()
+                    .after(crate::setup::run_faction_on_game_start)
+                    .after(crate::setup::run_all_factions_on_game_start),
             )
             .add_systems(
                 Update,
                 (
-                    tick_timed_effects,
-                    tick_authority,
-                    sync_building_modifiers,
-                    sync_system_building_maintenance,
-                    sync_maintenance_modifiers,
-                    sync_food_consumption,
-                    tick_production,
-                    tick_maintenance,
-                    tick_population_growth,
-                    tick_build_queue,
-                    tick_building_queue,
-                    tick_system_building_queue,
-                    tick_colonization_queue,
-                    check_resource_alerts,
-                    advance_production_tick,
+                    (
+                        tick_timed_effects,
+                        tick_authority,
+                        sync_building_modifiers,
+                        crate::species::sync_job_assignment,
+                        sync_species_modifiers,
+                        sync_system_building_maintenance,
+                        sync_maintenance_modifiers,
+                        sync_food_consumption,
+                        // #250: Aggregate job contributions every Update tick,
+                        // independent of `delta`. This guarantees the UI sees a
+                        // correct production rate even while paused.
+                        aggregate_job_contributions,
+                    )
+                        .chain(),
+                    (
+                        tick_production,
+                        tick_maintenance,
+                        tick_population_growth,
+                        tick_build_queue,
+                        tick_building_queue,
+                        tick_system_building_queue,
+                        tick_colonization_queue,
+                        check_resource_alerts,
+                        advance_production_tick,
+                    )
+                        .chain(),
+                )
+                    .chain()
+                    .after(crate::time_system::advance_game_time)
+                    // #270: Arrived RemoteCommand::Colony payloads must be
+                    // applied to the queue before the queue's tick consumes
+                    // orders, otherwise an arrival on the same frame can be
+                    // swallowed in a single tick_building_queue pass.
+                    .after(crate::communication::process_pending_commands),
+            )
+            // NOTE: sync_system_buildings_from_ships removed — station ships
+            // now carry SlotAssignment components directly.
+            .add_systems(
+                Update,
+                (
+                    update_sovereignty,
+                    cascade_sovereignty_changes,
+                    fire_sovereignty_events,
                 )
                     .chain()
                     .after(crate::time_system::advance_game_time),
             )
-            .add_systems(Update, (
-                update_sovereignty,
-                apply_pending_colonization_orders,
-            ));
+            .add_systems(Update, apply_pending_colonization_orders);
     }
 }
 
 #[derive(Component)]
 pub struct Colony {
     pub planet: Entity,
-    pub population: f64,
     pub growth_rate: f64,
 }
 
@@ -90,6 +142,32 @@ pub struct ResourceStockpile {
     pub research: Amt,
     pub food: Amt,
     pub authority: Amt,
+}
+
+/// #223: Per-star-system cargo-item stockpile. Shipyard-built deliverables
+/// land here when construction completes, ready to be loaded onto a ship's
+/// Cargo via `QueuedCommand::LoadDeliverable`.
+#[derive(Component, Default, Debug, Clone)]
+pub struct DeliverableStockpile {
+    pub items: Vec<crate::ship::CargoItem>,
+}
+
+impl DeliverableStockpile {
+    pub fn push(&mut self, item: crate::ship::CargoItem) {
+        self.items.push(item);
+    }
+
+    pub fn remove(&mut self, index: usize) -> Option<crate::ship::CargoItem> {
+        if index < self.items.len() {
+            Some(self.items.remove(index))
+        } else {
+            None
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
 }
 
 #[derive(Component)]
@@ -161,12 +239,12 @@ pub fn tick_timed_effects(
     mut productions: Query<(Entity, &mut Production)>,
     mut maintenance_costs: Query<(Entity, &mut MaintenanceCost)>,
     mut food_consumptions: Query<(Entity, &mut FoodConsumption)>,
-    mut empire_q: Query<(&mut AuthorityParams, &mut ConstructionParams), With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        (&mut AuthorityParams, &mut ConstructionParams),
+        With<crate::player::Empire>,
+    >,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
-    let Ok((mut authority_params, mut construction_params)) = empire_q.single_mut() else {
-        return;
-    };
     let now = clock.elapsed;
 
     // Helper: drain expired modifiers and fire any on_expire_event via EventSystem
@@ -179,33 +257,92 @@ pub fn tick_timed_effects(
         let expired = mv.drain_expired(now);
         for m in &expired {
             if let Some(ref evt) = m.on_expire_event {
-                info!(
-                    "Modifier '{}' expired, triggering event: {}",
-                    m.id, evt
-                );
+                info!("Modifier '{}' expired, triggering event: {}", m.id, evt);
                 event_system.fire_event(evt, target, now);
             }
         }
     }
 
     for (entity, mut prod) in &mut productions {
-        drain_and_fire(&mut prod.minerals_per_hexadies, now, Some(entity), &mut event_system);
-        drain_and_fire(&mut prod.energy_per_hexadies, now, Some(entity), &mut event_system);
-        drain_and_fire(&mut prod.research_per_hexadies, now, Some(entity), &mut event_system);
-        drain_and_fire(&mut prod.food_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(
+            &mut prod.minerals_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut prod.energy_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut prod.research_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut prod.food_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
     }
     for (entity, mut mc) in &mut maintenance_costs {
-        drain_and_fire(&mut mc.energy_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(
+            &mut mc.energy_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
     }
     for (entity, mut fc) in &mut food_consumptions {
-        drain_and_fire(&mut fc.food_per_hexadies, now, Some(entity), &mut event_system);
+        drain_and_fire(
+            &mut fc.food_per_hexadies,
+            now,
+            Some(entity),
+            &mut event_system,
+        );
     }
-    drain_and_fire(&mut authority_params.production, now, None, &mut event_system);
-    drain_and_fire(&mut authority_params.cost_per_colony, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.ship_cost_modifier, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.building_cost_modifier, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.ship_build_time_modifier, now, None, &mut event_system);
-    drain_and_fire(&mut construction_params.building_build_time_modifier, now, None, &mut event_system);
+    for (mut authority_params, mut construction_params) in &mut empire_q {
+        drain_and_fire(
+            &mut authority_params.production,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut authority_params.cost_per_colony,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.ship_cost_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.building_cost_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.ship_build_time_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.building_build_time_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+    }
 }
 
 /// Tracks cooldowns for resource alerts to prevent spamming the same alert every tick.
@@ -232,19 +369,17 @@ impl AlertCooldowns {
 
 /// Checks colonies for resource depletion and emits `ResourceAlert` events.
 /// Runs after maintenance/growth so stockpiles are up to date.
+#[allow(clippy::too_many_arguments)]
 pub fn check_resource_alerts(
     clock: Res<crate::time_system::GameClock>,
     last_tick: Res<LastProductionTick>,
-    colonies: Query<(
-        &Colony,
-        Option<&FoodConsumption>,
-        Option<&MaintenanceCost>,
-    )>,
+    colonies: Query<(&Colony, Option<&FoodConsumption>, Option<&MaintenanceCost>)>,
     stockpiles: Query<&ResourceStockpile, With<crate::galaxy::StarSystem>>,
     stars: Query<&crate::galaxy::StarSystem>,
     planets: Query<&crate::galaxy::Planet>,
     mut events: MessageWriter<crate::events::GameEvent>,
     mut alert_cooldowns: ResMut<AlertCooldowns>,
+    mut next_event_id: ResMut<crate::knowledge::NextEventId>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -258,7 +393,9 @@ pub fn check_resource_alerts(
             .map(|s| s.name.clone())
             .unwrap_or_default();
         let Some(sys) = colony_sys else { continue };
-        let Ok(stockpile) = stockpiles.get(sys) else { continue };
+        let Ok(stockpile) = stockpiles.get(sys) else {
+            continue;
+        };
         // Use planet entity as alert key (unique per colony)
         let alert_key = colony.planet;
 
@@ -266,6 +403,7 @@ pub fn check_resource_alerts(
         if stockpile.food == Amt::ZERO {
             if alert_cooldowns.can_alert("food_starving", alert_key, clock.elapsed) {
                 events.write(crate::events::GameEvent {
+                    id: next_event_id.allocate(),
                     timestamp: clock.elapsed,
                     kind: crate::events::GameEventKind::ResourceAlert,
                     description: format!("{}: Starvation! Food depleted", system_name),
@@ -281,6 +419,7 @@ pub fn check_resource_alerts(
             if stockpile.food < threshold && stockpile.food > Amt::ZERO {
                 if alert_cooldowns.can_alert("food_low", alert_key, clock.elapsed) {
                     events.write(crate::events::GameEvent {
+                        id: next_event_id.allocate(),
                         timestamp: clock.elapsed,
                         kind: crate::events::GameEventKind::ResourceAlert,
                         description: format!(
@@ -298,12 +437,10 @@ pub fn check_resource_alerts(
         if stockpile.energy == Amt::ZERO {
             if alert_cooldowns.can_alert("energy_depleted", alert_key, clock.elapsed) {
                 events.write(crate::events::GameEvent {
+                    id: next_event_id.allocate(),
                     timestamp: clock.elapsed,
                     kind: crate::events::GameEventKind::ResourceAlert,
-                    description: format!(
-                        "{}: Energy depleted! Maintenance unpaid",
-                        system_name
-                    ),
+                    description: format!("{}: Energy depleted! Maintenance unpaid", system_name),
                     related_system: colony_sys,
                 });
                 alert_cooldowns.mark("energy_depleted", alert_key, clock.elapsed);
@@ -312,8 +449,40 @@ pub fn check_resource_alerts(
     }
 }
 
-pub fn advance_production_tick(clock: Res<crate::time_system::GameClock>, mut last_tick: ResMut<LastProductionTick>) {
+pub fn advance_production_tick(
+    clock: Res<crate::time_system::GameClock>,
+    mut last_tick: ResMut<LastProductionTick>,
+) {
     last_tick.0 = clock.elapsed;
+}
+
+/// #280: Determine the initial building slot count for a new colony from the
+/// `colony_hub_t1` definition's `colony_hub.fixed_slots` capability. Returns
+/// `(num_slots, Some(BuildingId))` when the hub is found, or falls back to
+/// `(fallback(), None)` when the registry lacks the definition.
+///
+/// The `fallback` closure is only called when the hub is missing (e.g. tests
+/// without Lua scripts loaded).
+pub fn hub_slots_for_new_colony(
+    registry: &BuildingRegistry,
+    fallback: impl FnOnce() -> usize,
+) -> (usize, Option<crate::scripting::building_api::BuildingId>) {
+    if let Some(hub_def) = registry.get("colony_hub_t1") {
+        let fixed = hub_def
+            .capabilities
+            .get("colony_hub")
+            .and_then(|cap| cap.get("fixed_slots"))
+            .map(|v| v as usize)
+            .unwrap_or(4);
+        (
+            fixed,
+            Some(crate::scripting::building_api::BuildingId::new(
+                "colony_hub_t1",
+            )),
+        )
+    } else {
+        (fallback(), None)
+    }
 }
 
 #[cfg(test)]

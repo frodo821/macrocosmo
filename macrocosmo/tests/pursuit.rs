@@ -21,14 +21,13 @@ fn setup_two_factions(app: &mut App) -> (Entity, Entity) {
         let mut q = app
             .world_mut()
             .query_filtered::<Entity, With<PlayerEmpire>>();
-        q.iter(app.world()).next().expect("player empire must exist")
+        q.iter(app.world())
+            .next()
+            .expect("player empire must exist")
     };
     let enemy_faction = app
         .world_mut()
-        .spawn(Faction {
-            id: "enemy_test_faction".into(),
-            name: "Enemy Test Faction".into(),
-        })
+        .spawn(Faction::new("enemy_test_faction", "Enemy Test Faction"))
         .id();
 
     // Seed hostile Neutral + -100 relations in both directions.
@@ -83,6 +82,7 @@ fn spawn_sublight_ship(
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::SubLight {
             origin,
@@ -125,6 +125,7 @@ fn spawn_loitering_ship(
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::Loitering { position },
         Position::from(position),
@@ -150,16 +151,30 @@ fn count_hostile_detected(app: &App) -> usize {
         .count()
 }
 
-// Register the notifications plumbing (queue + auto_notify) on top of
-// `test_app_with_event_log` so we can assert notifications too.
+// Register the notifications plumbing (queue + auto_notify + fact drain) on
+// top of `test_app_with_event_log` so we can assert notifications too.
+//
+// #233: `HostileDetected` now surfaces through `PendingFactQueue`, so the
+// pursuit tests that assert on banners need both pipelines registered plus
+// a `Player` entity so `detect_hostiles_system` can compute an arrival time.
 fn test_app_with_notifications() -> App {
     let mut app = test_app_with_event_log();
-    app.insert_resource(NotificationQueue::new());
     app.add_systems(
         Update,
-        macrocosmo::notifications::auto_notify_from_events
+        (
+            macrocosmo::notifications::auto_notify_from_events,
+            macrocosmo::notifications::notify_from_knowledge_facts,
+        )
             .after(macrocosmo::ship::pursuit::detect_hostiles_system),
     );
+    // Spawn a minimal Player + capital system at origin so the new #233 fact
+    // pipeline has a target coordinate. Place the player at the same origin
+    // as the detector so local notifications surface instantly.
+    let system = app.world_mut().spawn(Position::from([0.0, 0.0, 0.0])).id();
+    app.world_mut().spawn((
+        macrocosmo::player::Player,
+        macrocosmo::player::StationedAt { system },
+    ));
     app
 }
 
@@ -194,16 +209,31 @@ fn aggressive_sublight_detects_hostile_sublight_in_range() {
         400,
     );
 
+    // Detection is immediate (GameEvent + EventLog); the notification is
+    // routed through PendingFactQueue and surfaces after the light delay
+    // between the target (1 ly away) and the player at origin (~60 hd).
     advance_time(&mut app, 1);
     assert_eq!(count_hostile_detected(&app), 1);
+    // Fact queue should have the HostileDetected fact scheduled for arrival.
+    assert_eq!(
+        app.world()
+            .resource::<macrocosmo::knowledge::PendingFactQueue>()
+            .pending_len(),
+        1,
+        "HostileDetected must be recorded in PendingFactQueue"
+    );
 
-    // Notification banner must have been pushed at high priority.
+    // Advance past the light-speed arrival to drain the fact. Target is ~1 ly
+    // from player and drifting in SubLight, so actual delay is slightly over
+    // 60 hd (distance accumulates). 120 hd is a comfortable margin.
+    advance_time(&mut app, 120);
+
     let q = app.world().resource::<NotificationQueue>();
     let notif = q
         .items
         .iter()
         .find(|n| n.title == "Hostile Detected")
-        .expect("HostileDetected must produce a banner");
+        .expect("HostileDetected must produce a banner after light delay");
     assert_eq!(notif.priority, NotificationPriority::High);
     assert!(notif.description.contains("Scout"));
     assert!(notif.description.contains("Raider"));
@@ -287,6 +317,7 @@ fn ftl_ships_are_invisible_to_detector() {
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::InFTL {
             origin_system: sys_a,
@@ -324,6 +355,7 @@ fn ftl_ships_are_invisible_to_detector() {
             player_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
+            fleet: None,
         },
         ShipState::InFTL {
             origin_system: sys_a,
@@ -394,10 +426,7 @@ fn non_hostile_standing_is_not_detected() {
     };
     let other_f = app
         .world_mut()
-        .spawn(Faction {
-            id: "friendly_neutral".into(),
-            name: "Friendly".into(),
-        })
+        .spawn(Faction::new("friendly_neutral", "Friendly"))
         .id();
     // Leave relations empty → get_or_default returns Neutral/0 → hostile check fails.
 
@@ -488,7 +517,9 @@ fn duplicate_detection_is_suppressed_within_cooldown() {
     );
     // The detector accumulated a DetectedHostiles component.
     assert!(
-        app.world().get::<pursuit::DetectedHostiles>(detector).is_some(),
+        app.world()
+            .get::<pursuit::DetectedHostiles>(detector)
+            .is_some(),
         "detector must be tagged with DetectedHostiles"
     );
 

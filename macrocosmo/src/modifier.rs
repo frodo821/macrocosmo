@@ -1,6 +1,61 @@
 use crate::amount::{Amt, SignedAmt};
 
-#[derive(Clone, Debug)]
+/// A declarative modifier parsed from a Lua definition (building / job / species).
+///
+/// Unlike `Modifier`, this carries a *target string* used by runtime sync systems
+/// to route it to the right `ModifiedValue` bucket. Target string conventions
+/// (see #241):
+///
+/// - `colony.<field>` — colony-level aggregator (e.g. `colony.minerals_per_hexadies`)
+/// - `colony.<job>_slot` — job slot capacity (e.g. `colony.miner_slot`)
+/// - `job:<job_id>::<target>` — per-job rate bucket (e.g.
+///   `job:miner::colony.minerals_per_hexadies`)
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ParsedModifier {
+    pub target: String,
+    pub base_add: f64,
+    pub multiplier: f64,
+    pub add: f64,
+}
+
+impl ParsedModifier {
+    /// True iff this modifier targets a job-scoped bucket
+    /// (`job:<id>::...`). The part after `::` is returned alongside the job id.
+    pub fn job_scope(&self) -> Option<(&str, &str)> {
+        let rest = self.target.strip_prefix("job:")?;
+        let (job_id, target) = rest.split_once("::")?;
+        Some((job_id, target))
+    }
+
+    /// #384: Parse `docked_to:<filter>::<target>` syntax.
+    /// Returns `Some((filter, target))` where filter is one of:
+    /// - `"self"` — applies to ships docked at this specific harbour
+    /// - `"*"` — applies to ships docked at any harbour
+    /// - `"<hull_id>"` — applies to ships docked at a harbour with matching hull_id
+    pub fn docked_scope(&self) -> Option<(&str, &str)> {
+        let rest = self.target.strip_prefix("docked_to:")?;
+        let (filter, target) = rest.split_once("::")?;
+        if filter.is_empty() || target.is_empty() {
+            return None;
+        }
+        Some((filter, target))
+    }
+
+    /// Build a `Modifier` with the given id/label.
+    pub fn to_modifier(&self, id: impl Into<String>, label: impl Into<String>) -> Modifier {
+        Modifier {
+            id: id.into(),
+            label: label.into(),
+            base_add: SignedAmt::from_f64(self.base_add),
+            multiplier: SignedAmt::from_f64(self.multiplier),
+            add: SignedAmt::from_f64(self.add),
+            expires_at: None,
+            on_expire_event: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Modifier {
     pub id: String,
     pub label: String,
@@ -20,7 +75,7 @@ impl Modifier {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModifiedValue {
     base: Amt,
     modifiers: Vec<Modifier>,
@@ -101,11 +156,7 @@ impl ModifiedValue {
         for m in &self.modifiers {
             sum += m.base_add.raw();
         }
-        if sum < 0 {
-            Amt::ZERO
-        } else {
-            Amt(sum as u64)
-        }
+        if sum < 0 { Amt::ZERO } else { Amt(sum as u64) }
     }
 
     /// `1.000 + Σ multiplier` (as SignedAmt for display; clamped to 0 in final_value)
@@ -144,7 +195,7 @@ impl ModifiedValue {
 
 /// A ModifiedValue with a generation counter for cache invalidation.
 /// Generation increments on any push/pop, signaling downstream caches to recompute.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ScopedModifiers {
     value: ModifiedValue,
     generation: u64,
@@ -272,6 +323,13 @@ impl CachedValue {
         current_gens != self.generations
     }
 
+    /// Read-only access to the last cached value (without recomputing).
+    /// Call `get` to refresh; call this for read-only contexts (e.g. queries
+    /// that can't take `&mut`).
+    pub fn cached(&self) -> Amt {
+        self.cached
+    }
+
     /// Compute the combined value from multiple scopes.
     /// First scope: base + base_add from its modifiers.
     /// All scopes: multipliers and adds are combined.
@@ -328,7 +386,12 @@ impl CachedValue {
 mod tests {
     use super::*;
 
-    fn make_modifier(id: &str, base_add: SignedAmt, multiplier: SignedAmt, add: SignedAmt) -> Modifier {
+    fn make_modifier(
+        id: &str,
+        base_add: SignedAmt,
+        multiplier: SignedAmt,
+        add: SignedAmt,
+    ) -> Modifier {
         Modifier {
             id: id.to_string(),
             label: id.to_string(),
@@ -353,7 +416,12 @@ mod tests {
     #[test]
     fn base_add_modifiers() {
         let mut mv = ModifiedValue::new(Amt::units(5));
-        mv.push_modifier(make_modifier("mine_0", SignedAmt::units(3), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "mine_0",
+            SignedAmt::units(3),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.effective_base(), Amt::units(8));
         assert_eq!(mv.final_value(), Amt::units(8));
     }
@@ -362,7 +430,12 @@ mod tests {
     fn multiplier_modifiers() {
         let mut mv = ModifiedValue::new(Amt::units(10));
         // +15% = 0.150
-        mv.push_modifier(make_modifier("tech_mining", SignedAmt::ZERO, SignedAmt::new(0, 150), SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "tech_mining",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 150),
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.total_multiplier(), SignedAmt::new(1, 150));
         assert_eq!(mv.final_value(), Amt::new(11, 500));
     }
@@ -370,7 +443,12 @@ mod tests {
     #[test]
     fn add_modifiers() {
         let mut mv = ModifiedValue::new(Amt::units(10));
-        mv.push_modifier(make_modifier("flat_bonus", SignedAmt::ZERO, SignedAmt::ZERO, SignedAmt::units(2)));
+        mv.push_modifier(make_modifier(
+            "flat_bonus",
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+            SignedAmt::units(2),
+        ));
         assert_eq!(mv.total_add(), SignedAmt::units(2));
         assert_eq!(mv.final_value(), Amt::units(12));
     }
@@ -379,8 +457,18 @@ mod tests {
     fn combined_modifiers() {
         // base=5, base_add=3, mult=+15%, add=0 → (5+3)*1.15 = 9.2
         let mut mv = ModifiedValue::new(Amt::units(5));
-        mv.push_modifier(make_modifier("mine_0", SignedAmt::units(3), SignedAmt::ZERO, SignedAmt::ZERO));
-        mv.push_modifier(make_modifier("tech_auto", SignedAmt::ZERO, SignedAmt::new(0, 150), SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "mine_0",
+            SignedAmt::units(3),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
+        mv.push_modifier(make_modifier(
+            "tech_auto",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 150),
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.effective_base(), Amt::units(8));
         assert_eq!(mv.total_multiplier(), SignedAmt::new(1, 150));
         assert_eq!(mv.final_value(), Amt::new(9, 200));
@@ -389,10 +477,20 @@ mod tests {
     #[test]
     fn push_modifier_replaces_same_id() {
         let mut mv = ModifiedValue::new(Amt::units(5));
-        mv.push_modifier(make_modifier("mine_0", SignedAmt::units(3), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "mine_0",
+            SignedAmt::units(3),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.final_value(), Amt::units(8));
         // Replace with different value
-        mv.push_modifier(make_modifier("mine_0", SignedAmt::units(5), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "mine_0",
+            SignedAmt::units(5),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.modifiers().len(), 1);
         assert_eq!(mv.final_value(), Amt::units(10));
     }
@@ -400,7 +498,12 @@ mod tests {
     #[test]
     fn pop_modifier_removes_and_returns() {
         let mut mv = ModifiedValue::new(Amt::units(5));
-        mv.push_modifier(make_modifier("mine_0", SignedAmt::units(3), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "mine_0",
+            SignedAmt::units(3),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert!(mv.has_modifier("mine_0"));
 
         let removed = mv.pop_modifier("mine_0");
@@ -416,12 +519,42 @@ mod tests {
     #[test]
     fn multiple_modifiers_summed() {
         let mut mv = ModifiedValue::new(Amt::units(2));
-        mv.push_modifier(make_modifier("mine_0", SignedAmt::units(1), SignedAmt::ZERO, SignedAmt::ZERO));
-        mv.push_modifier(make_modifier("mine_1", SignedAmt::units(2), SignedAmt::ZERO, SignedAmt::ZERO));
-        mv.push_modifier(make_modifier("tech_a", SignedAmt::ZERO, SignedAmt::new(0, 100), SignedAmt::ZERO));
-        mv.push_modifier(make_modifier("tech_b", SignedAmt::ZERO, SignedAmt::new(0, 200), SignedAmt::ZERO));
-        mv.push_modifier(make_modifier("bonus_a", SignedAmt::ZERO, SignedAmt::ZERO, SignedAmt::units(1)));
-        mv.push_modifier(make_modifier("bonus_b", SignedAmt::ZERO, SignedAmt::ZERO, SignedAmt::new(0, 500)));
+        mv.push_modifier(make_modifier(
+            "mine_0",
+            SignedAmt::units(1),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
+        mv.push_modifier(make_modifier(
+            "mine_1",
+            SignedAmt::units(2),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
+        mv.push_modifier(make_modifier(
+            "tech_a",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 100),
+            SignedAmt::ZERO,
+        ));
+        mv.push_modifier(make_modifier(
+            "tech_b",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 200),
+            SignedAmt::ZERO,
+        ));
+        mv.push_modifier(make_modifier(
+            "bonus_a",
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+            SignedAmt::units(1),
+        ));
+        mv.push_modifier(make_modifier(
+            "bonus_b",
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 500),
+        ));
 
         // effective_base = 2 + 1 + 2 = 5
         assert_eq!(mv.effective_base(), Amt::units(5));
@@ -455,7 +588,12 @@ mod tests {
     fn test_negative_multiplier() {
         // base=10, multiplier=-0.200 → total_mult=0.8 → final = 10 * 0.8 = 8
         let mut mv = ModifiedValue::new(Amt::units(10));
-        mv.push_modifier(make_modifier("debuff", SignedAmt::ZERO, SignedAmt::new(0, -200), SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "debuff",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, -200),
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.total_multiplier(), SignedAmt::new(0, 800));
         assert_eq!(mv.final_value(), Amt::units(8));
     }
@@ -464,7 +602,12 @@ mod tests {
     fn test_negative_base_add() {
         // base=5, base_add=-3 → effective_base=2, final=2
         let mut mv = ModifiedValue::new(Amt::units(5));
-        mv.push_modifier(make_modifier("penalty", SignedAmt::units(-3), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "penalty",
+            SignedAmt::units(-3),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.effective_base(), Amt::units(2));
         assert_eq!(mv.final_value(), Amt::units(2));
     }
@@ -473,7 +616,12 @@ mod tests {
     fn test_negative_add() {
         // base=10, add=-3 → final=7
         let mut mv = ModifiedValue::new(Amt::units(10));
-        mv.push_modifier(make_modifier("tax", SignedAmt::ZERO, SignedAmt::ZERO, SignedAmt::units(-3)));
+        mv.push_modifier(make_modifier(
+            "tax",
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+            SignedAmt::units(-3),
+        ));
         assert_eq!(mv.final_value(), Amt::units(7));
     }
 
@@ -481,7 +629,12 @@ mod tests {
     fn test_clamp_to_zero() {
         // base=5, multiplier=-2.0 → total_mult = 1 + (-2) = -1 → clamped to 0 → final=0
         let mut mv = ModifiedValue::new(Amt::units(5));
-        mv.push_modifier(make_modifier("destroy", SignedAmt::ZERO, SignedAmt::units(-2), SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "destroy",
+            SignedAmt::ZERO,
+            SignedAmt::units(-2),
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.final_value(), Amt::ZERO);
     }
 
@@ -489,7 +642,12 @@ mod tests {
     fn test_clamp_base_to_zero() {
         // base=3, base_add=-10 → effective_base clamped to 0 → final=0
         let mut mv = ModifiedValue::new(Amt::units(3));
-        mv.push_modifier(make_modifier("drain", SignedAmt::units(-10), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "drain",
+            SignedAmt::units(-10),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.effective_base(), Amt::ZERO);
         assert_eq!(mv.final_value(), Amt::ZERO);
     }
@@ -498,7 +656,12 @@ mod tests {
     fn test_clamp_add_to_zero() {
         // base=5, add=-10 → result clamped to 0
         let mut mv = ModifiedValue::new(Amt::units(5));
-        mv.push_modifier(make_modifier("tax", SignedAmt::ZERO, SignedAmt::ZERO, SignedAmt::units(-10)));
+        mv.push_modifier(make_modifier(
+            "tax",
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+            SignedAmt::units(-10),
+        ));
         assert_eq!(mv.final_value(), Amt::ZERO);
     }
 
@@ -506,8 +669,18 @@ mod tests {
     fn test_mixed_positive_negative() {
         // base=10, mod1 mult=+0.5, mod2 mult=-0.3 → total_mult=1.0+0.5-0.3=1.2 → final=12
         let mut mv = ModifiedValue::new(Amt::units(10));
-        mv.push_modifier(make_modifier("buff", SignedAmt::ZERO, SignedAmt::new(0, 500), SignedAmt::ZERO));
-        mv.push_modifier(make_modifier("nerf", SignedAmt::ZERO, SignedAmt::new(0, -300), SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "buff",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 500),
+            SignedAmt::ZERO,
+        ));
+        mv.push_modifier(make_modifier(
+            "nerf",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, -300),
+            SignedAmt::ZERO,
+        ));
         assert_eq!(mv.total_multiplier(), SignedAmt::new(1, 200));
         assert_eq!(mv.final_value(), Amt::units(12));
     }
@@ -517,7 +690,12 @@ mod tests {
     #[test]
     fn test_modifier_expires_at_none_is_permanent() {
         let mut mv = ModifiedValue::new(Amt::units(10));
-        mv.push_modifier(make_modifier("perm", SignedAmt::units(5), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "perm",
+            SignedAmt::units(5),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         // cleanup at any time should not remove permanent modifiers
         assert_eq!(mv.cleanup_expired(0), 0);
         assert_eq!(mv.cleanup_expired(1000), 0);
@@ -528,7 +706,12 @@ mod tests {
     #[test]
     fn test_modifier_expires_after_duration() {
         let mut mv = ModifiedValue::new(Amt::units(10));
-        let m = make_modifier("timed", SignedAmt::units(5), SignedAmt::ZERO, SignedAmt::ZERO);
+        let m = make_modifier(
+            "timed",
+            SignedAmt::units(5),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        );
         mv.push_modifier_timed(m, 0, 10); // expires_at = 10
 
         // At clock=9, still present
@@ -547,14 +730,29 @@ mod tests {
         let mut mv = ModifiedValue::new(Amt::units(10));
 
         // Permanent modifier
-        mv.push_modifier(make_modifier("perm", SignedAmt::units(1), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "perm",
+            SignedAmt::units(1),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
 
         // Expires at 5
-        let m1 = make_modifier("early", SignedAmt::units(2), SignedAmt::ZERO, SignedAmt::ZERO);
+        let m1 = make_modifier(
+            "early",
+            SignedAmt::units(2),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        );
         mv.push_modifier_timed(m1, 0, 5);
 
         // Expires at 15
-        let m2 = make_modifier("late", SignedAmt::units(3), SignedAmt::ZERO, SignedAmt::ZERO);
+        let m2 = make_modifier(
+            "late",
+            SignedAmt::units(3),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        );
         mv.push_modifier_timed(m2, 0, 15);
 
         assert_eq!(mv.modifiers().len(), 3);
@@ -603,7 +801,10 @@ mod tests {
         };
         mv.push_modifier(m);
         assert_eq!(mv.modifiers().len(), 1);
-        assert_eq!(mv.modifiers()[0].on_expire_event, Some("test_event".to_string()));
+        assert_eq!(
+            mv.modifiers()[0].on_expire_event,
+            Some("test_event".to_string())
+        );
 
         // drain should return the modifier with on_expire_event preserved
         let expired = mv.drain_expired(10);
@@ -618,7 +819,12 @@ mod tests {
         let mut mv = ModifiedValue::new(Amt::units(10));
 
         // Permanent modifier
-        mv.push_modifier(make_modifier("perm", SignedAmt::units(1), SignedAmt::ZERO, SignedAmt::ZERO));
+        mv.push_modifier(make_modifier(
+            "perm",
+            SignedAmt::units(1),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
 
         // Expires at 5, with on_expire_event
         let m1 = Modifier {
@@ -664,10 +870,20 @@ mod tests {
         let mut sm = ScopedModifiers::new(Amt::units(10));
         assert_eq!(sm.generation(), 0);
 
-        sm.push_modifier(make_modifier("a", SignedAmt::units(1), SignedAmt::ZERO, SignedAmt::ZERO));
+        sm.push_modifier(make_modifier(
+            "a",
+            SignedAmt::units(1),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert_eq!(sm.generation(), 1);
 
-        sm.push_modifier(make_modifier("b", SignedAmt::units(2), SignedAmt::ZERO, SignedAmt::ZERO));
+        sm.push_modifier(make_modifier(
+            "b",
+            SignedAmt::units(2),
+            SignedAmt::ZERO,
+            SignedAmt::ZERO,
+        ));
         assert_eq!(sm.generation(), 2);
 
         sm.pop_modifier("a");
@@ -704,7 +920,12 @@ mod tests {
         let val = cache.get(&[&scope]);
         assert_eq!(val, Amt::units(10));
 
-        scope.push_modifier(make_modifier("buff", SignedAmt::ZERO, SignedAmt::new(0, 500), SignedAmt::ZERO));
+        scope.push_modifier(make_modifier(
+            "buff",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 500),
+            SignedAmt::ZERO,
+        ));
         // +50% multiplier: 10 * 1.5 = 15
         let val = cache.get(&[&scope]);
         assert_eq!(val, Amt::units(15));
@@ -729,9 +950,19 @@ mod tests {
         // Expected: 10 * (1.0 + 0.2 + 0.1) = 10 * 1.3 = 13
         let ship = ScopedModifiers::new(Amt::units(10));
         let mut system = ScopedModifiers::default();
-        system.push_modifier(make_modifier("sys_buff", SignedAmt::ZERO, SignedAmt::new(0, 200), SignedAmt::ZERO));
+        system.push_modifier(make_modifier(
+            "sys_buff",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 200),
+            SignedAmt::ZERO,
+        ));
         let mut empire = ScopedModifiers::default();
-        empire.push_modifier(make_modifier("emp_buff", SignedAmt::ZERO, SignedAmt::new(0, 100), SignedAmt::ZERO));
+        empire.push_modifier(make_modifier(
+            "emp_buff",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 100),
+            SignedAmt::ZERO,
+        ));
 
         let mut cache = CachedValue::default();
         let val = cache.get(&[&ship, &system, &empire]);
@@ -749,7 +980,12 @@ mod tests {
         assert!(!cache.is_stale(&[&ship, &system]));
 
         // Change only system scope
-        system.push_modifier(make_modifier("sys_buff", SignedAmt::ZERO, SignedAmt::new(0, 200), SignedAmt::ZERO));
+        system.push_modifier(make_modifier(
+            "sys_buff",
+            SignedAmt::ZERO,
+            SignedAmt::new(0, 200),
+            SignedAmt::ZERO,
+        ));
         assert!(cache.is_stale(&[&ship, &system]));
 
         let val = cache.get(&[&ship, &system]);
@@ -761,5 +997,90 @@ mod tests {
         let mut cache = CachedValue::default();
         let val = cache.get(&[]);
         assert_eq!(val, Amt::ZERO);
+    }
+
+    // --- #384: docked_scope() tests ---
+
+    #[test]
+    fn test_docked_scope_self() {
+        let pm = ParsedModifier {
+            target: "docked_to:self::ship.speed".to_string(),
+            base_add: 1.0,
+            multiplier: 0.0,
+            add: 0.0,
+        };
+        let (filter, target) = pm.docked_scope().expect("should parse");
+        assert_eq!(filter, "self");
+        assert_eq!(target, "ship.speed");
+    }
+
+    #[test]
+    fn test_docked_scope_hull_id() {
+        let pm = ParsedModifier {
+            target: "docked_to:carrier_hull::ship.shield_regen".to_string(),
+            base_add: 0.0,
+            multiplier: 0.0,
+            add: 5.0,
+        };
+        let (filter, target) = pm.docked_scope().expect("should parse");
+        assert_eq!(filter, "carrier_hull");
+        assert_eq!(target, "ship.shield_regen");
+    }
+
+    #[test]
+    fn test_docked_scope_wildcard() {
+        let pm = ParsedModifier {
+            target: "docked_to:*::ship.evasion".to_string(),
+            base_add: 0.0,
+            multiplier: 0.1,
+            add: 0.0,
+        };
+        let (filter, target) = pm.docked_scope().expect("should parse");
+        assert_eq!(filter, "*");
+        assert_eq!(target, "ship.evasion");
+    }
+
+    #[test]
+    fn test_docked_scope_not_docked() {
+        let pm = ParsedModifier {
+            target: "ship.speed".to_string(),
+            base_add: 1.0,
+            multiplier: 0.0,
+            add: 0.0,
+        };
+        assert!(pm.docked_scope().is_none());
+    }
+
+    #[test]
+    fn test_docked_scope_empty_filter() {
+        let pm = ParsedModifier {
+            target: "docked_to:::ship.speed".to_string(),
+            base_add: 0.0,
+            multiplier: 0.0,
+            add: 0.0,
+        };
+        assert!(pm.docked_scope().is_none());
+    }
+
+    #[test]
+    fn test_docked_scope_no_double_colon() {
+        let pm = ParsedModifier {
+            target: "docked_to:self:ship.speed".to_string(),
+            base_add: 0.0,
+            multiplier: 0.0,
+            add: 0.0,
+        };
+        assert!(pm.docked_scope().is_none());
+    }
+
+    #[test]
+    fn test_docked_scope_job_is_not_docked() {
+        let pm = ParsedModifier {
+            target: "job:miner::colony.minerals_per_hexadies".to_string(),
+            base_add: 1.0,
+            multiplier: 0.0,
+            add: 0.0,
+        };
+        assert!(pm.docked_scope().is_none());
     }
 }

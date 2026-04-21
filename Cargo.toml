@@ -3,11 +3,19 @@ members = ["macrocosmo", "macrocosmo-ai"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
 
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.test]
+codegen-units = 256
+opt-level = 0

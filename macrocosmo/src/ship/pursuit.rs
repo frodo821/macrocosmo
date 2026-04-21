@@ -36,9 +36,15 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::components::Position;
+use crate::empire::CommsParams;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
+use crate::knowledge::{
+    KnowledgeFact, NextEventId, PendingFactQueue, PerceivedFact, RelayNetwork, compute_fact_arrival,
+};
 use crate::physics;
+use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::time_system::GameClock;
 
 use super::{Owner, RulesOfEngagement, Ship, ShipState};
@@ -94,7 +100,7 @@ fn ship_position(
     now: i64,
 ) -> Option<[f64; 3]> {
     match state {
-        ShipState::Docked { system } => positions.get(*system).ok().map(|p| p.as_array()),
+        ShipState::InSystem { system } => positions.get(*system).ok().map(|p| p.as_array()),
         ShipState::Surveying { target_system, .. } => {
             positions.get(*target_system).ok().map(|p| p.as_array())
         }
@@ -124,6 +130,10 @@ fn ship_position(
             ])
         }
         ShipState::Loitering { position } => Some(*position),
+        // #217: Scouting ships orbit the target system.
+        ShipState::Scouting { target_system, .. } => {
+            positions.get(*target_system).ok().map(|p| p.as_array())
+        }
     }
 }
 
@@ -132,7 +142,10 @@ fn ship_position(
 /// by the in-system combat path (`resolve_combat`), and FTL ships are beyond
 /// baseline sensors.
 fn is_deep_space(state: &ShipState) -> bool {
-    matches!(state, ShipState::SubLight { .. } | ShipState::Loitering { .. })
+    matches!(
+        state,
+        ShipState::SubLight { .. } | ShipState::Loitering { .. }
+    )
 }
 
 /// Resolve a ship's faction entity. Ship owners store this as
@@ -159,7 +172,7 @@ pub fn detect_hostiles_system(
     mut commands: Commands,
     clock: Res<GameClock>,
     relations: Res<FactionRelations>,
-    positions: Query<&crate::components::Position>,
+    positions: Query<&Position>,
     ships: Query<(
         Entity,
         &Ship,
@@ -169,6 +182,12 @@ pub fn detect_hostiles_system(
     )>,
     mut detected: Query<&mut DetectedHostiles>,
     mut events: MessageWriter<GameEvent>,
+    mut fact_queue: ResMut<PendingFactQueue>,
+    mut next_event_id: ResMut<NextEventId>,
+    mut notified_ids: ResMut<crate::knowledge::NotifiedEventIds>,
+    relay_network: Option<Res<RelayNetwork>>,
+    player_q: Query<&StationedAt, With<Player>>,
+    empire_q: Query<&CommsParams, With<PlayerEmpire>>,
 ) {
     let now = clock.elapsed;
 
@@ -220,6 +239,15 @@ pub fn detect_hostiles_system(
             continue;
         }
         if !is_deep_space(state) {
+            continue;
+        }
+        // #296 (S-3): Immobile ships (Infrastructure Cores) can never
+        // intercept a hostile target, so they are excluded from the
+        // detector loop entirely. Defence-in-depth: a Core always sits in
+        // ShipState::InSystem and would already be filtered by is_deep_space,
+        // but if a future feature ever loiters one in deep space the
+        // pursuit pipeline must remain coherent.
+        if ship.is_immobile() {
             continue;
         }
         let Some(detector_faction) = resolve_ship_faction(&ship.owner, fowner) else {
@@ -282,19 +310,65 @@ pub fn detect_hostiles_system(
         };
 
         if should_notify {
+            let description = format!(
+                "{} detected hostile {} at ({:.2}, {:.2}, {:.2})",
+                det.detector_name,
+                det.target_name,
+                det.target_pos[0],
+                det.target_pos[1],
+                det.target_pos[2],
+            );
+            // #249: Shared EventId between the legacy GameEvent and the paired
+            // KnowledgeFact so NotifiedEventIds dedupe keeps only one banner.
+            // Register before push (tri-state map: missing == "treated as
+            // notified", so the first try_notify on a registered entry wins).
+            let event_id = next_event_id.allocate();
+            notified_ids.register(event_id);
+            // EventLog + auto_pause still receive the raw event (the notification
+            // path is the one gaining light-speed delay).
             events.write(GameEvent {
+                id: event_id,
                 timestamp: now,
                 kind: GameEventKind::HostileDetected,
-                description: format!(
-                    "{} detected hostile {} at ({:.2}, {:.2}, {:.2})",
-                    det.detector_name,
-                    det.target_name,
-                    det.target_pos[0],
-                    det.target_pos[1],
-                    det.target_pos[2],
-                ),
+                description: description.clone(),
                 related_system: None,
             });
+
+            // #233: Notification via PendingFactQueue — 50 ly remote detections
+            // used to alert the player instantly, violating the light-speed
+            // contract. Routing through `compute_fact_arrival` respects that
+            // contract and also enables relay-accelerated propagation when
+            // coverage exists.
+            let player_pos_arr = player_q
+                .iter()
+                .next()
+                .and_then(|s| positions.get(s.system).ok())
+                .map(|p| p.as_array());
+            if let Some(player_pos) = player_pos_arr {
+                let comms_fallback = CommsParams::default();
+                let comms = empire_q.iter().next().unwrap_or(&comms_fallback);
+                let empty_relays: Vec<crate::knowledge::RelaySnapshot> = Vec::new();
+                let relays_slice = relay_network
+                    .as_deref()
+                    .map(|n| n.relays.as_slice())
+                    .unwrap_or(&empty_relays);
+                let plan =
+                    compute_fact_arrival(now, det.target_pos, player_pos, relays_slice, comms);
+                fact_queue.record(PerceivedFact {
+                    fact: KnowledgeFact::HostileDetected {
+                        event_id: Some(event_id),
+                        target: det.target,
+                        detector: det.detector,
+                        target_pos: det.target_pos,
+                        description,
+                    },
+                    observed_at: now,
+                    arrives_at: plan.arrives_at,
+                    source: plan.source,
+                    origin_pos: det.target_pos,
+                    related_system: None,
+                });
+            }
         }
     }
 }
@@ -324,7 +398,7 @@ mod tests {
     fn is_deep_space_classification() {
         let mut world = World::new();
         let sys = world.spawn_empty().id();
-        assert!(!is_deep_space(&ShipState::Docked { system: sys }));
+        assert!(!is_deep_space(&ShipState::InSystem { system: sys }));
         assert!(!is_deep_space(&ShipState::InFTL {
             origin_system: sys,
             destination_system: sys,

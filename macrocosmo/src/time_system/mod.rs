@@ -28,7 +28,10 @@ pub struct GameClock {
 
 impl GameClock {
     pub fn new(elapsed: i64) -> Self {
-        Self { elapsed, accumulator: 0.0 }
+        Self {
+            elapsed,
+            accumulator: 0.0,
+        }
     }
 
     pub fn year(&self) -> i64 {

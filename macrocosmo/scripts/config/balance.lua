@@ -21,4 +21,7 @@ define_balance {
     colonization_build_time     = 90, -- hexadies
     base_authority_per_hexadies = 1.0,
     authority_cost_per_colony   = 0.5,
+
+    -- Sovereignty (#298 S-4)
+    core_recovery_rate_per_hexadies = 1.0, -- HP recovered per hexady (peacetime, attacker absent)
 }

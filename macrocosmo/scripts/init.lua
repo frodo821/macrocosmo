@@ -14,6 +14,9 @@ require("config.balance")
 
 -- Base definitions (no cross-references)
 require("stars")
+-- #335: Biomes must load before planet_types so planet_type definitions can
+-- reference biomes via `default_biome = biomes.temperate` (or similar).
+require("biomes")
 require("planets")
 require("jobs")
 
@@ -48,6 +51,21 @@ require("anomalies")
 
 -- Events
 require("events")
+
+-- #350: Knowledge kinds (ScriptableKnowledge epic #349). Loaded after
+-- events so modder-defined kinds can share namespaces with existing event
+-- definitions. Must come before lifecycle so on_game_start callbacks can
+-- `record_knowledge` / `on("<id>@observed", fn)` once K-2 / K-3 land.
+require("knowledge.sample")
+
+-- #345 ESC-2: default Lua bridge from `*@observed` events to the ESC
+-- Notifications tab. Must come AFTER knowledge.sample (so the
+-- reserved events exist) and BEFORE lifecycle (so the `on()`
+-- subscriber is registered before lifecycle callbacks may fire
+-- `gs:record_knowledge` at game start). Loaded from a separate
+-- subdirectory so future notification bridges / policy overrides
+-- can sit alongside without cluttering the root init ordering.
+require("notifications.default_bridge")
 
 -- Lifecycle hooks (must be last — registers callbacks for game start/load)
 require("lifecycle")

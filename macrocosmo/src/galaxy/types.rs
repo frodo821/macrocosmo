@@ -1,6 +1,11 @@
 use bevy::prelude::*;
 
-use crate::scripting::galaxy_api::{PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition, StarTypeRegistry};
+use crate::scripting::galaxy_api::{
+    BiomeLuaDefinition, PlanetTypeDefinition, PlanetTypeRegistry, ResourceBias, StarTypeDefinition,
+    StarTypeRegistry,
+};
+
+use super::biome::{BiomeDefinition, BiomeRegistry};
 
 /// Hardcoded fallback star types when no Lua definitions are loaded.
 pub(crate) fn default_star_types() -> Vec<StarTypeDefinition> {
@@ -31,7 +36,40 @@ pub(crate) fn default_planet_types() -> Vec<PlanetTypeDefinition> {
             research: 1.0,
         },
         weight: 1.0,
+        default_biome: None,
     }]
+}
+
+/// #335: Startup system that parses biome definitions from the
+/// `_biome_definitions` Lua accumulator into [`BiomeRegistry`]. Runs after
+/// `load_all_scripts`. Always ensures a `"default"` biome exists so planet
+/// lookups fall back cleanly.
+pub fn load_biome_registry(
+    engine: Res<crate::scripting::ScriptEngine>,
+    mut registry: ResMut<BiomeRegistry>,
+) {
+    match crate::scripting::galaxy_api::parse_biomes(engine.lua()) {
+        Ok(biomes) => {
+            let count = biomes.len();
+            for b in biomes {
+                let BiomeLuaDefinition {
+                    id,
+                    display_name,
+                    description,
+                } = b;
+                registry.insert(BiomeDefinition {
+                    id,
+                    display_name,
+                    description,
+                });
+            }
+            info!("Loaded {} biome definitions from Lua", count);
+        }
+        Err(e) => {
+            warn!("Failed to parse biome definitions: {e}");
+        }
+    }
+    registry.ensure_default();
 }
 
 /// Startup system that parses star and planet type definitions from Lua accumulators.

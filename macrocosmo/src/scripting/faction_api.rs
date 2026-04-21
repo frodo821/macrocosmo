@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::faction::{FactionRelations, RelationState};
+use crate::faction::RelationState;
 
 /// Category that a faction belongs to (e.g. `empire`, `space_creature`,
 /// `ancient_defense`). Defined from Lua via `define_faction_type`.
@@ -21,6 +21,22 @@ pub struct FactionTypeDefinition {
     pub default_standing: f64,
     /// Default RelationState for new relationships.
     pub default_state: RelationState,
+    /// Combat strength for hostile faction entities of this type
+    /// (used at galaxy generation to scale the `HostileStats.strength`
+    /// component, and by combat strength calculations). Default 0.0.
+    pub strength: f64,
+    /// Evasion stat for hostile faction entities (0..=100).
+    pub evasion: f64,
+    /// Default current HP for a newly spawned hostile entity of this type.
+    pub default_hp: f64,
+    /// Default max HP for a newly spawned hostile entity of this type.
+    pub default_max_hp: f64,
+    /// Whether factions of this type are passive (not promoted to Empire).
+    /// Passive factions (e.g. `space_creature`, `ancient_defense`) exist as
+    /// bare `Faction` entities and are never upgraded to full empires.
+    pub is_passive: bool,
+    /// Diplomatic option ids available to factions of this type (#302).
+    pub allowed_diplomatic_options: Vec<String>,
 }
 
 /// Registry of all faction-type definitions loaded from Lua.
@@ -37,17 +53,40 @@ impl FactionTypeRegistry {
 }
 
 /// A faction definition loaded from Lua scripts.
+///
+/// Preset fields (`can_diplomacy`, `default_standing`, `default_state`,
+/// `is_passive`, `allowed_diplomatic_options`) are copied from the
+/// referenced [`FactionTypeDefinition`] at parse time. The `faction_type`
+/// string is kept as metadata but is NOT used for runtime behavior
+/// decisions — all runtime lookups read from the faction instance.
 #[derive(Debug, Clone)]
 pub struct FactionDefinition {
     pub id: String,
     pub name: String,
     /// Optional faction-type id (e.g. `"empire"`, `"space_creature"`).
-    /// Resolved against `FactionTypeRegistry` at runtime — not validated
-    /// at parse time so that types and factions can be defined in any order.
+    /// Kept as metadata/documentation. Runtime code should read the
+    /// preset fields below instead of looking up the type registry.
     pub faction_type: Option<String>,
     /// Whether this faction defines an `on_game_start` callback.
     /// The actual function is looked up from `_faction_definitions` at call time.
     pub has_on_game_start: bool,
+    // -- Preset fields (copied from FactionTypeDefinition at parse time) --
+    /// Whether this faction can engage in formal diplomacy. Copied from
+    /// `FactionTypeDefinition.can_diplomacy`; defaults to `false`.
+    pub can_diplomacy: bool,
+    /// Default standing for new relationships. Copied from
+    /// `FactionTypeDefinition.default_standing`; defaults to `0.0`.
+    pub default_standing: f64,
+    /// Default relation state for new relationships. Copied from
+    /// `FactionTypeDefinition.default_state`; defaults to `Neutral`.
+    pub default_state: RelationState,
+    /// Whether this faction is passive (space_creature, ancient_defense).
+    /// Passive factions are not promoted to Empire entities. Copied from
+    /// `FactionTypeDefinition`; defaults to `false`.
+    pub is_passive: bool,
+    /// Diplomatic option ids available to this faction. Copied from
+    /// `FactionTypeDefinition.allowed_diplomatic_options`; defaults to empty.
+    pub allowed_diplomatic_options: Vec<String>,
 }
 
 /// Registry of all faction definitions loaded from Lua.
@@ -56,8 +95,24 @@ pub struct FactionRegistry {
     pub factions: HashMap<String, FactionDefinition>,
 }
 
+/// Build a lookup map from faction-type id to [`FactionTypeDefinition`] by
+/// reading the `_faction_type_definitions` Lua global. Used internally by
+/// [`parse_faction_definitions`] to resolve preset fields at parse time.
+fn build_type_lookup(
+    lua: &mlua::Lua,
+) -> Result<std::collections::HashMap<String, FactionTypeDefinition>, mlua::Error> {
+    let defs = parse_faction_type_definitions(lua)?;
+    Ok(defs.into_iter().map(|d| (d.id.clone(), d)).collect())
+}
+
 /// Parse faction definitions from the Lua `_faction_definitions` global table.
+///
+/// Preset fields (`can_diplomacy`, `default_standing`, `default_state`,
+/// `is_passive`, `allowed_diplomatic_options`) are copied from the
+/// referenced [`FactionTypeDefinition`] at parse time. If no type is
+/// referenced or the type id is unknown, defaults apply.
 pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinition>, mlua::Error> {
+    let type_lookup = build_type_lookup(lua)?;
     let defs: mlua::Table = lua.globals().get("_faction_definitions")?;
     let mut result = Vec::new();
 
@@ -67,7 +122,9 @@ pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinitio
         let id: String = table.get("id")?;
         let name: String = table.get("name")?;
         let has_on_game_start = matches!(
-            table.get::<mlua::Value>("on_game_start").unwrap_or(mlua::Value::Nil),
+            table
+                .get::<mlua::Value>("on_game_start")
+                .unwrap_or(mlua::Value::Nil),
             mlua::Value::Function(_)
         );
 
@@ -75,7 +132,9 @@ pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinitio
         // ("empire") or a reference table returned by `define_faction_type`.
         // Backwards-compatible alias `type` is also accepted; if both are
         // present `faction_type` wins.
-        let raw_type = table.get::<mlua::Value>("faction_type").unwrap_or(mlua::Value::Nil);
+        let raw_type = table
+            .get::<mlua::Value>("faction_type")
+            .unwrap_or(mlua::Value::Nil);
         let raw_type = match raw_type {
             mlua::Value::Nil => table.get::<mlua::Value>("type").unwrap_or(mlua::Value::Nil),
             v => v,
@@ -85,11 +144,29 @@ pub fn parse_faction_definitions(lua: &mlua::Lua) -> Result<Vec<FactionDefinitio
             v => Some(crate::scripting::extract_ref_id(&v)?),
         };
 
+        // Resolve preset fields from the faction type definition, if any.
+        let type_def = faction_type.as_deref().and_then(|tid| type_lookup.get(tid));
+
+        let can_diplomacy = type_def.map(|t| t.can_diplomacy).unwrap_or(false);
+        let default_standing = type_def.map(|t| t.default_standing).unwrap_or(0.0);
+        let default_state = type_def
+            .map(|t| t.default_state)
+            .unwrap_or(RelationState::Neutral);
+        let is_passive = type_def.map(|t| t.is_passive).unwrap_or(false);
+        let allowed_diplomatic_options = type_def
+            .map(|t| t.allowed_diplomatic_options.clone())
+            .unwrap_or_default();
+
         result.push(FactionDefinition {
             id,
             name,
             faction_type,
             has_on_game_start,
+            can_diplomacy,
+            default_standing,
+            default_state,
+            is_passive,
+            allowed_diplomatic_options,
         });
     }
 
@@ -115,11 +192,35 @@ pub fn parse_faction_type_definitions(
             .unwrap_or_else(|| "neutral".to_string());
         let default_state = RelationState::from_str(&default_state_str)?;
 
+        let strength: f64 = table.get::<Option<f64>>("strength")?.unwrap_or(0.0);
+        let evasion: f64 = table.get::<Option<f64>>("evasion")?.unwrap_or(0.0);
+        let default_hp: f64 = table.get::<Option<f64>>("default_hp")?.unwrap_or(0.0);
+        let default_max_hp: f64 = table
+            .get::<Option<f64>>("default_max_hp")?
+            .unwrap_or(default_hp);
+
+        let is_passive: bool = table.get::<Option<bool>>("is_passive")?.unwrap_or(false);
+
+        // Parse allowed_diplomatic_options array (#302)
+        let mut allowed_diplomatic_options = Vec::new();
+        if let Some(opts_table) = table.get::<Option<mlua::Table>>("allowed_diplomatic_options")? {
+            for opt_pair in opts_table.pairs::<i64, mlua::Value>() {
+                let (_, val) = opt_pair?;
+                allowed_diplomatic_options.push(crate::scripting::extract_ref_id(&val)?);
+            }
+        }
+
         result.push(FactionTypeDefinition {
             id,
             can_diplomacy,
             default_standing,
             default_state,
+            strength,
+            evasion,
+            default_hp,
+            default_max_hp,
+            is_passive,
+            allowed_diplomatic_options,
         });
     }
 
@@ -127,164 +228,127 @@ pub fn parse_faction_type_definitions(
 }
 
 // ---------------------------------------------------------------------------
-// #172: define_diplomatic_action — Lua-defined custom diplomatic actions
+// #302: define_diplomatic_option — Lua-defined diplomatic option framework
 // ---------------------------------------------------------------------------
 
-/// Lua-defined custom diplomatic action (e.g. "trade_agreement") that
-/// coexists with the built-in [`crate::faction::DiplomaticAction`] variants
-/// (`DeclareWar`, `ProposePeace`, etc.).
+/// A possible response to a diplomatic option (POD — no closures).
 ///
-/// Prerequisite checks (`requires_diplomacy`, `requires_state`,
-/// `min_standing`) gate whether the sending faction may propose the action
-/// against a given target. When delivered and accepted, the optional
-/// `on_accepted` Lua callback runs with an `EffectScope` whose returned
-/// [`crate::effect::DescriptiveEffect`] list is applied as normal tech-style
-/// effects (flag sets, global param modifiers, etc.).
+/// When the receiver picks this response, the `event_id` string is fired
+/// through the event system so Lua `on()` handlers can react.
 #[derive(Debug, Clone)]
-pub struct DiplomaticActionDefinition {
+pub struct DiplomaticOptionResponse {
+    /// Unique response id within the option (e.g. "accept", "reject").
+    pub id: String,
+    /// Human-readable label shown in the UI.
+    pub label: String,
+    /// Event id to fire when this response is chosen.
+    pub event_id: String,
+}
+
+/// A diplomatic option definition loaded from Lua.
+///
+/// Options model a richer interaction than the old (removed) DiplomaticAction enum:
+/// they carry a `kind` (bilateral/unilateral), a list of POD
+/// [`DiplomaticOptionResponse`] entries, and a `payload_schema` hint that
+/// describes the `HashMap<String,String>` fields carried by the in-flight
+/// [`crate::faction::DiplomaticEvent`].
+#[derive(Debug, Clone)]
+pub struct DiplomaticOptionDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
-    /// If `true`, the target faction's `FactionType.can_diplomacy` must be
-    /// `true` for the action to be available.
-    pub requires_diplomacy: bool,
-    /// If set, the *sender's* current view of the target must be in this
-    /// state for the action to be available.
-    pub requires_state: Option<RelationState>,
-    /// If set, the sender's standing toward the target must be `>=` this
-    /// value for the action to be available.
-    pub min_standing: Option<f64>,
-    /// Whether the definition declared an `on_accepted` Lua callback. The
-    /// actual function is looked up lazily at call time via
-    /// [`lookup_on_accepted`] so we don't need to retain a long-lived
-    /// reference to the `Lua` context in the registry.
-    pub has_on_accepted: bool,
+    /// `"bilateral"` (requires receiver response) or `"unilateral"` (fire and
+    /// forget).
+    pub kind: String,
+    /// Ordered list of responses available to the receiver (empty for
+    /// unilateral options).
+    pub responses: Vec<DiplomaticOptionResponse>,
+    /// Optional list of expected payload keys for documentation /
+    /// validation purposes. Not enforced at runtime.
+    pub payload_schema: Vec<String>,
 }
 
-impl DiplomaticActionDefinition {
-    /// Evaluate prerequisite checks against the current game state.
-    ///
-    /// Returns `true` iff:
-    /// - when `requires_diplomacy`: the target faction's type is marked
-    ///   `can_diplomacy`;
-    /// - when `requires_state` is set: the sender's view of the target
-    ///   matches that state (an absent relation counts as `Neutral`);
-    /// - when `min_standing` is set: the sender's standing toward the
-    ///   target is `>=` the threshold.
-    pub fn is_available(
-        &self,
-        from_faction_entity: Entity,
-        to_faction_entity: Entity,
-        factions: &Query<&crate::player::Faction>,
-        relations: &FactionRelations,
-        faction_registry: &FactionRegistry,
-        type_registry: &FactionTypeRegistry,
-    ) -> bool {
-        if self.requires_diplomacy
-            && !crate::faction::faction_can_diplomacy(
-                to_faction_entity,
-                factions,
-                faction_registry,
-                type_registry,
-            )
-        {
-            return false;
-        }
-
-        let view = relations.get_or_default(from_faction_entity, to_faction_entity);
-
-        if let Some(state) = self.requires_state
-            && view.state != state
-        {
-            return false;
-        }
-
-        if let Some(min) = self.min_standing
-            && view.standing < min
-        {
-            return false;
-        }
-
-        true
-    }
-}
-
-/// Registry of all diplomatic-action definitions loaded from Lua.
+/// Registry of all diplomatic-option definitions loaded from Lua.
 #[derive(Resource, Default, Debug)]
-pub struct DiplomaticActionRegistry {
-    pub actions: HashMap<String, DiplomaticActionDefinition>,
+pub struct DiplomaticOptionRegistry {
+    pub options: HashMap<String, DiplomaticOptionDefinition>,
 }
 
-impl DiplomaticActionRegistry {
-    /// Look up an action by id. Returns `None` if not registered.
-    pub fn get(&self, id: &str) -> Option<&DiplomaticActionDefinition> {
-        self.actions.get(id)
+impl DiplomaticOptionRegistry {
+    /// Look up an option by id.
+    pub fn get(&self, id: &str) -> Option<&DiplomaticOptionDefinition> {
+        self.options.get(id)
     }
 }
 
-/// Parse diplomatic-action definitions from the Lua
-/// `_diplomatic_action_definitions` global table.
-pub fn parse_diplomatic_action_definitions(
+/// Parse diplomatic-option definitions from the Lua
+/// `_diplomatic_option_definitions` global table.
+pub fn parse_diplomatic_option_definitions(
     lua: &mlua::Lua,
-) -> Result<Vec<DiplomaticActionDefinition>, mlua::Error> {
-    let defs: mlua::Table = lua.globals().get("_diplomatic_action_definitions")?;
+) -> Result<Vec<DiplomaticOptionDefinition>, mlua::Error> {
+    let defs: mlua::Table = lua.globals().get("_diplomatic_option_definitions")?;
     let mut result = Vec::new();
 
     for pair in defs.pairs::<i64, mlua::Table>() {
         let (_, table) = pair?;
 
         let id: String = table.get("id")?;
-        let name: String = table.get::<Option<String>>("name")?.unwrap_or_else(|| id.clone());
-        let description: String = table.get::<Option<String>>("description")?.unwrap_or_default();
-        let requires_diplomacy: bool = table
-            .get::<Option<bool>>("requires_diplomacy")?
-            .unwrap_or(false);
+        let name: String = table
+            .get::<Option<String>>("name")?
+            .unwrap_or_else(|| id.clone());
+        let description: String = table
+            .get::<Option<String>>("description")?
+            .unwrap_or_default();
+        let kind: String = table
+            .get::<Option<String>>("kind")?
+            .unwrap_or_else(|| "bilateral".to_string());
 
-        let requires_state = match table.get::<Option<String>>("requires_state")? {
-            Some(s) => Some(RelationState::from_str(&s)?),
-            None => None,
-        };
+        // Validate kind
+        if kind != "bilateral" && kind != "unilateral" {
+            return Err(mlua::Error::RuntimeError(format!(
+                "define_diplomatic_option '{}': kind must be 'bilateral' or 'unilateral', got '{}'",
+                id, kind
+            )));
+        }
 
-        let min_standing = table.get::<Option<f64>>("min_standing")?;
+        // Parse responses array
+        let mut responses = Vec::new();
+        if let Some(resp_table) = table.get::<Option<mlua::Table>>("responses")? {
+            for resp_pair in resp_table.pairs::<i64, mlua::Table>() {
+                let (_, resp) = resp_pair?;
+                let resp_id: String = resp.get("id")?;
+                let resp_label: String = resp
+                    .get::<Option<String>>("label")?
+                    .unwrap_or_else(|| resp_id.clone());
+                let resp_event_id: String = resp.get("event_id")?;
+                responses.push(DiplomaticOptionResponse {
+                    id: resp_id,
+                    label: resp_label,
+                    event_id: resp_event_id,
+                });
+            }
+        }
 
-        let has_on_accepted = matches!(
-            table.get::<mlua::Value>("on_accepted").unwrap_or(mlua::Value::Nil),
-            mlua::Value::Function(_)
-        );
+        // Parse payload_schema array
+        let mut payload_schema = Vec::new();
+        if let Some(schema_table) = table.get::<Option<mlua::Table>>("payload_schema")? {
+            for schema_pair in schema_table.pairs::<i64, String>() {
+                let (_, key) = schema_pair?;
+                payload_schema.push(key);
+            }
+        }
 
-        result.push(DiplomaticActionDefinition {
+        result.push(DiplomaticOptionDefinition {
             id,
             name,
             description,
-            requires_diplomacy,
-            requires_state,
-            min_standing,
-            has_on_accepted,
+            kind,
+            responses,
+            payload_schema,
         });
     }
 
     Ok(result)
-}
-
-/// Look up the `on_accepted` Lua function for the given diplomatic-action id,
-/// if any. Returns Ok(None) if the action is not defined or has no callback.
-pub fn lookup_on_accepted(
-    lua: &mlua::Lua,
-    action_id: &str,
-) -> Result<Option<mlua::Function>, mlua::Error> {
-    let defs: mlua::Table = lua.globals().get("_diplomatic_action_definitions")?;
-    for pair in defs.pairs::<i64, mlua::Table>() {
-        let (_, table) = pair?;
-        let id: String = table.get("id")?;
-        if id == action_id {
-            let value: mlua::Value = table.get("on_accepted")?;
-            if let mlua::Value::Function(f) = value {
-                return Ok(Some(f));
-            }
-            return Ok(None);
-        }
-    }
-    Ok(None)
 }
 
 /// Look up the `on_game_start` Lua function for the given faction id, if any.
@@ -393,11 +457,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        lua.load(
-            r#"define_faction { id = "humanity_empire", name = "Terran Federation" }"#,
-        )
-        .exec()
-        .unwrap();
+        lua.load(r#"define_faction { id = "humanity_empire", name = "Terran Federation" }"#)
+            .exec()
+            .unwrap();
 
         let func = lookup_on_game_start(lua, "humanity_empire").unwrap();
         assert!(func.is_none());
@@ -435,8 +497,14 @@ mod tests {
 
     #[test]
     fn test_relation_state_from_str() {
-        assert_eq!(RelationState::from_str("neutral").unwrap(), RelationState::Neutral);
-        assert_eq!(RelationState::from_str("Peace").unwrap(), RelationState::Peace);
+        assert_eq!(
+            RelationState::from_str("neutral").unwrap(),
+            RelationState::Neutral
+        );
+        assert_eq!(
+            RelationState::from_str("Peace").unwrap(),
+            RelationState::Peace
+        );
         assert_eq!(RelationState::from_str("WAR").unwrap(), RelationState::War);
         assert_eq!(
             RelationState::from_str("alliance").unwrap(),
@@ -539,11 +607,9 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        lua.load(
-            r#"define_faction_type { id = "bad", default_state = "frenemy" }"#,
-        )
-        .exec()
-        .unwrap();
+        lua.load(r#"define_faction_type { id = "bad", default_state = "frenemy" }"#)
+            .exec()
+            .unwrap();
 
         let res = parse_faction_type_definitions(lua);
         assert!(res.is_err(), "unknown default_state must produce an error");
@@ -559,11 +625,59 @@ mod tests {
                 can_diplomacy: true,
                 default_standing: 0.0,
                 default_state: RelationState::Neutral,
+                strength: 0.0,
+                evasion: 0.0,
+                default_hp: 0.0,
+                default_max_hp: 0.0,
+                is_passive: false,
+                allowed_diplomatic_options: vec![],
             },
         );
 
         assert!(registry.get("empire").is_some());
         assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_parse_faction_type_with_hostile_stats() {
+        // #293: strength/evasion/default_hp/default_max_hp drive hostile
+        // entity spawn at galaxy generation time, replacing hard-coded
+        // per-hostile-type constants.
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction_type {
+                id = "space_creature",
+                strength = 10,
+                evasion = 20,
+                default_hp = 80,
+                default_max_hp = 80,
+            }
+            define_faction_type {
+                id = "ancient_defense",
+                strength = 10,
+                evasion = 10,
+                default_hp = 200,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_type_definitions(lua).unwrap();
+        let creature = defs.iter().find(|d| d.id == "space_creature").unwrap();
+        assert!((creature.strength - 10.0).abs() < 1e-9);
+        assert!((creature.evasion - 20.0).abs() < 1e-9);
+        assert!((creature.default_hp - 80.0).abs() < 1e-9);
+        assert!((creature.default_max_hp - 80.0).abs() < 1e-9);
+
+        let ancient = defs.iter().find(|d| d.id == "ancient_defense").unwrap();
+        assert!((ancient.strength - 10.0).abs() < 1e-9);
+        // default_max_hp falls back to default_hp when absent
+        assert!((ancient.default_hp - 200.0).abs() < 1e-9);
+        assert!((ancient.default_max_hp - 200.0).abs() < 1e-9);
     }
 
     #[test]
@@ -639,5 +753,264 @@ mod tests {
         let defs = parse_faction_definitions(lua).unwrap();
         assert_eq!(defs.len(), 1);
         assert!(defs[0].faction_type.is_none());
+        // Defaults when no type is referenced.
+        assert!(!defs[0].can_diplomacy);
+        assert!((defs[0].default_standing - 0.0).abs() < 1e-9);
+        assert_eq!(defs[0].default_state, RelationState::Neutral);
+        assert!(!defs[0].is_passive);
+        assert!(defs[0].allowed_diplomatic_options.is_empty());
+    }
+
+    // --- #323: preset copy from faction_type ---
+
+    #[test]
+    fn test_faction_preset_copy_from_type() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            local empire = define_faction_type {
+                id = "empire",
+                can_diplomacy = true,
+                default_standing = 10,
+                default_state = "peace",
+                allowed_diplomatic_options = { "negotiate" },
+            }
+            define_faction {
+                id = "federation",
+                name = "Federation",
+                faction_type = empire,
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let f = &defs[0];
+        assert!(f.can_diplomacy);
+        assert!((f.default_standing - 10.0).abs() < 1e-9);
+        assert_eq!(f.default_state, RelationState::Peace);
+        assert!(!f.is_passive);
+        assert_eq!(f.allowed_diplomatic_options, vec!["negotiate".to_string()]);
+    }
+
+    #[test]
+    fn test_faction_preset_copy_passive_type() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction_type {
+                id = "space_creature",
+                can_diplomacy = false,
+                is_passive = true,
+                default_standing = -100,
+                default_state = "neutral",
+            }
+            define_faction {
+                id = "bugs",
+                name = "Space Bugs",
+                faction_type = "space_creature",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let f = &defs[0];
+        assert!(!f.can_diplomacy);
+        assert!(f.is_passive);
+        assert!((f.default_standing - (-100.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_faction_preset_unknown_type_uses_defaults() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction {
+                id = "mystery",
+                name = "Mystery",
+                faction_type = "nonexistent",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let f = &defs[0];
+        assert_eq!(f.faction_type.as_deref(), Some("nonexistent"));
+        assert!(!f.can_diplomacy);
+        assert!((f.default_standing - 0.0).abs() < 1e-9);
+        assert_eq!(f.default_state, RelationState::Neutral);
+        assert!(!f.is_passive);
+    }
+
+    #[test]
+    fn test_faction_type_is_passive_parsed() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_faction_type {
+                id = "passive_type",
+                is_passive = true,
+            }
+            define_faction_type {
+                id = "active_type",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_faction_type_definitions(lua).unwrap();
+        let passive = defs.iter().find(|d| d.id == "passive_type").unwrap();
+        assert!(passive.is_passive);
+        let active = defs.iter().find(|d| d.id == "active_type").unwrap();
+        assert!(!active.is_passive);
+    }
+
+    // --- #302: define_diplomatic_option ---
+
+    #[test]
+    fn test_parse_diplomatic_option_bilateral() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_diplomatic_option {
+                id = "generic_negotiation",
+                name = "Negotiate",
+                description = "Open a bilateral negotiation.",
+                kind = "bilateral",
+                responses = {
+                    { id = "accept", label = "Accept", event_id = "negotiation_accepted" },
+                    { id = "reject", label = "Reject", event_id = "negotiation_rejected" },
+                },
+                payload_schema = { "terms", "duration" },
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_diplomatic_option_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        let opt = &defs[0];
+        assert_eq!(opt.id, "generic_negotiation");
+        assert_eq!(opt.name, "Negotiate");
+        assert_eq!(opt.kind, "bilateral");
+        assert_eq!(opt.responses.len(), 2);
+        assert_eq!(opt.responses[0].id, "accept");
+        assert_eq!(opt.responses[0].event_id, "negotiation_accepted");
+        assert_eq!(opt.responses[1].id, "reject");
+        assert_eq!(opt.payload_schema, vec!["terms", "duration"]);
+    }
+
+    #[test]
+    fn test_parse_diplomatic_option_unilateral() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_diplomatic_option {
+                id = "break_alliance",
+                name = "Break Alliance",
+                kind = "unilateral",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let defs = parse_diplomatic_option_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].kind, "unilateral");
+        assert!(defs[0].responses.is_empty());
+        assert!(defs[0].payload_schema.is_empty());
+    }
+
+    #[test]
+    fn test_parse_diplomatic_option_invalid_kind() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(
+            r#"
+            define_diplomatic_option {
+                id = "bad",
+                kind = "trilateral",
+            }
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let res = parse_diplomatic_option_definitions(lua);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_diplomatic_option_defaults() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        lua.load(r#"define_diplomatic_option { id = "minimal" }"#)
+            .exec()
+            .unwrap();
+
+        let defs = parse_diplomatic_option_definitions(lua).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "minimal");
+        assert_eq!(defs[0].kind, "bilateral");
+        assert!(defs[0].description.is_empty());
+    }
+
+    #[test]
+    fn test_diplomatic_option_registry_lookup() {
+        let mut registry = DiplomaticOptionRegistry::default();
+        registry.options.insert(
+            "test".to_string(),
+            DiplomaticOptionDefinition {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                description: String::new(),
+                kind: "bilateral".to_string(),
+                responses: vec![],
+                payload_schema: vec![],
+            },
+        );
+        assert!(registry.get("test").is_some());
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_define_diplomatic_option_returns_reference() {
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+
+        let result: mlua::Table = lua
+            .load(r#"return define_diplomatic_option { id = "test_opt" }"#)
+            .eval()
+            .unwrap();
+
+        let def_type: String = result.get("_def_type").unwrap();
+        assert_eq!(def_type, "diplomatic_option");
+        let id: String = result.get("id").unwrap();
+        assert_eq!(id, "test_opt");
     }
 }

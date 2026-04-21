@@ -1,16 +1,64 @@
 use mlua::prelude::*;
 use std::path::Path;
 
-use super::helpers::extract_id_from_lua_value;
 use super::effect_scope;
+use super::helpers::extract_id_from_lua_value;
+use super::log_buffer::{LogEntry, LogSource, SharedPrintBuffer};
 
 /// Configure global tables and functions available to all Lua scripts.
+///
+/// When `print_buffer` is `Some`, Lua's `print` is replaced with a function
+/// that tees output to both stdout and the shared buffer (which a Bevy system
+/// drains into `LogBuffer` each frame). When `None`, print retains its default
+/// behaviour.
 pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
+    setup_globals_with_print_buffer(lua, scripts_dir, None)
+}
+
+/// Internal entry point that accepts an optional shared print buffer.
+pub fn setup_globals_with_print_buffer(
+    lua: &Lua,
+    scripts_dir: &Path,
+    print_buffer: Option<SharedPrintBuffer>,
+) -> Result<(), mlua::Error> {
     let globals = lua.globals();
 
     // --- Sandbox: disable dangerous globals ---
     globals.set("loadfile", mlua::Value::Nil)?;
     globals.set("dofile", mlua::Value::Nil)?;
+
+    // --- Redirect print() to shared buffer (tee to stdout) ---
+    if let Some(buffer) = print_buffer {
+        let print_fn = lua.create_function(move |_, args: mlua::MultiValue| {
+            let parts: Vec<String> = args
+                .iter()
+                .map(|v| match v {
+                    mlua::Value::Nil => "nil".to_string(),
+                    mlua::Value::Boolean(b) => b.to_string(),
+                    mlua::Value::Integer(i) => i.to_string(),
+                    mlua::Value::Number(n) => n.to_string(),
+                    mlua::Value::String(s) => s.to_string_lossy().to_string(),
+                    other => format!("{:?}", other),
+                })
+                .collect();
+            let line = parts.join("\t");
+
+            // Tee to stdout
+            println!("[lua] {}", line);
+
+            // Push into the shared buffer
+            if let Ok(mut buf) = buffer.lock() {
+                buf.push(LogEntry {
+                    text: line,
+                    source: LogSource::Print,
+                    timestamp: 0, // will be filled by drain system
+                });
+            }
+
+            Ok(())
+        })?;
+        globals.set("print", print_fn)?;
+    }
 
     // --- Set up require() search path using resolved absolute path ---
     let package: mlua::Table = globals.get("package")?;
@@ -40,6 +88,9 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "building", "_building_definitions")?;
     register_define_fn(lua, "star_type", "_star_type_definitions")?;
     register_define_fn(lua, "planet_type", "_planet_type_definitions")?;
+    // #335: Biome definitions (decoupled from planet_type so multiple
+    // planet_types can share a biome and future features gate on biome id).
+    register_define_fn(lua, "biome", "_biome_definitions")?;
 
     // --- #182: Predefined systems + map types ---
     register_define_fn(lua, "predefined_system", "_predefined_system_definitions")?;
@@ -97,6 +148,15 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
 
     register_define_fn(lua, "event", "_event_definitions")?;
 
+    // --- #350: Knowledge kind definition (Lua-extensible knowledge kinds) ---
+    //
+    // `define_knowledge { id, payload_schema }` appends to
+    // `_knowledge_kind_definitions`, which is parsed by
+    // `scripting::knowledge_api::parse_knowledge_definitions` at startup
+    // (see `load_knowledge_kinds` system). The accumulator name must match
+    // `knowledge_api::KNOWLEDGE_DEF_ACCUMULATOR`.
+    register_define_fn(lua, "knowledge", "_knowledge_kind_definitions")?;
+
     // --- Ship design Lua bindings ---
 
     register_define_fn(lua, "slot_type", "_slot_type_definitions")?;
@@ -104,9 +164,15 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     register_define_fn(lua, "module", "_module_definitions")?;
     register_define_fn(lua, "ship_design", "_ship_design_definitions")?;
 
-    // --- Structure definition ---
-
+    // --- Structure & Deliverable definition ---
+    //
+    // #223: `define_structure` is the world-side entry (not shipyard-buildable).
+    // `define_deliverable` is the shipyard-buildable superset — adds `cost`,
+    // `build_time`, `cargo_size`, `scrap_refund`, `upgrade_to`, `upgrade_from`.
+    // Both feed `parse_structure_definitions`, which dispatches on which
+    // accumulator they came from.
     register_define_fn(lua, "structure", "_structure_definitions")?;
+    register_define_fn(lua, "deliverable", "_deliverable_definitions")?;
 
     // --- Anomaly definition ---
 
@@ -116,10 +182,16 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
 
     register_define_fn(lua, "faction", "_faction_definitions")?;
     register_define_fn(lua, "faction_type", "_faction_type_definitions")?;
+    register_define_fn(lua, "diplomatic_option", "_diplomatic_option_definitions")?;
+
+    // --- #305 S-11: Casus Belli definition ---
+    register_define_fn(lua, "casus_belli", "_casus_belli_definitions")?;
+
+    // --- #321: Negotiation item kind definition ---
     register_define_fn(
         lua,
-        "diplomatic_action",
-        "_diplomatic_action_definitions",
+        "negotiation_item_kind",
+        super::negotiation_api::ACCUMULATOR,
     )?;
 
     // --- #160: Balance constants Lua binding ---
@@ -144,43 +216,24 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     globals.set("define_balance", define_balance)?;
 
     // --- #45: Global param / flag Lua bindings ---
-
-    // Pending modifications table: scripts call modify_global/set_flag/check_flag
-    // and these are buffered for the Rust side to apply.
-    let pending_mods = lua.create_table()?;
-    globals.set("_pending_global_mods", pending_mods)?;
-
-    let pending_flags = lua.create_table()?;
-    globals.set("_pending_flags", pending_flags)?;
+    //
+    // #332-B4: retired the `set_flag(name)` / `modify_global(param, v)`
+    // global helpers and their backing `_pending_flags` /
+    // `_pending_global_mods` queues. Event / lifecycle callbacks mutate
+    // world state through the `gs:*` setter surface
+    // (`gs:set_flag(scope_kind, id, name, value)` /
+    // `gs:push_empire_modifier(...)`); tech and faction callbacks use
+    // `EffectScope` descriptors. The `check_flag` global is retained
+    // as a convenience read-path for ad-hoc scripts, but its backing
+    // `_flag_store` table is kept as a stub for forward-compat; it is
+    // populated exclusively by this local `check_flag` path now, not
+    // by the removed `set_flag` helper.
 
     let flag_store = lua.create_table()?;
     globals.set("_flag_store", flag_store)?;
 
-    // modify_global(param_name, value) -- buffers a global param modification
-    let modify_global = lua.create_function(|lua, (param_name, value): (String, f64)| {
-        let mods: mlua::Table = lua.globals().get("_pending_global_mods")?;
-        let len = mods.len()?;
-        let entry = lua.create_table()?;
-        entry.set("param", param_name)?;
-        entry.set("value", value)?;
-        mods.set(len + 1, entry)?;
-        Ok(())
-    })?;
-    globals.set("modify_global", modify_global)?;
-
-    // set_flag(name) -- sets a game flag
-    let set_flag = lua.create_function(|lua, name: String| {
-        let flags: mlua::Table = lua.globals().get("_pending_flags")?;
-        let len = flags.len()?;
-        flags.set(len + 1, name.clone())?;
-        // Also store in _flag_store so check_flag works immediately
-        let store: mlua::Table = lua.globals().get("_flag_store")?;
-        store.set(name, true)?;
-        Ok(())
-    })?;
-    globals.set("set_flag", set_flag)?;
-
-    // check_flag(name) -- returns true if the flag is set
+    // check_flag(name) -- returns true if the flag was stored in
+    // `_flag_store` (e.g. via a test fixture priming it directly).
     let check_flag = lua.create_function(|lua, name: String| {
         let store: mlua::Table = lua.globals().get("_flag_store")?;
         let result: bool = store.get::<Option<bool>>(name)?.unwrap_or(false);
@@ -194,13 +247,37 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     let event_handlers = lua.create_table()?;
     globals.set("_event_handlers", event_handlers)?;
 
-    // on(event_id, [filter,] handler) -- registers an event handler with optional structural filter
+    // #350 K-1: Knowledge reserved events table (auto-registered lifecycle
+    // event ids from define_knowledge). K-3 on() router checks this.
+    globals.set("_knowledge_subscribers", lua.create_table()?)?;
+    globals.set("_knowledge_reserved_events", lua.create_table()?)?;
+
+    // #352 K-3: Knowledge subscription accumulator. on(event_id, fn) routes
+    // knowledge-lifecycle event ids here; load_knowledge_subscriptions
+    // drains into bucketed KnowledgeSubscriptionRegistry at startup.
+    let knowledge_subscriptions = lua.create_table()?;
+    globals.set(
+        super::knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS,
+        knowledge_subscriptions,
+    )?;
+
+    // on(event_id, [filter,] handler) -- registers an event handler with optional structural filter.
+    //
+    // #352 (K-3): event ids matching the knowledge pattern
+    // (`<kind>@recorded` / `<kind>@observed` / `*@recorded` / `*@observed`)
+    // are routed to the `_pending_knowledge_subscriptions` accumulator
+    // instead of `_event_handlers`. The Rust-side
+    // `load_knowledge_subscriptions` startup system drains that
+    // accumulator into the bucketed `KnowledgeSubscriptionRegistry`
+    // resource. Knowledge subscriptions do not accept structural filter
+    // tables — filter is a bus-dispatch concept; knowledge payload
+    // filtering happens inside the subscriber function itself.
+    //
+    // Event ids shaped like `foo@bar` where `bar` is not a recognised
+    // knowledge lifecycle (i.e. anything other than `recorded` /
+    // `observed`) are rejected at registration time with a clear error
+    // (plan-349 §0.5 9.2 — load-time hygiene).
     let on_fn = lua.create_function(|lua, args: mlua::MultiValue| {
-        let handlers: mlua::Table = lua.globals().get("_event_handlers")?;
-        let len = handlers.len()?;
-
-        let entry = lua.create_table()?;
-
         let mut args_iter = args.into_iter();
         // First arg: event_id string
         let event_id: String = match args_iter.next() {
@@ -211,7 +288,6 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
                 ));
             }
         };
-        entry.set("event_id", event_id)?;
 
         // Second arg: either a filter table or a handler function
         let second = args_iter.next().ok_or_else(|| {
@@ -220,13 +296,37 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
             )
         })?;
 
+        // Early classification so we can reject filters on knowledge ids
+        // and surface unknown-lifecycle errors before we bother allocating
+        // the entry table.
+        if event_id.contains('@') {
+            // Any id containing '@' is treated as knowledge-intent: either
+            // valid knowledge lifecycle or explicit error. This prevents
+            // a typo like `foo@observe` from silently entering
+            // `_event_handlers`.
+            if let Err(e) = super::knowledge_dispatch::parse_knowledge_event_id(&event_id) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "on(): {e}"
+                )));
+            }
+            // Knowledge ids do not accept filter tables.
+            if let mlua::Value::Table(_) = &second {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "on(): knowledge event id '{event_id}' does not accept a filter table (filtering is a bus-dispatch feature; knowledge subscribers should filter in the callback body)"
+                )));
+            }
+        }
+
+        let is_knowledge = super::knowledge_dispatch::is_knowledge_event_id(&event_id);
+
+        let entry = lua.create_table()?;
+        entry.set("event_id", event_id.clone())?;
+
         match second {
             mlua::Value::Function(func) => {
-                // on(event_id, handler) -- no filter
                 entry.set("func", func)?;
             }
             mlua::Value::Table(filter) => {
-                // on(event_id, filter, handler)
                 entry.set("filter", filter)?;
                 let func = match args_iter.next() {
                     Some(mlua::Value::Function(f)) => f,
@@ -246,7 +346,14 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
             }
         }
 
-        handlers.set(len + 1, entry)?;
+        let target_table_name = if is_knowledge {
+            super::knowledge_registry::PENDING_KNOWLEDGE_SUBSCRIPTIONS
+        } else {
+            "_event_handlers"
+        };
+        let target: mlua::Table = lua.globals().get(target_table_name)?;
+        let len = target.len()?;
+        target.set(len + 1, entry)?;
         Ok(())
     })?;
     globals.set("on", on_fn)?;
@@ -287,6 +394,89 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         Ok(t)
     })?;
     globals.set("has_flag", has_flag)?;
+
+    // --- Diplomacy condition helpers (#322) ---
+
+    let target_state_is = lua.create_function(|lua, state: String| {
+        let t = lua.create_table()?;
+        t.set("type", "target_state_is")?;
+        t.set("state", state)?;
+        Ok(t)
+    })?;
+    globals.set("target_state_is", target_state_is)?;
+
+    let target_state_in = lua.create_function(|lua, args: mlua::MultiValue| {
+        let t = lua.create_table()?;
+        t.set("type", "target_state_in")?;
+        let states = lua.create_table()?;
+        for (i, arg) in args.into_iter().enumerate() {
+            states.set(i + 1, arg)?;
+        }
+        t.set("states", states)?;
+        Ok(t)
+    })?;
+    globals.set("target_state_in", target_state_in)?;
+
+    let target_standing_at_least = lua.create_function(|lua, threshold: f64| {
+        let t = lua.create_table()?;
+        t.set("type", "target_standing_at_least")?;
+        t.set("threshold", threshold)?;
+        Ok(t)
+    })?;
+    globals.set("target_standing_at_least", target_standing_at_least)?;
+
+    let relative_power_at_least = lua.create_function(|lua, ratio: f64| {
+        let t = lua.create_table()?;
+        t.set("type", "relative_power_at_least")?;
+        t.set("ratio", ratio)?;
+        Ok(t)
+    })?;
+    globals.set("relative_power_at_least", relative_power_at_least)?;
+
+    let target_allows_option = lua.create_function(|lua, value: mlua::Value| {
+        let t = lua.create_table()?;
+        t.set("type", "target_allows_option")?;
+        t.set("option_id", extract_id_from_lua_value(&value)?)?;
+        Ok(t)
+    })?;
+    globals.set("target_allows_option", target_allows_option)?;
+
+    let actor_has_modifier = lua.create_function(|lua, value: mlua::Value| {
+        let t = lua.create_table()?;
+        t.set("type", "actor_has_modifier")?;
+        t.set("modifier_id", extract_id_from_lua_value(&value)?)?;
+        Ok(t)
+    })?;
+    globals.set("actor_has_modifier", actor_has_modifier)?;
+
+    let actor_holds_capital_of_target = lua.create_function(|lua, _: ()| {
+        let t = lua.create_table()?;
+        t.set("type", "actor_holds_capital_of_target")?;
+        Ok(t)
+    })?;
+    globals.set(
+        "actor_holds_capital_of_target",
+        actor_holds_capital_of_target,
+    )?;
+
+    let target_system_count_at_most = lua.create_function(|lua, count: u32| {
+        let t = lua.create_table()?;
+        t.set("type", "target_system_count_at_most")?;
+        t.set("count", count)?;
+        Ok(t)
+    })?;
+    globals.set("target_system_count_at_most", target_system_count_at_most)?;
+
+    let target_attacked_actor_core_within = lua.create_function(|lua, hexadies: i64| {
+        let t = lua.create_table()?;
+        t.set("type", "target_attacked_actor_core_within")?;
+        t.set("hexadies", hexadies)?;
+        Ok(t)
+    })?;
+    globals.set(
+        "target_attacked_actor_core_within",
+        target_attacked_actor_core_within,
+    )?;
 
     let all_fn = lua.create_function(|lua, args: mlua::MultiValue| {
         let t = lua.create_table()?;
@@ -389,6 +579,51 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
     })?;
     globals.set("show_notification", show_notification_fn)?;
 
+    // --- #345 ESC-2: ESC (Empire Situation Center) notification push API ---
+    //
+    // `push_notification { title, message, severity, source, event_id,
+    //                      timestamp, children? }` enqueues a *post-hoc*
+    // ack-able notification into `EscNotificationQueue` (see
+    // `crate::ui::situation_center::notifications_tab`).
+    //
+    // Distinct from `show_notification` — that API drives the top-banner
+    // stack (#151), which is a live TTL-based popup. `push_notification`
+    // targets the ESC Notifications tab: history + ack, not banners.
+    //
+    // Shape:
+    //   - title / message: strings (at least one should be non-empty;
+    //     the renderer uses `message` as the body, falling back to
+    //     `title` if `message` is absent).
+    //   - severity: "info" | "warn" | "critical" (default "info").
+    //   - source: optional table `{ kind = ..., id = <u64 Entity bits> }`
+    //     where `kind` is one of "none" | "empire" | "system" | "colony" |
+    //     "ship" | "fleet" | "faction" | "build_order". Unknown kinds
+    //     fall back to "none". Missing `source` is equivalent to `none`.
+    //   - event_id: optional string OR numeric. When supplied it is
+    //     routed through `#249 NotifiedEventIds::try_notify` by the Rust
+    //     drain so duplicate pushes for the same id are silently
+    //     suppressed (same mechanism the banner queue uses).
+    //   - timestamp: optional i64 game-hexadies. When absent the drain
+    //     reads the current `GameClock`.
+    //   - children: optional array of tables shaped like the outer push
+    //     (recursive; depth capped by Rust-side parser).
+    //
+    // The entry is appended to the global `_pending_esc_notifications`
+    // Lua table; the Rust-side `drain_pending_esc_notifications` system
+    // drains it every frame and applies the push to
+    // `EscNotificationQueue`.
+    globals.set("_pending_esc_notifications", lua.create_table()?)?;
+    let push_notification_fn = lua.create_function(|lua, params: mlua::Table| {
+        let pending: mlua::Table = lua.globals().get("_pending_esc_notifications")?;
+        let len = pending.len()?;
+        // We deliberately store the raw Lua table — the Rust side knows
+        // the shape and can surface clear errors for each malformed
+        // field instead of having Lua's `.get::<T>(...)` coerce silently.
+        pending.set(len + 1, params)?;
+        Ok(())
+    })?;
+    globals.set("push_notification", push_notification_fn)?;
+
     // --- #152: Player choice dialog API ---
 
     // Pending choice queue — drained by `drain_pending_choices`
@@ -411,10 +646,7 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         // Derive a stable-ish id: prefer explicit `id`, else title slug, else
         // "choice". Always append a monotonically increasing counter to make
         // it unique even if the same title is shown repeatedly.
-        let next_counter: u64 = lua
-            .globals()
-            .get("_show_choice_counter")
-            .unwrap_or(0_u64);
+        let next_counter: u64 = lua.globals().get("_show_choice_counter").unwrap_or(0_u64);
         lua.globals()
             .set("_show_choice_counter", next_counter + 1)?;
 
@@ -423,7 +655,13 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
         } else if let Ok(title) = params.get::<String>("title") {
             let slug: String = title
                 .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             format!("{slug}_{next_counter}")
         } else {
@@ -571,7 +809,11 @@ pub fn setup_globals(lua: &Lua, scripts_dir: &Path) -> Result<(), mlua::Error> {
 /// 1. Creates an accumulator table `_xxx_definitions`
 /// 2. Registers `define_xxx(table)` which appends to the accumulator and
 ///    tags the table with `_def_type = def_type`, then returns it as a reference.
-fn register_define_fn(lua: &Lua, def_type: &str, accumulator_name: &str) -> Result<(), mlua::Error> {
+fn register_define_fn(
+    lua: &Lua,
+    def_type: &str,
+    accumulator_name: &str,
+) -> Result<(), mlua::Error> {
     let globals = lua.globals();
 
     let acc = lua.create_table()?;

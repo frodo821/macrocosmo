@@ -4,9 +4,16 @@
 -- reference them by value (e.g. `faction_type = types.empire`).
 local types = require("factions.faction_types")
 
--- Diplomatic actions (#172). Independent of faction definitions — the
--- registry resolves prerequisites against relations + types at call time.
-require("factions.actions")
+-- #305 (S-11): Casus Belli definitions.
+require("factions.casus_belli")
+
+-- #321: Negotiation item kinds. Loaded before diplomatic options so option
+-- definitions can reference item kinds by value if needed.
+require("factions.negotiation_items")
+
+-- Diplomatic options (#302 / #325). Lua-defined option framework for bilateral /
+-- unilateral interactions. All diplomatic actions use this framework.
+require("factions.options")
 
 define_faction {
     id = "humanity_empire",
@@ -33,6 +40,8 @@ define_faction {
             max_building_slots = 6,
         })
         earth:colonize(ctx.faction)
+        -- #280: planetary_capital_t3 must be placed FIRST so it occupies slot 0.
+        earth:add_building("planetary_capital_t3")
         earth:add_building("mine")
         earth:add_building("power_plant")
         earth:add_building("farm")
@@ -54,12 +63,28 @@ define_faction {
         })
 
         ctx.system:add_building("shipyard")
+        ctx.system:spawn_core()
 
         ctx.system:spawn_ship("explorer_mk1", "Explorer-1")
         ctx.system:spawn_ship("explorer_mk1", "Explorer-2")
         ctx.system:spawn_ship("courier_mk1", "Courier-1")
         ctx.system:spawn_ship("colony_ship_mk1", "Colony Ship-1")
     end,
+}
+
+-- #173: NPC empires. Defined without `on_game_start` so they do not compete
+-- with the player empire for the single capital star system. Homeworlds and
+-- starting fleets for NPC empires are a follow-up under #189.
+define_faction {
+    id = "vesk_hegemony",
+    name = "Vesk Hegemony",
+    faction_type = types.empire,
+}
+
+define_faction {
+    id = "aurelian_concord",
+    name = "Aurelian Concord",
+    faction_type = types.empire,
 }
 
 return {}

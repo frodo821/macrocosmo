@@ -13,20 +13,38 @@ local empire = define_faction_type {
     can_diplomacy = true,
     default_standing = 0,
     default_state = "neutral",
+    -- #302: Diplomatic options available to empire-type factions.
+    -- Populated after scripts/factions/options.lua is loaded (forward refs).
+    allowed_diplomatic_options = { "generic_negotiation", "break_alliance" },
 }
 
 local space_creature = define_faction_type {
     id = "space_creature",
     can_diplomacy = false,
+    is_passive = true,
     default_standing = -100,
     default_state = "neutral",
+    -- #293: Hostile combat stats moved from hard-coded HostileType::SpaceCreature
+    -- constants in Rust. Environmental strength_mult in generation.rs still scales
+    -- these base values based on stellar distance.
+    strength = 10,
+    evasion = 20,
+    default_hp = 80,
+    default_max_hp = 80,
 }
 
 local ancient_defense = define_faction_type {
     id = "ancient_defense",
     can_diplomacy = false,
+    is_passive = true,
     default_standing = -100,
     default_state = "neutral",
+    -- #293: Hostile combat stats moved from hard-coded HostileType::AncientDefense
+    -- constants in Rust.
+    strength = 10,
+    evasion = 10,
+    default_hp = 200,
+    default_max_hp = 200,
 }
 
 return {

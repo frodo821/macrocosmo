@@ -14,7 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use macrocosmo::scripting::{try_resolve_scripts_dir, ScriptEngine, SCRIPTS_DIR_ENV_VAR};
+use macrocosmo::scripting::{SCRIPTS_DIR_ENV_VAR, ScriptEngine, try_resolve_scripts_dir};
 
 static LOCK: Mutex<()> = Mutex::new(());
 

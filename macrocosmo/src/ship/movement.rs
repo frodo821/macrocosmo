@@ -3,10 +3,12 @@ use bevy::prelude::*;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::StarSystem;
+use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
+use crate::player::{AboardShip, Player, StationedAt};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
-use super::{Ship, ShipState, INITIAL_FTL_SPEED_C};
+use super::{INITIAL_FTL_SPEED_C, Ship, ShipState};
 
 /// Default port FTL range bonus in light-years (#46).
 /// Used as fallback when BuildingRegistry is unavailable; canonical values live in Lua.
@@ -20,7 +22,12 @@ pub const DEFAULT_PORT_TRAVEL_TIME_FACTOR: f64 = 0.8;
 
 // --- Sub-light travel ---
 
-/// #45: Accepts optional sublight_speed_bonus from GlobalParams
+/// #45: Accepts optional sublight_speed_bonus from GlobalParams.
+///
+/// #296: Returns `Err("ship is immobile")` when the ship's design confers no
+/// propulsion (both `sublight_speed` and `ftl_range` non-positive — see
+/// [`Ship::is_immobile`]). On success the ship transitions to
+/// [`ShipState::SubLight`]; on error `ship_state` is left unchanged.
 pub fn start_sublight_travel(
     ship_state: &mut ShipState,
     ship_pos: &Position,
@@ -28,8 +35,16 @@ pub fn start_sublight_travel(
     destination: Position,
     target_system: Option<Entity>,
     current_time: i64,
-) {
-    start_sublight_travel_with_bonus(ship_state, ship_pos, ship, destination, target_system, current_time, 0.0);
+) -> Result<(), &'static str> {
+    start_sublight_travel_with_bonus(
+        ship_state,
+        ship_pos,
+        ship,
+        destination,
+        target_system,
+        current_time,
+        0.0,
+    )
 }
 
 pub fn start_sublight_travel_with_bonus(
@@ -40,7 +55,14 @@ pub fn start_sublight_travel_with_bonus(
     target_system: Option<Entity>,
     current_time: i64,
     sublight_speed_bonus: f64,
-) {
+) -> Result<(), &'static str> {
+    // #296 (S-3): Gate immobile ships BEFORE writing SubLight state — otherwise
+    // sublight_travel_hexadies(dist, 0.0) would divide by zero and stall the
+    // ship mid-transit with no way to recover. Bonuses from global params
+    // cannot rescue a hull that has no propulsion at all.
+    if ship.is_immobile() {
+        return Err("ship is immobile");
+    }
     let origin = ship_pos.as_array();
     let dest = destination.as_array();
     let dist = distance_ly_arr(origin, dest);
@@ -53,18 +75,42 @@ pub fn start_sublight_travel_with_bonus(
         departed_at: current_time,
         arrival_at: current_time + travel_time,
     };
+    Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn sublight_movement_system(
     clock: Res<GameClock>,
-    mut query: Query<(&mut ShipState, &mut Position, &Ship)>,
-    systems: Query<&StarSystem, Without<Ship>>,
+    mut query: Query<(
+        &mut ShipState,
+        &mut Position,
+        &Ship,
+        Option<&mut super::transit_events::LastDockedSystem>,
+    )>,
+    systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
+    player_q: Query<&StationedAt, Without<Ship>>,
+    player_aboard_q: Query<&AboardShip, With<Player>>,
+    mut fact_sys: FactSysParam,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
-    for (mut state, mut pos, ship) in query.iter_mut() {
+    let player_system = player_q.iter().next().map(|s| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| systems.get(s).ok())
+        .map(|(_, p)| p.as_array());
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
+    for (mut state, mut pos, ship, mut last_docked) in query.iter_mut() {
         let (origin, destination, target_system, departed_at, arrival_at) = match *state {
             ShipState::SubLight {
-                origin, destination, target_system, departed_at, arrival_at,
+                origin,
+                destination,
+                target_system,
+                departed_at,
+                arrival_at,
             } => (origin, destination, target_system, departed_at, arrival_at),
             _ => continue,
         };
@@ -74,27 +120,36 @@ pub fn sublight_movement_system(
             pos.x = destination[0];
             pos.y = destination[1];
             pos.z = destination[2];
+            write_ship_arrived_dual(
+                target_system,
+                ship,
+                destination,
+                clock.elapsed,
+                &mut events,
+                vantage.as_ref(),
+                &systems,
+                &mut fact_sys,
+            );
             if let Some(system) = target_system {
-                *state = ShipState::Docked { system };
-                let sys_name = systems.get(system).map(|s| s.name.clone()).unwrap_or_default();
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ShipArrived,
-                    description: format!("{} arrived at {}", ship.name, sys_name),
-                    related_system: Some(system),
-                });
+                *state = ShipState::InSystem { system };
+                // #291: fire fleet_system_entered for sublight arrival.
+                if let Some(fleet) = ship.fleet {
+                    super::transit_events::fire_fleet_transit(
+                        &mut event_system,
+                        super::transit_events::TransitDirection::Entered,
+                        clock.elapsed,
+                        super::transit_events::TransitMode::Sublight,
+                        system,
+                        fleet,
+                    );
+                }
+                if let Some(ref mut lds) = last_docked {
+                    lds.0 = Some(system);
+                }
             } else {
-                // #185: Deep-space arrival — enter Loitering instead of staying SubLight.
-                *state = ShipState::Loitering { position: destination };
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ShipArrived,
-                    description: format!(
-                        "{} arrived at deep-space coordinates ({:.2}, {:.2}, {:.2})",
-                        ship.name, destination[0], destination[1], destination[2]
-                    ),
-                    related_system: None,
-                });
+                *state = ShipState::Loitering {
+                    position: destination,
+                };
             }
             continue;
         }
@@ -105,27 +160,36 @@ pub fn sublight_movement_system(
             pos.x = destination[0];
             pos.y = destination[1];
             pos.z = destination[2];
+            write_ship_arrived_dual(
+                target_system,
+                ship,
+                destination,
+                clock.elapsed,
+                &mut events,
+                vantage.as_ref(),
+                &systems,
+                &mut fact_sys,
+            );
             if let Some(system) = target_system {
-                *state = ShipState::Docked { system };
-                let sys_name = systems.get(system).map(|s| s.name.clone()).unwrap_or_default();
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ShipArrived,
-                    description: format!("{} arrived at {}", ship.name, sys_name),
-                    related_system: Some(system),
-                });
+                *state = ShipState::InSystem { system };
+                // #291: fire fleet_system_entered for sublight arrival.
+                if let Some(fleet) = ship.fleet {
+                    super::transit_events::fire_fleet_transit(
+                        &mut event_system,
+                        super::transit_events::TransitDirection::Entered,
+                        clock.elapsed,
+                        super::transit_events::TransitMode::Sublight,
+                        system,
+                        fleet,
+                    );
+                }
+                if let Some(ref mut lds) = last_docked {
+                    lds.0 = Some(system);
+                }
             } else {
-                // #185: Deep-space arrival — enter Loitering instead of staying SubLight.
-                *state = ShipState::Loitering { position: destination };
-                events.write(GameEvent {
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ShipArrived,
-                    description: format!(
-                        "{} arrived at deep-space coordinates ({:.2}, {:.2}, {:.2})",
-                        ship.name, destination[0], destination[1], destination[2]
-                    ),
-                    related_system: None,
-                });
+                *state = ShipState::Loitering {
+                    position: destination,
+                };
             }
         } else {
             pos.x = origin[0] + (destination[0] - origin[0]) * progress;
@@ -147,7 +211,18 @@ pub fn start_ftl_travel(
     dest_pos: &Position,
     current_time: i64,
 ) -> Result<(), &'static str> {
-    start_ftl_travel_with_bonus(ship_state, ship, origin_system, destination_system, origin_pos, dest_pos, current_time, 0.0, 1.0, PortParams::NONE)
+    start_ftl_travel_with_bonus(
+        ship_state,
+        ship,
+        origin_system,
+        destination_system,
+        origin_pos,
+        dest_pos,
+        current_time,
+        0.0,
+        1.0,
+        PortParams::NONE,
+    )
 }
 
 pub fn start_ftl_travel_with_bonus(
@@ -163,8 +238,16 @@ pub fn start_ftl_travel_with_bonus(
     port_params: PortParams,
 ) -> Result<(), &'static str> {
     start_ftl_travel_full(
-        ship_state, ship, origin_system, destination_system, origin_pos, dest_pos,
-        current_time, ftl_range_bonus, ftl_speed_multiplier, port_params,
+        ship_state,
+        ship,
+        origin_system,
+        destination_system,
+        origin_pos,
+        dest_pos,
+        current_time,
+        ftl_range_bonus,
+        ftl_speed_multiplier,
+        port_params,
         INITIAL_FTL_SPEED_C,
     )
 }
@@ -228,16 +311,30 @@ impl PortParams {
         travel_time_factor: 1.0,
     };
 
-    /// Create PortParams from SystemBuildings and BuildingRegistry.
-    pub fn from_system_buildings(
-        sb: &crate::colony::SystemBuildings,
+    /// Create PortParams from station ships query and BuildingRegistry.
+    pub fn from_station_ships(
+        system: Entity,
+        station_ships: &Query<(
+            Entity,
+            &crate::ship::Ship,
+            &crate::ship::ShipState,
+            &crate::colony::SlotAssignment,
+        )>,
         registry: &crate::scripting::building_api::BuildingRegistry,
     ) -> Self {
-        if sb.has_port(registry) {
+        if crate::colony::system_buildings::system_has_port(system, station_ships, registry) {
             PortParams {
                 has_port: true,
-                ftl_range_bonus: sb.port_ftl_range_bonus(registry),
-                travel_time_factor: sb.port_travel_time_factor(registry),
+                ftl_range_bonus: crate::colony::system_buildings::port_ftl_range_bonus(
+                    system,
+                    station_ships,
+                    registry,
+                ),
+                travel_time_factor: crate::colony::system_buildings::port_travel_time_factor(
+                    system,
+                    station_ships,
+                    registry,
+                ),
             }
         } else {
             Self::NONE
@@ -258,35 +355,134 @@ impl PortParams {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_ftl_travel(
     clock: Res<GameClock>,
-    mut ships: Query<(&Ship, &mut ShipState, &mut Position)>,
+    mut ships: Query<(
+        &Ship,
+        &mut ShipState,
+        &mut Position,
+        Option<&mut super::transit_events::LastDockedSystem>,
+    )>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
+    player_q: Query<&StationedAt, Without<Ship>>,
+    player_aboard_q: Query<&AboardShip, With<Player>>,
+    mut fact_sys: FactSysParam,
+    mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
-    for (ship, mut state, mut ship_pos) in ships.iter_mut() {
+    let player_system = player_q.iter().next().map(|s| s.system);
+    let player_pos: Option<[f64; 3]> = player_system
+        .and_then(|s| systems.get(s).ok())
+        .map(|(_, p)| p.as_array());
+    let player_aboard = player_aboard_q.iter().next().is_some();
+    let vantage = player_pos.map(|pos| PlayerVantage {
+        player_pos: pos,
+        player_aboard,
+    });
+
+    for (ship, mut state, mut ship_pos, last_docked) in ships.iter_mut() {
         let (destination_system, arrival_at) = match *state {
-            ShipState::InFTL { destination_system, arrival_at, .. } => {
-                (destination_system, arrival_at)
-            }
+            ShipState::InFTL {
+                destination_system,
+                arrival_at,
+                ..
+            } => (destination_system, arrival_at),
             _ => continue,
         };
 
         if clock.elapsed >= arrival_at {
             if let Ok((star, dest_pos)) = systems.get(destination_system) {
                 *ship_pos = *dest_pos;
-                *state = ShipState::Docked { system: destination_system };
+                *state = ShipState::InSystem {
+                    system: destination_system,
+                };
+                // #291: fire fleet_system_entered for FTL arrival.
+                if let Some(fleet) = ship.fleet {
+                    super::transit_events::fire_fleet_transit(
+                        &mut event_system,
+                        super::transit_events::TransitDirection::Entered,
+                        clock.elapsed,
+                        super::transit_events::TransitMode::Ftl,
+                        destination_system,
+                        fleet,
+                    );
+                }
+                if let Some(mut lds) = last_docked {
+                    lds.0 = Some(destination_system);
+                }
+                // #249: Dual-write FTL arrival.
+                let event_id = fact_sys.allocate_event_id();
+                let desc = format!("{} arrived at {} via FTL", ship.name, star.name);
                 events.write(GameEvent {
+                    id: event_id,
                     timestamp: clock.elapsed,
                     kind: GameEventKind::ShipArrived,
-                    description: format!("{} arrived at {} via FTL", ship.name, star.name),
+                    description: desc.clone(),
                     related_system: Some(destination_system),
                 });
+                if let Some(v) = vantage {
+                    let fact = KnowledgeFact::ShipArrived {
+                        event_id: Some(event_id),
+                        system: Some(destination_system),
+                        name: ship.name.clone(),
+                        detail: desc,
+                    };
+                    fact_sys.record(fact, dest_pos.as_array(), clock.elapsed, &v);
+                }
                 info!("Ship {} arrived at {} via FTL", ship.name, star.name);
             } else {
                 warn!("Ship {} FTL destination entity no longer exists", ship.name);
             }
         }
+    }
+}
+
+/// #249 helper — shared dual-write for sublight `ShipArrived` events.
+#[allow(clippy::too_many_arguments)]
+fn write_ship_arrived_dual(
+    target_system: Option<Entity>,
+    ship: &Ship,
+    destination: [f64; 3],
+    now: i64,
+    events: &mut MessageWriter<GameEvent>,
+    vantage: Option<&PlayerVantage>,
+    systems: &Query<(&StarSystem, &Position), Without<Ship>>,
+    fact_sys: &mut FactSysParam,
+) {
+    let (event_id, desc, related, origin_pos) = if let Some(system) = target_system {
+        let (sys_name, sys_pos) = systems
+            .get(system)
+            .map(|(s, p)| (s.name.clone(), p.as_array()))
+            .unwrap_or_default();
+        let eid = fact_sys.allocate_event_id();
+        let d = format!("{} arrived at {}", ship.name, sys_name);
+        (eid, d, Some(system), sys_pos)
+    } else {
+        let eid = fact_sys.allocate_event_id();
+        let d = format!(
+            "{} arrived at deep-space coordinates ({:.2}, {:.2}, {:.2})",
+            ship.name, destination[0], destination[1], destination[2]
+        );
+        (eid, d, None, destination)
+    };
+
+    events.write(GameEvent {
+        id: event_id,
+        timestamp: now,
+        kind: GameEventKind::ShipArrived,
+        description: desc.clone(),
+        related_system: related,
+    });
+
+    if let Some(v) = vantage {
+        let fact = KnowledgeFact::ShipArrived {
+            event_id: Some(event_id),
+            system: related,
+            name: ship.name.clone(),
+            detail: desc,
+        };
+        fact_sys.record(fact, origin_pos, now, v);
     }
 }
 

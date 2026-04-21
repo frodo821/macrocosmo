@@ -1,0 +1,50 @@
+name: ai-core isolation
+
+# Verifies that macrocosmo-ai stays engine-agnostic: no bevy / macrocosmo
+# runtime dependency may creep in. Tests also run here as a fast check.
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+    branches: [main]
+
+jobs:
+  isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ai-core-isolation-${{ hashFiles('macrocosmo-ai/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ai-core-isolation-
+
+      - name: Dependency tree must not contain bevy or macrocosmo
+        run: |
+          set -euo pipefail
+          # --edges=normal excludes dev-dependencies (tests may use anything).
+          LEAK=$(cargo tree -p macrocosmo-ai --edges=normal --prefix=none --no-dedupe \
+                  | awk '{print $1}' \
+                  | sort -u \
+                  | grep -E '^(bevy(_[a-z_]+)?|macrocosmo)$' || true)
+          if [ -n "$LEAK" ]; then
+            echo "::error::macrocosmo-ai runtime dependency tree leaks forbidden crate(s):"
+            echo "$LEAK"
+            exit 1
+          fi
+          echo "OK — no bevy / macrocosmo in runtime deps."
+
+      - name: Build macrocosmo-ai (no bevy, no game)
+        run: cargo build -p macrocosmo-ai --verbose
+
+      - name: Test macrocosmo-ai
+        run: cargo test -p macrocosmo-ai --verbose

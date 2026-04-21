@@ -13,7 +13,9 @@ pub fn parse_tech_branch_definitions(
     for pair in defs.pairs::<i64, mlua::Table>() {
         let (_, table) = pair?;
         let id: String = table.get("id")?;
-        let name: String = table.get::<Option<String>>("name")?.unwrap_or_else(|| id.clone());
+        let name: String = table
+            .get::<Option<String>>("name")?
+            .unwrap_or_else(|| id.clone());
         let color = match table.get::<mlua::Value>("color")? {
             mlua::Value::Table(t) => {
                 let r: f32 = t.get::<f64>(1).unwrap_or(0.5) as f32;
@@ -24,7 +26,12 @@ pub fn parse_tech_branch_definitions(
             _ => [0.5, 0.5, 0.5],
         };
         let icon: Option<String> = table.get::<Option<String>>("icon")?;
-        branches.push(TechBranchDefinition { id, name, color, icon });
+        branches.push(TechBranchDefinition {
+            id,
+            name,
+            color,
+            icon,
+        });
     }
     Ok(branches)
 }
@@ -65,7 +72,7 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
             _ => {
                 return Err(mlua::Error::RuntimeError(
                     "cost must be a number or table".to_string(),
-                ))
+                ));
             }
         };
 
@@ -83,9 +90,7 @@ pub fn parse_tech_definitions(lua: &mlua::Lua) -> Result<Vec<Technology>, mlua::
             .unwrap_or_default();
 
         // `dangerous` is optional; Lua omission defaults to `false`.
-        let dangerous: bool = table
-            .get::<Option<bool>>("dangerous")?
-            .unwrap_or(false);
+        let dangerous: bool = table.get::<Option<bool>>("dangerous")?.unwrap_or(false);
 
         techs.push(Technology {
             id,
@@ -259,13 +264,20 @@ mod tests {
         let tree = create_initial_tech_tree();
         assert_eq!(tree.technologies.len(), 15);
         assert!(tree.get(&TechId("social_xenolinguistics".into())).is_some());
-        assert!(tree.get(&TechId("military_composite_armor".into())).is_some());
+        assert!(
+            tree.get(&TechId("military_composite_armor".into()))
+                .is_some()
+        );
     }
 
     #[test]
     fn test_parse_lua_tech_definitions() {
         let lua = mlua::Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"
@@ -314,7 +326,11 @@ mod tests {
     #[test]
     fn test_parse_lua_tech_table_cost() {
         let lua = mlua::Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir()).unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"
@@ -343,8 +359,7 @@ mod tests {
     #[test]
     fn test_load_lua_files_from_disk() {
         let engine = crate::scripting::ScriptEngine::new().unwrap();
-        let init_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/init.lua");
+        let init_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/init.lua");
         engine
             .load_file(&init_path)
             .expect("Failed to load scripts via init.lua");
@@ -352,25 +367,37 @@ mod tests {
         // Should load all 15 technologies from the 4 Lua files
         assert_eq!(techs.len(), 15);
         // Verify one tech from each branch
-        assert!(techs
-            .iter()
-            .any(|t| t.id == TechId("social_xenolinguistics".into()) && t.branch == "social"));
-        assert!(techs
-            .iter()
-            .any(|t| t.id == TechId("physics_sublight_drives".into()) && t.branch == "physics"));
-        assert!(techs
-            .iter()
-            .any(|t| t.id == TechId("industrial_automated_mining".into()) && t.branch == "industrial"));
-        assert!(techs
-            .iter()
-            .any(|t| t.id == TechId("military_composite_armor".into()) && t.branch == "military"));
+        assert!(
+            techs
+                .iter()
+                .any(|t| t.id == TechId("social_xenolinguistics".into()) && t.branch == "social")
+        );
+        assert!(
+            techs
+                .iter()
+                .any(|t| t.id == TechId("physics_sublight_drives".into()) && t.branch == "physics")
+        );
+        assert!(
+            techs
+                .iter()
+                .any(|t| t.id == TechId("industrial_automated_mining".into())
+                    && t.branch == "industrial")
+        );
+        assert!(
+            techs.iter().any(
+                |t| t.id == TechId("military_composite_armor".into()) && t.branch == "military"
+            )
+        );
     }
 
     #[test]
     fn test_parse_tech_branch_definitions() {
         let lua = mlua::Lua::new();
-        crate::scripting::ScriptEngine::setup_globals(&lua, &crate::scripting::resolve_scripts_dir())
-            .unwrap();
+        crate::scripting::ScriptEngine::setup_globals(
+            &lua,
+            &crate::scripting::resolve_scripts_dir(),
+        )
+        .unwrap();
 
         lua.load(
             r#"

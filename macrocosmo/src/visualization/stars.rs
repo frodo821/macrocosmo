@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 
 use super::GalaxyView;
-use crate::colony::{BuildingRegistry, Buildings, Colony, SystemBuildings};
+use crate::colony::{BuildingRegistry, Buildings, Colony, SlotAssignment};
 use crate::components::Position;
-use crate::deep_space::{DeepSpaceStructure, StructureHitpoints};
-use crate::galaxy::{GalaxyConfig, HostilePresence, ObscuredByGas, Planet, StarSystem};
-use crate::knowledge::KnowledgeStore;
+use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
+use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, ObscuredByGas, Planet, StarSystem};
+use crate::knowledge::{KnowledgeStore, SystemVisibilityMap, SystemVisibilityTier};
 use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship::{Ship, ShipState};
 use crate::technology::GlobalParams;
@@ -34,10 +36,8 @@ pub fn spawn_star_visuals(
     view: Res<GalaxyView>,
 ) {
     // Build a set of colonized system entities
-    let colonized_systems: std::collections::HashSet<Entity> = colonies
-        .iter()
-        .filter_map(|c| c.system(&planets))
-        .collect();
+    let colonized_systems: std::collections::HashSet<Entity> =
+        colonies.iter().filter_map(|c| c.system(&planets)).collect();
 
     for (entity, star, pos, obscured) in &stars {
         let x = pos.x as f32 * view.scale;
@@ -68,7 +68,9 @@ pub fn spawn_star_visuals(
             };
             let glow_size = size * 3.0;
             commands.spawn((
-                StarVisual { system_entity: entity },
+                StarVisual {
+                    system_entity: entity,
+                },
                 StarGlow,
                 BaseStarSize(glow_size),
                 Sprite {
@@ -82,7 +84,9 @@ pub fn spawn_star_visuals(
 
         // Spawn main star dot
         commands.spawn((
-            StarVisual { system_entity: entity },
+            StarVisual {
+                system_entity: entity,
+            },
             BaseStarSize(size),
             Sprite {
                 color,
@@ -102,7 +106,9 @@ pub fn spawn_star_visuals(
                 0.7
             };
             commands.spawn((
-                StarVisual { system_entity: entity },
+                StarVisual {
+                    system_entity: entity,
+                },
                 Text2d::new(&star.name),
                 TextFont {
                     font_size: 14.0,
@@ -134,24 +140,28 @@ pub(super) fn star_color(star: &StarSystem, colonized: bool, obscured: bool) -> 
 // #176: Uses KnowledgeStore for remote system colonized status
 pub fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
-    mut visuals: Query<(&StarVisual, &mut Sprite, Option<&StarGlow>, Option<&BaseStarSize>)>,
-    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
+    mut visuals: Query<(
+        &StarVisual,
+        &mut Sprite,
+        Option<&StarGlow>,
+        Option<&BaseStarSize>,
+    )>,
+    empire_q: Query<(&KnowledgeStore, Option<&SystemVisibilityMap>), With<PlayerEmpire>>,
     colonies: Query<&Colony>,
     planets: Query<&Planet>,
     clock: Res<GameClock>,
     camera_q: Query<&Projection, With<Camera2d>>,
     player_q: Query<&StationedAt, With<Player>>,
 ) {
-    let Ok(knowledge) = empire_q.single() else {
+    crate::prof_span!("update_star_colors");
+    let Ok((knowledge, vis_map_opt)) = empire_q.single() else {
         return;
     };
     let player_system = player_q.iter().next().map(|s| s.system);
 
     // Build colonized systems set for local system only (real-time)
-    let local_colonized: std::collections::HashSet<Entity> = colonies
-        .iter()
-        .filter_map(|c| c.system(&planets))
-        .collect();
+    let local_colonized: std::collections::HashSet<Entity> =
+        colonies.iter().filter_map(|c| c.system(&planets)).collect();
 
     // Get the current camera scale for zoom-responsive sizing
     let camera_scale = camera_q
@@ -174,7 +184,8 @@ pub fn update_star_colors(
             let is_colonized = if player_system == Some(vis.system_entity) {
                 local_colonized.contains(&vis.system_entity)
             } else {
-                knowledge.get(vis.system_entity)
+                knowledge
+                    .get(vis.system_entity)
                     .map(|k| k.data.colonized)
                     .unwrap_or(false)
             };
@@ -182,7 +193,8 @@ pub fn update_star_colors(
             let effective_surveyed = if player_system == Some(vis.system_entity) {
                 star.surveyed
             } else {
-                knowledge.get(vis.system_entity)
+                knowledge
+                    .get(vis.system_entity)
                     .map(|k| k.data.surveyed)
                     .unwrap_or(star.surveyed)
             };
@@ -194,10 +206,24 @@ pub fn update_star_colors(
                 is_capital: star.is_capital,
             };
             let base_color = star_color(&effective_star, is_colonized, obscured.is_some());
-            let alpha_multiplier = match knowledge.info_age(vis.system_entity, clock.elapsed) {
-                None => 1.0, // No knowledge: keep base color as-is (already dim for unknown)
-                Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
-                Some(age) => (1.0 - (age as f32 - 60.0) / 600.0).clamp(0.3, 1.0),
+            // #392: Tier-based alpha multiplier. Catalogued systems are extra
+            // dim; surveyed systems use knowledge age fading.
+            let tier =
+                vis_map_opt
+                    .map(|vm| vm.get(vis.system_entity))
+                    .unwrap_or(if effective_surveyed {
+                        SystemVisibilityTier::Surveyed
+                    } else {
+                        SystemVisibilityTier::Catalogued
+                    });
+            let alpha_multiplier = if tier == SystemVisibilityTier::Catalogued {
+                0.3 // Catalogued: faint star point only
+            } else {
+                match knowledge.info_age(vis.system_entity, clock.elapsed) {
+                    None => 1.0,
+                    Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
+                    Some(age) => (1.0 - (age as f32 - 60.0) / 600.0).clamp(0.3, 1.0),
+                }
             };
             let [r, g, b, a] = base_color.to_srgba().to_f32_array();
 
@@ -231,12 +257,21 @@ pub fn draw_galaxy_overlay(
     selected: Res<SelectedSystem>,
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
-    empire_params_q: Query<(&GlobalParams, &KnowledgeStore), With<PlayerEmpire>>,
-    system_buildings: Query<(Entity, &SystemBuildings)>,
+    empire_params_q: Query<
+        (
+            Entity,
+            &GlobalParams,
+            &KnowledgeStore,
+            Option<&SystemVisibilityMap>,
+        ),
+        With<PlayerEmpire>,
+    >,
+    station_ships: Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
     galaxy_config: Option<Res<GalaxyConfig>>,
-    hostiles: Query<&HostilePresence>,
+    hostiles: Query<(&AtSystem, Option<&crate::faction::FactionOwner>), With<Hostile>>,
+    faction_relations: Res<crate::faction::FactionRelations>,
     building_registry: Res<BuildingRegistry>,
 ) {
     // Galaxy outline: center marker and boundary circle
@@ -262,7 +297,8 @@ pub fn draw_galaxy_overlay(
         );
     }
 
-    let Ok((global_params, knowledge)) = empire_params_q.single() else {
+    let Ok((viewer_empire, global_params, knowledge, vis_map_opt)) = empire_params_q.single()
+    else {
         return;
     };
     let Ok(stationed) = player_q.single() else {
@@ -278,11 +314,7 @@ pub fn draw_galaxy_overlay(
 
     // Capital pulsing ring (larger to match new star sizes)
     let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
-    gizmos.circle_2d(
-        Vec2::new(px, py),
-        20.0,
-        Color::srgba(1.0, 0.84, 0.0, pulse),
-    );
+    gizmos.circle_2d(Vec2::new(px, py), 20.0, Color::srgba(1.0, 0.84, 0.0, pulse));
 
     // #176: Build colonized systems set using KnowledgeStore for remote, real-time for local
     let local_colonized: std::collections::HashSet<Entity> = colonies
@@ -290,23 +322,32 @@ pub fn draw_galaxy_overlay(
         .filter_map(|(c, _)| c.system(&planets))
         .collect();
 
-    // Draw rings around colonized stars
+    // Draw rings around colonized stars (only for >= Surveyed tier)
     for (entity, star, star_pos) in &stars {
+        // #392: Skip overlay elements for Catalogued-only systems
+        let tier = vis_map_opt.map(|vm| vm.get(entity)).unwrap_or_else(|| {
+            if star.surveyed {
+                SystemVisibilityTier::Surveyed
+            } else {
+                SystemVisibilityTier::Catalogued
+            }
+        });
+        if !tier.can_see_planets() {
+            continue;
+        }
+
         let is_colonized = if entity == player_system {
             local_colonized.contains(&entity)
         } else {
-            knowledge.get(entity)
+            knowledge
+                .get(entity)
                 .map(|k| k.data.colonized)
                 .unwrap_or(false)
         };
         if is_colonized && !star.is_capital {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
-            gizmos.circle_2d(
-                Vec2::new(sx, sy),
-                18.0,
-                Color::srgba(0.3, 1.0, 0.3, 0.6),
-            );
+            gizmos.circle_2d(Vec2::new(sx, sy), 18.0, Color::srgba(0.3, 1.0, 0.3, 0.6));
         }
     }
 
@@ -336,11 +377,24 @@ pub fn draw_galaxy_overlay(
     );
 
     // #176: Survey lines use KnowledgeStore for remote systems
+    // #392: Only draw for systems with tier >= Surveyed
     for (entity, star, star_pos) in &stars {
+        let tier = vis_map_opt.map(|vm| vm.get(entity)).unwrap_or_else(|| {
+            if star.surveyed {
+                SystemVisibilityTier::Surveyed
+            } else {
+                SystemVisibilityTier::Catalogued
+            }
+        });
+        if !tier.can_see_planets() {
+            continue;
+        }
+
         let is_surveyed = if entity == player_system {
             star.surveyed
         } else {
-            knowledge.get(entity)
+            knowledge
+                .get(entity)
                 .map(|k| k.data.surveyed)
                 .unwrap_or(false)
         };
@@ -375,34 +429,40 @@ pub fn draw_galaxy_overlay(
             let effective_range = ship.ftl_range + global_params.ftl_range_bonus;
             if effective_range > 0.0 {
                 let ship_pos = match state {
-                    ShipState::Docked { system } => {
-                        stars.get(*system).ok().map(|(_, _, pos)| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
+                    ShipState::InSystem { system } => stars.get(*system).ok().map(|(_, _, pos)| {
+                        Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
+                    }),
                     _ => None,
                 };
                 if let Some(ship_pos_px) = ship_pos {
                     let range_px = effective_range as f32 * view.scale;
-                    gizmos.circle_2d(
-                        ship_pos_px,
-                        range_px,
-                        Color::srgba(0.3, 0.5, 1.0, 0.1),
-                    );
+                    gizmos.circle_2d(ship_pos_px, range_px, Color::srgba(0.3, 0.5, 1.0, 0.1));
                 }
             }
         }
     }
 
     // #52/#56/#176: Hostile presence markers — red X on surveyed systems with hostiles
-    // Local system: read HostilePresence directly. Remote: use KnowledgeStore.
+    // #293: Local system: query (AtSystem, FactionOwner, With<Hostile>) filtered by
+    // FactionRelations. Remote: use KnowledgeStore.
     {
         // Local system hostiles (real-time)
-        for hostile in &hostiles {
-            if hostile.system != player_system {
+        for (at_system, owner) in &hostiles {
+            if at_system.0 != player_system {
                 continue;
             }
-            let Ok((_, star, star_pos)) = stars.get(hostile.system) else {
+            // Only draw if the empire considers this faction hostile.
+            // Hostiles without FactionOwner fall through (drawn) — matches
+            // legacy behavior when FactionRelations isn't populated yet.
+            if let Some(o) = owner {
+                if !faction_relations
+                    .get_or_default(viewer_empire, o.0)
+                    .can_attack_aggressive()
+                {
+                    continue;
+                }
+            }
+            let Ok((_, star, star_pos)) = stars.get(at_system.0) else {
                 continue;
             };
             if !star.surveyed {
@@ -412,8 +472,16 @@ pub fn draw_galaxy_overlay(
             let sy = star_pos.y as f32 * view.scale;
             let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
             let s = 5.0_f32;
-            gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
-            gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy - s),
+                Vec2::new(sx + s, sy + s),
+                hostile_color,
+            );
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy + s),
+                Vec2::new(sx + s, sy - s),
+                hostile_color,
+            );
         }
         // Remote system hostiles (from KnowledgeStore)
         for (_entity, k) in knowledge.iter() {
@@ -430,8 +498,16 @@ pub fn draw_galaxy_overlay(
             let sy = star_pos.y as f32 * view.scale;
             let hostile_color = Color::srgba(1.0, 0.2, 0.2, 0.7);
             let s = 5.0_f32;
-            gizmos.line_2d(Vec2::new(sx - s, sy - s), Vec2::new(sx + s, sy + s), hostile_color);
-            gizmos.line_2d(Vec2::new(sx - s, sy + s), Vec2::new(sx + s, sy - s), hostile_color);
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy - s),
+                Vec2::new(sx + s, sy + s),
+                hostile_color,
+            );
+            gizmos.line_2d(
+                Vec2::new(sx - s, sy + s),
+                Vec2::new(sx + s, sy - s),
+                hostile_color,
+            );
         }
     }
 
@@ -440,11 +516,13 @@ pub fn draw_galaxy_overlay(
     {
         // Collect port systems: local from ECS, remote from knowledge
         let mut port_system_entities: Vec<Entity> = Vec::new();
-        // Local system ports (real-time)
-        for (entity, sb) in &system_buildings {
-            if entity == player_system && sb.has_port(&building_registry) {
-                port_system_entities.push(entity);
-            }
+        // Local system ports (real-time, via station ships)
+        if crate::colony::system_buildings::system_has_port(
+            player_system,
+            &station_ships,
+            &building_registry,
+        ) {
+            port_system_entities.push(player_system);
         }
         // Remote system ports (from KnowledgeStore)
         for (_entity, k) in knowledge.iter() {
@@ -474,19 +552,163 @@ pub fn draw_galaxy_overlay(
             }
         }
     }
+
+    // #395: Station infrastructure icons — draw small icons next to system names
+    // for each immobile ship (station) docked there.
+    {
+        // Collect immobile ships per system, classified by hull type.
+        let mut system_stations: HashMap<Entity, Vec<StationKind>> = HashMap::new();
+        for (_, ship, state) in &ships {
+            if !ship.is_immobile() {
+                continue;
+            }
+            let sys = match &*state {
+                ShipState::InSystem { system } => *system,
+                ShipState::Refitting { system, .. } => *system,
+                _ => continue,
+            };
+            system_stations
+                .entry(sys)
+                .or_default()
+                .push(station_kind_from_hull(&ship.hull_id));
+        }
+
+        for (sys_entity, kinds) in &system_stations {
+            let Ok((_, _star, star_pos)) = stars.get(*sys_entity) else {
+                continue;
+            };
+            let sx = star_pos.x as f32 * view.scale;
+            // Position icons below the system name label (name is at y+14, so start at y+24)
+            let base_y = star_pos.y as f32 * view.scale + 24.0;
+            let icon_spacing = 10.0;
+            let start_x = sx - (kinds.len() as f32 - 1.0) * icon_spacing / 2.0;
+
+            for (i, kind) in kinds.iter().enumerate() {
+                let ix = start_x + i as f32 * icon_spacing;
+                let iy = base_y;
+                draw_station_icon(&mut gizmos, Vec2::new(ix, iy), *kind);
+            }
+        }
+    }
+}
+
+/// Classification of station types for icon rendering.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StationKind {
+    Core,
+    Shipyard,
+    Port,
+    ResearchLab,
+    Unknown,
+}
+
+/// Classify a station by its hull_id substring.
+fn station_kind_from_hull(hull_id: &str) -> StationKind {
+    if hull_id.contains("core") {
+        StationKind::Core
+    } else if hull_id.contains("shipyard") {
+        StationKind::Shipyard
+    } else if hull_id.contains("port") {
+        StationKind::Port
+    } else if hull_id.contains("research") {
+        StationKind::ResearchLab
+    } else {
+        StationKind::Unknown
+    }
+}
+
+/// Draw a small gizmo icon for a station type.
+fn draw_station_icon(gizmos: &mut Gizmos, center: Vec2, kind: StationKind) {
+    let s = 3.5;
+    match kind {
+        StationKind::Core => {
+            // Filled-looking circle (double ring)
+            let gold = Color::srgba(1.0, 0.84, 0.0, 0.8);
+            gizmos.circle_2d(center, s, gold);
+            gizmos.circle_2d(center, s * 0.5, gold);
+        }
+        StationKind::Shipyard => {
+            // Crossed lines (anvil/hammer shape)
+            let cyan = Color::srgba(0.3, 0.9, 1.0, 0.8);
+            gizmos.line_2d(
+                center + Vec2::new(-s, 0.0),
+                center + Vec2::new(s, 0.0),
+                cyan,
+            );
+            gizmos.line_2d(
+                center + Vec2::new(0.0, -s),
+                center + Vec2::new(0.0, s),
+                cyan,
+            );
+            gizmos.line_2d(
+                center + Vec2::new(-s * 0.7, -s * 0.7),
+                center + Vec2::new(s * 0.7, s * 0.7),
+                cyan,
+            );
+        }
+        StationKind::Port => {
+            // Small diamond
+            let purple = Color::srgba(0.8, 0.5, 1.0, 0.8);
+            let top = center + Vec2::new(0.0, s);
+            let right = center + Vec2::new(s, 0.0);
+            let bottom = center + Vec2::new(0.0, -s);
+            let left = center + Vec2::new(-s, 0.0);
+            gizmos.line_2d(top, right, purple);
+            gizmos.line_2d(right, bottom, purple);
+            gizmos.line_2d(bottom, left, purple);
+            gizmos.line_2d(left, top, purple);
+        }
+        StationKind::ResearchLab => {
+            // Triangle pointing up
+            let green = Color::srgba(0.3, 1.0, 0.5, 0.8);
+            let top = center + Vec2::new(0.0, s);
+            let bl = center + Vec2::new(-s * 0.87, -s * 0.5);
+            let br = center + Vec2::new(s * 0.87, -s * 0.5);
+            gizmos.line_2d(top, bl, green);
+            gizmos.line_2d(bl, br, green);
+            gizmos.line_2d(br, top, green);
+        }
+        StationKind::Unknown => {
+            // Simple square
+            let gray = Color::srgba(0.6, 0.6, 0.6, 0.6);
+            let tl = center + Vec2::new(-s, s);
+            let tr = center + Vec2::new(s, s);
+            let br = center + Vec2::new(s, -s);
+            let bl = center + Vec2::new(-s, -s);
+            gizmos.line_2d(tl, tr, gray);
+            gizmos.line_2d(tr, br, gray);
+            gizmos.line_2d(br, bl, gray);
+            gizmos.line_2d(bl, tl, gray);
+        }
+    }
 }
 
 pub fn draw_deep_space_structures(
     mut gizmos: Gizmos,
-    structures: Query<(&DeepSpaceStructure, &Position, &StructureHitpoints)>,
+    structures: Query<(
+        &DeepSpaceStructure,
+        &Position,
+        &StructureHitpoints,
+        Option<&ConstructionPlatform>,
+        Option<&Scrapyard>,
+    )>,
     view: Res<GalaxyView>,
 ) {
-    for (_structure, pos, _hp) in &structures {
+    for (_structure, pos, _hp, platform, scrap) in &structures {
         let x = pos.x as f32 * view.scale;
         let y = pos.y as f32 * view.scale;
-        // Draw a small diamond marker
+        // Draw a small diamond marker. #229: colour encodes lifecycle state —
+        // yellow while a ConstructionPlatform is accumulating resources, red
+        // while the structure is a drained/being-drained Scrapyard, blue for
+        // fully active structures.
         let size = 4.0;
-        let color = Color::srgba(0.7, 0.7, 1.0, 0.6);
+        let color = if platform.is_some() {
+            Color::srgba(1.0, 0.9, 0.2, 0.85) // yellow — under construction
+        } else if scrap.is_some() {
+            Color::srgba(1.0, 0.3, 0.3, 0.85) // red — dismantled / scrapyard
+        } else {
+            Color::srgba(0.7, 0.7, 1.0, 0.6) // blue — active
+        };
         gizmos.line_2d(Vec2::new(x, y - size), Vec2::new(x + size, y), color);
         gizmos.line_2d(Vec2::new(x + size, y), Vec2::new(x, y + size), color);
         gizmos.line_2d(Vec2::new(x, y + size), Vec2::new(x - size, y), color);

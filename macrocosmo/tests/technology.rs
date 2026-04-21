@@ -23,8 +23,10 @@ fn test_start_research_sets_queue() {
 
 #[test]
 fn test_block_research_stops_progress() {
-    use technology::{ResearchQueue, ResearchPool, TechId, TechTree, Technology, TechCost, LastResearchTick};
     use macrocosmo::amount::Amt;
+    use technology::{
+        LastResearchTick, ResearchPool, ResearchQueue, TechCost, TechId, TechTree, Technology,
+    };
 
     let mut app = test_app();
 
@@ -67,7 +69,10 @@ fn test_block_research_stops_progress() {
     // Add points to pool
     {
         let empire = empire_entity(app.world_mut());
-        app.world_mut().get_mut::<ResearchPool>(empire).unwrap().points = 50.0;
+        app.world_mut()
+            .get_mut::<ResearchPool>(empire)
+            .unwrap()
+            .points = 50.0;
     }
 
     // Advance time
@@ -134,8 +139,8 @@ fn test_on_researched_fires_and_applies_effects() {
     use macrocosmo::amount::Amt;
     use macrocosmo::scripting::ScriptEngine;
     use technology::{
-        GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
-        TechCost, TechEffectsLog, TechId, TechTree, Technology,
+        GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue, TechCost,
+        TechEffectsLog, TechId, TechTree, Technology,
     };
 
     let mut app = test_app();
@@ -166,10 +171,7 @@ fn test_on_researched_fires_and_applies_effects() {
     // Register the apply_tech_effects system
     app.add_systems(
         Update,
-        (
-            technology::tick_research,
-            technology::apply_tech_effects,
-        )
+        (technology::tick_research, technology::apply_tech_effects)
             .chain()
             .after(macrocosmo::time_system::advance_game_time),
     );

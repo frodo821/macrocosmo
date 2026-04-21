@@ -1,9 +1,13 @@
+pub mod ai_debug;
 pub mod bottom_bar;
+pub mod console;
 pub mod context_menu;
+pub mod diplomacy_panel;
 pub mod outline;
 pub mod overlays;
 pub mod params;
 pub mod ship_panel;
+pub mod situation_center;
 pub mod system_panel;
 pub mod top_bar;
 
@@ -11,38 +15,60 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::amount::{Amt, SignedAmt};
+use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
+use crate::observer::{ObserverMode, ObserverView};
 use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams,
     FoodConsumption, MaintenanceCost, Production, ResourceCapacity, ResourceStockpile,
-    SystemBuildingQueue, SystemBuildings,
+    SlotAssignment,
 };
 use crate::communication::CommandLog;
-use crate::condition::ScopedFlags;
 use crate::components::Position;
-use crate::events::{GameEvent, GameEventKind};
-use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::condition::ScopedFlags;
+use crate::events::{EventLog, GameEvent, GameEventKind};
+use crate::faction::FactionRelations;
+use crate::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
+use crate::modifier::ModifiedValue;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
+use crate::scripting::building_api::BuildingRegistry;
+use crate::scripting::faction_api::DiplomaticOptionRegistry;
 use crate::ship::{
-    Cargo, CommandQueue, CourierRoute, PendingShipCommand, RulesOfEngagement, Ship, ShipHitpoints,
-    ShipState, SurveyData,
+    Cargo, CommandQueue, CourierRoute, PendingShipCommand, QueuedCommand, RulesOfEngagement, Ship,
+    ShipHitpoints, ShipState, SurveyData,
 };
 use crate::ship_design::{HullRegistry, ModuleRegistry, ShipDesignRegistry};
-use crate::scripting::building_api::BuildingRegistry;
 use crate::technology::{GameFlags, GlobalParams, ResearchPool, ResearchQueue, TechTree};
 use crate::time_system::{GameClock, GameSpeed};
 use crate::visualization::{
-    ContextMenu, EguiWantsPointer, OutlineExpandedSystems, SelectedPlanet, SelectedShip,
-    SelectedSystem,
+    ContextMenu, DeployMode, DeployPending, EguiWantsPointer, OutlineExpandedSystems,
+    SelectedPlanet, SelectedShip, SelectedSystem,
 };
 
-use params::{MainPanelRegistries, MainPanelSelection, MainPanelWorldQueries};
+use params::{
+    MainPanelDeliverableRes, MainPanelRegistries, MainPanelSelection, MainPanelWorldQueries,
+    ObserverUiState,
+};
 
 /// Resource tracking whether the research overlay is open.
 #[derive(Resource, Default)]
 pub struct ResearchPanelOpen(pub bool);
+
+/// #304: Resource tracking whether the diplomacy panel is open.
+#[derive(Resource, Default)]
+pub struct DiplomacyPanelOpen(pub bool);
+
+/// #252: Selected tab in the colony detail panel. `Overview` retains the
+/// pre-existing income/buildings view; `PopManagement` shows population
+/// breakdown, job slot assignments, and per-job production contributions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ColonyPanelTab {
+    #[default]
+    Overview,
+    PopManagement,
+}
 
 /// Intermediate resource holding pre-computed UI data shared across systems.
 /// Written by `compute_ui_state`, read by drawing systems.
@@ -60,6 +86,142 @@ pub struct UiState {
     pub net_food: SignedAmt,
     pub net_authority: SignedAmt,
     pub capital_stockpile: Option<(Amt, Amt)>,
+    /// #252: Which tab is active in the colony detail window.
+    pub colony_panel_tab: ColonyPanelTab,
+}
+
+// ---------------------------------------------------------------------------
+// #390-T5: UI Element Registry for BRP introspection
+// ---------------------------------------------------------------------------
+
+/// A single registered UI element with its semantic ID, display text, and
+/// screen-space bounding rectangle. Used by the BRP `find_ui_element` /
+/// `list_ui_elements` commands to let automated test drivers locate widgets.
+pub struct UiElement {
+    pub id: String,
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Per-frame registry of egui widget positions. Cleared at the start of each
+/// frame and populated by UI draw systems via [`register_ui_element`].
+///
+/// The resource is only inserted when the `remote` cargo feature is enabled.
+/// UI systems access it as `Option<ResMut<UiElementRegistry>>` so the code
+/// compiles regardless.
+#[derive(Resource, Default)]
+pub struct UiElementRegistry {
+    pub elements: Vec<UiElement>,
+}
+
+/// Register a rendered UI widget in the [`UiElementRegistry`].
+///
+/// Call this after rendering a button / label whose position you want to expose
+/// to BRP consumers. All call-sites should be gated behind
+/// `#[cfg(feature = "remote")]`.
+pub fn register_ui_element(
+    registry: &mut UiElementRegistry,
+    id: &str,
+    text: &str,
+    rect: egui::Rect,
+) {
+    registry.elements.push(UiElement {
+        id: id.to_string(),
+        text: text.to_string(),
+        x: rect.min.x,
+        y: rect.min.y,
+        w: rect.width(),
+        h: rect.height(),
+    });
+}
+
+/// #391: Render the modifier breakdown body into a `Ui` (used inside tooltips).
+/// Shows base, each modifier's contribution, and the final computed value.
+pub fn draw_modifier_breakdown(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &ModifiedValue,
+    format_fn: &dyn Fn(Amt) -> String,
+    current_time: Option<i64>,
+) {
+    let final_val = value.final_value();
+    let modifiers = value.modifiers();
+
+    ui.set_min_width(220.0);
+    ui.label(egui::RichText::new(format!("{}: {}", label, format_fn(final_val))).strong());
+    ui.separator();
+    ui.label(format!("Base: {}", format_fn(value.base())));
+
+    for m in modifiers {
+        let mut parts = Vec::new();
+        if m.base_add.raw() != 0 {
+            parts.push(format!("{} (base add)", m.base_add.display()));
+        }
+        if m.multiplier.raw() != 0 {
+            let mult_with_one = SignedAmt::units(1).add(m.multiplier);
+            let abs_raw = mult_with_one.raw().unsigned_abs();
+            let w = abs_raw / 1000;
+            let f = abs_raw % 1000;
+            let sign = if mult_with_one.raw() < 0 { "-" } else { "" };
+            let mult_str = if f == 0 {
+                format!("x{}{}", sign, w)
+            } else if f % 100 == 0 {
+                format!("x{}{}.{}", sign, w, f / 100)
+            } else if f % 10 == 0 {
+                format!("x{}{}.{:02}", sign, w, f / 10)
+            } else {
+                format!("x{}{}.{:03}", sign, w, f)
+            };
+            parts.push(format!("{} (mult)", mult_str));
+        }
+        if m.add.raw() != 0 {
+            parts.push(format!("{} (add)", m.add.display()));
+        }
+        let effect = parts.join(", ");
+
+        let mut line = format!("[{}]  {}", m.label, effect);
+        if let Some(now) = current_time {
+            if let Some(remaining) = m.remaining_duration(now) {
+                line.push_str(&format!("  ({} hd left)", remaining));
+            }
+        }
+        ui.label(line);
+    }
+
+    ui.separator();
+    ui.label(format!("Final: {}", format_fn(final_val)));
+}
+
+/// #391: Render a label showing a `ModifiedValue`'s final value, with a hover
+/// tooltip that breaks down base, each modifier contribution, and the final
+/// result. `format_fn` converts an `Amt` to the display string appropriate
+/// for this stat (e.g. percentage for speed, decimal for range).
+pub fn modified_value_label_with_tooltip(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &ModifiedValue,
+    format_fn: impl Fn(Amt) -> String,
+    current_time: Option<i64>,
+) {
+    let final_val = value.final_value();
+    let text = format!("{}: {}", label, format_fn(final_val));
+    let response = ui.label(&text);
+
+    let modifiers = value.modifiers();
+    if modifiers.is_empty() {
+        response.on_hover_text(format!(
+            "{}: {}\n(no modifiers)",
+            label,
+            format_fn(value.base())
+        ));
+    } else {
+        response.on_hover_ui(|tooltip_ui| {
+            draw_modifier_breakdown(tooltip_ui, label, value, &format_fn, current_time);
+        });
+    }
 }
 
 pub struct UiPlugin;
@@ -67,25 +229,136 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
+            // #344: ESC framework (SituationCenterState, SituationTabRegistry,
+            // EscNotificationQueue, F3 toggle system, Notifications tab).
+            // Registered before the draw chain is attached so any plugin
+            // that calls `register_situation_tab` during `build()` finds the
+            // registry already initialised.
+            .add_plugins(situation_center::SituationCenterPlugin)
             .init_resource::<ResearchPanelOpen>()
+            .init_resource::<DiplomacyPanelOpen>()
             .init_resource::<overlays::ShipDesignerState>()
             .init_resource::<EguiWantsPointer>()
             .init_resource::<UiState>()
+            .init_resource::<console::ConsoleState>()
+            .init_resource::<ai_debug::AiDebugUi>()
+            .add_systems(Update, ai_debug::toggle_ai_debug)
+            .add_systems(Update, toggle_console)
+            .add_systems(Update, toggle_diplomacy_panel)
             .add_systems(
                 EguiPrimaryContextPass,
                 (
+                    // #261: Install the bundled CJK font on the first pass.
+                    // Must run before any draw system so every widget picks up
+                    // the Japanese-capable fallback on frame 1.
+                    setup_cjk_font,
                     compute_ui_state,
                     draw_top_bar_system,
                     draw_notifications_system,
                     draw_outline_and_tooltips_system,
                     draw_main_panels_system,
                     draw_overlays_system,
+                    draw_diplomacy_overlay_system,
+                    // #344: ESC panel sits alongside Research / Ship
+                    // Designer in the floating-window slot. Exclusive
+                    // system — keeps its own `&World` access for tab
+                    // `badge` / `render`, so it cannot be parallelised
+                    // with the surrounding UI systems anyway.
+                    situation_center::draw_situation_center_system,
                     draw_choice_dialog_system,
+                    ai_debug::sample_ai_debug_stream,
+                    ai_debug::draw_ai_debug_system,
+                    draw_console_system,
                     draw_bottom_bar_system,
                 )
                     .chain(),
             );
     }
+}
+
+/// #261: Raw bytes of the bundled CJK font. Zen Kaku Gothic New Regular from
+/// `github.com/googlefonts/zen-kakugothic`, distributed under SIL OFL 1.1 (see
+/// `assets/fonts/OFL.txt`). Embedded at compile time so the binary carries its
+/// own glyph coverage and doesn't depend on a filesystem asset path at runtime.
+const CJK_FONT_BYTES: &[u8] = include_bytes!("../../assets/fonts/ZenKakuGothicNew-Regular.ttf");
+
+/// #261: Register the bundled CJK font with egui on the first pass so
+/// Japanese glyphs (タブ名、イベントログ、Lua 由来テキスト等) render instead
+/// of falling through to tofu. The guard makes this a one-shot system — egui
+/// keeps the fonts across subsequent frames once `set_fonts` has been called.
+fn setup_cjk_font(mut contexts: EguiContexts, mut initialized: Local<bool>) {
+    if *initialized {
+        return;
+    }
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "zen_kaku_jp".into(),
+        egui::FontData::from_static(CJK_FONT_BYTES).into(),
+    );
+    // Make the CJK font the first-priority proportional font so ASCII keeps
+    // its existing shape where Zen Kaku Gothic covers it, and the fallback
+    // chain remains (egui-default Latin + symbol fonts stay behind it).
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "zen_kaku_jp".into());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push("zen_kaku_jp".into());
+    ctx.set_fonts(fonts);
+    *initialized = true;
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::CJK_FONT_BYTES;
+
+    /// #261: Verify the font binary is actually embedded and non-trivial.
+    /// TTF files start with the magic bytes 0x00 0x01 0x00 0x00 (or `OTTO`
+    /// for OpenType CFF); Zen Kaku Gothic New ships as TTF so we check the
+    /// former. This guards against a missing / truncated asset at build time.
+    #[test]
+    fn test_font_bytes_embedded_at_compile_time() {
+        assert!(
+            CJK_FONT_BYTES.len() > 100_000,
+            "embedded font is suspiciously small ({}B)",
+            CJK_FONT_BYTES.len()
+        );
+        assert_eq!(
+            &CJK_FONT_BYTES[..4],
+            &[0x00, 0x01, 0x00, 0x00],
+            "font header does not look like a TTF"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #417: Helper to resolve the "active empire" entity for UI purposes.
+// In normal play this is the PlayerEmpire entity; in observer mode it is
+// the empire selected in ObserverView.
+// ---------------------------------------------------------------------------
+
+fn resolve_ui_empire_raw(
+    player_q: &Query<Entity, With<PlayerEmpire>>,
+    observer_mode: &ObserverMode,
+    observer_view: &ObserverView,
+) -> Option<Entity> {
+    if observer_mode.enabled {
+        observer_view.viewing
+    } else {
+        player_q.single().ok()
+    }
+}
+
+/// Convenience wrapper that extracts the active empire from an [`ObserverUiState`].
+fn resolve_ui_empire(obs: &ObserverUiState) -> Option<Entity> {
+    resolve_ui_empire_raw(&obs.player_empire_q, &obs.observer_mode, &obs.observer_view)
 }
 
 // ---------------------------------------------------------------------------
@@ -106,14 +379,21 @@ fn compute_ui_state(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    system_stockpiles: Query<
-        (&ResourceStockpile, Option<&ResourceCapacity>),
-        With<StarSystem>,
-    >,
-    empire_q: Query<(&KnowledgeStore, &AuthorityParams), With<PlayerEmpire>>,
+    stars: Query<(
+        Entity,
+        &StarSystem,
+        &Position,
+        Option<&SystemAttributes>,
+        Option<&Sovereignty>,
+    )>,
+    system_stockpiles: Query<(&ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
+    player_empire_q: Query<(&KnowledgeStore, &AuthorityParams), With<PlayerEmpire>>,
+    all_empire_q: Query<&AuthorityParams, With<crate::player::Empire>>,
     planets: Query<&Planet>,
+    observer_mode: Res<crate::observer::ObserverMode>,
+    observer_view: Res<crate::observer::ObserverView>,
 ) {
+    crate::prof_span!("compute_ui_state");
     let player_info = player_q
         .iter()
         .next()
@@ -122,7 +402,23 @@ fn compute_ui_state(
     ui_state.player_entity = player_info.map(|(e, _, _)| e);
     ui_state.player_aboard_ship = player_info.and_then(|(_, _, aboard)| aboard);
 
-    let Ok((knowledge, authority_params)) = empire_q.single() else {
+    // #398: In observer mode with a viewed empire, show that empire's
+    // ground-truth resource totals (no light-speed delay). In normal play,
+    // use the PlayerEmpire's KnowledgeStore as before.
+    if observer_mode.enabled {
+        compute_ui_state_observer(
+            &mut ui_state,
+            &colonies,
+            &stars,
+            &system_stockpiles,
+            &all_empire_q,
+            &planets,
+            &observer_view,
+        );
+        return;
+    }
+
+    let Ok((knowledge, authority_params)) = player_empire_q.single() else {
         return;
     };
 
@@ -169,7 +465,9 @@ fn compute_ui_state(
     let mut has_capital = false;
     for (_, colony, production, _, _, _, maintenance, food_consumption) in colonies.iter() {
         if let Some(prod) = production {
-            net_m = net_m.add(SignedAmt::from_amt(prod.minerals_per_hexadies.final_value()));
+            net_m = net_m.add(SignedAmt::from_amt(
+                prod.minerals_per_hexadies.final_value(),
+            ));
             let energy_prod = SignedAmt::from_amt(prod.energy_per_hexadies.final_value());
             let maint = maintenance
                 .map(|mc| SignedAmt::from_amt(mc.energy_per_hexadies.final_value()))
@@ -183,7 +481,7 @@ fn compute_ui_state(
         }
         colony_count += 1;
         if let Some(sys) = colony.system(&planets) {
-            if let Ok((_, star, _, _)) = stars.get(sys) {
+            if let Ok((_, star, _, _, _)) = stars.get(sys) {
                 if star.is_capital {
                     has_capital = true;
                 }
@@ -211,7 +509,7 @@ fn compute_ui_state(
 
     // Capital stockpile for upfront cost checks (research)
     ui_state.capital_stockpile = None;
-    for (sys_entity, star, _, _) in stars.iter() {
+    for (sys_entity, star, _, _, _) in stars.iter() {
         if star.is_capital {
             if let Ok((s, _)) = system_stockpiles.get(sys_entity) {
                 ui_state.capital_stockpile = Some((s.minerals, s.energy));
@@ -221,21 +519,195 @@ fn compute_ui_state(
     }
 }
 
+/// #398: Compute resource totals for the observed empire in observer mode.
+/// Uses ground-truth stockpile data (no KnowledgeStore delay) filtered by
+/// `Sovereignty` ownership.
+#[allow(clippy::too_many_arguments)]
+fn compute_ui_state_observer(
+    ui_state: &mut UiState,
+    colonies: &Query<(
+        Entity,
+        &Colony,
+        Option<&Production>,
+        Option<&BuildQueue>,
+        Option<&Buildings>,
+        Option<&BuildingQueue>,
+        Option<&MaintenanceCost>,
+        Option<&FoodConsumption>,
+    )>,
+    stars: &Query<(
+        Entity,
+        &StarSystem,
+        &Position,
+        Option<&SystemAttributes>,
+        Option<&Sovereignty>,
+    )>,
+    system_stockpiles: &Query<(&ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
+    all_empire_q: &Query<&AuthorityParams, With<crate::player::Empire>>,
+    planets: &Query<&Planet>,
+    observer_view: &crate::observer::ObserverView,
+) {
+    let viewed = match observer_view.viewing {
+        Some(e) => e,
+        None => {
+            // No empire selected — zero out everything.
+            ui_state.total_minerals = Amt::ZERO;
+            ui_state.total_energy = Amt::ZERO;
+            ui_state.total_food = Amt::ZERO;
+            ui_state.total_authority = Amt::ZERO;
+            ui_state.net_minerals = SignedAmt::ZERO;
+            ui_state.net_energy = SignedAmt::ZERO;
+            ui_state.net_food = SignedAmt::ZERO;
+            ui_state.net_authority = SignedAmt::ZERO;
+            ui_state.capital_stockpile = None;
+            return;
+        }
+    };
+
+    // Collect systems owned by the viewed empire.
+    let mut owned_systems: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+    for (sys_entity, _, _, _, sovereignty) in stars.iter() {
+        if let Some(sov) = sovereignty {
+            if sov.owner == Some(crate::ship::Owner::Empire(viewed)) {
+                owned_systems.insert(sys_entity);
+            }
+        }
+    }
+
+    // Ground-truth resource totals from owned systems' stockpiles.
+    let mut m = Amt::ZERO;
+    let mut e = Amt::ZERO;
+    let mut f = Amt::ZERO;
+    let mut a = Amt::ZERO;
+    for &sys in &owned_systems {
+        if let Ok((stockpile, _)) = system_stockpiles.get(sys) {
+            m = m.add(stockpile.minerals);
+            e = e.add(stockpile.energy);
+            f = f.add(stockpile.food);
+            a = a.add(stockpile.authority);
+        }
+    }
+    ui_state.total_minerals = m;
+    ui_state.total_energy = e;
+    ui_state.total_food = f;
+    ui_state.total_authority = a;
+
+    // Net income from colonies on owned systems.
+    let mut net_m = SignedAmt::ZERO;
+    let mut net_e = SignedAmt::ZERO;
+    let mut net_f = SignedAmt::ZERO;
+    let mut colony_count: u64 = 0;
+    let mut has_capital = false;
+    for (_, colony, production, _, _, _, maintenance, food_consumption) in colonies.iter() {
+        let sys = match colony.system(planets) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !owned_systems.contains(&sys) {
+            continue;
+        }
+        if let Some(prod) = production {
+            net_m = net_m.add(SignedAmt::from_amt(
+                prod.minerals_per_hexadies.final_value(),
+            ));
+            let energy_prod = SignedAmt::from_amt(prod.energy_per_hexadies.final_value());
+            let maint = maintenance
+                .map(|mc| SignedAmt::from_amt(mc.energy_per_hexadies.final_value()))
+                .unwrap_or(SignedAmt::ZERO);
+            net_e = net_e.add(energy_prod.add(SignedAmt(0 - maint.raw())));
+            let food_prod = SignedAmt::from_amt(prod.food_per_hexadies.final_value());
+            let food_cons = food_consumption
+                .map(|fc| SignedAmt::from_amt(fc.food_per_hexadies.final_value()))
+                .unwrap_or(SignedAmt::ZERO);
+            net_f = net_f.add(food_prod.add(SignedAmt(0 - food_cons.raw())));
+        }
+        colony_count += 1;
+        if let Ok((_, star, _, _, _)) = stars.get(sys) {
+            if star.is_capital {
+                has_capital = true;
+            }
+        }
+    }
+
+    // Authority net income from the viewed empire.
+    let non_capital_count = if has_capital {
+        colony_count.saturating_sub(1)
+    } else {
+        colony_count
+    };
+    if let Ok(authority_params) = all_empire_q.get(viewed) {
+        let auth_prod = SignedAmt::from_amt(authority_params.production.final_value());
+        let auth_cost = SignedAmt::from_amt(
+            authority_params
+                .cost_per_colony
+                .final_value()
+                .mul_u64(non_capital_count),
+        );
+        ui_state.net_authority = auth_prod.add(SignedAmt(0 - auth_cost.raw()));
+    } else {
+        ui_state.net_authority = SignedAmt::ZERO;
+    }
+
+    ui_state.net_minerals = net_m;
+    ui_state.net_energy = net_e;
+    ui_state.net_food = net_f;
+
+    // Capital stockpile for the viewed empire.
+    ui_state.capital_stockpile = None;
+    for &sys in &owned_systems {
+        if let Ok((_, star, _, _, _)) = stars.get(sys) {
+            if star.is_capital {
+                if let Ok((s, _)) = system_stockpiles.get(sys) {
+                    ui_state.capital_stockpile = Some((s.minerals, s.energy));
+                }
+                break;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // System 2: draw_top_bar_system
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn draw_top_bar_system(
     mut contexts: EguiContexts,
     ui_state: Res<UiState>,
     clock: Res<GameClock>,
     mut speed: ResMut<GameSpeed>,
     mut research_open: ResMut<ResearchPanelOpen>,
+    mut diplomacy_open: ResMut<DiplomacyPanelOpen>,
     mut designer_state: ResMut<overlays::ShipDesignerState>,
+    observer_mode: Res<crate::observer::ObserverMode>,
+    mut observer_view: ResMut<crate::observer::ObserverView>,
+    factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
+    mut ui_registry: Option<ResMut<UiElementRegistry>>,
 ) {
+    crate::prof_span!("draw_top_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+
+    // Build sorted (entity, name) list of empire factions for the selector.
+    let mut factions: Vec<(Entity, String)> = factions_q
+        .iter()
+        .map(|(e, f)| (e, f.name.clone()))
+        .collect();
+    factions.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut selected = observer_view.viewing;
+    let observer_state = if observer_mode.enabled {
+        Some(top_bar::ObserverBarState {
+            enabled: true,
+            read_only: observer_mode.read_only,
+            selected: &mut selected,
+            factions: &factions,
+        })
+    } else {
+        None
+    };
+
     top_bar::draw_top_bar(
         ctx,
         &clock,
@@ -249,8 +721,15 @@ fn draw_top_bar_system(
         ui_state.net_minerals,
         ui_state.net_authority,
         &mut research_open,
+        &mut diplomacy_open,
         &mut designer_state,
+        observer_state,
+        ui_registry.as_mut().map(|r| &mut **r),
     );
+
+    if selected != observer_view.viewing {
+        observer_view.viewing = selected;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -376,62 +855,53 @@ fn draw_outline_and_tooltips_system(
     ui_state: Res<UiState>,
     mut selected_system: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
+    mut selected_ships: ResMut<crate::visualization::SelectedShips>,
     mut egui_wants_pointer: ResMut<EguiWantsPointer>,
     mut outline_expanded: ResMut<OutlineExpandedSystems>,
     galaxy_view: Res<crate::visualization::GalaxyView>,
     design_registry: Res<ShipDesignRegistry>,
-    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
-    stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-    colonies: Query<(
-        Entity,
-        &Colony,
-        Option<&Production>,
-        Option<&mut BuildQueue>,
-        Option<&Buildings>,
-        Option<&mut BuildingQueue>,
-        Option<&MaintenanceCost>,
-        Option<&FoodConsumption>,
-    )>,
-    ships_query: Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    )>,
-    planets: Query<&Planet>,
-    windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    knowledge_q: Query<&KnowledgeStore, With<crate::player::Empire>>,
+    outline_q: params::OutlineQueries,
+    obs: ObserverUiState,
 ) {
+    crate::prof_span!("draw_outline_and_tooltips");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let knowledge = empire_q.single().ok();
+    // #417: In observer mode, show ground truth (no KnowledgeStore delay).
+    // In normal play, use the PlayerEmpire's KnowledgeStore.
+    let empire_entity = resolve_ui_empire(&obs);
+    let knowledge = if obs.observer_mode.enabled {
+        None // ground truth in observer mode
+    } else {
+        empire_entity.and_then(|e| knowledge_q.get(e).ok())
+    };
     let player_system = ui_state.player_system;
 
     egui_wants_pointer.0 = ctx.wants_pointer_input();
 
     outline::draw_outline(
         ctx,
-        &stars,
-        &colonies,
-        &ships_query,
+        &outline_q.stars,
+        &outline_q.colonies,
+        &outline_q.ships_query,
         &mut selected_system,
         &mut selected_ship,
-        &planets,
+        &mut selected_ships,
+        &outline_q.planets,
         &mut outline_expanded,
         &design_registry,
+        &outline_q.fleets,
     );
 
     draw_map_tooltips(
         ctx,
-        &windows,
-        &camera_q,
-        &stars,
-        &ships_query,
-        &planets,
-        &colonies,
+        &outline_q.windows,
+        &outline_q.camera_q,
+        &outline_q.stars,
+        &outline_q.ships_query,
+        &outline_q.planets,
+        &outline_q.colonies,
         &clock,
         &galaxy_view,
         &design_registry,
@@ -449,7 +919,7 @@ fn draw_main_panels_system(
     mut commands: Commands,
     mut contexts: EguiContexts,
     clock: Res<GameClock>,
-    ui_state: Res<UiState>,
+    mut ui_state: ResMut<UiState>,
     mut selection: MainPanelSelection,
     registries: MainPanelRegistries,
     building_registry: Res<BuildingRegistry>,
@@ -466,14 +936,17 @@ fn draw_main_panels_system(
         Option<&MaintenanceCost>,
         Option<&FoodConsumption>,
     )>,
-    mut ships_query: Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    )>,
+    mut ships_query: Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     mut command_queues: Query<&mut CommandQueue>,
     empire_q: Query<
         (
@@ -485,16 +958,33 @@ fn draw_main_panels_system(
             &ResearchPool,
             &ResearchQueue,
             &AuthorityParams,
+            Option<&crate::knowledge::SystemVisibilityMap>,
         ),
-        With<PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
+    mut deliverables_res: MainPanelDeliverableRes,
     mut game_events: MessageWriter<GameEvent>,
 ) {
+    crate::prof_span!("draw_main_panels");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok((knowledge, _command_log, global_params, construction_params, _tech_tree, _research_pool, _research_queue, _authority_params)) =
-        empire_q.single()
+    // #417: Resolve empire entity — PlayerEmpire in normal mode, ObserverView in observer mode.
+    let empire_entity = resolve_ui_empire_raw(&selection.player_empire_q, &selection.observer_mode, &selection.observer_view);
+    let Some(empire_entity) = empire_entity else {
+        return;
+    };
+    let Ok((
+        knowledge,
+        _command_log,
+        global_params,
+        construction_params,
+        tech_tree,
+        _research_pool,
+        _research_queue,
+        _authority_params,
+        vis_map_opt,
+    )) = empire_q.get(empire_entity)
     else {
         return;
     };
@@ -506,8 +996,56 @@ fn draw_main_panels_system(
         .next()
         .map(|(e, s, a)| (e, s.system, a.map(|ab| ab.ship)));
 
+    // #229: Pre-compute condition evaluation inputs so the system panel can
+    // filter the shipyard Deliverables list by `prerequisites`. `TechTree`
+    // stores techs as `TechId(String)`; the Condition DSL uses raw strings.
+    let researched_techs: std::collections::HashSet<String> = tech_tree
+        .technologies
+        .iter()
+        .filter(|(_, t)| tech_tree.is_researched(&t.id))
+        .map(|(id, _)| id.0.clone())
+        .collect();
+    let active_modifiers: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let (empire_flags_union, empire_buildings) = match deliverables_res.empire_flags.get(empire_entity) {
+        Ok((game_flags, scoped_flags)) => {
+            let mut union: std::collections::HashSet<String> = scoped_flags.flags.clone();
+            union.extend(game_flags.flags.iter().cloned());
+            (union, std::collections::HashSet::<String>::new())
+        }
+        Err(_) => (
+            std::collections::HashSet::<String>::new(),
+            std::collections::HashSet::<String>::new(),
+        ),
+    };
+    let deliverable_avail = system_panel::DeliverableAvailabilityCtx {
+        researched_techs: &researched_techs,
+        active_modifiers: &active_modifiers,
+        empire_flags: &empire_flags_union,
+        empire_buildings: &empire_buildings,
+    };
+
     // --- System panel ---
     let mut colonization_actions = Vec::new();
+    let mut system_actions = system_panel::SystemPanelActions::default();
+    // #370: Compute whether the selected system has a Core for the
+    // system building gate. Done before the draw_system_panel call to
+    // avoid borrow-conflict with `selection.selected_system`.
+    let selected_system_has_core = selection
+        .selected_system
+        .0
+        .map(|sys| world.core_ships.iter().any(|(at, _)| at.0 == sys))
+        .unwrap_or(false);
+    // #392: Compute visibility tier for selected system.
+    // #417: In observer mode, grant full visibility (ground truth).
+    let selected_vis_tier = selection.selected_system.0.map(|sys| {
+        if selection.observer_mode.enabled {
+            crate::knowledge::SystemVisibilityTier::Local
+        } else {
+            vis_map_opt
+                .map(|vm| vm.get(sys))
+                .unwrap_or(crate::knowledge::SystemVisibilityTier::Catalogued)
+        }
+    });
     system_panel::draw_system_panel(
         ctx,
         &mut selection.selected_system,
@@ -516,6 +1054,7 @@ fn draw_main_panels_system(
         &stars,
         &player_q,
         &mut colonies,
+        &world.colony_pop_view,
         &mut world.stockpiles,
         &mut ships_query,
         &world.positions,
@@ -525,13 +1064,25 @@ fn draw_main_panels_system(
         &world.planets,
         &world.planet_entities,
         &mut world.system_buildings,
+        &world.station_ships,
         &registries.hull_registry,
         &registries.module_registry,
         &registries.design_registry,
         &world.colonization_queues,
         &mut colonization_actions,
         &building_registry,
+        &registries.job_registry,
+        &mut ui_state.colony_panel_tab,
         &world.anomalies,
+        &world.deliverable_stockpiles,
+        &world.deep_space_structures,
+        &deliverables_res.structure_registry,
+        &deliverable_avail,
+        &mut system_actions,
+        &mut deliverables_res.colony_dispatches,
+        &world.remote_commands,
+        selected_system_has_core,
+        selected_vis_tier,
     );
 
     for action in colonization_actions {
@@ -542,11 +1093,86 @@ fn draw_main_panels_system(
         });
     }
 
+    // #229: Handle dismantle — `dismantle_structure` requires exclusive
+    // `&mut World`, so we wrap it in `commands.queue`.
+    if let Some(structure_entity) = system_actions.dismantle {
+        commands.queue(move |world: &mut World| {
+            if let Err(e) =
+                crate::ship::deliverable_ops::dismantle_structure(world, structure_entity)
+            {
+                warn!("Dismantle failed for {:?}: {}", structure_entity, e);
+            } else {
+                info!("Structure {:?} dismantled", structure_entity);
+            }
+        });
+    }
+
+    // #229: Handle "Load" from DeliverableStockpile row.
+    if let Some((ship_e, system_e, idx)) = system_actions.load_deliverable {
+        if let Ok(mut queue) = command_queues.get_mut(ship_e) {
+            queue.commands.push(QueuedCommand::LoadDeliverable {
+                system: system_e,
+                stockpile_index: idx,
+            });
+            queue.predicted_system = Some(system_e);
+        }
+    }
+
     // --- Ship panel ---
     let selected_system_for_panel = selection.selected_system.0;
+
+    // #229: Compute nearby structures for the selected ship. Threshold
+    // chosen a bit loose (2 ly) so the UI still offers Transfer / Load
+    // while the ship is sublight-cruising toward the structure. The
+    // command processors re-check co-location via
+    // `DEPLOY_POSITION_EPSILON` and auto-inject a `MoveToCoordinates`
+    // when the ship isn't quite there yet.
+    const NEARBY_STRUCTURE_RADIUS_LY: f64 = 2.0;
+    let nearby_structures: Vec<ship_panel::NearbyStructure> = match selection.selected_ship.0 {
+        Some(ship_e) => {
+            let ship_pos = ships_query
+                .get(ship_e)
+                .ok()
+                .and_then(|(_, _, state, _, _, _)| match &*state {
+                    ShipState::InSystem { system } => world.positions.get(*system).ok().copied(),
+                    ShipState::Loitering { position } => {
+                        Some(crate::components::Position::from(*position))
+                    }
+                    ShipState::Surveying { target_system, .. }
+                    | ShipState::Settling {
+                        system: target_system,
+                        ..
+                    } => world.positions.get(*target_system).ok().copied(),
+                    _ => None,
+                });
+            match ship_pos {
+                Some(sp) => {
+                    let mut v: Vec<ship_panel::NearbyStructure> = Vec::new();
+                    for (entity, ds, pos, platform, scrap) in world.deep_space_structures.iter() {
+                        let d = sp.distance_to(pos);
+                        if d > NEARBY_STRUCTURE_RADIUS_LY {
+                            continue;
+                        }
+                        v.push(ship_panel::NearbyStructure {
+                            entity,
+                            name: ds.name.clone(),
+                            is_platform: platform.is_some(),
+                            is_scrapyard: scrap.is_some(),
+                            distance_ly: d,
+                        });
+                    }
+                    v
+                }
+                None => Vec::new(),
+            }
+        }
+        None => Vec::new(),
+    };
+
     let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
+        &mut selection.selected_ships,
         &mut ships_query,
         &clock,
         &mut colonies,
@@ -565,23 +1191,35 @@ fn draw_main_panels_system(
         player_aboard_ship,
         &world.courier_routes,
         selected_system_for_panel,
-        &world.fleet_memberships,
+        &world.fleet_members,
         &world.fleets,
+        &nearby_structures,
+        &world.ship_stats,
+        &world.docked_at,
+        &world.docked_check,
+        &registries.hull_registry,
+        &world.ship_modifiers,
     );
+
+    // #398: In observer read-only mode, suppress all ship panel actions
+    // and context menu so the player cannot issue commands. The ship panel
+    // itself still renders (info-only) above.
+    if selection.observer_mode.read_only {
+        selection.context_menu.open = false;
+        return;
+    }
 
     // Handle cancel current action
     if ship_panel_actions.cancel_current {
         if let Some(ship_entity) = selection.selected_ship.0 {
             if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(ship_entity) {
                 let dock_system = match &*state {
-                    ShipState::Surveying {
-                        target_system, ..
-                    } => Some(*target_system),
+                    ShipState::Surveying { target_system, .. } => Some(*target_system),
                     ShipState::Settling { system, .. } => Some(*system),
                     _ => None,
                 };
                 if let Some(sys) = dock_system {
-                    *state = ShipState::Docked { system: sys };
+                    *state = ShipState::InSystem { system: sys };
                 }
             }
         }
@@ -619,6 +1257,7 @@ fn draw_main_panels_system(
             scrap.ship_name, scrap.system_name, scrap.minerals_refund, scrap.energy_refund
         );
         game_events.write(GameEvent {
+            id: crate::knowledge::EventId::default(),
             timestamp: clock.elapsed,
             kind: GameEventKind::ShipScrapped,
             description,
@@ -645,29 +1284,32 @@ fn draw_main_panels_system(
     // #123: Handle fleet-wide refit — apply to every refit-eligible ship in
     // the fleet that is currently docked at a colony.
     if let Some(fleet_refit) = ship_panel_actions.fleet_refit {
+        // #287 (γ-1): members are stored in the sibling FleetMembers
+        // component now, not inside Fleet itself.
         let member_entities: Vec<Entity> = world
-            .fleets
+            .fleet_members
             .get(fleet_refit.fleet_entity)
-            .map(|fleet| fleet.members.clone())
+            .map(|m| m.0.clone())
             .unwrap_or_default();
         for member in member_entities {
             // Determine if the member is docked at a system that has a colony
             // (matches the per-ship eligibility rule).
-            let dock_system: Option<Entity> = ships_query
-                .get(member)
-                .ok()
-                .and_then(|(_, ship, state, _, _, _)| {
-                    let docked = match &*state {
-                        ShipState::Docked { system } => Some(*system),
-                        _ => None,
-                    }?;
-                    // Refit-eligible only if design revision is ahead.
-                    let design = registries.design_registry.get(&ship.design_id)?;
-                    if design.revision <= ship.design_revision {
-                        return None;
-                    }
-                    Some(docked)
-                });
+            let dock_system: Option<Entity> =
+                ships_query
+                    .get(member)
+                    .ok()
+                    .and_then(|(_, ship, state, _, _, _)| {
+                        let docked = match &*state {
+                            ShipState::InSystem { system } => Some(*system),
+                            _ => None,
+                        }?;
+                        // Refit-eligible only if design revision is ahead.
+                        let design = registries.design_registry.get(&ship.design_id)?;
+                        if design.revision <= ship.design_revision {
+                            return None;
+                        }
+                        Some(docked)
+                    });
             if let Some(sys) = dock_system {
                 apply_design_refit(
                     member,
@@ -741,7 +1383,9 @@ fn draw_main_panels_system(
         }
     }
     if let Some(ship_entity) = ship_panel_actions.courier_clear_route {
-        commands.entity(ship_entity).remove::<crate::ship::CourierRoute>();
+        commands
+            .entity(ship_entity)
+            .remove::<crate::ship::CourierRoute>();
     }
     if let Some((ship_entity, mode)) = ship_panel_actions.courier_set_mode {
         if let Ok(route) = world.courier_routes.get(ship_entity) {
@@ -756,40 +1400,164 @@ fn draw_main_panels_system(
         }
     }
 
+    // #229: Ship panel deliverable actions.
+    if let Some((ship_e, item_index)) = ship_panel_actions.deploy_mode_request {
+        deliverables_res.deploy_mode.0 = Some(DeployPending {
+            ship: ship_e,
+            item_index,
+        });
+        info!(
+            "Deploy mode armed: ship {:?} cargo #{} — click a star to place.",
+            ship_e, item_index
+        );
+    }
+    if let Some((ship_e, structure, minerals, energy)) = ship_panel_actions.transfer_request {
+        if let Ok(mut queue) = command_queues.get_mut(ship_e) {
+            queue.commands.push(QueuedCommand::TransferToStructure {
+                structure,
+                minerals,
+                energy,
+            });
+        }
+    }
+    if let Some((ship_e, structure)) = ship_panel_actions.load_from_scrapyard_request {
+        if let Ok(mut queue) = command_queues.get_mut(ship_e) {
+            queue
+                .commands
+                .push(QueuedCommand::LoadFromScrapyard { structure });
+        }
+    }
+
+    // #389: Dock/Undock actions from ship panel.
+    if let Some((ship_entity, harbour_entity)) = ship_panel_actions.dock_at {
+        crate::ship::harbour::dock(&mut commands, ship_entity, harbour_entity);
+    }
+    if let Some(ship_entity) = ship_panel_actions.undock {
+        // Determine the system the ship is in for state transition
+        if let Ok((_, _, state, _, _, _)) = ships_query.get(ship_entity) {
+            let system = match &*state {
+                ShipState::InSystem { system } => Some(*system),
+                _ => None,
+            };
+            if let Some(sys) = system {
+                crate::ship::harbour::undock(&mut commands, ship_entity, sys);
+            }
+        }
+    }
+
     // --- Context menu ---
     let mut pending_ship_commands = Vec::new();
     let colony_ro: Vec<Colony> = colonies
         .iter()
         .map(|(_, c, _, _, _, _, _, _)| Colony {
             planet: c.planet,
-            population: c.population,
             growth_rate: c.growth_rate,
         })
         .collect();
-    // #176: Build hostile_systems using real-time for local, KnowledgeStore for remote
+    // #176/#293: Build hostile_systems using real-time for local, KnowledgeStore for remote.
+    // #417: In observer mode, use ground truth (all Hostile entities) directly.
     let hostile_systems: std::collections::HashSet<Entity> = {
         let mut set: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-        // Local system: real-time HostilePresence
-        for h in world.hostile_presence.iter() {
-            if Some(h.system) == player_system {
-                set.insert(h.system);
+        if selection.observer_mode.enabled {
+            // Ground truth: all hostile entities
+            for (at_system, _owner) in world.hostile_presence.iter() {
+                set.insert(at_system.0);
             }
-        }
-        // Remote systems: from KnowledgeStore
-        for (_entity, k) in knowledge.iter() {
-            if Some(k.system) == player_system {
-                continue;
+        } else {
+            // Local system: (AtSystem, FactionOwner, With<Hostile>)
+            for (at_system, _owner) in world.hostile_presence.iter() {
+                if Some(at_system.0) == player_system {
+                    set.insert(at_system.0);
+                }
             }
-            if k.data.has_hostile {
-                set.insert(k.system);
+            // Remote systems: from KnowledgeStore
+            for (_entity, k) in knowledge.iter() {
+                if Some(k.system) == player_system {
+                    continue;
+                }
+                if k.data.has_hostile {
+                    set.insert(k.system);
+                }
             }
         }
         set
     };
-    context_menu::draw_context_menu(
+    // #299 (S-5): Build a map of systems that have a Core, keyed by
+    // faction entity, so the context menu can gate colonization on
+    // Core presence.
+    let core_by_system: Vec<(Entity, Entity)> = world
+        .core_ships
+        .iter()
+        .map(|(at, fo)| (at.0, fo.0))
+        .collect();
+    // #389: Build harbour info for the context menu target system.
+    let target_harbours: Vec<context_menu::HarbourInfo> = selection
+        .context_menu
+        .target_system
+        .map(|target_sys| {
+            // Collect harbours in the target system
+            let selected_ship_hull_size: u32 = selection
+                .selected_ship
+                .0
+                .and_then(|se| ships_query.get(se).ok())
+                .map(|(_, ship, _, _, _, _)| {
+                    registries
+                        .hull_registry
+                        .get(&ship.hull_id)
+                        .map(|h| h.size)
+                        .unwrap_or(1)
+                })
+                .unwrap_or(1);
+            let mut harbours = Vec::new();
+            for (h_entity, h_ship, h_state, _, _, _) in ships_query.iter() {
+                let in_target =
+                    matches!(h_state, ShipState::InSystem { system } if *system == target_sys);
+                if !in_target {
+                    continue;
+                }
+                let Ok(stats) = world.ship_stats.get(h_entity) else {
+                    continue;
+                };
+                let cap_raw = stats.harbour_capacity.cached().raw();
+                if cap_raw == 0 {
+                    continue;
+                }
+                let capacity = (cap_raw / 1000) as u32;
+                let used = {
+                    let mut total: u32 = 0;
+                    for (de, da) in world.docked_at.iter() {
+                        if da.0 == h_entity {
+                            if let Ok((_, ds, _, _, _, _)) = ships_query.get(de) {
+                                let sz = registries
+                                    .hull_registry
+                                    .get(&ds.hull_id)
+                                    .map(|h| h.size)
+                                    .unwrap_or(1);
+                                total = total.saturating_add(sz);
+                            }
+                        }
+                    }
+                    total
+                };
+                harbours.push(context_menu::HarbourInfo {
+                    entity: h_entity,
+                    name: h_ship.name.clone(),
+                    can_dock: used.saturating_add(selected_ship_hull_size) <= capacity,
+                });
+            }
+            harbours
+        })
+        .unwrap_or_default();
+    let ship_is_docked_at_harbour = selection
+        .selected_ship
+        .0
+        .and_then(|se| world.docked_check.get(se).ok())
+        .is_some();
+    let ctx_menu_actions = context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,
         &mut selection.selected_ship,
+        &mut selection.selected_ships,
         &stars,
         &mut ships_query,
         &mut command_queues,
@@ -803,7 +1571,15 @@ fn draw_main_panels_system(
         &world.planet_entities,
         &hostile_systems,
         &registries.design_registry,
+        &core_by_system,
+        selection.ui_registry.as_mut().map(|r| &mut **r),
+        &target_harbours,
+        ship_is_docked_at_harbour,
     );
+    // #389: Handle dock action from context menu
+    if let Some((ship_entity, harbour_entity)) = ctx_menu_actions.dock_at {
+        crate::ship::harbour::dock(&mut commands, ship_entity, harbour_entity);
+    }
     for pending_cmd in pending_ship_commands {
         commands.spawn(pending_cmd);
     }
@@ -828,25 +1604,26 @@ fn draw_overlays_system(
         (&mut ResourceStockpile, Option<&ResourceCapacity>),
         With<StarSystem>,
     >,
-    mut empire_q: Query<
-        (&TechTree, &ResearchPool, &mut ResearchQueue),
-        With<PlayerEmpire>,
-    >,
+    mut empire_q: Query<(&TechTree, &ResearchPool, &mut ResearchQueue), With<crate::player::Empire>>,
     branch_registry: Res<crate::technology::TechBranchRegistry>,
     effects_preview: Res<crate::technology::TechEffectsPreview>,
     unlock_index: Res<crate::technology::TechUnlockIndex>,
+    obs: ObserverUiState,
 ) {
+    crate::prof_span!("draw_overlays");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok((tech_tree, research_pool, mut research_queue)) = empire_q.single_mut() else {
+    // #417: Resolve empire entity for research overlay.
+    let empire_entity = resolve_ui_empire(&obs);
+    let Some(empire_entity) = empire_entity else {
+        return;
+    };
+    let Ok((tech_tree, research_pool, mut research_queue)) = empire_q.get_mut(empire_entity) else {
         return;
     };
 
-    let capital_refs = ui_state
-        .capital_stockpile
-        .as_ref()
-        .map(|(m, e)| (m, e));
+    let capital_refs = ui_state.capital_stockpile.as_ref().map(|(m, e)| (m, e));
 
     let research_action = overlays::draw_overlays(
         ctx,
@@ -917,21 +1694,231 @@ fn draw_overlays_system(
 }
 
 // ---------------------------------------------------------------------------
+// #304: F2 toggle for the diplomacy panel (runs in Update)
+// ---------------------------------------------------------------------------
+
+fn toggle_diplomacy_panel(keys: Res<ButtonInput<KeyCode>>, mut open: ResMut<DiplomacyPanelOpen>) {
+    if keys.just_pressed(diplomacy_panel::TOGGLE_KEY) {
+        open.0 = !open.0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #310: toggle_console — Alt+F2 toggles the Lua console
+// ---------------------------------------------------------------------------
+
+fn toggle_console(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<console::ConsoleState>) {
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    if alt && keys.just_pressed(KeyCode::F2) {
+        state.visible = !state.visible;
+        if state.visible {
+            state.scroll_to_bottom = true;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #304: draw_diplomacy_overlay_system — diplomacy panel (floating window)
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn draw_diplomacy_overlay_system(
+    mut commands: Commands,
+    mut contexts: EguiContexts,
+    clock: Res<GameClock>,
+    mut diplomacy_open: ResMut<DiplomacyPanelOpen>,
+    mut relations: ResMut<FactionRelations>,
+    active_wars: Res<ActiveWars>,
+    cb_registry: Res<CasusBelliRegistry>,
+    option_registry: Res<DiplomaticOptionRegistry>,
+    faction_registry: Res<crate::scripting::faction_api::FactionRegistry>,
+    known_factions: Res<crate::faction::KnownFactions>,
+    factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
+    obs: ObserverUiState,
+) {
+    crate::prof_span!("draw_diplomacy_overlay");
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    // #417: Resolve empire entity for diplomacy panel.
+    let Some(player_entity) = resolve_ui_empire(&obs) else {
+        return;
+    };
+
+    // #405: Build sorted FactionEntry list filtered to discovered factions only.
+    let mut factions: Vec<diplomacy_panel::FactionEntry> = factions_q
+        .iter()
+        .filter(|(e, _)| *e == player_entity || known_factions.is_known(*e))
+        .map(|(e, f)| diplomacy_panel::FactionEntry {
+            entity: e,
+            name: f.name.clone(),
+            can_diplomacy: f.can_diplomacy,
+            allowed_diplomatic_options: f.allowed_diplomatic_options.iter().cloned().collect(),
+        })
+        .collect();
+    factions.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let action = diplomacy_panel::draw_diplomacy_panel(
+        ctx,
+        &mut diplomacy_open.0,
+        player_entity,
+        &relations,
+        &active_wars,
+        &cb_registry,
+        &option_registry,
+        &faction_registry,
+        &factions,
+        &clock,
+    );
+
+    // Execute returned actions.
+    match action {
+        diplomacy_panel::DiplomacyAction::SendDiplomaticEvent {
+            from,
+            to,
+            option_id,
+        } => {
+            // Use a fixed 0-delay for now (same-system instant); a future
+            // pass will compute real light-speed delay from physical distance.
+            let delay = 0i64;
+            match option_id.as_str() {
+                crate::faction::DIPLO_DECLARE_WAR => {
+                    crate::faction::declare_war_with_delay(
+                        &mut commands,
+                        &mut relations,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                crate::faction::DIPLO_BREAK_ALLIANCE => {
+                    crate::faction::break_alliance_with_delay(
+                        &mut commands,
+                        &mut relations,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                crate::faction::DIPLO_PROPOSE_PEACE => {
+                    crate::faction::propose_peace_with_delay(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                crate::faction::DIPLO_PROPOSE_ALLIANCE => {
+                    crate::faction::propose_alliance_with_delay(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        delay,
+                    );
+                }
+                _ => {
+                    // Lua-defined diplomatic option — send as DiplomaticEvent
+                    crate::faction::send_diplomatic_event(
+                        &mut commands,
+                        &clock,
+                        from,
+                        to,
+                        option_id,
+                        std::collections::HashMap::new(),
+                        delay,
+                    );
+                }
+            }
+        }
+        diplomacy_panel::DiplomacyAction::EndWar {
+            faction_a,
+            faction_b,
+            scenario_id: _,
+        } => {
+            // For now, end war via peace proposal. A future pass will use
+            // the scenario's on_select callback and demand adjustments.
+            // `end_war` requires exclusive world access so we spawn a peace
+            // proposal that the next tick will resolve.
+            crate::faction::propose_peace_with_delay(
+                &mut commands,
+                &clock,
+                faction_a,
+                faction_b,
+                0,
+            );
+        }
+        diplomacy_panel::DiplomacyAction::None => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // System 6: draw_bottom_bar_system
 // ---------------------------------------------------------------------------
 
 fn draw_bottom_bar_system(
     mut contexts: EguiContexts,
-    clock: Res<GameClock>,
-    empire_q: Query<&CommandLog, With<PlayerEmpire>>,
+    event_log: Res<EventLog>,
 ) {
+    crate::prof_span!("draw_bottom_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok(command_log) = empire_q.single() else {
+    bottom_bar::draw_bottom_bar(ctx, &event_log);
+}
+
+// ---------------------------------------------------------------------------
+// #310: draw_console_system — Lua console overlay
+// ---------------------------------------------------------------------------
+
+fn draw_console_system(
+    mut contexts: EguiContexts,
+    mut console_state: ResMut<console::ConsoleState>,
+    mut log_buffer: ResMut<crate::scripting::log_buffer::LogBuffer>,
+    clock: Res<GameClock>,
+    engine: Res<crate::scripting::ScriptEngine>,
+) {
+    crate::prof_span!("draw_console");
+    let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    bottom_bar::draw_bottom_bar(ctx, command_log, &clock);
+
+    if let Some(input) = console::draw_console(ctx, &mut console_state, &log_buffer) {
+        // Echo the input
+        log_buffer.push(
+            input.clone(),
+            crate::scripting::log_buffer::LogSource::Console,
+            clock.elapsed,
+        );
+
+        // Evaluate the Lua expression. Try as expression first (return value),
+        // fall back to statement.
+        let lua = engine.lua();
+        let result = lua
+            .load(&format!("return {}", input))
+            .eval::<mlua::Value>()
+            .or_else(|_| lua.load(&input).eval::<mlua::Value>());
+
+        match result {
+            Ok(value) => {
+                // Don't log nil results for statement execution
+                if !matches!(value, mlua::Value::Nil) {
+                    let formatted = console::format_lua_value(&value);
+                    log_buffer.push(
+                        formatted,
+                        crate::scripting::log_buffer::LogSource::ConsoleResult,
+                        clock.elapsed,
+                    );
+                }
+            }
+            Err(e) => {
+                log_buffer.push_error(format!("{}", e), clock.elapsed);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -993,8 +1980,7 @@ fn draw_map_tooltips(
     // Check for nearest star under cursor
     let mut best_star: Option<(Entity, f32)> = None;
     for (entity, _star, pos, _) in stars.iter() {
-        let star_px =
-            bevy::math::Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
+        let star_px = bevy::math::Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
         let dist = world_pos.distance(star_px);
         if dist < hover_radius {
             if best_star.is_none() || dist < best_star.unwrap().1 {
@@ -1072,17 +2058,19 @@ fn draw_map_tooltips(
         let star_closer = best_star.is_some_and(|(_, d)| d < ship_dist);
         if !star_closer {
             if let Ok((_, ship, state, _, hp, _)) = ships.get(ship_entity) {
-                let design_name = design_registry.get(&ship.design_id)
+                let design_name = design_registry
+                    .get(&ship.design_id)
                     .map(|d| d.name.as_str())
                     .unwrap_or(&ship.design_id);
                 let status = match &*state {
-                    ShipState::Docked { .. } => "Docked",
+                    ShipState::InSystem { .. } => "Docked",
                     ShipState::SubLight { .. } => "Sub-light",
                     ShipState::InFTL { .. } => "In FTL",
                     ShipState::Surveying { .. } => "Surveying",
                     ShipState::Settling { .. } => "Settling",
                     ShipState::Refitting { .. } => "Refitting",
                     ShipState::Loitering { .. } => "Loitering",
+                    ShipState::Scouting { .. } => "Scouting",
                 };
                 egui::Tooltip::always_open(
                     ctx.clone(),
@@ -1106,7 +2094,11 @@ fn draw_map_tooltips(
     if let Some((star_entity, _)) = best_star {
         if let Ok((_, star, _, attrs)) = stars.get(star_entity) {
             let is_local = player_system == Some(star_entity);
-            let k_data = if is_local { None } else { knowledge.and_then(|k| k.get(star_entity)) };
+            let k_data = if is_local {
+                None
+            } else {
+                knowledge.and_then(|k| k.get(star_entity))
+            };
 
             // For remote systems, derive info from KnowledgeStore
             let effective_surveyed = if is_local {
@@ -1144,20 +2136,43 @@ fn draw_map_tooltips(
                 if effective_surveyed {
                     // Local: show actual planet count. Remote: planet count not in snapshot, skip.
                     if is_local {
-                        let planet_count = planets.iter().filter(|p| p.system == star_entity).count();
+                        let planet_count =
+                            planets.iter().filter(|p| p.system == star_entity).count();
                         ui.label(format!("Planets: {}", planet_count));
                     }
                     if let Some(hab) = effective_hab {
-                        ui.label(format!("Habitability: {}", crate::galaxy::habitability_label(hab)));
+                        ui.label(format!(
+                            "Habitability: {}",
+                            crate::galaxy::habitability_label(hab)
+                        ));
                     }
                 } else {
                     ui.label(egui::RichText::new("Unsurveyed").weak().italics());
                 }
                 if !is_local {
                     if let Some(k) = k_data {
+                        // #215: Tag tooltip freshness with observation source
+                        // so the player can see at a glance whether intel came
+                        // via direct light-speed, relay, or scout, and whether
+                        // it has aged past the stale threshold.
                         let age = clock.elapsed - k.observed_at;
                         let years = age as f64 / crate::time_system::HEXADIES_PER_YEAR as f64;
-                        ui.label(egui::RichText::new(format!("Info age: {:.1} yr", years)).weak().small());
+                        let overlay_source = if age >= crate::knowledge::STALE_THRESHOLD_HEXADIES {
+                            crate::knowledge::ObservationSource::Stale
+                        } else {
+                            k.source
+                        };
+                        let tag = match overlay_source {
+                            crate::knowledge::ObservationSource::Direct => "[DIR]",
+                            crate::knowledge::ObservationSource::Relay => "[REL]",
+                            crate::knowledge::ObservationSource::Scout => "[SCT]",
+                            crate::knowledge::ObservationSource::Stale => "[STALE]",
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("Info age: {:.1} yr {}", years, tag))
+                                .weak()
+                                .small(),
+                        );
                     } else if !star.is_capital {
                         ui.label(egui::RichText::new("No intelligence").weak().italics());
                     }
@@ -1192,11 +2207,8 @@ fn apply_design_refit(
         Option<&mut Cargo>,
         &ShipHitpoints,
         Option<&SurveyData>,
-    )>,
-    stockpiles: &mut Query<
-        (&mut ResourceStockpile, Option<&ResourceCapacity>),
-        With<StarSystem>,
-    >,
+    ), Without<SlotAssignment>>,
+    stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     design_registry: &ShipDesignRegistry,
     hull_registry: &HullRegistry,
     module_registry: &ModuleRegistry,
@@ -1206,7 +2218,7 @@ fn apply_design_refit(
         return;
     };
     // Must be docked at the given system (not in transit, not refitting).
-    let docked_here = matches!(&*state, ShipState::Docked { system } if *system == system_entity);
+    let docked_here = matches!(&*state, ShipState::InSystem { system } if *system == system_entity);
     if !docked_here {
         return;
     }
@@ -1220,12 +2232,8 @@ fn apply_design_refit(
     let Some(hull) = hull_registry.get(&ship.hull_id) else {
         return;
     };
-    let (cost_m, cost_e, time) = crate::ship_design::refit_cost_to_design(
-        &ship.modules,
-        design,
-        hull,
-        module_registry,
-    );
+    let (cost_m, cost_e, time) =
+        crate::ship_design::refit_cost_to_design(&ship.modules, design, hull, module_registry);
     let new_modules = crate::ship_design::design_equipped_modules(design);
     let target_revision = design.revision;
     if let Ok((mut stockpile, _)) = stockpiles.get_mut(system_entity) {
@@ -1257,7 +2265,8 @@ fn draw_choice_dialog_system(
     ui_state: Res<UiState>,
     mut pending: ResMut<PendingChoice>,
     mut selection: ResMut<PendingChoiceSelection>,
-    empire_q: Query<(&TechTree, &GameFlags, &ScopedFlags), With<PlayerEmpire>>,
+    empire_q: Query<(&TechTree, &GameFlags, &ScopedFlags), With<crate::player::Empire>>,
+    obs: ObserverUiState,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -1265,7 +2274,12 @@ fn draw_choice_dialog_system(
     if !pending.is_active() {
         return;
     }
-    let Ok((tech_tree, game_flags, scoped_flags)) = empire_q.single() else {
+    // #417: Resolve empire entity for choice dialog.
+    let empire_entity = resolve_ui_empire(&obs);
+    let Some(empire_entity) = empire_entity else {
+        return;
+    };
+    let Ok((tech_tree, game_flags, scoped_flags)) = empire_q.get(empire_entity) else {
         return;
     };
 
@@ -1321,12 +2335,11 @@ fn draw_choice_dialog_system(
                         }
                     };
 
-                    let mut button = egui::Button::new(
-                        egui::RichText::new(label_text).strong(),
-                    )
-                    .min_size(egui::vec2(400.0, 28.0));
+                    let mut button = egui::Button::new(egui::RichText::new(label_text).strong())
+                        .min_size(egui::vec2(400.0, 28.0));
                     if unavailable {
-                        button = button.fill(egui::Color32::from_rgba_premultiplied(40, 40, 40, 180));
+                        button =
+                            button.fill(egui::Color32::from_rgba_premultiplied(40, 40, 40, 180));
                     }
 
                     let mut response = ui.add(button);

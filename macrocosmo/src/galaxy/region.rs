@@ -198,11 +198,7 @@ pub struct PlacementInputs<'a> {
 }
 
 impl<'a> PlacementInputs<'a> {
-    pub fn new(
-        systems: &'a [[f64; 3]],
-        capital_idx: usize,
-        galaxy_radius: f64,
-    ) -> Self {
+    pub fn new(systems: &'a [[f64; 3]], capital_idx: usize, galaxy_radius: f64) -> Self {
         Self {
             systems,
             capital_idx,
@@ -267,17 +263,11 @@ pub fn place_regions(
         while placed < count as usize && attempts_left > 0 {
             attempts_left -= 1;
 
-            let candidate = match try_grow_region(
-                rng,
-                spec,
-                type_def,
-                next_id,
-                inputs,
-                &out.regions,
-            ) {
-                Some(r) => r,
-                None => continue,
-            };
+            let candidate =
+                match try_grow_region(rng, spec, type_def, next_id, inputs, &out.regions) {
+                    Some(r) => r,
+                    None => continue,
+                };
 
             // Validate adding this region: C2/C3/C4 against ALL systems.
             out.regions.push(candidate);
@@ -324,7 +314,9 @@ fn try_grow_region(
     existing: &[ForbiddenRegion],
 ) -> Option<ForbiddenRegion> {
     let capital_pos = inputs.systems[inputs.capital_idx];
-    let sanctuary = spec.min_distance_from_capital.max(inputs.capital_sanctuary_radius);
+    let sanctuary = spec
+        .min_distance_from_capital
+        .max(inputs.capital_sanctuary_radius);
 
     let seed = sample_seed(rng, inputs, capital_pos, sanctuary, existing)?;
 
@@ -446,11 +438,7 @@ pub fn validate_constraints(regions: &[ForbiddenRegion], inputs: &PlacementInput
         .collect();
 
     // Build unblocked FTL adjacency graph.
-    let adjacency = build_ftl_adjacency(
-        inputs.systems,
-        inputs.capital_escape_ftl_range,
-        &blocking,
-    );
+    let adjacency = build_ftl_adjacency(inputs.systems, inputs.capital_escape_ftl_range, &blocking);
     let components = connected_components(&adjacency);
     let capital_component = components[inputs.capital_idx];
 
@@ -518,7 +506,9 @@ pub fn build_ftl_adjacency(
             if d > ftl_range {
                 continue;
             }
-            let blocked = blocking.iter().any(|b| b.blocks_segment(systems[i], systems[j]));
+            let blocked = blocking
+                .iter()
+                .any(|b| b.blocks_segment(systems[i], systems[j]));
             if blocked {
                 continue;
             }
@@ -697,7 +687,9 @@ mod tests {
         for (name, strength) in caps {
             capabilities.insert(
                 (*name).to_string(),
-                CapabilityParams { strength: *strength },
+                CapabilityParams {
+                    strength: *strength,
+                },
             );
         }
         RegionTypeDefinition {

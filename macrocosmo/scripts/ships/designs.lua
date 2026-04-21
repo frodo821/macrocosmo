@@ -1,5 +1,15 @@
 local hulls = require("ships.hulls")
 local modules = require("ships.modules")
+local station_hulls = require("ships.station_hulls")
+local station_modules = require("ships.station_modules")
+
+-- #236: Ship design stats (hp/ftl_range/cost/maintenance/build_time/can_*)
+-- are derived from hull + modules at registry load time. Presets no longer
+-- author those fields — only id/name/hull/modules (and description) are read.
+--
+-- #138: Designs that use power-consuming modules must include a reactor
+-- module to satisfy the power budget constraint. Designs are validated
+-- at registry load time.
 
 -- Default designs matching current ShipType functionality
 local explorer_mk1 = define_ship_design {
@@ -10,14 +20,6 @@ local explorer_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.survey_equipment },
     },
-    can_survey = true,
-    can_colonize = false,
-    maintenance = 0.5,
-    build_cost = { minerals = 200, energy = 100 },
-    build_time = 60,
-    hp = 50,
-    sublight_speed = 0.75,
-    ftl_range = 10.0,
 }
 
 local colony_ship_mk1 = define_ship_design {
@@ -28,14 +30,6 @@ local colony_ship_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.colony_module },
     },
-    can_survey = false,
-    can_colonize = true,
-    maintenance = 1.0,
-    build_cost = { minerals = 500, energy = 300 },
-    build_time = 120,
-    hp = 100,
-    sublight_speed = 0.5,
-    ftl_range = 15.0,
 }
 
 local courier_mk1 = define_ship_design {
@@ -46,15 +40,8 @@ local courier_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "sublight", module = modules.afterburner },
         { slot_type = "utility", module = modules.cargo_bay },
+        { slot_type = "reactor", module = modules.fusion_reactor_s },
     },
-    can_survey = false,
-    can_colonize = false,
-    maintenance = 0.3,
-    build_cost = { minerals = 100, energy = 50 },
-    build_time = 30,
-    hp = 35,
-    sublight_speed = 0.80,
-    ftl_range = 0.0,
 }
 
 local scout_mk1 = define_ship_design {
@@ -65,34 +52,66 @@ local scout_mk1 = define_ship_design {
         { slot_type = "ftl", module = modules.ftl_drive },
         { slot_type = "utility", module = modules.survey_equipment },
     },
-    can_survey = true,
-    can_colonize = false,
-    maintenance = 0.4,
-    build_cost = { minerals = 150, energy = 80 },
-    build_time = 45,
-    hp = 40,
-    sublight_speed = 0.85,
-    ftl_range = 10.0,
 }
 
+-- #403: Corvette combat design — small weapon/defense modules
 local patrol_corvette = define_ship_design {
     id = "patrol_corvette",
     name = "Patrol Corvette",
     hull = hulls.corvette,
     modules = {
-        { slot_type = "weapon", module = modules.weapon_laser },
-        { slot_type = "weapon", module = modules.weapon_laser },
+        { slot_type = "weapon", module = modules.weapon_laser_s },
+        { slot_type = "weapon", module = modules.weapon_laser_s },
         { slot_type = "ftl", module = modules.ftl_drive },
-        { slot_type = "defense", module = modules.armor_plating },
+        { slot_type = "defense", module = modules.armor_plating_s },
+        { slot_type = "reactor", module = modules.fusion_reactor_s },
     },
-    can_survey = false,
-    can_colonize = false,
-    maintenance = 0.6,
-    build_cost = { minerals = 380, energy = 200 },
-    build_time = 60,
-    hp = 50,
-    sublight_speed = 0.75,
-    ftl_range = 15.0,
+}
+
+-- #403: Frigate combat design — medium weapon/defense modules
+-- Power budget: 2*4 (laser_m) + 5 (railgun_m) + 0 (armor_m) + 6 (shield_m) = 19 / 20
+local assault_frigate = define_ship_design {
+    id = "assault_frigate",
+    name = "Assault Frigate",
+    hull = hulls.frigate,
+    modules = {
+        { slot_type = "weapon", module = modules.weapon_laser_m },
+        { slot_type = "weapon", module = modules.weapon_laser_m },
+        { slot_type = "weapon", module = modules.weapon_railgun_m },
+        { slot_type = "ftl", module = modules.ftl_drive },
+        { slot_type = "defense", module = modules.armor_plating_m },
+        { slot_type = "defense", module = modules.shield_generator_m },
+        { slot_type = "reactor", module = modules.fusion_reactor_m },
+    },
+}
+
+-- #385: Station designs for system buildings (immobile, spawned by building construction).
+local station_shipyard_v1 = define_ship_design {
+    id = "station_shipyard_v1",
+    name = "Orbital Shipyard",
+    hull = station_hulls.station_shipyard_hull,
+    modules = {
+        { slot_type = "utility", module = station_modules.shipyard_bay },
+    },
+}
+
+local station_port_v1 = define_ship_design {
+    id = "station_port_v1",
+    name = "Trade Port",
+    hull = station_hulls.station_port_hull,
+    modules = {
+        { slot_type = "utility", module = station_modules.port_dock },
+        { slot_type = "weapon", module = station_modules.point_defense_turret },
+    },
+}
+
+local station_research_lab_v1 = define_ship_design {
+    id = "station_research_lab_v1",
+    name = "Research Station",
+    hull = station_hulls.station_research_lab_hull,
+    modules = {
+        { slot_type = "utility", module = station_modules.research_array },
+    },
 }
 
 return {
@@ -101,4 +120,8 @@ return {
     courier_mk1 = courier_mk1,
     scout_mk1 = scout_mk1,
     patrol_corvette = patrol_corvette,
+    assault_frigate = assault_frigate,
+    station_shipyard_v1 = station_shipyard_v1,
+    station_port_v1 = station_port_v1,
+    station_research_lab_v1 = station_research_lab_v1,
 }

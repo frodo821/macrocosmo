@@ -7,25 +7,28 @@ pub mod unlocks;
 use bevy::prelude::*;
 use std::collections::HashSet;
 
-use crate::modifier::ModifiedValue;
 use crate::amount::Amt;
+use crate::modifier::ModifiedValue;
 
 // Re-export everything for backward compatibility
-pub use effects::{apply_tech_effects, build_tech_effects_preview, TechEffectsLog, TechEffectsPreview};
+pub use effects::{
+    PendingColonyTechModifiers, TechEffectsLog, TechEffectsPreview, apply_tech_effects,
+    build_tech_effects_preview, sync_tech_colony_modifiers,
+};
 pub use parsing::{
     create_initial_tech_tree, create_initial_tech_tree_vec, parse_tech_branch_definitions,
     parse_tech_definitions,
 };
 pub use research::{
-    emit_research, flush_research, propagate_tech_knowledge, receive_research,
-    receive_tech_knowledge, tick_research, LastResearchTick, PendingKnowledgePropagation,
-    PendingResearch, RecentlyResearched, ResearchPool, ResearchQueue, TechKnowledge,
+    LastResearchTick, PendingKnowledgePropagation, PendingResearch, RecentlyResearched,
+    ResearchPool, ResearchQueue, TechKnowledge, emit_research, flush_research,
+    propagate_tech_knowledge, receive_research, receive_tech_knowledge, tick_research,
 };
 pub use tree::{
-    default_tech_branches, TechBranchDefinition, TechBranchRegistry, TechCost, TechId, TechTree,
-    Technology,
+    TechBranchDefinition, TechBranchRegistry, TechCost, TechId, TechTree, Technology,
+    default_tech_branches,
 };
-pub use unlocks::{build_tech_unlock_index, TechUnlockIndex, UnlockEntry, UnlockKind};
+pub use unlocks::{TechUnlockIndex, UnlockEntry, UnlockKind, build_tech_unlock_index};
 
 pub struct TechnologyPlugin;
 
@@ -56,46 +59,68 @@ impl Plugin for TechnologyPlugin {
                     .after(crate::colony::load_building_registry)
                     .after(crate::deep_space::load_structure_definitions),
             )
-        .insert_resource(LastResearchTick(0))
-        .init_resource::<TechEffectsLog>()
-        .init_resource::<TechEffectsPreview>()
-        .init_resource::<TechUnlockIndex>()
-        .add_systems(
-            Startup,
-            build_tech_effects_preview
-                .after(load_technologies)
-                .after(crate::scripting::load_all_scripts),
-        )
-        .add_systems(
-            Update,
-            (emit_research, receive_research, tick_research, flush_research)
-                .chain()
-                .after(crate::time_system::advance_game_time),
-        )
-        .add_systems(
-            Update,
-            apply_tech_effects
-                .after(tick_research)
-                .before(propagate_tech_knowledge)
-                .after(crate::time_system::advance_game_time),
-        )
-        .add_systems(
-            Update,
-            (propagate_tech_knowledge, receive_tech_knowledge)
-                .chain()
-                .after(apply_tech_effects)
-                .after(crate::time_system::advance_game_time),
-        )
-        // #160: Keep AuthorityParams' base values in sync with GameBalance.
-        // Runs after apply_tech_effects (which may alter GameBalance) and
-        // before tick_timed_effects / tick_authority.
-        .add_systems(
-            Update,
-            sync_authority_params_from_balance
-                .after(apply_tech_effects)
-                .before(crate::colony::tick_timed_effects)
-                .after(crate::time_system::advance_game_time),
-        );
+            .insert_resource(LastResearchTick(0))
+            .init_resource::<TechEffectsLog>()
+            .init_resource::<TechEffectsPreview>()
+            .init_resource::<TechUnlockIndex>()
+            .add_systems(
+                Startup,
+                build_tech_effects_preview
+                    .after(load_technologies)
+                    .after(crate::scripting::load_all_scripts),
+            )
+            .add_systems(
+                Update,
+                (
+                    emit_research,
+                    receive_research,
+                    tick_research,
+                    flush_research,
+                )
+                    .chain()
+                    .after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
+                apply_tech_effects
+                    .after(tick_research)
+                    .before(propagate_tech_knowledge)
+                    .after(crate::time_system::advance_game_time),
+            )
+            // #245: Broadcast tech-sourced colony modifiers into every colony's
+            // Production / ColonyJobRates / ColonyJobs every tick. Runs AFTER
+            // `sync_species_modifiers` because that system (together with
+            // `sync_building_modifiers`) clears and rebuilds `ColonyJobRates`
+            // buckets from scratch each tick. If we ran before them, the tech
+            // modifiers we push would be wiped. Running after means the
+            // tech:* modifier id always lands on top of the freshly-rebuilt
+            // buckets, and `tick_production` (which runs next) reads the
+            // combined value.
+            .add_systems(
+                Update,
+                sync_tech_colony_modifiers
+                    .after(apply_tech_effects)
+                    .after(crate::colony::sync_species_modifiers)
+                    .before(crate::colony::tick_production)
+                    .after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
+                (propagate_tech_knowledge, receive_tech_knowledge)
+                    .chain()
+                    .after(apply_tech_effects)
+                    .after(crate::time_system::advance_game_time),
+            )
+            // #160: Keep AuthorityParams' base values in sync with GameBalance.
+            // Runs after apply_tech_effects (which may alter GameBalance) and
+            // before tick_timed_effects / tick_authority.
+            .add_systems(
+                Update,
+                sync_authority_params_from_balance
+                    .after(apply_tech_effects)
+                    .before(crate::colony::tick_timed_effects)
+                    .after(crate::time_system::advance_game_time),
+            );
     }
 }
 
@@ -188,6 +213,12 @@ pub struct GameBalance {
     pub base_authority_per_hexadies: ModifiedValue,
     /// Authority cost per hexady per non-capital colony. Base = 0.5
     pub authority_cost_per_colony: ModifiedValue,
+    /// #223: Cargo mass equivalent of a single deliverable cargo_size slot.
+    /// Base = 1.0 (1 slot consumes the same cap as 1 Amt unit of resource).
+    pub mass_per_item_slot: ModifiedValue,
+    /// #298 (S-4): Core hull recovery rate per hexady during peacetime when
+    /// the attacker fleet has left. Base = 1.0 HP/hexady.
+    pub core_recovery_rate_per_hexadies: ModifiedValue,
 }
 
 impl Default for GameBalance {
@@ -205,6 +236,8 @@ impl Default for GameBalance {
             colonization_build_time: ModifiedValue::new(Amt::units(90)),
             base_authority_per_hexadies: ModifiedValue::new(Amt::units(1)),
             authority_cost_per_colony: ModifiedValue::new(Amt::new(0, 500)),
+            mass_per_item_slot: ModifiedValue::new(Amt::units(1)),
+            core_recovery_rate_per_hexadies: ModifiedValue::new(Amt::from_f64(1.0)),
         }
     }
 }
@@ -247,6 +280,22 @@ impl GameBalance {
         self.authority_cost_per_colony.final_value()
     }
 
+    /// #223: Mass equivalent of one deliverable cargo_size slot (as Amt).
+    pub fn mass_per_item_slot(&self) -> Amt {
+        self.mass_per_item_slot.final_value()
+    }
+
+    /// #298 (S-4): Core hull recovery rate per hexady (HP/hexady).
+    pub fn core_recovery_rate_per_hexadies(&self) -> f64 {
+        self.core_recovery_rate_per_hexadies.final_value().to_f64()
+    }
+
+    /// #223: Same as `mass_per_item_slot()` but returning the raw u64 (for
+    /// inline mass arithmetic inside `Cargo` helpers).
+    pub fn mass_per_item_slot_raw(&self) -> u64 {
+        self.mass_per_item_slot.final_value().raw()
+    }
+
     /// Look up a balance field's `ModifiedValue` by string target name (for
     /// use by the modifier pipeline). Returns `None` if the target is not a
     /// recognised balance field. The target is the part after the
@@ -265,6 +314,8 @@ impl GameBalance {
             "colonization_build_time" => Some(&mut self.colonization_build_time),
             "base_authority_per_hexadies" => Some(&mut self.base_authority_per_hexadies),
             "authority_cost_per_colony" => Some(&mut self.authority_cost_per_colony),
+            "mass_per_item_slot" => Some(&mut self.mass_per_item_slot),
+            "core_recovery_rate_per_hexadies" => Some(&mut self.core_recovery_rate_per_hexadies),
             _ => None,
         }
     }
@@ -324,7 +375,7 @@ pub fn load_technologies(
     mut commands: Commands,
     engine: Res<crate::scripting::ScriptEngine>,
     branch_registry: Res<TechBranchRegistry>,
-    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    empire_q: Query<Entity, With<crate::player::Empire>>,
 ) {
     let techs = match parse_tech_definitions(engine.lua()) {
         Ok(parsed) if !parsed.is_empty() => parsed,
@@ -356,12 +407,15 @@ pub fn load_technologies(
         tree.technologies.len()
     );
 
-    // Insert onto the player empire entity (replacing the default)
-    if let Ok(empire_entity) = empire_q.single() {
-        commands.entity(empire_entity).insert(tree);
-    } else {
-        warn!("No player empire entity found; inserting TechTree as resource fallback");
+    // Insert onto all empire entities
+    let empire_entities: Vec<Entity> = empire_q.iter().collect();
+    if empire_entities.is_empty() {
+        warn!("No empire entities found; inserting TechTree as resource fallback");
         commands.insert_resource(tree);
+    } else {
+        for empire_entity in empire_entities {
+            commands.entity(empire_entity).insert(tree.clone());
+        }
     }
 }
 
@@ -405,18 +459,64 @@ pub fn load_game_balance(
         }
     }
 
-    set_decimal(&mut balance.initial_ftl_speed_c, &table, "initial_ftl_speed_c");
+    set_decimal(
+        &mut balance.initial_ftl_speed_c,
+        &table,
+        "initial_ftl_speed_c",
+    );
     set_integer(&mut balance.survey_duration, &table, "survey_duration");
     set_integer(&mut balance.settling_duration, &table, "settling_duration");
     set_decimal(&mut balance.survey_range_ly, &table, "survey_range_ly");
-    set_decimal(&mut balance.port_ftl_range_bonus, &table, "port_ftl_range_bonus");
-    set_decimal(&mut balance.port_travel_time_factor, &table, "port_travel_time_factor");
-    set_decimal(&mut balance.repair_rate_per_hexadies, &table, "repair_rate_per_hexadies");
-    set_integer(&mut balance.colonization_mineral_cost, &table, "colonization_mineral_cost");
-    set_integer(&mut balance.colonization_energy_cost, &table, "colonization_energy_cost");
-    set_integer(&mut balance.colonization_build_time, &table, "colonization_build_time");
-    set_decimal(&mut balance.base_authority_per_hexadies, &table, "base_authority_per_hexadies");
-    set_decimal(&mut balance.authority_cost_per_colony, &table, "authority_cost_per_colony");
+    set_decimal(
+        &mut balance.port_ftl_range_bonus,
+        &table,
+        "port_ftl_range_bonus",
+    );
+    set_decimal(
+        &mut balance.port_travel_time_factor,
+        &table,
+        "port_travel_time_factor",
+    );
+    set_decimal(
+        &mut balance.repair_rate_per_hexadies,
+        &table,
+        "repair_rate_per_hexadies",
+    );
+    set_integer(
+        &mut balance.colonization_mineral_cost,
+        &table,
+        "colonization_mineral_cost",
+    );
+    set_integer(
+        &mut balance.colonization_energy_cost,
+        &table,
+        "colonization_energy_cost",
+    );
+    set_integer(
+        &mut balance.colonization_build_time,
+        &table,
+        "colonization_build_time",
+    );
+    set_decimal(
+        &mut balance.base_authority_per_hexadies,
+        &table,
+        "base_authority_per_hexadies",
+    );
+    set_decimal(
+        &mut balance.authority_cost_per_colony,
+        &table,
+        "authority_cost_per_colony",
+    );
+    set_decimal(
+        &mut balance.mass_per_item_slot,
+        &table,
+        "mass_per_item_slot",
+    );
+    set_decimal(
+        &mut balance.core_recovery_rate_per_hexadies,
+        &table,
+        "core_recovery_rate_per_hexadies",
+    );
 
     info!("GameBalance loaded from Lua");
 }
@@ -432,24 +532,20 @@ pub fn load_game_balance(
 /// stack remains intact.
 pub fn sync_authority_params_from_balance(
     balance: Res<GameBalance>,
-    mut empire_q: Query<
-        &mut crate::colony::AuthorityParams,
-        With<crate::player::PlayerEmpire>,
-    >,
+    mut empire_q: Query<&mut crate::colony::AuthorityParams, With<crate::player::Empire>>,
 ) {
     if !balance.is_changed() {
         return;
     }
-    let Ok(mut params) = empire_q.single_mut() else {
-        return;
-    };
     let prod_base = balance.base_authority_per_hexadies.effective_base();
     let cost_base = balance.authority_cost_per_colony.effective_base();
-    if params.production.base() != prod_base {
-        params.production.set_base(prod_base);
-    }
-    if params.cost_per_colony.base() != cost_base {
-        params.cost_per_colony.set_base(cost_base);
+    for mut params in &mut empire_q {
+        if params.production.base() != prod_base {
+            params.production.set_base(prod_base);
+        }
+        if params.cost_per_colony.base() != cost_base {
+            params.cost_per_colony.set_base(cost_base);
+        }
     }
 }
 
@@ -460,8 +556,8 @@ pub fn sync_authority_params_from_balance(
 #[cfg(test)]
 mod game_balance_tests {
     use super::*;
-    use crate::modifier::Modifier;
     use crate::amount::SignedAmt;
+    use crate::modifier::Modifier;
 
     fn make_mult_modifier(id: &str, mult: SignedAmt) -> Modifier {
         Modifier {
@@ -513,12 +609,10 @@ mod game_balance_tests {
             "colonization_build_time",
             "base_authority_per_hexadies",
             "authority_cost_per_colony",
+            "core_recovery_rate_per_hexadies",
         ];
         for f in fields {
-            assert!(
-                b.field_mut(f).is_some(),
-                "field_mut should know '{f}'"
-            );
+            assert!(b.field_mut(f).is_some(), "field_mut should know '{f}'");
         }
         assert!(b.field_mut("does_not_exist").is_none());
     }

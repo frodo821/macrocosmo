@@ -78,10 +78,7 @@ pub fn draw_ship_designer(
                     .selected_text(&editing_label)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(
-                                state.editing_design_id.is_none(),
-                                "(new design)",
-                            )
+                            .selectable_label(state.editing_design_id.is_none(), "(new design)")
                             .clicked()
                         {
                             state.editing_design_id = None;
@@ -96,7 +93,8 @@ pub fn draw_ship_designer(
                                 continue;
                             };
                             let is_selected = state.editing_design_id.as_deref() == Some(did);
-                            if ui.selectable_label(is_selected, &def.name).clicked() && !is_selected {
+                            if ui.selectable_label(is_selected, &def.name).clicked() && !is_selected
+                            {
                                 // Populate state from the chosen design.
                                 state.editing_design_id = Some(def.id.clone());
                                 state.selected_hull = Some(def.hull_id.clone());
@@ -125,9 +123,7 @@ pub fn draw_ship_designer(
                             }
                         }
                     });
-                if state.editing_design_id.is_some()
-                    && ui.button("New").clicked()
-                {
+                if state.editing_design_id.is_some() && ui.button("New").clicked() {
                     state.editing_design_id = None;
                     state.selected_hull = None;
                     state.selected_modules.clear();
@@ -188,9 +184,28 @@ pub fn draw_ship_designer(
                 for hull_slot in &hull.slots {
                     for i in 0..hull_slot.count {
                         let slot_label = if hull_slot.count > 1 {
-                            format!("[{}] {}_{}", &hull_slot.slot_type.chars().next().unwrap_or('?').to_uppercase(), hull_slot.slot_type, i + 1)
+                            format!(
+                                "[{}] {}_{}",
+                                &hull_slot
+                                    .slot_type
+                                    .chars()
+                                    .next()
+                                    .unwrap_or('?')
+                                    .to_uppercase(),
+                                hull_slot.slot_type,
+                                i + 1
+                            )
                         } else {
-                            format!("[{}] {}", &hull_slot.slot_type.chars().next().unwrap_or('?').to_uppercase(), hull_slot.slot_type)
+                            format!(
+                                "[{}] {}",
+                                &hull_slot
+                                    .slot_type
+                                    .chars()
+                                    .next()
+                                    .unwrap_or('?')
+                                    .to_uppercase(),
+                                hull_slot.slot_type
+                            )
                         };
 
                         let current_module_name = state
@@ -238,9 +253,7 @@ pub fn draw_ship_designer(
                                             .get(slot_idx)
                                             .and_then(|o| o.as_ref())
                                             == Some(&mod_id);
-                                        if ui
-                                            .selectable_label(is_selected, &module.name)
-                                            .clicked()
+                                        if ui.selectable_label(is_selected, &module.name).clicked()
                                         {
                                             if slot_idx < state.selected_modules.len() {
                                                 state.selected_modules[slot_idx] =
@@ -266,8 +279,7 @@ pub fn draw_ship_designer(
                     .filter_map(|id| module_registry.get(id))
                     .collect();
 
-                let (hp, speed, evasion) =
-                    crate::ship_design::design_stats(hull, &selected_mods);
+                let (hp, speed, evasion) = crate::ship_design::design_stats(hull, &selected_mods);
                 let (cost_m, cost_e, build_time, maint) =
                     crate::ship_design::design_cost(hull, &selected_mods);
 
@@ -317,11 +329,7 @@ pub fn draw_ship_designer(
                         } else {
                             let base = format!(
                                 "custom_{}",
-                                state
-                                    .design_name
-                                    .trim()
-                                    .to_lowercase()
-                                    .replace(' ', "_")
+                                state.design_name.trim().to_lowercase().replace(' ', "_")
                             );
                             if design_registry.get(&base).is_some() {
                                 let mut counter = 2;
@@ -341,41 +349,31 @@ pub fn draw_ship_designer(
                             .iter()
                             .filter_map(|a| module_registry.get(&a.module_id))
                             .collect();
-                        let (cost_m, cost_e, build_time, maintenance) =
-                            crate::ship_design::design_cost(hull, &mod_defs);
-                        let (hp, sublight_speed, _evasion) =
-                            crate::ship_design::design_stats(hull, &mod_defs);
-                        let ftl_range = mod_defs
-                            .iter()
-                            .flat_map(|m| m.modifiers.iter())
-                            .filter(|m| m.target == "ship.ftl_range")
-                            .map(|m| m.base_add)
-                            .sum::<f64>();
-                        // Preserve survey/colonize capability when editing in
-                        // place; default to false for brand-new designs.
-                        let (can_survey, can_colonize) = state
-                            .editing_design_id
-                            .as_ref()
-                            .and_then(|id| design_registry.get(id))
-                            .map(|d| (d.can_survey, d.can_colonize))
-                            .unwrap_or((false, false));
+                        // #236: all stats/cost/capabilities derived from hull
+                        // + modules via the shared helper. Hull modifiers are
+                        // applied (previously ignored by the inline compute).
+                        let d = crate::ship_design::design_derived(hull, &mod_defs);
                         action = ShipDesignerAction::SaveDesign(ShipDesignDefinition {
                             id: design_id,
                             name: state.design_name.trim().to_string(),
                             description: String::new(),
                             hull_id: hull.id.clone(),
                             modules,
-                            can_survey,
-                            can_colonize,
-                            maintenance,
-                            build_cost_minerals: cost_m,
-                            build_cost_energy: cost_e,
-                            build_time,
-                            hp,
-                            sublight_speed,
-                            ftl_range,
+                            can_survey: d.can_survey,
+                            can_colonize: d.can_colonize,
+                            maintenance: d.maintenance,
+                            build_cost_minerals: d.build_cost_minerals,
+                            build_cost_energy: d.build_cost_energy,
+                            build_time: d.build_time,
+                            hp: d.hp,
+                            sublight_speed: d.sublight_speed,
+                            ftl_range: d.ftl_range,
                             // Revision is filled in by `upsert_edited`.
                             revision: 0,
+                            // #396: derived from hull build cost at registry time
+                            is_direct_buildable: hull.build_cost_minerals
+                                > crate::amount::Amt::ZERO
+                                || hull.build_cost_energy > crate::amount::Amt::ZERO,
                         });
                     }
 
@@ -502,18 +500,14 @@ pub fn draw_overlays(
                     };
 
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("Current: {}", tech.name)).strong(),
-                        );
+                        ui.label(egui::RichText::new(format!("Current: {}", tech.name)).strong());
                     });
 
-                    ui.add(
-                        egui::ProgressBar::new(progress).text(format!(
-                            "{:.0}/{} RP",
-                            research_queue.accumulated,
-                            tech.cost.research.display_compact()
-                        )),
-                    );
+                    ui.add(egui::ProgressBar::new(progress).text(format!(
+                        "{:.0}/{} RP",
+                        research_queue.accumulated,
+                        tech.cost.research.display_compact()
+                    )));
 
                     if research_queue.blocked {
                         ui.label(
@@ -643,8 +637,10 @@ pub fn draw_overlays(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         // Cost display
-                                        let mut cost_parts =
-                                            vec![format!("{} RP", tech.cost.research.display_compact())];
+                                        let mut cost_parts = vec![format!(
+                                            "{} RP",
+                                            tech.cost.research.display_compact()
+                                        )];
                                         if tech.cost.minerals > Amt::ZERO {
                                             cost_parts.push(format!(
                                                 "M:{}",
@@ -664,11 +660,7 @@ pub fn draw_overlays(
 
                             // Description
                             if !tech.description.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(&tech.description)
-                                        .weak()
-                                        .italics(),
-                                );
+                                ui.label(egui::RichText::new(&tech.description).weak().italics());
                             }
 
                             // #156: Effects + Unlocks (collapsible per tech).
@@ -684,16 +676,13 @@ pub fn draw_overlays(
                             let (tech_follow_ons, concrete_unlocks): (Vec<_>, Vec<_>) =
                                 unlocks.iter().partition(|e| e.kind == UnlockKind::Tech);
                             if !preview.is_empty() || !unlocks.is_empty() {
-                                let header_id =
-                                    egui::Id::new(("research_details", &tech.id.0));
+                                let header_id = egui::Id::new(("research_details", &tech.id.0));
                                 egui::CollapsingHeader::new("Details")
                                     .id_salt(header_id)
                                     .default_open(false)
                                     .show(ui, |ui| {
                                         if !preview.is_empty() {
-                                            ui.label(
-                                                egui::RichText::new("Effects:").strong(),
-                                            );
+                                            ui.label(egui::RichText::new("Effects:").strong());
                                             for effect in preview {
                                                 ui.label(format!("  - {}", effect.display_text()));
                                             }
@@ -728,14 +717,14 @@ pub fn draw_overlays(
                                             }
                                         }
                                         if !concrete_unlocks.is_empty() {
-                                            ui.label(
-                                                egui::RichText::new("Unlocks:").strong(),
-                                            );
+                                            ui.label(egui::RichText::new("Unlocks:").strong());
                                             for entry in &concrete_unlocks {
                                                 let kind_label = match entry.kind {
                                                     UnlockKind::Module => "Module",
                                                     UnlockKind::Building => "Building",
                                                     UnlockKind::Structure => "Structure",
+                                                    UnlockKind::Hull => "Hull",
+                                                    UnlockKind::ShipDesign => "Ship Design",
                                                     // `Tech` entries handled in the "Leads to" list above.
                                                     UnlockKind::Tech => continue,
                                                 };
@@ -800,19 +789,22 @@ pub fn draw_overlays(
                                                 );
                                             });
                                         } else {
-                                            action =
-                                                ResearchAction::StartResearch(tech.id.clone());
+                                            action = ResearchAction::StartResearch(tech.id.clone());
                                         }
                                     }
                                 } else {
                                     ui.add_enabled(false, egui::Button::new("Start Research"))
-                                        .on_disabled_hover_text("Insufficient resources at capital");
+                                        .on_disabled_hover_text(
+                                            "Insufficient resources at capital",
+                                        );
                                 }
                             } else if is_available {
                                 // Another tech is currently being researched
                                 ui.label(
-                                    egui::RichText::new("Available (finish current research first)")
-                                        .weak(),
+                                    egui::RichText::new(
+                                        "Available (finish current research first)",
+                                    )
+                                    .weak(),
                                 );
                             } else if !is_researched {
                                 // Locked — show prerequisite names
@@ -820,9 +812,7 @@ pub fn draw_overlays(
                                     .prerequisites
                                     .iter()
                                     .filter(|pre| !tech_tree.is_researched(pre))
-                                    .filter_map(|pre| {
-                                        tech_tree.get(pre).map(|t| t.name.clone())
-                                    })
+                                    .filter_map(|pre| tech_tree.get(pre).map(|t| t.name.clone()))
                                     .collect();
                                 if !missing.is_empty() {
                                     ui.label(
@@ -865,15 +855,10 @@ pub fn draw_overlays(
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "\"{}\" is flagged as dangerous.",
-                            tech_name
-                        ))
-                        .strong(),
+                        egui::RichText::new(format!("\"{}\" is flagged as dangerous.", tech_name))
+                            .strong(),
                     );
-                    ui.label(
-                        "Researching it may have significant or irreversible consequences.",
-                    );
+                    ui.label("Researching it may have significant or irreversible consequences.");
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui

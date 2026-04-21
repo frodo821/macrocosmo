@@ -20,7 +20,10 @@ use crate::galaxy::region::{CapabilityParams, RegionSpec, RegionTypeDefinition};
 pub fn parse_region_type_definitions(
     lua: &mlua::Lua,
 ) -> Result<Vec<RegionTypeDefinition>, mlua::Error> {
-    let defs: mlua::Table = match lua.globals().get::<mlua::Value>("_region_type_definitions")? {
+    let defs: mlua::Table = match lua
+        .globals()
+        .get::<mlua::Value>("_region_type_definitions")?
+    {
         mlua::Value::Table(t) => t,
         _ => return Ok(Vec::new()),
     };
@@ -54,9 +57,7 @@ fn parse_region_capabilities(
             let mut caps = HashMap::new();
             for pair in caps_table.pairs::<String, mlua::Table>() {
                 let (key, params_table) = pair?;
-                let strength: f64 = params_table
-                    .get::<Option<f64>>("strength")?
-                    .unwrap_or(1.0);
+                let strength: f64 = params_table.get::<Option<f64>>("strength")?.unwrap_or(1.0);
                 caps.insert(key, CapabilityParams { strength });
             }
             Ok(caps)

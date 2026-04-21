@@ -3,6 +3,38 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::condition::Condition;
+
+/// Module size tier — constrains which hull slots accept which modules.
+/// A module fits in a slot when `module.size <= slot.max_size`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
+pub enum ModuleSize {
+    #[default]
+    Small,
+    Medium,
+    Large,
+}
+
+impl std::fmt::Display for ModuleSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Small => write!(f, "small"),
+            Self::Medium => write!(f, "medium"),
+            Self::Large => write!(f, "large"),
+        }
+    }
+}
+
+impl ModuleSize {
+    /// Parse a size string (case-insensitive). Defaults to Small for unknown values.
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "medium" => Self::Medium,
+            "large" => Self::Large,
+            _ => Self::Small,
+        }
+    }
+}
 
 /// Defines a module slot type (weapon, utility, engine, special).
 #[derive(Clone, Debug)]
@@ -31,6 +63,9 @@ impl SlotTypeRegistry {
 pub struct HullSlot {
     pub slot_type: String,
     pub count: u32,
+    /// Maximum module size this slot accepts (Small fits everywhere, Large only
+    /// in Large slots). Defaults to `ModuleSize::Large` (accept anything).
+    pub max_size: ModuleSize,
 }
 
 /// Defines a ship hull.
@@ -48,6 +83,13 @@ pub struct HullDefinition {
     pub build_time: i64,
     pub maintenance: Amt,
     pub modifiers: Vec<ModuleModifier>,
+    /// Optional Condition tree gating access to this hull.
+    /// Populated from the Lua `prerequisites = has_tech(...)` / ... field.
+    pub prerequisites: Option<Condition>,
+    /// Hull size tier (mandatory). Small craft = 1, capital ships = large values.
+    pub size: u32,
+    /// Whether this hull is a capital-class hull (default false).
+    pub is_capital: bool,
 }
 
 #[derive(Resource, Default)]
@@ -113,9 +155,28 @@ pub struct ModuleDefinition {
     pub weapon: Option<WeaponStats>,
     pub cost_minerals: Amt,
     pub cost_energy: Amt,
-    pub prerequisite_tech: Option<String>,
+    /// Optional Condition tree gating access to this module.
+    /// Populated from the Lua `prerequisites = has_tech(...)` / ... field.
+    ///
+    /// Previously named `prerequisite_tech: Option<String>`; hard-migrated
+    /// in #226 to a full Condition tree so modules can be gated by arbitrary
+    /// combinations of tech / flags / buildings / modifiers.
+    pub prerequisites: Option<Condition>,
     /// Available upgrade paths from this module.
     pub upgrade_to: Vec<ModuleUpgradePath>,
+    /// #239: Build time contribution (in hexadies). The design's total build
+    /// time is `hull.build_time + Σ module.build_time`. Added to make refits
+    /// and upgrades pay a time cost proportional to the loadout, not just the
+    /// hull. Defaults to 0 when Lua omits the field so existing content keeps
+    /// compiling.
+    pub build_time: i64,
+    /// #138: Power consumed by this module when installed (default 0).
+    pub power_cost: i32,
+    /// #138: Power produced by this module (only reactor modules, default 0).
+    pub power_output: i32,
+    /// #138: Module size tier (Small/Medium/Large, default Small).
+    /// Must be <= the slot's `max_size` to fit.
+    pub size: ModuleSize,
 }
 
 #[derive(Resource, Default)]
@@ -170,6 +231,11 @@ pub struct ShipDesignDefinition {
     /// the design is edited via the Ship Designer. Ships with a `design_revision`
     /// less than this value are considered "refit-eligible".
     pub revision: u64,
+    /// #396: Whether this design can be built from the normal Shipyard build queue.
+    /// `false` for installation hulls (Shipyard, Port, ResearchLab, Core) whose
+    /// hull has zero build cost — they are built through the SystemBuildingQueue instead.
+    /// Derived at registry time: `true` when `build_cost_minerals > 0 || build_cost_energy > 0`.
+    pub is_direct_buildable: bool,
 }
 
 /// An error raised when validating a ShipDesignDefinition against its hull/module registries.
@@ -202,6 +268,19 @@ pub enum ShipDesignValidationError {
         slot_type: String,
         available: u32,
         requested: u32,
+    },
+    /// #138: Total power consumption exceeds total power output.
+    PowerBudgetExceeded {
+        design_id: String,
+        total_output: i32,
+        total_cost: i32,
+    },
+    /// #138: A module's size exceeds the slot's max_size.
+    ModuleTooLarge {
+        design_id: String,
+        module_id: String,
+        module_size: ModuleSize,
+        slot_max_size: ModuleSize,
     },
 }
 
@@ -251,6 +330,25 @@ impl std::fmt::Display for ShipDesignValidationError {
                 "ship design '{}' fills {} '{}' slot(s) but hull '{}' only provides {}",
                 design_id, requested, slot_type, hull_id, available
             ),
+            Self::PowerBudgetExceeded {
+                design_id,
+                total_output,
+                total_cost,
+            } => write!(
+                f,
+                "ship design '{}' requires {} power but reactors only produce {}",
+                design_id, total_cost, total_output
+            ),
+            Self::ModuleTooLarge {
+                design_id,
+                module_id,
+                module_size,
+                slot_max_size,
+            } => write!(
+                f,
+                "ship design '{}' assigns {} module '{}' into a {} slot",
+                design_id, module_size, module_id, slot_max_size
+            ),
         }
     }
 }
@@ -265,15 +363,19 @@ impl ShipDesignDefinition {
         hulls: &HullRegistry,
         modules: &ModuleRegistry,
     ) -> Result<(), ShipDesignValidationError> {
-        let hull = hulls
-            .get(&self.hull_id)
-            .ok_or_else(|| ShipDesignValidationError::HullNotFound {
-                design_id: self.id.clone(),
-                hull_id: self.hull_id.clone(),
-            })?;
+        let hull =
+            hulls
+                .get(&self.hull_id)
+                .ok_or_else(|| ShipDesignValidationError::HullNotFound {
+                    design_id: self.id.clone(),
+                    hull_id: self.hull_id.clone(),
+                })?;
 
         // Tally requested slot assignments per slot_type for overfill checks.
         let mut per_slot_count: HashMap<&str, u32> = HashMap::new();
+        // #138: Track power budget across all modules.
+        let mut total_power_output: i32 = 0;
+        let mut total_power_cost: i32 = 0;
 
         for assignment in &self.modules {
             // The slot_type on the assignment must exist on the hull.
@@ -307,6 +409,27 @@ impl ShipDesignDefinition {
                 });
             }
 
+            // #138: Check module size fits in the slot's max_size.
+            // Find the hull slot's max_size for this slot_type.
+            if let Some(hull_slot) = hull
+                .slots
+                .iter()
+                .find(|s| s.slot_type == assignment.slot_type)
+            {
+                if module.size > hull_slot.max_size {
+                    return Err(ShipDesignValidationError::ModuleTooLarge {
+                        design_id: self.id.clone(),
+                        module_id: assignment.module_id.clone(),
+                        module_size: module.size,
+                        slot_max_size: hull_slot.max_size,
+                    });
+                }
+            }
+
+            // #138: Accumulate power budget.
+            total_power_output += module.power_output;
+            total_power_cost += module.power_cost;
+
             *per_slot_count
                 .entry(assignment.slot_type.as_str())
                 .or_insert(0) += 1;
@@ -329,6 +452,15 @@ impl ShipDesignDefinition {
                     requested: *requested,
                 });
             }
+        }
+
+        // #138: Check power budget — total output must cover total cost.
+        if total_power_cost > total_power_output {
+            return Err(ShipDesignValidationError::PowerBudgetExceeded {
+                design_id: self.id.clone(),
+                total_output: total_power_output,
+                total_cost: total_power_cost,
+            });
         }
 
         Ok(())
@@ -374,7 +506,10 @@ impl ShipDesignRegistry {
 
     /// Check if a design can colonize planets.
     pub fn can_colonize(&self, id: &str) -> bool {
-        self.designs.get(id).map(|d| d.can_colonize).unwrap_or(false)
+        self.designs
+            .get(id)
+            .map(|d| d.can_colonize)
+            .unwrap_or(false)
     }
 
     /// Get build cost (minerals, energy) for a design.
@@ -489,13 +624,17 @@ pub fn load_ship_designs(
     }
 
     // Parse ship designs and validate each against the hull/module registries.
+    // #236: Derived fields (hp/ftl_range/cost/maintenance/can_*) are computed
+    // here from hull + modules. Any values parsed from Lua are ignored — the
+    // parser has already emitted a `warn!` for each authored derived field.
     match ship_design_api::parse_ship_designs(engine.lua()) {
         Ok(defs) => {
             let mut loaded = 0usize;
             let mut rejected = 0usize;
-            for def in defs {
+            for mut def in defs {
                 match def.validate(&hulls, &modules) {
                     Ok(()) => {
+                        apply_derived_to_definition(&mut def, &hulls, &modules);
                         designs.insert(def);
                         loaded += 1;
                     }
@@ -514,50 +653,200 @@ pub fn load_ship_designs(
     }
 }
 
-/// Compute total cost for a ship design: hull cost + sum of module costs.
-/// Returns (minerals, energy, build_time, maintenance).
-pub fn design_cost(
-    hull: &HullDefinition,
-    modules: &[&ModuleDefinition],
-) -> (Amt, Amt, i64, Amt) {
-    let mut minerals = hull.build_cost_minerals;
-    let mut energy = hull.build_cost_energy;
-    let mut maintenance = hull.maintenance;
-    for m in modules {
-        minerals = minerals.add(m.cost_minerals);
-        energy = energy.add(m.cost_energy);
-        // Each module adds 10% of its mineral cost as maintenance
-        maintenance = maintenance.add(Amt::milli(m.cost_minerals.raw() / 10));
-    }
-    (minerals, energy, hull.build_time, maintenance)
+/// #236: Overwrite a definition's derived fields with values computed from
+/// its hull + modules. Used by the registry loader and by any code path that
+/// constructs a `ShipDesignDefinition` from Lua (or from the Ship Designer
+/// UI) and wants to ensure the resulting stats match hull + modules.
+pub fn apply_derived_to_definition(
+    def: &mut ShipDesignDefinition,
+    hulls: &HullRegistry,
+    modules: &ModuleRegistry,
+) {
+    let Some(hull) = hulls.get(&def.hull_id) else {
+        return;
+    };
+    let mod_defs: Vec<&ModuleDefinition> = def
+        .modules
+        .iter()
+        .filter_map(|a| modules.get(&a.module_id))
+        .collect();
+    let d = design_derived(hull, &mod_defs);
+    def.hp = d.hp;
+    def.sublight_speed = d.sublight_speed;
+    def.ftl_range = d.ftl_range;
+    def.maintenance = d.maintenance;
+    def.build_cost_minerals = d.build_cost_minerals;
+    def.build_cost_energy = d.build_cost_energy;
+    def.build_time = d.build_time;
+    def.can_survey = d.can_survey;
+    def.can_colonize = d.can_colonize;
+    // #396: installation hulls have zero hull build cost — they are built via
+    // the SystemBuildingQueue, not the normal Shipyard queue.
+    def.is_direct_buildable =
+        hull.build_cost_minerals > Amt::ZERO || hull.build_cost_energy > Amt::ZERO;
 }
 
-/// Compute total stats for a design: HP, speed, evasion from hull + module modifiers.
-pub fn design_stats(
-    hull: &HullDefinition,
-    modules: &[&ModuleDefinition],
-) -> (f64, f64, f64) {
-    let mut hp = hull.base_hp;
-    let mut speed = hull.base_speed;
-    let mut evasion = hull.base_evasion;
-    for m in modules {
-        for modifier in &m.modifiers {
-            match modifier.target.as_str() {
-                "ship.speed" => speed += modifier.base_add,
-                "ship.evasion" => evasion += modifier.base_add,
-                // HP modifiers affect hull HP
-                _ => {}
+/// #226: derive a ship design's effective prerequisites from its hull and
+/// modules. A design has no first-class `prerequisites` field — instead the
+/// conditions gating the underlying hull + modules are composed here.
+///
+/// * 0 sub-conditions → `None`
+/// * 1 sub-condition   → the sub-condition unwrapped (avoids a noisy `All([X])`)
+/// * N sub-conditions  → `Condition::All(...)`
+pub fn ship_design_effective_prerequisites(
+    design: &ShipDesignDefinition,
+    hulls: &HullRegistry,
+    modules: &ModuleRegistry,
+) -> Option<Condition> {
+    let mut parts: Vec<Condition> = Vec::new();
+    if let Some(hull) = hulls.get(&design.hull_id) {
+        if let Some(c) = &hull.prerequisites {
+            parts.push(c.clone());
+        }
+    }
+    for assign in &design.modules {
+        if let Some(m) = modules.get(&assign.module_id) {
+            if let Some(c) = &m.prerequisites {
+                parts.push(c.clone());
             }
         }
     }
-    (hp, speed, evasion)
+    match parts.len() {
+        0 => None,
+        1 => Some(parts.into_iter().next().unwrap()),
+        _ => Some(Condition::All(parts)),
+    }
+}
+
+/// #236: Derived statistics for a ship design, computed entirely from
+/// `HullDefinition` + a selection of `ModuleDefinition`s. Lua presets never
+/// author these values — they are derived at registry build time so that the
+/// hull + module content is the single source of truth.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DerivedStats {
+    pub hp: f64,
+    pub sublight_speed: f64,
+    pub evasion: f64,
+    pub ftl_range: f64,
+    pub survey_speed: f64,
+    pub colonize_speed: f64,
+    /// `survey_speed > 0` — capability derived, not authored.
+    pub can_survey: bool,
+    /// `colonize_speed > 0` — capability derived, not authored.
+    pub can_colonize: bool,
+    pub build_cost_minerals: Amt,
+    pub build_cost_energy: Amt,
+    pub build_time: i64,
+    pub maintenance: Amt,
+}
+
+/// Apply modifiers against a base value, using the same formula as
+/// `ModifiedValue::final_value`:
+/// ```text
+/// final = (base + Σ base_add) * (1 + Σ multiplier) + Σ add
+/// ```
+/// Negative values are clamped to 0 at each stage (matches ModifiedValue).
+fn apply_modifiers(base: f64, target: &str, sources: &[&[ModuleModifier]]) -> f64 {
+    let mut base_sum = base;
+    let mut mult_sum = 1.0;
+    let mut add_sum = 0.0;
+    for group in sources {
+        for m in *group {
+            if m.target == target {
+                base_sum += m.base_add;
+                mult_sum += m.multiplier;
+                add_sum += m.add;
+            }
+        }
+    }
+    (base_sum.max(0.0) * mult_sum.max(0.0) + add_sum).max(0.0)
+}
+
+/// #236: Compute all derived stats for a ship design from its hull + modules.
+/// Applies hull modifiers and module modifiers via the `ModifiedValue` formula.
+pub fn design_derived(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> DerivedStats {
+    let module_mods: Vec<&[ModuleModifier]> =
+        modules.iter().map(|m| m.modifiers.as_slice()).collect();
+    let mut sources: Vec<&[ModuleModifier]> = Vec::with_capacity(module_mods.len() + 1);
+    sources.push(hull.modifiers.as_slice());
+    for m in &module_mods {
+        sources.push(*m);
+    }
+
+    let hp = apply_modifiers(hull.base_hp, "ship.hp", &sources);
+    let sublight_speed = apply_modifiers(hull.base_speed, "ship.speed", &sources);
+    let evasion = apply_modifiers(hull.base_evasion, "ship.evasion", &sources);
+    let ftl_range = apply_modifiers(0.0, "ship.ftl_range", &sources);
+    let survey_speed = apply_modifiers(0.0, "ship.survey_speed", &sources);
+    let colonize_speed = apply_modifiers(0.0, "ship.colonize_speed", &sources);
+
+    // Cost + maintenance: hull + Σ module. Each module adds
+    // 0.0001 × mineral_cost to energy maintenance per hexady — i.e. a module
+    // costing 100 minerals contributes 0.010 energy/hd.
+    //
+    // #257: Before this fix the formula was `Amt::milli(raw()/10)` which
+    // produced 10 energy/hd for a 100-mineral module (1000× too high) because
+    // `Amt::raw()` returns the internal fixed-point with SCALE=1000. The
+    // starter fleet's maintenance ballooned to ~93 energy/hd, dwarfing the
+    // ~30 energy/hd produced by the opening power plant.
+    //
+    // raw() is already scaled ×1000, so dividing by 10_000 before wrapping
+    // in `Amt::milli` lands on the intended 0.01% coefficient.
+    let mut minerals = hull.build_cost_minerals;
+    let mut energy = hull.build_cost_energy;
+    let mut maintenance = hull.maintenance;
+    // #239: Total build time is `hull.build_time + Σ module.build_time`.
+    // Previously only the hull contributed, which made heavy loadouts (and
+    // therefore refits) disproportionately cheap in time. Summed as i64 and
+    // clamped to ≥ 1 at the end so degenerate zero-time designs never slip
+    // through the build queue.
+    let mut build_time = hull.build_time;
+    for m in modules {
+        minerals = minerals.add(m.cost_minerals);
+        energy = energy.add(m.cost_energy);
+        maintenance = maintenance.add(Amt::milli(m.cost_minerals.raw() / 10_000));
+        build_time = build_time.saturating_add(m.build_time);
+    }
+
+    DerivedStats {
+        hp,
+        sublight_speed,
+        evasion,
+        ftl_range,
+        survey_speed,
+        colonize_speed,
+        can_survey: survey_speed > 0.0,
+        can_colonize: colonize_speed > 0.0,
+        build_cost_minerals: minerals,
+        build_cost_energy: energy,
+        build_time: build_time.max(1),
+        maintenance,
+    }
+}
+
+/// Compute total cost for a ship design: hull cost + sum of module costs.
+/// Returns (minerals, energy, build_time, maintenance).
+/// Retained as a thin wrapper around `design_derived` for existing call-sites.
+pub fn design_cost(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> (Amt, Amt, i64, Amt) {
+    let d = design_derived(hull, modules);
+    (
+        d.build_cost_minerals,
+        d.build_cost_energy,
+        d.build_time,
+        d.maintenance,
+    )
+}
+
+/// Compute total stats for a design: HP, speed, evasion from hull + module modifiers.
+/// Retained as a thin wrapper around `design_derived` for existing call-sites.
+pub fn design_stats(hull: &HullDefinition, modules: &[&ModuleDefinition]) -> (f64, f64, f64) {
+    let d = design_derived(hull, modules);
+    (d.hp, d.sublight_speed, d.evasion)
 }
 
 /// #123: Convert a design's slot assignments into the EquippedModule list
 /// that should appear on a ship after applying that design.
-pub fn design_equipped_modules(
-    design: &ShipDesignDefinition,
-) -> Vec<crate::ship::EquippedModule> {
+pub fn design_equipped_modules(design: &ShipDesignDefinition) -> Vec<crate::ship::EquippedModule> {
     design
         .modules
         .iter()
@@ -592,6 +881,12 @@ pub fn refit_cost_to_design(
 
 /// Compute refit cost: new module cost - 50% of old module value.
 /// Returns (minerals, energy, time).
+///
+/// #239: Time cost is `(hull.build_time + Σ new_module.build_time) / 2`,
+/// matching the `design_derived` build_time formula halved. Before this
+/// change refits only paid `hull.build_time / 2` regardless of the new
+/// loadout, which made wholesale module swaps nearly free in time — one
+/// of the explicit motivations for the issue.
 pub fn refit_cost(
     old_modules: &[&ModuleDefinition],
     new_modules: &[&ModuleDefinition],
@@ -605,17 +900,28 @@ pub fn refit_cost(
     }
     let mut new_m = Amt::ZERO;
     let mut new_e = Amt::ZERO;
+    let mut new_build_time: i64 = 0;
     for m in new_modules {
         new_m = new_m.add(m.cost_minerals);
         new_e = new_e.add(m.cost_energy);
+        new_build_time = new_build_time.saturating_add(m.build_time);
     }
     // Refund 50% of old module value
     let refund_m = Amt::milli(old_m.raw() / 2);
     let refund_e = Amt::milli(old_e.raw() / 2);
-    let cost_m = if new_m > refund_m { new_m.sub(refund_m) } else { Amt::ZERO };
-    let cost_e = if new_e > refund_e { new_e.sub(refund_e) } else { Amt::ZERO };
-    // Refit time: half hull build time
-    let time = hull.build_time / 2;
+    let cost_m = if new_m > refund_m {
+        new_m.sub(refund_m)
+    } else {
+        Amt::ZERO
+    };
+    let cost_e = if new_e > refund_e {
+        new_e.sub(refund_e)
+    } else {
+        Amt::ZERO
+    };
+    // Refit time: half of the full (hull + modules) build time.
+    let total_time = hull.build_time.saturating_add(new_build_time);
+    let time = total_time / 2;
     (cost_m, cost_e, time.max(1))
 }
 
@@ -636,14 +942,25 @@ mod tests {
             base_speed: 0.75,
             base_evasion: 30.0,
             slots: vec![
-                HullSlot { slot_type: "weapon".to_string(), count: 2 },
-                HullSlot { slot_type: "ftl".to_string(), count: 1 },
+                HullSlot {
+                    slot_type: "weapon".to_string(),
+                    count: 2,
+                    max_size: ModuleSize::Large,
+                },
+                HullSlot {
+                    slot_type: "ftl".to_string(),
+                    count: 1,
+                    max_size: ModuleSize::Large,
+                },
             ],
             build_cost_minerals: Amt::units(200),
             build_cost_energy: Amt::units(100),
             build_time: 60,
             maintenance: Amt::new(0, 500),
             modifiers: vec![],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
         });
 
         let corvette = registry.get("corvette").unwrap();
@@ -672,8 +989,12 @@ mod tests {
             weapon: None,
             cost_minerals: Amt::units(100),
             cost_energy: Amt::units(50),
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         });
 
         let ftl = registry.get("ftl_drive").unwrap();
@@ -714,6 +1035,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 10.0,
             revision: 0,
+            is_direct_buildable: true,
         });
 
         let explorer = registry.get("explorer_mk1").unwrap();
@@ -721,6 +1043,125 @@ mod tests {
         assert_eq!(explorer.hull_id, "corvette");
         assert_eq!(explorer.modules.len(), 2);
         assert_eq!(explorer.modules[0].module_id, "ftl_drive");
+    }
+
+    // ---------------------------------------------------------------------
+    // #257: Module maintenance scaling
+    // ---------------------------------------------------------------------
+
+    /// Each module contributes `0.0001 × mineral_cost` to energy maintenance
+    /// per hexady. A module costing 100 minerals must land on 0.010 energy/hd,
+    /// not 10 energy/hd (pre-fix the formula was 1000× too large because
+    /// `Amt::raw()` already carries the ×1000 scale factor).
+    #[test]
+    fn test_module_maintenance_formula_matches_ten_percent_intent() {
+        let hull = HullDefinition {
+            id: "frame".to_string(),
+            name: "Frame".to_string(),
+            description: String::new(),
+            base_hp: 1.0,
+            base_speed: 0.0,
+            base_evasion: 0.0,
+            slots: vec![],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            maintenance: Amt::ZERO,
+            modifiers: vec![],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
+        };
+        let module = ModuleDefinition {
+            id: "m100".to_string(),
+            name: "100-mineral module".to_string(),
+            description: String::new(),
+            slot_type: "utility".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(100),
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+
+        let derived = design_derived(&hull, &[&module]);
+        assert_eq!(
+            derived.maintenance,
+            Amt::milli(10),
+            "100-mineral module should contribute 0.010 energy/hd, got {}",
+            derived.maintenance
+        );
+    }
+
+    /// Regression: the starter explorer (ftl + survey modules) used to cost
+    /// 16.5 energy/hd of maintenance. With the fix its total must be under
+    /// 1 energy/hd — otherwise the opening economy is unplayable (see #257).
+    #[test]
+    fn test_starter_explorer_maintenance_under_one() {
+        let hull = HullDefinition {
+            id: "scout_hull".to_string(),
+            name: "Scout Hull".to_string(),
+            description: String::new(),
+            base_hp: 10.0,
+            base_speed: 1.0,
+            base_evasion: 30.0,
+            slots: vec![],
+            build_cost_minerals: Amt::units(50),
+            build_cost_energy: Amt::units(25),
+            build_time: 20,
+            // Starter hull maintenance — matches ships/hulls.lua ballpark.
+            maintenance: Amt::new(0, 500),
+            modifiers: vec![],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
+        };
+        let ftl = ModuleDefinition {
+            id: "ftl_drive_mk1".to_string(),
+            name: "FTL Drive Mk.I".to_string(),
+            description: String::new(),
+            slot_type: "ftl".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(100),
+            cost_energy: Amt::units(50),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+        let survey = ModuleDefinition {
+            id: "survey_equipment".to_string(),
+            name: "Survey Equipment".to_string(),
+            description: String::new(),
+            slot_type: "utility".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(60),
+            cost_energy: Amt::units(30),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+
+        let derived = design_derived(&hull, &[&ftl, &survey]);
+        // 0.500 (hull) + 0.010 (100 min) + 0.006 (60 min) = 0.516 energy/hd
+        assert!(
+            derived.maintenance < Amt::units(1),
+            "starter explorer maintenance must be < 1 energy/hd; got {}",
+            derived.maintenance
+        );
+        assert_eq!(derived.maintenance, Amt::milli(516));
     }
 
     // ---------------------------------------------------------------------
@@ -738,15 +1179,30 @@ mod tests {
             base_speed: 0.75,
             base_evasion: 30.0,
             slots: vec![
-                HullSlot { slot_type: "ftl".to_string(), count: 1 },
-                HullSlot { slot_type: "weapon".to_string(), count: 2 },
-                HullSlot { slot_type: "utility".to_string(), count: 1 },
+                HullSlot {
+                    slot_type: "ftl".to_string(),
+                    count: 1,
+                    max_size: ModuleSize::Large,
+                },
+                HullSlot {
+                    slot_type: "weapon".to_string(),
+                    count: 2,
+                    max_size: ModuleSize::Large,
+                },
+                HullSlot {
+                    slot_type: "utility".to_string(),
+                    count: 1,
+                    max_size: ModuleSize::Large,
+                },
             ],
             build_cost_minerals: Amt::units(200),
             build_cost_energy: Amt::units(100),
             build_time: 60,
             maintenance: Amt::new(0, 500),
             modifiers: vec![],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
         });
 
         let mut modules = ModuleRegistry::default();
@@ -759,8 +1215,12 @@ mod tests {
             weapon: None,
             cost_minerals: Amt::ZERO,
             cost_energy: Amt::ZERO,
-            prerequisite_tech: None,
+            prerequisites: None,
             upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
         };
         modules.insert(make("ftl_drive", "ftl"));
         modules.insert(make("weapon_laser", "weapon"));
@@ -787,6 +1247,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 0.0,
             revision: 0,
+            is_direct_buildable: true,
         }
     }
 
@@ -796,9 +1257,18 @@ mod tests {
         let design = make_design(
             "ok",
             vec![
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
-                DesignSlotAssignment { slot_type: "weapon".into(), module_id: "weapon_laser".into() },
-                DesignSlotAssignment { slot_type: "utility".into(), module_id: "survey_equipment".into() },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "utility".into(),
+                    module_id: "survey_equipment".into(),
+                },
             ],
         );
         assert!(design.validate(&hulls, &modules).is_ok());
@@ -816,7 +1286,9 @@ mod tests {
             }],
         );
         match design.validate(&hulls, &modules) {
-            Err(ShipDesignValidationError::SlotTypeMismatch { actual, expected, .. }) => {
+            Err(ShipDesignValidationError::SlotTypeMismatch {
+                actual, expected, ..
+            }) => {
                 assert_eq!(actual, "ftl");
                 assert_eq!(expected, "weapon");
             }
@@ -881,8 +1353,14 @@ mod tests {
         let design = make_design(
             "too_many",
             vec![
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
             ],
         );
         match design.validate(&hulls, &modules) {
@@ -898,6 +1376,146 @@ mod tests {
             }
             other => panic!("expected SlotOverfilled, got {:?}", other),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // #138: Power budget validation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_power_budget_exceeded() {
+        let (mut hulls, mut modules) = validation_fixture();
+        // Add a reactor slot to the corvette.
+        hulls.get("corvette").unwrap();
+        let mut h = hulls.hulls.remove("corvette").unwrap();
+        h.slots.push(HullSlot {
+            slot_type: "reactor".to_string(),
+            count: 1,
+            max_size: ModuleSize::Large,
+        });
+        hulls.insert(h);
+
+        // Add a reactor module that outputs 5 power.
+        modules.insert(ModuleDefinition {
+            id: "reactor_small".to_string(),
+            name: "Small Reactor".to_string(),
+            description: String::new(),
+            slot_type: "reactor".to_string(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 5,
+            size: ModuleSize::Small,
+        });
+        // Give the weapon module a power cost of 3.
+        let mut wep = modules.modules.remove("weapon_laser").unwrap();
+        wep.power_cost = 3;
+        modules.insert(wep);
+
+        // Two weapons (6 power) + reactor (5 output) → exceeds budget.
+        let design = make_design(
+            "power_hungry",
+            vec![
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "reactor".into(),
+                    module_id: "reactor_small".into(),
+                },
+            ],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::PowerBudgetExceeded {
+                total_output,
+                total_cost,
+                ..
+            }) => {
+                assert_eq!(total_output, 5);
+                assert_eq!(total_cost, 6);
+            }
+            other => panic!("expected PowerBudgetExceeded, got {:?}", other),
+        }
+
+        // One weapon (3 power) + reactor (5 output) → valid.
+        let ok_design = make_design(
+            "power_ok",
+            vec![
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "reactor".into(),
+                    module_id: "reactor_small".into(),
+                },
+            ],
+        );
+        assert!(ok_design.validate(&hulls, &modules).is_ok());
+    }
+
+    // ---------------------------------------------------------------------
+    // #138: Module size constraint validation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_module_too_large() {
+        let (mut hulls, mut modules) = validation_fixture();
+        // Set the weapon slot to Small max size.
+        for slot in &mut hulls.hulls.get_mut("corvette").unwrap().slots {
+            if slot.slot_type == "weapon" {
+                slot.max_size = ModuleSize::Small;
+            }
+        }
+        // Make weapon_laser a Medium module.
+        let mut wep = modules.modules.remove("weapon_laser").unwrap();
+        wep.size = ModuleSize::Medium;
+        modules.insert(wep);
+
+        let design = make_design(
+            "too_big",
+            vec![DesignSlotAssignment {
+                slot_type: "weapon".into(),
+                module_id: "weapon_laser".into(),
+            }],
+        );
+        match design.validate(&hulls, &modules) {
+            Err(ShipDesignValidationError::ModuleTooLarge {
+                module_id,
+                module_size,
+                slot_max_size,
+                ..
+            }) => {
+                assert_eq!(module_id, "weapon_laser");
+                assert_eq!(module_size, ModuleSize::Medium);
+                assert_eq!(slot_max_size, ModuleSize::Small);
+            }
+            other => panic!("expected ModuleTooLarge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_allows_small_module_in_large_slot() {
+        let (hulls, modules) = validation_fixture();
+        // weapon slots default to Large max_size, weapon_laser defaults to Small size.
+        let design = make_design(
+            "small_in_large",
+            vec![DesignSlotAssignment {
+                slot_type: "weapon".into(),
+                module_id: "weapon_laser".into(),
+            }],
+        );
+        assert!(design.validate(&hulls, &modules).is_ok());
     }
 
     // ---------------------------------------------------------------------
@@ -955,12 +1573,86 @@ mod tests {
     }
 
     #[test]
+    fn ship_design_effective_prereqs_empty_when_none() {
+        let (hulls, modules) = validation_fixture();
+        let design = make_design(
+            "noop",
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
+        );
+        assert!(ship_design_effective_prerequisites(&design, &hulls, &modules).is_none());
+    }
+
+    #[test]
+    fn ship_design_effective_prereqs_single_unwrapped_not_wrapped_in_all() {
+        use crate::condition::ConditionAtom;
+        let (mut hulls, modules) = validation_fixture();
+        // Attach a prerequisite to the corvette hull.
+        let mut corvette = hulls.get("corvette").unwrap().clone();
+        corvette.prerequisites = Some(Condition::Atom(ConditionAtom::has_tech("hull_corvette")));
+        hulls.insert(corvette);
+
+        let design = make_design(
+            "ok",
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
+        );
+        let eff = ship_design_effective_prerequisites(&design, &hulls, &modules);
+        // Exactly one contributing condition (hull's). Must not be wrapped in All.
+        assert_eq!(
+            eff,
+            Some(Condition::Atom(ConditionAtom::has_tech("hull_corvette")))
+        );
+    }
+
+    #[test]
+    fn ship_design_effective_prereqs_derived_from_hull_and_modules() {
+        use crate::condition::ConditionAtom;
+        let (mut hulls, mut modules) = validation_fixture();
+        // Hull requires tech T1.
+        let mut corvette = hulls.get("corvette").unwrap().clone();
+        corvette.prerequisites = Some(Condition::Atom(ConditionAtom::has_tech("T1")));
+        hulls.insert(corvette);
+        // FTL drive module requires tech T2.
+        let mut ftl = modules.get("ftl_drive").unwrap().clone();
+        ftl.prerequisites = Some(Condition::Atom(ConditionAtom::has_tech("T2")));
+        modules.insert(ftl);
+
+        let design = make_design(
+            "ok",
+            vec![DesignSlotAssignment {
+                slot_type: "ftl".into(),
+                module_id: "ftl_drive".into(),
+            }],
+        );
+        let eff = ship_design_effective_prerequisites(&design, &hulls, &modules);
+        match eff {
+            Some(Condition::All(parts)) => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0], Condition::Atom(ConditionAtom::has_tech("T1")));
+                assert_eq!(parts[1], Condition::Atom(ConditionAtom::has_tech("T2")));
+            }
+            other => panic!("expected Condition::All, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn design_equipped_modules_mirrors_design_assignments() {
         let design = make_design(
             "ok",
             vec![
-                DesignSlotAssignment { slot_type: "ftl".into(), module_id: "ftl_drive".into() },
-                DesignSlotAssignment { slot_type: "weapon".into(), module_id: "weapon_laser".into() },
+                DesignSlotAssignment {
+                    slot_type: "ftl".into(),
+                    module_id: "ftl_drive".into(),
+                },
+                DesignSlotAssignment {
+                    slot_type: "weapon".into(),
+                    module_id: "weapon_laser".into(),
+                },
             ],
         );
         let equipped = design_equipped_modules(&design);
@@ -969,5 +1661,565 @@ mod tests {
         assert_eq!(equipped[0].module_id, "ftl_drive");
         assert_eq!(equipped[1].slot_type, "weapon");
         assert_eq!(equipped[1].module_id, "weapon_laser");
+    }
+
+    // -----------------------------------------------------------------
+    // #236: Regression tests — derive ship design stats from hull +
+    // modules. Preset-authored fields must be ignored; all stats flow
+    // through `design_derived` via the hull + modules registries.
+    // -----------------------------------------------------------------
+
+    /// Small helper building a hull + module fixture that mirrors the real
+    /// Lua courier_hull + ftl_drive content so we can assert exact numeric
+    /// expectations in the derive tests.
+    fn derive_fixture_courier() -> (
+        HullDefinition,
+        ModuleDefinition,
+        ModuleDefinition,
+        ModuleDefinition,
+    ) {
+        let courier_hull = HullDefinition {
+            id: "courier_hull".into(),
+            name: "Courier Hull".into(),
+            description: String::new(),
+            base_hp: 35.0,
+            base_speed: 0.80,
+            base_evasion: 25.0,
+            slots: vec![
+                HullSlot {
+                    slot_type: "ftl".into(),
+                    count: 1,
+                    max_size: ModuleSize::Large,
+                },
+                HullSlot {
+                    slot_type: "sublight".into(),
+                    count: 1,
+                    max_size: ModuleSize::Large,
+                },
+                HullSlot {
+                    slot_type: "utility".into(),
+                    count: 2,
+                    max_size: ModuleSize::Large,
+                },
+            ],
+            build_cost_minerals: Amt::units(100),
+            build_cost_energy: Amt::units(50),
+            build_time: 30,
+            maintenance: Amt::new(0, 300),
+            modifiers: vec![
+                ModuleModifier {
+                    target: "ship.cargo_capacity".into(),
+                    base_add: 0.0,
+                    multiplier: 1.5,
+                    add: 0.0,
+                },
+                ModuleModifier {
+                    target: "ship.ftl_range".into(),
+                    base_add: 0.0,
+                    multiplier: 1.2,
+                    add: 0.0,
+                },
+            ],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
+        };
+        let ftl_drive = ModuleDefinition {
+            id: "ftl_drive".into(),
+            name: "FTL Drive".into(),
+            description: String::new(),
+            slot_type: "ftl".into(),
+            modifiers: vec![ModuleModifier {
+                target: "ship.ftl_range".into(),
+                base_add: 15.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
+            weapon: None,
+            cost_minerals: Amt::units(100),
+            cost_energy: Amt::units(50),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+        let afterburner = ModuleDefinition {
+            id: "afterburner".into(),
+            name: "Afterburner".into(),
+            description: String::new(),
+            slot_type: "sublight".into(),
+            modifiers: vec![ModuleModifier {
+                target: "ship.speed".into(),
+                base_add: 0.0,
+                multiplier: 0.2,
+                add: 0.0,
+            }],
+            weapon: None,
+            cost_minerals: Amt::units(60),
+            cost_energy: Amt::units(40),
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+        let cargo_bay = ModuleDefinition {
+            id: "cargo_bay".into(),
+            name: "Cargo Bay".into(),
+            description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![ModuleModifier {
+                target: "ship.cargo_capacity".into(),
+                base_add: 500.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
+            weapon: None,
+            cost_minerals: Amt::units(30),
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+        (courier_hull, ftl_drive, afterburner, cargo_bay)
+    }
+
+    /// #236 primary regression: Courier Mk.I must have FTL.
+    #[test]
+    fn test_courier_mk1_has_ftl_capability() {
+        let (hull, ftl, ab, cargo) = derive_fixture_courier();
+        let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
+        // (0 + 15) * (1 + 1.2) = 33.0
+        assert!(d.ftl_range > 0.0, "courier_mk1 must have FTL range > 0");
+        assert!(
+            (d.ftl_range - 33.0).abs() < 1e-9,
+            "expected ftl_range 33.0, got {}",
+            d.ftl_range
+        );
+    }
+
+    /// #236: Hull modifiers feed into `design_derived`. Previously the inline
+    /// compute in overlays ignored hull.modifiers entirely.
+    #[test]
+    fn test_hull_modifiers_applied_in_derive() {
+        // courier_hull ftl_range multiplier 1.2x applies on top of ftl_drive.
+        let (courier, ftl, _, _) = derive_fixture_courier();
+        let d = design_derived(&courier, &[&ftl]);
+        assert!(
+            (d.ftl_range - 33.0).abs() < 1e-9,
+            "courier hull ftl_range 1.2x must apply"
+        );
+
+        // scout_hull: survey_speed multiplier 1.3x applies on survey_equipment.
+        let scout = HullDefinition {
+            id: "scout_hull".into(),
+            name: "Scout Hull".into(),
+            description: String::new(),
+            base_hp: 40.0,
+            base_speed: 0.85,
+            base_evasion: 35.0,
+            slots: vec![HullSlot {
+                slot_type: "utility".into(),
+                count: 1,
+                max_size: ModuleSize::Large,
+            }],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            maintenance: Amt::ZERO,
+            modifiers: vec![
+                ModuleModifier {
+                    target: "ship.survey_speed".into(),
+                    base_add: 0.0,
+                    multiplier: 1.3,
+                    add: 0.0,
+                },
+                ModuleModifier {
+                    target: "ship.speed".into(),
+                    base_add: 0.0,
+                    multiplier: 1.15,
+                    add: 0.0,
+                },
+            ],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
+        };
+        let survey = ModuleDefinition {
+            id: "survey_equipment".into(),
+            name: "Survey".into(),
+            description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![ModuleModifier {
+                target: "ship.survey_speed".into(),
+                base_add: 1.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+        let d = design_derived(&scout, &[&survey]);
+        // (0 + 1.0) * (1 + 1.3) = 2.3
+        assert!(
+            (d.survey_speed - 2.3).abs() < 1e-9,
+            "scout_hull survey_speed 1.3x must apply: got {}",
+            d.survey_speed
+        );
+        // sublight: 0.85 * (1 + 1.15) = 1.8275
+        assert!(
+            (d.sublight_speed - 1.8275).abs() < 1e-9,
+            "scout_hull speed 1.15x must apply: got {}",
+            d.sublight_speed
+        );
+    }
+
+    /// #236: `can_survey` and `can_colonize` derive from speed fields, not
+    /// from authored flags. A ship with a survey module auto-gets can_survey.
+    #[test]
+    fn test_can_survey_derives_from_survey_speed() {
+        let bare_hull = HullDefinition {
+            id: "corvette".into(),
+            name: "Corvette".into(),
+            description: String::new(),
+            base_hp: 50.0,
+            base_speed: 0.75,
+            base_evasion: 30.0,
+            slots: vec![HullSlot {
+                slot_type: "utility".into(),
+                count: 1,
+                max_size: ModuleSize::Large,
+            }],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 1,
+            maintenance: Amt::ZERO,
+            modifiers: vec![],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
+        };
+        let survey = ModuleDefinition {
+            id: "survey_equipment".into(),
+            name: "Survey".into(),
+            description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![ModuleModifier {
+                target: "ship.survey_speed".into(),
+                base_add: 1.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
+            weapon: None,
+            cost_minerals: Amt::ZERO,
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time: 0,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        };
+
+        // Without survey module → no survey capability.
+        let no_survey = design_derived(&bare_hull, &[]);
+        assert!(!no_survey.can_survey);
+        assert_eq!(no_survey.survey_speed, 0.0);
+
+        // With survey module → survey_speed > 0 → can_survey = true.
+        let with_survey = design_derived(&bare_hull, &[&survey]);
+        assert!(with_survey.can_survey);
+        assert!(with_survey.survey_speed > 0.0);
+        assert!(!with_survey.can_colonize);
+    }
+
+    /// #236: A full preset (hull + modules) derives to the expected stats.
+    /// Acts as a contract test for the whole derive pipeline.
+    #[test]
+    fn test_preset_designs_derived_from_modules() {
+        let (hull, ftl, ab, cargo) = derive_fixture_courier();
+        let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
+
+        // Stats
+        assert_eq!(d.hp, 35.0);
+        assert!(
+            (d.sublight_speed - 0.96).abs() < 1e-9,
+            "0.80 * 1.2 = 0.96, got {}",
+            d.sublight_speed
+        );
+        assert_eq!(d.evasion, 25.0);
+        assert!((d.ftl_range - 33.0).abs() < 1e-9);
+        assert_eq!(d.survey_speed, 0.0);
+        assert_eq!(d.colonize_speed, 0.0);
+        assert!(!d.can_survey);
+        assert!(!d.can_colonize);
+
+        // Cost: 100+100+60+30 = 290, 50+50+40+0 = 140
+        assert_eq!(d.build_cost_minerals, Amt::units(290));
+        assert_eq!(d.build_cost_energy, Amt::units(140));
+        assert_eq!(d.build_time, 30);
+        // #257: Maintenance uses 0.0001 × mineral_cost per module.
+        //   hull 0.300 + ftl 100×0.0001 + afterburner 60×0.0001 + cargo 30×0.0001
+        //   = 0.300 + 0.010 + 0.006 + 0.003 = 0.319
+        assert_eq!(d.maintenance, Amt::new(0, 319));
+    }
+
+    // -----------------------------------------------------------------
+    // #239: ModuleDefinition.build_time contribution
+    // -----------------------------------------------------------------
+
+    /// Helper producing a minimal hull with a configurable build_time and
+    /// utility slots (so we can stack modules).
+    fn tiny_hull(build_time: i64) -> HullDefinition {
+        HullDefinition {
+            id: "tiny".into(),
+            name: "Tiny".into(),
+            description: String::new(),
+            base_hp: 10.0,
+            base_speed: 1.0,
+            base_evasion: 0.0,
+            slots: vec![HullSlot {
+                slot_type: "utility".into(),
+                count: 4,
+                max_size: ModuleSize::Large,
+            }],
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time,
+            maintenance: Amt::ZERO,
+            modifiers: vec![],
+            prerequisites: None,
+            size: 1,
+            is_capital: false,
+        }
+    }
+
+    fn tiny_module(id: &str, build_time: i64, mineral_cost: u64) -> ModuleDefinition {
+        ModuleDefinition {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            slot_type: "utility".into(),
+            modifiers: vec![],
+            weapon: None,
+            cost_minerals: Amt::units(mineral_cost),
+            cost_energy: Amt::ZERO,
+            prerequisites: None,
+            upgrade_to: Vec::new(),
+            build_time,
+            power_cost: 0,
+            power_output: 0,
+            size: ModuleSize::Small,
+        }
+    }
+
+    /// #239 primary regression: design build_time is hull + Σ module.
+    #[test]
+    fn test_design_derived_build_time_sums_hull_and_modules() {
+        let hull = tiny_hull(10);
+        let a = tiny_module("a", 5, 0);
+        let b = tiny_module("b", 5, 0);
+
+        let d = design_derived(&hull, &[&a, &b]);
+        assert_eq!(d.build_time, 20, "build_time must be hull(10) + Σ(5+5)");
+
+        // No modules → build_time equals hull.build_time (clamped to ≥ 1).
+        let d_bare = design_derived(&hull, &[]);
+        assert_eq!(d_bare.build_time, 10);
+    }
+
+    /// #239: A zero hull + zero modules design still reports build_time
+    /// of at least 1 so the build queue never divides by zero.
+    #[test]
+    fn test_design_derived_build_time_clamped_to_one() {
+        let hull = tiny_hull(0);
+        let d = design_derived(&hull, &[]);
+        assert_eq!(d.build_time, 1);
+    }
+
+    /// #239: Refit time scales with Σ new_module.build_time, not only the
+    /// hull. Swapping in heavier modules costs more refit time.
+    #[test]
+    fn test_refit_cost_uses_module_build_time() {
+        let hull = tiny_hull(20); // hull alone → baseline refit time 10
+        let old_m = tiny_module("old", 0, 0);
+        let new_light = tiny_module("new_light", 0, 0);
+        let new_heavy = tiny_module("new_heavy", 10, 0);
+
+        // Light → (20 + 0)/2 = 10 hd
+        let (_, _, t_light) = refit_cost(&[&old_m], &[&new_light], &hull);
+        assert_eq!(t_light, 10);
+
+        // Heavy → (20 + 10)/2 = 15 hd. Must be strictly greater than the
+        // light case — this is the key behavioural change the issue asks
+        // for.
+        let (_, _, t_heavy) = refit_cost(&[&old_m], &[&new_heavy], &hull);
+        assert_eq!(t_heavy, 15);
+        assert!(
+            t_heavy > t_light,
+            "heavier modules must cost more refit time"
+        );
+    }
+
+    /// #239: `refit_cost_to_design` routes module lookup through the
+    /// registry and still sees the build_time contribution.
+    #[test]
+    fn test_refit_cost_to_design_includes_module_build_time() {
+        let mut hulls = HullRegistry::default();
+        hulls.insert(tiny_hull(20));
+        let mut modules = ModuleRegistry::default();
+        modules.insert(tiny_module("heavy", 10, 0));
+
+        let hull = hulls.get("tiny").unwrap();
+
+        let design = ShipDesignDefinition {
+            id: "d".into(),
+            name: "d".into(),
+            description: String::new(),
+            hull_id: "tiny".into(),
+            modules: vec![DesignSlotAssignment {
+                slot_type: "utility".into(),
+                module_id: "heavy".into(),
+            }],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 0.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: true,
+        };
+
+        let (_, _, t) = refit_cost_to_design(&[], &design, hull, &modules);
+        // (20 + 10)/2 = 15
+        assert_eq!(t, 15);
+    }
+
+    /// #239 regression: preset build times match the new formula. Asserts
+    /// the `design_derived` output against a hand-computed value using the
+    /// same hull + module fixture produced by `derive_fixture_courier`.
+    /// When we eventually give the courier fixture non-zero module build
+    /// times this test guards against regressions in the summation.
+    #[test]
+    fn test_preset_build_times_match_new_formula() {
+        let (hull, ftl, ab, cargo) = derive_fixture_courier();
+
+        // The courier_hull fixture carries hull.build_time = 30 and the
+        // three modules default to 0 — so the pre-#239 hull-only value and
+        // the post-#239 sum match by construction. Intentional: if anyone
+        // later gives the fixture non-zero module times without updating
+        // the expectation, the test fails and forces a consistent update.
+        let expected = hull.build_time + ftl.build_time + ab.build_time + cargo.build_time;
+        let d = design_derived(&hull, &[&ftl, &ab, &cargo]);
+        assert_eq!(d.build_time, expected);
+    }
+
+    /// #239: Two designs with identical hull but heavier module loadout
+    /// must differ in build time. Protects against a future regression
+    /// where the summation is accidentally reduced back to
+    /// `hull.build_time`.
+    #[test]
+    fn test_heavier_loadout_costs_more_build_time() {
+        let hull = tiny_hull(10);
+        let light = tiny_module("light", 5, 0);
+        let heavy = tiny_module("heavy", 20, 0);
+
+        let d_light = design_derived(&hull, &[&light]);
+        let d_heavy = design_derived(&hull, &[&heavy]);
+        assert!(
+            d_heavy.build_time > d_light.build_time,
+            "heavier module loadout must produce a longer build time"
+        );
+        assert_eq!(d_light.build_time, 15);
+        assert_eq!(d_heavy.build_time, 30);
+    }
+
+    /// #396: `is_direct_buildable` is set based on hull build cost.
+    /// Installation hulls (zero cost) produce `false`; normal hulls produce `true`.
+    #[test]
+    fn test_is_direct_buildable_derived_from_hull_cost() {
+        let mut hulls = HullRegistry::default();
+        let mut modules = ModuleRegistry::default();
+
+        // Installation hull: zero build cost
+        let mut install_hull = tiny_hull(0);
+        install_hull.id = "installation".into();
+        install_hull.build_cost_minerals = Amt::ZERO;
+        install_hull.build_cost_energy = Amt::ZERO;
+        hulls.insert(install_hull);
+
+        // Normal hull: non-zero build cost
+        let mut normal_hull = tiny_hull(30);
+        normal_hull.id = "normal".into();
+        normal_hull.build_cost_minerals = Amt::units(100);
+        normal_hull.build_cost_energy = Amt::units(50);
+        hulls.insert(normal_hull);
+
+        modules.insert(tiny_module("m1", 0, 0));
+
+        let mut install_design = ShipDesignDefinition {
+            id: "install_design".into(),
+            name: "Install".into(),
+            description: String::new(),
+            hull_id: "installation".into(),
+            modules: vec![],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 0.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: true, // will be overwritten
+        };
+        apply_derived_to_definition(&mut install_design, &hulls, &modules);
+        assert!(
+            !install_design.is_direct_buildable,
+            "installation hull design must not be direct-buildable"
+        );
+
+        let mut normal_design = ShipDesignDefinition {
+            id: "normal_design".into(),
+            name: "Normal".into(),
+            description: String::new(),
+            hull_id: "normal".into(),
+            modules: vec![],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 0.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: false, // will be overwritten
+        };
+        apply_derived_to_definition(&mut normal_design, &hulls, &modules);
+        assert!(
+            normal_design.is_direct_buildable,
+            "normal hull design must be direct-buildable"
+        );
     }
 }

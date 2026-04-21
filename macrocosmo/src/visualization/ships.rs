@@ -5,7 +5,9 @@ use bevy::prelude::*;
 use super::{GalaxyView, SelectedShip};
 use crate::components::Position;
 use crate::galaxy::StarSystem;
-use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
+use crate::player::PlayerEmpire;
+use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState, ShipStats};
 use crate::time_system::GameClock;
 
 // #16: Ship drawing helpers and system
@@ -42,26 +44,71 @@ fn draw_dashed_line(gizmos: &mut Gizmos, start: Vec2, end: Vec2, color: Color) {
     }
 }
 
+/// Returns true when a ship is immobile (station / infrastructure core).
+fn is_station(ship: &Ship) -> bool {
+    ship.sublight_speed <= 0.0 && ship.ftl_range <= 0.0
+}
+
+/// Returns true when a ship acts as a harbour (harbour_capacity > 0).
+fn is_harbour(stats: Option<&ShipStats>) -> bool {
+    stats
+        .map(|s| s.harbour_capacity.cached().raw() > 0)
+        .unwrap_or(false)
+}
+
+/// Per-ship metadata stashed while grouping docked ships by system.
+struct DockedShipInfo {
+    design_id: String,
+    is_harbour: bool,
+}
+
 pub fn draw_ships(
     mut gizmos: Gizmos,
-    ships: Query<(Entity, &Ship, &ShipState, Option<&CommandQueue>)>,
+    ships: Query<(
+        Entity,
+        &Ship,
+        &ShipState,
+        Option<&CommandQueue>,
+        Option<&ShipStats>,
+    )>,
     stars: Query<&Position, With<StarSystem>>,
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
     selected_ship: Res<SelectedShip>,
+    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
 ) {
     // Group docked ships by system so we can offset them.
-    let mut docked_counts: HashMap<Entity, Vec<String>> = HashMap::new();
-    // Also count ships per system for badge display.
+    // #395: Immobile ships (stations / infrastructure) are excluded entirely —
+    // they are represented by icons in the galaxy overlay instead.
+    let mut docked_counts: HashMap<Entity, Vec<DockedShipInfo>> = HashMap::new();
     let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
 
-    for (_entity, ship, state, _queue) in &ships {
+    for (_entity, ship, state, _queue, stats) in &ships {
+        let station = is_station(ship);
+        if station {
+            // #395: Skip immobile ships — they are shown as development icons
+            // next to system names in `draw_galaxy_overlay`, not as ship markers.
+            if !matches!(
+                state,
+                ShipState::InSystem { .. }
+                    | ShipState::Refitting { .. }
+                    | ShipState::Scouting { .. }
+            ) {
+                // Non-docked states still need movement visuals for mobile ships,
+                // but stations should never be in transit — skip entirely.
+            }
+            continue;
+        }
+        let harbour = is_harbour(stats);
         match state {
-            ShipState::Docked { system } => {
+            ShipState::InSystem { system } => {
                 docked_counts
                     .entry(*system)
                     .or_default()
-                    .push(ship.design_id.clone());
+                    .push(DockedShipInfo {
+                        design_id: ship.design_id.clone(),
+                        is_harbour: harbour,
+                    });
                 *system_ship_counts.entry(*system).or_insert(0) += 1;
             }
             ShipState::SubLight {
@@ -143,11 +190,7 @@ pub fn draw_ships(
                     let sy = sys_pos.y as f32 * view.scale;
                     let (r, g, b) = ship_color_rgb(&ship.design_id);
                     let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
-                    gizmos.circle_2d(
-                        Vec2::new(sx, sy),
-                        6.0,
-                        Color::srgba(r, g, b, pulse),
-                    );
+                    gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
                     gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
                 }
             }
@@ -159,11 +202,7 @@ pub fn draw_ships(
 
                     // Pulsing indicator
                     let pulse = (clock.as_years_f64() as f32 * 5.0).sin() * 0.3 + 0.7;
-                    gizmos.circle_2d(
-                        Vec2::new(sx, sy),
-                        6.0,
-                        Color::srgba(r, g, b, pulse),
-                    );
+                    gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
 
                     // Ship marker
                     gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
@@ -174,7 +213,10 @@ pub fn draw_ships(
                 docked_counts
                     .entry(*system)
                     .or_default()
-                    .push(ship.design_id.clone());
+                    .push(DockedShipInfo {
+                        design_id: ship.design_id.clone(),
+                        is_harbour: harbour,
+                    });
                 *system_ship_counts.entry(*system).or_insert(0) += 1;
             }
             // #185: Loitering ships are drawn as a small marker at their deep-space coordinate.
@@ -186,19 +228,30 @@ pub fn draw_ships(
                 // Faint outer halo to distinguish "loitering" from in-transit.
                 gizmos.circle_2d(Vec2::new(cx, cy), 5.5, Color::srgba(r, g, b, 0.25));
             }
+            // #217: Scouting — display at the target system like docked.
+            ShipState::Scouting { target_system, .. } => {
+                docked_counts
+                    .entry(*target_system)
+                    .or_default()
+                    .push(DockedShipInfo {
+                        design_id: ship.design_id.clone(),
+                        is_harbour: harbour,
+                    });
+                *system_ship_counts.entry(*target_system).or_insert(0) += 1;
+            }
         }
     }
 
     // Draw docked ships offset around their system.
-    for (system_entity, design_ids) in &docked_counts {
+    for (system_entity, ship_infos) in &docked_counts {
         let Ok(sys_pos) = stars.get(*system_entity) else {
             continue;
         };
         let sx = sys_pos.x as f32 * view.scale;
         let sy = sys_pos.y as f32 * view.scale;
-        let count = design_ids.len();
+        let count = ship_infos.len();
 
-        for (i, design_id) in design_ids.iter().enumerate() {
+        for (i, info) in ship_infos.iter().enumerate() {
             let angle = if count == 1 {
                 0.0
             } else {
@@ -208,8 +261,23 @@ pub fn draw_ships(
             let ox = sx + angle.cos() * offset_radius;
             let oy = sy + angle.sin() * offset_radius;
 
-            let color = ship_color(design_id);
-            gizmos.circle_2d(Vec2::new(ox, oy), 3.0, color);
+            if info.is_harbour {
+                // Harbour ships: gold diamond
+                let gold = Color::srgb(1.0, 0.85, 0.2);
+                let radius = 5.5;
+                let center = Vec2::new(ox, oy);
+                let top = center + Vec2::new(0.0, radius);
+                let right = center + Vec2::new(radius, 0.0);
+                let bottom = center + Vec2::new(0.0, -radius);
+                let left = center + Vec2::new(-radius, 0.0);
+                gizmos.line_2d(top, right, gold);
+                gizmos.line_2d(right, bottom, gold);
+                gizmos.line_2d(bottom, left, gold);
+                gizmos.line_2d(left, top, gold);
+            } else {
+                let color = ship_color(&info.design_id);
+                gizmos.circle_2d(Vec2::new(ox, oy), 3.0, color);
+            }
         }
     }
 
@@ -250,15 +318,14 @@ pub fn draw_ships(
 
     // #104: Command queue overlay for selected ship
     if let Some(selected_entity) = selected_ship.0 {
-        if let Ok((_entity, ship, state, Some(queue))) = ships.get(selected_entity) {
+        if let Ok((_entity, ship, state, Some(queue), _stats)) = ships.get(selected_entity) {
             if !queue.commands.is_empty() {
                 // Determine the ship's current screen position from its state
                 let current_pos = match state {
-                    ShipState::Docked { system } => {
-                        stars.get(*system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
+                    ShipState::InSystem { system } => stars
+                        .get(*system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
                     ShipState::SubLight {
                         origin,
                         destination,
@@ -273,10 +340,8 @@ pub fn draw_ships(
                         } else {
                             1.0
                         };
-                        let cx =
-                            (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
-                        let cy =
-                            (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
+                        let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
+                        let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
                         Some(Vec2::new(cx, cy))
                     }
                     ShipState::InFTL {
@@ -304,28 +369,28 @@ pub fn draw_ships(
                             None
                         }
                     }
-                    ShipState::Settling { system, .. } => {
-                        stars.get(*system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
-                    ShipState::Surveying { target_system, .. } => {
-                        stars.get(*target_system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
-                    ShipState::Refitting { system, .. } => {
-                        stars.get(*system).ok().map(|pos| {
-                            Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)
-                        })
-                    }
+                    ShipState::Settling { system, .. } => stars
+                        .get(*system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
+                    ShipState::Surveying { target_system, .. } => stars
+                        .get(*target_system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
+                    ShipState::Refitting { system, .. } => stars
+                        .get(*system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
                     // #185: Loitering ship's current screen pos for queue overlay.
-                    ShipState::Loitering { position } => {
-                        Some(Vec2::new(
-                            position[0] as f32 * view.scale,
-                            position[1] as f32 * view.scale,
-                        ))
-                    }
+                    ShipState::Loitering { position } => Some(Vec2::new(
+                        position[0] as f32 * view.scale,
+                        position[1] as f32 * view.scale,
+                    )),
+                    // #217: Scouting ships render at the target system.
+                    ShipState::Scouting { target_system, .. } => stars
+                        .get(*target_system)
+                        .ok()
+                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
                 };
 
                 if let Some(mut prev_pos) = current_pos {
@@ -335,7 +400,8 @@ pub fn draw_ships(
                         let target_screen = match cmd {
                             QueuedCommand::MoveTo { system, .. }
                             | QueuedCommand::Survey { system, .. }
-                            | QueuedCommand::Colonize { system, .. } => {
+                            | QueuedCommand::Colonize { system, .. }
+                            | QueuedCommand::LoadDeliverable { system, .. } => {
                                 let Ok(target_pos) = stars.get(*system) else {
                                     continue;
                                 };
@@ -344,11 +410,29 @@ pub fn draw_ships(
                                     target_pos.y as f32 * view.scale,
                                 )
                             }
+                            // #217: Scout targets a star system like MoveTo.
+                            QueuedCommand::Scout { target_system, .. } => {
+                                let Ok(target_pos) = stars.get(*target_system) else {
+                                    continue;
+                                };
+                                Vec2::new(
+                                    target_pos.x as f32 * view.scale,
+                                    target_pos.y as f32 * view.scale,
+                                )
+                            }
                             // #185: Loitering target — render directly from coordinates.
-                            QueuedCommand::MoveToCoordinates { target } => Vec2::new(
+                            QueuedCommand::MoveToCoordinates { target }
+                            | QueuedCommand::DeployDeliverable {
+                                position: target, ..
+                            } => Vec2::new(
                                 target[0] as f32 * view.scale,
                                 target[1] as f32 * view.scale,
                             ),
+                            // #223: In-place actions draw no destination marker.
+                            QueuedCommand::TransferToStructure { .. }
+                            | QueuedCommand::LoadFromScrapyard { .. } => {
+                                continue;
+                            }
                         };
 
                         // Dashed path line from previous position to target
@@ -361,11 +445,21 @@ pub fn draw_ships(
 
                         // Command-specific markers
                         match cmd {
-                            QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
+                            QueuedCommand::MoveTo { .. }
+                            | QueuedCommand::MoveToCoordinates { .. } => {
+                                gizmos.circle_2d(target_screen, 4.0, Color::srgba(r, g, b, 0.5));
+                            }
+                            // #217: Scout marker — magenta accent to distinguish from Survey.
+                            QueuedCommand::Scout { .. } => {
                                 gizmos.circle_2d(
                                     target_screen,
-                                    4.0,
-                                    Color::srgba(r, g, b, 0.5),
+                                    6.0,
+                                    Color::srgba(1.0, 0.3, 1.0, 0.4),
+                                );
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    3.0,
+                                    Color::srgba(1.0, 0.3, 1.0, 0.6),
                                 );
                             }
                             QueuedCommand::Survey { .. } => {
@@ -387,10 +481,76 @@ pub fn draw_ships(
                                     Color::srgba(1.0, 1.0, 0.2, 0.5),
                                 );
                             }
+                            // #223: Deliverable deploy marker — orange diamond-ish ring.
+                            QueuedCommand::DeployDeliverable { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    5.0,
+                                    Color::srgba(1.0, 0.6, 0.2, 0.6),
+                                );
+                            }
+                            QueuedCommand::LoadDeliverable { .. } => {
+                                gizmos.circle_2d(
+                                    target_screen,
+                                    4.0,
+                                    Color::srgba(0.2, 0.8, 1.0, 0.5),
+                                );
+                            }
+                            // TransferToStructure / LoadFromScrapyard continue'd above.
+                            QueuedCommand::TransferToStructure { .. }
+                            | QueuedCommand::LoadFromScrapyard { .. } => {}
                         }
 
                         prev_pos = target_screen;
                     }
+                }
+            }
+        }
+    }
+
+    // #409: Ghost rendering for destroyed ships whose destruction hasn't
+    // reached the player yet via light-speed. These ships are despawned
+    // (no live entity) but their KnowledgeStore snapshot still shows them
+    // alive at their last known position.
+    if let Ok(store) = empire_q.single() {
+        let live_entities: std::collections::HashSet<Entity> =
+            ships.iter().map(|(e, ..)| e).collect();
+
+        for (_, snapshot) in store.iter_ships() {
+            if live_entities.contains(&snapshot.entity) {
+                continue;
+            }
+            if snapshot.last_known_state == ShipSnapshotState::Destroyed {
+                continue;
+            }
+
+            let pos = match &snapshot.last_known_state {
+                ShipSnapshotState::Loitering { position } => {
+                    Some(Vec2::new(
+                        position[0] as f32 * view.scale,
+                        position[1] as f32 * view.scale,
+                    ))
+                }
+                _ => snapshot.last_known_system.and_then(|sys| {
+                    stars.get(sys).ok().map(|p| {
+                        Vec2::new(p.x as f32 * view.scale, p.y as f32 * view.scale)
+                    })
+                }),
+            };
+
+            if let Some(pos) = pos {
+                if snapshot.last_known_state == ShipSnapshotState::Missing {
+                    // Amber "?" pulsing marker for missing ships
+                    let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.2 + 0.6;
+                    gizmos.circle_2d(pos, 4.0, Color::srgba(1.0, 0.7, 0.1, pulse));
+                    gizmos.circle_2d(pos, 6.5, Color::srgba(1.0, 0.7, 0.1, pulse * 0.4));
+                } else {
+                    let (r, g, b) = ship_color_rgb(&snapshot.design_id);
+                    // Semi-transparent ghost marker
+                    gizmos.circle_2d(pos, 3.0, Color::srgba(r, g, b, 0.3));
+                    // Pulsing outer ring to indicate "last known"
+                    let pulse = (clock.as_years_f64() as f32 * 2.0).sin() * 0.15 + 0.2;
+                    gizmos.circle_2d(pos, 5.0, Color::srgba(r, g, b, pulse));
                 }
             }
         }

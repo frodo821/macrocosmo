@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 /// Position in 3D space, measured in light-years.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
@@ -59,14 +59,26 @@ mod tests {
 
     #[test]
     fn distance_to_same_point_is_zero() {
-        let p = Position { x: 5.0, y: 3.0, z: -1.0 };
+        let p = Position {
+            x: 5.0,
+            y: 3.0,
+            z: -1.0,
+        };
         assert_eq!(p.distance_to(&p), 0.0);
     }
 
     #[test]
     fn distance_to_known_value() {
-        let a = Position { x: 3.0, y: 4.0, z: 0.0 };
-        let b = Position { x: 0.0, y: 0.0, z: 0.0 };
+        let a = Position {
+            x: 3.0,
+            y: 4.0,
+            z: 0.0,
+        };
+        let b = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let d = a.distance_to(&b);
         assert!((d - 5.0).abs() < 1e-10, "expected 5.0, got {d}");
     }

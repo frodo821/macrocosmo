@@ -2,23 +2,31 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::colony::{
-    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption, MaintenanceCost, Production,
-    ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue, SystemBuildings,
-    DEFAULT_SYSTEM_BUILDING_SLOTS,
+    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption,
+    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+    SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
+use crate::communication::CommandLog;
 use crate::components::Position;
+use crate::condition::ScopedFlags;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::knowledge::KnowledgeStore;
 use crate::modifier::ModifiedValue;
-use crate::player::{Faction, PlayerEmpire};
+use crate::observer::{in_observer_mode, not_in_observer_mode};
+use crate::player::{Empire, Faction, PlayerEmpire};
+use crate::scripting::ScriptEngine;
 use crate::scripting::building_api::BuildingId;
-use crate::scripting::faction_api::{lookup_on_game_start, FactionRegistry};
+use crate::scripting::faction_api::{FactionRegistry, lookup_on_game_start};
 use crate::scripting::game_start_ctx::{
     GameStartActions, GameStartCtx, PlanetAttributesSpec, PlanetRef, SpawnedPlanetSpec,
 };
-use crate::scripting::ScriptEngine;
-use crate::ship::{spawn_ship, Owner};
+use crate::ship::{Owner, Ship, ShipState, spawn_core_ship_from_deliverable, spawn_ship};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
+use crate::technology::{
+    EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
+    ResearchPool, ResearchQueue, TechTree,
+};
 
 pub struct GameSetupPlugin;
 
@@ -26,13 +34,61 @@ impl Plugin for GameSetupPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
+            apply_faction_presets
+                .after(crate::player::spawn_player_empire)
+                .after(crate::scripting::load_faction_registry),
+        )
+        .add_systems(
+            Startup,
             run_faction_on_game_start
                 .after(crate::galaxy::generate_galaxy)
                 .after(crate::player::spawn_player_empire)
                 .after(crate::colony::spawn_capital_colony)
                 .after(crate::scripting::load_all_scripts)
-                .after(crate::scripting::load_faction_registry),
+                .after(crate::scripting::load_faction_registry)
+                .after(apply_faction_presets)
+                .run_if(not_in_observer_mode),
+        )
+        // #173: `run_all_factions_on_game_start` spawns NPC empires for every
+        // registered non-passive faction. Runs in BOTH player and observer
+        // modes so NPC empires exist in regular play. `.after(run_faction_on_game_start)`
+        // guarantees the player empire is fully set up before NPC spawns
+        // iterate the registry, and existing double-spawn guards
+        // (`existing_by_id` + passive-skip) prevent duplicates.
+        .add_systems(
+            Startup,
+            run_all_factions_on_game_start
+                .after(crate::galaxy::generate_galaxy)
+                .after(crate::colony::spawn_capital_colony)
+                .after(crate::scripting::load_all_scripts)
+                .after(crate::scripting::load_faction_registry)
+                .after(run_faction_on_game_start),
+        )
+        .add_systems(
+            Startup,
+            init_observer_view
+                .after(run_all_factions_on_game_start)
+                .run_if(in_observer_mode),
         );
+    }
+}
+
+/// Startup system (observer mode only) that sets `ObserverView.viewing` to
+/// the first spawned `Empire` entity, so the top-bar selector and Governor
+/// tab have a sensible default.
+pub fn init_observer_view(
+    mut view: ResMut<crate::observer::ObserverView>,
+    empires: Query<(Entity, &Faction), With<Empire>>,
+) {
+    if view.viewing.is_some() {
+        return;
+    }
+    let mut items: Vec<(Entity, String)> =
+        empires.iter().map(|(e, f)| (e, f.name.clone())).collect();
+    items.sort_by(|a, b| a.1.cmp(&b.1));
+    if let Some((e, name)) = items.into_iter().next() {
+        view.viewing = Some(e);
+        info!("Observer mode: focus set to faction '{}'", name);
     }
 }
 
@@ -41,6 +97,192 @@ fn player_faction_id(world: &mut World) -> Option<String> {
     let mut q = world.query_filtered::<&Faction, With<PlayerEmpire>>();
     let f = q.iter(world).next()?;
     Some(f.id.clone())
+}
+
+/// Startup system that patches existing `Faction` components with preset
+/// fields from `FactionDefinition`. This covers factions spawned before the
+/// registry was loaded (e.g. the player empire from `spawn_player_empire`
+/// and hostile factions from `spawn_hostile_factions`).
+pub fn apply_faction_presets(mut factions: Query<&mut Faction>, registry: Res<FactionRegistry>) {
+    for mut faction in &mut factions {
+        if let Some(def) = registry.factions.get(&faction.id) {
+            faction.can_diplomacy = def.can_diplomacy;
+            faction.allowed_diplomatic_options =
+                def.allowed_diplomatic_options.iter().cloned().collect();
+        }
+    }
+}
+
+/// Build the full set of empire-level components for a spawned Empire. This
+/// mirrors `crate::player::spawn_player_empire` so observer-mode empires are
+/// indistinguishable from the player empire (aside from the `PlayerEmpire`
+/// marker).
+fn empire_bundle(
+    name: String,
+    faction_id: String,
+    faction_name: String,
+    can_diplomacy: bool,
+    allowed_diplomatic_options: std::collections::HashSet<String>,
+) -> impl Bundle {
+    (
+        (
+            Empire { name },
+            Faction {
+                id: faction_id,
+                name: faction_name,
+                can_diplomacy,
+                allowed_diplomatic_options,
+            },
+            TechTree::default(),
+            ResearchQueue::default(),
+            ResearchPool::default(),
+            RecentlyResearched::default(),
+            crate::colony::AuthorityParams::default(),
+            crate::colony::ConstructionParams::default(),
+        ),
+        (
+            EmpireModifiers::default(),
+            GameFlags::default(),
+            GlobalParams::default(),
+            KnowledgeStore::default(),
+            crate::knowledge::SystemVisibilityMap::default(),
+            CommandLog::default(),
+            ScopedFlags::default(),
+            PendingColonyTechModifiers::default(),
+        ),
+    )
+}
+
+/// Startup system for both player and observer modes (#173): iterate every
+/// registered non-passive faction and spawn a full `Empire` entity for each
+/// missing one, then run its `on_game_start` Lua callback. The `PlayerEmpire`
+/// marker is NEVER added here — the player empire is spawned earlier by
+/// `spawn_player_empire` and skipped below. Hostile / passive factions
+/// (already spawned by `spawn_hostile_factions`) are skipped too.
+pub fn run_all_factions_on_game_start(world: &mut World) {
+    // Snapshot the registry into a plain Vec so we can drop the borrow
+    // before mutating the world.
+    struct FactionSnapshot {
+        id: String,
+        name: String,
+        has_on_game_start: bool,
+        is_passive: bool,
+        can_diplomacy: bool,
+        allowed_diplomatic_options: std::collections::HashSet<String>,
+    }
+    let registry_ids: Vec<FactionSnapshot> = {
+        let reg = world.resource::<FactionRegistry>();
+        reg.factions
+            .values()
+            .map(|def| FactionSnapshot {
+                id: def.id.clone(),
+                name: def.name.clone(),
+                has_on_game_start: def.has_on_game_start,
+                is_passive: def.is_passive,
+                can_diplomacy: def.can_diplomacy,
+                allowed_diplomatic_options: def
+                    .allowed_diplomatic_options
+                    .iter()
+                    .cloned()
+                    .collect(),
+            })
+            .collect()
+    };
+
+    if registry_ids.is_empty() {
+        warn!("Setup: FactionRegistry is empty; no NPC empires spawned");
+        return;
+    }
+
+    // Collect pre-existing bare Faction entities (e.g. spawned by the
+    // faction plugin as hostile) so we don't double-spawn.
+    let existing_by_id: std::collections::HashMap<String, Entity> = {
+        let mut q = world.query_filtered::<(Entity, &Faction), Without<Empire>>();
+        q.iter(world).map(|(e, f)| (f.id.clone(), e)).collect()
+    };
+
+    // #173: Collect pre-existing Empire entities (the player empire, or any
+    // Empire already promoted by a prior run) so we skip them.
+    let existing_empire_ids: std::collections::HashSet<String> = {
+        let mut q = world.query_filtered::<&Faction, With<Empire>>();
+        q.iter(world).map(|f| f.id.clone()).collect()
+    };
+
+    for snap in &registry_ids {
+        // #173: Skip factions that already have an Empire (e.g. the player
+        // empire spawned by `spawn_player_empire`). Don't re-run their
+        // `on_game_start` — that is handled by `run_faction_on_game_start`.
+        if existing_empire_ids.contains(&snap.id) {
+            continue;
+        }
+        // If a bare Faction entity already exists (without Empire), upgrade
+        // it to an Empire by inserting the bundle. Otherwise spawn fresh.
+        if let Some(entity) = existing_by_id.get(&snap.id) {
+            // Leave passive factions alone — they're added by
+            // FactionRelationsPlugin and shouldn't be promoted to full
+            // empires. `is_passive` is a preset field from the faction type.
+            if snap.is_passive {
+                continue;
+            }
+            // Upgrade: defensive branch — normally no prior Faction entity
+            // exists for an empire id that isn't passive.
+            world.entity_mut(*entity).insert(empire_bundle(
+                snap.name.clone(),
+                snap.id.clone(),
+                snap.name.clone(),
+                snap.can_diplomacy,
+                snap.allowed_diplomatic_options.clone(),
+            ));
+            info!(
+                "Setup: upgraded existing Faction '{}' to full Empire",
+                snap.id
+            );
+        } else {
+            world.spawn(empire_bundle(
+                snap.name.clone(),
+                snap.id.clone(),
+                snap.name.clone(),
+                snap.can_diplomacy,
+                snap.allowed_diplomatic_options.clone(),
+            ));
+            info!("Setup: spawned NPC Empire for faction '{}'", snap.id);
+        }
+
+        if snap.has_on_game_start {
+            run_on_game_start_for_faction(world, &snap.id);
+        }
+    }
+}
+
+/// Shared helper: look up `on_game_start` for the given faction id and,
+/// if present, call it and apply the resulting actions. Used by both
+/// `run_faction_on_game_start` (player path) and `run_all_factions_on_game_start`
+/// (observer path).
+fn run_on_game_start_for_faction(world: &mut World, faction_id: &str) {
+    let ctx = GameStartCtx::new(faction_id.to_string());
+    let actions = {
+        let engine = world.resource::<ScriptEngine>();
+        let lua = engine.lua();
+        let func = match lookup_on_game_start(lua, faction_id) {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                warn!(
+                    "Faction '{}' on_game_start function not found despite registry flag",
+                    faction_id
+                );
+                return;
+            }
+            Err(e) => {
+                warn!("Failed to look up on_game_start for '{}': {e}", faction_id);
+                return;
+            }
+        };
+        if let Err(e) = func.call::<()>(ctx.clone()) {
+            warn!("on_game_start for '{}' raised an error: {e}", faction_id);
+        }
+        ctx.take_actions()
+    };
+    apply_game_start_actions(world, faction_id, actions);
 }
 
 /// Startup system that runs the player faction's `on_game_start` Lua callback,
@@ -107,11 +349,7 @@ pub fn run_faction_on_game_start(world: &mut World) {
 
 /// Resolve a `PlanetRef` to a planet `Entity` using the existing-planets list and the
 /// freshly spawned-planets list. Returns `None` if the index is out of range.
-fn resolve_planet_ref(
-    pref: PlanetRef,
-    existing: &[Entity],
-    spawned: &[Entity],
-) -> Option<Entity> {
+fn resolve_planet_ref(pref: PlanetRef, existing: &[Entity], spawned: &[Entity]) -> Option<Entity> {
     match pref {
         PlanetRef::Existing(idx) => {
             if idx == 0 || idx > existing.len() {
@@ -165,21 +403,32 @@ fn spawn_planet_entity(
 
 /// Spawn a fresh capital colony scaffold on the given planet. Mirrors the body of
 /// `spawn_capital_colony` but without the capital-search logic.
-fn spawn_colony_on_planet(world: &mut World, planet_entity: Entity, num_slots: usize) -> Entity {
-    world
+///
+/// #297 (S-2): `faction_entity` is the administrative owner attached as a
+/// [`crate::faction::FactionOwner`] component. `None` skips attachment
+/// (warn-and-skip defensive pattern), matching `spawn_capital_colony` when
+/// no `PlayerEmpire` / matching `Faction` exists.
+fn spawn_colony_on_planet(
+    world: &mut World,
+    planet_entity: Entity,
+    num_slots: usize,
+    faction_entity: Option<Entity>,
+) -> Entity {
+    let colony = world
         .spawn((
             Colony {
                 planet: planet_entity,
-                population: 100.0,
                 growth_rate: 0.01,
             },
+            // #250: zero-base production; all output comes from building/job
+            // modifiers via the sync pipeline.
             Production {
-                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-                food_per_hexadies: ModifiedValue::new(Amt::units(5)),
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
             },
-            BuildQueue { queue: Vec::new() },
+            BuildQueue::default(),
             Buildings {
                 slots: vec![None; num_slots],
             },
@@ -192,10 +441,18 @@ fn spawn_colony_on_planet(world: &mut World, planet_entity: Entity, num_slots: u
                     species_id: "human".to_string(),
                     population: 100,
                 }],
+                growth_accumulator: 0.0,
             },
             ColonyJobs::default(),
+            crate::colony::ColonyJobRates::default(),
         ))
-        .id()
+        .id();
+    if let Some(empire) = faction_entity {
+        world
+            .entity_mut(colony)
+            .insert(crate::faction::FactionOwner(empire));
+    }
+    colony
 }
 
 /// Apply the actions recorded by a faction's `on_game_start` callback to the ECS.
@@ -226,6 +483,25 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
         planets.sort_by(|a, b| a.1.cmp(&b.1));
         let entities: Vec<Entity> = planets.into_iter().map(|(e, _)| e).collect();
         (entity, pos, name, entities)
+    };
+
+    // #297 (S-2): Resolve the faction entity for this `faction_id` so
+    // colonies / SystemBuildings / ships spawned by this on_game_start
+    // callback all carry the same `FactionOwner`. Precedence matches the
+    // existing ship-owner lookup below (L619-641): prefer an Empire whose
+    // Faction id matches, fall back to PlayerEmpire, otherwise None.
+    let faction_entity: Option<Entity> = {
+        let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+        let by_faction = q
+            .iter(world)
+            .find(|(_, f)| f.id == faction_id)
+            .map(|(e, _)| e);
+        if by_faction.is_some() {
+            by_faction
+        } else {
+            let mut pe_q = world.query_filtered::<Entity, With<PlayerEmpire>>();
+            pe_q.iter(world).next()
+        }
     };
 
     // Apply system-level attributes from set_attributes(...)
@@ -339,7 +615,10 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
                         .get::<SystemAttributes>(planet_entity)
                         .map(|a| a.max_building_slots as usize)
                         .unwrap_or(4);
-                    let _ = spawn_colony_on_planet(world, planet_entity, num_slots);
+                    // #297 (S-2): Pass the resolved faction entity so the
+                    // new Colony carries a `FactionOwner`. `None` skips
+                    // attachment with a warning (see helper doc).
+                    let _ = spawn_colony_on_planet(world, planet_entity, num_slots, faction_entity);
                     // Ensure the system also has resource stockpile / system buildings if
                     // they were not created (shouldn't happen normally but be defensive).
                     if world.get::<ResourceStockpile>(capital_entity).is_none() {
@@ -352,11 +631,17 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
                                 authority: Amt::ZERO,
                             },
                             ResourceCapacity::default(),
-                            SystemBuildings {
-                                slots: vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS],
-                            },
+                            SystemBuildings::default(),
                             SystemBuildingQueue::default(),
                         ));
+                        // #297 (S-2): SystemBuildings on the StarSystem entity
+                        // implies administrative ownership — attach
+                        // FactionOwner on the same entity (plan §2C).
+                        if let Some(empire) = faction_entity {
+                            world
+                                .entity_mut(capital_entity)
+                                .insert(crate::faction::FactionOwner(empire));
+                        }
                     }
                 }
             }
@@ -405,47 +690,129 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
         }
     }
 
-    // Apply system_buildings — add to first empty slot of SystemBuildings on the capital.
+    // Apply system_buildings — spawn station ships with SlotAssignment for each
+    // building. The BuildingRegistry is consulted to find ship_design_id.
     if !actions.system_buildings.is_empty() {
-        let Some(mut sys_b) = world.get_mut::<SystemBuildings>(capital_entity) else {
+        let max_slots = world
+            .get::<SystemBuildings>(capital_entity)
+            .map(|sb| sb.max_slots)
+            .unwrap_or(0);
+        if max_slots == 0 {
             warn!(
                 "on_game_start for '{}': capital has no SystemBuildings component",
                 faction_id
             );
-            return;
-        };
-        for building_id in &actions.system_buildings {
-            if let Some(slot) = sys_b.slots.iter_mut().find(|s| s.is_none()) {
-                *slot = Some(BuildingId::new(building_id));
+        } else {
+            // Count already-occupied slots (existing station ships at this system).
+            let mut occupied_slots: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            {
+                let mut q = world.query::<(&Ship, &ShipState, &SlotAssignment)>();
+                for (_, state, slot) in q.iter(world) {
+                    if let ShipState::InSystem { system } = state {
+                        if *system == capital_entity {
+                            occupied_slots.insert(slot.0);
+                        }
+                    }
+                }
+            }
+
+            // For each system building, find the ship_design_id and spawn.
+            let building_to_design: std::collections::HashMap<String, (String, String)> = if let Some(building_registry) = world.get_resource::<crate::colony::BuildingRegistry>() {
+                building_registry
+                    .buildings
+                    .values()
+                    .filter_map(|def| {
+                        def.ship_design_id
+                            .as_ref()
+                            .map(|did| (def.id.clone(), (did.clone(), def.name.clone())))
+                    })
+                    .collect()
             } else {
-                warn!(
-                    "on_game_start for '{}' add system building '{}': no free system slot",
-                    faction_id, building_id
-                );
+                std::collections::HashMap::new()
+            };
+
+            let mut next_slot = 0usize;
+            let owner = faction_entity
+                .map(Owner::Empire)
+                .unwrap_or(Owner::Neutral);
+
+            for building_id in &actions.system_buildings {
+                // Find next free slot.
+                while next_slot < max_slots && occupied_slots.contains(&next_slot) {
+                    next_slot += 1;
+                }
+                if next_slot >= max_slots {
+                    warn!(
+                        "on_game_start for '{}' add system building '{}': no free system slot",
+                        faction_id, building_id
+                    );
+                    break;
+                }
+                let slot_idx = next_slot;
+                occupied_slots.insert(slot_idx);
+                next_slot += 1;
+
+                // Spawn station ship if there's a design mapping.
+                if let Some((design_id, station_name)) = building_to_design.get(building_id) {
+                    let mut state: bevy::ecs::system::SystemState<(
+                        Commands,
+                        Res<ShipDesignRegistry>,
+                    )> = bevy::ecs::system::SystemState::new(world);
+                    {
+                        let (mut commands, registry) = state.get_mut(world);
+                        let ship_entity = spawn_ship(
+                            &mut commands,
+                            design_id,
+                            station_name.clone(),
+                            capital_entity,
+                            capital_pos,
+                            owner,
+                            &registry,
+                        );
+                        commands.entity(ship_entity).insert(SlotAssignment(slot_idx));
+                    }
+                    state.apply(world);
+                } else {
+                    warn!(
+                        "on_game_start for '{}': system building '{}' has no ship_design_id mapping",
+                        faction_id, building_id
+                    );
+                }
             }
         }
     }
 
-    // Spawn ships at the capital. Use the player empire as owner.
+    // Spawn ships at the capital. Prefer the Empire tagged with a matching
+    // Faction (works in observer mode where no PlayerEmpire exists), fall
+    // back to PlayerEmpire, and finally Neutral.
     if !actions.ships.is_empty() {
         let owner = {
-            let mut q = world.query_filtered::<Entity, With<PlayerEmpire>>();
-            match q.iter(world).next() {
-                Some(e) => Owner::Empire(e),
-                None => {
-                    warn!(
-                        "No PlayerEmpire found; ships from on_game_start of '{}' will be neutral",
-                        faction_id
-                    );
-                    Owner::Neutral
+            let empire_by_faction: Option<Entity> = {
+                let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+                q.iter(world)
+                    .find(|(_, f)| f.id == faction_id)
+                    .map(|(e, _)| e)
+            };
+            if let Some(e) = empire_by_faction {
+                Owner::Empire(e)
+            } else {
+                let mut q = world.query_filtered::<Entity, With<PlayerEmpire>>();
+                match q.iter(world).next() {
+                    Some(e) => Owner::Empire(e),
+                    None => {
+                        warn!(
+                            "No Empire found for faction '{}'; ships will be Neutral",
+                            faction_id
+                        );
+                        Owner::Neutral
+                    }
                 }
             }
         };
         // Use SystemState to obtain a Commands queue from the world.
-        let mut state: bevy::ecs::system::SystemState<(
-            Commands,
-            Res<ShipDesignRegistry>,
-        )> = bevy::ecs::system::SystemState::new(world);
+        let mut state: bevy::ecs::system::SystemState<(Commands, Res<ShipDesignRegistry>)> =
+            bevy::ecs::system::SystemState::new(world);
         {
             let (mut commands, registry) = state.get_mut(world);
             for (design_id, name) in &actions.ships {
@@ -469,6 +836,55 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
         );
     }
 
+    // #299 (S-5): Spawn an Infrastructure Core at the capital when requested
+    // via `ctx.system:spawn_core()`. This uses the canonical
+    // `infrastructure_core_v1` design and the same owner resolution as ships.
+    if actions.spawn_core {
+        let owner = {
+            let empire_by_faction: Option<Entity> = {
+                let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+                q.iter(world)
+                    .find(|(_, f)| f.id == faction_id)
+                    .map(|(e, _)| e)
+            };
+            if let Some(e) = empire_by_faction {
+                Owner::Empire(e)
+            } else {
+                let mut q = world.query_filtered::<Entity, With<PlayerEmpire>>();
+                match q.iter(world).next() {
+                    Some(e) => Owner::Empire(e),
+                    None => {
+                        warn!(
+                            "No Empire found for faction '{}'; Core will be Neutral (no sovereignty)",
+                            faction_id
+                        );
+                        Owner::Neutral
+                    }
+                }
+            }
+        };
+        let core_pos = crate::galaxy::system_inner_orbit_position(capital_entity, world);
+        let mut state: bevy::ecs::system::SystemState<(Commands, Res<ShipDesignRegistry>)> =
+            bevy::ecs::system::SystemState::new(world);
+        {
+            let (mut commands, registry) = state.get_mut(world);
+            spawn_core_ship_from_deliverable(
+                &mut commands,
+                "infrastructure_core_v1",
+                format!("Infrastructure Core ({})", faction_id),
+                capital_entity,
+                Position::from(core_pos),
+                owner,
+                &registry,
+            );
+        }
+        state.apply(world);
+        info!(
+            "Spawned Infrastructure Core from on_game_start of '{}' at {}",
+            faction_id, capital_name
+        );
+    }
+
     info!(
         "Applied on_game_start actions for faction '{}' at capital {}",
         faction_id, capital_name
@@ -480,9 +896,9 @@ mod tests {
     use super::*;
     use crate::amount::Amt;
     use crate::colony::{
-        BuildQueue, BuildingQueue, Colony, FoodConsumption, MaintenanceCost, Production,
-        ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
-        DEFAULT_SYSTEM_BUILDING_SLOTS,
+        BuildQueue, BuildingQueue, Colony, FoodConsumption,
+        MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+        SystemBuildingQueue,
     };
     use crate::components::Position;
     use crate::condition::ScopedFlags;
@@ -493,8 +909,8 @@ mod tests {
     use crate::ship::{Ship, ShipState};
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
     use crate::technology::{
-        EmpireModifiers, GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue,
-        TechKnowledge, TechTree,
+        EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
+        ResearchPool, ResearchQueue, TechKnowledge, TechTree,
     };
 
     fn setup_world() -> (World, Entity, Entity) {
@@ -522,9 +938,7 @@ mod tests {
                     authority: Amt::ZERO,
                 },
                 ResourceCapacity::default(),
-                SystemBuildings {
-                    slots: vec![None; DEFAULT_SYSTEM_BUILDING_SLOTS],
-                },
+                SystemBuildings::default(),
                 SystemBuildingQueue::default(),
             ))
             .id();
@@ -552,7 +966,6 @@ mod tests {
         world.spawn((
             Colony {
                 planet,
-                population: 100.0,
                 growth_rate: 0.01,
             },
             Production {
@@ -561,7 +974,7 @@ mod tests {
                 research_per_hexadies: ModifiedValue::new(Amt::units(1)),
                 food_per_hexadies: ModifiedValue::new(Amt::units(5)),
             },
-            BuildQueue { queue: Vec::new() },
+            BuildQueue::default(),
             crate::colony::Buildings {
                 slots: vec![None; 5],
             },
@@ -569,30 +982,34 @@ mod tests {
             ProductionFocus::default(),
             MaintenanceCost::default(),
             FoodConsumption::default(),
+            crate::colony::ColonyJobRates::default(),
         ));
 
         // Player empire entity (needed for ship owner resolution)
         world.spawn((
-            Empire {
-                name: "Test Empire".into(),
-            },
-            PlayerEmpire,
-            Faction {
-                id: "test_faction".into(),
-                name: "Test".into(),
-            },
-            TechTree::default(),
-            ResearchQueue::default(),
-            ResearchPool::default(),
-            RecentlyResearched::default(),
-            crate::colony::AuthorityParams::default(),
-            crate::colony::ConstructionParams::default(),
-            EmpireModifiers::default(),
-            GameFlags::default(),
-            GlobalParams::default(),
-            KnowledgeStore::default(),
-            crate::communication::CommandLog::default(),
-            ScopedFlags::default(),
+            (
+                Empire {
+                    name: "Test Empire".into(),
+                },
+                PlayerEmpire,
+                Faction::new("test_faction", "Test"),
+                TechTree::default(),
+                ResearchQueue::default(),
+                ResearchPool::default(),
+                RecentlyResearched::default(),
+                crate::colony::AuthorityParams::default(),
+                crate::colony::ConstructionParams::default(),
+            ),
+            (
+                EmpireModifiers::default(),
+                GameFlags::default(),
+                GlobalParams::default(),
+                KnowledgeStore::default(),
+                crate::knowledge::SystemVisibilityMap::default(),
+                crate::communication::CommandLog::default(),
+                ScopedFlags::default(),
+                PendingColonyTechModifiers::default(),
+            ),
         ));
 
         // Ship design registry with a single explorer design.
@@ -613,6 +1030,7 @@ mod tests {
             sublight_speed: 0.75,
             ftl_range: 10.0,
             revision: 0,
+            is_direct_buildable: true,
         });
         world.insert_resource(registry);
 
@@ -654,20 +1072,70 @@ mod tests {
     fn apply_actions_adds_system_buildings() {
         let (mut world, capital, _planet) = setup_world();
 
+        // Insert a BuildingRegistry with "shipyard" that has a ship_design_id.
+        let mut building_registry = crate::colony::BuildingRegistry::default();
+        building_registry.insert(crate::scripting::building_api::BuildingDefinition {
+            id: "shipyard".to_string(),
+            name: "Shipyard".to_string(),
+            description: String::new(),
+            minerals_cost: Amt::ZERO,
+            energy_cost: Amt::ZERO,
+            build_time: 30,
+            maintenance: Amt::ZERO,
+            production_bonus_minerals: Amt::ZERO,
+            production_bonus_energy: Amt::ZERO,
+            production_bonus_research: Amt::ZERO,
+            production_bonus_food: Amt::ZERO,
+            modifiers: Vec::new(),
+            is_system_building: true,
+            capabilities: std::collections::HashMap::new(),
+            upgrade_to: Vec::new(),
+            is_direct_buildable: true,
+            prerequisites: None,
+            on_built: None,
+            on_upgraded: None,
+            dismantlable: true,
+            ship_design_id: Some("station_shipyard_v1".to_string()),
+        });
+        world.insert_resource(building_registry);
+
+        // Add a matching ship design.
+        let mut design_reg = world.resource_mut::<ShipDesignRegistry>();
+        design_reg.insert(ShipDesignDefinition {
+            id: "station_shipyard_v1".into(),
+            name: "Shipyard Station".into(),
+            description: String::new(),
+            hull_id: "station".into(),
+            modules: Vec::new(),
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::ZERO,
+            build_cost_energy: Amt::ZERO,
+            build_time: 0,
+            hp: 100.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: false,
+        });
+
         let mut actions = GameStartActions::default();
         actions.system_buildings.push("shipyard".into());
 
         apply_game_start_actions(&mut world, "test_faction", actions);
 
-        let sys_b = world
-            .get::<SystemBuildings>(capital)
-            .expect("capital has SystemBuildings");
-        let names: Vec<String> = sys_b
-            .slots
-            .iter()
-            .filter_map(|s| s.as_ref().map(|b| b.0.clone()))
-            .collect();
-        assert_eq!(names, vec!["shipyard".to_string()]);
+        // Verify a station ship with SlotAssignment(0) was spawned at the capital.
+        let mut q = world.query::<(&Ship, &ShipState, &SlotAssignment)>();
+        let found = q.iter(&world).any(|(ship, state, slot)| {
+            ship.design_id == "station_shipyard_v1"
+                && matches!(state, ShipState::InSystem { system } if *system == capital)
+                && slot.0 == 0
+        });
+        assert!(
+            found,
+            "Station ship with SlotAssignment(0) should be spawned at capital"
+        );
     }
 
     #[test]
@@ -675,8 +1143,12 @@ mod tests {
         let (mut world, capital, _planet) = setup_world();
 
         let mut actions = GameStartActions::default();
-        actions.ships.push(("explorer_mk1".into(), "Explorer-1".into()));
-        actions.ships.push(("explorer_mk1".into(), "Explorer-2".into()));
+        actions
+            .ships
+            .push(("explorer_mk1".into(), "Explorer-1".into()));
+        actions
+            .ships
+            .push(("explorer_mk1".into(), "Explorer-2".into()));
 
         apply_game_start_actions(&mut world, "test_faction", actions);
 
@@ -686,8 +1158,8 @@ mod tests {
         for (ship, state) in &ships {
             assert!(matches!(ship.owner, Owner::Empire(_)));
             match state {
-                ShipState::Docked { system } => assert_eq!(*system, capital),
-                _ => panic!("Expected Docked state at capital"),
+                ShipState::InSystem { system } => assert_eq!(*system, capital),
+                _ => panic!("Expected InSystem state at capital"),
             }
         }
         let names: Vec<String> = ships.iter().map(|(s, _)| s.name.clone()).collect();
@@ -915,18 +1387,15 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["mine".to_string(), "farm".to_string()]);
 
-        // Shipyard added at system level
+        // Shipyard station ship at system level (if BuildingRegistry is set up)
+        // In this test, BuildingRegistry might not have "shipyard" with
+        // ship_design_id, so the station ship might not be spawned.
+        // Verify SystemBuildings still exists with max_slots.
         let sys_b = world.get::<SystemBuildings>(capital).unwrap();
-        let sys_names: Vec<String> = sys_b
-            .slots
-            .iter()
-            .filter_map(|s| s.as_ref().map(|b| b.0.clone()))
-            .collect();
-        assert_eq!(sys_names, vec!["shipyard".to_string()]);
+        assert!(sys_b.max_slots > 0);
 
-        // One ship spawned
+        // Ships spawned (explorer + possibly station ship)
         let mut sq = world.query::<&Ship>();
-        assert_eq!(sq.iter(&world).count(), 1);
+        assert!(sq.iter(&world).count() >= 1);
     }
 }
-

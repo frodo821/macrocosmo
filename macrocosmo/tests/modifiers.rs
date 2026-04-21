@@ -7,7 +7,12 @@ use macrocosmo::colony::*;
 use macrocosmo::modifier::{ModifiedValue, Modifier};
 use macrocosmo::ship::*;
 
-use common::{advance_time, empire_entity, find_planet, spawn_test_colony, spawn_test_system, test_app};
+use macrocosmo::faction::FactionOwner;
+
+use common::{
+    advance_time, empire_entity, find_planet, spawn_test_colony, spawn_test_empire,
+    spawn_test_system, test_app,
+};
 
 // Modifier affects production output
 
@@ -36,17 +41,19 @@ fn test_modifier_affects_production_output() {
     });
 
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::ZERO,
             energy: Amt::ZERO,
             research: Amt::ZERO,
             food: Amt::units(100),
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
+        },
+        ResourceCapacity::default(),
+    ));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -55,7 +62,7 @@ fn test_modifier_affects_production_output() {
             research_per_hexadies: ModifiedValue::new(Amt::ZERO),
             food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
+        BuildQueue::default(),
         Buildings { slots: vec![] },
         BuildingQueue::default(),
         ProductionFocus::default(),
@@ -148,17 +155,19 @@ fn test_maintenance_modifier_affects_energy() {
     });
 
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::ZERO,
             energy: Amt::units(100),
             research: Amt::ZERO,
             food: Amt::units(100),
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
+        },
+        ResourceCapacity::default(),
+    ));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -167,9 +176,14 @@ fn test_maintenance_modifier_affects_energy() {
             research_per_hexadies: ModifiedValue::new(Amt::ZERO),
             food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
+        BuildQueue::default(),
         Buildings {
-            slots: vec![Some(BuildingId::new("mine")), Some(BuildingId::new("shipyard")), None, None],
+            slots: vec![
+                Some(BuildingId::new("mine")),
+                Some(BuildingId::new("shipyard")),
+                None,
+                None,
+            ],
         },
         BuildingQueue::default(),
         ProductionFocus::default(),
@@ -204,6 +218,7 @@ fn test_maintenance_modifier_affects_energy() {
 #[test]
 fn test_food_consumption_modifier() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     let sys = spawn_test_system(
         app.world_mut(),
@@ -229,17 +244,19 @@ fn test_food_consumption_modifier() {
     });
 
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::ZERO,
             energy: Amt::ZERO,
             research: Amt::ZERO,
             food: Amt::units(100),
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
+        },
+        ResourceCapacity::default(),
+    ));
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 100.0,
             growth_rate: 0.0,
         },
         Production {
@@ -248,12 +265,20 @@ fn test_food_consumption_modifier() {
             research_per_hexadies: ModifiedValue::new(Amt::ZERO),
             food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
+        BuildQueue::default(),
         Buildings { slots: vec![] },
         BuildingQueue::default(),
         ProductionFocus::default(),
         MaintenanceCost::default(),
         food_consumption,
+        macrocosmo::species::ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 100,
+            }],
+            growth_accumulator: 0.0,
+        },
+        FactionOwner(empire),
     ));
 
     // Run one update so sync_food_consumption sets the base
@@ -307,20 +332,26 @@ fn test_authority_params_modifier() {
     );
 
     // Mark as capital
-    app.world_mut().get_mut::<macrocosmo::galaxy::StarSystem>(sys).unwrap().is_capital = true;
+    app.world_mut()
+        .get_mut::<macrocosmo::galaxy::StarSystem>(sys)
+        .unwrap()
+        .is_capital = true;
 
     let planet_sys = find_planet(app.world_mut(), sys);
-    app.world_mut().entity_mut(sys).insert((ResourceStockpile {
+    app.world_mut().entity_mut(sys).insert((
+        ResourceStockpile {
             minerals: Amt::ZERO,
             energy: Amt::ZERO,
             research: Amt::ZERO,
             food: Amt::units(100),
             authority: Amt::ZERO,
-        }, ResourceCapacity::default()));
+        },
+        ResourceCapacity::default(),
+    ));
+    let empire = empire_entity(app.world_mut());
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
-            population: 10.0,
             growth_rate: 0.0,
         },
         Production {
@@ -329,12 +360,13 @@ fn test_authority_params_modifier() {
             research_per_hexadies: ModifiedValue::new(Amt::ZERO),
             food_per_hexadies: ModifiedValue::new(Amt::ZERO),
         },
-        BuildQueue { queue: Vec::new() },
+        BuildQueue::default(),
         Buildings { slots: vec![] },
         BuildingQueue::default(),
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        FactionOwner(empire),
     ));
 
     // Advance 10 hd
@@ -371,7 +403,10 @@ fn test_construction_params_modify_ship_cost() {
     // Modify it
     {
         let empire = empire_entity(app.world_mut());
-        let mut params = app.world_mut().get_mut::<ConstructionParams>(empire).unwrap();
+        let mut params = app
+            .world_mut()
+            .get_mut::<ConstructionParams>(empire)
+            .unwrap();
         params.ship_cost_modifier.push_modifier(Modifier {
             id: "tech_cheaper_ships".to_string(),
             label: "Cheaper Ships".to_string(),
@@ -449,12 +484,15 @@ fn test_ship_maintenance_synced_via_modifiers() {
         "Colony MaintenanceCost should have a ship maintenance modifier"
     );
 
-    // Explorer maintenance is 0.5 E/hd = Amt(500)
+    // #236/#257: Explorer maintenance is derived from corvette hull (0.500) +
+    // ftl_drive (100 min × 0.0001 = 0.010) + survey_equipment (60 min × 0.0001
+    // = 0.006) = 0.516 E/hd. Pre-#257 the formula was 1000× too large (16.5
+    // E/hd) which made the starting economy unplayable.
     let modifier = ship_maint_modifier.unwrap();
     assert_eq!(
         modifier.base_add,
-        macrocosmo::amount::SignedAmt::from_amt(Amt::new(0, 500)),
-        "Ship maintenance modifier should match Explorer maintenance cost (0.5 E/hd)"
+        macrocosmo::amount::SignedAmt::from_amt(Amt::new(0, 516)),
+        "Ship maintenance modifier should match Explorer derived maintenance (0.516 E/hd)"
     );
 }
 
@@ -476,13 +514,7 @@ fn test_timed_modifier_expires_in_game() {
     );
 
     // Spawn colony with base mineral production = 5/hd, no buildings
-    let colony_id = spawn_test_colony(
-        app.world_mut(),
-        sys,
-        Amt::ZERO,
-        Amt::ZERO,
-        vec![],
-    );
+    let colony_id = spawn_test_colony(app.world_mut(), sys, Amt::ZERO, Amt::ZERO, vec![]);
 
     // Push a +20% mineral production modifier that expires in 5 hd
     {
