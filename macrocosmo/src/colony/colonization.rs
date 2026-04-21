@@ -173,7 +173,7 @@ pub fn tick_colonization_queue(
     planet_query: Query<(Entity, &Planet, &SystemAttributes)>,
     positions: Query<&Position>,
     player_q: Query<&StationedAt, With<Player>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
     building_registry: Res<super::BuildingRegistry>,
@@ -184,10 +184,10 @@ pub fn tick_colonization_queue(
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| positions.get(s).ok())
         .map(|p| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {

@@ -29,7 +29,7 @@ pub const SETTLING_DURATION_HEXADIES: i64 = 60;
 pub struct SettlementPlayerQueries<'w, 's> {
     pub empire_entity_q: Query<'w, 's, Entity, With<crate::player::PlayerEmpire>>,
     pub player_q: Query<'w, 's, &'static StationedAt, Without<Ship>>,
-    pub player_aboard_q: Query<'w, 's, &'static AboardShip, With<Player>>,
+    pub ruler_aboard_q: Query<'w, 's, &'static AboardShip, With<Player>>,
 }
 
 /// System that processes ongoing settling operations. When the timer completes,
@@ -66,10 +66,10 @@ pub fn process_settling(
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| systems.get(s).ok())
         .map(|(_, p)| p.as_array());
-    let player_aboard = player_queries.player_aboard_q.iter().next().is_some();
+    let ruler_aboard = player_queries.ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
     // #387: Pre-collect systems that already have a shipyard station to avoid
     // spawning duplicates. We snapshot before the mutable iteration because
@@ -369,17 +369,17 @@ pub fn process_refitting(
     mut events: MessageWriter<GameEvent>,
     systems: Query<(&StarSystem, &Position)>,
     player_q: Query<&StationedAt, Without<Ship>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| systems.get(s).ok())
         .map(|(_, p)| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     for (_entity, mut ship, mut state) in &mut ships {

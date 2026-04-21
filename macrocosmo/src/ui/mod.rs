@@ -76,7 +76,7 @@ pub enum ColonyPanelTab {
 pub struct UiState {
     pub player_system: Option<Entity>,
     pub player_entity: Option<Entity>,
-    pub player_aboard_ship: Option<Entity>,
+    pub ruler_aboard_ship: Option<Entity>,
     pub total_minerals: Amt,
     pub total_energy: Amt,
     pub total_food: Amt,
@@ -400,7 +400,7 @@ fn compute_ui_state(
         .map(|(e, s, a)| (e, s.system, a.map(|ab| ab.ship)));
     ui_state.player_system = player_info.map(|(_, sys, _)| sys);
     ui_state.player_entity = player_info.map(|(e, _, _)| e);
-    ui_state.player_aboard_ship = player_info.and_then(|(_, _, aboard)| aboard);
+    ui_state.ruler_aboard_ship = player_info.and_then(|(_, _, aboard)| aboard);
 
     // #398: In observer mode with a viewed empire, show that empire's
     // ground-truth resource totals (no light-speed delay). In normal play,
@@ -990,7 +990,7 @@ fn draw_main_panels_system(
     };
 
     let player_system = ui_state.player_system;
-    let player_aboard_ship = ui_state.player_aboard_ship;
+    let ruler_aboard_ship = ui_state.ruler_aboard_ship;
     let player_info = player_q
         .iter()
         .next()
@@ -1188,7 +1188,7 @@ fn draw_main_panels_system(
         &world.roe,
         &world.positions,
         player_system,
-        player_aboard_ship,
+        ruler_aboard_ship,
         &world.courier_routes,
         selected_system_for_panel,
         &world.fleet_members,
@@ -1342,7 +1342,7 @@ fn draw_main_panels_system(
     if let Some(ship_entity) = ship_panel_actions.board_ship {
         if let Some((player_entity, _, _)) = player_info {
             if let Ok((_, mut ship, _, _, _, _)) = ships_query.get_mut(ship_entity) {
-                ship.player_aboard = true;
+                ship.ruler_aboard = true;
             }
             commands
                 .entity(player_entity)
@@ -1355,7 +1355,7 @@ fn draw_main_panels_system(
         if let Some((player_entity, _, _)) = player_info {
             if let Some(ship_entity) = selection.selected_ship.0 {
                 if let Ok((_, mut ship, _state, _, _, _)) = ships_query.get_mut(ship_entity) {
-                    ship.player_aboard = false;
+                    ship.ruler_aboard = false;
                 }
             }
             commands.entity(player_entity).remove::<AboardShip>();

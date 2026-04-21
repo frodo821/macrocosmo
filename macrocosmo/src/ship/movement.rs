@@ -90,7 +90,7 @@ pub fn sublight_movement_system(
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
     player_q: Query<&StationedAt, Without<Ship>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
@@ -98,10 +98,10 @@ pub fn sublight_movement_system(
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| systems.get(s).ok())
         .map(|(_, p)| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
     for (mut state, mut pos, ship, mut last_docked) in query.iter_mut() {
         let (origin, destination, target_system, departed_at, arrival_at) = match *state {
@@ -367,7 +367,7 @@ pub fn process_ftl_travel(
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
     player_q: Query<&StationedAt, Without<Ship>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
@@ -375,10 +375,10 @@ pub fn process_ftl_travel(
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| systems.get(s).ok())
         .map(|(_, p)| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     for (ship, mut state, mut ship_pos, last_docked) in ships.iter_mut() {

@@ -58,7 +58,7 @@ pub fn handle_load_deliverable_requested(
     mut stockpiles: Query<&mut DeliverableStockpile>,
     star_systems: Query<(Entity, &Position), (Without<Ship>, With<crate::galaxy::StarSystem>)>,
     player_q: Query<&StationedAt, Without<Ship>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
 ) {
     let mass_per_slot_raw = balance.mass_per_item_slot().0;
@@ -66,10 +66,10 @@ pub fn handle_load_deliverable_requested(
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| star_systems.get(s).ok())
         .map(|(_, p)| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     for req in reqs.read() {
@@ -250,17 +250,17 @@ pub fn handle_deploy_deliverable_requested(
     existing_cores: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
     star_systems: Query<(Entity, &Position), (Without<Ship>, With<crate::galaxy::StarSystem>)>,
     player_q: Query<&StationedAt, Without<Ship>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
 ) {
     let player_system = player_q.iter().next().map(|s| s.system);
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| star_systems.get(s).ok())
         .map(|(_, p)| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     for req in reqs.read() {

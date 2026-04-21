@@ -82,7 +82,9 @@ use super::savebag::*;
 // #280: Colony Hub migration (hub_t1/planetary_capital_t3 into slot 0).
 // #388 (G): Added `docked_at` field + station ship migration.
 // SlotAssignment refactor: `slot_assignment` field + SystemBuildings→max_slots.
-pub const SAVE_VERSION: u32 = 6;
+/// #421: Added `ruler` and `empire_ruler` fields to `SavedComponentBag`,
+/// and renamed `player_aboard` to `ruler_aboard` on `SavedShip`.
+pub const SAVE_VERSION: u32 = 7;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -228,6 +230,7 @@ fn assign_save_ids(world: &mut World) {
             With<ForbiddenRegion>,
             With<PortFacility>,
             With<DiplomaticEvent>,
+            With<crate::player::Ruler>,
         )>>();
         for e in q.iter(world) {
             to_assign.push(e);
@@ -410,6 +413,12 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if e_ref.get::<Player>().is_some() {
         bag.player = Some(SavedPlayer);
+    }
+    if let Some(r) = e_ref.get::<crate::player::Ruler>() {
+        bag.ruler = Some(SavedRuler::from_live(r));
+    }
+    if let Some(er) = e_ref.get::<crate::player::EmpireRuler>() {
+        bag.empire_ruler = Some(SavedEmpireRuler::from_live(er));
     }
     if let Some(s) = e_ref.get::<StationedAt>() {
         bag.stationed_at = Some(SavedStationedAt::from_live(s));

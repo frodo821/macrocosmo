@@ -245,14 +245,14 @@ pub fn resolve_combat(
     let player_pos: Option<[f64; 3]> = player_stationed_system
         .and_then(|s| systems.get(s).ok())
         .map(|(_, _, p)| p.as_array());
-    let player_aboard = player_q
+    let ruler_aboard = player_q
         .iter()
         .next()
         .and_then(|(_, _, a)| a.map(|_| ()))
         .is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     for (hostile_entity, system_entity, hostile_strength, hostile_evasion, hostile_faction) in

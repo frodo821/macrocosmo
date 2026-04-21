@@ -398,7 +398,7 @@ mod tests {
                 owner: Owner::Empire(Entity::PLACEHOLDER),
                 sublight_speed: 1.0,
                 ftl_range: 5.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: system_entity,
                 design_revision: 0,
                 fleet: None,

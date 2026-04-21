@@ -41,7 +41,7 @@ use crate::colony::ResourceStockpile;
 use crate::components::Position;
 use crate::galaxy::StarSystem;
 use crate::physics;
-use crate::player::{Player, StationedAt};
+use crate::player::{Ruler, StationedAt};
 use crate::ship::{Ship, ShipState};
 use crate::time_system::GameClock;
 
@@ -561,12 +561,12 @@ pub fn update_visibility_tiers(
 fn initialize_capital_knowledge(
     mut commands: Commands,
     mut empire_q: Query<(Entity, &mut KnowledgeStore), With<crate::player::Empire>>,
-    player_q: Query<&StationedAt, With<Player>>,
+    ruler_q: Query<&StationedAt, Or<(With<Ruler>, With<crate::player::Player>)>>,
     systems: Query<(Entity, &StarSystem, &Position)>,
 ) {
-    // Resolve the capital system: prefer the player's StationedAt, fall back
+    // Resolve the capital system: prefer any ruler's StationedAt, fall back
     // to the first StarSystem with `is_capital`.
-    let capital_entity = player_q
+    let capital_entity = ruler_q
         .iter()
         .next()
         .map(|s| s.system)
@@ -827,7 +827,7 @@ fn build_colony_snapshots(
 
 pub fn propagate_knowledge(
     clock: Res<GameClock>,
-    player_q: Query<&StationedAt, With<Player>>,
+    ruler_q: Query<&StationedAt, Or<(With<Ruler>, With<crate::player::Player>)>>,
     systems: Query<(
         Entity,
         &StarSystem,
@@ -868,13 +868,13 @@ pub fn propagate_knowledge(
     crate::prof_span!("propagate_knowledge");
 
     // Collect empire data to avoid borrow conflicts during iteration.
-    // Fall back to the player's StationedAt system for empires without
+    // Fall back to any ruler's StationedAt system for empires without
     // EmpireViewerSystem (e.g. test setups that predate the component).
-    let player_fallback = player_q.iter().next().map(|s| s.system);
+    let ruler_fallback = ruler_q.iter().next().map(|s| s.system);
     let empire_list: Vec<(Entity, Entity)> = empire_q
         .iter()
         .filter_map(|(e, _, _, viewer)| {
-            let system = viewer.map(|v| v.0).or(player_fallback)?;
+            let system = viewer.map(|v| v.0).or(ruler_fallback)?;
             Some((e, system))
         })
         .collect();

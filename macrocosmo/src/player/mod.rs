@@ -31,17 +31,13 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 Update,
-                update_player_location
-                    .after(crate::time_system::advance_game_time)
-                    .run_if(not_in_observer_mode),
+                update_ruler_location.after(crate::time_system::advance_game_time),
             )
-            .add_systems(Update, log_player_info.run_if(not_in_observer_mode))
             .add_systems(
                 Update,
-                sync_player_viewer_system
-                    .after(update_player_location)
-                    .run_if(not_in_observer_mode),
-            );
+                sync_ruler_viewer_system.after(update_ruler_location),
+            )
+            .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
     }
 }
 
@@ -77,7 +73,18 @@ pub fn spawn_player_empire(mut commands: Commands) {
     info!("Player empire entity spawned");
 }
 
-/// The player's current location
+/// The physical avatar of an empire's leader. Every empire gets one.
+#[derive(Component)]
+pub struct Ruler {
+    pub name: String,
+    pub empire: Entity,
+}
+
+/// Forward-reference on empire entity pointing to its Ruler entity.
+#[derive(Component)]
+pub struct EmpireRuler(pub Entity);
+
+/// Marker: this Ruler is the human-controlled player.
 #[derive(Component)]
 pub struct Player;
 
@@ -142,11 +149,50 @@ impl Faction {
     }
 }
 
-pub fn spawn_player(mut commands: Commands, capitals: Query<(Entity, &StarSystem)>) {
+/// Spawn a Ruler entity for an empire at the given system.
+/// Returns the Ruler entity.
+pub fn spawn_ruler_for_empire(
+    commands: &mut Commands,
+    empire_entity: Entity,
+    system: Entity,
+    name: String,
+    is_player: bool,
+) -> Entity {
+    let mut ec = commands.spawn((
+        Ruler {
+            name: name.clone(),
+            empire: empire_entity,
+        },
+        StationedAt { system },
+    ));
+    if is_player {
+        ec.insert(Player);
+    }
+    let ruler_entity = ec.id();
+    commands
+        .entity(empire_entity)
+        .insert(EmpireRuler(ruler_entity));
+    ruler_entity
+}
+
+pub fn spawn_player(
+    mut commands: Commands,
+    capitals: Query<(Entity, &StarSystem)>,
+    empire_q: Query<Entity, With<PlayerEmpire>>,
+) {
+    let Ok(empire_entity) = empire_q.single() else {
+        return;
+    };
     for (entity, system) in &capitals {
         if system.is_capital {
-            commands.spawn((Player, StationedAt { system: entity }));
-            info!("Player starts at capital: {}", system.name);
+            spawn_ruler_for_empire(
+                &mut commands,
+                empire_entity,
+                entity,
+                "Player".into(),
+                true,
+            );
+            info!("Player Ruler starts at capital: {}", system.name);
             return;
         }
     }
@@ -194,28 +240,27 @@ pub fn log_player_info(
     }
 }
 
-/// Sync `EmpireViewerSystem` on the player empire to match the player's
-/// current `StationedAt` system. NPC empires keep their initial value.
-pub fn sync_player_viewer_system(
-    player_q: Query<&StationedAt, With<Player>>,
-    mut empire_q: Query<&mut EmpireViewerSystem, With<PlayerEmpire>>,
+/// Sync `EmpireViewerSystem` on ALL empires that have a Ruler to match the
+/// Ruler's current `StationedAt` system.
+pub fn sync_ruler_viewer_system(
+    rulers: Query<(&Ruler, &StationedAt)>,
+    mut empires: Query<(&EmpireRuler, &mut EmpireViewerSystem)>,
 ) {
-    let Ok(stationed) = player_q.single() else {
-        return;
-    };
-    let Ok(mut viewer) = empire_q.single_mut() else {
-        return;
-    };
-    viewer.0 = stationed.system;
+    for (empire_ruler, mut viewer) in &mut empires {
+        if let Ok((_, stationed)) = rulers.get(empire_ruler.0) {
+            viewer.0 = stationed.system;
+        }
+    }
 }
 
-/// Update player's StationedAt when aboard a ship that docks at a new system.
+/// Update Ruler's StationedAt when aboard a ship that docks at a new system.
 /// Only updates on dock — while in transit, StationedAt stays at the last docked system.
-pub fn update_player_location(
-    mut player_q: Query<(&AboardShip, &mut StationedAt), With<Player>>,
+/// Runs for ALL rulers (player and NPC).
+pub fn update_ruler_location(
+    mut ruler_q: Query<(&AboardShip, &mut StationedAt), With<Ruler>>,
     ships: Query<&ShipState>,
 ) {
-    for (aboard, mut stationed) in &mut player_q {
+    for (aboard, mut stationed) in &mut ruler_q {
         if let Ok(state) = ships.get(aboard.ship) {
             if let ShipState::InSystem { system } = state {
                 stationed.system = *system;

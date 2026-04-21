@@ -586,7 +586,7 @@ pub struct Ship {
     pub owner: Owner,
     pub sublight_speed: f64,
     pub ftl_range: f64,
-    pub player_aboard: bool,
+    pub ruler_aboard: bool,
     /// #64: System entity where maintenance is charged
     pub home_port: Entity,
     /// #123: Last `ShipDesignDefinition.revision` this ship was synchronized
@@ -841,7 +841,7 @@ pub fn spawn_ship(
             owner,
             sublight_speed,
             ftl_range,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: system,
             design_revision,
             fleet: Some(fleet_entity),
@@ -1066,7 +1066,7 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: design.sublight_speed,
             ftl_range: design.ftl_range,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,

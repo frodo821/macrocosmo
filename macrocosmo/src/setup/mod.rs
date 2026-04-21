@@ -251,7 +251,82 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
         if snap.has_on_game_start {
             run_on_game_start_for_faction(world, &snap.id);
         }
+
+        // #421: Spawn a Ruler entity for this NPC empire.
+        spawn_npc_ruler(world, &snap.id, &snap.name);
     }
+}
+
+/// #421: Spawn a Ruler entity for a newly created NPC empire. Finds the empire
+/// entity by faction id, then picks the first colony's system as the home, or
+/// falls back to the global capital system.
+fn spawn_npc_ruler(world: &mut World, faction_id: &str, faction_name: &str) {
+    use crate::player::{EmpireRuler, Ruler, StationedAt};
+
+    // Find the empire entity for this faction.
+    let empire_entity = {
+        let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+        q.iter(world)
+            .find(|(_, f)| f.id == faction_id)
+            .map(|(e, _)| e)
+    };
+    let Some(empire_entity) = empire_entity else {
+        warn!(
+            "Setup: could not find Empire for faction '{}' to spawn Ruler",
+            faction_id
+        );
+        return;
+    };
+
+    // Find a capital system for this empire: prefer a system where the empire
+    // has a colony (via FactionOwner on the colony → planet → system),
+    // fall back to the global `is_capital` system.
+    let home_system = {
+        let mut colony_q =
+            world.query::<(&crate::colony::Colony, &crate::faction::FactionOwner)>();
+        let mut planet_q = world.query::<&crate::galaxy::Planet>();
+        let colony_planet = colony_q
+            .iter(world)
+            .find(|(_, fo)| fo.0 == empire_entity)
+            .map(|(c, _)| c.planet);
+        colony_planet.and_then(|planet_e| {
+            planet_q.get(world, planet_e).ok().map(|p| p.system)
+        })
+    }
+    .or_else(|| {
+        let mut sys_q = world.query::<(Entity, &StarSystem)>();
+        sys_q
+            .iter(world)
+            .find(|(_, s)| s.is_capital)
+            .map(|(e, _)| e)
+    });
+
+    let Some(home_system) = home_system else {
+        warn!(
+            "Setup: no home system found for faction '{}'; skipping Ruler spawn",
+            faction_id
+        );
+        return;
+    };
+
+    let ruler = world
+        .spawn((
+            Ruler {
+                name: faction_name.to_string(),
+                empire: empire_entity,
+            },
+            StationedAt {
+                system: home_system,
+            },
+        ))
+        .id();
+    world
+        .entity_mut(empire_entity)
+        .insert(EmpireRuler(ruler));
+    info!(
+        "Setup: spawned Ruler for NPC faction '{}'",
+        faction_id
+    );
 }
 
 /// Shared helper: look up `on_game_start` for the given faction id and,

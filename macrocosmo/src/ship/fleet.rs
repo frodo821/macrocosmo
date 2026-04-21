@@ -293,7 +293,7 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: design.sublight_speed,
             ftl_range: design.ftl_range,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,

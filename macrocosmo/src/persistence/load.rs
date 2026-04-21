@@ -276,6 +276,12 @@ fn apply_component_bag(
     if bag.player.is_some() {
         ec.insert(crate::player::Player);
     }
+    if let Some(r) = &bag.ruler {
+        ec.insert(r.clone().into_live(map));
+    }
+    if let Some(er) = &bag.empire_ruler {
+        ec.insert(er.clone().into_live(map));
+    }
     if let Some(s) = &bag.stationed_at {
         ec.insert(s.clone().into_live(map));
     }

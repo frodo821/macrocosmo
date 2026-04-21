@@ -32,7 +32,7 @@ fn spawn_ship_with_fleet(
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 15.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: system,
             design_revision: 0,
             fleet: Some(fleet_entity),

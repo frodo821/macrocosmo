@@ -71,7 +71,7 @@ fn test_hostile_destroyed_when_hp_zero() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -138,7 +138,7 @@ fn test_ship_destroyed_when_hp_zero_in_combat() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.85,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -267,7 +267,7 @@ fn test_combat_takes_multiple_ticks() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -367,7 +367,7 @@ fn test_shield_regenerates() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -463,7 +463,7 @@ fn test_shield_regen_caps_at_max() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -589,7 +589,7 @@ fn test_combat_damages_3_layers() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -666,7 +666,7 @@ fn test_hull_zero_destroys_ship() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -815,7 +815,7 @@ fn test_weapon_cooldown() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -849,7 +849,7 @@ fn test_weapon_cooldown() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -957,7 +957,7 @@ fn test_shield_piercing() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -1075,7 +1075,7 @@ fn test_retreat_ships_skip_combat_no_damage_dealt() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -1144,7 +1144,7 @@ fn test_retreat_ships_dont_take_damage() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -1239,7 +1239,7 @@ fn test_aggressive_ships_engage_combat() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -1332,7 +1332,7 @@ fn test_defensive_ships_engage_combat_same_as_before() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -1432,7 +1432,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
             owner: Owner::Neutral,
             sublight_speed: 0.75,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,
@@ -1466,7 +1466,7 @@ fn test_mixed_roe_only_non_retreat_fight() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -1524,7 +1524,7 @@ fn test_set_roe_via_pending_command() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: sys,
                 design_revision: 0,
                 fleet: None,
@@ -1719,7 +1719,7 @@ fn test_colonize_blocked_by_hostile() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.5,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -1809,7 +1809,7 @@ fn test_hostile_cleared_allows_colonization() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.5,
                 ftl_range: 0.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -1954,7 +1954,7 @@ fn spawn_test_armed_ship(world: &mut World, sys: Entity, owner: Owner) -> Entity
                 owner,
                 sublight_speed: 0.75,
                 ftl_range: 10.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: Entity::PLACEHOLDER,
                 design_revision: 0,
                 fleet: None,
@@ -2443,13 +2443,25 @@ fn test_hostile_viz_uses_factionowner() {
     let sys_remote =
         spawn_test_system(app.world_mut(), "Remote", [1.0, 0.0, 0.0], 0.7, true, false);
 
-    // Spawn player stationed at capital.
-    app.world_mut().spawn((
-        macrocosmo::player::Player,
-        macrocosmo::player::StationedAt {
-            system: sys_capital,
-        },
-    ));
+    // Spawn player ruler stationed at capital.
+    {
+        let empire = app
+            .world_mut()
+            .query_filtered::<Entity, With<macrocosmo::player::PlayerEmpire>>()
+            .iter(app.world())
+            .next()
+            .unwrap_or(Entity::PLACEHOLDER);
+        app.world_mut().spawn((
+            macrocosmo::player::Player,
+            macrocosmo::player::Ruler {
+                name: "Test Player".into(),
+                empire,
+            },
+            macrocosmo::player::StationedAt {
+                system: sys_capital,
+            },
+        ));
+    }
 
     // Spawn hostile faction + hostile entity with NO HostilePresence.
     let (space_creature, _) = common::setup_test_hostile_factions(app.world_mut());
@@ -2565,7 +2577,7 @@ fn test_port_station_participates_in_hostile_combat() {
             owner: Owner::Neutral,
             sublight_speed: 0.0,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,

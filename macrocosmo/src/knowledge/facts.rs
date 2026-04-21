@@ -825,7 +825,7 @@ pub fn compute_fact_arrival(
 /// `(arrives_at, source)` so callers can also populate a `GameEvent` if they
 /// dual-write.
 ///
-/// - If `player_aboard` or `origin_pos == player_pos`, the event is treated
+/// - If `ruler_aboard` or `origin_pos == player_pos`, the event is treated
 ///   as local and pushed directly into the notification queue (systems-2);
 ///   the returned `arrives_at == observed_at`, `source = Direct`.
 /// - Otherwise the fact is routed through `PendingFactQueue` with an arrival
@@ -839,7 +839,7 @@ pub fn record_fact_or_local(
     fact: KnowledgeFact,
     origin_pos: [f64; 3],
     observed_at: i64,
-    player_aboard: bool,
+    ruler_aboard: bool,
     player_pos: [f64; 3],
     queue: &mut PendingFactQueue,
     notifications: &mut crate::notifications::NotificationQueue,
@@ -849,7 +849,7 @@ pub fn record_fact_or_local(
 ) -> (i64, ObservationSource) {
     // Local path: player is on-site so they perceive the event immediately.
     // No light-speed / relay delay applies.
-    let is_local = player_aboard || origin_pos == player_pos;
+    let is_local = ruler_aboard || origin_pos == player_pos;
 
     if is_local {
         // Dedupe: only push if this id is registered AND hasn't notified yet.
@@ -890,7 +890,7 @@ pub fn record_fact_or_local(
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerVantage {
     pub player_pos: [f64; 3],
-    pub player_aboard: bool,
+    pub ruler_aboard: bool,
 }
 
 /// #249: SystemParam bundle that groups the six resources / queries that every
@@ -996,7 +996,7 @@ impl<'w, 's> FactSysParam<'w, 's> {
             fact,
             origin_pos,
             observed_at,
-            vantage.player_aboard,
+            vantage.ruler_aboard,
             vantage.player_pos,
             &mut self.fact_queue,
             &mut self.notifications,
@@ -1030,7 +1030,7 @@ pub fn record_world_event_fact(
         fact,
         origin_pos,
         observed_at,
-        vantage.player_aboard,
+        vantage.ruler_aboard,
         vantage.player_pos,
         queue,
         notifications,
@@ -1162,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn record_fact_or_local_bypasses_queue_when_player_aboard() {
+    fn record_fact_or_local_bypasses_queue_when_ruler_aboard() {
         let mut queue = PendingFactQueue::default();
         let mut notifs = crate::notifications::NotificationQueue::new();
         let mut notified = NotifiedEventIds::default();

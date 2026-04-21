@@ -58,7 +58,7 @@ use crate::knowledge::{
 };
 use crate::modifier::{ModifiedValue, ScopedModifiers};
 use crate::notifications::{Notification, NotificationPriority, NotificationQueue};
-use crate::player::{AboardShip, Empire, Faction, Player, StationedAt};
+use crate::player::{AboardShip, Empire, EmpireRuler, Faction, Player, Ruler, StationedAt};
 use crate::scripting::building_api::BuildingId;
 use crate::ship::scout::ScoutReport;
 use crate::ship::{
@@ -506,7 +506,8 @@ pub struct SavedShip {
     pub owner: SavedOwner,
     pub sublight_speed: f64,
     pub ftl_range: f64,
-    pub player_aboard: bool,
+    #[serde(alias = "player_aboard")]
+    pub ruler_aboard: bool,
     pub home_port_bits: u64,
     pub design_revision: u64,
     /// #287 (γ-1): Fleet back-pointer (raw `Entity` bits). `None` when the
@@ -539,7 +540,7 @@ impl SavedShip {
             owner: SavedOwner::from_live(&v.owner),
             sublight_speed: v.sublight_speed,
             ftl_range: v.ftl_range,
-            player_aboard: v.player_aboard,
+            ruler_aboard: v.ruler_aboard,
             home_port_bits: v.home_port.to_bits(),
             design_revision: v.design_revision,
             fleet_bits: v.fleet.map(|e| e.to_bits()),
@@ -561,7 +562,7 @@ impl SavedShip {
             owner: self.owner.into_live(map),
             sublight_speed: self.sublight_speed,
             ftl_range: self.ftl_range,
-            player_aboard: self.player_aboard,
+            ruler_aboard: self.ruler_aboard,
             home_port: remap_entity(self.home_port_bits, map),
             design_revision: self.design_revision,
             fleet: self.fleet_bits.map(|b| remap_entity(b, map)),
@@ -990,6 +991,43 @@ impl SavedPlayer {
     }
     pub fn into_live(self) -> Player {
         Player
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedRuler {
+    pub name: String,
+    pub empire_bits: u64,
+}
+
+impl SavedRuler {
+    pub fn from_live(v: &Ruler) -> Self {
+        Self {
+            name: v.name.clone(),
+            empire_bits: v.empire.to_bits(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> Ruler {
+        Ruler {
+            name: self.name,
+            empire: remap_entity(self.empire_bits, map),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedEmpireRuler {
+    pub ruler_bits: u64,
+}
+
+impl SavedEmpireRuler {
+    pub fn from_live(v: &EmpireRuler) -> Self {
+        Self {
+            ruler_bits: v.0.to_bits(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> EmpireRuler {
+        EmpireRuler(remap_entity(self.ruler_bits, map))
     }
 }
 
@@ -4626,12 +4664,18 @@ pub struct SavedComponentBag {
     /// #324: Extinct faction marker.
     #[serde(default)]
     pub extinct: Option<SavedExtinct>,
-    // Player
+    // Player / Ruler
     pub player: Option<SavedPlayer>,
     pub stationed_at: Option<SavedStationedAt>,
     pub aboard_ship: Option<SavedAboardShip>,
     pub empire: Option<SavedEmpire>,
     pub player_empire: Option<SavedPlayerEmpire>,
+    /// #421: Ruler entity — unified empire avatar.
+    #[serde(default)]
+    pub ruler: Option<SavedRuler>,
+    /// #421: Forward-reference from empire to its Ruler entity.
+    #[serde(default)]
+    pub empire_ruler: Option<SavedEmpireRuler>,
 }
 
 impl RemapEntities for SavedComponentBag {

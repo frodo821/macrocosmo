@@ -147,7 +147,7 @@ fn scenario_world() -> World {
                 owner: Owner::Empire(empire),
                 sublight_speed: 1.0,
                 ftl_range: 5.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: system,
                 design_revision: 0,
                 fleet: None,

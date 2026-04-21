@@ -242,6 +242,24 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
         .id()
 }
 
+/// Spawn a Ruler entity for the test empire at the given system.
+/// Returns the Ruler entity.
+pub fn spawn_test_ruler(world: &mut World, empire: Entity, system: Entity) -> Entity {
+    use macrocosmo::player::{EmpireRuler, Player, Ruler, StationedAt};
+    let ruler = world
+        .spawn((
+            Ruler {
+                name: "Test Ruler".into(),
+                empire,
+            },
+            StationedAt { system },
+            Player,
+        ))
+        .id();
+    world.entity_mut(empire).insert(EmpireRuler(ruler));
+    ruler
+}
+
 /// Set the empire's viewer system for knowledge propagation tests.
 /// Must be called after spawning a capital/home system.
 pub fn set_empire_viewer_system(world: &mut World, empire: Entity, system: Entity) {
@@ -640,7 +658,7 @@ pub fn test_app() -> App {
     // #59: Player location tracking (after ship movement systems)
     app.add_systems(
         Update,
-        macrocosmo::player::update_player_location
+        macrocosmo::player::update_ruler_location
             .after(macrocosmo::time_system::advance_game_time)
             .after(sublight_movement_system)
             .after(process_ftl_travel),
@@ -1008,7 +1026,7 @@ pub fn full_test_app() -> App {
 
     // --- Player system (from PlayerPlugin, excluding Startup spawn_player) ---
     app.add_systems(Update, macrocosmo::player::log_player_info);
-    app.add_systems(Update, macrocosmo::player::update_player_location);
+    app.add_systems(Update, macrocosmo::player::update_ruler_location);
 
     // --- Visualization systems (excluding Gizmos-dependent ones) ---
     app.add_systems(Update, (visualization::camera_controls,));
@@ -1732,7 +1750,7 @@ pub fn spawn_test_ship(
             owner: Owner::Neutral,
             sublight_speed: design.sublight_speed,
             ftl_range: design.ftl_range,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: system,
             design_revision: 0,
             fleet: Some(fleet_entity),

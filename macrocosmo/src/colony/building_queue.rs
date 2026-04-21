@@ -388,10 +388,10 @@ pub fn tick_build_queue(
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| positions.get(s).ok())
         .map(|p| p.as_array());
-    let player_aboard = player_info.map(|(_, a)| a.is_some()).unwrap_or(false);
+    let ruler_aboard = player_info.map(|(_, a)| a.is_some()).unwrap_or(false);
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     // Per-order completion info (#223).

@@ -123,7 +123,7 @@ pub fn process_surveys(
     >,
     hostiles: Query<&AtSystem, With<Hostile>>,
     player_q: Query<&StationedAt, With<Player>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
     balance: Res<crate::technology::GameBalance>,
     anomaly_registry: Option<Res<crate::scripting::anomaly_api::AnomalyRegistry>>,
@@ -146,10 +146,10 @@ pub fn process_surveys(
         .unwrap_or(1.0);
 
     // #249: Snapshot the player's vantage point once — used by fact dual-write.
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_system_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     for (ship_entity, ship, mut state, mut ship_hp, ship_pos, mut cmd_queue) in ships.iter_mut() {
@@ -453,7 +453,7 @@ pub fn deliver_survey_results(
     ships: Query<(Entity, &Ship, &ShipState, &SurveyData)>,
     mut systems: Query<(&mut StarSystem, &crate::components::Position), Without<Ship>>,
     player_q: Query<&StationedAt, With<Player>>,
-    player_aboard_q: Query<&AboardShip, With<Player>>,
+    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut empire_q: Query<&mut KnowledgeStore, With<PlayerEmpire>>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
@@ -466,10 +466,10 @@ pub fn deliver_survey_results(
     // #249: Player vantage — delivered at player's docked system, so origin
     // matches player_pos → local path in `record_fact_or_local`.
     let player_pos: Option<[f64; 3]> = systems.get(player_system).ok().map(|(_, p)| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
 
     for (ship_entity, ship, state, survey_data) in &ships {
@@ -623,7 +623,7 @@ mod tests {
             owner: Owner::Neutral,
             sublight_speed: design.sublight_speed,
             ftl_range: design.ftl_range,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: Entity::PLACEHOLDER,
             design_revision: 0,
             fleet: None,

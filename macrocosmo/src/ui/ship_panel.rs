@@ -476,7 +476,7 @@ struct ShipPanelData {
     fleet_refit_summary: Option<FleetRefitSummary>,
     current_roe: RulesOfEngagement,
     roe_command_delay: i64,
-    is_player_aboard: bool,
+    is_ruler_aboard: bool,
     can_board: bool,
     can_disembark: bool,
     /// #389: Harbour capacity (0 = not a harbour).
@@ -626,7 +626,7 @@ pub fn draw_ship_panel(
     roe_query: &Query<&RulesOfEngagement>,
     positions: &Query<&Position>,
     player_stationed: Option<Entity>,
-    player_aboard_ship: Option<Entity>,
+    ruler_aboard_ship: Option<Entity>,
     courier_routes: &Query<&CourierRoute>,
     selected_system: Option<Entity>,
     fleet_members: &Query<&crate::ship::FleetMembers>,
@@ -807,14 +807,14 @@ pub fn draw_ship_panel(
                 .unwrap_or(0)
         };
         // #59: Player aboard this ship?
-        let is_player_aboard = ship.player_aboard;
+        let is_ruler_aboard = ship.ruler_aboard;
         // #59: Can player board this ship? (ship docked at player's system, player not aboard any ship)
-        let can_board = !is_player_aboard
-            && player_aboard_ship.is_none()
+        let can_board = !is_ruler_aboard
+            && ruler_aboard_ship.is_none()
             && docked_system.is_some()
             && docked_system == player_stationed;
         // #59: Can player disembark? (player aboard this ship and ship is docked)
-        let can_disembark = is_player_aboard && docked_system.is_some();
+        let can_disembark = is_ruler_aboard && docked_system.is_some();
         // #389: Harbour capacity and docked ship info
         let (harbour_capacity, harbour_docked_size, harbour_docked_ships) = ship_stats
             .get(ship_entity)
@@ -879,7 +879,7 @@ pub fn draw_ship_panel(
             fleet_refit_summary,
             current_roe,
             roe_command_delay,
-            is_player_aboard,
+            is_ruler_aboard,
             can_board,
             can_disembark,
             harbour_capacity,
@@ -949,7 +949,7 @@ pub fn draw_ship_panel(
         fleet_refit_summary,
         current_roe,
         roe_command_delay,
-        is_player_aboard,
+        is_ruler_aboard,
         can_board,
         can_disembark,
         harbour_capacity,
@@ -1010,7 +1010,7 @@ pub fn draw_ship_panel(
                 .unwrap_or(&design_id);
             ui.label(format!("Type: {}", design_display_name));
             // #59: Player aboard indicator
-            if is_player_aboard {
+            if is_ruler_aboard {
                 ui.label(
                     egui::RichText::new("[Player Aboard]")
                         .color(egui::Color32::from_rgb(50, 255, 50))

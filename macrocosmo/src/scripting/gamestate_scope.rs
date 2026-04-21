@@ -1866,7 +1866,7 @@ pub(crate) mod apply {
             .unwrap_or([0.0, 0.0, 0.0]);
 
         // Collect player vantage.
-        let (player_pos, player_aboard) = {
+        let (player_pos, ruler_aboard) = {
             use crate::player::{AboardShip, StationedAt};
             let mut q = world
                 .query_filtered::<(Option<&StationedAt>, Option<&AboardShip>), With<PlayerEmpire>>(

@@ -567,7 +567,7 @@ pub fn tick_platform_upgrade(
     )>,
     positions: Query<&crate::components::Position>,
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
-    player_aboard_q: Query<&crate::player::AboardShip, With<crate::player::Player>>,
+    ruler_aboard_q: Query<&crate::player::AboardShip, With<crate::player::Player>>,
     mut fact_sys: crate::knowledge::FactSysParam,
 ) {
     use crate::knowledge::{KnowledgeFact, PlayerVantage};
@@ -575,10 +575,10 @@ pub fn tick_platform_upgrade(
     let player_pos: Option<[f64; 3]> = player_system
         .and_then(|s| positions.get(s).ok())
         .map(|p| p.as_array());
-    let player_aboard = player_aboard_q.iter().next().is_some();
+    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
     let vantage = player_pos.map(|pos| PlayerVantage {
         player_pos: pos,
-        player_aboard,
+        ruler_aboard,
     });
     for (entity, mut structure, mut lifetime, mut platform) in platforms.iter_mut() {
         let Some(target_id) = platform.target_id.clone() else {

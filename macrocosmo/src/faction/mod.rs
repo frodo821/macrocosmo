@@ -1975,7 +1975,7 @@ mod tests {
             owner,
             sublight_speed: 0.5,
             ftl_range: 0.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port,
             design_revision: 0,
             fleet: None,

@@ -5,14 +5,28 @@ use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEventKind};
 use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
-use macrocosmo::player::{AboardShip, Player, StationedAt};
+use macrocosmo::player::{AboardShip, Player, Ruler, StationedAt};
 use macrocosmo::ship::*;
 
 use common::{advance_time, spawn_test_system, test_app, test_app_with_event_log};
 
 /// Helper: spawn a player entity stationed at the given system.
 fn spawn_player(world: &mut World, system: Entity) -> Entity {
-    world.spawn((Player, StationedAt { system })).id()
+    let empire = world
+        .query_filtered::<Entity, With<macrocosmo::player::PlayerEmpire>>()
+        .iter(world)
+        .next()
+        .unwrap_or(Entity::PLACEHOLDER);
+    world
+        .spawn((
+            Player,
+            Ruler {
+                name: "Test Player".into(),
+                empire,
+            },
+            StationedAt { system },
+        ))
+        .id()
 }
 
 /// Helper: spawn a basic ship docked at the given system.
@@ -27,7 +41,7 @@ fn spawn_basic_ship(world: &mut World, name: &str, system: Entity) -> Entity {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 10.0,
-                player_aboard: false,
+                ruler_aboard: false,
                 home_port: system,
                 design_revision: 0,
                 fleet: None,
@@ -62,7 +76,7 @@ fn test_player_board_ship() {
     // Board the ship
     {
         let mut ship = app.world_mut().get_mut::<Ship>(ship_entity).unwrap();
-        ship.player_aboard = true;
+        ship.ruler_aboard = true;
     }
     app.world_mut()
         .entity_mut(player_entity)
@@ -70,7 +84,7 @@ fn test_player_board_ship() {
 
     // Verify
     let ship = app.world().get::<Ship>(ship_entity).unwrap();
-    assert!(ship.player_aboard, "Ship should have player_aboard = true");
+    assert!(ship.ruler_aboard, "Ship should have ruler_aboard = true");
 
     let aboard = app.world().get::<AboardShip>(player_entity).unwrap();
     assert_eq!(
@@ -106,13 +120,13 @@ fn test_player_disembark() {
     // Board the ship (player aboard ship at sys_b)
     {
         let mut ship = app.world_mut().get_mut::<Ship>(ship_entity).unwrap();
-        ship.player_aboard = true;
+        ship.ruler_aboard = true;
     }
     app.world_mut()
         .entity_mut(player_entity)
         .insert(AboardShip { ship: ship_entity });
 
-    // Run one update so update_player_location fires
+    // Run one update so update_ruler_location fires
     advance_time(&mut app, 1);
 
     // StationedAt should now be sys_b (ship is docked there)
@@ -125,7 +139,7 @@ fn test_player_disembark() {
     // Now disembark
     {
         let mut ship = app.world_mut().get_mut::<Ship>(ship_entity).unwrap();
-        ship.player_aboard = false;
+        ship.ruler_aboard = false;
     }
     app.world_mut()
         .entity_mut(player_entity)
@@ -165,7 +179,7 @@ fn test_player_location_updates_with_ship() {
     // Board the ship
     {
         let mut ship = app.world_mut().get_mut::<Ship>(ship_entity).unwrap();
-        ship.player_aboard = true;
+        ship.ruler_aboard = true;
     }
     app.world_mut()
         .entity_mut(player_entity)
@@ -177,7 +191,7 @@ fn test_player_location_updates_with_ship() {
         *state = ShipState::InSystem { system: sys_b };
     }
 
-    // Run update to trigger update_player_location
+    // Run update to trigger update_ruler_location
     advance_time(&mut app, 1);
 
     // StationedAt should follow the ship
@@ -208,7 +222,7 @@ fn test_player_location_stays_during_transit() {
     // Board ship
     {
         let mut ship = app.world_mut().get_mut::<Ship>(ship_entity).unwrap();
-        ship.player_aboard = true;
+        ship.ruler_aboard = true;
     }
     app.world_mut()
         .entity_mut(player_entity)
@@ -299,7 +313,7 @@ fn test_player_respawn_on_ship_destruction() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 10.0,
-                player_aboard: true,
+                ruler_aboard: true,
                 home_port: capital,
                 design_revision: 0,
                 fleet: None,
@@ -421,7 +435,7 @@ fn test_player_respawn_event_fires() {
                 owner: Owner::Neutral,
                 sublight_speed: 0.75,
                 ftl_range: 10.0,
-                player_aboard: true,
+                ruler_aboard: true,
                 home_port: capital,
                 design_revision: 0,
                 fleet: None,

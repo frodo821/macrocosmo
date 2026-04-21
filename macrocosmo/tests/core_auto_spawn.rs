@@ -60,7 +60,7 @@ fn spawn_colony_ship(world: &mut World, system: Entity, faction: Entity) -> Enti
             owner: Owner::Empire(faction),
             sublight_speed: 0.5,
             ftl_range: 10.0,
-            player_aboard: false,
+            ruler_aboard: false,
             home_port: system,
             design_revision: 0,
             fleet: Some(fleet_entity),

@@ -425,7 +425,7 @@ mod tests {
                     owner: crate::ship::Owner::Neutral,
                     sublight_speed: 1.0,
                     ftl_range: 0.0,
-                    player_aboard: false,
+                    ruler_aboard: false,
                     home_port: harbour,
                     design_revision: 0,
                     fleet: None,
