@@ -27,7 +27,7 @@ use crate::colony::{BuildingRegistry, Colony};
 use crate::components::Position;
 use crate::galaxy::{AtSystem, Hostile, Planet, Sovereignty, StarSystem};
 use crate::physics::distance_ly;
-use crate::player::{Empire, Faction};
+use crate::player::{AboardShip, Empire, EmpireRuler, Faction, Ruler, StationedAt};
 use crate::ship::command_events::{
     ColonizeRequested, CommandId, MoveRequested, NextCommandId, SurveyRequested,
 };
@@ -36,6 +36,16 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::colony::system_buildings::{SlotAssignment, system_has_shipyard};
 use crate::technology::{ResearchQueue, TechId, TechTree};
 use crate::time_system::GameClock;
+
+/// Queued ruler boarding requests produced by `drain_ai_commands` and
+/// consumed by [`process_ruler_boarding`]. This indirection avoids adding
+/// mutable Ship access to `drain_ai_commands` (which would conflict with
+/// the existing read-only Ship query).
+#[derive(Resource, Default)]
+pub struct PendingRulerBoarding {
+    /// `(ruler_entity, ship_entity, target_system)`
+    pub requests: Vec<(Entity, Entity, Entity)>,
+}
 
 /// Extra queries needed by build / research / structure commands, bundled
 /// into a `SystemParam` to keep `drain_ai_commands` under Bevy's 16-param
@@ -65,6 +75,9 @@ pub fn drain_ai_commands(
     mut next_cmd_id: ResMut<NextCommandId>,
     clock: Res<GameClock>,
     mut build_research: BuildResearchParams,
+    empire_rulers: Query<&EmpireRuler, With<Empire>>,
+    ruler_q: Query<(&StationedAt, Option<&AboardShip>), With<Ruler>>,
+    mut pending_boarding: ResMut<PendingRulerBoarding>,
 ) {
     let commands = drainer.drain_commands();
     if commands.is_empty() {
@@ -157,6 +170,19 @@ pub fn drain_ai_commands(
                 &cmd.params,
                 &ships,
                 &empires,
+                &mut move_writer,
+                &mut next_cmd_id,
+                clock.elapsed,
+            );
+        } else if kind_str == cmd_ids::move_ruler().as_str() {
+            handle_move_ruler(
+                &cmd.issuer,
+                &cmd.params,
+                &ships,
+                &empires,
+                &empire_rulers,
+                &ruler_q,
+                &mut pending_boarding,
                 &mut move_writer,
                 &mut next_cmd_id,
                 clock.elapsed,
@@ -996,6 +1022,113 @@ fn pick_nearest_system(
     best
 }
 
+/// Handle `move_ruler`: find an idle ship at the Ruler's current system,
+/// queue the boarding in `PendingRulerBoarding`, and emit `MoveRequested`
+/// for the chosen ship.
+fn handle_move_ruler(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    empire_rulers: &Query<&EmpireRuler, With<Empire>>,
+    ruler_q: &Query<(&StationedAt, Option<&AboardShip>), With<Ruler>>,
+    pending_boarding: &mut PendingRulerBoarding,
+    move_writer: &mut MessageWriter<MoveRequested>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let target_system = match params.get("target_system") {
+        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
+        _ => {
+            warn!("move_ruler command missing target_system param");
+            return;
+        }
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => {
+            warn!("move_ruler: no empire found for faction {:?}", issuer);
+            return;
+        }
+    };
+
+    let Ok(empire_ruler) = empire_rulers.get(empire_entity) else {
+        debug!("move_ruler: empire {:?} has no EmpireRuler", empire_entity);
+        return;
+    };
+    let ruler_entity = empire_ruler.0;
+
+    let Ok((stationed, aboard)) = ruler_q.get(ruler_entity) else {
+        debug!("move_ruler: ruler {:?} has no StationedAt", ruler_entity);
+        return;
+    };
+
+    if aboard.is_some() {
+        debug!("move_ruler: ruler is already aboard a ship");
+        return;
+    }
+
+    let ruler_system = stationed.system;
+
+    if ruler_system == target_system {
+        debug!("move_ruler: ruler is already at target system");
+        return;
+    }
+
+    let transport_ship = ships
+        .iter()
+        .find(|(_, ship, state, queue)| {
+            ship.owner == Owner::Empire(empire_entity)
+                && !ship.is_immobile()
+                && matches!(state, ShipState::InSystem { system } if *system == ruler_system)
+                && queue.commands.is_empty()
+                && !ship.ruler_aboard
+        })
+        .map(|(e, _, _, _)| e);
+
+    let Some(ship_entity) = transport_ship else {
+        debug!(
+            "move_ruler: no idle ship at ruler's system {:?} for empire {:?}",
+            ruler_system, empire_entity
+        );
+        return;
+    };
+
+    pending_boarding
+        .requests
+        .push((ruler_entity, ship_entity, target_system));
+
+    move_writer.write(MoveRequested {
+        command_id: next_cmd_id.allocate(),
+        ship: ship_entity,
+        target: target_system,
+        issued_at: now,
+    });
+
+    info!(
+        "move_ruler: boarding ruler {:?} onto ship {:?}, moving to system {:?} for faction {:?}",
+        ruler_entity, ship_entity, target_system, issuer
+    );
+}
+
+/// Process pending ruler boarding requests. Inserts `AboardShip` on the
+/// ruler and sets `ruler_aboard = true` on the ship.
+pub fn process_ruler_boarding(
+    mut commands: Commands,
+    mut pending: ResMut<PendingRulerBoarding>,
+    mut ships: Query<&mut Ship>,
+) {
+    for (ruler_entity, ship_entity, _target) in pending.requests.drain(..) {
+        commands
+            .entity(ruler_entity)
+            .insert(AboardShip { ship: ship_entity });
+        if let Ok(mut ship) = ships.get_mut(ship_entity) {
+            ship.ruler_aboard = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,6 +1155,7 @@ mod tests {
         app.insert_resource(GameSpeed::default());
         app.init_resource::<NextCommandId>();
         app.insert_resource(AiBusResource::with_warning_mode(WarningMode::Silent));
+        app.init_resource::<PendingRulerBoarding>();
         app.add_message::<MoveRequested>();
         app.add_systems(Startup, schema::declare_all);
         app.update();

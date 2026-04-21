@@ -26,7 +26,7 @@ use crate::ai::convert::{to_ai_faction, to_ai_system};
 use crate::ai::plugin::AiBusResource;
 use crate::ai::schema::ids::{command as cmd_ids, metric};
 use crate::knowledge::KnowledgeStore;
-use crate::player::{Empire, Faction, PlayerEmpire};
+use crate::player::{AboardShip, Empire, EmpireRuler, Faction, PlayerEmpire, Ruler, StationedAt};
 use crate::technology::ResearchQueue;
 use crate::time_system::GameClock;
 
@@ -119,6 +119,12 @@ pub struct NpcContext {
     pub ships: Vec<ShipInfo>,
     /// `true` when the empire has an active research target in its queue.
     pub is_researching: bool,
+    /// The Ruler entity for this empire, if one exists.
+    pub ruler_entity: Option<Entity>,
+    /// The system the Ruler is currently stationed at.
+    pub ruler_system: Option<Entity>,
+    /// Whether the Ruler is currently aboard a ship.
+    pub ruler_aboard: bool,
 }
 
 /// Default policy: do nothing. Useful for tests that want a quiet baseline.
@@ -223,6 +229,14 @@ impl NpcPolicy for SimpleNpcPolicy {
                 );
             }
             commands.push(cmd);
+
+            // Follow-up: move the Ruler to the attack target if idle (not aboard a ship).
+            if !context.ruler_aboard && context.ruler_entity.is_some() {
+                let ruler_cmd = Command::new(cmd_ids::move_ruler(), faction_id, now)
+                    .with_param("target_system", CommandValue::System(to_ai_system(target)));
+                commands.push(ruler_cmd);
+            }
+
             return commands;
         }
 
@@ -367,6 +381,8 @@ pub fn npc_decision_tick(
     )>,
     research_queues: Query<&ResearchQueue, With<Empire>>,
     design_registry: Option<Res<crate::ship_design::ShipDesignRegistry>>,
+    empire_rulers: Query<&EmpireRuler, With<Empire>>,
+    ruler_q: Query<(&StationedAt, Option<&AboardShip>), With<Ruler>>,
     mut policy: Local<SimpleNpcPolicy>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
@@ -427,12 +443,28 @@ pub fn npc_decision_tick(
             .get(entity)
             .is_ok_and(|rq| rq.current.is_some());
 
+        // Extract Ruler info for this empire.
+        let (ruler_entity, ruler_system, ruler_aboard) =
+            if let Ok(empire_ruler) = empire_rulers.get(entity) {
+                let ruler_e = empire_ruler.0;
+                if let Ok((stationed, aboard)) = ruler_q.get(ruler_e) {
+                    (Some(ruler_e), Some(stationed.system), aboard.is_some())
+                } else {
+                    (Some(ruler_e), None, false)
+                }
+            } else {
+                (None, None, false)
+            };
+
         let context = NpcContext {
             hostile_systems,
             unsurveyed_systems,
             colonizable_systems,
             ships,
             is_researching,
+            ruler_entity,
+            ruler_system,
+            ruler_aboard,
         };
 
         let commands = policy.decide(&faction.id, entity, now, &bus.0, &context);
@@ -463,6 +495,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: false,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
         let cmds = p.decide("vesk_hegemony", Entity::PLACEHOLDER, 0, &bus, &ctx);
         assert!(cmds.is_empty());
@@ -531,6 +566,9 @@ mod tests {
                 ftl_range: 15.0,
             }],
             is_researching: false,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -573,6 +611,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: false,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -607,6 +648,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -660,6 +704,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: combat_ships,
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -705,6 +752,9 @@ mod tests {
                 ftl_range: 15.0,
             }],
             is_researching: false,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -742,6 +792,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: false,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -779,6 +832,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -817,6 +873,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -859,6 +918,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -901,6 +963,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: vec![],
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -956,6 +1021,9 @@ mod tests {
             colonizable_systems: vec![],
             ships: combat_ships,
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -1021,6 +1089,9 @@ mod tests {
             colonizable_systems: vec![colonizable],
             ships,
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -1085,6 +1156,9 @@ mod tests {
             colonizable_systems: vec![],
             ships,
             is_researching: true,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -1104,5 +1178,113 @@ mod tests {
             Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "patrol_corvette"),
             _ => panic!("expected design_id param"),
         }
+    }
+
+    #[test]
+    fn simple_policy_emits_move_ruler_with_attack() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 5.0),
+                ("my_fleet_ready", 0.8),
+                ("colony_count", 3.0),
+                ("can_build_ships", 1.0),
+            ],
+        );
+
+        let hostile_sys = Entity::from_raw_u32(42).unwrap();
+        let combat_ship = Entity::from_raw_u32(100).unwrap();
+        let ruler_entity = Entity::from_raw_u32(999).unwrap();
+        let ruler_system = Entity::from_raw_u32(1).unwrap();
+
+        let ctx = NpcContext {
+            hostile_systems: vec![hostile_sys],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![ShipInfo {
+                entity: combat_ship,
+                design_id: "corvette".into(),
+                system: Some(ruler_system),
+                is_idle: true,
+                can_survey: false,
+                can_colonize: false,
+                is_combat: true,
+                ftl_range: 15.0,
+            }],
+            is_researching: false,
+            ruler_entity: Some(ruler_entity),
+            ruler_system: Some(ruler_system),
+            ruler_aboard: false,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            test_faction_entity(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        assert_eq!(cmds.len(), 2, "should emit attack_target + move_ruler");
+        assert_eq!(cmds[0].kind.as_str(), "attack_target");
+        assert_eq!(cmds[1].kind.as_str(), "move_ruler");
+        match cmds[1].params.get("target_system") {
+            Some(CommandValue::System(sys_ref)) => {
+                let entity = crate::ai::convert::from_ai_system(*sys_ref);
+                assert_eq!(entity, hostile_sys);
+            }
+            _ => panic!("expected target_system param on move_ruler"),
+        }
+    }
+
+    #[test]
+    fn simple_policy_no_move_ruler_when_already_aboard() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 5.0),
+                ("my_fleet_ready", 0.8),
+                ("colony_count", 3.0),
+                ("can_build_ships", 1.0),
+            ],
+        );
+
+        let hostile_sys = Entity::from_raw_u32(42).unwrap();
+        let combat_ship = Entity::from_raw_u32(100).unwrap();
+        let ruler_entity = Entity::from_raw_u32(999).unwrap();
+        let ruler_system = Entity::from_raw_u32(1).unwrap();
+
+        let ctx = NpcContext {
+            hostile_systems: vec![hostile_sys],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![ShipInfo {
+                entity: combat_ship,
+                design_id: "corvette".into(),
+                system: Some(ruler_system),
+                is_idle: true,
+                can_survey: false,
+                can_colonize: false,
+                is_combat: true,
+                ftl_range: 15.0,
+            }],
+            is_researching: false,
+            ruler_entity: Some(ruler_entity),
+            ruler_system: Some(ruler_system),
+            ruler_aboard: true, // already aboard
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            test_faction_entity(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        assert_eq!(cmds.len(), 1, "should only emit attack_target, not move_ruler");
+        assert_eq!(cmds[0].kind.as_str(), "attack_target");
     }
 }

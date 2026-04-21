@@ -550,6 +550,12 @@ fn declare_commands(bus: &mut AiBus) {
         CommandSpec::new("switch empire research focus to a target branch or tech"),
     );
 
+    // Ruler
+    bus.declare_command(
+        c::move_ruler(),
+        CommandSpec::new("board the ruler onto a ship and move to a target system"),
+    );
+
     // Diplomacy
     bus.declare_command(
         c::declare_war(),

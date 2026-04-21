@@ -294,6 +294,11 @@ pub mod command {
         CommandKindId::from("research_focus")
     }
 
+    // Ruler
+    pub fn move_ruler() -> CommandKindId {
+        CommandKindId::from("move_ruler")
+    }
+
     // Diplomacy
     pub fn declare_war() -> CommandKindId {
         CommandKindId::from("declare_war")

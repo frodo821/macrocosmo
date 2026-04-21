@@ -86,6 +86,7 @@ impl Plugin for AiPlugin {
         app.init_resource::<AiBusResource>()
             .init_resource::<super::npc_decision::AiPlayerMode>()
             .init_resource::<super::npc_decision::LastAiDecisionTick>()
+            .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .add_systems(Startup, schema::declare_all)
             .add_systems(
                 Update,
@@ -113,9 +114,16 @@ impl Plugin for AiPlugin {
                 super::npc_decision::npc_decision_tick.in_set(AiTickSet::Reason),
             )
             // Command consumer — drains AI commands and converts to ECS actions.
+            // `process_ruler_boarding` runs after `drain_ai_commands` to handle
+            // deferred ruler boarding (needs mutable Ship access).
             .add_systems(
                 Update,
-                super::command_consumer::drain_ai_commands.in_set(AiTickSet::CommandDrain),
+                (
+                    super::command_consumer::drain_ai_commands,
+                    super::command_consumer::process_ruler_boarding
+                        .after(super::command_consumer::drain_ai_commands),
+                )
+                    .in_set(AiTickSet::CommandDrain),
             )
             .configure_sets(
                 Update,
