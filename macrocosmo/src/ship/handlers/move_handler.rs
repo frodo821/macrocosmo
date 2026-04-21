@@ -23,7 +23,7 @@ use crate::ship::command_events::{
 };
 use crate::ship::movement::{PortParams, start_sublight_travel_with_bonus};
 use crate::ship::routing;
-use crate::ship::{CommandQueue, RulesOfEngagement, Ship, ShipState};
+use crate::ship::{CommandQueue, Owner, RulesOfEngagement, Ship, ShipState};
 
 /// Handles `MoveRequested`. Runs **before** the legacy `process_command_queue`
 /// (see `ShipPlugin` schedule) so that spawning `PendingRoute` correctly
@@ -43,9 +43,9 @@ pub fn handle_move_requested(
     mut commands: Commands,
     clock: Res<GameClock>,
     mut reqs: MessageReader<MoveRequested>,
-    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::Empire>>,
     balance: Res<crate::technology::GameBalance>,
-    empire_knowledge_q: Query<&crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    empire_knowledge_q: Query<&crate::knowledge::KnowledgeStore, With<crate::player::Empire>>,
     // Same shape as the legacy `process_command_queue` ship query, minus
     // `&mut CommandQueue` (we don't touch the queue from the handler — the
     // dispatcher already popped the MoveTo).
@@ -66,17 +66,9 @@ pub fn handle_move_requested(
     regions: Query<&crate::galaxy::ForbiddenRegion>,
     mut executed: MessageWriter<CommandExecuted>,
 ) {
-    // Early exit when no MoveRequested messages this tick.
-    let Some(global_params) = empire_params_q.single().ok() else {
-        // No empire → drain without action (avoids eating messages) but
-        // also don't emit terminals since there's nobody to hear them.
-        for _ in reqs.read() {}
-        return;
-    };
     let _ = &design_registry; // kept for symmetry with legacy; future uses
     let base_ftl_speed = balance.initial_ftl_speed_c();
     let ftl_blockers = routing::collect_ftl_blockers(&regions);
-    let empire_knowledge = empire_knowledge_q.single().ok();
     let hostile_faction_map: std::collections::HashMap<Entity, Entity> = hostiles_q
         .iter()
         .map(|(at_system, owner)| (at_system.0, owner.0))
@@ -101,6 +93,20 @@ pub fn handle_move_requested(
             continue;
         };
         let roe = roe.copied().unwrap_or_default();
+
+        // Look up the ship's owner empire for tech bonuses and knowledge.
+        // Neutral ships use default params (no tech bonuses).
+        let default_params = crate::technology::GlobalParams::default();
+        let global_params = match ship.owner {
+            Owner::Empire(owner_entity) => {
+                empire_params_q.get(owner_entity).unwrap_or(&default_params)
+            }
+            Owner::Neutral => &default_params,
+        };
+        let empire_knowledge = match ship.owner {
+            Owner::Empire(owner_entity) => empire_knowledge_q.get(owner_entity).ok(),
+            Owner::Neutral => None,
+        };
 
         // The dispatcher already validated that the target exists; re-check
         // here to guard against a same-tick despawn race (plan §3.2).

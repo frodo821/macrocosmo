@@ -176,7 +176,8 @@ impl Plugin for KnowledgePlugin {
                     .chain()
                     .after(crate::galaxy::generate_galaxy)
                     .after(crate::player::spawn_player)
-                    .after(crate::player::spawn_player_empire),
+                    .after(crate::player::spawn_player_empire)
+                    .after(crate::setup::run_all_factions_on_game_start),
             )
             .add_systems(Update, propagate_knowledge)
             .add_systems(
@@ -473,30 +474,28 @@ fn determine_tier_for_system(
 fn initialize_visibility_tiers(
     mut empire_q: Query<
         (Entity, &KnowledgeStore, &mut SystemVisibilityMap),
-        With<crate::player::PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
     ships: Query<(Entity, &Ship, &ShipState)>,
     systems: Query<(Entity, &StarSystem)>,
 ) {
-    let Ok((empire_entity, knowledge, mut vis_map)) = empire_q.single_mut() else {
-        warn!("Visibility init: no player empire found");
-        return;
-    };
-
-    for (system_entity, star) in &systems {
-        let tier = determine_tier_for_system(
-            system_entity,
-            empire_entity,
-            &ships,
-            knowledge,
-            star.surveyed,
-        );
-        vis_map.set(system_entity, tier);
+    for (empire_entity, knowledge, mut vis_map) in &mut empire_q {
+        for (system_entity, star) in &systems {
+            let tier = determine_tier_for_system(
+                system_entity,
+                empire_entity,
+                &ships,
+                knowledge,
+                star.surveyed,
+            );
+            vis_map.set(system_entity, tier);
+        }
     }
 
     info!(
-        "System visibility tiers initialized for {} systems",
-        systems.iter().count()
+        "System visibility tiers initialized for {} systems across {} empires",
+        systems.iter().count(),
+        empire_q.iter().count(),
     );
 }
 
@@ -505,7 +504,7 @@ fn initialize_visibility_tiers(
 pub fn update_visibility_tiers(
     mut empire_q: Query<
         (Entity, &KnowledgeStore, &mut SystemVisibilityMap),
-        With<crate::player::PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
     mut changed_ships: Query<
         (Entity, &Ship, &ShipState, &mut TrackedShipSystem),
@@ -514,11 +513,7 @@ pub fn update_visibility_tiers(
     all_ships: Query<(Entity, &Ship, &ShipState)>,
     star_systems: Query<&StarSystem>,
 ) {
-    let Ok((empire_entity, knowledge, mut vis_map)) = empire_q.single_mut() else {
-        return;
-    };
-
-    // Collect systems that need recalculation.
+    // Collect systems that need recalculation from changed ships.
     let mut affected_systems: Vec<Entity> = Vec::new();
 
     for (_entity, _ship, state, mut tracked) in &mut changed_ships {
@@ -540,33 +535,50 @@ pub fn update_visibility_tiers(
         }
     }
 
-    // Recalculate tier for each affected system.
-    for system in affected_systems {
-        let star_surveyed = star_systems
-            .get(system)
-            .map(|s| s.surveyed)
-            .unwrap_or(false);
-        let tier =
-            determine_tier_for_system(system, empire_entity, &all_ships, knowledge, star_surveyed);
-        vis_map.set(system, tier);
+    if affected_systems.is_empty() {
+        return;
+    }
+
+    // Recalculate tier for each affected system, for every empire.
+    for (empire_entity, knowledge, mut vis_map) in &mut empire_q {
+        for &system in &affected_systems {
+            let star_surveyed = star_systems
+                .get(system)
+                .map(|s| s.surveyed)
+                .unwrap_or(false);
+            let tier = determine_tier_for_system(
+                system,
+                empire_entity,
+                &all_ships,
+                knowledge,
+                star_surveyed,
+            );
+            vis_map.set(system, tier);
+        }
     }
 }
 
 fn initialize_capital_knowledge(
-    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut commands: Commands,
+    mut empire_q: Query<(Entity, &mut KnowledgeStore), With<crate::player::Empire>>,
     player_q: Query<&StationedAt, With<Player>>,
     systems: Query<(Entity, &StarSystem, &Position)>,
 ) {
-    let Ok(mut store) = empire_q.single_mut() else {
-        warn!("Knowledge init: no player empire found");
+    // Resolve the capital system: prefer the player's StationedAt, fall back
+    // to the first StarSystem with `is_capital`.
+    let capital_entity = player_q
+        .iter()
+        .next()
+        .map(|s| s.system)
+        .or_else(|| {
+            systems
+                .iter()
+                .find(|(_, s, _)| s.is_capital)
+                .map(|(e, _, _)| e)
+        });
+    let Some(capital_entity) = capital_entity else {
+        warn!("Knowledge init: no capital system found");
         return;
-    };
-    let capital_entity = match player_q.iter().next() {
-        Some(stationed) => stationed.system,
-        None => {
-            warn!("Knowledge init: no player found");
-            return;
-        }
     };
 
     let (_, capital, capital_pos) = match systems.get(capital_entity) {
@@ -587,15 +599,25 @@ fn initialize_capital_knowledge(
         ..default()
     };
 
-    store.update(SystemKnowledge {
-        system: capital_entity,
-        observed_at: 0,
-        received_at: 0,
-        data: snapshot,
-        source: ObservationSource::Direct,
-    });
+    for (empire_entity, mut store) in &mut empire_q {
+        store.update(SystemKnowledge {
+            system: capital_entity,
+            observed_at: 0,
+            received_at: 0,
+            data: snapshot.clone(),
+            source: ObservationSource::Direct,
+        });
+        // Set the empire's viewer system for light-speed delay calculations.
+        commands
+            .entity(empire_entity)
+            .insert(crate::player::EmpireViewerSystem(capital_entity));
+    }
 
-    info!("Player knowledge initialized: capital '{}'", capital.name);
+    info!(
+        "Knowledge initialized for {} empires: capital '{}'",
+        empire_q.iter().count(),
+        capital.name
+    );
 }
 
 /// #216: Build a `SystemSnapshot` describing the observed state of a star
@@ -820,8 +842,13 @@ pub fn propagate_knowledge(
     )>,
     positions: Query<&Position>,
     mut empire_q: Query<
-        (&mut KnowledgeStore, Option<&SystemVisibilityMap>),
-        With<crate::player::PlayerEmpire>,
+        (
+            Entity,
+            &mut KnowledgeStore,
+            Option<&SystemVisibilityMap>,
+            Option<&crate::player::EmpireViewerSystem>,
+        ),
+        With<crate::player::Empire>,
     >,
     colonies: ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
@@ -835,45 +862,46 @@ pub fn propagate_knowledge(
         With<crate::galaxy::Hostile>,
     >,
     faction_relations: Res<crate::faction::FactionRelations>,
-    empire_entity_q: Query<Entity, With<crate::player::PlayerEmpire>>,
     ships: Query<(Entity, &Ship, &ShipState, &crate::ship::ShipHitpoints)>,
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     crate::prof_span!("propagate_knowledge");
-    let Ok((mut store, vis_map_opt)) = empire_q.single_mut() else {
-        return;
-    };
-    let stationed = match player_q.iter().next() {
-        Some(s) => s,
-        None => return,
-    };
 
-    let player_pos = match positions.get(stationed.system) {
-        Ok(pos) => pos,
-        Err(_) => return,
-    };
+    // Collect empire data to avoid borrow conflicts during iteration.
+    // Fall back to the player's StationedAt system for empires without
+    // EmpireViewerSystem (e.g. test setups that predate the component).
+    let player_fallback = player_q.iter().next().map(|s| s.system);
+    let empire_list: Vec<(Entity, Entity)> = empire_q
+        .iter()
+        .filter_map(|(e, _, _, viewer)| {
+            let system = viewer.map(|v| v.0).or(player_fallback)?;
+            Some((e, system))
+        })
+        .collect();
 
-    // #293: Build hostile system lookup from (AtSystem, HostileStats,
-    // FactionOwner, Hostile). Filter by FactionRelations so only factions the
-    // viewing empire considers hostile (can_attack_aggressive) count. Falls
-    // back to including every hostile when the empire entity is not yet
-    // spawned (tests without PlayerEmpire).
-    let viewer_empire = empire_entity_q.iter().next();
-    let mut hostile_map: HashMap<Entity, f64> = HashMap::new();
-    for (at_system, stats, owner) in &hostiles {
-        // Hostiles without FactionOwner default to "included" (legacy
-        // behavior) — same fallback used by settlement/scout/viz.
-        let include = match (viewer_empire, owner) {
-            (Some(viewer), Some(o)) => faction_relations
-                .get_or_default(viewer, o.0)
-                .can_attack_aggressive(),
-            _ => true,
+    for (empire_entity, viewer_system) in &empire_list {
+        let Ok(viewer_pos) = positions.get(*viewer_system) else {
+            continue;
         };
-        if include {
-            // Sum strength if multiple hostiles share a system.
-            *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+
+        let Ok((_, mut store, vis_map_opt, _)) = empire_q.get_mut(*empire_entity) else {
+            continue;
+        };
+
+        // #293: Build per-empire hostile system lookup, filtered by faction
+        // relations so only factions this empire considers hostile count.
+        let mut hostile_map: HashMap<Entity, f64> = HashMap::new();
+        for (at_system, stats, owner) in &hostiles {
+            let include = match owner {
+                Some(o) => faction_relations
+                    .get_or_default(*empire_entity, o.0)
+                    .can_attack_aggressive(),
+                None => true,
+            };
+            if include {
+                *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+            }
         }
-    }
 
     for (entity, star, sys_pos, stockpile) in &systems {
         // #392: Only propagate system knowledge to systems with tier >= Surveyed.
@@ -893,7 +921,7 @@ pub fn propagate_knowledge(
             }
         }
 
-        let distance = physics::distance_ly(player_pos, sys_pos);
+        let distance = physics::distance_ly(viewer_pos, sys_pos);
         let delay = physics::light_delay_hexadies(distance);
         let observed_at = clock.elapsed - delay;
 
@@ -942,13 +970,9 @@ pub fn propagate_knowledge(
     }
 
     // #175 / #188: Ship knowledge propagation.
-    // Ships are visible based on the light delay from their position to the player.
-    // For docked / surveying / settling / refitting ships, use the system's position.
-    // For SubLight ships, interpolate the current position from origin/destination
-    // and apply the resulting light-speed delay (#188 fix — previously SubLight was
-    // delivered with distance=0 because the position lookup returned None).
-    // For Loitering ships, use the loitering coordinate directly (#185).
-    let player_pos_arr = player_pos.as_array();
+    // Ships are visible based on the light delay from their position to the
+    // empire's viewer system.
+    let viewer_pos_arr = viewer_pos.as_array();
     for (ship_entity, ship, state, hp) in &ships {
         // Compute the ship's current world position as an [f64; 3].
         // NOTE (#392 V2): Ship snapshot visibility gating by tier (>= Connected)
@@ -1003,7 +1027,7 @@ pub fn propagate_knowledge(
             continue;
         };
 
-        let distance = physics::distance_ly_arr(player_pos_arr, ship_pos_arr);
+        let distance = physics::distance_ly_arr(viewer_pos_arr, ship_pos_arr);
         let delay = physics::light_delay_hexadies(distance);
         let observed_at = clock.elapsed - delay;
 
@@ -1057,6 +1081,8 @@ pub fn propagate_knowledge(
             source: ObservationSource::Direct,
         });
     }
+
+    } // end empire loop
 }
 
 /// #409: Check destroyed ship records. Two-phase transition:
@@ -1064,26 +1090,27 @@ pub fn propagate_knowledge(
 /// 2. After full light-speed delay → mark snapshot as Destroyed, remove record
 pub fn update_destroyed_ship_knowledge(
     clock: Res<GameClock>,
-    player_q: Query<&StationedAt, With<Player>>,
     positions: Query<&Position>,
-    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        (&mut KnowledgeStore, &crate::player::EmpireViewerSystem),
+        With<crate::player::PlayerEmpire>,
+    >,
     mut registry: ResMut<DestroyedShipRegistry>,
     mut events: MessageWriter<crate::events::GameEvent>,
     mut next_id: ResMut<NextEventId>,
 ) {
-    let Ok(mut store) = empire_q.single_mut() else {
+    // Ship destruction records are player-facing (emit ShipMissing events).
+    // Keep PlayerEmpire-scoped until destruction records are per-empire.
+    let Ok((mut store, viewer)) = empire_q.single_mut() else {
         return;
     };
-    let Some(stationed) = player_q.iter().next() else {
+    let Ok(viewer_pos) = positions.get(viewer.0) else {
         return;
     };
-    let Ok(player_pos) = positions.get(stationed.system) else {
-        return;
-    };
-    let player_pos_arr = player_pos.as_array();
+    let viewer_pos_arr = viewer_pos.as_array();
 
     registry.records.retain_mut(|record| {
-        let distance = physics::distance_ly_arr(player_pos_arr, record.destruction_pos);
+        let distance = physics::distance_ly_arr(viewer_pos_arr, record.destruction_pos);
         let delay = physics::light_delay_hexadies(distance);
         let arrives_at = record.destruction_tick + delay;
 
@@ -1133,9 +1160,11 @@ pub fn update_destroyed_ship_knowledge(
 /// Runs after colony production systems to avoid query conflicts with &mut Production.
 pub fn snapshot_production_knowledge(
     clock: Res<GameClock>,
-    player_q: Query<&StationedAt, With<Player>>,
     positions: Query<&Position>,
-    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<
+        &mut KnowledgeStore,
+        With<crate::player::Empire>,
+    >,
     colonies: Query<(
         &crate::colony::Colony,
         Option<&crate::colony::Production>,
@@ -1143,57 +1172,49 @@ pub fn snapshot_production_knowledge(
     )>,
     planets: Query<&crate::galaxy::Planet>,
 ) {
-    let Ok(mut store) = empire_q.single_mut() else {
-        return;
-    };
-    let stationed = match player_q.iter().next() {
-        Some(s) => s,
-        None => return,
-    };
-    let player_pos = match positions.get(stationed.system) {
-        Ok(pos) => pos,
-        Err(_) => return,
-    };
 
-    // For each system that already has a knowledge entry, update production data
-    // We collect the keys first to avoid borrow issues
-    let system_entities: Vec<Entity> = store.iter().map(|(_, k)| k.system).collect();
+    for mut store in &mut empire_q {
+        // For each system that already has a knowledge entry, update production data.
+        // Collect keys first to avoid borrow issues.
+        let system_entities: Vec<Entity> = store.iter().map(|(_, k)| k.system).collect();
 
-    for system_entity in system_entities {
-        // Compute production for this system
-        let mut prod_minerals = Amt::ZERO;
-        let mut prod_energy = Amt::ZERO;
-        let mut prod_food = Amt::ZERO;
-        let mut prod_research = Amt::ZERO;
-        let mut maint_energy = Amt::ZERO;
+        for system_entity in system_entities {
+            let mut prod_minerals = Amt::ZERO;
+            let mut prod_energy = Amt::ZERO;
+            let mut prod_food = Amt::ZERO;
+            let mut prod_research = Amt::ZERO;
+            let mut maint_energy = Amt::ZERO;
 
-        for (colony, production, maintenance) in colonies.iter() {
-            if colony.system(&planets) == Some(system_entity) {
-                if let Some(prod) = production {
-                    prod_minerals = prod_minerals.add(prod.minerals_per_hexadies.final_value());
-                    prod_energy = prod_energy.add(prod.energy_per_hexadies.final_value());
-                    prod_food = prod_food.add(prod.food_per_hexadies.final_value());
-                    prod_research = prod_research.add(prod.research_per_hexadies.final_value());
-                }
-                if let Some(maint) = maintenance {
-                    maint_energy = maint_energy.add(maint.energy_per_hexadies.final_value());
+            for (colony, production, maintenance) in colonies.iter() {
+                if colony.system(&planets) == Some(system_entity) {
+                    if let Some(prod) = production {
+                        prod_minerals =
+                            prod_minerals.add(prod.minerals_per_hexadies.final_value());
+                        prod_energy = prod_energy.add(prod.energy_per_hexadies.final_value());
+                        prod_food = prod_food.add(prod.food_per_hexadies.final_value());
+                        prod_research =
+                            prod_research.add(prod.research_per_hexadies.final_value());
+                    }
+                    if let Some(maint) = maintenance {
+                        maint_energy =
+                            maint_energy.add(maint.energy_per_hexadies.final_value());
+                    }
                 }
             }
-        }
 
-        // Only update if there's actual production data
-        if prod_minerals > Amt::ZERO
-            || prod_energy > Amt::ZERO
-            || prod_food > Amt::ZERO
-            || prod_research > Amt::ZERO
-            || maint_energy > Amt::ZERO
-        {
-            if let Some(entry) = store.entries.get_mut(&system_entity) {
-                entry.data.production_minerals = prod_minerals;
-                entry.data.production_energy = prod_energy;
-                entry.data.production_food = prod_food;
-                entry.data.production_research = prod_research;
-                entry.data.maintenance_energy = maint_energy;
+            if prod_minerals > Amt::ZERO
+                || prod_energy > Amt::ZERO
+                || prod_food > Amt::ZERO
+                || prod_research > Amt::ZERO
+                || maint_energy > Amt::ZERO
+            {
+                if let Some(entry) = store.entries.get_mut(&system_entity) {
+                    entry.data.production_minerals = prod_minerals;
+                    entry.data.production_energy = prod_energy;
+                    entry.data.production_food = prod_food;
+                    entry.data.production_research = prod_research;
+                    entry.data.maintenance_energy = maint_energy;
+                }
             }
         }
     }

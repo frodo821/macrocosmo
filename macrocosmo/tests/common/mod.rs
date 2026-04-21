@@ -241,6 +241,14 @@ pub fn spawn_test_empire(world: &mut World) -> Entity {
         .id()
 }
 
+/// Set the empire's viewer system for knowledge propagation tests.
+/// Must be called after spawning a capital/home system.
+pub fn set_empire_viewer_system(world: &mut World, empire: Entity, system: Entity) {
+    world
+        .entity_mut(empire)
+        .insert(macrocosmo::player::EmpireViewerSystem(system));
+}
+
 /// Test helper for #168: spawn passive hostile factions and seed
 /// Neutral/-100 relations against the test empire. **Must be called
 /// before spawning hostile entities** so `spawn_test_hostile` can attach

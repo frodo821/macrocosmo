@@ -35,7 +35,13 @@ impl Plugin for PlayerPlugin {
                     .after(crate::time_system::advance_game_time)
                     .run_if(not_in_observer_mode),
             )
-            .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
+            .add_systems(Update, log_player_info.run_if(not_in_observer_mode))
+            .add_systems(
+                Update,
+                sync_player_viewer_system
+                    .after(update_player_location)
+                    .run_if(not_in_observer_mode),
+            );
     }
 }
 
@@ -96,6 +102,12 @@ pub struct Empire {
 /// Marker component for the player's empire entity.
 #[derive(Component)]
 pub struct PlayerEmpire;
+
+/// The star system used as the light-speed reference point for an empire's
+/// knowledge propagation. For the player empire this tracks `StationedAt`;
+/// for NPC empires it is set to the capital system at spawn.
+#[derive(Component)]
+pub struct EmpireViewerSystem(pub Entity);
 
 /// Faction identity component. Defines which faction an empire belongs to.
 /// The `id` matches a FactionDefinition loaded from Lua scripts.
@@ -180,6 +192,21 @@ pub fn log_player_info(
             }
         }
     }
+}
+
+/// Sync `EmpireViewerSystem` on the player empire to match the player's
+/// current `StationedAt` system. NPC empires keep their initial value.
+pub fn sync_player_viewer_system(
+    player_q: Query<&StationedAt, With<Player>>,
+    mut empire_q: Query<&mut EmpireViewerSystem, With<PlayerEmpire>>,
+) {
+    let Ok(stationed) = player_q.single() else {
+        return;
+    };
+    let Ok(mut viewer) = empire_q.single_mut() else {
+        return;
+    };
+    viewer.0 = stationed.system;
 }
 
 /// Update player's StationedAt when aboard a ship that docks at a new system.

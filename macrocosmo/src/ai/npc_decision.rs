@@ -25,7 +25,7 @@ use macrocosmo_ai::{Command, CommandValue};
 use crate::ai::convert::{to_ai_faction, to_ai_system};
 use crate::ai::plugin::AiBusResource;
 use crate::ai::schema::ids::{command as cmd_ids, metric};
-use crate::galaxy::{AtSystem, Hostile};
+use crate::knowledge::KnowledgeStore;
 use crate::player::{Empire, Faction, PlayerEmpire};
 use crate::time_system::GameClock;
 
@@ -87,13 +87,35 @@ pub trait NpcPolicy: Send + Sync + 'static {
     ) -> Vec<Command>;
 }
 
+/// Per-ship summary extracted from ECS for the NPC policy.
+pub struct ShipInfo {
+    pub entity: Entity,
+    pub design_id: String,
+    /// The system the ship is currently docked at, or `None` if in transit.
+    pub system: Option<Entity>,
+    /// `true` when the ship is `InSystem` with an empty command queue.
+    pub is_idle: bool,
+    pub can_survey: bool,
+    pub can_colonize: bool,
+    /// `true` when the ship is not a dedicated survey/colony vessel — i.e.
+    /// it can participate in combat.
+    pub is_combat: bool,
+    pub ftl_range: f64,
+}
+
 /// Read-only context data extracted from ECS for the NPC policy.
 ///
 /// This keeps the policy trait free of Bevy `Query` types, making it
 /// testable without a full Bevy app.
 pub struct NpcContext {
-    /// Systems with hostile entities present.
+    /// Systems with hostile entities present (from KnowledgeStore).
     pub hostile_systems: Vec<Entity>,
+    /// Known systems that have not yet been surveyed.
+    pub unsurveyed_systems: Vec<Entity>,
+    /// Surveyed systems that are not yet colonized (potential colony targets).
+    pub colonizable_systems: Vec<Entity>,
+    /// All ships owned by the empire being decided for.
+    pub ships: Vec<ShipInfo>,
 }
 
 /// Default policy: do nothing. Useful for tests that want a quiet baseline.
@@ -115,11 +137,15 @@ impl NpcPolicy for NoOpPolicy {
 
 /// Simple heuristic NPC policy that reads bus metrics and emits commands.
 ///
-/// Decision rules (Phase 1):
+/// Ship selection is the policy's responsibility — commands carry explicit
+/// ship entity lists so the command consumer dispatches only what the
+/// policy chose. No cooldown is needed: the policy only selects idle ships,
+/// so ships already dispatched (in transit) are naturally excluded.
 ///
-/// 1. **Attack hostiles**: If `systems_with_hostiles > 0` AND
-///    `my_fleet_ready >= 0.5` AND `my_total_ships >= 3` → emit
-///    `attack_target` for a hostile system.
+/// Decision rules:
+///
+/// 1. **Attack hostiles**: If there are known hostile systems AND idle
+///    combat ships exist → emit `attack_target` with the selected ships.
 ///
 /// 2. **Retreat**: If `my_fleet_ready < 0.3` → emit `retreat`.
 ///
@@ -129,15 +155,8 @@ impl NpcPolicy for NoOpPolicy {
 ///
 /// Known limitation: metrics are global (not per-faction) in Phase 1; the
 /// policy treats them as "self" metrics for each NPC.
-/// Minimum hexadies between consecutive non-empty decisions for a faction.
-/// Prevents re-issuing the same command while the previous one is still
-/// being processed (route computation is async).
-const DECISION_COOLDOWN_HEXADIES: i64 = 5;
-
 #[derive(Default)]
-pub struct SimpleNpcPolicy {
-    last_decision: std::collections::HashMap<Entity, i64>,
-}
+pub struct SimpleNpcPolicy;
 
 impl NpcPolicy for SimpleNpcPolicy {
     fn decide(
@@ -148,52 +167,98 @@ impl NpcPolicy for SimpleNpcPolicy {
         bus: &macrocosmo_ai::AiBus,
         context: &NpcContext,
     ) -> Vec<Command> {
-        // Cooldown: skip if we decided recently.
-        if let Some(&last) = self.last_decision.get(&faction_entity) {
-            if now - last < DECISION_COOLDOWN_HEXADIES {
-                return Vec::new();
-            }
-        }
-
         let mut commands = Vec::new();
         let faction_id = to_ai_faction(faction_entity);
 
-        let total_ships = bus.current(&metric::my_total_ships()).unwrap_or(0.0);
         let fleet_ready = bus.current(&metric::my_fleet_ready()).unwrap_or(0.0);
-        let systems_with_hostiles = bus.current(&metric::systems_with_hostiles()).unwrap_or(0.0);
         let colony_count = bus.current(&metric::colony_count()).unwrap_or(0.0);
         let can_build = bus.current(&metric::can_build_ships()).unwrap_or(0.0);
+        let total_ships = bus.current(&metric::my_total_ships()).unwrap_or(0.0);
 
-        // Rule 1: Attack hostiles — fleet is strong enough
-        if systems_with_hostiles > 0.0
-            && fleet_ready >= 0.5
-            && total_ships >= 3.0
-            && !context.hostile_systems.is_empty()
-        {
-            // Pick the first hostile system as target
+        // Idle combat ships: not survey/colony capable, currently docked.
+        let idle_combat: Vec<Entity> = context
+            .ships
+            .iter()
+            .filter(|s| s.is_idle && s.is_combat)
+            .map(|s| s.entity)
+            .collect();
+
+        // Rule 1: Attack hostiles — have idle combat ships and known hostile systems
+        if !context.hostile_systems.is_empty() && !idle_combat.is_empty() {
             let target = context.hostile_systems[0];
-            let cmd = Command::new(cmd_ids::attack_target(), faction_id, now)
-                .with_param("target_system", CommandValue::System(to_ai_system(target)));
+            let mut cmd = Command::new(cmd_ids::attack_target(), faction_id, now)
+                .with_param("target_system", CommandValue::System(to_ai_system(target)))
+                .with_param("ship_count", CommandValue::I64(idle_combat.len() as i64));
+            for (i, &ship) in idle_combat.iter().enumerate() {
+                cmd = cmd.with_param(
+                    format!("ship_{i}"),
+                    CommandValue::Entity(crate::ai::convert::to_ai_entity(ship)),
+                );
+            }
             commands.push(cmd);
             return commands;
         }
 
-        // Rule 2: Retreat — fleet is weak
+        // Rule 2: Survey unsurveyed systems — send idle survey ships
+        let idle_surveyors: Vec<Entity> = context
+            .ships
+            .iter()
+            .filter(|s| s.is_idle && s.can_survey)
+            .map(|s| s.entity)
+            .collect();
+        if !context.unsurveyed_systems.is_empty() && !idle_surveyors.is_empty() {
+            // Send one survey ship per unsurveyed system (up to available ships).
+            for (ship, &target) in idle_surveyors
+                .iter()
+                .zip(context.unsurveyed_systems.iter())
+            {
+                let cmd = Command::new(cmd_ids::survey_system(), faction_id.clone(), now)
+                    .with_param("target_system", CommandValue::System(to_ai_system(target)))
+                    .with_param("ship_count", CommandValue::I64(1))
+                    .with_param(
+                        "ship_0",
+                        CommandValue::Entity(crate::ai::convert::to_ai_entity(*ship)),
+                    );
+                commands.push(cmd);
+            }
+        }
+
+        // Rule 3: Colonize surveyed uncolonized systems — send idle colony ships
+        let idle_colonizers: Vec<Entity> = context
+            .ships
+            .iter()
+            .filter(|s| s.is_idle && s.can_colonize)
+            .map(|s| s.entity)
+            .collect();
+        if !context.colonizable_systems.is_empty() && !idle_colonizers.is_empty() {
+            for (ship, &target) in idle_colonizers
+                .iter()
+                .zip(context.colonizable_systems.iter())
+            {
+                let cmd = Command::new(cmd_ids::colonize_system(), faction_id.clone(), now)
+                    .with_param("target_system", CommandValue::System(to_ai_system(target)))
+                    .with_param("ship_count", CommandValue::I64(1))
+                    .with_param(
+                        "ship_0",
+                        CommandValue::Entity(crate::ai::convert::to_ai_entity(*ship)),
+                    );
+                commands.push(cmd);
+            }
+        }
+
+        // Rule 4: Retreat — fleet is weak
         if fleet_ready > 0.0 && fleet_ready < 0.3 {
             let cmd = Command::new(cmd_ids::retreat(), faction_id, now);
             commands.push(cmd);
             return commands;
         }
 
-        // Rule 3: Fortify / build ships — have shipyard but few ships
+        // Rule 5: Fortify / build ships — have shipyard but few ships
         if can_build >= 1.0 && total_ships < colony_count * 2.0 {
             let cmd = Command::new(cmd_ids::fortify_system(), faction_id, now);
             commands.push(cmd);
         }
 
-        if !commands.is_empty() {
-            self.last_decision.insert(faction_entity, now);
-        }
         commands
     }
 }
@@ -211,8 +276,14 @@ pub fn npc_decision_tick(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastAiDecisionTick>,
     mut bus: ResMut<AiBusResource>,
-    npcs: Query<(Entity, &Faction), With<AiControlled>>,
-    hostiles: Query<&AtSystem, With<Hostile>>,
+    npcs: Query<(Entity, &Faction, &KnowledgeStore), With<AiControlled>>,
+    all_ships: Query<(
+        Entity,
+        &crate::ship::Ship,
+        &crate::ship::ShipState,
+        &crate::ship::CommandQueue,
+    )>,
+    design_registry: Option<Res<crate::ship_design::ShipDesignRegistry>>,
     mut policy: Local<SimpleNpcPolicy>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
@@ -222,12 +293,60 @@ pub fn npc_decision_tick(
     }
     last_tick.0 = now;
 
-    let hostile_systems: Vec<Entity> = hostiles.iter().map(|at| at.0).collect();
-    let context = NpcContext {
-        hostile_systems: hostile_systems.clone(),
-    };
+    for (entity, faction, knowledge) in &npcs {
+        // Extract system intel from KnowledgeStore.
+        let mut hostile_systems = Vec::new();
+        let mut unsurveyed_systems = Vec::new();
+        let mut colonizable_systems = Vec::new();
+        for (_, k) in knowledge.iter() {
+            if k.data.has_hostile {
+                hostile_systems.push(k.system);
+            }
+            if !k.data.surveyed {
+                unsurveyed_systems.push(k.system);
+            }
+            if k.data.surveyed && !k.data.colonized {
+                colonizable_systems.push(k.system);
+            }
+        }
 
-    for (entity, faction) in &npcs {
+        // Build ship inventory for this empire.
+        let ships: Vec<ShipInfo> = all_ships
+            .iter()
+            .filter(|(_, ship, _, _)| ship.owner == crate::ship::Owner::Empire(entity))
+            .map(|(ship_entity, ship, state, queue)| {
+                let system = match state {
+                    crate::ship::ShipState::InSystem { system } => Some(*system),
+                    _ => None,
+                };
+                let is_idle = system.is_some() && queue.commands.is_empty();
+                let can_survey = design_registry
+                    .as_ref()
+                    .is_some_and(|r| r.can_survey(&ship.design_id));
+                let can_colonize = design_registry
+                    .as_ref()
+                    .is_some_and(|r| r.can_colonize(&ship.design_id));
+                let is_combat = !can_survey && !can_colonize && !ship.is_immobile();
+                ShipInfo {
+                    entity: ship_entity,
+                    design_id: ship.design_id.clone(),
+                    system,
+                    is_idle,
+                    can_survey,
+                    can_colonize,
+                    is_combat,
+                    ftl_range: ship.ftl_range,
+                }
+            })
+            .collect();
+
+        let context = NpcContext {
+            hostile_systems,
+            unsurveyed_systems,
+            colonizable_systems,
+            ships,
+        };
+
         let commands = policy.decide(&faction.id, entity, now, &bus.0, &context);
         for cmd in commands {
             bus.0.emit_command(cmd);
@@ -252,6 +371,9 @@ mod tests {
         let bus = macrocosmo_ai::AiBus::default();
         let ctx = NpcContext {
             hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
         };
         let cmds = p.decide("vesk_hegemony", Entity::PLACEHOLDER, 0, &bus, &ctx);
         assert!(cmds.is_empty());
@@ -282,8 +404,21 @@ mod tests {
         ]);
 
         let hostile_sys = Entity::from_raw_u32(42).unwrap();
+        let combat_ship = Entity::from_raw_u32(100).unwrap();
         let ctx = NpcContext {
             hostile_systems: vec![hostile_sys],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![ShipInfo {
+                entity: combat_ship,
+                design_id: "corvette".into(),
+                system: Some(Entity::from_raw_u32(1).unwrap()),
+                is_idle: true,
+                can_survey: false,
+                can_colonize: false,
+                is_combat: true,
+                ftl_range: 15.0,
+            }],
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -319,6 +454,9 @@ mod tests {
 
         let ctx = NpcContext {
             hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -346,6 +484,9 @@ mod tests {
 
         let ctx = NpcContext {
             hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -373,6 +514,9 @@ mod tests {
 
         let ctx = NpcContext {
             hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -388,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn simple_policy_no_attack_when_too_few_ships() {
+    fn simple_policy_no_attack_without_combat_ships() {
         let bus = bus_with_metrics(&[
             ("my_total_ships", 2.0),
             ("my_fleet_ready", 0.9),
@@ -398,8 +542,22 @@ mod tests {
         ]);
 
         let hostile_sys = Entity::from_raw_u32(42).unwrap();
+        // Only survey ships — no combat capability
+        let survey_ship = Entity::from_raw_u32(100).unwrap();
         let ctx = NpcContext {
             hostile_systems: vec![hostile_sys],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![ShipInfo {
+                entity: survey_ship,
+                design_id: "explorer".into(),
+                system: Some(Entity::from_raw_u32(1).unwrap()),
+                is_idle: true,
+                can_survey: true,
+                can_colonize: false,
+                is_combat: false,
+                ftl_range: 15.0,
+            }],
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -411,10 +569,9 @@ mod tests {
             &ctx,
         );
 
-        // Should NOT emit attack_target (only 2 ships, need >= 3)
         assert!(
             cmds.iter().all(|c| c.kind.as_str() != "attack_target"),
-            "should not attack with fewer than 3 ships"
+            "should not attack without combat-capable ships"
         );
     }
 }

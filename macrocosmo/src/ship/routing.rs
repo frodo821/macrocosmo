@@ -526,7 +526,7 @@ pub fn collect_ftl_blockers(regions: &Query<&ForbiddenRegion>) -> Vec<RegionBloc
 pub fn poll_pending_routes(
     mut commands: Commands,
     clock: Res<crate::time_system::GameClock>,
-    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::Empire>>,
     balance: Res<crate::technology::GameBalance>,
     mut ships: Query<
         (Entity, &Ship, &mut ShipState, &mut CommandQueue, &Position),
@@ -544,9 +544,6 @@ pub fn poll_pending_routes(
     mut executed: MessageWriter<super::command_events::CommandExecuted>,
 ) {
     use super::command_events::{CommandExecuted, CommandKind, CommandResult};
-    let Ok(global_params) = empire_params_q.single() else {
-        return;
-    };
     let base_ftl_speed = balance.initial_ftl_speed_c();
 
     // Collect ship entities first to avoid borrow conflicts.
@@ -586,6 +583,16 @@ pub fn poll_pending_routes(
                 });
             }
             continue;
+        };
+
+        // Look up the ship's owner empire for tech bonuses.
+        // Neutral ships use default params (no tech bonuses).
+        let default_params = crate::technology::GlobalParams::default();
+        let global_params = match ship.owner {
+            super::Owner::Empire(owner_entity) => {
+                empire_params_q.get(owner_entity).unwrap_or(&default_params)
+            }
+            super::Owner::Neutral => &default_params,
         };
 
         // Ensure ship is still docked (may have changed state while waiting).

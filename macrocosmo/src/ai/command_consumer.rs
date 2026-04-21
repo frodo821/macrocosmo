@@ -17,8 +17,10 @@ use crate::ai::convert::{from_ai_system, to_ai_faction};
 use crate::ai::emit::AiBusDrainer;
 use crate::ai::schema::ids::command as cmd_ids;
 use crate::galaxy::{AtSystem, Hostile, Sovereignty, StarSystem};
-use crate::player::{Empire, Faction, PlayerEmpire};
-use crate::ship::command_events::{CommandId, MoveRequested, NextCommandId};
+use crate::player::{Empire, Faction};
+use crate::ship::command_events::{
+    ColonizeRequested, CommandId, MoveRequested, NextCommandId, SurveyRequested,
+};
 use crate::ship::{CommandQueue, Owner, Ship, ShipState};
 use crate::time_system::GameClock;
 
@@ -30,6 +32,8 @@ pub fn drain_ai_commands(
     hostiles: Query<&AtSystem, With<Hostile>>,
     empires: Query<(Entity, &Faction), With<Empire>>,
     mut move_writer: MessageWriter<MoveRequested>,
+    mut survey_writer: Option<MessageWriter<SurveyRequested>>,
+    mut colonize_writer: Option<MessageWriter<ColonizeRequested>>,
     mut next_cmd_id: ResMut<NextCommandId>,
     clock: Res<GameClock>,
 ) {
@@ -62,6 +66,30 @@ pub fn drain_ai_commands(
                 &mut next_cmd_id,
                 clock.elapsed,
             );
+        } else if kind_str == cmd_ids::survey_system().as_str() {
+            if let Some(ref mut w) = survey_writer {
+                handle_survey_system(
+                    &cmd.issuer,
+                    &cmd.params,
+                    &ships,
+                    &empires,
+                    w,
+                    &mut next_cmd_id,
+                    clock.elapsed,
+                );
+            }
+        } else if kind_str == cmd_ids::colonize_system().as_str() {
+            if let Some(ref mut w) = colonize_writer {
+                handle_colonize_system(
+                    &cmd.issuer,
+                    &cmd.params,
+                    &ships,
+                    &empires,
+                    w,
+                    &mut next_cmd_id,
+                    clock.elapsed,
+                );
+            }
         } else if kind_str == cmd_ids::fortify_system().as_str() {
             info!(
                 "AI command fortify_system from faction {:?} (Phase 1: log only)",
@@ -99,8 +127,29 @@ fn find_empire_entity(
     None
 }
 
-/// Handle `attack_target`: find idle ships owned by the faction and emit
-/// MoveRequested for the target system.
+/// Extract ship entity list from indexed command params (`ship_count`,
+/// `ship_0`, `ship_1`, ...).
+fn extract_ship_list(params: &macrocosmo_ai::CommandParams) -> Vec<Entity> {
+    let count = match params.get("ship_count") {
+        Some(CommandValue::I64(n)) => *n as usize,
+        _ => return vec![],
+    };
+    (0..count)
+        .filter_map(|i| {
+            let key = format!("ship_{i}");
+            match params.get(key.as_str()) {
+                Some(CommandValue::Entity(r)) => {
+                    Some(crate::ai::convert::from_ai_entity(*r))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Handle `attack_target`: dispatch the ships specified by the AI policy
+/// to the target system. The policy is responsible for ship selection —
+/// the consumer only validates that each ship is still eligible.
 fn handle_attack_target(
     issuer: &macrocosmo_ai::FactionId,
     params: &macrocosmo_ai::CommandParams,
@@ -126,15 +175,24 @@ fn handle_attack_target(
         }
     };
 
+    let selected_ships = extract_ship_list(params);
+    if selected_ships.is_empty() {
+        debug!(
+            "attack_target: no ships specified by policy for faction {:?}",
+            issuer
+        );
+        return;
+    }
+
     let mut dispatched = 0;
-    for (ship_entity, ship, state, queue) in ships.iter() {
+    for ship_entity in selected_ships {
+        let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
+            continue; // Ship despawned since policy decided
+        };
         if ship.owner != Owner::Empire(empire_entity) {
             continue;
         }
         if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
-            continue;
-        }
-        if ship.is_immobile() {
             continue;
         }
         if let ShipState::InSystem { system } = state {
@@ -155,6 +213,113 @@ fn handle_attack_target(
     if dispatched > 0 {
         info!(
             "attack_target: dispatched {} ships from faction {:?} to system {:?}",
+            dispatched, issuer, target_system
+        );
+    }
+}
+
+/// Handle `survey_system`: dispatch the specified survey ship to the target system.
+fn handle_survey_system(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    survey_writer: &mut MessageWriter<SurveyRequested>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let target_system = match params.get("target_system") {
+        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
+        _ => {
+            warn!("survey_system command missing target_system param");
+            return;
+        }
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => return,
+    };
+
+    let selected_ships = extract_ship_list(params);
+    let mut dispatched = 0;
+    for ship_entity in selected_ships {
+        let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
+            continue;
+        };
+        if ship.owner != Owner::Empire(empire_entity) {
+            continue;
+        }
+        if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
+            continue;
+        }
+
+        survey_writer.write(SurveyRequested {
+            command_id: next_cmd_id.allocate(),
+            ship: ship_entity,
+            target_system,
+            issued_at: now,
+        });
+        dispatched += 1;
+    }
+
+    if dispatched > 0 {
+        info!(
+            "survey_system: dispatched {} ships from faction {:?} to system {:?}",
+            dispatched, issuer, target_system
+        );
+    }
+}
+
+/// Handle `colonize_system`: dispatch the specified colony ship to the target system.
+fn handle_colonize_system(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    colonize_writer: &mut MessageWriter<ColonizeRequested>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let target_system = match params.get("target_system") {
+        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
+        _ => {
+            warn!("colonize_system command missing target_system param");
+            return;
+        }
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => return,
+    };
+
+    let selected_ships = extract_ship_list(params);
+    let mut dispatched = 0;
+    for ship_entity in selected_ships {
+        let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
+            continue;
+        };
+        if ship.owner != Owner::Empire(empire_entity) {
+            continue;
+        }
+        if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
+            continue;
+        }
+
+        colonize_writer.write(ColonizeRequested {
+            command_id: next_cmd_id.allocate(),
+            ship: ship_entity,
+            target_system,
+            planet: None, // Let the handler pick the best planet
+            issued_at: now,
+        });
+        dispatched += 1;
+    }
+
+    if dispatched > 0 {
+        info!(
+            "colonize_system: dispatched {} ships from faction {:?} to system {:?}",
             dispatched, issuer, target_system
         );
     }
@@ -298,7 +463,7 @@ mod tests {
             ))
             .id();
 
-        world.spawn((
+        let ship_entity = world.spawn((
             Ship {
                 name: "NPC Scout".into(),
                 design_id: "scout".into(),
@@ -314,11 +479,14 @@ mod tests {
             },
             ShipState::InSystem { system: origin_sys },
             CommandQueue::default(),
-        ));
+        )).id();
 
         let target_ref = crate::ai::convert::to_ai_system(target_sys);
+        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
         let cmd = Command::new(cmd_ids::attack_target(), faction_id, 10)
-            .with_param("target_system", CommandValue::System(target_ref));
+            .with_param("target_system", CommandValue::System(target_ref))
+            .with_param("ship_count", CommandValue::I64(1))
+            .with_param("ship_0", CommandValue::Entity(ship_ref));
         world.resource_mut::<AiBusResource>().0.emit_command(cmd);
 
         // Add a counting system that reads MoveRequested messages.
