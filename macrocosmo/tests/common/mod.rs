@@ -17,6 +17,7 @@ use macrocosmo::galaxy::{
 };
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo::faction::FactionOwner;
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::ship::*;
@@ -1206,35 +1207,43 @@ pub fn spawn_test_colony(
         ));
     }
 
-    world
-        .spawn((
-            Colony {
-                planet,
-                growth_rate: 0.01,
-            },
-            Production {
-                minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
-                research_per_hexadies: ModifiedValue::new(Amt::units(1)),
-                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            },
-            BuildQueue::default(),
-            Buildings {
-                slots: planet_buildings,
-            },
-            BuildingQueue::default(),
-            ProductionFocus::default(),
-            MaintenanceCost::default(),
-            FoodConsumption::default(),
-            macrocosmo::species::ColonyPopulation {
-                species: vec![macrocosmo::species::ColonySpecies {
-                    species_id: "human".to_string(),
-                    population: 100,
-                }],
-                growth_accumulator: 0.0,
-            },
-        ))
-        .id()
+    // Find the empire entity to set FactionOwner
+    let empire = {
+        let mut q = world.query_filtered::<Entity, With<Empire>>();
+        q.iter(world).next()
+    };
+
+    let mut entity_commands = world.spawn((
+        Colony {
+            planet,
+            growth_rate: 0.01,
+        },
+        Production {
+            minerals_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            energy_per_hexadies: ModifiedValue::new(Amt::units(5)),
+            research_per_hexadies: ModifiedValue::new(Amt::units(1)),
+            food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+        },
+        BuildQueue::default(),
+        Buildings {
+            slots: planet_buildings,
+        },
+        BuildingQueue::default(),
+        ProductionFocus::default(),
+        MaintenanceCost::default(),
+        FoodConsumption::default(),
+        macrocosmo::species::ColonyPopulation {
+            species: vec![macrocosmo::species::ColonySpecies {
+                species_id: "human".to_string(),
+                population: 100,
+            }],
+            growth_accumulator: 0.0,
+        },
+    ));
+    if let Some(empire_entity) = empire {
+        entity_commands.insert(FactionOwner(empire_entity));
+    }
+    entity_commands.id()
 }
 
 /// Find the first planet entity belonging to a star system.

@@ -9,7 +9,10 @@ use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::ship::*;
 use macrocosmo::species::ColonyPopulation;
 
-use common::{advance_time, find_planet, spawn_test_colony, spawn_test_system, test_app};
+use common::{
+    advance_time, find_planet, spawn_test_colony, spawn_test_empire, spawn_test_system, test_app,
+};
+use macrocosmo::faction::FactionOwner;
 
 /// Helper: add ResourceStockpile and ResourceCapacity to a star system entity.
 /// If the system already has a stockpile, it replaces it.
@@ -442,6 +445,7 @@ fn test_demolish_takes_time() {
 #[test]
 fn test_farm_produces_food() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     let sys = spawn_test_system(
         app.world_mut(),
@@ -491,6 +495,7 @@ fn test_farm_produces_food() {
             }],
             growth_accumulator: 0.0,
         },
+        FactionOwner(empire),
     ));
 
     // Advance 10 hexadies
@@ -712,6 +717,7 @@ fn test_maintenance_deducts_energy_integration() {
 #[test]
 fn test_population_capped_by_carrying_capacity() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     // Marginal habitability: base_score=0.4, K_habitat = 200 * 0.4 = 80
     // food_per_hd=10 (base) + 0 (no farm) = 10 → K_food = 10/0.1 = 100
@@ -759,6 +765,7 @@ fn test_population_capped_by_carrying_capacity() {
             }],
             growth_accumulator: 0.0,
         },
+        FactionOwner(empire),
     ));
 
     // Advance in 1-hexady steps for stable Euler integration
@@ -787,6 +794,8 @@ fn test_habitability_affects_growth_rate() {
     // Same setup, different habitability → different growth speed
     let mut ideal_app = test_app();
     let mut marginal_app = test_app();
+    let ideal_empire = spawn_test_empire(ideal_app.world_mut());
+    let marginal_empire = spawn_test_empire(marginal_app.world_mut());
 
     let ideal_sys = spawn_test_system(
         ideal_app.world_mut(),
@@ -805,7 +814,7 @@ fn test_habitability_affects_growth_rate() {
         true,
     );
 
-    let colony_bundle = |planet_entity: Entity| {
+    let colony_bundle = |planet_entity: Entity, empire_entity: Entity| {
         (
             Colony {
                 planet: planet_entity,
@@ -828,15 +837,18 @@ fn test_habitability_affects_growth_rate() {
                 }],
                 growth_accumulator: 0.0,
             },
+            FactionOwner(empire_entity),
         )
     };
 
     let ideal_planet = find_planet(ideal_app.world_mut(), ideal_sys);
-    ideal_app.world_mut().spawn(colony_bundle(ideal_planet));
+    ideal_app
+        .world_mut()
+        .spawn(colony_bundle(ideal_planet, ideal_empire));
     let marginal_planet = find_planet(marginal_app.world_mut(), marginal_sys);
     marginal_app
         .world_mut()
-        .spawn(colony_bundle(marginal_planet));
+        .spawn(colony_bundle(marginal_planet, marginal_empire));
 
     for _ in 0..60 {
         advance_time(&mut ideal_app, 1);
@@ -1252,6 +1264,7 @@ fn test_build_queue_requires_shipyard() {
 #[test]
 fn test_starvation_reduces_population() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     let sys = spawn_test_system(
         app.world_mut(),
@@ -1298,6 +1311,7 @@ fn test_starvation_reduces_population() {
             }],
             growth_accumulator: 0.0,
         },
+        FactionOwner(empire),
     ));
 
     advance_time(&mut app, 1);
@@ -1387,6 +1401,7 @@ fn test_starvation_population_floor() {
 #[test]
 fn test_capital_produces_authority() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     let cap_sys = spawn_capital_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0]);
 
@@ -1424,6 +1439,7 @@ fn test_capital_produces_authority() {
             ProductionFocus::default(),
             MaintenanceCost::default(),
             FoodConsumption::default(),
+            FactionOwner(empire),
         ))
         .id();
 
@@ -1443,6 +1459,7 @@ fn test_capital_produces_authority() {
 #[test]
 fn test_empire_scale_authority_cost() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     let cap_sys = spawn_capital_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0]);
     let remote_sys = spawn_test_system(app.world_mut(), "Remote", [5.0, 0.0, 0.0], 0.7, true, true);
@@ -1481,6 +1498,7 @@ fn test_empire_scale_authority_cost() {
             ProductionFocus::default(),
             MaintenanceCost::default(),
             FoodConsumption::default(),
+            FactionOwner(empire),
         ))
         .id();
 
@@ -1516,6 +1534,7 @@ fn test_empire_scale_authority_cost() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        FactionOwner(empire),
     ));
 
     // Advance 10 hexadies

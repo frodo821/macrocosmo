@@ -152,63 +152,65 @@ pub fn fire_sovereignty_events(
 pub fn tick_authority(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
-    empire_authority_q: Query<&AuthorityParams, With<crate::player::PlayerEmpire>>,
-    colonies: Query<&Colony>,
+    empire_authority_q: Query<(Entity, &AuthorityParams), With<crate::player::Empire>>,
+    colonies: Query<(&Colony, &crate::faction::FactionOwner)>,
     mut stockpiles: Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
 ) {
-    let Ok(authority_params) = empire_authority_q.single() else {
-        return;
-    };
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
     let d = delta as u64;
 
-    // First pass: find capital system and count non-capital colonies
-    let mut capital_system: Option<Entity> = None;
-    let mut non_capital_count: u64 = 0;
-    for colony in colonies.iter() {
-        if let Some(sys) = colony.system(&planets) {
-            if let Ok(star) = stars.get(sys) {
-                if star.is_capital {
-                    capital_system = Some(sys);
+    for (empire_entity, authority_params) in &empire_authority_q {
+        // First pass: find capital system and count non-capital colonies for this empire
+        let mut capital_system: Option<Entity> = None;
+        let mut non_capital_count: u64 = 0;
+        for (colony, faction_owner) in &colonies {
+            if faction_owner.0 != empire_entity {
+                continue;
+            }
+            if let Some(sys) = colony.system(&planets) {
+                if let Ok(star) = stars.get(sys) {
+                    if star.is_capital {
+                        capital_system = Some(sys);
+                    } else {
+                        non_capital_count += 1;
+                    }
                 } else {
                     non_capital_count += 1;
                 }
             } else {
                 non_capital_count += 1;
             }
-        } else {
-            non_capital_count += 1;
         }
-    }
 
-    let Some(cap_sys) = capital_system else {
-        return; // No capital found
-    };
+        let Some(cap_sys) = capital_system else {
+            continue; // No capital found for this empire
+        };
 
-    // TODO (#76): Scale authority cost by light-speed distance from capital to each colony.
-    // Distant colonies should cost more authority to maintain due to communication delay.
-    // This should be its own issue — requires per-colony distance calculation and
-    // Position queries which aren't currently available in this system.
+        // TODO (#76): Scale authority cost by light-speed distance from capital to each colony.
+        // Distant colonies should cost more authority to maintain due to communication delay.
+        // This should be its own issue — requires per-colony distance calculation and
+        // Position queries which aren't currently available in this system.
 
-    // Produce authority at capital system and deduct empire scale cost
-    let auth_production = authority_params.production.final_value();
-    let auth_cost_per_colony = authority_params.cost_per_colony.final_value();
-    if let Ok((mut stockpile, capacity)) = stockpiles.get_mut(cap_sys) {
-        // Capital produces authority
-        stockpile.authority = stockpile.authority.add(auth_production.mul_u64(d));
+        // Produce authority at capital system and deduct empire scale cost
+        let auth_production = authority_params.production.final_value();
+        let auth_cost_per_colony = authority_params.cost_per_colony.final_value();
+        if let Ok((mut stockpile, capacity)) = stockpiles.get_mut(cap_sys) {
+            // Capital produces authority
+            stockpile.authority = stockpile.authority.add(auth_production.mul_u64(d));
 
-        // Deduct empire scale cost for non-capital colonies
-        let scale_cost = auth_cost_per_colony.mul_u64(non_capital_count).mul_u64(d);
-        stockpile.authority = stockpile.authority.sub(scale_cost);
+            // Deduct empire scale cost for non-capital colonies
+            let scale_cost = auth_cost_per_colony.mul_u64(non_capital_count).mul_u64(d);
+            stockpile.authority = stockpile.authority.sub(scale_cost);
 
-        // Clamp authority to capacity
-        if let Some(cap) = capacity {
-            stockpile.authority = stockpile.authority.min(cap.authority);
+            // Clamp authority to capacity
+            if let Some(cap) = capacity {
+                stockpile.authority = stockpile.authority.min(cap.authority);
+            }
         }
     }
 }

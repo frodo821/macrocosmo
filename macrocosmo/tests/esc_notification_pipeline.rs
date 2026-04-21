@@ -116,11 +116,16 @@ fn make_integration_app() -> App {
         (dispatch_knowledge_observed, drain_pending_esc_notifications).chain(),
     );
 
-    // The dispatcher iterates `PlayerEmpire`-tagged entities as
+    // The dispatcher iterates `Empire`-tagged entities as
     // observer empires — spawn one so the observed path actually
     // runs (otherwise the subscriber never fires and the test gives
     // a false pass).
-    app.world_mut().spawn(PlayerEmpire);
+    app.world_mut().spawn((
+        PlayerEmpire,
+        macrocosmo::player::Empire {
+            name: "Test Empire".into(),
+        },
+    ));
     app
 }
 

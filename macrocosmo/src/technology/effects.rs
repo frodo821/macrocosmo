@@ -7,7 +7,7 @@ use crate::amount::SignedAmt;
 use crate::condition::ScopedFlags;
 use crate::effect::DescriptiveEffect;
 use crate::modifier::{Modifier, ParsedModifier};
-use crate::player::PlayerEmpire;
+use crate::player::Empire;
 use crate::scripting::ScriptEngine;
 use crate::scripting::effect_scope::{EffectScope, collect_effects};
 use crate::technology::tree::TechId;
@@ -180,7 +180,7 @@ pub fn apply_tech_effects(
             Option<&mut PendingColonyTechModifiers>,
             Option<&mut crate::empire::CommsParams>,
         ),
-        With<PlayerEmpire>,
+        With<Empire>,
     >,
     mut balance: ResMut<GameBalance>,
     mut effects_log: ResMut<TechEffectsLog>,
@@ -189,7 +189,7 @@ pub fn apply_tech_effects(
         return;
     };
 
-    let Ok((
+    for (
         recently,
         mut game_flags,
         mut scoped_flags,
@@ -197,102 +197,101 @@ pub fn apply_tech_effects(
         mut empire_modifiers,
         mut pending_colony_mods,
         mut comms_params,
-    )) = empire_q.single_mut()
-    else {
-        return;
-    };
-    // Fallback storage if the empire entity lacks `PendingColonyTechModifiers`
-    // (e.g. legacy test fixtures). In that case colony-targeted modifiers have
-    // no one to broadcast them, so we drop them with a warning and the
-    // subsequent routing still logs its own diagnostic.
-    let mut scratch_pending = PendingColonyTechModifiers::default();
-    let pending_ref: &mut PendingColonyTechModifiers = match &mut pending_colony_mods {
-        Some(p) => &mut *p,
-        None => &mut scratch_pending,
-    };
-    // #233: Same fallback for CommsParams. Legacy empire entities without the
-    // component get a scratch bucket; the field values still "apply" but have
-    // no runtime effect, preserving forward-compat for old fixtures.
-    let mut scratch_comms = crate::empire::CommsParams::default();
-    let comms_ref: &mut crate::empire::CommsParams = match &mut comms_params {
-        Some(c) => &mut *c,
-        None => &mut scratch_comms,
-    };
+    ) in &mut empire_q
+    {
+        // Fallback storage if the empire entity lacks `PendingColonyTechModifiers`
+        // (e.g. legacy test fixtures). In that case colony-targeted modifiers have
+        // no one to broadcast them, so we drop them with a warning and the
+        // subsequent routing still logs its own diagnostic.
+        let mut scratch_pending = PendingColonyTechModifiers::default();
+        let pending_ref: &mut PendingColonyTechModifiers = match &mut pending_colony_mods {
+            Some(p) => &mut *p,
+            None => &mut scratch_pending,
+        };
+        // #233: Same fallback for CommsParams. Legacy empire entities without the
+        // component get a scratch bucket; the field values still "apply" but have
+        // no runtime effect, preserving forward-compat for old fixtures.
+        let mut scratch_comms = crate::empire::CommsParams::default();
+        let comms_ref: &mut crate::empire::CommsParams = match &mut comms_params {
+            Some(c) => &mut *c,
+            None => &mut scratch_comms,
+        };
 
-    if recently.techs.is_empty() {
-        return;
-    }
+        if recently.techs.is_empty() {
+            continue;
+        }
 
-    let lua = engine.lua();
+        let lua = engine.lua();
 
-    // Get the _tech_definitions table
-    let Ok(tech_defs) = lua.globals().get::<mlua::Table>("_tech_definitions") else {
-        warn!("_tech_definitions table not found in Lua globals");
-        return;
-    };
-
-    for tech_id in &recently.techs {
-        // Find this tech's definition in _tech_definitions
-        let on_researched_fn = find_on_researched(&tech_defs, &tech_id.0);
-        let Some(func) = on_researched_fn else {
-            debug!("No on_researched callback for tech {}", tech_id.0);
+        // Get the _tech_definitions table
+        let Ok(tech_defs) = lua.globals().get::<mlua::Table>("_tech_definitions") else {
+            warn!("_tech_definitions table not found in Lua globals");
             continue;
         };
 
-        // Create EffectScope and call the callback
-        let scope = EffectScope::new();
-        let result = func.call::<mlua::Value>(scope.clone());
+        for tech_id in &recently.techs {
+            // Find this tech's definition in _tech_definitions
+            let on_researched_fn = find_on_researched(&tech_defs, &tech_id.0);
+            let Some(func) = on_researched_fn else {
+                debug!("No on_researched callback for tech {}", tech_id.0);
+                continue;
+            };
 
-        let effects = match result {
-            Ok(return_value) => match collect_effects(&scope, return_value) {
-                Ok(effects) => effects,
+            // Create EffectScope and call the callback
+            let scope = EffectScope::new();
+            let result = func.call::<mlua::Value>(scope.clone());
+
+            let effects = match result {
+                Ok(return_value) => match collect_effects(&scope, return_value) {
+                    Ok(effects) => effects,
+                    Err(e) => {
+                        warn!("Failed to collect effects for tech {}: {e}", tech_id.0);
+                        continue;
+                    }
+                },
                 Err(e) => {
-                    warn!("Failed to collect effects for tech {}: {e}", tech_id.0);
+                    warn!("on_researched callback failed for tech {}: {e}", tech_id.0);
                     continue;
                 }
-            },
-            Err(e) => {
-                warn!("on_researched callback failed for tech {}: {e}", tech_id.0);
+            };
+
+            if effects.is_empty() {
                 continue;
             }
-        };
 
-        if effects.is_empty() {
-            continue;
+            // Apply each effect
+            for effect in &effects {
+                apply_effect(
+                    effect,
+                    &mut game_flags,
+                    &mut scoped_flags,
+                    &mut global_params,
+                    &mut balance,
+                    &mut empire_modifiers,
+                    pending_ref,
+                    comms_ref,
+                    tech_id,
+                );
+            }
+
+            info!("Applied {} effects for tech {}", effects.len(), tech_id.0);
+
+            // Log for UI display
+            effects_log.effects.insert(tech_id.clone(), effects);
+
+            // #332-B3: dropped the `_pending_global_mods` / `_pending_flags`
+            // drain. The legacy global `modify_global` / `set_flag` helpers
+            // have no production Lua callers (tech callbacks use
+            // `EffectScope` descriptors exclusively, which are already
+            // applied above); B4 removes the globals outright.
         }
 
-        // Apply each effect
-        for effect in &effects {
-            apply_effect(
-                effect,
-                &mut game_flags,
-                &mut scoped_flags,
-                &mut global_params,
-                &mut balance,
-                &mut empire_modifiers,
-                pending_ref,
-                comms_ref,
-                tech_id,
+        if !scratch_pending.entries.is_empty() {
+            warn!(
+                "PendingColonyTechModifiers component missing on empire entity; {} colony-targeted tech modifier(s) dropped (setup issue)",
+                scratch_pending.entries.len()
             );
         }
-
-        info!("Applied {} effects for tech {}", effects.len(), tech_id.0);
-
-        // Log for UI display
-        effects_log.effects.insert(tech_id.clone(), effects);
-
-        // #332-B3: dropped the `_pending_global_mods` / `_pending_flags`
-        // drain. The legacy global `modify_global` / `set_flag` helpers
-        // have no production Lua callers (tech callbacks use
-        // `EffectScope` descriptors exclusively, which are already
-        // applied above); B4 removes the globals outright.
-    }
-
-    if !scratch_pending.entries.is_empty() {
-        warn!(
-            "PendingColonyTechModifiers component missing on PlayerEmpire entity; {} colony-targeted tech modifier(s) dropped (setup issue)",
-            scratch_pending.entries.len()
-        );
     }
 }
 
@@ -528,22 +527,29 @@ fn route_tech_modifier(
 /// - `colony.<job_id>_slot` → increases `JobSlot.capacity` beyond the building
 ///   baseline. A new slot is appended if the colony didn't have one yet.
 pub fn sync_tech_colony_modifiers(
-    pending_q: Query<&PendingColonyTechModifiers, With<PlayerEmpire>>,
+    pending_q: Query<&PendingColonyTechModifiers, With<Empire>>,
     mut colonies: Query<(
         &mut crate::colony::Production,
         Option<&mut crate::colony::ColonyJobRates>,
         Option<&mut crate::species::ColonyJobs>,
     )>,
 ) {
-    let Ok(pending) = pending_q.single() else {
-        return;
-    };
-    if pending.entries.is_empty() {
+    // Collect all pending entries from all empires.
+    // TODO(#418): scope colony modifier application per-empire via FactionOwner.
+    let mut all_entries: Vec<(&TechId, &ParsedModifier)> = Vec::new();
+    for pending in &pending_q {
+        for (tech_id, pm) in &pending.entries {
+            all_entries.push((tech_id, pm));
+        }
+    }
+    if all_entries.is_empty() {
         return;
     }
+    // Build a pseudo-pending to iterate below.
+    let pending_entries = all_entries;
 
     for (mut prod, mut rates_opt, mut jobs_opt) in &mut colonies {
-        for (tech_id, pm) in &pending.entries {
+        for (tech_id, pm) in &pending_entries {
             let modifier_id = format!("tech:{}:{}", tech_id.0, pm.target);
 
             // job:<id>::<inner_target> → ColonyJobRates bucket.

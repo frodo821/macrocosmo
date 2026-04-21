@@ -7,8 +7,11 @@ use macrocosmo::colony::*;
 use macrocosmo::modifier::{ModifiedValue, Modifier};
 use macrocosmo::ship::*;
 
+use macrocosmo::faction::FactionOwner;
+
 use common::{
-    advance_time, empire_entity, find_planet, spawn_test_colony, spawn_test_system, test_app,
+    advance_time, empire_entity, find_planet, spawn_test_colony, spawn_test_empire,
+    spawn_test_system, test_app,
 };
 
 // Modifier affects production output
@@ -215,6 +218,7 @@ fn test_maintenance_modifier_affects_energy() {
 #[test]
 fn test_food_consumption_modifier() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     let sys = spawn_test_system(
         app.world_mut(),
@@ -274,6 +278,7 @@ fn test_food_consumption_modifier() {
             }],
             growth_accumulator: 0.0,
         },
+        FactionOwner(empire),
     ));
 
     // Run one update so sync_food_consumption sets the base
@@ -343,6 +348,7 @@ fn test_authority_params_modifier() {
         },
         ResourceCapacity::default(),
     ));
+    let empire = empire_entity(app.world_mut());
     app.world_mut().spawn((
         Colony {
             planet: planet_sys,
@@ -360,6 +366,7 @@ fn test_authority_params_modifier() {
         ProductionFocus::default(),
         MaintenanceCost::default(),
         FoodConsumption::default(),
+        FactionOwner(empire),
     ));
 
     // Advance 10 hd

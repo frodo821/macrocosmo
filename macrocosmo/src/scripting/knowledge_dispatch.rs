@@ -673,7 +673,7 @@ pub fn dispatch_knowledge_observed(world: &mut World) {
     // NPC observer rollouts (post-v1, plan §7) can drop in without
     // touching this system.
     let observer_empires: Vec<Entity> = {
-        let mut q = world.query_filtered::<Entity, With<crate::player::PlayerEmpire>>();
+        let mut q = world.query_filtered::<Entity, With<crate::player::Empire>>();
         let mut v: Vec<Entity> = q.iter(world).collect();
         v.sort_by_key(|e| e.to_bits());
         v

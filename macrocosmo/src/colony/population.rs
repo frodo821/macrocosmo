@@ -39,10 +39,16 @@ pub fn tick_population_growth(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
     empire_modifiers_q: Query<
-        &crate::technology::EmpireModifiers,
-        With<crate::player::PlayerEmpire>,
+        (Entity, &crate::technology::EmpireModifiers),
+        With<crate::player::Empire>,
     >,
-    mut colonies: Query<(&Colony, &mut ColonyPopulation, &Production, Option<&FoodConsumption>)>,
+    mut colonies: Query<(
+        &Colony,
+        &mut ColonyPopulation,
+        &Production,
+        Option<&FoodConsumption>,
+        &crate::faction::FactionOwner,
+    )>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     planet_attrs: Query<&crate::galaxy::SystemAttributes, With<Planet>>,
     planets: Query<&Planet>,
@@ -51,19 +57,19 @@ pub fn tick_population_growth(
 ) {
     use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
 
-    let Ok(empire_modifiers) = empire_modifiers_q.single() else {
-        return;
-    };
-
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
     let d = delta as u64;
 
-    let colony_data: Vec<(Entity, u32, f64, Amt, Amt, f64, Entity)> = colonies
+    // Build a map from empire entity to its EmpireModifiers for quick lookup.
+    let empire_map: std::collections::HashMap<Entity, &crate::technology::EmpireModifiers> =
+        empire_modifiers_q.iter().map(|(e, m)| (e, m)).collect();
+
+    let colony_data: Vec<(Entity, u32, f64, Amt, Amt, f64, Entity, Entity)> = colonies
         .iter()
-        .filter_map(|(colony, pop, production, food_consumption)| {
+        .filter_map(|(colony, pop, production, food_consumption, faction_owner)| {
             let sys = colony.system(&planets)?;
             let total_pop = pop.total();
             let food_consumed = if let Some(fc) = food_consumption {
@@ -86,11 +92,12 @@ pub fn tick_population_growth(
                 food_prod,
                 hab_score,
                 sys,
+                faction_owner.0,
             ))
         })
         .collect();
 
-    for (_planet_entity, _population, _growth_rate, food_consumed, _food_prod, _hab_score, sys) in
+    for (_planet_entity, _population, _growth_rate, food_consumed, _food_prod, _hab_score, sys, _owner) in
         &colony_data
     {
         if let Ok(mut stockpile) = stockpiles.get_mut(*sys) {
@@ -98,7 +105,7 @@ pub fn tick_population_growth(
         }
     }
 
-    for (planet_entity, total_pop, growth_rate, _food_consumed, food_prod, hab_score, sys) in
+    for (planet_entity, total_pop, growth_rate, _food_consumed, food_prod, hab_score, sys, owner) in
         &colony_data
     {
         let food_at_zero = stockpiles
@@ -106,7 +113,13 @@ pub fn tick_population_growth(
             .ok()
             .is_some_and(|s| s.food == Amt::ZERO);
 
-        for (colony, mut pop, _production, _food_consumption) in &mut colonies {
+        // Look up the empire modifiers for this colony's owner
+        let pop_growth_bonus = empire_map
+            .get(owner)
+            .map(|m| m.population_growth.final_value().to_f64())
+            .unwrap_or(0.0);
+
+        for (colony, mut pop, _production, _food_consumption, _fo) in &mut colonies {
             if colony.planet != *planet_entity {
                 continue;
             }
@@ -123,8 +136,7 @@ pub fn tick_population_growth(
                 };
                 let k = k_habitat.min(k_food).max(1.0);
 
-                let effective_growth =
-                    growth_rate + empire_modifiers.population_growth.final_value().to_f64();
+                let effective_growth = growth_rate + pop_growth_bonus;
                 effective_growth * hab_score * population * (1.0 - population / k) * d as f64
             };
 

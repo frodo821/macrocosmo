@@ -241,13 +241,10 @@ pub fn tick_timed_effects(
     mut food_consumptions: Query<(Entity, &mut FoodConsumption)>,
     mut empire_q: Query<
         (&mut AuthorityParams, &mut ConstructionParams),
-        With<crate::player::PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
     mut event_system: ResMut<crate::event_system::EventSystem>,
 ) {
-    let Ok((mut authority_params, mut construction_params)) = empire_q.single_mut() else {
-        return;
-    };
     let now = clock.elapsed;
 
     // Helper: drain expired modifiers and fire any on_expire_event via EventSystem
@@ -308,42 +305,44 @@ pub fn tick_timed_effects(
             &mut event_system,
         );
     }
-    drain_and_fire(
-        &mut authority_params.production,
-        now,
-        None,
-        &mut event_system,
-    );
-    drain_and_fire(
-        &mut authority_params.cost_per_colony,
-        now,
-        None,
-        &mut event_system,
-    );
-    drain_and_fire(
-        &mut construction_params.ship_cost_modifier,
-        now,
-        None,
-        &mut event_system,
-    );
-    drain_and_fire(
-        &mut construction_params.building_cost_modifier,
-        now,
-        None,
-        &mut event_system,
-    );
-    drain_and_fire(
-        &mut construction_params.ship_build_time_modifier,
-        now,
-        None,
-        &mut event_system,
-    );
-    drain_and_fire(
-        &mut construction_params.building_build_time_modifier,
-        now,
-        None,
-        &mut event_system,
-    );
+    for (mut authority_params, mut construction_params) in &mut empire_q {
+        drain_and_fire(
+            &mut authority_params.production,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut authority_params.cost_per_colony,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.ship_cost_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.building_cost_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.ship_build_time_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+        drain_and_fire(
+            &mut construction_params.building_build_time_modifier,
+            now,
+            None,
+            &mut event_system,
+        );
+    }
 }
 
 /// Tracks cooldowns for resource alerts to prevent spamming the same alert every tick.

@@ -375,7 +375,7 @@ pub fn load_technologies(
     mut commands: Commands,
     engine: Res<crate::scripting::ScriptEngine>,
     branch_registry: Res<TechBranchRegistry>,
-    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    empire_q: Query<Entity, With<crate::player::Empire>>,
 ) {
     let techs = match parse_tech_definitions(engine.lua()) {
         Ok(parsed) if !parsed.is_empty() => parsed,
@@ -407,12 +407,15 @@ pub fn load_technologies(
         tree.technologies.len()
     );
 
-    // Insert onto the player empire entity (replacing the default)
-    if let Ok(empire_entity) = empire_q.single() {
-        commands.entity(empire_entity).insert(tree);
-    } else {
-        warn!("No player empire entity found; inserting TechTree as resource fallback");
+    // Insert onto all empire entities
+    let empire_entities: Vec<Entity> = empire_q.iter().collect();
+    if empire_entities.is_empty() {
+        warn!("No empire entities found; inserting TechTree as resource fallback");
         commands.insert_resource(tree);
+    } else {
+        for empire_entity in empire_entities {
+            commands.entity(empire_entity).insert(tree.clone());
+        }
     }
 }
 
@@ -529,21 +532,20 @@ pub fn load_game_balance(
 /// stack remains intact.
 pub fn sync_authority_params_from_balance(
     balance: Res<GameBalance>,
-    mut empire_q: Query<&mut crate::colony::AuthorityParams, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<&mut crate::colony::AuthorityParams, With<crate::player::Empire>>,
 ) {
     if !balance.is_changed() {
         return;
     }
-    let Ok(mut params) = empire_q.single_mut() else {
-        return;
-    };
     let prod_base = balance.base_authority_per_hexadies.effective_base();
     let cost_base = balance.authority_cost_per_colony.effective_base();
-    if params.production.base() != prod_base {
-        params.production.set_base(prod_base);
-    }
-    if params.cost_per_colony.base() != cost_base {
-        params.cost_per_colony.set_base(cost_base);
+    for mut params in &mut empire_q {
+        if params.production.base() != prod_base {
+            params.production.set_base(prod_base);
+        }
+        if params.cost_per_colony.base() != cost_base {
+            params.cost_per_colony.set_base(cost_base);
+        }
     }
 }
 

@@ -680,13 +680,14 @@ pub fn rebuild_relay_network(
         (Without<ConstructionPlatform>, Without<Scrapyard>),
     >,
     registry: Res<DeliverableRegistry>,
-    empire_q: Query<&CommsParams, With<crate::player::PlayerEmpire>>,
+    empire_q: Query<&CommsParams, With<crate::player::Empire>>,
 ) {
+    // Use the max empire relay range bonus across all empires for the global
+    // relay network. TODO(#418): per-empire relay networks.
     let empire_bonus = empire_q
         .iter()
-        .next()
         .map(|c| c.empire_relay_range.final_value().to_f64())
-        .unwrap_or(0.0);
+        .fold(0.0_f64, f64::max);
 
     network.relays.clear();
     for (_e, structure, pos, relay) in structures.iter() {
@@ -910,7 +911,7 @@ pub struct FactSysParam<'w, 's> {
     pub notified_ids: ResMut<'w, NotifiedEventIds>,
     pub next_event_id: ResMut<'w, NextEventId>,
     pub relay_network: Res<'w, RelayNetwork>,
-    pub empire_comms: Query<'w, 's, &'static CommsParams, With<crate::player::PlayerEmpire>>,
+    pub empire_comms: Query<'w, 's, &'static CommsParams, With<crate::player::Empire>>,
     /// #354 K-5: core variant -> `PendingKnowledgeRecord` sink. Optional
     /// so callsites that construct a `FactSysParam` outside
     /// `ScriptingPlugin` (tests / observer-mode headless apps) don't

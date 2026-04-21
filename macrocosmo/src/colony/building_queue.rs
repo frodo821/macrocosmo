@@ -366,7 +366,7 @@ pub fn tick_build_queue(
     last_tick: Res<LastProductionTick>,
     design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
-    mut colonies: Query<(&Colony, &mut BuildQueue)>,
+    mut colonies: Query<(&Colony, &mut BuildQueue, &crate::faction::FactionOwner)>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     mut deliverable_stockpiles: Query<&mut DeliverableStockpile, With<StarSystem>>,
     positions: Query<&Position>,
@@ -374,14 +374,9 @@ pub fn tick_build_queue(
     planets: Query<&Planet>,
     bq_station_ships: Query<(Entity, &Ship, &ShipState, &super::SlotAssignment)>,
     mut events: MessageWriter<GameEvent>,
-    empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
     player_q: Query<(&StationedAt, Option<&AboardShip>), With<Player>>,
     mut fact_sys: FactSysParam,
 ) {
-    let ship_owner = empire_q
-        .single()
-        .map(Owner::Empire)
-        .unwrap_or(Owner::Neutral);
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
@@ -417,11 +412,12 @@ pub fn tick_build_queue(
         minerals_consumed: Amt,
         energy_consumed: Amt,
         completed: Vec<Completion>,
+        ship_owner: Owner,
     }
 
     let mut results: Vec<BuildResult> = Vec::new();
 
-    for (colony, mut build_queue) in &mut colonies {
+    for (colony, mut build_queue, faction_owner) in &mut colonies {
         let Some(sys) = colony.system(&planets) else {
             continue;
         };
@@ -491,6 +487,7 @@ pub fn tick_build_queue(
             minerals_consumed: total_minerals_consumed,
             energy_consumed: total_energy_consumed,
             completed,
+            ship_owner: Owner::Empire(faction_owner.0),
         });
     }
 
@@ -517,7 +514,7 @@ pub fn tick_build_queue(
                             display_name.clone(),
                             result.system,
                             *pos,
-                            ship_owner,
+                            result.ship_owner,
                             &design_registry,
                         );
                         // #249: Dual-write ShipBuilt — routine, low-priority.

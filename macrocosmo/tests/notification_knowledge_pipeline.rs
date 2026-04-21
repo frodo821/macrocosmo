@@ -375,7 +375,13 @@ fn test_empire_comm_relay_range_extends_coverage() {
     // Empire entity with default CommsParams (no range bonus).
     let empire = app
         .world_mut()
-        .spawn((PlayerEmpire, CommsParams::default()))
+        .spawn((
+            PlayerEmpire,
+            macrocosmo::player::Empire {
+                name: "Test Empire".into(),
+            },
+            CommsParams::default(),
+        ))
         .id();
 
     // A standalone (unpaired) relay entity.

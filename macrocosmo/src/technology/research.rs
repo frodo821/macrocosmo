@@ -152,16 +152,18 @@ pub fn emit_research(
 pub fn receive_research(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut empire_q: Query<&mut ResearchPool, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<&mut ResearchPool, With<crate::player::Empire>>,
     pending: Query<(Entity, &PendingResearch)>,
 ) {
-    let Ok(mut pool) = empire_q.single_mut() else {
-        return;
-    };
-    for (entity, pr) in &pending {
-        if clock.elapsed >= pr.arrives_at {
-            pool.points += pr.amount;
-            commands.entity(entity).despawn();
+    // TODO(#418): PendingResearch entities are not yet associated with a
+    // specific empire. For now, all empires receive all pending research.
+    // This should be scoped per-empire once PendingResearch carries an owner.
+    for mut pool in &mut empire_q {
+        for (entity, pr) in &pending {
+            if clock.elapsed >= pr.arrives_at {
+                pool.points += pr.amount;
+                commands.entity(entity).despawn();
+            }
         }
     }
 }
@@ -179,7 +181,7 @@ pub fn tick_research(
             &mut ResearchPool,
             &mut RecentlyResearched,
         ),
-        With<crate::player::PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
 ) {
     let delta = clock.elapsed - last_tick.0;
@@ -188,63 +190,59 @@ pub fn tick_research(
     }
     last_tick.0 = clock.elapsed;
 
-    let Ok((mut tech_tree, mut queue, mut pool, mut recently_researched)) = empire_q.single_mut()
-    else {
-        return;
-    };
-
-    let Some(ref current_tech_id) = queue.current else {
-        return;
-    };
-
-    // Skip progress if research is blocked
-    if queue.blocked {
-        return;
-    }
-
-    let current_tech_id = current_tech_id.clone();
-
-    let research_cost = {
-        let Some(tech) = tech_tree.technologies.get(&current_tech_id) else {
-            queue.current = None;
-            return;
+    for (mut tech_tree, mut queue, mut pool, mut recently_researched) in &mut empire_q {
+        let Some(ref current_tech_id) = queue.current else {
+            continue;
         };
-        tech.cost.research.to_f64()
-    };
 
-    // Transfer available research points from pool
-    let needed = research_cost - queue.accumulated;
-    if needed > 0.0 {
-        let transfer = pool.points.min(needed);
-        if transfer > 0.0 {
-            pool.points -= transfer;
-            queue.accumulated += transfer;
+        // Skip progress if research is blocked
+        if queue.blocked {
+            continue;
         }
-    }
 
-    // Check completion
-    if queue.accumulated >= research_cost {
-        let tech_name = tech_tree
-            .technologies
-            .get(&current_tech_id)
-            .map(|t| t.name.clone())
-            .unwrap_or_default();
+        let current_tech_id = current_tech_id.clone();
 
-        tech_tree.complete_research(current_tech_id.clone());
-        recently_researched.techs.push(current_tech_id);
+        let research_cost = {
+            let Some(tech) = tech_tree.technologies.get(&current_tech_id) else {
+                queue.current = None;
+                continue;
+            };
+            tech.cost.research.to_f64()
+        };
 
-        queue.current = None;
-        queue.accumulated = 0.0;
-        info!("Research complete: {}", tech_name);
+        // Transfer available research points from pool
+        let needed = research_cost - queue.accumulated;
+        if needed > 0.0 {
+            let transfer = pool.points.min(needed);
+            if transfer > 0.0 {
+                pool.points -= transfer;
+                queue.accumulated += transfer;
+            }
+        }
+
+        // Check completion
+        if queue.accumulated >= research_cost {
+            let tech_name = tech_tree
+                .technologies
+                .get(&current_tech_id)
+                .map(|t| t.name.clone())
+                .unwrap_or_default();
+
+            tech_tree.complete_research(current_tech_id.clone());
+            recently_researched.techs.push(current_tech_id);
+
+            queue.current = None;
+            queue.accumulated = 0.0;
+            info!("Research complete: {}", tech_name);
+        }
     }
 }
 
 /// Flush unused research points at the end of each tick (use it or lose it).
-pub fn flush_research(mut empire_q: Query<&mut ResearchPool, With<crate::player::PlayerEmpire>>) {
-    let Ok(mut pool) = empire_q.single_mut() else {
-        return;
-    };
-    pool.points = 0.0;
+pub fn flush_research(mut empire_q: Query<&mut ResearchPool, With<crate::player::Empire>>) {
+    for mut pool in &mut empire_q {
+        pool.points = 0.0;
+    }
 }
 
 /// When techs are recently researched, propagate knowledge to all colonized systems.
@@ -252,52 +250,52 @@ pub fn flush_research(mut empire_q: Query<&mut ResearchPool, With<crate::player:
 pub fn propagate_tech_knowledge(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut empire_q: Query<&mut RecentlyResearched, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<&mut RecentlyResearched, With<crate::player::Empire>>,
     colonies: Query<&Colony>,
     stars: Query<(Entity, &StarSystem, &Position)>,
     mut tech_knowledge: Query<&mut TechKnowledge>,
     planets: Query<&crate::galaxy::Planet>,
 ) {
-    let Ok(mut recently_researched) = empire_q.single_mut() else {
-        return;
-    };
-    if recently_researched.techs.is_empty() {
-        return;
-    }
-
-    // Find capital system
-    let capital = stars.iter().find(|(_, s, _)| s.is_capital);
-    let Some((capital_entity, _, capital_pos)) = capital else {
-        recently_researched.techs.clear();
-        return;
-    };
-    let capital_pos = *capital_pos;
-
-    // Collect colonized system entities
-    let colonized_systems: HashSet<Entity> =
-        colonies.iter().filter_map(|c| c.system(&planets)).collect();
-
-    for tech_id in recently_researched.techs.drain(..) {
-        // Capital gets it immediately
-        if let Ok(mut knowledge) = tech_knowledge.get_mut(capital_entity) {
-            knowledge.known_techs.insert(tech_id.clone());
+    for mut recently_researched in &mut empire_q {
+        if recently_researched.techs.is_empty() {
+            continue;
         }
 
-        // Other colonized systems get it after light delay
-        for (sys_entity, _, sys_pos) in stars.iter() {
-            if sys_entity == capital_entity {
-                continue;
+        // Find capital system
+        // TODO(#418): capital should be per-empire, not a global flag on StarSystem
+        let capital = stars.iter().find(|(_, s, _)| s.is_capital);
+        let Some((capital_entity, _, capital_pos)) = capital else {
+            recently_researched.techs.clear();
+            continue;
+        };
+        let capital_pos = *capital_pos;
+
+        // Collect colonized system entities
+        let colonized_systems: HashSet<Entity> =
+            colonies.iter().filter_map(|c| c.system(&planets)).collect();
+
+        for tech_id in recently_researched.techs.drain(..) {
+            // Capital gets it immediately
+            if let Ok(mut knowledge) = tech_knowledge.get_mut(capital_entity) {
+                knowledge.known_techs.insert(tech_id.clone());
             }
-            if !colonized_systems.contains(&sys_entity) {
-                continue;
+
+            // Other colonized systems get it after light delay
+            for (sys_entity, _, sys_pos) in stars.iter() {
+                if sys_entity == capital_entity {
+                    continue;
+                }
+                if !colonized_systems.contains(&sys_entity) {
+                    continue;
+                }
+                let distance = physics::distance_ly(&capital_pos, sys_pos);
+                let delay = physics::light_delay_hexadies(distance);
+                commands.spawn(PendingKnowledgePropagation {
+                    tech_id: tech_id.clone(),
+                    target_system: sys_entity,
+                    arrives_at: clock.elapsed + delay,
+                });
             }
-            let distance = physics::distance_ly(&capital_pos, sys_pos);
-            let delay = physics::light_delay_hexadies(distance);
-            commands.spawn(PendingKnowledgePropagation {
-                tech_id: tech_id.clone(),
-                target_system: sys_entity,
-                arrives_at: clock.elapsed + delay,
-            });
         }
     }
 }

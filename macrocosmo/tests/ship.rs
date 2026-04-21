@@ -13,9 +13,11 @@ use macrocosmo::ship::*;
 use macrocosmo::technology;
 use macrocosmo::time_system::GameClock;
 
+use macrocosmo::faction::FactionOwner;
+
 use common::{
-    advance_time, empire_entity, find_planet, full_test_app, spawn_test_colony, spawn_test_system,
-    test_app,
+    advance_time, empire_entity, find_planet, full_test_app, spawn_test_colony, spawn_test_empire,
+    spawn_test_system, test_app,
 };
 
 fn spawn_ftl_explorer(world: &mut World, name: &str, system: Entity, pos: [f64; 3]) -> Entity {
@@ -288,6 +290,7 @@ fn test_ftl_travel_and_arrival() {
 #[test]
 fn test_build_queue_spawns_ship() {
     let mut app = test_app();
+    let empire = spawn_test_empire(app.world_mut());
 
     // System entity (build queue needs to look up Position on colony.system)
     let sys = spawn_test_system(
@@ -361,6 +364,8 @@ fn test_build_queue_spawns_ship() {
         Buildings {
             slots: vec![None, None, None, None],
         },
+        BuildingQueue::default(),
+        FactionOwner(empire),
     ));
 
     // Count ships before

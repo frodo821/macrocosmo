@@ -723,19 +723,33 @@ pub fn sensor_buoy_detect_system(
     )>,
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
     positions: Query<&crate::components::Position>,
-    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::Empire>>,
 ) {
     use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
-    let Ok(mut store) = empire_q.single_mut() else {
-        return;
-    };
+    // TODO(#418): sensor buoy observations should be scoped per-empire based on
+    // structure ownership. For now, all empires receive observations from all
+    // sensor buoys (matching the pre-#418 single-empire behaviour).
     let Some(stationed) = player_q.iter().next() else {
         return;
     };
     let Ok(player_pos) = positions.get(stationed.system) else {
         return;
     };
+
+    // Pre-collect ship snapshots so we can write to multiple empire stores.
+    struct BuoySnapshot {
+        ship_entity: Entity,
+        name: String,
+        design_id: String,
+        snapshot_state: ShipSnapshotState,
+        last_system: Option<Entity>,
+        observed_at: i64,
+        hp: f64,
+        hp_max: f64,
+    }
+
+    let mut snapshots: Vec<BuoySnapshot> = Vec::new();
 
     for (structure, buoy_pos) in &structures {
         let Some(def) = registry.get(&structure.definition_id) else {
@@ -766,14 +780,6 @@ pub fn sensor_buoy_detect_system(
             // Range check: distance from buoy to ship.
             let dist = crate::physics::distance_ly(buoy_pos, ship_pos);
             if dist > detect_range {
-                continue;
-            }
-
-            // Skip if existing knowledge is at least as fresh.
-            if store
-                .get_ship(ship_entity)
-                .is_some_and(|existing| existing.observed_at >= observed_at)
-            {
                 continue;
             }
 
@@ -809,15 +815,37 @@ pub fn sensor_buoy_detect_system(
                 }
             };
 
-            store.update_ship(ShipSnapshot {
-                entity: ship_entity,
+            snapshots.push(BuoySnapshot {
+                ship_entity,
                 name: ship.name.clone(),
                 design_id: ship.design_id.clone(),
-                last_known_state: snapshot_state,
-                last_known_system: last_system,
+                snapshot_state,
+                last_system,
                 observed_at,
                 hp: hp.hull,
                 hp_max: hp.hull_max,
+            });
+        }
+    }
+
+    // Write snapshots to all empire knowledge stores.
+    for mut store in &mut empire_q {
+        for snap in &snapshots {
+            if store
+                .get_ship(snap.ship_entity)
+                .is_some_and(|existing| existing.observed_at >= snap.observed_at)
+            {
+                continue;
+            }
+            store.update_ship(ShipSnapshot {
+                entity: snap.ship_entity,
+                name: snap.name.clone(),
+                design_id: snap.design_id.clone(),
+                last_known_state: snap.snapshot_state.clone(),
+                last_known_system: snap.last_system,
+                observed_at: snap.observed_at,
+                hp: snap.hp,
+                hp_max: snap.hp_max,
                 source: ObservationSource::Direct,
             });
         }
@@ -894,7 +922,7 @@ pub fn relay_knowledge_propagate_system(
     positions: Query<&crate::components::Position>,
     mut empire_q: Query<
         (Entity, &mut crate::knowledge::KnowledgeStore),
-        With<crate::player::PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
     // #145: Forbidden regions that block FTL comm propagation.
     ftl_comm_blocking_regions: Query<&crate::galaxy::ForbiddenRegion>,
@@ -931,9 +959,8 @@ pub fn relay_knowledge_propagate_system(
         .collect();
     use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
-    let Ok((empire_entity, mut store)) = empire_q.single_mut() else {
-        return;
-    };
+    // TODO(#418): relay knowledge should be scoped per-empire based on
+    // structure ownership. For now, all empires receive relay observations.
     let Some(stationed) = player_q.iter().next() else {
         return;
     };
@@ -948,12 +975,21 @@ pub fn relay_knowledge_propagate_system(
         Some(cap.range)
     };
 
+    // Pre-collect ship snapshots and system knowledge for later writing to all empires.
+    let mut ship_snapshots: Vec<ShipSnapshot> = Vec::new();
+
+    struct SystemKnowledgeEntry {
+        system: Entity,
+        observed_at: i64,
+        received_at: i64,
+        data: crate::knowledge::SystemSnapshot,
+    }
+    let mut system_snapshots: Vec<SystemKnowledgeEntry> = Vec::new();
+
+    // Collect empire entities for per-empire hostile map filtering.
+    let empire_entities: Vec<Entity> = empire_q.iter().map(|(e, _)| e).collect();
+
     for (_source_entity, source_structure, source_pos, relay) in &relays {
-        // Every FTLCommRelay component SENDS from the holder to `paired_with`.
-        // `direction` is informational for UI/future ROE; both variants send.
-        // Strict OneWay semantics are enforced by `pair_relay_command` at
-        // setup time (the receiver has its FTLCommRelay removed), so this
-        // loop needs no special-casing beyond the component's presence.
         let _ = relay.direction;
 
         let Some(source_range) = relay_range_for(source_structure) else {
@@ -962,22 +998,17 @@ pub fn relay_knowledge_propagate_system(
 
         let partner_entity = relay.paired_with;
         let Ok((partner_structure, partner_pos)) = partner_q.get(partner_entity) else {
-            // Dangling pair — verify_relay_pairings_system will clean up.
             continue;
         };
         let Some(partner_range) = relay_range_for(partner_structure) else {
             continue;
         };
 
-        // Check player-in-partner-range.
         let player_to_partner = crate::physics::distance_ly(player_pos, partner_pos);
         if partner_range > 0.0 && player_to_partner > partner_range {
             continue;
         }
 
-        // #145: If any forbidden region with `blocks_ftl_comm` intersects the
-        // pair segment, skip this pair entirely — knowledge falls back to
-        // light-speed propagation (handled elsewhere, not here).
         let source_arr = source_pos.as_array();
         let partner_arr = partner_pos.as_array();
         if comm_blockers
@@ -994,16 +1025,7 @@ pub fn relay_knowledge_propagate_system(
                 continue;
             }
 
-            // FTL speed ~ instant: observed_at = clock.elapsed.
             let observed_at = clock.elapsed;
-
-            // Skip if existing knowledge is at least as fresh.
-            if store
-                .get_ship(ship_entity)
-                .is_some_and(|existing| existing.observed_at >= observed_at)
-            {
-                continue;
-            }
 
             let (snapshot_state, last_system) = match state {
                 crate::ship::ShipState::InSystem { system } => {
@@ -1030,13 +1052,12 @@ pub fn relay_knowledge_propagate_system(
                     },
                     None,
                 ),
-                // #217: Scouting ships appear like Surveying at target system.
                 crate::ship::ShipState::Scouting { target_system, .. } => {
                     (ShipSnapshotState::Surveying, Some(*target_system))
                 }
             };
 
-            store.update_ship(ShipSnapshot {
+            ship_snapshots.push(ShipSnapshot {
                 entity: ship_entity,
                 name: ship.name.clone(),
                 design_id: ship.design_id.clone(),
@@ -1049,29 +1070,23 @@ pub fn relay_knowledge_propagate_system(
             });
         }
 
-        // #216: FTL-relayed SystemKnowledge. For every star system within the
-        // SOURCE relay's range, write a fresh SystemKnowledge entry at
-        // FTL speed (observed_at = clock.elapsed, source = Relay) provided
-        // the player is within the PARTNER relay's range (checked above).
-        //
-        // This is the "Sensor Buoy + Relay" aggregation path (B-1): Sensor
-        // Buoy ship observations are already covered by the ship loop above;
-        // here we additionally deliver the system-level snapshot (resources,
-        // colonization, hostile presence, etc.) through the same pair.
+        // #216: FTL-relayed SystemKnowledge.
         let observed_at = clock.elapsed;
-        // #293: system → aggregated hostile strength, filtered by
-        // FactionRelations relative to the receiving empire entity.
+        // #293: Build hostile map using the first empire entity for faction
+        // relations filtering. TODO(#418): per-empire hostile maps.
         let mut hostile_map: std::collections::HashMap<Entity, f64> =
             std::collections::HashMap::new();
-        for (at_system, stats, owner) in &hostiles {
-            let include = match owner {
-                Some(o) => faction_relations
-                    .get_or_default(empire_entity, o.0)
-                    .can_attack_aggressive(),
-                None => true,
-            };
-            if include {
-                *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+        if let Some(&first_empire) = empire_entities.first() {
+            for (at_system, stats, owner) in &hostiles {
+                let include = match owner {
+                    Some(o) => faction_relations
+                        .get_or_default(first_empire, o.0)
+                        .can_attack_aggressive(),
+                    None => true,
+                };
+                if include {
+                    *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
+                }
             }
         }
 
@@ -1081,15 +1096,6 @@ pub fn relay_knowledge_propagate_system(
                 continue;
             }
 
-            // Skip if existing knowledge is at least as fresh.
-            if store
-                .get(sys_entity)
-                .is_some_and(|existing| existing.observed_at >= observed_at)
-            {
-                continue;
-            }
-
-            // Compute port/shipyard from the ships query (which includes Option<SlotAssignment>).
             let reverse = crate::colony::system_buildings::build_reverse_design_map(&building_registry);
             let relay_has_port = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
                 slot.is_some()
@@ -1114,11 +1120,38 @@ pub fn relay_knowledge_propagate_system(
                 &hostile_map,
             );
 
-            store.update(crate::knowledge::SystemKnowledge {
+            system_snapshots.push(SystemKnowledgeEntry {
                 system: sys_entity,
                 observed_at,
                 received_at: clock.elapsed,
                 data: snapshot,
+            });
+        }
+    }
+
+    // Write collected snapshots to all empire knowledge stores.
+    for (_empire_entity, mut store) in &mut empire_q {
+        for snap in &ship_snapshots {
+            if store
+                .get_ship(snap.entity)
+                .is_some_and(|existing| existing.observed_at >= snap.observed_at)
+            {
+                continue;
+            }
+            store.update_ship(snap.clone());
+        }
+        for sys_snap in &system_snapshots {
+            if store
+                .get(sys_snap.system)
+                .is_some_and(|existing| existing.observed_at >= sys_snap.observed_at)
+            {
+                continue;
+            }
+            store.update(crate::knowledge::SystemKnowledge {
+                system: sys_snap.system,
+                observed_at: sys_snap.observed_at,
+                received_at: sys_snap.received_at,
+                data: sys_snap.data.clone(),
                 source: ObservationSource::Relay,
             });
         }
