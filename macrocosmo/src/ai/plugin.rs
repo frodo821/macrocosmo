@@ -152,6 +152,18 @@ pub fn declare_foreign_slots_on_awareness(
 ) {
     for entity in &new_factions {
         let fid = super::convert::to_ai_faction(entity);
+
+        // Declare per-faction "self" metric slots so emitters can write
+        // faction-scoped values (e.g. `my_total_ships.faction_42`).
+        for base in super::schema::ids::metric::PER_FACTION_METRIC_BASES {
+            let id = super::schema::ids::metric::for_faction(base, fid);
+            // Re-use the spec from the global declaration (same type / retention).
+            // `declare_metric` is idempotent — if the slot already exists it
+            // merely updates the spec.
+            bus.declare_metric(id, macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
+        }
+
+        // Declare foreign-faction metric slots (Tier 2).
         for template in super::schema::foreign::foreign_metric_templates() {
             let id = super::schema::foreign::foreign_metric_id(&template.prefix, fid);
             bus.declare_metric(id, (template.spec_factory)());

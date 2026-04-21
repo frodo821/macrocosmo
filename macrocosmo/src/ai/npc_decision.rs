@@ -153,8 +153,9 @@ impl NpcPolicy for NoOpPolicy {
 ///    `my_total_ships < colony_count * 2` → emit `fortify_system` (logged
 ///    only by the consumer in Phase 1).
 ///
-/// Known limitation: metrics are global (not per-faction) in Phase 1; the
-/// policy treats them as "self" metrics for each NPC.
+/// Reads per-faction metrics from the bus using faction-suffixed IDs
+/// (e.g. `my_total_ships.faction_42`), so each NPC sees only its own
+/// empire's data.
 #[derive(Default)]
 pub struct SimpleNpcPolicy;
 
@@ -170,10 +171,18 @@ impl NpcPolicy for SimpleNpcPolicy {
         let mut commands = Vec::new();
         let faction_id = to_ai_faction(faction_entity);
 
-        let fleet_ready = bus.current(&metric::my_fleet_ready()).unwrap_or(0.0);
-        let colony_count = bus.current(&metric::colony_count()).unwrap_or(0.0);
-        let can_build = bus.current(&metric::can_build_ships()).unwrap_or(0.0);
-        let total_ships = bus.current(&metric::my_total_ships()).unwrap_or(0.0);
+        let fleet_ready = bus
+            .current(&metric::for_faction("my_fleet_ready", faction_id))
+            .unwrap_or(0.0);
+        let colony_count = bus
+            .current(&metric::for_faction("colony_count", faction_id))
+            .unwrap_or(0.0);
+        let can_build = bus
+            .current(&metric::for_faction("can_build_ships", faction_id))
+            .unwrap_or(0.0);
+        let total_ships = bus
+            .current(&metric::for_faction("my_total_ships", faction_id))
+            .unwrap_or(0.0);
 
         // Idle combat ships: not survey/colony capable, currently docked.
         let idle_combat: Vec<Entity> = context
@@ -382,26 +391,48 @@ mod tests {
         assert!(cmds.is_empty());
     }
 
-    /// Helper: create a bus with all metrics declared and set values.
-    fn bus_with_metrics(metrics: &[(&str, f64)]) -> macrocosmo_ai::AiBus {
+    /// Helper: create a bus with per-faction metrics declared and set.
+    ///
+    /// Metric names in `metrics` are base names (e.g. `"my_total_ships"`);
+    /// they are automatically suffixed with the faction id.
+    fn bus_with_metrics(
+        faction: macrocosmo_ai::FactionId,
+        metrics: &[(&str, f64)],
+    ) -> macrocosmo_ai::AiBus {
         let mut bus = macrocosmo_ai::AiBus::with_warning_mode(WarningMode::Silent);
         schema::declare_metrics_standalone(&mut bus);
+        // Declare + emit per-faction slots.
         for (name, value) in metrics {
-            let id = macrocosmo_ai::MetricId::from(*name);
+            let id = metric::for_faction(name, faction);
+            bus.declare_metric(id.clone(), macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
             bus.emit(&id, *value, 10);
         }
+        // Also declare the global metrics that remain un-suffixed.
         bus
+    }
+
+    /// The faction entity used in all SimpleNpcPolicy tests.
+    fn test_faction_entity() -> Entity {
+        Entity::from_raw_u32(1).unwrap()
+    }
+
+    /// The AI faction id corresponding to [`test_faction_entity`].
+    fn test_faction_id() -> macrocosmo_ai::FactionId {
+        crate::ai::convert::to_ai_faction(test_faction_entity())
     }
 
     #[test]
     fn simple_policy_emits_attack_when_conditions_met() {
-        let bus = bus_with_metrics(&[
-            ("my_total_ships", 5.0),
-            ("my_fleet_ready", 0.8),
-            ("systems_with_hostiles", 2.0),
-            ("colony_count", 3.0),
-            ("can_build_ships", 1.0),
-        ]);
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 5.0),
+                ("my_fleet_ready", 0.8),
+                ("systems_with_hostiles", 2.0),
+                ("colony_count", 3.0),
+                ("can_build_ships", 1.0),
+            ],
+        );
 
         let hostile_sys = Entity::from_raw_u32(42).unwrap();
         let combat_ship = Entity::from_raw_u32(100).unwrap();
@@ -444,13 +475,16 @@ mod tests {
 
     #[test]
     fn simple_policy_emits_retreat_when_fleet_weak() {
-        let bus = bus_with_metrics(&[
-            ("my_total_ships", 2.0),
-            ("my_fleet_ready", 0.2),
-            ("systems_with_hostiles", 0.0),
-            ("colony_count", 1.0),
-            ("can_build_ships", 0.0),
-        ]);
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 2.0),
+                ("my_fleet_ready", 0.2),
+                ("systems_with_hostiles", 0.0),
+                ("colony_count", 1.0),
+                ("can_build_ships", 0.0),
+            ],
+        );
 
         let ctx = NpcContext {
             hostile_systems: vec![],
@@ -474,13 +508,16 @@ mod tests {
 
     #[test]
     fn simple_policy_emits_fortify_when_few_ships() {
-        let bus = bus_with_metrics(&[
-            ("my_total_ships", 1.0),
-            ("my_fleet_ready", 0.9),
-            ("systems_with_hostiles", 0.0),
-            ("colony_count", 3.0),
-            ("can_build_ships", 1.0),
-        ]);
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 1.0),
+                ("my_fleet_ready", 0.9),
+                ("systems_with_hostiles", 0.0),
+                ("colony_count", 3.0),
+                ("can_build_ships", 1.0),
+            ],
+        );
 
         let ctx = NpcContext {
             hostile_systems: vec![],
@@ -504,13 +541,16 @@ mod tests {
 
     #[test]
     fn simple_policy_does_nothing_when_fleet_sufficient() {
-        let bus = bus_with_metrics(&[
-            ("my_total_ships", 8.0),
-            ("my_fleet_ready", 0.9),
-            ("systems_with_hostiles", 0.0),
-            ("colony_count", 3.0),
-            ("can_build_ships", 1.0),
-        ]);
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 8.0),
+                ("my_fleet_ready", 0.9),
+                ("systems_with_hostiles", 0.0),
+                ("colony_count", 3.0),
+                ("can_build_ships", 1.0),
+            ],
+        );
 
         let ctx = NpcContext {
             hostile_systems: vec![],
@@ -533,13 +573,16 @@ mod tests {
 
     #[test]
     fn simple_policy_no_attack_without_combat_ships() {
-        let bus = bus_with_metrics(&[
-            ("my_total_ships", 2.0),
-            ("my_fleet_ready", 0.9),
-            ("systems_with_hostiles", 1.0),
-            ("colony_count", 1.0),
-            ("can_build_ships", 0.0),
-        ]);
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 2.0),
+                ("my_fleet_ready", 0.9),
+                ("systems_with_hostiles", 1.0),
+                ("colony_count", 1.0),
+                ("can_build_ships", 0.0),
+            ],
+        );
 
         let hostile_sys = Entity::from_raw_u32(42).unwrap();
         // Only survey ships — no combat capability

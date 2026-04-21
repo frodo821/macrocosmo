@@ -22,6 +22,76 @@ use macrocosmo_ai::{CommandKindId, EvidenceKindId, MetricId};
 pub mod metric {
     use super::MetricId;
 
+    /// Create a per-faction variant of a metric.
+    ///
+    /// Returns a `MetricId` of the form `"{base}.faction_{id}"`, matching
+    /// the naming convention used by foreign metrics in
+    /// [`super::super::foreign`].
+    pub fn for_faction(base: &str, faction: macrocosmo_ai::FactionId) -> MetricId {
+        MetricId::from(format!("{base}.faction_{}", faction.0))
+    }
+
+    /// Base names of all "self" metrics that should be emitted per-faction.
+    ///
+    /// Global / time metrics (`game_elapsed_time`, `systems_with_hostiles`)
+    /// are intentionally excluded — they remain global.
+    pub const PER_FACTION_METRIC_BASES: &[&str] = &[
+        // 1.1 Military — Self
+        "my_total_ships",
+        "my_strength",
+        "my_fleet_ready",
+        "my_armor",
+        "my_shields",
+        "my_shield_regen_rate",
+        "my_vulnerability_score",
+        "my_has_flagship",
+        "my_total_attack",
+        "my_total_defense",
+        // 1.2 Economy — Production
+        "net_production_minerals",
+        "net_production_energy",
+        "net_production_food",
+        "net_production_research",
+        "net_production_authority",
+        "food_consumption_rate",
+        "food_surplus",
+        // 1.3 Economy — Stockpiles
+        "stockpile_minerals",
+        "stockpile_energy",
+        "stockpile_food",
+        "stockpile_authority",
+        "stockpile_ratio_minerals",
+        "stockpile_ratio_energy",
+        "stockpile_ratio_food",
+        "total_authority_debt",
+        // 1.4 Population
+        "population_total",
+        "population_growth_rate",
+        "population_carrying_capacity",
+        "population_ratio",
+        // 1.5 Territory (per-faction subset)
+        "colony_count",
+        "colonized_system_count",
+        "border_system_count",
+        "habitable_systems_known",
+        "colonizable_systems_remaining",
+        // 1.6 Technology
+        "tech_total_researched",
+        "tech_completion_percent",
+        "tech_unlocks_available",
+        "research_output_ratio",
+        // 1.7 Infrastructure
+        "systems_with_shipyard",
+        "systems_with_port",
+        "max_building_slots",
+        "used_building_slots",
+        "free_building_slots",
+        "can_build_ships",
+        // 1.8 Meta (per-faction subset)
+        "number_of_allies",
+        "number_of_enemies",
+    ];
+
     // 1.1 Military — Self -----------------------------------------------
     pub fn my_total_ships() -> MetricId {
         MetricId::from("my_total_ships")
