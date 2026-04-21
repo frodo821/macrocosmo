@@ -16,6 +16,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::amount::{Amt, SignedAmt};
 use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
+use crate::observer::{ObserverMode, ObserverView};
 use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams,
@@ -48,6 +49,7 @@ use crate::visualization::{
 
 use params::{
     MainPanelDeliverableRes, MainPanelRegistries, MainPanelSelection, MainPanelWorldQueries,
+    ObserverUiState,
 };
 
 /// Resource tracking whether the research overlay is open.
@@ -334,6 +336,29 @@ mod font_tests {
             "font header does not look like a TTF"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// #417: Helper to resolve the "active empire" entity for UI purposes.
+// In normal play this is the PlayerEmpire entity; in observer mode it is
+// the empire selected in ObserverView.
+// ---------------------------------------------------------------------------
+
+fn resolve_ui_empire_raw(
+    player_q: &Query<Entity, With<PlayerEmpire>>,
+    observer_mode: &ObserverMode,
+    observer_view: &ObserverView,
+) -> Option<Entity> {
+    if observer_mode.enabled {
+        observer_view.viewing
+    } else {
+        player_q.single().ok()
+    }
+}
+
+/// Convenience wrapper that extracts the active empire from an [`ObserverUiState`].
+fn resolve_ui_empire(obs: &ObserverUiState) -> Option<Entity> {
+    resolve_ui_empire_raw(&obs.player_empire_q, &obs.observer_mode, &obs.observer_view)
 }
 
 // ---------------------------------------------------------------------------
@@ -835,14 +860,22 @@ fn draw_outline_and_tooltips_system(
     mut outline_expanded: ResMut<OutlineExpandedSystems>,
     galaxy_view: Res<crate::visualization::GalaxyView>,
     design_registry: Res<ShipDesignRegistry>,
-    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
+    knowledge_q: Query<&KnowledgeStore, With<crate::player::Empire>>,
     outline_q: params::OutlineQueries,
+    obs: ObserverUiState,
 ) {
     crate::prof_span!("draw_outline_and_tooltips");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let knowledge = empire_q.single().ok();
+    // #417: In observer mode, show ground truth (no KnowledgeStore delay).
+    // In normal play, use the PlayerEmpire's KnowledgeStore.
+    let empire_entity = resolve_ui_empire(&obs);
+    let knowledge = if obs.observer_mode.enabled {
+        None // ground truth in observer mode
+    } else {
+        empire_entity.and_then(|e| knowledge_q.get(e).ok())
+    };
     let player_system = ui_state.player_system;
 
     egui_wants_pointer.0 = ctx.wants_pointer_input();
@@ -927,13 +960,18 @@ fn draw_main_panels_system(
             &AuthorityParams,
             Option<&crate::knowledge::SystemVisibilityMap>,
         ),
-        With<PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
     mut deliverables_res: MainPanelDeliverableRes,
     mut game_events: MessageWriter<GameEvent>,
 ) {
     crate::prof_span!("draw_main_panels");
     let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    // #417: Resolve empire entity — PlayerEmpire in normal mode, ObserverView in observer mode.
+    let empire_entity = resolve_ui_empire_raw(&selection.player_empire_q, &selection.observer_mode, &selection.observer_view);
+    let Some(empire_entity) = empire_entity else {
         return;
     };
     let Ok((
@@ -946,7 +984,7 @@ fn draw_main_panels_system(
         _research_queue,
         _authority_params,
         vis_map_opt,
-    )) = empire_q.single()
+    )) = empire_q.get(empire_entity)
     else {
         return;
     };
@@ -968,7 +1006,7 @@ fn draw_main_panels_system(
         .map(|(id, _)| id.0.clone())
         .collect();
     let active_modifiers: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let (empire_flags_union, empire_buildings) = match deliverables_res.empire_flags.single() {
+    let (empire_flags_union, empire_buildings) = match deliverables_res.empire_flags.get(empire_entity) {
         Ok((game_flags, scoped_flags)) => {
             let mut union: std::collections::HashSet<String> = scoped_flags.flags.clone();
             union.extend(game_flags.flags.iter().cloned());
@@ -997,11 +1035,16 @@ fn draw_main_panels_system(
         .0
         .map(|sys| world.core_ships.iter().any(|(at, _)| at.0 == sys))
         .unwrap_or(false);
-    // #392: Compute visibility tier for selected system
+    // #392: Compute visibility tier for selected system.
+    // #417: In observer mode, grant full visibility (ground truth).
     let selected_vis_tier = selection.selected_system.0.map(|sys| {
-        vis_map_opt
-            .map(|vm| vm.get(sys))
-            .unwrap_or(crate::knowledge::SystemVisibilityTier::Catalogued)
+        if selection.observer_mode.enabled {
+            crate::knowledge::SystemVisibilityTier::Local
+        } else {
+            vis_map_opt
+                .map(|vm| vm.get(sys))
+                .unwrap_or(crate::knowledge::SystemVisibilityTier::Catalogued)
+        }
     });
     system_panel::draw_system_panel(
         ctx,
@@ -1411,22 +1454,30 @@ fn draw_main_panels_system(
             growth_rate: c.growth_rate,
         })
         .collect();
-    // #176/#293: Build hostile_systems using real-time for local, KnowledgeStore for remote
+    // #176/#293: Build hostile_systems using real-time for local, KnowledgeStore for remote.
+    // #417: In observer mode, use ground truth (all Hostile entities) directly.
     let hostile_systems: std::collections::HashSet<Entity> = {
         let mut set: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-        // Local system: (AtSystem, FactionOwner, With<Hostile>)
-        for (at_system, _owner) in world.hostile_presence.iter() {
-            if Some(at_system.0) == player_system {
+        if selection.observer_mode.enabled {
+            // Ground truth: all hostile entities
+            for (at_system, _owner) in world.hostile_presence.iter() {
                 set.insert(at_system.0);
             }
-        }
-        // Remote systems: from KnowledgeStore
-        for (_entity, k) in knowledge.iter() {
-            if Some(k.system) == player_system {
-                continue;
+        } else {
+            // Local system: (AtSystem, FactionOwner, With<Hostile>)
+            for (at_system, _owner) in world.hostile_presence.iter() {
+                if Some(at_system.0) == player_system {
+                    set.insert(at_system.0);
+                }
             }
-            if k.data.has_hostile {
-                set.insert(k.system);
+            // Remote systems: from KnowledgeStore
+            for (_entity, k) in knowledge.iter() {
+                if Some(k.system) == player_system {
+                    continue;
+                }
+                if k.data.has_hostile {
+                    set.insert(k.system);
+                }
             }
         }
         set
@@ -1553,16 +1604,22 @@ fn draw_overlays_system(
         (&mut ResourceStockpile, Option<&ResourceCapacity>),
         With<StarSystem>,
     >,
-    mut empire_q: Query<(&TechTree, &ResearchPool, &mut ResearchQueue), With<PlayerEmpire>>,
+    mut empire_q: Query<(&TechTree, &ResearchPool, &mut ResearchQueue), With<crate::player::Empire>>,
     branch_registry: Res<crate::technology::TechBranchRegistry>,
     effects_preview: Res<crate::technology::TechEffectsPreview>,
     unlock_index: Res<crate::technology::TechUnlockIndex>,
+    obs: ObserverUiState,
 ) {
     crate::prof_span!("draw_overlays");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok((tech_tree, research_pool, mut research_queue)) = empire_q.single_mut() else {
+    // #417: Resolve empire entity for research overlay.
+    let empire_entity = resolve_ui_empire(&obs);
+    let Some(empire_entity) = empire_entity else {
+        return;
+    };
+    let Ok((tech_tree, research_pool, mut research_queue)) = empire_q.get_mut(empire_entity) else {
         return;
     };
 
@@ -1676,14 +1733,15 @@ fn draw_diplomacy_overlay_system(
     option_registry: Res<DiplomaticOptionRegistry>,
     faction_registry: Res<crate::scripting::faction_api::FactionRegistry>,
     known_factions: Res<crate::faction::KnownFactions>,
-    empire_q: Query<Entity, With<PlayerEmpire>>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
+    obs: ObserverUiState,
 ) {
     crate::prof_span!("draw_diplomacy_overlay");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    let Ok(player_entity) = empire_q.single() else {
+    // #417: Resolve empire entity for diplomacy panel.
+    let Some(player_entity) = resolve_ui_empire(&obs) else {
         return;
     };
 
@@ -2207,7 +2265,8 @@ fn draw_choice_dialog_system(
     ui_state: Res<UiState>,
     mut pending: ResMut<PendingChoice>,
     mut selection: ResMut<PendingChoiceSelection>,
-    empire_q: Query<(&TechTree, &GameFlags, &ScopedFlags), With<PlayerEmpire>>,
+    empire_q: Query<(&TechTree, &GameFlags, &ScopedFlags), With<crate::player::Empire>>,
+    obs: ObserverUiState,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -2215,7 +2274,12 @@ fn draw_choice_dialog_system(
     if !pending.is_active() {
         return;
     }
-    let Ok((tech_tree, game_flags, scoped_flags)) = empire_q.single() else {
+    // #417: Resolve empire entity for choice dialog.
+    let empire_entity = resolve_ui_empire(&obs);
+    let Some(empire_entity) = empire_entity else {
+        return;
+    };
+    let Ok((tech_tree, game_flags, scoped_flags)) = empire_q.get(empire_entity) else {
         return;
     };
 

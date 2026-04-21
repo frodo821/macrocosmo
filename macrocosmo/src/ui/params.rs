@@ -169,7 +169,7 @@ pub struct OutlineQueries<'w, 's> {
 }
 
 #[derive(SystemParam)]
-pub struct MainPanelSelection<'w> {
+pub struct MainPanelSelection<'w, 's> {
     pub selected_system: ResMut<'w, SelectedSystem>,
     pub selected_ship: ResMut<'w, SelectedShip>,
     pub selected_ships: ResMut<'w, SelectedShips>,
@@ -181,6 +181,10 @@ pub struct MainPanelSelection<'w> {
     /// #398: Observer mode read-only flag. When `read_only` is true, context
     /// menu and ship panel commands are suppressed.
     pub observer_mode: Res<'w, crate::observer::ObserverMode>,
+    /// #417: Observer view — which empire entity is being observed.
+    pub observer_view: Res<'w, crate::observer::ObserverView>,
+    /// #417: PlayerEmpire query for resolving the active empire entity.
+    pub player_empire_q: Query<'w, 's, Entity, With<crate::player::PlayerEmpire>>,
 }
 
 /// #229: Deliverable-pipeline resources used by the main panels: the Lua-
@@ -200,9 +204,18 @@ pub struct MainPanelDeliverableRes<'w, 's> {
             &'static crate::technology::GameFlags,
             &'static crate::condition::ScopedFlags,
         ),
-        With<crate::player::PlayerEmpire>,
+        With<crate::player::Empire>,
     >,
     pub colony_dispatches: ResMut<'w, crate::communication::PendingColonyDispatches>,
+}
+
+/// #417: Observer-mode resolution bundle. Carries the resources and query
+/// needed to determine the "active empire" entity for UI purposes.
+#[derive(SystemParam)]
+pub struct ObserverUiState<'w, 's> {
+    pub observer_mode: Res<'w, crate::observer::ObserverMode>,
+    pub observer_view: Res<'w, crate::observer::ObserverView>,
+    pub player_empire_q: Query<'w, 's, Entity, With<crate::player::PlayerEmpire>>,
 }
 
 #[derive(SystemParam)]
