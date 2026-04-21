@@ -93,6 +93,7 @@ impl Plugin for AiPlugin {
                     declare_foreign_slots_on_awareness,
                     super::emitters::emit_military_metrics,
                     super::emitters::emit_economic_metrics,
+                    super::emitters::emit_foreign_metrics,
                 )
                     .in_set(AiTickSet::MetricProduce),
             )

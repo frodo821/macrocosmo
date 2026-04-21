@@ -10,6 +10,7 @@ use bevy::prelude::*;
 
 use crate::ai::convert::to_ai_faction;
 use crate::ai::emit::AiBusWriter;
+use crate::ai::schema::foreign::foreign_metric_id;
 use crate::ai::schema::ids::metric;
 use crate::colony::{
     Buildings, Colony, FoodConsumption, Production, ResourceCapacity, ResourceStockpile,
@@ -18,6 +19,7 @@ use crate::colony::{
 use crate::faction::FactionOwner;
 use crate::galaxy::{BASE_CARRYING_CAPACITY, Planet, StarSystem, SystemAttributes};
 use crate::galaxy::{AtSystem, Hostile, Sovereignty};
+use crate::knowledge::KnowledgeStore;
 use crate::player::Empire;
 use crate::ship::{CoreShip, Owner, Ship, ShipHitpoints, ShipModifiers, ShipState};
 use crate::technology::TechTree;
@@ -375,6 +377,85 @@ pub fn emit_economic_metrics(
 
     // Meta / time — global, not per-faction.
     writer.emit(&metric::game_elapsed_time(), clock.elapsed as f64);
+}
+
+/// Emit foreign-faction metrics from each empire's KnowledgeStore.
+///
+/// For each empire, we estimate other factions' strength, fleet count, and
+/// colony count using ground-truth data (Sovereignty, Ship.owner) as a
+/// temporary proxy until KnowledgeStore snapshots carry owner information.
+///
+/// The estimates are intentionally imprecise — in the future, they should
+/// be derived purely from light-speed-delayed KnowledgeStore observations.
+///
+/// Registered under [`AiTickSet::MetricProduce`](super::AiTickSet::MetricProduce).
+pub fn emit_foreign_metrics(
+    mut writer: AiBusWriter,
+    empires: Query<(Entity, Option<&KnowledgeStore>), With<Empire>>,
+    ships: Query<(&Ship, &ShipHitpoints, &ShipModifiers)>,
+    sovereignties: Query<&Sovereignty, With<StarSystem>>,
+    colonies: Query<(&Colony, Option<&FactionOwner>)>,
+) {
+    // Pre-compute per-empire ship counts, strength, and colony counts.
+    let mut ship_counts: HashMap<Entity, f64> = HashMap::new();
+    let mut strength_totals: HashMap<Entity, f64> = HashMap::new();
+    for (ship, hp, mods) in &ships {
+        let owner_entity = match ship.owner {
+            Owner::Empire(e) => e,
+            _ => continue,
+        };
+        *ship_counts.entry(owner_entity).or_default() += 1.0;
+
+        let attack = mods.attack.final_value().to_f64();
+        let defense = mods.defense.final_value().to_f64();
+        let current_hp = hp.hull + hp.armor + hp.shield;
+        *strength_totals.entry(owner_entity).or_default() += attack + defense + current_hp;
+    }
+
+    // Pre-compute per-empire colony counts from Sovereignty.
+    let mut colony_counts: HashMap<Entity, f64> = HashMap::new();
+    for (_colony, faction_owner) in &colonies {
+        if let Some(fo) = faction_owner {
+            *colony_counts.entry(fo.0).or_default() += 1.0;
+        }
+    }
+
+    // For each observing empire, emit foreign metrics for every other empire.
+    let empire_entities: Vec<Entity> = empires.iter().map(|(e, _)| e).collect();
+    for &observer in &empire_entities {
+        let observer_fid = to_ai_faction(observer);
+
+        for &target in &empire_entities {
+            if target == observer {
+                continue;
+            }
+            let target_fid = to_ai_faction(target);
+
+            let fleet_count = ship_counts.get(&target).copied().unwrap_or(0.0);
+            let strength = strength_totals.get(&target).copied().unwrap_or(0.0);
+            let col_count = colony_counts.get(&target).copied().unwrap_or(0.0);
+
+            // Emit using the foreign metric id convention:
+            // "foreign.<metric>.faction_<target>" — but we must emit from the
+            // observer's perspective. The bus currently has one global namespace
+            // so we compose: "foreign.<metric>.faction_<target>.observer_<observer>"
+            // would be ideal, but the existing schema declares slots as
+            // "foreign.<metric>.faction_<target_id>". Since the bus is shared,
+            // we emit global estimates (same for all observers for now).
+            writer.emit(
+                &foreign_metric_id("foreign.strength", target_fid),
+                strength,
+            );
+            writer.emit(
+                &foreign_metric_id("foreign.fleet_count", target_fid),
+                fleet_count,
+            );
+            writer.emit(
+                &foreign_metric_id("foreign.colony_count", target_fid),
+                col_count,
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -797,5 +878,152 @@ mod tests {
         assert!((minerals - 0.0).abs() < 1e-9);
         let pop = bus.current(&metric::for_faction("population_total", fid)).unwrap();
         assert!((pop - 0.0).abs() < 1e-9);
+    }
+
+    // -- Foreign emitter tests ------------------------------------------------
+
+    fn foreign_test_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(GameClock::new(10));
+        app.insert_resource(GameSpeed::default());
+        app.insert_resource(AiBusResource::with_warning_mode(WarningMode::Silent));
+        {
+            let mut bus = app.world_mut().resource_mut::<AiBusResource>();
+            schema::declare_metrics_standalone(&mut bus.0);
+        }
+        app.add_systems(Update, emit_foreign_metrics);
+        app
+    }
+
+    /// Spawn a second empire (foreign) and declare its foreign metric slots.
+    fn spawn_foreign_empire(app: &mut App, name: &str) -> Entity {
+        let entity = app.world_mut().spawn((
+            Empire { name: name.into() },
+            Faction::new(name, name),
+        )).id();
+        let fid = to_ai_faction(entity);
+        // Declare per-faction self metric slots.
+        let mut bus = app.world_mut().resource_mut::<AiBusResource>();
+        for base in crate::ai::schema::ids::metric::PER_FACTION_METRIC_BASES {
+            let id = metric::for_faction(base, fid);
+            bus.0.declare_metric(id, macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
+        }
+        // Declare foreign metric slots for this faction.
+        for template in crate::ai::schema::foreign::foreign_metric_templates() {
+            let id = crate::ai::schema::foreign::foreign_metric_id(&template.prefix, fid);
+            bus.0.declare_metric(id, (template.spec_factory)());
+        }
+        entity
+    }
+
+    #[test]
+    fn emit_foreign_metrics_fleet_count_and_strength() {
+        let mut app = foreign_test_app();
+        let empire_a = spawn_empire(&mut app);
+        let empire_b = spawn_foreign_empire(&mut app, "Empire B");
+
+        // Declare foreign slots for empire_a too (so empire_b can observe empire_a).
+        {
+            let fid_a = to_ai_faction(empire_a);
+            let mut bus = app.world_mut().resource_mut::<AiBusResource>();
+            for template in crate::ai::schema::foreign::foreign_metric_templates() {
+                let id = crate::ai::schema::foreign::foreign_metric_id(&template.prefix, fid_a);
+                bus.0.declare_metric(id, (template.spec_factory)());
+            }
+        }
+
+        // Give empire_b 2 ships.
+        spawn_ship(&mut app, empire_b, true, false);
+        spawn_ship(&mut app, empire_b, true, false);
+
+        app.update();
+
+        let fid_b = to_ai_faction(empire_b);
+        let bus = app.world().resource::<AiBusResource>();
+
+        // Empire A should see empire B's 2 ships.
+        let fleet = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.fleet_count", fid_b)).unwrap();
+        assert!((fleet - 2.0).abs() < 1e-9);
+
+        // Strength: each ship has attack=10, defense=5, hp=40+15+8=63 => per ship = 78.
+        let strength = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.strength", fid_b)).unwrap();
+        assert!((strength - 156.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn emit_foreign_metrics_colony_count() {
+        let mut app = foreign_test_app();
+        let empire_a = spawn_empire(&mut app);
+        let empire_b = spawn_foreign_empire(&mut app, "Empire B");
+
+        // Declare foreign slots for empire_a.
+        {
+            let fid_a = to_ai_faction(empire_a);
+            let mut bus = app.world_mut().resource_mut::<AiBusResource>();
+            for template in crate::ai::schema::foreign::foreign_metric_templates() {
+                let id = crate::ai::schema::foreign::foreign_metric_id(&template.prefix, fid_a);
+                bus.0.declare_metric(id, (template.spec_factory)());
+            }
+        }
+
+        // Give empire_b 2 colonies.
+        spawn_colony(&mut app, empire_b, 100.0, 10.0, 5.0, 500, 300, 4, 2);
+        spawn_colony(&mut app, empire_b, 50.0, 5.0, 3.0, 200, 100, 3, 1);
+
+        app.update();
+
+        let fid_b = to_ai_faction(empire_b);
+        let bus = app.world().resource::<AiBusResource>();
+
+        let col_count = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.colony_count", fid_b)).unwrap();
+        assert!((col_count - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn emit_foreign_metrics_no_self_emission() {
+        let mut app = foreign_test_app();
+        let empire_a = spawn_empire(&mut app);
+
+        // Only one empire — no foreign metrics should be emitted.
+        spawn_ship(&mut app, empire_a, true, false);
+        app.update();
+
+        let fid_a = to_ai_faction(empire_a);
+        let bus = app.world().resource::<AiBusResource>();
+
+        // foreign.strength.faction_<A> should NOT have been emitted (no observer sees self).
+        let strength = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.strength", fid_a));
+        assert!(strength.is_none());
+    }
+
+    #[test]
+    fn emit_foreign_metrics_zeroes_for_empty_empire() {
+        let mut app = foreign_test_app();
+        let _empire_a = spawn_empire(&mut app);
+        let empire_b = spawn_foreign_empire(&mut app, "Empire B");
+
+        // Declare foreign slots for empire_a.
+        {
+            let fid_a = to_ai_faction(_empire_a);
+            let mut bus = app.world_mut().resource_mut::<AiBusResource>();
+            for template in crate::ai::schema::foreign::foreign_metric_templates() {
+                let id = crate::ai::schema::foreign::foreign_metric_id(&template.prefix, fid_a);
+                bus.0.declare_metric(id, (template.spec_factory)());
+            }
+        }
+
+        // Empire B has no ships, no colonies.
+        app.update();
+
+        let fid_b = to_ai_faction(empire_b);
+        let bus = app.world().resource::<AiBusResource>();
+
+        let fleet = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.fleet_count", fid_b)).unwrap();
+        assert!((fleet - 0.0).abs() < 1e-9);
+        let strength = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.strength", fid_b)).unwrap();
+        assert!((strength - 0.0).abs() < 1e-9);
+        let col = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.colony_count", fid_b)).unwrap();
+        assert!((col - 0.0).abs() < 1e-9);
     }
 }
