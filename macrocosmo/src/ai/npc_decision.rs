@@ -27,6 +27,7 @@ use crate::ai::plugin::AiBusResource;
 use crate::ai::schema::ids::{command as cmd_ids, metric};
 use crate::knowledge::KnowledgeStore;
 use crate::player::{Empire, Faction, PlayerEmpire};
+use crate::technology::ResearchQueue;
 use crate::time_system::GameClock;
 
 /// Marker component: this empire's decisions are made by the AI policy.
@@ -116,6 +117,8 @@ pub struct NpcContext {
     pub colonizable_systems: Vec<Entity>,
     /// All ships owned by the empire being decided for.
     pub ships: Vec<ShipInfo>,
+    /// `true` when the empire has an active research target in its queue.
+    pub is_researching: bool,
 }
 
 /// Default policy: do nothing. Useful for tests that want a quiet baseline.
@@ -142,16 +145,31 @@ impl NpcPolicy for NoOpPolicy {
 /// policy chose. No cooldown is needed: the policy only selects idle ships,
 /// so ships already dispatched (in transit) are naturally excluded.
 ///
-/// Decision rules:
+/// Decision rules (evaluated in order):
 ///
 /// 1. **Attack hostiles**: If there are known hostile systems AND idle
 ///    combat ships exist → emit `attack_target` with the selected ships.
+///    (early-returns — combat is highest priority)
 ///
-/// 2. **Retreat**: If `my_fleet_ready < 0.3` → emit `retreat`.
+/// 2. **Survey**: Send idle survey ships to unsurveyed systems.
 ///
-/// 3. **Fortify**: If `can_build_ships == 1.0` AND
-///    `my_total_ships < colony_count * 2` → emit `fortify_system` (logged
-///    only by the consumer in Phase 1).
+/// 3. **Colonize**: Send idle colony ships to colonizable systems.
+///
+/// 4. **Research**: If no research is active and techs are available →
+///    emit `research_focus` (auto-pick).
+///
+/// 5. **Colony building**: If `free_building_slots > 0` → emit
+///    `build_structure` with a building chosen by production heuristic
+///    (power plant if energy negative, farm if food negative, else mine).
+///
+/// 6. **Fleet composition**: If `can_build_ships >= 1.0` and the fleet
+///    is missing key roles (survey, colony, combat) → emit `build_ship`
+///    for the most-needed role.
+///
+/// 7. **Retreat**: If `my_fleet_ready < 0.3` → emit `retreat`.
+///
+/// 8. **Fortify**: If `can_build_ships == 1.0` AND
+///    `my_total_ships < colony_count * 2` → emit `fortify_system`.
 ///
 /// Reads per-faction metrics from the bus using faction-suffixed IDs
 /// (e.g. `my_total_ships.faction_42`), so each NPC sees only its own
@@ -255,14 +273,69 @@ impl NpcPolicy for SimpleNpcPolicy {
             }
         }
 
-        // Rule 4: Retreat — fleet is weak
+        // Rule 4: Research — keep research queue active
+        let tech_unlocks = bus
+            .current(&metric::for_faction("tech_unlocks_available", faction_id))
+            .unwrap_or(0.0);
+        if tech_unlocks > 0.0 && !context.is_researching {
+            let cmd = Command::new(cmd_ids::research_focus(), faction_id, now);
+            commands.push(cmd);
+        }
+
+        // Rule 5: Colony building — fill empty building slots
+        let free_slots = bus
+            .current(&metric::for_faction("free_building_slots", faction_id))
+            .unwrap_or(0.0);
+        if free_slots > 0.0 {
+            let net_energy = bus
+                .current(&metric::for_faction("net_production_energy", faction_id))
+                .unwrap_or(0.0);
+            let net_food = bus
+                .current(&metric::for_faction("net_production_food", faction_id))
+                .unwrap_or(0.0);
+
+            let building_id = if net_energy < 0.0 {
+                "power_plant"
+            } else if net_food < 0.0 {
+                "farm"
+            } else {
+                "mine"
+            };
+
+            let cmd = Command::new(cmd_ids::build_structure(), faction_id, now)
+                .with_param("building_id", CommandValue::Str(building_id.into()));
+            commands.push(cmd);
+        }
+
+        // Rule 6: Fleet composition — build missing ship roles
+        if can_build >= 1.0 {
+            let survey_count = context.ships.iter().filter(|s| s.can_survey).count();
+            let colony_count_ships = context.ships.iter().filter(|s| s.can_colonize).count();
+            let combat_count = context.ships.iter().filter(|s| s.is_combat).count();
+
+            if survey_count == 0 && !context.unsurveyed_systems.is_empty() {
+                let cmd = Command::new(cmd_ids::build_ship(), faction_id, now)
+                    .with_param("design_id", CommandValue::Str("explorer_mk1".into()));
+                commands.push(cmd);
+            } else if colony_count_ships == 0 && !context.colonizable_systems.is_empty() {
+                let cmd = Command::new(cmd_ids::build_ship(), faction_id, now)
+                    .with_param("design_id", CommandValue::Str("colony_ship_mk1".into()));
+                commands.push(cmd);
+            } else if combat_count < 3 {
+                let cmd = Command::new(cmd_ids::build_ship(), faction_id, now)
+                    .with_param("design_id", CommandValue::Str("patrol_corvette".into()));
+                commands.push(cmd);
+            }
+        }
+
+        // Rule 7: Retreat — fleet is weak
         if fleet_ready > 0.0 && fleet_ready < 0.3 {
             let cmd = Command::new(cmd_ids::retreat(), faction_id, now);
             commands.push(cmd);
             return commands;
         }
 
-        // Rule 5: Fortify / build ships — have shipyard but few ships
+        // Rule 8: Fortify / build ships — have shipyard but few ships
         if can_build >= 1.0 && total_ships < colony_count * 2.0 {
             let cmd = Command::new(cmd_ids::fortify_system(), faction_id, now);
             commands.push(cmd);
@@ -292,6 +365,7 @@ pub fn npc_decision_tick(
         &crate::ship::ShipState,
         &crate::ship::CommandQueue,
     )>,
+    research_queues: Query<&ResearchQueue, With<Empire>>,
     design_registry: Option<Res<crate::ship_design::ShipDesignRegistry>>,
     mut policy: Local<SimpleNpcPolicy>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
@@ -349,11 +423,16 @@ pub fn npc_decision_tick(
             })
             .collect();
 
+        let is_researching = research_queues
+            .get(entity)
+            .is_ok_and(|rq| rq.current.is_some());
+
         let context = NpcContext {
             hostile_systems,
             unsurveyed_systems,
             colonizable_systems,
             ships,
+            is_researching,
         };
 
         let commands = policy.decide(&faction.id, entity, now, &bus.0, &context);
@@ -383,12 +462,13 @@ mod tests {
             unsurveyed_systems: vec![],
             colonizable_systems: vec![],
             ships: vec![],
+            is_researching: false,
         };
         let cmds = p.decide("vesk_hegemony", Entity::PLACEHOLDER, 0, &bus, &ctx);
         assert!(cmds.is_empty());
 
         let cmds = p.decide("aurelian_concord", Entity::PLACEHOLDER, 100, &bus, &ctx);
-        assert!(cmds.is_empty());
+        assert!(cmds.is_empty(), "no-op policy should emit nothing");
     }
 
     /// Helper: create a bus with per-faction metrics declared and set.
@@ -450,6 +530,7 @@ mod tests {
                 is_combat: true,
                 ftl_range: 15.0,
             }],
+            is_researching: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -491,6 +572,7 @@ mod tests {
             unsurveyed_systems: vec![],
             colonizable_systems: vec![],
             ships: vec![],
+            is_researching: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -524,6 +606,7 @@ mod tests {
             unsurveyed_systems: vec![],
             colonizable_systems: vec![],
             ships: vec![],
+            is_researching: true,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -535,8 +618,11 @@ mod tests {
             &ctx,
         );
 
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].kind.as_str(), "fortify_system");
+        // Fortify + build_ship (combat_count < 3 with can_build=1.0)
+        assert!(
+            cmds.iter().any(|c| c.kind.as_str() == "fortify_system"),
+            "should emit fortify_system when few ships"
+        );
     }
 
     #[test]
@@ -549,14 +635,31 @@ mod tests {
                 ("systems_with_hostiles", 0.0),
                 ("colony_count", 3.0),
                 ("can_build_ships", 1.0),
+                ("free_building_slots", 0.0),
+                ("tech_unlocks_available", 0.0),
             ],
         );
+
+        // Provide 3 combat ships so fleet composition rule doesn't trigger
+        let combat_ships: Vec<ShipInfo> = (0..3)
+            .map(|i| ShipInfo {
+                entity: Entity::from_raw_u32(200 + i).unwrap(),
+                design_id: "patrol_corvette".into(),
+                system: Some(Entity::from_raw_u32(1).unwrap()),
+                is_idle: true,
+                can_survey: false,
+                can_colonize: false,
+                is_combat: true,
+                ftl_range: 15.0,
+            })
+            .collect();
 
         let ctx = NpcContext {
             hostile_systems: vec![],
             unsurveyed_systems: vec![],
             colonizable_systems: vec![],
-            ships: vec![],
+            ships: combat_ships,
+            is_researching: true,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -601,6 +704,7 @@ mod tests {
                 is_combat: false,
                 ftl_range: 15.0,
             }],
+            is_researching: false,
         };
 
         let mut policy = SimpleNpcPolicy::default();
@@ -616,5 +720,389 @@ mod tests {
             cmds.iter().all(|c| c.kind.as_str() != "attack_target"),
             "should not attack without combat-capable ships"
         );
+    }
+
+    #[test]
+    fn simple_policy_emits_research_when_not_researching() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 8.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 3.0),
+                ("can_build_ships", 0.0),
+                ("tech_unlocks_available", 3.0),
+                ("free_building_slots", 0.0),
+            ],
+        );
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
+            is_researching: false,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        assert!(
+            cmds.iter().any(|c| c.kind.as_str() == "research_focus"),
+            "should emit research_focus when not researching and techs available"
+        );
+    }
+
+    #[test]
+    fn simple_policy_no_research_when_already_researching() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 8.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 3.0),
+                ("can_build_ships", 0.0),
+                ("tech_unlocks_available", 3.0),
+                ("free_building_slots", 0.0),
+            ],
+        );
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
+            is_researching: true,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        assert!(
+            cmds.iter().all(|c| c.kind.as_str() != "research_focus"),
+            "should not emit research_focus when already researching"
+        );
+    }
+
+    #[test]
+    fn simple_policy_builds_power_plant_when_energy_negative() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 8.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 3.0),
+                ("can_build_ships", 0.0),
+                ("free_building_slots", 2.0),
+                ("net_production_energy", -5.0),
+                ("net_production_food", 10.0),
+            ],
+        );
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
+            is_researching: true,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        let build_cmd = cmds
+            .iter()
+            .find(|c| c.kind.as_str() == "build_structure")
+            .expect("should emit build_structure");
+        match build_cmd.params.get("building_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "power_plant"),
+            _ => panic!("expected building_id param"),
+        }
+    }
+
+    #[test]
+    fn simple_policy_builds_farm_when_food_negative() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 8.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 3.0),
+                ("can_build_ships", 0.0),
+                ("free_building_slots", 2.0),
+                ("net_production_energy", 5.0),
+                ("net_production_food", -3.0),
+            ],
+        );
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
+            is_researching: true,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        let build_cmd = cmds
+            .iter()
+            .find(|c| c.kind.as_str() == "build_structure")
+            .expect("should emit build_structure");
+        match build_cmd.params.get("building_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "farm"),
+            _ => panic!("expected building_id param"),
+        }
+    }
+
+    #[test]
+    fn simple_policy_builds_mine_by_default() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 8.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 3.0),
+                ("can_build_ships", 0.0),
+                ("free_building_slots", 1.0),
+                ("net_production_energy", 5.0),
+                ("net_production_food", 5.0),
+            ],
+        );
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships: vec![],
+            is_researching: true,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        let build_cmd = cmds
+            .iter()
+            .find(|c| c.kind.as_str() == "build_structure")
+            .expect("should emit build_structure");
+        match build_cmd.params.get("building_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "mine"),
+            _ => panic!("expected building_id param"),
+        }
+    }
+
+    #[test]
+    fn simple_policy_builds_explorer_when_no_survey_ships() {
+        let unsurveyed = Entity::from_raw_u32(50).unwrap();
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 3.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 1.0),
+                ("can_build_ships", 1.0),
+                ("free_building_slots", 0.0),
+            ],
+        );
+
+        // 3 combat ships, no survey ships, unsurveyed systems exist
+        let combat_ships: Vec<ShipInfo> = (0..3)
+            .map(|i| ShipInfo {
+                entity: Entity::from_raw_u32(200 + i).unwrap(),
+                design_id: "patrol_corvette".into(),
+                system: Some(Entity::from_raw_u32(1).unwrap()),
+                is_idle: true,
+                can_survey: false,
+                can_colonize: false,
+                is_combat: true,
+                ftl_range: 15.0,
+            })
+            .collect();
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![unsurveyed],
+            colonizable_systems: vec![],
+            ships: combat_ships,
+            is_researching: true,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        let build_cmd = cmds
+            .iter()
+            .find(|c| c.kind.as_str() == "build_ship")
+            .expect("should emit build_ship for explorer");
+        match build_cmd.params.get("design_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "explorer_mk1"),
+            _ => panic!("expected design_id param"),
+        }
+    }
+
+    #[test]
+    fn simple_policy_builds_colony_ship_when_no_colonizers() {
+        let colonizable = Entity::from_raw_u32(50).unwrap();
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 4.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 1.0),
+                ("can_build_ships", 1.0),
+                ("free_building_slots", 0.0),
+            ],
+        );
+
+        // 3 combat ships + 1 survey ship, no colony ships
+        let mut ships: Vec<ShipInfo> = (0..3)
+            .map(|i| ShipInfo {
+                entity: Entity::from_raw_u32(200 + i).unwrap(),
+                design_id: "patrol_corvette".into(),
+                system: Some(Entity::from_raw_u32(1).unwrap()),
+                is_idle: true,
+                can_survey: false,
+                can_colonize: false,
+                is_combat: true,
+                ftl_range: 15.0,
+            })
+            .collect();
+        ships.push(ShipInfo {
+            entity: Entity::from_raw_u32(300).unwrap(),
+            design_id: "explorer_mk1".into(),
+            system: Some(Entity::from_raw_u32(1).unwrap()),
+            is_idle: true,
+            can_survey: true,
+            can_colonize: false,
+            is_combat: false,
+            ftl_range: 15.0,
+        });
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![colonizable],
+            ships,
+            is_researching: true,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        let build_cmd = cmds
+            .iter()
+            .find(|c| c.kind.as_str() == "build_ship")
+            .expect("should emit build_ship for colony ship");
+        match build_cmd.params.get("design_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "colony_ship_mk1"),
+            _ => panic!("expected design_id param"),
+        }
+    }
+
+    #[test]
+    fn simple_policy_builds_combat_ship_when_few_combat() {
+        let bus = bus_with_metrics(
+            test_faction_id(),
+            &[
+                ("my_total_ships", 2.0),
+                ("my_fleet_ready", 0.9),
+                ("colony_count", 1.0),
+                ("can_build_ships", 1.0),
+                ("free_building_slots", 0.0),
+            ],
+        );
+
+        // 1 survey + 1 combat = only 1 combat ship (< 3 threshold)
+        let ships = vec![
+            ShipInfo {
+                entity: Entity::from_raw_u32(200).unwrap(),
+                design_id: "explorer_mk1".into(),
+                system: Some(Entity::from_raw_u32(1).unwrap()),
+                is_idle: true,
+                can_survey: true,
+                can_colonize: false,
+                is_combat: false,
+                ftl_range: 15.0,
+            },
+            ShipInfo {
+                entity: Entity::from_raw_u32(201).unwrap(),
+                design_id: "patrol_corvette".into(),
+                system: Some(Entity::from_raw_u32(1).unwrap()),
+                is_idle: true,
+                can_survey: false,
+                can_colonize: false,
+                is_combat: true,
+                ftl_range: 15.0,
+            },
+        ];
+
+        let ctx = NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            ships,
+            is_researching: true,
+        };
+
+        let mut policy = SimpleNpcPolicy::default();
+        let cmds = policy.decide(
+            "test_faction",
+            Entity::from_raw_u32(1).unwrap(),
+            10,
+            &bus,
+            &ctx,
+        );
+
+        let build_cmd = cmds
+            .iter()
+            .find(|c| c.kind.as_str() == "build_ship")
+            .expect("should emit build_ship for combat");
+        match build_cmd.params.get("design_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "patrol_corvette"),
+            _ => panic!("expected design_id param"),
+        }
     }
 }
