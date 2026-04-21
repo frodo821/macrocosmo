@@ -24,7 +24,9 @@ use crate::ai::schema::ids::command as cmd_ids;
 use crate::amount::Amt;
 use crate::colony::building_queue::{BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings};
 use crate::colony::{BuildingRegistry, Colony};
+use crate::components::Position;
 use crate::galaxy::{AtSystem, Hostile, Planet, Sovereignty, StarSystem};
+use crate::physics::distance_ly;
 use crate::player::{Empire, Faction};
 use crate::ship::command_events::{
     ColonizeRequested, CommandId, MoveRequested, NextCommandId, SurveyRequested,
@@ -56,6 +58,7 @@ pub fn drain_ai_commands(
     sovereignty: Query<(Entity, &Sovereignty), With<StarSystem>>,
     hostiles: Query<&AtSystem, With<Hostile>>,
     empires: Query<(Entity, &Faction), With<Empire>>,
+    positions: Query<&Position>,
     mut move_writer: MessageWriter<MoveRequested>,
     mut survey_writer: Option<MessageWriter<SurveyRequested>>,
     mut colonize_writer: Option<MessageWriter<ColonizeRequested>>,
@@ -88,6 +91,7 @@ pub fn drain_ai_commands(
                 &hostiles,
                 &sovereignty,
                 &empires,
+                &positions,
                 &mut move_writer,
                 &mut next_cmd_id,
                 clock.elapsed,
@@ -879,6 +883,7 @@ fn handle_retreat(
     hostiles: &Query<&AtSystem, With<Hostile>>,
     sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
     empires: &Query<(Entity, &Faction), With<Empire>>,
+    positions: &Query<&Position>,
     move_writer: &mut MessageWriter<MoveRequested>,
     next_cmd_id: &mut NextCommandId,
     now: i64,
@@ -888,24 +893,35 @@ fn handle_retreat(
         None => return,
     };
 
-    let mut home_system: Option<Entity> = None;
-    for (sys_entity, sov) in sovereignty.iter() {
-        if sov.owner == Some(Owner::Empire(empire_entity)) {
-            home_system = Some(sys_entity);
-            break;
-        }
+    // 1. Collect all systems owned by this empire.
+    let owned_systems: Vec<Entity> = sovereignty
+        .iter()
+        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
+        .map(|(e, _)| e)
+        .collect();
+
+    if owned_systems.is_empty() {
+        debug!("retreat: faction {:?} has no sovereign systems", issuer);
+        return;
     }
 
-    let home = match home_system {
-        Some(h) => h,
-        None => {
-            debug!("retreat: faction {:?} has no home system", issuer);
-            return;
-        }
-    };
-
-    let hostile_systems: std::collections::HashSet<Entity> =
+    // 2. Build set of systems with hostile presence.
+    let hostile_set: std::collections::HashSet<Entity> =
         hostiles.iter().map(|at| at.0).collect();
+
+    // 3. Safe rally candidates = owned systems without hostiles.
+    let safe_systems: Vec<Entity> = owned_systems
+        .iter()
+        .filter(|s| !hostile_set.contains(s))
+        .copied()
+        .collect();
+
+    // 4. Fall back to any owned system if none are safe.
+    let rally_candidates = if safe_systems.is_empty() {
+        &owned_systems
+    } else {
+        &safe_systems
+    };
 
     let mut retreated = 0;
     for (ship_entity, ship, state, queue) in ships.iter() {
@@ -915,26 +931,69 @@ fn handle_retreat(
         if ship.is_immobile() {
             continue;
         }
-
-        if let ShipState::InSystem { system } = state {
-            if hostile_systems.contains(system) && queue.commands.is_empty() && *system != home {
-                move_writer.write(MoveRequested {
-                    command_id: next_cmd_id.allocate(),
-                    ship: ship_entity,
-                    target: home,
-                    issued_at: now,
-                });
-                retreated += 1;
-            }
+        // Skip ships already in transit (moving, FTL, etc.).
+        let ShipState::InSystem { system } = state else {
+            continue;
+        };
+        // Only retreat ships in hostile systems with empty command queues.
+        if !hostile_set.contains(system) || !queue.commands.is_empty() {
+            continue;
         }
+        // If the ship is already at a safe rally candidate, no need to move.
+        if !safe_systems.is_empty() && safe_systems.contains(system) {
+            continue;
+        }
+
+        // Build per-ship candidates excluding the ship's current system.
+        let filtered: Vec<Entity> = rally_candidates
+            .iter()
+            .filter(|s| **s != *system)
+            .copied()
+            .collect();
+        if filtered.is_empty() {
+            continue; // Only system in the empire; nowhere to go.
+        }
+
+        // Pick nearest rally point by distance.
+        let target = pick_nearest_system(*system, &filtered, positions);
+        move_writer.write(MoveRequested {
+            command_id: next_cmd_id.allocate(),
+            ship: ship_entity,
+            target,
+            issued_at: now,
+        });
+        retreated += 1;
     }
 
     if retreated > 0 {
         info!(
-            "retreat: {} ships from faction {:?} retreating to {:?}",
-            retreated, issuer, home
+            "retreat: {} ships from faction {:?} retreating to rally points",
+            retreated, issuer
         );
     }
+}
+
+/// Pick the system from `candidates` nearest to `origin`. Falls back to the
+/// first candidate if positions are unavailable.
+fn pick_nearest_system(
+    origin: Entity,
+    candidates: &[Entity],
+    positions: &Query<&Position>,
+) -> Entity {
+    let origin_pos = positions.get(origin).ok();
+    let mut best = candidates[0];
+    let mut best_dist = f64::MAX;
+    for &candidate in candidates {
+        let dist = match (origin_pos, positions.get(candidate).ok()) {
+            (Some(a), Some(b)) => distance_ly(a, b),
+            _ => f64::MAX,
+        };
+        if dist < best_dist {
+            best_dist = dist;
+            best = candidate;
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -1728,5 +1787,241 @@ mod tests {
         let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
         assert_eq!(queue.queue.len(), 1, "fortify should queue 1 ship");
         assert_eq!(queue.queue[0].design_id, "corvette_mk1");
+    }
+
+    // ── retreat tests ────────────────────────────────────────────────
+
+    /// Collect (ship, target) pairs from MoveRequested messages.
+    #[derive(Resource, Default)]
+    struct MoveTargets(Vec<(Entity, Entity)>);
+
+    fn collect_move_targets(
+        mut reader: MessageReader<MoveRequested>,
+        mut targets: ResMut<MoveTargets>,
+    ) {
+        for msg in reader.read() {
+            targets.0.push((msg.ship, msg.target));
+        }
+    }
+
+    /// Helper: spawn a ship owned by `empire` at `system`.
+    fn spawn_ship_at(
+        world: &mut World,
+        empire: Entity,
+        system: Entity,
+        name: &str,
+    ) -> Entity {
+        world
+            .spawn((
+                Ship {
+                    name: name.into(),
+                    design_id: "scout".into(),
+                    hull_id: "corvette".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: system,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system },
+                CommandQueue::default(),
+            ))
+            .id()
+    }
+
+    /// Helper: spawn a star system with position and sovereignty.
+    fn spawn_system_with_sov(
+        world: &mut World,
+        name: &str,
+        pos: [f64; 3],
+        owner: Option<Entity>,
+    ) -> Entity {
+        let owner = owner.map(|e| Owner::Empire(e));
+        world
+            .spawn((
+                StarSystem {
+                    name: name.into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from(pos),
+                Sovereignty { owner, control_score: 1.0 },
+            ))
+            .id()
+    }
+
+    #[test]
+    fn retreat_picks_nearest_safe_system() {
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire = world
+            .spawn((
+                Empire { name: "E".into() },
+                Faction::new("e", "E"),
+            ))
+            .id();
+
+        // Hostile system where ship is located (at origin).
+        let hostile_sys = spawn_system_with_sov(world, "Hostile", [0.0, 0.0, 0.0], Some(empire));
+        // Near safe system at distance 5.
+        let near_safe = spawn_system_with_sov(world, "NearSafe", [3.0, 4.0, 0.0], Some(empire));
+        // Far safe system at distance 13.
+        let _far_safe = spawn_system_with_sov(world, "FarSafe", [12.0, 5.0, 0.0], Some(empire));
+
+        // Mark hostile_sys as having hostile presence.
+        world.spawn((Hostile, AtSystem(hostile_sys)));
+
+        let ship = spawn_ship_at(world, empire, hostile_sys, "Scout");
+
+        // Issue retreat command.
+        let faction_id = to_ai_faction(empire);
+        let cmd = Command::new(cmd_ids::retreat(), faction_id, 10);
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<MoveTargets>();
+        app.add_systems(Update, (drain_ai_commands, collect_move_targets).chain());
+        app.update();
+
+        let targets = app.world().resource::<MoveTargets>();
+        assert_eq!(targets.0.len(), 1, "should retreat 1 ship");
+        assert_eq!(targets.0[0], (ship, near_safe), "should pick nearest safe system");
+    }
+
+    #[test]
+    fn retreat_distributes_ships_to_nearest_rally() {
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire = world
+            .spawn((
+                Empire { name: "E".into() },
+                Faction::new("e", "E"),
+            ))
+            .id();
+
+        // Two hostile systems at different locations.
+        let hostile_a = spawn_system_with_sov(world, "HostileA", [0.0, 0.0, 0.0], Some(empire));
+        let hostile_b = spawn_system_with_sov(world, "HostileB", [20.0, 0.0, 0.0], Some(empire));
+
+        // Two safe systems: one near hostile_a, one near hostile_b.
+        let safe_left = spawn_system_with_sov(world, "SafeLeft", [-5.0, 0.0, 0.0], Some(empire));
+        let safe_right = spawn_system_with_sov(world, "SafeRight", [25.0, 0.0, 0.0], Some(empire));
+
+        world.spawn((Hostile, AtSystem(hostile_a)));
+        world.spawn((Hostile, AtSystem(hostile_b)));
+
+        let ship_a = spawn_ship_at(world, empire, hostile_a, "ShipA");
+        let ship_b = spawn_ship_at(world, empire, hostile_b, "ShipB");
+
+        let faction_id = to_ai_faction(empire);
+        let cmd = Command::new(cmd_ids::retreat(), faction_id, 10);
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<MoveTargets>();
+        app.add_systems(Update, (drain_ai_commands, collect_move_targets).chain());
+        app.update();
+
+        let targets = app.world().resource::<MoveTargets>();
+        assert_eq!(targets.0.len(), 2, "should retreat 2 ships");
+
+        // Each ship goes to its nearest safe system.
+        let ship_a_target = targets.0.iter().find(|(s, _)| *s == ship_a).map(|(_, t)| *t);
+        let ship_b_target = targets.0.iter().find(|(s, _)| *s == ship_b).map(|(_, t)| *t);
+        assert_eq!(ship_a_target, Some(safe_left), "ship_a should go to safe_left");
+        assert_eq!(ship_b_target, Some(safe_right), "ship_b should go to safe_right");
+    }
+
+    #[test]
+    fn retreat_skips_ships_already_in_transit() {
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire = world
+            .spawn((
+                Empire { name: "E".into() },
+                Faction::new("e", "E"),
+            ))
+            .id();
+
+        let hostile_sys = spawn_system_with_sov(world, "Hostile", [0.0, 0.0, 0.0], Some(empire));
+        let _safe_sys = spawn_system_with_sov(world, "Safe", [5.0, 0.0, 0.0], Some(empire));
+
+        world.spawn((Hostile, AtSystem(hostile_sys)));
+
+        // Ship already in FTL transit — should not be re-commanded.
+        world.spawn((
+            Ship {
+                name: "In Transit".into(),
+                design_id: "scout".into(),
+                hull_id: "corvette".into(),
+                modules: vec![],
+                owner: Owner::Empire(empire),
+                sublight_speed: 0.1,
+                ftl_range: 5.0,
+                ruler_aboard: false,
+                home_port: hostile_sys,
+                design_revision: 0,
+                fleet: None,
+            },
+            ShipState::InFTL {
+                origin_system: hostile_sys,
+                destination_system: _safe_sys,
+                departed_at: 5,
+                arrival_at: 15,
+            },
+            CommandQueue::default(),
+        ));
+
+        let faction_id = to_ai_faction(empire);
+        let cmd = Command::new(cmd_ids::retreat(), faction_id, 10);
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<MoveTargets>();
+        app.add_systems(Update, (drain_ai_commands, collect_move_targets).chain());
+        app.update();
+
+        let targets = app.world().resource::<MoveTargets>();
+        assert_eq!(targets.0.len(), 0, "should not retreat ships already in transit");
+    }
+
+    #[test]
+    fn retreat_falls_back_to_hostile_owned_system() {
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire = world
+            .spawn((
+                Empire { name: "E".into() },
+                Faction::new("e", "E"),
+            ))
+            .id();
+
+        // All owned systems have hostiles.
+        let hostile_a = spawn_system_with_sov(world, "HostileA", [0.0, 0.0, 0.0], Some(empire));
+        let hostile_b = spawn_system_with_sov(world, "HostileB", [10.0, 0.0, 0.0], Some(empire));
+
+        world.spawn((Hostile, AtSystem(hostile_a)));
+        world.spawn((Hostile, AtSystem(hostile_b)));
+
+        let ship = spawn_ship_at(world, empire, hostile_a, "Scout");
+
+        let faction_id = to_ai_faction(empire);
+        let cmd = Command::new(cmd_ids::retreat(), faction_id, 10);
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<MoveTargets>();
+        app.add_systems(Update, (drain_ai_commands, collect_move_targets).chain());
+        app.update();
+
+        let targets = app.world().resource::<MoveTargets>();
+        // Should still retreat — falls back to the nearest owned system (hostile_b,
+        // since ship is already at hostile_a).
+        assert_eq!(targets.0.len(), 1, "should retreat even when all systems are hostile");
+        assert_eq!(targets.0[0], (ship, hostile_b), "should pick nearest owned system as fallback");
     }
 }
