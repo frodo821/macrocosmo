@@ -75,8 +75,17 @@ pub fn draw_ships(
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
     selected_ship: Res<SelectedShip>,
-    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
+    empire_q: Query<(Entity, &KnowledgeStore), With<PlayerEmpire>>,
+    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
 ) {
+    // #434: Only draw player-owned ships on the galaxy map. NPC ships at
+    // the player's local system could be drawn in the future, but for now
+    // we only show what the player directly controls.
+    let Ok((empire_entity, _knowledge)) = empire_q.single() else {
+        return;
+    };
+    let _player_system = player_q.iter().next().map(|s| s.system);
+
     // Group docked ships by system so we can offset them.
     // #395: Immobile ships (stations / infrastructure) are excluded entirely —
     // they are represented by icons in the galaxy overlay instead.
@@ -84,6 +93,10 @@ pub fn draw_ships(
     let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
 
     for (_entity, ship, state, _queue, stats) in &ships {
+        // #434: Only draw player-owned ships.
+        if !matches!(ship.owner, crate::ship::Owner::Empire(e) if e == empire_entity) {
+            continue;
+        }
         let station = is_station(ship);
         if station {
             // #395: Skip immobile ships — they are shown as development icons
@@ -512,7 +525,7 @@ pub fn draw_ships(
     // reached the player yet via light-speed. These ships are despawned
     // (no live entity) but their KnowledgeStore snapshot still shows them
     // alive at their last known position.
-    if let Ok(store) = empire_q.single() {
+    if let Ok((_, store)) = empire_q.single() {
         let live_entities: std::collections::HashSet<Entity> =
             ships.iter().map(|(e, ..)| e).collect();
 

@@ -522,84 +522,63 @@ mod tests {
         assert!(registry.get("nonexistent").is_none());
     }
 
-    /// MAJOR #9: Verify BuildingRegistry loaded from scripts/buildings/basic.lua.
+    /// Verify BuildingRegistry loaded from a Lua fixture.
+    /// Uses a dedicated test fixture to decouple from production Lua content.
     #[test]
     fn test_building_registry_loaded_from_lua() {
         let engine = ScriptEngine::new().unwrap();
 
-        // Load the actual building definitions file
-        let building_script = std::path::Path::new("scripts/buildings/basic.lua");
-        if !building_script.exists() {
-            // Try from the workspace root (worktree directory)
-            let alt_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts/buildings/basic.lua");
-            if alt_path.exists() {
-                engine.load_file(&alt_path).unwrap();
-            } else {
-                panic!(
-                    "scripts/buildings/basic.lua not found at {:?} or {:?}",
-                    building_script, alt_path
-                );
-            }
-        } else {
-            engine.load_file(building_script).unwrap();
-        }
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/buildings_test.lua");
+        assert!(fixture.exists(), "fixture not found at {fixture:?}");
+        engine.load_file(&fixture).unwrap();
 
         let defs = parse_building_definitions(engine.lua()).unwrap();
+        assert_eq!(defs.len(), 6, "fixture defines exactly 6 buildings");
 
-        // basic.lua defines 14 buildings: mine, power_plant, research_lab, shipyard, port, farm,
-        // advanced_mine, advanced_power_plant, colony_hub_t1/t2/t3, planetary_capital_t1/t2/t3
-        assert_eq!(
-            defs.len(),
-            14,
-            "Expected 14 building definitions from basic.lua"
-        );
-
-        // Build a registry from the parsed definitions
         let mut registry = BuildingRegistry::default();
         for def in &defs {
             registry.insert(def.clone());
         }
 
-        // Verify Mine grants miner_slot = 5 via the new modifiers field.
-        let mine = registry.get("mine").expect("Mine should be in registry");
-        assert_eq!(mine.name, "Mine");
-        assert_eq!(mine.minerals_cost, Amt::units(150));
-        assert_eq!(mine.energy_cost, Amt::units(50));
-        assert_eq!(mine.build_time, 10);
-        assert_eq!(mine.maintenance, Amt::new(0, 200));
+        // Mine: planet building, correct cost/modifiers.
+        let mine = registry
+            .get("test_mine")
+            .expect("test_mine should be in registry");
+        assert_eq!(mine.name, "Test Mine");
+        assert_eq!(mine.minerals_cost, Amt::units(100));
+        assert_eq!(mine.energy_cost, Amt::units(25));
+        assert_eq!(mine.build_time, 5);
+        assert!(!mine.is_system_building);
         assert!(
             mine.modifiers
                 .iter()
-                .any(|m| m.target == "colony.miner_slot" && (m.base_add - 5.0).abs() < 1e-10),
-            "Mine should declare colony.miner_slot +5"
+                .any(|m| m.target == "colony.miner_slot" && (m.base_add - 3.0).abs() < 1e-10),
+            "test_mine should declare colony.miner_slot +3"
         );
 
-        // Verify Farm grants farmer_slot.
-        let farm = registry.get("farm").expect("Farm should be in registry");
-        assert_eq!(farm.name, "Farm");
+        // Farm: planet building with farmer_slot modifier.
+        let farm = registry
+            .get("test_farm")
+            .expect("test_farm should be in registry");
         assert!(
             farm.modifiers
                 .iter()
                 .any(|m| m.target == "colony.farmer_slot"),
-            "Farm should declare colony.farmer_slot"
+            "test_farm should declare colony.farmer_slot"
         );
 
-        // Verify Shipyard has no production modifiers and is a system building.
+        // Shipyard: system building with shipyard capability.
         let shipyard = registry
-            .get("shipyard")
-            .expect("Shipyard should be in registry");
-        assert_eq!(shipyard.name, "Shipyard");
-        assert!(shipyard.modifiers.is_empty());
-        assert_eq!(shipyard.maintenance, Amt::units(1));
+            .get("test_shipyard")
+            .expect("test_shipyard should be in registry");
         assert!(shipyard.is_system_building);
         assert!(shipyard.capabilities.contains_key("shipyard"));
 
-        // Verify Mine is a planet building
-        assert!(!mine.is_system_building);
-
-        // Verify Port has port capability
-        let port = registry.get("port").expect("Port should be in registry");
+        // Port: system building with port capability.
+        let port = registry
+            .get("test_port")
+            .expect("test_port should be in registry");
         assert!(port.is_system_building);
         assert!(port.capabilities.contains_key("port"));
     }
@@ -829,35 +808,36 @@ mod tests {
 
     #[test]
     fn test_building_api_prerequisites_from_lua_file_wires_advanced_mine() {
-        // Ensures scripts/buildings/basic.lua now populates prerequisites for
-        // advanced_mine / advanced_power_plant (previously silently dropped).
+        // Verify prerequisites are parsed from Lua fixture.
         use crate::condition::{AtomKind, Condition};
 
         let engine = ScriptEngine::new().unwrap();
-        let building_script =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
-        if !building_script.exists() {
-            return;
-        }
-        engine.load_file(&building_script).unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/buildings_test.lua");
+        assert!(fixture.exists(), "fixture not found at {fixture:?}");
+        engine.load_file(&fixture).unwrap();
+
         let defs = parse_building_definitions(engine.lua()).unwrap();
         let by_id: std::collections::HashMap<_, _> =
             defs.iter().map(|d| (d.id.as_str(), d)).collect();
 
-        let adv_mine = by_id.get("advanced_mine").unwrap();
+        let adv_mine = by_id
+            .get("test_advanced_mine")
+            .expect("test_advanced_mine should be in fixture");
         match &adv_mine.prerequisites {
             Some(Condition::Atom(atom)) => match &atom.kind {
                 AtomKind::HasTech(id) => assert_eq!(id, "industrial_automated_mining"),
                 other => panic!("expected HasTech atom, got {:?}", other),
             },
             other => panic!(
-                "expected advanced_mine prerequisites to be a HasTech atom, got {:?}",
+                "expected test_advanced_mine prerequisites to be a HasTech atom, got {:?}",
                 other
             ),
         }
 
-        let adv_pp = by_id.get("advanced_power_plant").unwrap();
-        assert!(adv_pp.prerequisites.is_some());
+        // test_mine should have no prerequisites
+        let mine = by_id.get("test_mine").unwrap();
+        assert!(mine.prerequisites.is_none());
     }
 
     /// #385: `ship_design_id` parses from Lua and defaults to None.
@@ -896,34 +876,33 @@ mod tests {
         );
     }
 
-    /// #385: Building definitions from Lua scripts wire ship_design_id for
-    /// system buildings (shipyard, port, research_lab).
+    /// #385: Building definitions from Lua fixture wire ship_design_id for
+    /// system buildings.
     #[test]
     fn test_building_ship_design_id_from_lua_file() {
         let engine = ScriptEngine::new().unwrap();
-        let building_script =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
-        if !building_script.exists() {
-            return;
-        }
-        engine.load_file(&building_script).unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/buildings_test.lua");
+        assert!(fixture.exists(), "fixture not found at {fixture:?}");
+        engine.load_file(&fixture).unwrap();
+
         let defs = parse_building_definitions(engine.lua()).unwrap();
         let by_id: std::collections::HashMap<_, _> =
             defs.iter().map(|d| (d.id.as_str(), d)).collect();
 
         assert_eq!(
-            by_id.get("shipyard").unwrap().ship_design_id.as_deref(),
-            Some("station_shipyard_v1"),
-        );
-        assert_eq!(
-            by_id.get("port").unwrap().ship_design_id.as_deref(),
+            by_id.get("test_port").unwrap().ship_design_id.as_deref(),
             Some("station_port_v1"),
         );
         assert_eq!(
-            by_id.get("research_lab").unwrap().ship_design_id.as_deref(),
+            by_id
+                .get("test_research_lab")
+                .unwrap()
+                .ship_design_id
+                .as_deref(),
             Some("station_research_lab_v1"),
         );
         // Mine should have no ship_design_id
-        assert!(by_id.get("mine").unwrap().ship_design_id.is_none());
+        assert!(by_id.get("test_mine").unwrap().ship_design_id.is_none());
     }
 }

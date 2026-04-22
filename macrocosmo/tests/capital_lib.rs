@@ -88,10 +88,12 @@ fn defaults_record_capital_layout() {
             b.as_str()
         })
         .collect();
-    // #280: planetary_capital_t3 is prepended by lib/capital.lua.
+    // colony_hub_t1 is prepended by lib/capital.lua (changed from
+    // planetary_capital_t3 to reduce initial faction power disparity and
+    // allow slot expansion).
     assert_eq!(
         planet_buildings,
-        vec!["planetary_capital_t3", "mine", "power_plant", "farm"]
+        vec!["colony_hub_t1", "mine", "power_plant", "farm"]
     );
 
     // Default system buildings: shipyard.
@@ -219,8 +221,8 @@ fn starter_buildings_and_ships_are_overridable() {
         .iter()
         .map(|(_, b)| b.as_str())
         .collect();
-    // #280: planetary_capital_t3 prepended by lib/capital.lua.
-    assert_eq!(planet_building_ids, vec!["planetary_capital_t3", "mine"]);
+    // colony_hub_t1 prepended by lib/capital.lua.
+    assert_eq!(planet_building_ids, vec!["colony_hub_t1", "mine"]);
 
     assert_eq!(
         actions.system_buildings,

@@ -24,6 +24,11 @@ pub(super) struct StarVisual {
 #[derive(Component)]
 pub(super) struct StarGlow;
 
+/// #434: Marks a Text2d entity as a star name label so `update_star_colors`
+/// can dynamically show/hide it based on KnowledgeStore.
+#[derive(Component)]
+pub(super) struct StarLabel;
+
 /// Stores the base pixel size of a star sprite so zoom-responsive scaling can reference it.
 #[derive(Component)]
 pub(super) struct BaseStarSize(pub f32);
@@ -34,25 +39,64 @@ pub fn spawn_star_visuals(
     colonies: Query<&Colony>,
     planets: Query<&Planet>,
     view: Res<GalaxyView>,
+    empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
+    player_q: Query<&StationedAt, With<Player>>,
 ) {
     // Build a set of colonized system entities
     let colonized_systems: std::collections::HashSet<Entity> =
         colonies.iter().filter_map(|c| c.system(&planets)).collect();
 
+    let knowledge = empire_q.iter().next();
+    let player_system = player_q.iter().next().map(|s| s.system);
+
     for (entity, star, pos, obscured) in &stars {
         let x = pos.x as f32 * view.scale;
         let y = pos.y as f32 * view.scale;
         let is_obscured = obscured.is_some();
-        let is_colonized = colonized_systems.contains(&entity);
 
-        let color = star_color(star, is_colonized, is_obscured);
+        // #434: Gate is_capital/surveyed/colonized on KnowledgeStore for
+        // remote systems — the live StarSystem flags are global and would
+        // leak NPC faction data to the player.
+        let is_local = player_system == Some(entity);
+        let effective_capital = if is_local {
+            star.is_capital
+        } else {
+            knowledge
+                .and_then(|k| k.get(entity))
+                .map(|k| k.data.is_capital)
+                .unwrap_or(false)
+        };
+        let effective_surveyed = if is_local {
+            star.surveyed
+        } else {
+            knowledge
+                .and_then(|k| k.get(entity))
+                .map(|k| k.data.surveyed)
+                .unwrap_or(false)
+        };
+        let is_colonized = if is_local {
+            colonized_systems.contains(&entity)
+        } else {
+            knowledge
+                .and_then(|k| k.get(entity))
+                .map(|k| k.data.colonized)
+                .unwrap_or(false)
+        };
 
-        // Determine base size based on star status
-        let size = if star.is_capital {
+        let effective_star = StarSystem {
+            name: star.name.clone(),
+            star_type: star.star_type.clone(),
+            surveyed: effective_surveyed,
+            is_capital: effective_capital,
+        };
+        let color = star_color(&effective_star, is_colonized, is_obscured);
+
+        // Determine base size based on knowledge-gated status
+        let size = if effective_capital {
             16.0
         } else if is_colonized {
             14.0
-        } else if star.surveyed {
+        } else if effective_surveyed {
             12.0
         } else {
             10.0
@@ -61,7 +105,7 @@ pub fn spawn_star_visuals(
         // Spawn glow halo behind the star (skip for obscured stars)
         if !is_obscured {
             let [r, g, b, _] = color.to_srgba().to_f32_array();
-            let glow_alpha = if star.is_capital || is_colonized {
+            let glow_alpha = if effective_capital || is_colonized {
                 0.2
             } else {
                 0.15
@@ -96,28 +140,31 @@ pub fn spawn_star_visuals(
             Transform::from_xyz(x, y, 0.0),
         ));
 
-        // Labels: show for all surveyed stars, not just capital
-        if star.is_capital || star.surveyed {
-            let label_alpha = if star.is_capital {
-                1.0
-            } else if is_colonized {
-                0.9
-            } else {
-                0.7
-            };
-            commands.spawn((
-                StarVisual {
-                    system_entity: entity,
-                },
-                Text2d::new(&star.name),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(Color::srgba(1.0, 1.0, 1.0, label_alpha)),
-                Transform::from_xyz(x, y + 14.0, 1.0),
-            ));
-        }
+        // #434: Spawn labels for ALL stars (with alpha=0 for unknown ones)
+        // so that `update_star_colors` can dynamically show/hide them as
+        // knowledge is discovered.
+        let label_alpha = if effective_capital {
+            1.0
+        } else if is_colonized {
+            0.9
+        } else if effective_surveyed {
+            0.7
+        } else {
+            0.0
+        };
+        commands.spawn((
+            StarVisual {
+                system_entity: entity,
+            },
+            StarLabel,
+            Text2d::new(&star.name),
+            TextFont {
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(Color::srgba(1.0, 1.0, 1.0, label_alpha)),
+            Transform::from_xyz(x, y + 14.0, 1.0),
+        ));
     }
 }
 
@@ -145,7 +192,8 @@ pub fn update_star_colors(
         &mut Sprite,
         Option<&StarGlow>,
         Option<&mut BaseStarSize>,
-    )>,
+    ), Without<StarLabel>>,
+    mut labels: Query<(&StarVisual, &mut TextColor), With<StarLabel>>,
     empire_q: Query<(&KnowledgeStore, Option<&SystemVisibilityMap>), With<PlayerEmpire>>,
     colonies: Query<&Colony>,
     planets: Query<&Planet>,
@@ -189,14 +237,15 @@ pub fn update_star_colors(
                     .map(|k| k.data.colonized)
                     .unwrap_or(false)
             };
-            // #176: For remote systems, use knowledge-based survey status
+            // #434: For remote systems, use knowledge-based survey status only.
+            // Do NOT fall back to star.surveyed — it is global.
             let effective_surveyed = if player_system == Some(vis.system_entity) {
                 star.surveyed
             } else {
                 knowledge
                     .get(vis.system_entity)
                     .map(|k| k.data.surveyed)
-                    .unwrap_or(star.surveyed)
+                    .unwrap_or(false)
             };
             // #430: Gate is_capital on KnowledgeStore for remote systems
             let effective_capital = if player_system == Some(vis.system_entity) {
@@ -276,6 +325,48 @@ pub fn update_star_colors(
                 let scaled = new_base * zoom_factor;
                 sprite.custom_size = Some(Vec2::splat(scaled));
             }
+        }
+    }
+
+    // #434: Dynamically update star label visibility based on KnowledgeStore.
+    for (vis, mut text_color) in &mut labels {
+        if let Ok((_, star, _)) = stars.get(vis.system_entity) {
+            let is_local = player_system == Some(vis.system_entity);
+            let effective_capital = if is_local {
+                star.is_capital
+            } else {
+                knowledge
+                    .get(vis.system_entity)
+                    .map(|k| k.data.is_capital)
+                    .unwrap_or(false)
+            };
+            let effective_surveyed = if is_local {
+                star.surveyed
+            } else {
+                knowledge
+                    .get(vis.system_entity)
+                    .map(|k| k.data.surveyed)
+                    .unwrap_or(false)
+            };
+            let is_colonized = if is_local {
+                local_colonized.contains(&vis.system_entity)
+            } else {
+                knowledge
+                    .get(vis.system_entity)
+                    .map(|k| k.data.colonized)
+                    .unwrap_or(false)
+            };
+
+            let label_alpha = if effective_capital {
+                1.0
+            } else if is_colonized {
+                0.9
+            } else if effective_surveyed {
+                0.7
+            } else {
+                0.0
+            };
+            *text_color = TextColor(Color::srgba(1.0, 1.0, 1.0, label_alpha));
         }
     }
 }
@@ -420,13 +511,10 @@ pub fn draw_galaxy_overlay(
     // #176: Survey lines use KnowledgeStore for remote systems
     // #392: Only draw for systems with tier >= Surveyed
     for (entity, star, star_pos) in &stars {
-        let tier = vis_map_opt.map(|vm| vm.get(entity)).unwrap_or_else(|| {
-            if star.surveyed {
-                SystemVisibilityTier::Surveyed
-            } else {
-                SystemVisibilityTier::Catalogued
-            }
-        });
+        // #434: Don't fall back to star.surveyed — use KnowledgeStore only.
+        let tier = vis_map_opt
+            .map(|vm| vm.get(entity))
+            .unwrap_or(SystemVisibilityTier::Catalogued);
         if !tier.can_see_planets() {
             continue;
         }
@@ -605,9 +693,12 @@ pub fn draw_galaxy_overlay(
 
     // #395: Station infrastructure icons — draw small icons next to system names
     // for each immobile ship (station) docked there.
+    // #434: Only draw for the local system (real-time) or systems with
+    // knowledge — don't leak NPC station positions from ground truth.
     {
-        // Collect immobile ships per system, classified by hull type.
         let mut system_stations: HashMap<Entity, Vec<StationKind>> = HashMap::new();
+
+        // Local system: use ECS ground truth for player-owned stations.
         for (_, ship, state) in &ships {
             if !ship.is_immobile() {
                 continue;
@@ -617,10 +708,33 @@ pub fn draw_galaxy_overlay(
                 ShipState::Refitting { system, .. } => *system,
                 _ => continue,
             };
+            // Only show stations at the player's local system from ground truth.
+            if sys != player_system {
+                continue;
+            }
             system_stations
                 .entry(sys)
                 .or_default()
                 .push(station_kind_from_hull(&ship.hull_id));
+        }
+
+        // Remote systems: derive station icons from KnowledgeStore flags
+        // (has_port, has_shipyard). Detailed per-ship info isn't available
+        // in snapshots, so we show the corresponding icon types.
+        for (_entity, k) in knowledge.iter() {
+            if k.system == player_system {
+                continue;
+            }
+            let mut kinds = Vec::new();
+            if k.data.has_shipyard {
+                kinds.push(StationKind::Shipyard);
+            }
+            if k.data.has_port {
+                kinds.push(StationKind::Port);
+            }
+            if !kinds.is_empty() {
+                system_stations.insert(k.system, kinds);
+            }
         }
 
         for (sys_entity, kinds) in &system_stations {

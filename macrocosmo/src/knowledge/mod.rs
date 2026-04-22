@@ -439,7 +439,6 @@ fn determine_tier_for_system(
     player_empire_entity: Entity,
     ships: &Query<(Entity, &Ship, &ShipState)>,
     knowledge: &KnowledgeStore,
-    star_surveyed: bool,
 ) -> SystemVisibilityTier {
     // Check if any player-owned ship is physically present in the system.
     let has_own_ship = ships.iter().any(|(_, ship, state)| {
@@ -456,13 +455,13 @@ fn determine_tier_for_system(
         return SystemVisibilityTier::Local;
     }
 
-    // Check if system was surveyed — either from live StarSystem component
-    // or from KnowledgeStore snapshot (whichever is true).
-    let is_surveyed = star_surveyed
-        || knowledge
-            .get(system)
-            .map(|k| k.data.surveyed)
-            .unwrap_or(false);
+    // #434: Only use KnowledgeStore for survey status — the live
+    // StarSystem.surveyed flag is global (set by ANY faction's survey)
+    // and would leak NPC-surveyed systems to the player.
+    let is_surveyed = knowledge
+        .get(system)
+        .map(|k| k.data.surveyed)
+        .unwrap_or(false);
 
     if is_surveyed {
         SystemVisibilityTier::Surveyed
@@ -483,13 +482,12 @@ fn initialize_visibility_tiers(
     systems: Query<(Entity, &StarSystem)>,
 ) {
     for (empire_entity, knowledge, mut vis_map) in &mut empire_q {
-        for (system_entity, star) in &systems {
+        for (system_entity, _star) in &systems {
             let tier = determine_tier_for_system(
                 system_entity,
                 empire_entity,
                 &ships,
                 knowledge,
-                star.surveyed,
             );
             vis_map.set(system_entity, tier);
         }
@@ -514,7 +512,6 @@ pub fn update_visibility_tiers(
         Or<(Changed<ShipState>, Added<TrackedShipSystem>)>,
     >,
     all_ships: Query<(Entity, &Ship, &ShipState)>,
-    star_systems: Query<&StarSystem>,
 ) {
     // Collect systems that need recalculation from changed ships.
     let mut affected_systems: Vec<Entity> = Vec::new();
@@ -545,16 +542,11 @@ pub fn update_visibility_tiers(
     // Recalculate tier for each affected system, for every empire.
     for (empire_entity, knowledge, mut vis_map) in &mut empire_q {
         for &system in &affected_systems {
-            let star_surveyed = star_systems
-                .get(system)
-                .map(|s| s.surveyed)
-                .unwrap_or(false);
             let tier = determine_tier_for_system(
                 system,
                 empire_entity,
                 &all_ships,
                 knowledge,
-                star_surveyed,
             );
             vis_map.set(system, tier);
         }
@@ -927,13 +919,12 @@ pub fn propagate_knowledge(
         // the Surveyed-vs-Connected distinction (frozen vs. live) is deferred
         // to V2 when relay/courier connection detection is implemented.
         //
-        // When the visibility map has no entry for a system (e.g. before
-        // `update_visibility_tiers` has processed it), fall back to the
-        // star's live `surveyed` flag so new/migrated entities still receive
-        // knowledge on the first tick.
+        // #434: Only propagate to systems the empire has visibility for.
+        // Do NOT fall back to the live `star.surveyed` flag — it is global
+        // and would leak NPC-surveyed systems to the player.
         if let Some(vis_map) = vis_map_opt {
             let tier = vis_map.get(entity);
-            if !tier.can_see_planets() && !star.surveyed {
+            if !tier.can_see_planets() {
                 continue;
             }
         }

@@ -1115,6 +1115,11 @@ pub fn spawn_test_system(
 }
 
 /// Spawn a star system with a default planet. Returns (system_entity, planet_entity).
+///
+/// #434: When `surveyed` is true, automatically sets the player empire's
+/// `SystemVisibilityMap` tier to `Surveyed` so that `propagate_knowledge`
+/// will include this system (it no longer falls back to the live
+/// `star.surveyed` flag).
 pub fn spawn_test_system_with_planet(
     world: &mut World,
     name: &str,
@@ -1155,6 +1160,22 @@ pub fn spawn_test_system_with_planet(
             Position::from(pos),
         ))
         .id();
+
+    // #434: Seed visibility tier for surveyed systems so propagate_knowledge
+    // includes them (it no longer uses the global star.surveyed fallback).
+    if surveyed {
+        use macrocosmo::knowledge::{SystemVisibilityMap, SystemVisibilityTier};
+        use macrocosmo::player::Empire;
+        let empire = {
+            let mut q = world.query_filtered::<Entity, With<Empire>>();
+            q.iter(world).collect::<Vec<_>>()
+        };
+        for e in empire {
+            if let Some(mut vis_map) = world.get_mut::<SystemVisibilityMap>(e) {
+                vis_map.set(sys, SystemVisibilityTier::Surveyed);
+            }
+        }
+    }
 
     (sys, planet)
 }

@@ -2496,6 +2496,7 @@ fn test_hostile_viz_uses_factionowner() {
     }
 
     // Let light-speed observation catch up (1 ly = 60 hexadies).
+    // (#434: spawn_test_system now auto-seeds visibility tier for surveyed systems.)
     common::advance_time(&mut app, 61);
 
     let store = app.world().get::<KnowledgeStore>(empire).unwrap();
