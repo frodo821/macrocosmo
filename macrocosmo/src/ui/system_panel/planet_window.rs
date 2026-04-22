@@ -11,6 +11,8 @@ use crate::scripting::building_api::BuildingRegistry;
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::visualization::SelectedPlanet;
 
+use crate::faction::FactionOwner;
+
 use super::colony_detail::draw_colony_detail;
 use super::format_planet_type;
 
@@ -69,6 +71,12 @@ pub(super) fn draw_planet_window(
     is_local_system: bool,
     k_data: Option<&crate::knowledge::SystemKnowledge>,
     clock_elapsed: i64,
+    // #432: Active empire entity for colony ownership checks.
+    viewed_empire: Entity,
+    // #432: Observer mode flag.
+    is_observer: bool,
+    // #432: FactionOwner lookup for colony ownership.
+    faction_owners: &Query<&FactionOwner>,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
         return;
@@ -139,6 +147,17 @@ pub(super) fn draw_planet_window(
                     .ok()
                     .and_then(|(_, _, a)| a);
 
+                // #432: Determine if the colony on this planet belongs to the viewed empire.
+                let is_own_colony = if is_observer {
+                    true
+                } else {
+                    colonies.iter().find_map(|(ce, c, _, _, _, _, _, _)| {
+                        if c.planet == sel_planet_entity { Some(ce) } else { None }
+                    }).map_or(false, |ce| {
+                        faction_owners.get(ce).map(|fo| fo.0 == viewed_empire).unwrap_or(false)
+                    })
+                };
+
                 egui::ScrollArea::vertical()
                     .max_height(500.0)
                     .show(ui, |ui| {
@@ -163,6 +182,7 @@ pub(super) fn draw_planet_window(
                             is_local_system,
                             k_data,
                             clock_elapsed,
+                            is_own_colony,
                         );
                     });
             } else {

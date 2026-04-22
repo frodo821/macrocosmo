@@ -119,6 +119,8 @@ pub struct MainPanelWorldQueries<'w, 's> {
     pub docked_check: Query<'w, 's, &'static DockedAt>,
     /// #391: Ship modifiers — used for modifier breakdown tooltips.
     pub ship_modifiers: Query<'w, 's, &'static ShipModifiers>,
+    /// #432: FactionOwner lookup for ownership filtering.
+    pub faction_owners: Query<'w, 's, &'static FactionOwner>,
 }
 
 /// #407: Bundled queries for the outline/tooltip system, to keep its
@@ -166,6 +168,8 @@ pub struct OutlineQueries<'w, 's> {
     pub windows: Query<'w, 's, &'static Window>,
     pub camera_q: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<Camera2d>>,
     pub fleets: Query<'w, 's, (Entity, &'static Fleet, &'static FleetMembers)>,
+    /// #432: FactionOwner lookup for ownership filtering in the outline.
+    pub faction_owners: Query<'w, 's, &'static crate::faction::FactionOwner>,
 }
 
 #[derive(SystemParam)]

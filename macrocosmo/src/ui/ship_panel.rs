@@ -637,6 +637,8 @@ pub fn draw_ship_panel(
     docked_check: &Query<&DockedAt>,
     hull_reg: &HullRegistry,
     ship_modifiers_query: &Query<&ShipModifiers>,
+    // #432: When `false`, command buttons are suppressed (foreign ship).
+    is_own_ship: bool,
 ) -> ShipPanelActions {
     // #407: Multi-select panel — when 2+ ships selected, show aggregate view
     // instead of individual ship details.
@@ -1140,13 +1142,24 @@ pub fn draw_ship_panel(
                 home_port_name
             ));
 
+            // #432: For non-owned ships, show a "Foreign Ship" label and
+            // skip all command UI below.
+            if !is_own_ship {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("[Foreign Ship — no commands available]")
+                        .color(egui::Color32::from_rgb(200, 120, 80))
+                        .italics(),
+                );
+            }
+
             // #389: Undock button when docked at a harbour
             if let Some((_, ref harbour_name)) = docked_at_harbour {
                 ui.label(
                     egui::RichText::new(format!("Docked at harbour: {}", harbour_name))
                         .color(egui::Color32::from_rgb(255, 215, 80)),
                 );
-                if ui.button("Undock").clicked() {
+                if is_own_ship && ui.button("Undock").clicked() {
                     actions.undock = Some(ship_entity);
                 }
             }
@@ -1173,6 +1186,8 @@ pub fn draw_ship_panel(
             }
 
             // #57: Rules of Engagement selector
+            // #432: All command sections below are gated on ship ownership.
+            if is_own_ship {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("ROE:");
@@ -1536,6 +1551,8 @@ pub fn draw_ship_panel(
                     }
                 }
             }
+
+            } // #432: end if is_own_ship — command sections
 
             if ui.button("Deselect ship").clicked() {
                 deselect_ship = true;

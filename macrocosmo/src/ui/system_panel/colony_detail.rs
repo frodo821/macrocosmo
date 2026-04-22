@@ -72,7 +72,24 @@ pub(super) fn draw_colony_detail(
     is_local_system: bool,
     k_data: Option<&SystemKnowledge>,
     clock_elapsed: i64,
+    // #432: When `false`, build/demolish/upgrade commands are suppressed.
+    is_own_colony: bool,
 ) {
+    // #432: For foreign colonies, show a minimal label and return.
+    if !is_own_colony {
+        ui.label(
+            egui::RichText::new("Foreign Colony")
+                .strong()
+                .color(egui::Color32::from_rgb(200, 120, 80)),
+        );
+        ui.label(
+            egui::RichText::new("This colony belongs to another empire.")
+                .italics()
+                .color(egui::Color32::from_rgb(160, 140, 120)),
+        );
+        return;
+    }
+
     ui.label(
         egui::RichText::new("Colony")
             .strong()

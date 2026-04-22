@@ -172,6 +172,12 @@ pub fn draw_system_panel(
     remote_commands: &Query<&crate::communication::PendingCommand>,
     system_has_core: bool,
     visibility_tier: Option<crate::knowledge::SystemVisibilityTier>,
+    // #432: Active empire entity for ownership checks.
+    viewed_empire: Entity,
+    // #432: Whether we are in observer mode (show all, but read-only).
+    is_observer: bool,
+    // #432: FactionOwner lookup for colony ownership checks.
+    faction_owners: &Query<&crate::faction::FactionOwner>,
 ) {
     let Some(sel_entity) = selected_system.0 else {
         return;
@@ -549,6 +555,9 @@ pub fn draw_system_panel(
         is_local_system,
         k_data,
         clock.elapsed,
+        viewed_empire,
+        is_observer,
+        faction_owners,
     );
     } // show_planet_window
 }

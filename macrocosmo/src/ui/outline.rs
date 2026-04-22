@@ -6,6 +6,7 @@ use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::ship::fleet::{Fleet, FleetMembers};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
+use crate::ship::{Owner};
 use crate::ship_design::ShipDesignRegistry;
 use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedShips, SelectedSystem};
 
@@ -271,6 +272,10 @@ fn draw_ship_context_menu(
 }
 
 /// Draws the left-side outline panel showing owned systems and ships.
+/// #432: `viewed_empire` is the active empire entity (PlayerEmpire or
+/// ObserverView). When `is_observer` is false, colonies and ships are
+/// filtered to only those owned by the viewed empire. In observer mode
+/// all objects are shown.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_outline(
     ctx: &egui::Context,
@@ -300,7 +305,29 @@ pub fn draw_outline(
     expanded: &mut OutlineExpandedSystems,
     design_registry: &ShipDesignRegistry,
     fleets: &Query<(Entity, &Fleet, &FleetMembers)>,
+    faction_owners: &Query<&crate::faction::FactionOwner>,
+    viewed_empire: Option<Entity>,
+    is_observer: bool,
 ) {
+    // #432: Ownership predicate — returns true when the entity belongs to
+    // the viewed empire (or always true in observer mode / no empire).
+    let is_own_colony = |colony_entity: Entity| -> bool {
+        if is_observer || viewed_empire.is_none() {
+            return true;
+        }
+        let ve = viewed_empire.unwrap();
+        faction_owners
+            .get(colony_entity)
+            .map(|fo| fo.0 == ve)
+            .unwrap_or(false)
+    };
+    let is_own_ship = |ship: &Ship| -> bool {
+        if is_observer || viewed_empire.is_none() {
+            return true;
+        }
+        ship.owner == Owner::Empire(viewed_empire.unwrap())
+    };
+
     egui::SidePanel::left("outline_panel")
         .min_width(180.0)
         .max_width(220.0)
@@ -309,8 +336,12 @@ pub fn draw_outline(
             ui.separator();
 
             // Collect systems that have colonies (owned systems)
+            // #432: Only include colonies belonging to the viewed empire.
             let mut owned_systems: Vec<(Entity, String, bool)> = Vec::new();
-            for (_, colony, _, _, _, _, _, _) in colonies.iter() {
+            for (colony_entity, colony, _, _, _, _, _, _) in colonies.iter() {
+                if !is_own_colony(colony_entity) {
+                    continue;
+                }
                 if let Some(sys) = colony.system(planets) {
                     if let Ok((entity, star, _, _)) = stars.get(sys) {
                         // Avoid duplicates if multiple colonies on same system
@@ -358,8 +389,10 @@ pub fn draw_outline(
 
                 if is_expanded {
                     // #395/#406: Show stations separately from ships with visual distinction
-                    let system_stations = stations_at(*system_entity, ships);
-                    let docked = ships_docked_at(*system_entity, ships);
+                    // #432: Filter by viewed empire unless observer mode.
+                    let ship_owner_filter = if is_observer { None } else { viewed_empire };
+                    let system_stations = stations_at(*system_entity, ships, ship_owner_filter);
+                    let docked = ships_docked_at(*system_entity, ships, ship_owner_filter);
                     let has_both = !system_stations.is_empty() && !docked.is_empty();
                     if !system_stations.is_empty() {
                         ui.indent(format!("outline_stations_{:?}", system_entity), |ui| {
@@ -417,10 +450,14 @@ pub fn draw_outline(
 
             // "Stationed Elsewhere" section for ships docked at unowned systems
             // #395: Immobile ships (stations) are excluded here.
+            // #432: Filter by viewed empire ownership.
             let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
                 Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
                 if ship.is_immobile() {
+                    continue;
+                }
+                if !is_own_ship(ship) {
                     continue;
                 }
                 if let ShipState::InSystem { system } = &*state {
@@ -499,9 +536,13 @@ pub fn draw_outline(
 
             // "In Transit" section for ships not docked
             // #395: Immobile ships are excluded (they should never be in transit).
+            // #432: Filter by viewed empire ownership.
             let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
             for (entity, ship, state, _, _, _) in ships.iter() {
                 if ship.is_immobile() {
+                    continue;
+                }
+                if !is_own_ship(ship) {
                     continue;
                 }
                 let status = match &*state {
@@ -574,6 +615,7 @@ pub fn draw_outline(
 
 /// Helper to collect mobile ships docked at a given system.
 /// #395: Immobile ships (stations) are excluded — they appear in the "Stations" section.
+/// #432: `owner_filter` optionally restricts results to ships owned by the given empire.
 fn ships_docked_at(
     system: Entity,
     ships: &Query<(
@@ -584,12 +626,18 @@ fn ships_docked_at(
         &ShipHitpoints,
         Option<&SurveyData>,
     )>,
+    owner_filter: Option<Entity>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _, _, _)| {
             if ship.is_immobile() {
                 return None;
+            }
+            if let Some(empire) = owner_filter {
+                if ship.owner != Owner::Empire(empire) {
+                    return None;
+                }
             }
             if let ShipState::InSystem { system: s } = &*state {
                 if *s == system {
@@ -705,6 +753,7 @@ fn draw_fleet_grouped_ship_list(
 }
 
 /// #395: Collect immobile ships (stations) docked at a given system.
+/// #432: `owner_filter` optionally restricts results to ships owned by the given empire.
 fn stations_at(
     system: Entity,
     ships: &Query<(
@@ -715,12 +764,18 @@ fn stations_at(
         &ShipHitpoints,
         Option<&SurveyData>,
     )>,
+    owner_filter: Option<Entity>,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
         .filter_map(|(e, ship, state, _, _, _)| {
             if !ship.is_immobile() {
                 return None;
+            }
+            if let Some(empire) = owner_filter {
+                if ship.owner != Owner::Empire(empire) {
+                    return None;
+                }
             }
             if let ShipState::InSystem { system: s } = &*state {
                 if *s == system {

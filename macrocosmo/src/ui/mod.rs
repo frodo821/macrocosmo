@@ -892,6 +892,9 @@ fn draw_outline_and_tooltips_system(
         &mut outline_expanded,
         &design_registry,
         &outline_q.fleets,
+        &outline_q.faction_owners,
+        empire_entity,
+        obs.observer_mode.enabled,
     );
 
     draw_map_tooltips(
@@ -1083,6 +1086,9 @@ fn draw_main_panels_system(
         &world.remote_commands,
         selected_system_has_core,
         selected_vis_tier,
+        empire_entity,
+        selection.observer_mode.enabled,
+        &world.faction_owners,
     );
 
     for action in colonization_actions {
@@ -1169,6 +1175,20 @@ fn draw_main_panels_system(
         None => Vec::new(),
     };
 
+    // #432: Determine if the selected ship belongs to the viewed empire.
+    // In observer read-only mode, no commands are allowed at all (handled
+    // further below). In normal or observer-control mode, only own ships
+    // may receive commands.
+    let selected_ship_is_own = selection.selected_ship.0.map_or(false, |ship_e| {
+        if selection.observer_mode.read_only {
+            return false;
+        }
+        ships_query
+            .get(ship_e)
+            .map(|(_, ship, _, _, _, _)| ship.owner == crate::ship::Owner::Empire(empire_entity))
+            .unwrap_or(false)
+    });
+
     let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
@@ -1199,6 +1219,7 @@ fn draw_main_panels_system(
         &world.docked_check,
         &registries.hull_registry,
         &world.ship_modifiers,
+        selected_ship_is_own,
     );
 
     // #398: In observer read-only mode, suppress all ship panel actions
@@ -1553,6 +1574,10 @@ fn draw_main_panels_system(
         .0
         .and_then(|se| world.docked_check.get(se).ok())
         .is_some();
+    // #432: Suppress context menu for non-owned ships.
+    if !selected_ship_is_own {
+        selection.context_menu.open = false;
+    }
     let ctx_menu_actions = context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,
