@@ -2175,6 +2175,10 @@ fn draw_map_tooltips(
                 let is_my_capital = home_system_entity == Some(star_entity);
                 if is_my_capital {
                     ui.label("Capital system");
+                } else if k_data.is_some_and(|k| k.data.is_capital) {
+                    ui.label(
+                        egui::RichText::new("Foreign Capital").color(egui::Color32::LIGHT_RED),
+                    );
                 }
                 if effective_surveyed {
                     // Local: show actual planet count. Remote: planet count not in snapshot, skip.
