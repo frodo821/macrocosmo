@@ -121,6 +121,8 @@ pub struct MainPanelWorldQueries<'w, 's> {
     pub ship_modifiers: Query<'w, 's, &'static ShipModifiers>,
     /// #432: FactionOwner lookup for ownership filtering.
     pub faction_owners: Query<'w, 's, &'static FactionOwner>,
+    /// SystemModifiers for capability checks (shipyard, port, etc.).
+    pub sys_mods: Query<'w, 's, &'static crate::galaxy::SystemModifiers>,
 }
 
 /// #407: Bundled queries for the outline/tooltip system, to keep its

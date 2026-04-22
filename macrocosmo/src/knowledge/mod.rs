@@ -410,9 +410,11 @@ pub fn ensure_tracked_ship_system(
 ) {
     for (entity, state) in &ships {
         let current_system = system_from_ship_state(state);
+        // Use try_insert to gracefully handle despawned entities (e.g.
+        // ships destroyed between query iteration and command application).
         commands
             .entity(entity)
-            .insert(TrackedShipSystem(current_system));
+            .try_insert(TrackedShipSystem(current_system));
     }
 }
 
@@ -872,7 +874,7 @@ pub fn propagate_knowledge(
     >,
     faction_relations: Res<crate::faction::FactionRelations>,
     ships: Query<(Entity, &Ship, &ShipState, &crate::ship::ShipHitpoints)>,
-    building_registry: Res<crate::colony::BuildingRegistry>,
+    system_modifiers_q: Query<&crate::galaxy::SystemModifiers>,
 ) {
     crate::prof_span!("propagate_knowledge");
 
@@ -945,16 +947,13 @@ pub fn propagate_knowledge(
             continue;
         }
 
-        let sys_has_port = crate::colony::system_buildings::system_has_port(
-            entity,
-            &station_ships,
-            &building_registry,
-        );
-        let sys_has_shipyard = crate::colony::system_buildings::system_has_shipyard(
-            entity,
-            &station_ships,
-            &building_registry,
-        );
+        let sys_mods = system_modifiers_q.get(entity).ok();
+        let sys_has_port = sys_mods
+            .map(|m| m.port_repair.value().final_value() > Amt::ZERO)
+            .unwrap_or(false);
+        let sys_has_shipyard = sys_mods
+            .map(|m| m.shipyard_capacity.value().final_value() > Amt::ZERO)
+            .unwrap_or(false);
         let snapshot = build_system_snapshot(
             entity,
             star,

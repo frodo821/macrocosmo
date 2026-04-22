@@ -5,6 +5,7 @@ mod types;
 
 use bevy::prelude::*;
 
+use crate::amount::Amt;
 use crate::modifier::ScopedModifiers;
 use crate::scripting::galaxy_api::{PlanetTypeRegistry, StarTypeRegistry};
 use crate::scripting::map_api::{MapTypeRegistry, PredefinedSystemRegistry};
@@ -280,13 +281,36 @@ pub struct Anomaly {
     pub discovered_at: i64,
 }
 
-/// Modifiers that apply to all ships in a star system.
-/// Example: solar storm reducing speed, nebula boosting shields.
-#[derive(Component, Default)]
+/// Modifiers that apply to a star system.
+/// Ship combat stats, plus system-level building capabilities expressed as
+/// modifiers (shipyard capacity, port effects).
+#[derive(Component)]
 pub struct SystemModifiers {
     pub ship_speed: ScopedModifiers,
     pub ship_attack: ScopedModifiers,
     pub ship_defense: ScopedModifiers,
+    /// Shipyard capacity: >0 means "has shipyard". Each shipyard adds +1.
+    pub shipyard_capacity: ScopedModifiers,
+    /// Port FTL range bonus (light-years). Base=0, port adds +10.
+    pub port_ftl_range_bonus: ScopedModifiers,
+    /// Port travel time factor. Base=1.0 (no port), port adds -0.2 → 0.8.
+    pub port_travel_time_factor: ScopedModifiers,
+    /// Port repair capability: >0 means "has port for repair/docking".
+    pub port_repair: ScopedModifiers,
+}
+
+impl Default for SystemModifiers {
+    fn default() -> Self {
+        Self {
+            ship_speed: ScopedModifiers::default(),
+            ship_attack: ScopedModifiers::default(),
+            ship_defense: ScopedModifiers::default(),
+            shipyard_capacity: ScopedModifiers::default(),
+            port_ftl_range_bonus: ScopedModifiers::default(),
+            port_travel_time_factor: ScopedModifiers::new(Amt::units(1)),
+            port_repair: ScopedModifiers::default(),
+        }
+    }
 }
 
 /// Raw star-type modifier definitions attached to a system at generation.

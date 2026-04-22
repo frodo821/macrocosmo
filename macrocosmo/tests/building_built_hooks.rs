@@ -423,7 +423,7 @@ fn bare_building_def(id: &str) -> BuildingDefinition {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None,
+        ship_design_id: None, colony_slots: None,
     }
 }
 

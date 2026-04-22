@@ -69,6 +69,9 @@ pub struct BuildingDefinition {
     /// ships (e.g. Shipyard → "station_shipyard_v1"). The runtime can look this
     /// up in the `ShipDesignRegistry` to spawn the corresponding station entity.
     pub ship_design_id: Option<String>,
+    /// Number of colony building slots this building provides (colony hub tiers).
+    /// Replaces the old `capabilities.colony_hub.fixed_slots` pattern.
+    pub colony_slots: Option<usize>,
 }
 
 /// Parameters for a named building capability.
@@ -240,6 +243,17 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
         let dismantlable: bool = table.get::<Option<bool>>("dismantlable")?.unwrap_or(true);
         let ship_design_id: Option<String> = table.get::<Option<String>>("ship_design_id")?;
 
+        // colony_slots: direct field, or fallback to capabilities.colony_hub.fixed_slots
+        let colony_slots: Option<usize> = table
+            .get::<Option<u32>>("colony_slots")?
+            .map(|v| v as usize)
+            .or_else(|| {
+                capabilities
+                    .get("colony_hub")
+                    .and_then(|cap| cap.get("fixed_slots"))
+                    .map(|v| v as usize)
+            });
+
         result.push(BuildingDefinition {
             id,
             name,
@@ -262,6 +276,7 @@ pub fn parse_building_definitions(lua: &mlua::Lua) -> Result<Vec<BuildingDefinit
             on_upgraded,
             dismantlable,
             ship_design_id,
+            colony_slots,
         });
     }
 
@@ -485,6 +500,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: None,
+            colony_slots: None,
         });
 
         let mine = registry.get("mine").unwrap();
@@ -515,6 +531,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: None,
+            colony_slots: None,
         });
 
         assert_eq!(registry.buildings.len(), 2);
@@ -609,6 +626,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: None,
+            colony_slots: None,
         });
 
         // Replace with updated values
@@ -634,6 +652,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: None,
+            colony_slots: None,
         });
 
         assert_eq!(registry.buildings.len(), 1);
@@ -724,6 +743,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: None,
+            colony_slots: None,
         });
 
         // Upgrade-only planet building
@@ -749,6 +769,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: None,
+            colony_slots: None,
         });
 
         // planet_buildings() should only return direct-buildable ones

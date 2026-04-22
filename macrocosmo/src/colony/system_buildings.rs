@@ -496,6 +496,76 @@ pub fn sync_system_building_maintenance(
     }
 }
 
+/// Sync `system.*` modifiers from system-building definitions onto the
+/// `SystemModifiers` component of each StarSystem. This replaces the old
+/// capability-based queries (`system_has_shipyard`, `port_ftl_range_bonus`, etc.)
+/// with modifier-driven reads.
+pub fn sync_system_capability_modifiers(
+    registry: Res<BuildingRegistry>,
+    mut systems: Query<(Entity, &mut crate::galaxy::SystemModifiers)>,
+    station_ships: Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
+) {
+    let reverse = build_reverse_design_map(&registry);
+
+    for (sys_entity, mut sys_mods) in &mut systems {
+        // Clear previous building-sourced modifiers (prefix "syscap:")
+        clear_prefixed(&mut sys_mods.shipyard_capacity, "syscap:");
+        clear_prefixed(&mut sys_mods.port_ftl_range_bonus, "syscap:");
+        clear_prefixed(&mut sys_mods.port_travel_time_factor, "syscap:");
+        clear_prefixed(&mut sys_mods.port_repair, "syscap:");
+
+        for (ship_entity, ship, state, _slot) in &station_ships {
+            let in_system = match state {
+                ShipState::InSystem { system } => *system == sys_entity,
+                ShipState::Refitting { system, .. } => *system == sys_entity,
+                _ => false,
+            };
+            if !in_system {
+                continue;
+            }
+            let Some(bid) = reverse.get(&ship.design_id) else {
+                continue;
+            };
+            let Some(def) = registry.get(bid.as_str()) else {
+                continue;
+            };
+            for pm in &def.modifiers {
+                let id = format!("syscap:{}[{:?}]:{}", def.id, ship_entity, pm.target);
+                let modifier = pm.to_modifier(id, &def.name);
+                match pm.target.as_str() {
+                    "system.shipyard_capacity" => {
+                        sys_mods.shipyard_capacity.push_modifier(modifier);
+                    }
+                    "system.port_ftl_range_bonus" => {
+                        sys_mods.port_ftl_range_bonus.push_modifier(modifier);
+                    }
+                    "system.port_travel_time_factor" => {
+                        sys_mods.port_travel_time_factor.push_modifier(modifier);
+                    }
+                    "system.port_repair" => {
+                        sys_mods.port_repair.push_modifier(modifier);
+                    }
+                    _ => {} // Not a system capability target — handled by colony sync
+                }
+            }
+        }
+    }
+}
+
+/// Remove all modifiers with the given prefix from a ScopedModifiers.
+fn clear_prefixed(scope: &mut crate::modifier::ScopedModifiers, prefix: &str) {
+    let to_remove: Vec<String> = scope
+        .value()
+        .modifiers()
+        .iter()
+        .filter(|m| m.id.starts_with(prefix))
+        .map(|m| m.id.clone())
+        .collect();
+    for id in to_remove {
+        scope.pop_modifier(&id);
+    }
+}
+
 /// Tick system-level building construction/demolition queues on StarSystem entities.
 /// On construction completion, spawn a station Ship with SlotAssignment.
 /// On demolition, despawn the station Ship in that slot.
@@ -796,6 +866,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: Some("station_shipyard_v1".to_string()),
+            colony_slots: None,
         });
 
         let mut port_caps = HashMap::new();
@@ -832,6 +903,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: Some("station_port_v1".to_string()),
+            colony_slots: None,
         });
         registry
     }

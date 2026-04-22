@@ -22,7 +22,9 @@ local shipyard = define_building {
     build_time = 30,
     maintenance = 1.0,
     is_system_building = true,
-    capabilities = { shipyard = { concurrent_builds = 1 } },
+    modifiers = {
+        { target = "system.shipyard_capacity", base_add = 1 },
+    },
     ship_design_id = "station_shipyard_v1",
 }
 
@@ -34,7 +36,11 @@ local port = define_building {
     build_time = 40,
     maintenance = 0.5,
     is_system_building = true,
-    capabilities = { port = { ftl_range_bonus = 10.0, travel_time_factor = 0.8 } },
+    modifiers = {
+        { target = "system.port_ftl_range_bonus", base_add = 10.0 },
+        { target = "system.port_travel_time_factor", base_add = -0.2 },
+        { target = "system.port_repair", base_add = 1 },
+    },
     ship_design_id = "station_port_v1",
 }
 

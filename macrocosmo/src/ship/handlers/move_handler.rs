@@ -54,7 +54,7 @@ pub fn handle_move_requested(
         (Without<routing::PendingRoute>, Without<crate::colony::SlotAssignment>),
     >,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-    station_ships: Query<(Entity, &Ship, &ShipState, &crate::colony::SlotAssignment)>,
+    sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
     hostiles_q: Query<
         (&crate::galaxy::AtSystem, &crate::faction::FactionOwner),
         With<crate::galaxy::Hostile>,
@@ -62,7 +62,6 @@ pub fn handle_move_requested(
     relations: Res<crate::faction::FactionRelations>,
     mut pending_count: ResMut<routing::RouteCalculationsPending>,
     design_registry: Res<ShipDesignRegistry>,
-    building_registry: Res<crate::colony::BuildingRegistry>,
     regions: Query<&crate::galaxy::ForbiddenRegion>,
     mut executed: MessageWriter<CommandExecuted>,
 ) {
@@ -201,7 +200,7 @@ pub fn handle_move_requested(
             continue;
         };
         let origin_pos_arr = origin_pos.as_array();
-        let port_params = PortParams::from_station_ships(docked_sys, &station_ships, &building_registry);
+        let port_params = sys_mods_q.get(docked_sys).map(PortParams::from_system_modifiers).unwrap_or(PortParams::NONE);
         let effective_ftl_range = if ship.ftl_range > 0.0 {
             ship.ftl_range + global_params.ftl_range_bonus + port_params.ftl_range_bonus
         } else {

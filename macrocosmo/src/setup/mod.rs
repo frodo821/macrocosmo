@@ -1233,6 +1233,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: Some("station_shipyard_v1".to_string()),
+            colony_slots: None,
         });
         world.insert_resource(building_registry);
 

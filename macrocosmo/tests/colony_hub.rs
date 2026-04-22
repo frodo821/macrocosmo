@@ -49,9 +49,7 @@ fn test_hub_t1_lua_definition_loads() {
     assert_eq!(hub.name, "Colony Hub");
     assert!(!hub.is_system_building);
     assert!(!hub.is_direct_buildable); // cost = nil
-    assert!(hub.capabilities.contains_key("colony_hub"));
-    let cap = hub.capabilities.get("colony_hub").unwrap();
-    assert_eq!(cap.get("fixed_slots"), Some(4.0));
+    assert_eq!(hub.colony_slots, Some(4));
 }
 
 #[test]
@@ -77,9 +75,7 @@ fn test_capital_t3_lua_definition_loads() {
         .get("planetary_capital_t3")
         .expect("planetary_capital_t3 missing");
     assert_eq!(cap_def.name, "Planetary Capital III");
-    let cap = cap_def.capabilities.get("colony_hub").unwrap();
-    assert_eq!(cap.get("fixed_slots"), Some(14.0));
-    assert_eq!(cap.get("slot_ratio"), Some(0.15));
+    assert_eq!(cap_def.colony_slots, Some(14));
 }
 
 #[test]
@@ -144,24 +140,14 @@ fn test_hub_slots_for_new_colony_fallback() {
 fn test_hub_provides_fixed_slots() {
     let reg = lua_building_registry();
     let hub = reg.get("colony_hub_t1").unwrap();
-    let fixed = hub
-        .capabilities
-        .get("colony_hub")
-        .and_then(|c| c.get("fixed_slots"))
-        .unwrap();
-    assert_eq!(fixed, 4.0);
+    assert_eq!(hub.colony_slots, Some(4));
 }
 
 #[test]
 fn test_hub_t2_increases_slots() {
     let reg = lua_building_registry();
     let hub2 = reg.get("colony_hub_t2").unwrap();
-    let fixed = hub2
-        .capabilities
-        .get("colony_hub")
-        .and_then(|c| c.get("fixed_slots"))
-        .unwrap();
-    assert_eq!(fixed, 6.0);
+    assert_eq!(hub2.colony_slots, Some(6));
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +179,7 @@ fn test_demolish_rejected_for_non_dismantlable() {
         on_built: None,
         on_upgraded: None,
         dismantlable: false,
-        ship_design_id: None,
+        ship_design_id: None, colony_slots: None,
     });
 
     let def = reg.get("hub_test").unwrap();

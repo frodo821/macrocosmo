@@ -23,10 +23,9 @@ pub fn process_pending_ship_commands(
     mut ships: Query<(&mut Ship, &mut ShipState, &Position), Without<crate::colony::SlotAssignment>>,
     mut command_queues: Query<&mut CommandQueue>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
-    cmd_station_ships: Query<(Entity, &Ship, &ShipState, &crate::colony::SlotAssignment)>,
+    sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
     _planets: Query<&crate::galaxy::Planet>,
     design_registry: Res<ShipDesignRegistry>,
-    building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
     let default_params = crate::technology::GlobalParams::default();
     let base_ftl_speed = balance.initial_ftl_speed_c();
@@ -88,7 +87,7 @@ pub fn process_pending_ship_commands(
                     continue;
                 };
                 // Try FTL first, fall back to sublight
-                let port_params = PortParams::from_station_ships(docked_system, &cmd_station_ships, &building_registry);
+                let port_params = sys_mods_q.get(docked_system).map(PortParams::from_system_modifiers).unwrap_or(PortParams::NONE);
                 match start_ftl_travel_full(
                     &mut state,
                     &ship,

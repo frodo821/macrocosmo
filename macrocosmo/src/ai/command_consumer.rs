@@ -33,7 +33,7 @@ use crate::ship::command_events::{
 };
 use crate::ship::{CommandQueue, Owner, Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
-use crate::colony::system_buildings::{SlotAssignment, system_has_shipyard};
+use crate::colony::system_buildings::SlotAssignment;
 use crate::technology::{ResearchQueue, TechId, TechTree};
 use crate::time_system::GameClock;
 
@@ -56,6 +56,7 @@ pub struct BuildResearchParams<'w, 's> {
     building_registry: Option<Res<'w, BuildingRegistry>>,
     build_queues: Query<'w, 's, &'static mut BuildQueue>,
     station_ships: Query<'w, 's, (Entity, &'static Ship, &'static ShipState, &'static SlotAssignment)>,
+    sys_mods_q: Query<'w, 's, &'static crate::galaxy::SystemModifiers>,
     empire_tech: Query<'w, 's, (&'static mut TechTree, &'static mut ResearchQueue), With<Empire>>,
     colonies: Query<'w, 's, (Entity, &'static Colony, &'static Buildings, &'static mut BuildingQueue)>,
     planets: Query<'w, 's, &'static Planet>,
@@ -442,8 +443,6 @@ fn queue_ship_at_shipyard(
         return false;
     }
 
-    let building_registry = br.building_registry.as_deref();
-
     // Find a system with a shipyard owned by this empire.
     // Prefer the specified target_system if it qualifies.
     let owned_systems: Vec<Entity> = sovereignty
@@ -454,19 +453,19 @@ fn queue_ship_at_shipyard(
 
     let shipyard_system = if let Some(target) = target_system {
         // Verify target is owned and has a shipyard
-        if owned_systems.contains(&target) && has_shipyard_check(target, &br.station_ships, building_registry) {
+        if owned_systems.contains(&target) && has_shipyard_check(target, &br.sys_mods_q) {
             Some(target)
         } else {
             // Fall back to any owned system with a shipyard
             owned_systems
                 .iter()
-                .find(|&&sys| has_shipyard_check(sys, &br.station_ships, building_registry))
+                .find(|&&sys| has_shipyard_check(sys, &br.sys_mods_q))
                 .copied()
         }
     } else {
         owned_systems
             .iter()
-            .find(|&&sys| has_shipyard_check(sys, &br.station_ships, building_registry))
+            .find(|&&sys| has_shipyard_check(sys, &br.sys_mods_q))
             .copied()
     };
 
@@ -502,18 +501,15 @@ fn queue_ship_at_shipyard(
     }
 }
 
-/// Check if a system has a shipyard capability. Wraps `system_has_shipyard`
-/// from `colony::system_buildings`, handling the case where the
-/// `BuildingRegistry` may not be available.
+/// Check if a system has a shipyard capability via `SystemModifiers`.
 fn has_shipyard_check(
     system: Entity,
-    station_ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
-    building_registry: Option<&BuildingRegistry>,
+    sys_mods_q: &Query<&crate::galaxy::SystemModifiers>,
 ) -> bool {
-    let Some(registry) = building_registry else {
-        return false;
-    };
-    system_has_shipyard(system, station_ships, registry)
+    sys_mods_q
+        .get(system)
+        .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+        .unwrap_or(false)
 }
 
 /// Handle `build_ship`: queue construction of the specified ship design at
@@ -1404,7 +1400,7 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
-            ship_design_id: None,
+            ship_design_id: None, colony_slots: None,
         });
         registry
     }
@@ -1418,19 +1414,8 @@ mod tests {
         // Insert design + building registries
         app.insert_resource(test_design_registry());
 
-        // Building registry with shipyard capability
+        // Building registry with shipyard modifier
         let mut breg = BuildingRegistry::default();
-        let mut shipyard_caps = HashMap::new();
-        shipyard_caps.insert(
-            "shipyard".to_string(),
-            CapabilityParams {
-                params: {
-                    let mut m = HashMap::new();
-                    m.insert("concurrent_builds".to_string(), 1.0);
-                    m
-                },
-            },
-        );
         breg.insert(BuildingDefinition {
             id: "shipyard".into(),
             name: "Shipyard".into(),
@@ -1443,9 +1428,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
-            modifiers: Vec::new(),
+            modifiers: vec![
+                crate::modifier::ParsedModifier {
+                    target: "system.shipyard_capacity".into(),
+                    base_add: 1.0,
+                    multiplier: 0.0,
+                    add: 0.0,
+                },
+            ],
             is_system_building: true,
-            capabilities: shipyard_caps,
+            capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
@@ -1453,6 +1445,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: Some("station_shipyard_v1".into()),
+            colony_slots: None,
         });
         app.insert_resource(breg);
 
@@ -1466,6 +1459,18 @@ mod tests {
             .id();
 
         let faction_id = to_ai_faction(empire_entity);
+
+        // SystemModifiers with shipyard_capacity seeded so has_shipyard check passes.
+        let mut sys_mods = crate::galaxy::SystemModifiers::default();
+        sys_mods.shipyard_capacity.push_modifier(crate::modifier::Modifier {
+            id: "test_shipyard".into(),
+            label: "Test Shipyard".into(),
+            base_add: crate::amount::SignedAmt::units(1),
+            multiplier: crate::amount::SignedAmt::ZERO,
+            add: crate::amount::SignedAmt::ZERO,
+            expires_at: None,
+            on_expire_event: None,
+        });
 
         let sys_entity = world
             .spawn((
@@ -1481,10 +1486,11 @@ mod tests {
                     control_score: 1.0,
                 },
                 BuildQueue::default(),
+                sys_mods,
             ))
             .id();
 
-        // Spawn a station ship with shipyard capability at that system
+        // Spawn a station ship with shipyard design at that system
         world.spawn((
             Ship {
                 name: "Shipyard Station".into(),
@@ -1834,10 +1840,8 @@ mod tests {
         let mut app = test_app();
         app.insert_resource(test_design_registry());
 
-        // Building registry with shipyard
+        // Building registry with shipyard modifier
         let mut breg = BuildingRegistry::default();
-        let mut caps = HashMap::new();
-        caps.insert("shipyard".to_string(), CapabilityParams { params: HashMap::new() });
         breg.insert(BuildingDefinition {
             id: "shipyard".into(),
             name: "Shipyard".into(),
@@ -1850,9 +1854,16 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
-            modifiers: Vec::new(),
+            modifiers: vec![
+                crate::modifier::ParsedModifier {
+                    target: "system.shipyard_capacity".into(),
+                    base_add: 1.0,
+                    multiplier: 0.0,
+                    add: 0.0,
+                },
+            ],
             is_system_building: true,
-            capabilities: caps,
+            capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
             is_direct_buildable: true,
             prerequisites: None,
@@ -1860,6 +1871,7 @@ mod tests {
             on_upgraded: None,
             dismantlable: true,
             ship_design_id: Some("station_shipyard_v1".into()),
+            colony_slots: None,
         });
         app.insert_resource(breg);
 
@@ -1873,6 +1885,17 @@ mod tests {
             .id();
 
         let faction_id = to_ai_faction(empire_entity);
+
+        let mut sys_mods = crate::galaxy::SystemModifiers::default();
+        sys_mods.shipyard_capacity.push_modifier(crate::modifier::Modifier {
+            id: "test_shipyard".into(),
+            label: "Test Shipyard".into(),
+            base_add: crate::amount::SignedAmt::units(1),
+            multiplier: crate::amount::SignedAmt::ZERO,
+            add: crate::amount::SignedAmt::ZERO,
+            expires_at: None,
+            on_expire_event: None,
+        });
 
         let sys_entity = world
             .spawn((
@@ -1888,6 +1911,7 @@ mod tests {
                     control_score: 1.0,
                 },
                 BuildQueue::default(),
+                sys_mods,
             ))
             .id();
 

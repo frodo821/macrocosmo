@@ -7,7 +7,7 @@ local colony_hub_t1 = define_building {
     maintenance = 0.0,
     dismantlable = false,
     is_system_building = false,
-    capabilities = { colony_hub = { fixed_slots = 4 } },
+    colony_slots = 4,
     modifiers = {
         { target = "colony.farmer_slot", base_add = 1 },
         { target = "colony.power_worker_slot", base_add = 1 },
@@ -26,7 +26,7 @@ local colony_hub_t2 = define_building {
     maintenance = 0.0,
     dismantlable = false,
     is_system_building = false,
-    capabilities = { colony_hub = { fixed_slots = 6 } },
+    colony_slots = 6,
     modifiers = {
         { target = "colony.farmer_slot", base_add = 2 },
         { target = "colony.power_worker_slot", base_add = 2 },
@@ -45,7 +45,7 @@ local colony_hub_t3 = define_building {
     maintenance = 0.0,
     dismantlable = false,
     is_system_building = false,
-    capabilities = { colony_hub = { fixed_slots = 8 } },
+    colony_slots = 8,
     modifiers = {
         { target = "colony.farmer_slot", base_add = 3 },
         { target = "colony.power_worker_slot", base_add = 3 },
@@ -66,7 +66,7 @@ local planetary_capital_t1 = define_building {
     maintenance = 0.0,
     dismantlable = false,
     is_system_building = false,
-    capabilities = { colony_hub = { fixed_slots = 10 } },
+    colony_slots = 10,
     modifiers = {
         { target = "colony.farmer_slot", base_add = 3 },
         { target = "colony.power_worker_slot", base_add = 3 },
@@ -86,7 +86,7 @@ local planetary_capital_t2 = define_building {
     maintenance = 0.0,
     dismantlable = false,
     is_system_building = false,
-    capabilities = { colony_hub = { fixed_slots = 12 } },
+    colony_slots = 12,
     modifiers = {
         { target = "colony.farmer_slot", base_add = 3 },
         { target = "colony.power_worker_slot", base_add = 3 },
@@ -106,7 +106,7 @@ local planetary_capital_t3 = define_building {
     maintenance = 0.0,
     dismantlable = false,
     is_system_building = false,
-    capabilities = { colony_hub = { fixed_slots = 14, slot_ratio = 0.15 } },
+    colony_slots = 14,
     modifiers = {
         { target = "colony.farmer_slot", base_add = 3 },
         { target = "colony.power_worker_slot", base_add = 3 },

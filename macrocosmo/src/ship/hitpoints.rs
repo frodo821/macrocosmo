@@ -55,10 +55,10 @@ pub fn tick_ship_repair(
     // #298 (S-4): Exclude conquered Cores from normal Port repair — their
     // recovery is handled by `tick_conquered_recovery` in `conquered.rs`.
     mut ships: Query<(&ShipState, &mut ShipHitpoints), Without<ConqueredCore>>,
-    hp_station_ships: Query<(Entity, &Ship, &ShipState, &crate::colony::SlotAssignment)>,
-    building_registry: Res<crate::colony::BuildingRegistry>,
+    sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
     balance: Res<crate::technology::GameBalance>,
 ) {
+    use crate::amount::Amt;
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
@@ -70,12 +70,11 @@ pub fn tick_ship_repair(
             continue;
         };
 
-        // Check if the system has a Port capability via station ships
-        let has_port = crate::colony::system_buildings::system_has_port(
-            *system,
-            &hp_station_ships,
-            &building_registry,
-        );
+        // Check if the system has a Port capability via SystemModifiers
+        let has_port = sys_mods_q
+            .get(*system)
+            .map(|m| m.port_repair.value().final_value() > Amt::ZERO)
+            .unwrap_or(false);
 
         if has_port {
             // Repair armor first, then hull

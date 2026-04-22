@@ -148,6 +148,7 @@ pub fn draw_system_panel(
         Option<&mut SystemBuildingQueue>,
     )>,
     station_ships_q: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
+    sys_mods_q: &Query<&crate::galaxy::SystemModifiers>,
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
@@ -496,6 +497,7 @@ pub fn draw_system_panel(
                                             design_registry,
                                             system_buildings_q,
                                             station_ships_q,
+                                            sys_mods_q,
                                             construction_params,
                                             building_registry,
                                             &colonized_planets,
@@ -844,6 +846,7 @@ fn draw_right_panel(
         Option<&mut SystemBuildingQueue>,
     )>,
     station_ships_q: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
+    sys_mods_q: &Query<&crate::galaxy::SystemModifiers>,
     construction_params: &ConstructionParams,
     building_registry: &BuildingRegistry,
     colonized_planets: &std::collections::HashSet<Entity>,
@@ -1250,11 +1253,10 @@ fn draw_right_panel(
     // === #134: Ship Build Queue + Build Ship (system-level) ===
     {
         // Determine shipyard availability via capability check on station ships.
-        let has_shipyard = crate::colony::system_buildings::system_has_shipyard(
-            sel_entity,
-            station_ships_q,
-            building_registry,
-        );
+        let has_shipyard = sys_mods_q
+            .get(sel_entity)
+            .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+            .unwrap_or(false);
 
         // Collect colonies in this system along with a snapshot of their build queues.
         // Also remember the first colony entity, which we will use as the host for
@@ -1990,15 +1992,14 @@ fn format_planet_type(planet_type: &str) -> String {
 /// regression tests can verify it without needing an egui context.
 pub fn ship_build_host_colony(
     system_entity: Entity,
-    station_ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
-    building_registry: &BuildingRegistry,
+    sys_mods_q: &Query<&crate::galaxy::SystemModifiers>,
     colonies: &[(Entity, Entity)], // (colony_entity, system_entity) pairs
 ) -> Option<Entity> {
-    if !crate::colony::system_buildings::system_has_shipyard(
-        system_entity,
-        station_ships,
-        building_registry,
-    ) {
+    let has_shipyard = sys_mods_q
+        .get(system_entity)
+        .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+        .unwrap_or(false);
+    if !has_shipyard {
         return None;
     }
     colonies

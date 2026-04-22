@@ -534,9 +534,8 @@ pub fn poll_pending_routes(
     >,
     mut pending_q: Query<&mut PendingRoute>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
-    routing_station_ships: Query<(Entity, &Ship, &ShipState, &crate::colony::SlotAssignment)>,
+    sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
     mut pending_count: ResMut<RouteCalculationsPending>,
-    building_registry: Res<crate::colony::BuildingRegistry>,
     // #334 Phase 1: emit the terminal CommandExecuted for the MoveRequested
     // that spawned this async route. `CommandId` is threaded via
     // `PendingRoute.command_id`; `None` is tolerated for in-flight ships
@@ -765,7 +764,7 @@ pub fn poll_pending_routes(
                     }
                     continue;
                 };
-                let port_params = PortParams::from_station_ships(docked_system, &routing_station_ships, &building_registry);
+                let port_params = sys_mods_q.get(docked_system).map(PortParams::from_system_modifiers).unwrap_or(PortParams::NONE);
                 match crate::ship::movement::start_ftl_travel_full(
                     &mut state,
                     ship,

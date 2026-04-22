@@ -219,8 +219,9 @@ static PENDING_ACK_BUFFER: Mutex<Vec<PendingAck>> = Mutex::new(Vec::new());
 /// tab renderer calls this too; exposed so tests can drive the drain
 /// system without wiring egui.
 pub fn enqueue_pending_ack(action: PendingAck) {
-    if let Ok(mut buf) = PENDING_ACK_BUFFER.lock() {
-        buf.push(action);
+    match PENDING_ACK_BUFFER.lock() {
+        Ok(mut buf) => buf.push(action),
+        Err(poison) => poison.into_inner().push(action),
     }
 }
 
@@ -229,7 +230,7 @@ pub fn enqueue_pending_ack(action: PendingAck) {
 pub fn drain_pending_acks_for_tests() -> Vec<PendingAck> {
     match PENDING_ACK_BUFFER.lock() {
         Ok(mut buf) => std::mem::take(&mut *buf),
-        Err(_) => Vec::new(),
+        Err(poison) => std::mem::take(&mut *poison.into_inner()),
     }
 }
 
@@ -239,7 +240,7 @@ pub fn drain_pending_acks_for_tests() -> Vec<PendingAck> {
 pub fn apply_pending_acks_system(mut queue: ResMut<EscNotificationQueue>) {
     let drained: Vec<PendingAck> = match PENDING_ACK_BUFFER.lock() {
         Ok(mut buf) => std::mem::take(&mut *buf),
-        Err(_) => return,
+        Err(poison) => std::mem::take(&mut *poison.into_inner()),
     };
     for action in drained {
         match action {

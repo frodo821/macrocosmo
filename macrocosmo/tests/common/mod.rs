@@ -66,7 +66,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None,
+        ship_design_id: None, colony_slots: None,
     });
     registry.insert(BuildingDefinition {
         id: "power_plant".into(),
@@ -89,7 +89,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None,
+        ship_design_id: None, colony_slots: None,
     });
     registry.insert(BuildingDefinition {
         id: "research_lab".into(),
@@ -113,18 +113,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_upgraded: None,
         dismantlable: true,
         ship_design_id: Some("station_research_lab_v1".into()),
+            colony_slots: None,
     });
-    let mut shipyard_caps = HashMap::new();
-    shipyard_caps.insert(
-        "shipyard".to_string(),
-        CapabilityParams {
-            params: {
-                let mut m = HashMap::new();
-                m.insert("concurrent_builds".to_string(), 1.0);
-                m
-            },
-        },
-    );
     registry.insert(BuildingDefinition {
         id: "shipyard".into(),
         name: "Shipyard".into(),
@@ -137,9 +127,9 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO,
         production_bonus_food: Amt::ZERO,
-        modifiers: Vec::new(),
+        modifiers: vec![pm("system.shipyard_capacity", 1.0)],
         is_system_building: true,
-        capabilities: shipyard_caps,
+        capabilities: HashMap::new(),
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
@@ -147,19 +137,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_upgraded: None,
         dismantlable: true,
         ship_design_id: Some("station_shipyard_v1".into()),
+        colony_slots: None,
     });
-    let mut port_caps = HashMap::new();
-    port_caps.insert(
-        "port".to_string(),
-        CapabilityParams {
-            params: {
-                let mut m = HashMap::new();
-                m.insert("ftl_range_bonus".to_string(), 10.0);
-                m.insert("travel_time_factor".to_string(), 0.8);
-                m
-            },
-        },
-    );
     registry.insert(BuildingDefinition {
         id: "port".into(),
         name: "Port".into(),
@@ -172,9 +151,13 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO,
         production_bonus_food: Amt::ZERO,
-        modifiers: Vec::new(),
+        modifiers: vec![
+            pm("system.port_ftl_range_bonus", 10.0),
+            pm("system.port_travel_time_factor", -0.2),
+            pm("system.port_repair", 1.0),
+        ],
         is_system_building: true,
-        capabilities: port_caps,
+        capabilities: HashMap::new(),
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
@@ -182,6 +165,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_upgraded: None,
         dismantlable: true,
         ship_design_id: Some("station_port_v1".into()),
+        colony_slots: None,
     });
     registry.insert(BuildingDefinition {
         id: "farm".into(),
@@ -204,7 +188,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None,
+        ship_design_id: None, colony_slots: None,
     });
     registry
 }
@@ -589,6 +573,12 @@ pub fn test_app() -> App {
             .chain()
             .after(macrocosmo::time_system::advance_game_time),
     );
+    // System-level building capability modifiers (independent of colony chain).
+    app.add_systems(
+        Update,
+        macrocosmo::colony::sync_system_capability_modifiers
+            .after(macrocosmo::time_system::advance_game_time),
+    );
     app.add_systems(
         Update,
         apply_pending_colonization_orders.after(macrocosmo::time_system::advance_game_time),
@@ -920,6 +910,10 @@ pub fn full_test_app() -> App {
             advance_production_tick,
         )
             .chain(),
+    );
+    app.add_systems(
+        Update,
+        macrocosmo::colony::sync_system_capability_modifiers,
     );
     // #303 (S-10): Sovereignty change detection + cascade + event firing.
     app.init_resource::<macrocosmo::colony::PendingSovereigntyChanges>();

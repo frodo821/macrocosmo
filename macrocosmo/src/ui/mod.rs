@@ -1080,6 +1080,7 @@ fn draw_main_panels_system(
         &world.planet_entities,
         &mut world.system_buildings,
         &world.station_ships,
+        &world.sys_mods,
         &registries.hull_registry,
         &registries.module_registry,
         &registries.design_registry,

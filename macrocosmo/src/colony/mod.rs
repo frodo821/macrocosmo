@@ -110,6 +110,11 @@ impl Plugin for ColonyPlugin {
             // now carry SlotAssignment components directly.
             .add_systems(
                 Update,
+                sync_system_capability_modifiers
+                    .after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
                 (
                     update_sovereignty,
                     cascade_sovereignty_changes,
@@ -468,12 +473,7 @@ pub fn hub_slots_for_new_colony(
     fallback: impl FnOnce() -> usize,
 ) -> (usize, Option<crate::scripting::building_api::BuildingId>) {
     if let Some(hub_def) = registry.get("colony_hub_t1") {
-        let fixed = hub_def
-            .capabilities
-            .get("colony_hub")
-            .and_then(|cap| cap.get("fixed_slots"))
-            .map(|v| v as usize)
-            .unwrap_or(4);
+        let fixed = hub_def.colony_slots.unwrap_or(4);
         (
             fixed,
             Some(crate::scripting::building_api::BuildingId::new(

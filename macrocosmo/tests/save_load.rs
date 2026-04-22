@@ -1749,6 +1749,7 @@ fn test_migration_assigns_slot_to_station_ships_without_slot_assignment() {
         on_upgraded: None,
         dismantlable: true,
         ship_design_id: Some("station_shipyard_v1".into()),
+            colony_slots: None,
     });
     dst.insert_resource(building_reg);
     let mut design_reg = ShipDesignRegistry::default();

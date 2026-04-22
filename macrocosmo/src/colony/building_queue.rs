@@ -372,7 +372,7 @@ pub fn tick_build_queue(
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
-    bq_station_ships: Query<(Entity, &Ship, &ShipState, &super::SlotAssignment)>,
+    sys_mods_q: Query<&crate::galaxy::SystemModifiers, With<StarSystem>>,
     mut events: MessageWriter<GameEvent>,
     player_q: Query<(&StationedAt, Option<&AboardShip>), With<Player>>,
     mut fact_sys: FactSysParam,
@@ -424,11 +424,10 @@ pub fn tick_build_queue(
 
         // #35: Skip ship construction if system has no shipyard capability.
         // Deliverables also require a shipyard.
-        let has_shipyard = super::system_buildings::system_has_shipyard(
-            sys,
-            &bq_station_ships,
-            &building_registry,
-        );
+        let has_shipyard = sys_mods_q
+            .get(sys)
+            .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+            .unwrap_or(false);
         if !build_queue.queue.is_empty() && !has_shipyard {
             warn!("System lacks a Shipyard; skipping construction");
             continue;
@@ -828,11 +827,10 @@ pub fn tick_building_queue(
                         payload,
                     )),
                 );
-                // #280: If the upgraded building has colony_hub capability,
-                // expand the colony's slot count to match fixed_slots.
+                // #280: If the upgraded building declares colony_slots,
+                // expand the colony's slot count to match.
                 if let Some(new_def) = building_registry.get(completed.target_id.as_str()) {
-                    if let Some(hub_cap) = new_def.capabilities.get("colony_hub") {
-                        let fixed = hub_cap.get_or("fixed_slots", 0.0) as usize;
+                    if let Some(fixed) = new_def.colony_slots {
                         if fixed > buildings.slots.len() {
                             buildings.slots.resize(fixed, None);
                             info!("Colony hub upgrade expanded slots to {}", fixed);
