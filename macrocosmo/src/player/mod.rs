@@ -25,8 +25,13 @@ impl Plugin for PlayerPlugin {
         app.add_systems(Startup, spawn_player_empire.run_if(not_in_observer_mode))
             .add_systems(
                 Startup,
-                spawn_player
+                (
+                    bevy::ecs::schedule::ApplyDeferred,
+                    spawn_player,
+                )
+                    .chain()
                     .after(crate::galaxy::generate_galaxy)
+                    .after(crate::scripting::load_faction_registry)
                     .run_if(not_in_observer_mode),
             )
             .add_systems(
@@ -178,25 +183,44 @@ pub fn spawn_ruler_for_empire(
 pub fn spawn_player(
     mut commands: Commands,
     capitals: Query<(Entity, &StarSystem)>,
-    empire_q: Query<Entity, With<PlayerEmpire>>,
+    empire_q: Query<(Entity, &Faction), With<PlayerEmpire>>,
+    home_assignments: Option<Res<crate::galaxy::HomeSystemAssignments>>,
 ) {
-    let Ok(empire_entity) = empire_q.single() else {
+    let Ok((empire_entity, faction)) = empire_q.single() else {
         return;
     };
-    for (entity, system) in &capitals {
-        if system.is_capital {
-            spawn_ruler_for_empire(
-                &mut commands,
-                empire_entity,
-                entity,
-                "Player".into(),
-                true,
-            );
-            info!("Player Ruler starts at capital: {}", system.name);
-            return;
-        }
-    }
-    warn!("No capital system found!");
+
+    // #429: Use HomeSystemAssignments to find the player faction's home system.
+    // Fall back to is_capital for backward compat (tests without galaxy gen).
+    let home = home_assignments
+        .as_ref()
+        .and_then(|ha| ha.assignments.get(&faction.id).copied());
+
+    let capital_entity = home.or_else(|| {
+        capitals
+            .iter()
+            .find(|(_, s)| s.is_capital)
+            .map(|(e, _)| e)
+    });
+
+    let Some(entity) = capital_entity else {
+        warn!("No home system found for player!");
+        return;
+    };
+
+    let system_name = capitals
+        .get(entity)
+        .map(|(_, s)| s.name.clone())
+        .unwrap_or_else(|_| "unknown".into());
+
+    spawn_ruler_for_empire(
+        &mut commands,
+        empire_entity,
+        entity,
+        "Player".into(),
+        true,
+    );
+    info!("Player Ruler starts at home system: {}", system_name);
 }
 
 pub fn log_player_info(

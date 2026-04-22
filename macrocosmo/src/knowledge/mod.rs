@@ -563,65 +563,77 @@ pub fn update_visibility_tiers(
 
 fn initialize_capital_knowledge(
     mut commands: Commands,
-    mut empire_q: Query<(Entity, &mut KnowledgeStore), With<crate::player::Empire>>,
-    ruler_q: Query<&StationedAt, Or<(With<Ruler>, With<crate::player::Player>)>>,
+    mut empire_q: Query<
+        (Entity, &mut KnowledgeStore, Option<&crate::galaxy::HomeSystem>),
+        With<crate::player::Empire>,
+    >,
     systems: Query<(Entity, &StarSystem, &Position)>,
+    home_assignments: Option<Res<crate::galaxy::HomeSystemAssignments>>,
+    empire_factions: Query<&crate::player::Faction, With<crate::player::Empire>>,
 ) {
-    // Resolve the capital system: prefer any ruler's StationedAt, fall back
-    // to the first StarSystem with `is_capital`.
-    let capital_entity = ruler_q
+    // Fallback: first is_capital system (for tests without HomeSystem).
+    let fallback_capital = systems
         .iter()
-        .next()
-        .map(|s| s.system)
-        .or_else(|| {
-            systems
-                .iter()
-                .find(|(_, s, _)| s.is_capital)
-                .map(|(e, _, _)| e)
-        });
-    let Some(capital_entity) = capital_entity else {
-        warn!("Knowledge init: no capital system found");
-        return;
-    };
+        .find(|(_, s, _)| s.is_capital)
+        .map(|(e, _, _)| e);
 
-    let (_, capital, capital_pos) = match systems.get(capital_entity) {
-        Ok(result) => result,
-        Err(_) => {
-            warn!("Knowledge init: capital entity not found");
-            return;
-        }
-    };
+    let mut init_count = 0;
+    for (empire_entity, mut store, home_system) in &mut empire_q {
+        // Resolve this empire's home system:
+        // 1. HomeSystem component (set by apply_game_start_actions)
+        // 2. HomeSystemAssignments resource (by faction id)
+        // 3. Fallback to first is_capital system
+        let capital_entity = home_system
+            .map(|hs| hs.0)
+            .or_else(|| {
+                let faction = empire_factions.get(empire_entity).ok()?;
+                home_assignments
+                    .as_ref()
+                    .and_then(|ha| ha.assignments.get(&faction.id).copied())
+            })
+            .or(fallback_capital);
 
-    let snapshot = SystemSnapshot {
-        name: capital.name.clone(),
-        position: capital_pos.as_array(),
-        surveyed: capital.surveyed,
-        colonized: true, // Capital is always colonized
-        population: 1.0,
-        production: 1.0,
-        is_capital: true,
-        ..default()
-    };
+        let Some(capital_entity) = capital_entity else {
+            warn!(
+                "Knowledge init: no home system for empire {:?}",
+                empire_entity
+            );
+            continue;
+        };
 
-    for (empire_entity, mut store) in &mut empire_q {
+        let Ok((_, capital, capital_pos)) = systems.get(capital_entity) else {
+            warn!(
+                "Knowledge init: home system entity {:?} not found",
+                capital_entity
+            );
+            continue;
+        };
+
+        let snapshot = SystemSnapshot {
+            name: capital.name.clone(),
+            position: capital_pos.as_array(),
+            surveyed: capital.surveyed,
+            colonized: true,
+            population: 1.0,
+            production: 1.0,
+            is_capital: true,
+            ..default()
+        };
+
         store.update(SystemKnowledge {
             system: capital_entity,
             observed_at: 0,
             received_at: 0,
-            data: snapshot.clone(),
+            data: snapshot,
             source: ObservationSource::Direct,
         });
-        // Set the empire's viewer system for light-speed delay calculations.
         commands
             .entity(empire_entity)
             .insert(crate::player::EmpireViewerSystem(capital_entity));
+        init_count += 1;
     }
 
-    info!(
-        "Knowledge initialized for {} empires: capital '{}'",
-        empire_q.iter().count(),
-        capital.name
-    );
+    info!("Knowledge initialized for {} empires", init_count);
 }
 
 /// #216: Build a `SystemSnapshot` describing the observed state of a star
