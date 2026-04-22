@@ -2114,6 +2114,11 @@ fn courier_route_knowledge_relay_delivers_pre_loaded_cargo() {
         sys_b,
         [0.3, 0.0, 0.0],
     );
+    // Set courier owner to the player empire so knowledge relay works.
+    {
+        let empire = common::empire_entity(app.world_mut());
+        app.world_mut().get_mut::<Ship>(courier).unwrap().owner = Owner::Empire(empire);
+    }
     let mut route = CourierRoute::new(vec![sys_a, sys_b], CourierMode::KnowledgeRelay);
     route.current_index = 1;
     app.world_mut().entity_mut(courier).insert(route);
@@ -2195,6 +2200,11 @@ fn courier_route_knowledge_relay_pickup_refreshes_received_at() {
         sys_a,
         [0.0, 0.0, 0.0],
     );
+    // Set courier owner to the player empire so knowledge relay works.
+    {
+        let empire = common::empire_entity(app.world_mut());
+        app.world_mut().get_mut::<Ship>(courier).unwrap().owner = Owner::Empire(empire);
+    }
     app.world_mut()
         .entity_mut(courier)
         .insert(CourierRoute::new(
@@ -3037,6 +3047,11 @@ fn test_scout_report_via_ftl_comm() {
     // Scout ship with FTL range 10 — can't reach target in one hop, but
     // we'll teleport it manually to simplify the test (skip movement logic).
     let ship = spawn_scout_ship(app.world_mut(), sys_target, [20.0, 0.0, 0.0]);
+    // Set scout owner to the player empire so report delivery works.
+    {
+        let empire = empire_entity(app.world_mut());
+        app.world_mut().get_mut::<Ship>(ship).unwrap().owner = Owner::Empire(empire);
+    }
 
     // Inject the Scouting state directly (ship already at target, observing).
     let start_at = app.world().resource::<GameClock>().elapsed;
@@ -3097,6 +3112,11 @@ fn test_scout_report_via_return() {
         .spawn((Player, StationedAt { system: sys_home }));
 
     let ship = spawn_scout_ship(app.world_mut(), sys_target, [5.0, 0.0, 0.0]);
+    // Set scout owner to the player empire so report delivery works.
+    {
+        let empire = empire_entity(app.world_mut());
+        app.world_mut().get_mut::<Ship>(ship).unwrap().owner = Owner::Empire(empire);
+    }
 
     // Directly park the ship in Scouting at target.
     let start_at = app.world().resource::<GameClock>().elapsed;

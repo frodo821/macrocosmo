@@ -30,19 +30,16 @@ use crate::ship::{CommandQueue, Owner, QueuedCommand, Ship, ShipState};
 pub fn handle_survey_requested(
     clock: Res<GameClock>,
     balance: Res<crate::technology::GameBalance>,
-    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::Empire>>,
     mut reqs: MessageReader<SurveyRequested>,
     mut executed: MessageWriter<CommandExecuted>,
     mut ships: Query<(&Ship, &mut ShipState, &Position, &mut CommandQueue)>,
     systems: Query<(&crate::galaxy::StarSystem, &Position), Without<Ship>>,
     design_registry: Res<ShipDesignRegistry>,
 ) {
-    let Ok(global_params) = empire_params_q.single() else {
-        for _ in reqs.read() {}
-        return;
-    };
     let survey_range_base = balance.survey_range_ly();
     let survey_duration_base = balance.survey_duration();
+    let default_params = crate::technology::GlobalParams::default();
 
     for req in reqs.read() {
         let Ok((ship, mut state, ship_pos, mut queue)) = ships.get_mut(req.ship) else {
@@ -56,6 +53,11 @@ pub fn handle_survey_requested(
                 completed_at: clock.elapsed,
             });
             continue;
+        };
+
+        let global_params = match ship.owner {
+            Owner::Empire(e) => empire_params_q.get(e).unwrap_or(&default_params),
+            Owner::Neutral => &default_params,
         };
 
         let docked_system: Option<Entity> = match *state {

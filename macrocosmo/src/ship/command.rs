@@ -7,7 +7,7 @@ use crate::time_system::GameClock;
 
 use super::movement::{PortParams, start_ftl_travel_full, start_sublight_travel_with_bonus};
 use super::survey::start_survey_with_bonus;
-use super::{CommandQueue, PendingShipCommand, Ship, ShipCommand, ShipState};
+use super::{CommandQueue, Owner, PendingShipCommand, Ship, ShipCommand, ShipState};
 
 // --- Pending ship command processing (#33) ---
 
@@ -17,7 +17,7 @@ use super::{CommandQueue, PendingShipCommand, Ship, ShipCommand, ShipState};
 pub fn process_pending_ship_commands(
     mut commands: Commands,
     clock: Res<GameClock>,
-    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::Empire>>,
     balance: Res<crate::technology::GameBalance>,
     pending: Query<(Entity, &PendingShipCommand)>,
     mut ships: Query<(&mut Ship, &mut ShipState, &Position), Without<crate::colony::SlotAssignment>>,
@@ -28,9 +28,7 @@ pub fn process_pending_ship_commands(
     design_registry: Res<ShipDesignRegistry>,
     building_registry: Res<crate::colony::BuildingRegistry>,
 ) {
-    let Ok(global_params) = empire_params_q.single() else {
-        return;
-    };
+    let default_params = crate::technology::GlobalParams::default();
     let base_ftl_speed = balance.initial_ftl_speed_c();
     let settling_duration = balance.settling_duration();
     let survey_range = balance.survey_range_ly();
@@ -43,6 +41,11 @@ pub fn process_pending_ship_commands(
         let Ok((ship, mut state, ship_pos)) = ships.get_mut(pending_cmd.ship) else {
             commands.entity(cmd_entity).despawn();
             continue;
+        };
+
+        let global_params = match ship.owner {
+            Owner::Empire(e) => empire_params_q.get(e).unwrap_or(&default_params),
+            Owner::Neutral => &default_params,
         };
 
         // EnqueueCommand works regardless of ship state — it just adds to the queue

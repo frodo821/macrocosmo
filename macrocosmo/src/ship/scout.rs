@@ -32,7 +32,7 @@ use crate::knowledge::{
     SystemSnapshot,
 };
 use crate::physics::distance_ly_arr;
-use crate::player::{Player, PlayerEmpire, StationedAt};
+use crate::player::{Player, StationedAt};
 use crate::time_system::GameClock;
 
 use super::{CommandQueue, QueuedCommand, ReportMode, Ship, ShipHitpoints, ShipState};
@@ -208,27 +208,33 @@ pub fn tick_scout_observation(
         With<Hostile>,
     >,
     faction_relations: Res<crate::faction::FactionRelations>,
-    empire_entity_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
     let now = clock.elapsed;
 
-    // #293: Hostile systems lookup keyed by star system entity with
+    // #293: Hostile systems lookup keyed by (viewer_empire, star_system) with
     // summed strength. Filter by FactionRelations so hostiles the viewing
     // empire considers non-aggressive do not register as "hostile" in
-    // scout reports.
-    let viewer = empire_entity_q.iter().next();
-    let mut hostile_map: HashMap<Entity, f64> = HashMap::new();
-    for (at_system, stats, owner) in &hostiles {
-        let include = match (viewer, owner) {
-            (Some(v), Some(o)) => faction_relations
-                .get_or_default(v, o.0)
-                .can_attack_aggressive(),
-            _ => true,
+    // scout reports. Build lazily per viewer empire.
+    let mut hostile_map_cache: HashMap<Option<Entity>, HashMap<Entity, f64>> = HashMap::new();
+    let build_hostile_map =
+        |viewer: Option<Entity>,
+         hostiles: &Query<(&AtSystem, &HostileStats, Option<&crate::faction::FactionOwner>), With<Hostile>>,
+         relations: &crate::faction::FactionRelations|
+         -> HashMap<Entity, f64> {
+            let mut map: HashMap<Entity, f64> = HashMap::new();
+            for (at_system, stats, owner) in hostiles.iter() {
+                let include = match (viewer, owner) {
+                    (Some(v), Some(o)) => relations
+                        .get_or_default(v, o.0)
+                        .can_attack_aggressive(),
+                    _ => true,
+                };
+                if include {
+                    *map.entry(at_system.0).or_insert(0.0) += stats.strength;
+                }
+            }
+            map
         };
-        if include {
-            *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
-        }
-    }
 
     // First pass: collect an owned snapshot of every ship so we can sensor-
     // scan without borrowing the mutable query twice. Also identify which
@@ -247,10 +253,11 @@ pub fn tick_scout_observation(
     let mut all_ships: Vec<ShipObservation> = Vec::new();
     let mut completions: Vec<(
         Entity,
-        Entity, // target_system
-        Entity, // origin_system
+        Entity,           // target_system
+        Entity,           // origin_system
         ReportMode,
         [f64; 3],
+        Option<Entity>,   // owner empire entity
     )> = Vec::new();
 
     for (ship_entity, ship, state, ship_pos, hp) in ships.iter() {
@@ -297,18 +304,28 @@ pub fn tick_scout_observation(
         } = *state
         {
             if now >= completes_at {
+                let owner_empire = match ship.owner {
+                    super::Owner::Empire(e) => Some(e),
+                    super::Owner::Neutral => None,
+                };
                 completions.push((
                     ship_entity,
                     target_system,
                     origin_system,
                     report_mode,
                     ship_pos.as_array(),
+                    owner_empire,
                 ));
             }
         }
     }
 
-    for (ship_entity, target_system, origin_system, report_mode, scout_pos) in completions {
+    for (ship_entity, target_system, origin_system, report_mode, scout_pos, owner_empire) in completions {
+        // Build per-empire hostile map (cached).
+        let hostile_map = hostile_map_cache
+            .entry(owner_empire)
+            .or_insert_with(|| build_hostile_map(owner_empire, &hostiles, &faction_relations));
+
         // Build system snapshot — minimal survey-compatible payload.
         let (system_name, system_pos, surveyed) = match systems.get(target_system) {
             Ok((s, p)) => (s.name.clone(), p.as_array(), s.surveyed),
@@ -399,8 +416,9 @@ pub fn process_scout_report(
         &mut CommandQueue,
         &mut ScoutReport,
     )>,
-    mut empire_q: Query<&mut KnowledgeStore, With<PlayerEmpire>>,
+    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::Empire>>,
     player_q: Query<&StationedAt, With<Player>>,
+    viewer_q: Query<&crate::player::EmpireViewerSystem, With<crate::player::Empire>>,
     positions: Query<&Position>,
     // FTL comm coverage inputs.
     structure_registry: Res<crate::deep_space::StructureRegistry>,
@@ -420,9 +438,7 @@ pub fn process_scout_report(
     partner_structures: Query<&crate::deep_space::DeepSpaceStructure>,
     system_positions: Query<&Position, With<StarSystem>>,
 ) {
-    let Ok(mut store) = empire_q.single_mut() else {
-        return;
-    };
+    // Player position used for FTL comm coverage check (player empire only).
     let player_pos: Option<[f64; 3]> = player_q
         .iter()
         .next()
@@ -436,6 +452,23 @@ pub fn process_scout_report(
     );
 
     for (ship_entity, ship, state, ship_pos, mut queue, mut report) in reports.iter_mut() {
+        // Look up the ship's owner empire's KnowledgeStore.
+        let owner_entity = match ship.owner {
+            super::Owner::Empire(e) => Some(e),
+            super::Owner::Neutral => None,
+        };
+
+        // Determine the empire viewer position for FTL comm coverage.
+        // Use the EmpireViewerSystem position for the ship's owner empire.
+        // Fall back to the player's StationedAt position for backward compat.
+        let empire_viewer_pos: Option<[f64; 3]> = owner_entity.and_then(|e| {
+            viewer_q
+                .get(e)
+                .ok()
+                .and_then(|v| positions.get(v.0).ok().map(|p| p.as_array()))
+                .or(player_pos)
+        });
+
         let deliver =
             |store: &mut KnowledgeStore, report: &ScoutReport, source: ObservationSource| {
                 // System knowledge entry.
@@ -462,15 +495,19 @@ pub fn process_scout_report(
                 // Try instant delivery IF:
                 //  1. The ship is still in the target system / at the
                 //     observation position (i.e., it hasn't left), AND
-                //  2. FTL comm coverage includes both scout pos and player.
+                //  2. FTL comm coverage includes both scout pos and empire viewer.
                 let at_observation_post = matches!(state, ShipState::InSystem { .. });
-                let covered = match player_pos {
+                let covered = match empire_viewer_pos {
                     Some(pp) => ftl_comm_covers(ship_pos.as_array(), pp, &coverage),
                     None => false,
                 };
 
                 if at_observation_post && covered {
-                    deliver(&mut store, &report, ObservationSource::Scout);
+                    if let Some(e) = owner_entity {
+                        if let Ok(mut store) = empire_q.get_mut(e) {
+                            deliver(&mut store, &report, ObservationSource::Scout);
+                        }
+                    }
                     commands.entity(ship_entity).remove::<ScoutReport>();
                     info!(
                         "Scout report delivered via FTL Comm: {} -> system {:?}",
@@ -484,7 +521,11 @@ pub fn process_scout_report(
                 // move home.
                 if let ShipState::InSystem { system } = state {
                     if *system == report.origin_system {
-                        deliver(&mut store, &report, ObservationSource::Scout);
+                        if let Some(e) = owner_entity {
+                            if let Ok(mut store) = empire_q.get_mut(e) {
+                                deliver(&mut store, &report, ObservationSource::Scout);
+                            }
+                        }
                         commands.entity(ship_entity).remove::<ScoutReport>();
                         info!(
                             "Scout report (FtlComm fallback -> Return) delivered on dock at origin: {} -> system {:?}",
@@ -514,7 +555,11 @@ pub fn process_scout_report(
             ReportMode::Return => {
                 if let ShipState::InSystem { system } = state {
                     if *system == report.origin_system {
-                        deliver(&mut store, &report, ObservationSource::Scout);
+                        if let Some(e) = owner_entity {
+                            if let Ok(mut store) = empire_q.get_mut(e) {
+                                deliver(&mut store, &report, ObservationSource::Scout);
+                            }
+                        }
                         commands.entity(ship_entity).remove::<ScoutReport>();
                         info!(
                             "Scout report delivered on dock at origin: {} -> system {:?}",

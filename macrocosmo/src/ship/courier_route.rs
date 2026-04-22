@@ -30,7 +30,7 @@ use crate::physics;
 use crate::ship::command_events::CommandId;
 use crate::time_system::GameClock;
 
-use super::{Cargo, CommandQueue, QueuedCommand, Ship, ShipState};
+use super::{Cargo, CommandQueue, Owner, QueuedCommand, Ship, ShipState};
 
 /// Default cargo capacity (in `Amt` units) for couriers operating in
 /// `ResourceTransport` mode. Used per-resource (minerals, energy).
@@ -149,7 +149,7 @@ pub struct CarriedCommands {
 pub fn tick_courier_routes(
     clock: Res<GameClock>,
     systems_q: Query<(Entity, &Position), With<StarSystem>>,
-    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::PlayerEmpire>>,
+    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::Empire>>,
     mut stockpiles_q: Query<&mut ResourceStockpile, With<StarSystem>>,
     pending_q: Query<(Entity, &PendingCommand)>,
     mut applied_ids: ResMut<AppliedCommandIds>,
@@ -169,12 +169,6 @@ pub fn tick_courier_routes(
     let position_of = |entity: Entity| -> Option<[f64; 3]> {
         systems_q.get(entity).ok().map(|(_, pos)| pos.as_array())
     };
-
-    // The empire knowledge store doubles as the "system local" store for
-    // KnowledgeRelay in the current single-empire model. In future, each
-    // system could have its own store; this query lookup is a single
-    // point to swap out.
-    let mut empire_store_opt = empire_q.iter_mut().next();
 
     for (entity, ship, state, mut queue, mut route, cargo, mut knowledge_cargo, mut carried_cmds) in
         couriers_q.iter_mut()
@@ -209,8 +203,13 @@ pub fn tick_courier_routes(
         // We're at the target waypoint — run the mode-specific action.
         match route.mode {
             CourierMode::KnowledgeRelay => {
-                if let Some(ref mut store_mut) = empire_store_opt {
-                    let store: &mut KnowledgeStore = store_mut;
+                // Look up the courier ship's owner empire's KnowledgeStore.
+                let owner_entity = match ship.owner {
+                    Owner::Empire(e) => Some(e),
+                    Owner::Neutral => None,
+                };
+                if let Some(Ok(mut store)) = owner_entity.map(|e| empire_q.get_mut(e)) {
+                    let store: &mut KnowledgeStore = &mut store;
 
                     // Step 1: deliver currently-carried entries into the
                     // local store. KnowledgeStore::update preserves newer

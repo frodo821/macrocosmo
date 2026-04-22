@@ -1092,67 +1092,86 @@ pub fn update_destroyed_ship_knowledge(
     clock: Res<GameClock>,
     positions: Query<&Position>,
     mut empire_q: Query<
-        (&mut KnowledgeStore, &crate::player::EmpireViewerSystem),
-        With<crate::player::PlayerEmpire>,
+        (Entity, &mut KnowledgeStore, &crate::player::EmpireViewerSystem),
+        With<crate::player::Empire>,
     >,
     mut registry: ResMut<DestroyedShipRegistry>,
     mut events: MessageWriter<crate::events::GameEvent>,
     mut next_id: ResMut<NextEventId>,
+    player_empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
 ) {
-    // Ship destruction records are player-facing (emit ShipMissing events).
-    // Keep PlayerEmpire-scoped until destruction records are per-empire.
-    let Ok((mut store, viewer)) = empire_q.single_mut() else {
+    // Collect empire viewer positions up front to avoid borrow conflicts.
+    let empire_viewers: Vec<(Entity, [f64; 3])> = empire_q
+        .iter()
+        .filter_map(|(entity, _, viewer)| {
+            positions.get(viewer.0).ok().map(|p| (entity, p.as_array()))
+        })
+        .collect();
+
+    if empire_viewers.is_empty() {
         return;
-    };
-    let Ok(viewer_pos) = positions.get(viewer.0) else {
-        return;
-    };
-    let viewer_pos_arr = viewer_pos.as_array();
+    }
+
+    let player_empire = player_empire_q.iter().next();
 
     registry.records.retain_mut(|record| {
-        let distance = physics::distance_ly_arr(viewer_pos_arr, record.destruction_pos);
-        let delay = physics::light_delay_hexadies(distance);
-        let arrives_at = record.destruction_tick + delay;
+        let mut all_received_destruction = true;
 
-        if clock.elapsed >= arrives_at {
-            store.update_ship(ShipSnapshot {
-                entity: record.entity,
-                name: record.name.clone(),
-                design_id: record.design_id.clone(),
-                last_known_state: ShipSnapshotState::Destroyed,
-                last_known_system: record.last_known_system,
-                observed_at: record.destruction_tick,
-                hp: 0.0,
-                hp_max: 0.0,
-                source: ObservationSource::Direct,
-            });
-            false // remove from registry
-        } else if !record.marked_missing
-            && clock.elapsed >= record.destruction_tick + MISSING_GRACE_HEXADIES
-        {
-            record.marked_missing = true;
-            store.update_ship(ShipSnapshot {
-                entity: record.entity,
-                name: record.name.clone(),
-                design_id: record.design_id.clone(),
-                last_known_state: ShipSnapshotState::Missing,
-                last_known_system: record.last_known_system,
-                observed_at: clock.elapsed,
-                hp: 0.0,
-                hp_max: 0.0,
-                source: ObservationSource::Direct,
-            });
-            events.write(crate::events::GameEvent::new(
-                &mut next_id,
-                clock.elapsed,
-                crate::events::GameEventKind::ShipMissing,
-                format!("{} has not returned — presumed missing", record.name),
-                record.last_known_system,
-            ));
-            true // keep — still waiting for light
-        } else {
-            true // keep — not yet missing or already marked
+        for &(empire_entity, viewer_pos_arr) in &empire_viewers {
+            let distance = physics::distance_ly_arr(viewer_pos_arr, record.destruction_pos);
+            let delay = physics::light_delay_hexadies(distance);
+            let arrives_at = record.destruction_tick + delay;
+
+            if clock.elapsed >= arrives_at {
+                // This empire can now learn about the destruction.
+                if let Ok((_, mut store, _)) = empire_q.get_mut(empire_entity) {
+                    store.update_ship(ShipSnapshot {
+                        entity: record.entity,
+                        name: record.name.clone(),
+                        design_id: record.design_id.clone(),
+                        last_known_state: ShipSnapshotState::Destroyed,
+                        last_known_system: record.last_known_system,
+                        observed_at: record.destruction_tick,
+                        hp: 0.0,
+                        hp_max: 0.0,
+                        source: ObservationSource::Direct,
+                    });
+                }
+            } else {
+                all_received_destruction = false;
+
+                // ShipMissing event — only emit for the player empire.
+                if !record.marked_missing
+                    && clock.elapsed >= record.destruction_tick + MISSING_GRACE_HEXADIES
+                    && Some(empire_entity) == player_empire
+                {
+                    if let Ok((_, mut store, _)) = empire_q.get_mut(empire_entity) {
+                        store.update_ship(ShipSnapshot {
+                            entity: record.entity,
+                            name: record.name.clone(),
+                            design_id: record.design_id.clone(),
+                            last_known_state: ShipSnapshotState::Missing,
+                            last_known_system: record.last_known_system,
+                            observed_at: clock.elapsed,
+                            hp: 0.0,
+                            hp_max: 0.0,
+                            source: ObservationSource::Direct,
+                        });
+                    }
+                    record.marked_missing = true;
+                    events.write(crate::events::GameEvent::new(
+                        &mut next_id,
+                        clock.elapsed,
+                        crate::events::GameEventKind::ShipMissing,
+                        format!("{} has not returned — presumed missing", record.name),
+                        record.last_known_system,
+                    ));
+                }
+            }
         }
+
+        // Only remove the record when ALL empires have received the destruction.
+        !all_received_destruction
     });
 }
 

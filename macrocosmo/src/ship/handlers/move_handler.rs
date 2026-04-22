@@ -251,17 +251,14 @@ pub fn handle_move_requested(
 pub fn handle_move_to_coordinates_requested(
     clock: Res<GameClock>,
     mut reqs: MessageReader<MoveToCoordinatesRequested>,
-    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::PlayerEmpire>>,
+    empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::Empire>>,
     mut ships: Query<
         (&Ship, &mut ShipState, &Position, &mut CommandQueue),
         Without<routing::PendingRoute>,
     >,
     mut executed: MessageWriter<CommandExecuted>,
 ) {
-    let Ok(global_params) = empire_params_q.single() else {
-        for _ in reqs.read() {}
-        return;
-    };
+    let default_params = crate::technology::GlobalParams::default();
 
     for req in reqs.read() {
         let Ok((ship, mut state, ship_pos, mut queue)) = ships.get_mut(req.ship) else {
@@ -275,6 +272,11 @@ pub fn handle_move_to_coordinates_requested(
                 completed_at: clock.elapsed,
             });
             continue;
+        };
+
+        let global_params = match ship.owner {
+            Owner::Empire(e) => empire_params_q.get(e).unwrap_or(&default_params),
+            Owner::Neutral => &default_params,
         };
 
         match start_sublight_travel_with_bonus(
