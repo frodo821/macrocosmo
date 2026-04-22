@@ -284,15 +284,18 @@ pub fn sync_building_modifiers(
         let mut caps: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
         // 3. Walk planet-level buildings in this colony.
-        for slot in &buildings.slots {
+        // #438: Include slot index in source_id so duplicate building types
+        // generate unique modifier IDs (otherwise push_modifier deduplicates).
+        for (slot_idx, slot) in buildings.slots.iter().enumerate() {
             if let Some(bid) = slot {
                 let Some(def) = registry.get(bid.as_str()) else {
                     warn!("Building '{}' not found in registry", bid);
                     continue;
                 };
+                let source = format!("{}[{}]", def.id, slot_idx);
                 for pm in &def.modifiers {
                     apply_building_modifier(
-                        &def.id,
+                        &source,
                         &def.name,
                         pm,
                         &mut prod,
@@ -310,7 +313,7 @@ pub fn sync_building_modifiers(
         if let Some(sys_entity) = colony.system(&planets) {
             if sys_entities.contains_key(&sys_entity) {
                 let reverse = super::system_buildings::build_reverse_design_map(&registry);
-                for (_ship_entity, ship, state, _slot) in &station_ships {
+                for (ship_entity, ship, state, _slot) in &station_ships {
                     let in_system = match state {
                         crate::ship::ShipState::InSystem { system: s } => *s == sys_entity,
                         crate::ship::ShipState::Refitting { system: s, .. } => *s == sys_entity,
@@ -323,9 +326,11 @@ pub fn sync_building_modifiers(
                         let Some(def) = registry.get(bid.as_str()) else {
                             continue;
                         };
+                        // #438: Include ship entity index for unique modifier IDs.
+                        let source = format!("{}[{:?}]", def.id, ship_entity);
                         for pm in &def.modifiers {
                             apply_building_modifier(
-                                &def.id,
+                                &source,
                                 &def.name,
                                 pm,
                                 &mut prod,
