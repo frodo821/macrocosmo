@@ -335,6 +335,7 @@ pub fn draw_outline(
             ui.heading("Empire");
             ui.separator();
 
+            egui::ScrollArea::vertical().show(ui, |ui| {
             // Collect systems that have colonies (owned systems)
             // #432: Only include colonies belonging to the viewed empire.
             let mut owned_systems: Vec<(Entity, String, bool)> = Vec::new();
@@ -610,6 +611,7 @@ pub fn draw_outline(
                         }
                     });
             }
+            }); // ScrollArea
         });
 }
 
