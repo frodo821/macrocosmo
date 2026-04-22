@@ -49,7 +49,8 @@ impl Plugin for GalaxyPlugin {
                     .after(load_biome_registry)
                     .after(crate::scripting::load_predefined_system_registry)
                     .after(crate::scripting::load_map_type_registry)
-                    .after(crate::faction::spawn_hostile_factions),
+                    .after(crate::faction::spawn_hostile_factions)
+                    .after(crate::scripting::load_faction_registry),
             )
             .add_systems(
                 Startup,
