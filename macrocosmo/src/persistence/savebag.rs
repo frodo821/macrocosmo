@@ -2754,6 +2754,10 @@ pub struct SavedSystemSnapshot {
     pub production_food: Amt,
     pub production_research: Amt,
     pub maintenance_energy: Amt,
+    /// #430: Whether this system is a capital, propagated through KnowledgeStore.
+    /// `#[serde(default)]` for backward compat with older saves.
+    #[serde(default)]
+    pub is_capital: bool,
     /// #269: Per-colony snapshots. `#[serde(default)]` so older saves that
     /// predate this field still deserialize with an empty vec.
     #[serde(default)]
@@ -2928,6 +2932,7 @@ impl SavedSystemSnapshot {
             production_food: v.production_food,
             production_research: v.production_research,
             maintenance_energy: v.maintenance_energy,
+            is_capital: v.is_capital,
             colonies: v
                 .colonies
                 .iter()
@@ -2961,6 +2966,7 @@ impl SavedSystemSnapshot {
             production_food: self.production_food,
             production_research: self.production_research,
             maintenance_energy: self.maintenance_energy,
+            is_capital: self.is_capital,
             colonies: self
                 .colonies
                 .into_iter()

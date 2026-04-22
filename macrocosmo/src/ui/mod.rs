@@ -2130,7 +2130,13 @@ fn draw_map_tooltips(
             .gap(12.0)
             .show(|ui: &mut egui::Ui| {
                 ui.label(egui::RichText::new(&star.name).strong());
-                if star.is_capital {
+                // #430: Gate capital display on KnowledgeStore for remote systems
+                let effective_capital = if is_local {
+                    star.is_capital
+                } else {
+                    k_data.map(|k| k.data.is_capital).unwrap_or(false)
+                };
+                if effective_capital {
                     ui.label("Capital system");
                 }
                 if effective_surveyed {
@@ -2173,7 +2179,7 @@ fn draw_map_tooltips(
                                 .weak()
                                 .small(),
                         );
-                    } else if !star.is_capital {
+                    } else if !effective_capital {
                         ui.label(egui::RichText::new("No intelligence").weak().italics());
                     }
                 }

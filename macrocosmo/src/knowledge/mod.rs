@@ -240,6 +240,9 @@ pub struct SystemSnapshot {
     pub production_food: Amt,
     pub production_research: Amt,
     pub maintenance_energy: Amt,
+    /// #430: Whether this system is a capital, propagated through KnowledgeStore
+    /// so UI/visualization can gate display on knowledge tier.
+    pub is_capital: bool,
     /// #269: Per-colony snapshot. Populated by the snapshot build path so
     /// remote colony detail UI reads from this instead of the live world.
     /// Empty vec means "system is known but no colonies observed yet".
@@ -596,6 +599,7 @@ fn initialize_capital_knowledge(
         colonized: true, // Capital is always colonized
         population: 1.0,
         production: 1.0,
+        is_capital: true,
         ..default()
     };
 
@@ -717,6 +721,7 @@ pub fn build_system_snapshot(
         energy_potential,
         research_potential,
         max_building_slots,
+        is_capital: star.is_capital,
         colonies: colony_snapshots,
         ..SystemSnapshot::default()
     }

@@ -144,7 +144,7 @@ pub fn update_star_colors(
         &StarVisual,
         &mut Sprite,
         Option<&StarGlow>,
-        Option<&BaseStarSize>,
+        Option<&mut BaseStarSize>,
     )>,
     empire_q: Query<(&KnowledgeStore, Option<&SystemVisibilityMap>), With<PlayerEmpire>>,
     colonies: Query<&Colony>,
@@ -198,12 +198,21 @@ pub fn update_star_colors(
                     .map(|k| k.data.surveyed)
                     .unwrap_or(star.surveyed)
             };
+            // #430: Gate is_capital on KnowledgeStore for remote systems
+            let effective_capital = if player_system == Some(vis.system_entity) {
+                star.is_capital
+            } else {
+                knowledge
+                    .get(vis.system_entity)
+                    .map(|k| k.data.is_capital)
+                    .unwrap_or(false)
+            };
             // Create a temporary view of the star with knowledge-based survey status
             let effective_star = StarSystem {
                 name: star.name.clone(),
                 star_type: star.star_type.clone(),
                 surveyed: effective_surveyed,
-                is_capital: star.is_capital,
+                is_capital: effective_capital,
             };
             let base_color = star_color(&effective_star, is_colonized, obscured.is_some());
             // #392: Tier-based alpha multiplier. Catalogued systems are extra
@@ -229,7 +238,7 @@ pub fn update_star_colors(
 
             if glow.is_some() {
                 // Glow sprites: use base color with low alpha, also apply age fading
-                let glow_alpha = if star.is_capital || is_colonized {
+                let glow_alpha = if effective_capital || is_colonized {
                     0.2
                 } else {
                     0.15
@@ -239,9 +248,32 @@ pub fn update_star_colors(
                 sprite.color = Color::srgba(r, g, b, a * alpha_multiplier);
             }
 
-            // Apply zoom-responsive sizing
-            if let Some(base) = base_size {
-                let scaled = base.0 * zoom_factor;
+            // #430: Recalculate base size from knowledge-gated state so that
+            // enemy capitals don't leak a larger dot before being discovered.
+            if let Some(mut base) = base_size {
+                let new_base = if glow.is_some() {
+                    // Glow sprites are 3x the star size
+                    let star_size = if effective_capital {
+                        16.0
+                    } else if is_colonized {
+                        14.0
+                    } else if effective_surveyed {
+                        12.0
+                    } else {
+                        10.0
+                    };
+                    star_size * 3.0
+                } else if effective_capital {
+                    16.0
+                } else if is_colonized {
+                    14.0
+                } else if effective_surveyed {
+                    12.0
+                } else {
+                    10.0
+                };
+                base.0 = new_base;
+                let scaled = new_base * zoom_factor;
                 sprite.custom_size = Some(Vec2::splat(scaled));
             }
         }
@@ -344,7 +376,16 @@ pub fn draw_galaxy_overlay(
                 .map(|k| k.data.colonized)
                 .unwrap_or(false)
         };
-        if is_colonized && !star.is_capital {
+        // #430: Gate is_capital on KnowledgeStore for remote systems
+        let effective_capital = if entity == player_system {
+            star.is_capital
+        } else {
+            knowledge
+                .get(entity)
+                .map(|k| k.data.is_capital)
+                .unwrap_or(false)
+        };
+        if is_colonized && !effective_capital {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
             gizmos.circle_2d(Vec2::new(sx, sy), 18.0, Color::srgba(0.3, 1.0, 0.3, 0.6));
@@ -398,7 +439,16 @@ pub fn draw_galaxy_overlay(
                 .map(|k| k.data.surveyed)
                 .unwrap_or(false)
         };
-        if is_surveyed && !star.is_capital {
+        // #430: Gate is_capital on KnowledgeStore for remote systems
+        let effective_capital_2 = if entity == player_system {
+            star.is_capital
+        } else {
+            knowledge
+                .get(entity)
+                .map(|k| k.data.is_capital)
+                .unwrap_or(false)
+        };
+        if is_surveyed && !effective_capital_2 {
             let sx = star_pos.x as f32 * view.scale;
             let sy = star_pos.y as f32 * view.scale;
             gizmos.line_2d(

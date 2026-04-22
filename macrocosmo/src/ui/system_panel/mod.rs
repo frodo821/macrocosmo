@@ -747,7 +747,11 @@ fn draw_left_panel(
             if snap.has_shipyard {
                 ui.label("Shipyard present");
             }
-        } else if !star.is_capital {
+        } else {
+            // #430: No knowledge entry for this remote system — show generic
+            // "no intel" label. The player's own capital always has a knowledge
+            // entry (initialized at startup), so this branch only fires for
+            // genuinely unknown remote systems.
             ui.separator();
             ui.label(
                 egui::RichText::new("No intelligence available for this system.")

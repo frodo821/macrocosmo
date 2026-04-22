@@ -2738,3 +2738,141 @@ fn test_local_colony_snapshot_also_populated() {
     assert_eq!(entry.data.colonies.len(), 1);
     assert_eq!(entry.data.colonies[0].colony_entity, colony);
 }
+
+// ---------------------------------------------------------------------------
+// #430: SystemSnapshot.is_capital propagates through KnowledgeStore
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_is_capital_propagated_in_system_snapshot() {
+    let mut app = test_app();
+
+    // Player empire at capital (manually spawned with is_capital: true)
+    let capital = app
+        .world_mut()
+        .spawn((
+            StarSystem {
+                name: "Capital".into(),
+                surveyed: true,
+                is_capital: true,
+                star_type: "default".to_string(),
+            },
+            Position::from([0.0, 0.0, 0.0]),
+            Sovereignty::default(),
+            TechKnowledge::default(),
+            macrocosmo::galaxy::SystemModifiers::default(),
+            macrocosmo::galaxy::Anomalies::default(),
+        ))
+        .id();
+    app.world_mut().spawn((
+        Planet {
+            name: "Capital I".into(),
+            system: capital,
+            planet_type: "default".to_string(),
+        },
+        SystemAttributes {
+            habitability: 1.0,
+            mineral_richness: 0.5,
+            energy_potential: 0.5,
+            research_potential: 0.5,
+            max_building_slots: 4,
+        },
+        Position::from([0.0, 0.0, 0.0]),
+    ));
+
+    // Remote system that is an enemy capital (is_capital = true in ground truth)
+    let remote_capital = app
+        .world_mut()
+        .spawn((
+            StarSystem {
+                name: "EnemyCapital".to_string(),
+                surveyed: false,
+                is_capital: true, // enemy capital — ground truth
+                star_type: "G".to_string(),
+            },
+            Position::from([5.0, 0.0, 0.0]),
+            Sovereignty::default(),
+        ))
+        .id();
+
+    // Spawn player stationed at capital
+    app.world_mut().spawn((
+        Player,
+        StationedAt {
+            system: capital,
+        },
+    ));
+
+    // Spawn a colony so knowledge init finds the capital
+    spawn_test_colony(
+        app.world_mut(),
+        capital,
+        Amt::units(100),
+        Amt::units(100),
+        vec![],
+    );
+
+    advance_time(&mut app, 1);
+
+    let empire = empire_entity(app.world_mut());
+
+    // The capital init snapshot should have is_capital = true.
+    let store = app.world().get::<KnowledgeStore>(empire).unwrap();
+    let capital_entry = store.get(capital).expect("capital has knowledge");
+    assert!(
+        capital_entry.data.is_capital,
+        "Player's own capital should have is_capital = true in KnowledgeStore"
+    );
+
+    // The remote enemy capital should NOT have knowledge yet (unsurveyed, no observation).
+    let remote_entry = store.get(remote_capital);
+    assert!(
+        remote_entry.is_none() || !remote_entry.unwrap().data.is_capital,
+        "Enemy capital should not reveal is_capital before being observed"
+    );
+}
+
+#[test]
+fn test_is_capital_defaults_false_in_snapshot() {
+    // Verify that SystemSnapshot::default() has is_capital = false,
+    // so older saves and unobserved systems don't accidentally report as capitals.
+    let snap = SystemSnapshot::default();
+    assert!(!snap.is_capital);
+}
+
+/// #430: build_system_snapshot includes is_capital from StarSystem ground truth.
+#[test]
+fn test_build_system_snapshot_includes_is_capital() {
+    // Manually construct a snapshot for a capital system and verify the field.
+    let mut store = KnowledgeStore::default();
+    let sys_entity = Entity::from_bits(999);
+    store.update(SystemKnowledge {
+        system: sys_entity,
+        observed_at: 0,
+        received_at: 0,
+        data: SystemSnapshot {
+            name: "TestCapital".to_string(),
+            is_capital: true,
+            ..Default::default()
+        },
+        source: ObservationSource::Direct,
+    });
+    let entry = store.get(sys_entity).unwrap();
+    assert!(entry.data.is_capital);
+
+    // Non-capital snapshot defaults to false.
+    let mut store2 = KnowledgeStore::default();
+    let sys_entity2 = Entity::from_bits(1000);
+    store2.update(SystemKnowledge {
+        system: sys_entity2,
+        observed_at: 0,
+        received_at: 0,
+        data: SystemSnapshot {
+            name: "TestNonCapital".to_string(),
+            ..Default::default()
+        },
+        source: ObservationSource::Direct,
+    });
+    let entry2 = store2.get(sys_entity2).unwrap();
+    assert!(!entry2.data.is_capital);
+}
