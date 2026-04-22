@@ -2812,6 +2812,20 @@ fn test_is_capital_propagated_in_system_snapshot() {
         vec![],
     );
 
+    // #434: Seed visibility tier so propagate_knowledge includes the capital.
+    {
+        let empire = empire_entity(app.world_mut());
+        if let Some(mut vis_map) = app
+            .world_mut()
+            .get_mut::<macrocosmo::knowledge::SystemVisibilityMap>(empire)
+        {
+            vis_map.set(
+                capital,
+                macrocosmo::knowledge::SystemVisibilityTier::Surveyed,
+            );
+        }
+    }
+
     advance_time(&mut app, 1);
 
     let empire = empire_entity(app.world_mut());

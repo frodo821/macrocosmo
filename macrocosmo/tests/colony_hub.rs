@@ -20,16 +20,16 @@ fn lua_building_registry() -> BuildingRegistry {
     use macrocosmo::scripting::ScriptEngine;
     use macrocosmo::scripting::building_api::parse_building_definitions;
 
+    // Load all scripts via init.lua (supports split directory layouts).
     let engine = ScriptEngine::new().unwrap();
-    let building_script =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/buildings/basic.lua");
-    if !building_script.exists() {
+    let init_path = engine.scripts_dir().join("init.lua");
+    if !init_path.exists() {
         panic!(
-            "scripts/buildings/basic.lua not found at {:?}",
-            building_script
+            "scripts/init.lua not found at {:?}",
+            init_path
         );
     }
-    engine.load_file(&building_script).unwrap();
+    engine.load_file(&init_path).unwrap();
     let defs = parse_building_definitions(engine.lua()).unwrap();
     let mut registry = BuildingRegistry::default();
     for def in defs {
