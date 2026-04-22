@@ -15,7 +15,9 @@ pub use biome::{
     Biome, BiomeDefinition, BiomeRegistry, DEFAULT_BIOME_ID, resolve_biome_id,
     resolve_default_biome_id,
 };
-pub use generation::{generate_galaxy, place_forbidden_regions, poisson_sample};
+pub use generation::{
+    HomeSystemAssignments, generate_galaxy, place_forbidden_regions, poisson_sample,
+};
 pub use region::{
     ForbiddenRegion, RegionBlockSnapshot, RegionSpecQueue, RegionTypeRegistry, effective_radius,
 };
@@ -66,6 +68,11 @@ pub struct GalaxyConfig {
     pub radius: f64,
     pub num_systems: usize,
 }
+
+/// Marks which StarSystem entity is this empire's home system.
+/// Attached to the Empire entity, not the StarSystem.
+#[derive(Component)]
+pub struct HomeSystem(pub Entity);
 
 /// A star system in the galaxy
 #[derive(Component)]

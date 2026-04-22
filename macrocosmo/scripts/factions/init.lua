@@ -72,19 +72,51 @@ define_faction {
     end,
 }
 
--- #173: NPC empires. Defined without `on_game_start` so they do not compete
--- with the player empire for the single capital star system. Homeworlds and
--- starting fleets for NPC empires are a follow-up under #189.
+-- #429: NPC empires with on_game_start callbacks that use the shared
+-- initialize_default_capital helper. Each faction gets its own home system
+-- allocated during galaxy generation (Phase B).
 define_faction {
     id = "vesk_hegemony",
     name = "Vesk Hegemony",
     faction_type = types.empire,
+    on_game_start = function(ctx)
+        initialize_default_capital(ctx, {
+            home_planet_name = "Vesk Prime",
+            home_planet_type = "arid",
+            home_planet_attrs = {
+                habitability       = 0.85,
+                mineral_richness   = 0.8,
+                energy_potential   = 0.6,
+                research_potential = 0.4,
+                max_building_slots = 5,
+            },
+            starter_ships = {
+                { "explorer_mk1", "Vesk Scout-1" },
+            },
+        })
+    end,
 }
 
 define_faction {
     id = "aurelian_concord",
     name = "Aurelian Concord",
     faction_type = types.empire,
+    on_game_start = function(ctx)
+        initialize_default_capital(ctx, {
+            home_planet_name = "Aurelia",
+            home_planet_type = "ocean",
+            home_planet_attrs = {
+                habitability       = 0.90,
+                mineral_richness   = 0.5,
+                energy_potential   = 0.7,
+                research_potential = 0.6,
+                max_building_slots = 5,
+            },
+            starter_ships = {
+                { "explorer_mk1", "Aurelian Explorer-1" },
+            },
+        })
+    end,
 }
 
 return {}

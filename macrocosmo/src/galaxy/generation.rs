@@ -26,6 +26,7 @@ use super::{
 use crate::amount::SignedAmt;
 use crate::faction::{FactionOwner, HostileFactions};
 use crate::modifier::Modifier;
+use crate::scripting::faction_api::FactionRegistry;
 use crate::scripting::galaxy_api::StarTypeModifier;
 
 /// Galaxy generation parameters.
@@ -60,8 +61,19 @@ pub(crate) struct EmptySystem {
 
 /// Capital assignments produced by Phase B.
 pub(crate) struct CapitalAssignments {
-    /// Index into the systems vec that is the capital (always 0 after swap).
+    /// Index into the systems vec that is the player's capital (always 0 after swap).
     pub capital_idx: usize,
+    /// Per-faction home system index (faction_id -> system index).
+    /// The player capital is included under its faction_id.
+    pub faction_homes: std::collections::HashMap<String, usize>,
+}
+
+/// Maps faction ids to their assigned home StarSystem entity. Built during
+/// galaxy generation and consumed by `run_on_game_start_for_faction` to
+/// route each faction's `on_game_start` callback to the correct system.
+#[derive(Resource, Default)]
+pub struct HomeSystemAssignments {
+    pub assignments: std::collections::HashMap<String, Entity>,
 }
 
 /// Planet data generated during Phase C initialization.
@@ -350,44 +362,101 @@ pub(crate) fn default_generate_empty_systems(
 }
 
 /// Phase B (default): Choose which systems become faction capitals.
-/// Currently selects the single player capital (~20 ly from center) and swaps
-/// it to index 0. Returns capital assignments without modifying ECS state.
+/// Selects the player capital (~20 ly from center) and swaps it to index 0,
+/// then allocates additional home systems for each non-passive faction by
+/// maximizing minimum distance to already-assigned homes.
 ///
 /// Runs when no `on_choose_capitals` hook is registered.
 pub(crate) fn default_choose_faction_capitals(
     systems: &mut Vec<EmptySystem>,
+    non_passive_faction_ids: &[String],
 ) -> CapitalAssignments {
+    let mut faction_homes = std::collections::HashMap::new();
+
     // #182: if Phase A tagged any system with `capital_for_faction` (via a
     // predefined system definition), pick the first such system as capital.
-    if let Some(idx) = systems.iter().position(|s| s.capital_for_faction.is_some()) {
+    let player_capital_idx = if let Some(idx) =
+        systems.iter().position(|s| s.capital_for_faction.is_some())
+    {
         systems.swap(0, idx);
-        return CapitalAssignments { capital_idx: 0 };
+        0
+    } else {
+        let target_capital_radius = 20.0_f64;
+        let capital_idx = systems
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let ra = (a.position[0] * a.position[0]
+                    + a.position[1] * a.position[1]
+                    + a.position[2] * a.position[2])
+                    .sqrt();
+                let rb = (b.position[0] * b.position[0]
+                    + b.position[1] * b.position[1]
+                    + b.position[2] * b.position[2])
+                    .sqrt();
+                let da = (ra - target_capital_radius).abs();
+                let db = (rb - target_capital_radius).abs();
+                da.partial_cmp(&db).unwrap()
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        // Swap capital to index 0 so the rest of the code treats systems[0] as capital
+        systems.swap(0, capital_idx);
+        0
+    };
+
+    // Track assigned indices: player capital is always assigned first.
+    let mut assigned_indices: Vec<usize> = vec![player_capital_idx];
+
+    // Assign the first non-passive faction id to the player capital.
+    if let Some(first_id) = non_passive_faction_ids.first() {
+        faction_homes.insert(first_id.clone(), player_capital_idx);
     }
 
-    let target_capital_radius = 20.0_f64;
-    let capital_idx = systems
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            let ra = (a.position[0] * a.position[0]
-                + a.position[1] * a.position[1]
-                + a.position[2] * a.position[2])
-                .sqrt();
-            let rb = (b.position[0] * b.position[0]
-                + b.position[1] * b.position[1]
-                + b.position[2] * b.position[2])
-                .sqrt();
-            let da = (ra - target_capital_radius).abs();
-            let db = (rb - target_capital_radius).abs();
-            da.partial_cmp(&db).unwrap()
-        })
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+    // For each remaining faction, pick the unassigned system that maximizes
+    // minimum distance to all already-assigned homes.
+    for faction_id in non_passive_faction_ids.iter().skip(1) {
+        let best = systems
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !assigned_indices.contains(i))
+            .max_by(|(_, a), (_, b)| {
+                let min_dist_a = assigned_indices
+                    .iter()
+                    .map(|&ai| {
+                        let ap = systems[ai].position;
+                        let dx = a.position[0] - ap[0];
+                        let dy = a.position[1] - ap[1];
+                        let dz = a.position[2] - ap[2];
+                        (dx * dx + dy * dy + dz * dz).sqrt()
+                    })
+                    .fold(f64::MAX, f64::min);
+                let min_dist_b = assigned_indices
+                    .iter()
+                    .map(|&ai| {
+                        let bp = systems[ai].position;
+                        let dx = b.position[0] - bp[0];
+                        let dy = b.position[1] - bp[1];
+                        let dz = b.position[2] - bp[2];
+                        (dx * dx + dy * dy + dz * dz).sqrt()
+                    })
+                    .fold(f64::MAX, f64::min);
+                min_dist_a
+                    .partial_cmp(&min_dist_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i);
+        if let Some(idx) = best {
+            assigned_indices.push(idx);
+            faction_homes.insert(faction_id.clone(), idx);
+        }
+    }
 
-    // Swap capital to index 0 so the rest of the code treats systems[0] as capital
-    systems.swap(0, capital_idx);
-
-    CapitalAssignments { capital_idx: 0 }
+    CapitalAssignments {
+        capital_idx: player_capital_idx,
+        faction_homes,
+    }
 }
 
 /// Per-system override produced by the `on_initialize_system` Lua hook.
@@ -409,6 +478,7 @@ pub(crate) struct SystemInitOverride {
 
 /// Phase C: Initialize all systems — generate planets, spawn ECS entities,
 /// place hostiles. `overrides[i]` (if present) is applied to system `i`.
+/// Inserts `HomeSystemAssignments` as a resource mapping faction_id -> spawned Entity.
 pub(crate) fn initialize_systems(
     commands: &mut Commands,
     rng: &mut impl Rng,
@@ -424,12 +494,18 @@ pub(crate) fn initialize_systems(
 ) {
     let actual_count = systems.len();
 
+    // Collect all home system indices for special treatment.
+    // Always include capital_idx even when faction_homes is empty (test paths).
+    let mut home_indices: std::collections::HashSet<usize> =
+        capitals.faction_homes.values().copied().collect();
+    home_indices.insert(capitals.capital_idx);
+
     // Determine planet counts per system
     let mut planet_counts: Vec<usize> = Vec::with_capacity(actual_count);
     for (i, sys) in systems.iter().enumerate() {
         let star = &star_types[sys.star_type_idx];
-        let count = if i == capitals.capital_idx {
-            // Capital always gets at least 2 planets
+        let count = if home_indices.contains(&i) {
+            // Home systems always get at least 2 planets
             poisson_sample(rng, star.planet_lambda, star.max_planets).max(2)
         } else {
             poisson_sample(rng, star.planet_lambda, star.max_planets)
@@ -472,8 +548,8 @@ pub(crate) fn initialize_systems(
         let count = planet_counts[i];
         let mut planets = Vec::with_capacity(count);
         for p in 0..count {
-            if i == capitals.capital_idx && p == 0 {
-                // Capital's first planet: use capital attributes and a terrestrial type
+            if home_indices.contains(&i) && p == 0 {
+                // Home system's first planet: use capital attributes and a terrestrial type
                 let type_idx = planet_types
                     .iter()
                     .position(|pt| pt.id == "terrestrial")
@@ -497,50 +573,51 @@ pub(crate) fn initialize_systems(
         all_planets.push(planets);
     }
 
-    // Ensure at least 2 habitable neighbours within 10 ly of capital
-    let capital_pos = systems[capitals.capital_idx].position;
-    let mut neighbours: Vec<(usize, f64)> = (1..actual_count)
-        .map(|i| {
-            let p = systems[i].position;
-            let dx = p[0] - capital_pos[0];
-            let dy = p[1] - capital_pos[1];
-            let dz = p[2] - capital_pos[2];
-            (i, (dx * dx + dy * dy + dz * dz).sqrt())
-        })
-        .collect();
-    neighbours.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    let nearby: Vec<usize> = neighbours
-        .iter()
-        .filter(|(_, dist)| *dist <= 10.0)
-        .take(5)
-        .map(|(i, _)| *i)
-        .collect();
-
-    // Check if nearby systems have at least one habitable planet
-    let habitable_count = nearby
-        .iter()
-        .filter(|&&i| {
-            all_planets[i]
-                .iter()
-                .any(|pd| super::is_habitable(pd.attrs.habitability))
-        })
-        .count();
-
-    let needed = 2_usize.saturating_sub(habitable_count);
-    let mut fixed = 0;
-    for &idx in &nearby {
-        if fixed >= needed {
-            break;
-        }
-        let has_habitable = all_planets[idx]
+    // Ensure at least 2 habitable neighbours within 10 ly of each home system
+    for &home_idx in &home_indices {
+        let home_pos = systems[home_idx].position;
+        let mut neighbours: Vec<(usize, f64)> = (0..actual_count)
+            .filter(|&i| i != home_idx && !home_indices.contains(&i))
+            .map(|i| {
+                let p = systems[i].position;
+                let dx = p[0] - home_pos[0];
+                let dy = p[1] - home_pos[1];
+                let dz = p[2] - home_pos[2];
+                (i, (dx * dx + dy * dy + dz * dz).sqrt())
+            })
+            .collect();
+        neighbours.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        let nearby: Vec<usize> = neighbours
             .iter()
-            .any(|pd| super::is_habitable(pd.attrs.habitability));
-        if !has_habitable {
-            // Fix the first planet to be Adequate (0.7 habitability)
-            if let Some(first) = all_planets[idx].first_mut() {
-                first.attrs.habitability = 0.7;
-                first.attrs.max_building_slots = building_slots_for(0.7, rng);
-                fixed += 1;
+            .filter(|(_, dist)| *dist <= 10.0)
+            .take(5)
+            .map(|(i, _)| *i)
+            .collect();
+
+        let habitable_count = nearby
+            .iter()
+            .filter(|&&i| {
+                all_planets[i]
+                    .iter()
+                    .any(|pd| super::is_habitable(pd.attrs.habitability))
+            })
+            .count();
+
+        let needed = 2_usize.saturating_sub(habitable_count);
+        let mut fixed = 0;
+        for &idx in &nearby {
+            if fixed >= needed {
+                break;
+            }
+            let has_habitable = all_planets[idx]
+                .iter()
+                .any(|pd| super::is_habitable(pd.attrs.habitability));
+            if !has_habitable {
+                if let Some(first) = all_planets[idx].first_mut() {
+                    first.attrs.habitability = 0.7;
+                    first.attrs.max_building_slots = building_slots_for(0.7, rng);
+                    fixed += 1;
+                }
             }
         }
     }
@@ -553,8 +630,18 @@ pub(crate) fn initialize_systems(
     // Track spawned system entities and positions for hostile spawning
     let mut spawned_systems: Vec<(Entity, [f64; 3], bool)> = Vec::with_capacity(actual_count);
 
+    // Reverse lookup: system index -> faction_id(s)
+    let index_to_factions: std::collections::HashMap<usize, Vec<String>> = {
+        let mut map: std::collections::HashMap<usize, Vec<String>> =
+            std::collections::HashMap::new();
+        for (fid, &idx) in &capitals.faction_homes {
+            map.entry(idx).or_default().push(fid.clone());
+        }
+        map
+    };
+
     for (i, sys) in systems.iter().enumerate() {
-        let is_capital = i == capitals.capital_idx;
+        let is_capital = home_indices.contains(&i);
         let star_type = &star_types[sys.star_type_idx];
 
         // Apply optional per-system name / surveyed override.
@@ -637,21 +724,40 @@ pub(crate) fn initialize_systems(
         num_systems: actual_count,
     });
 
+    // Build HomeSystemAssignments from spawned entities.
+    let mut home_assignments = HomeSystemAssignments::default();
+    for (faction_id, &sys_idx) in &capitals.faction_homes {
+        if let Some(&(entity, _, _)) = spawned_systems.get(sys_idx) {
+            home_assignments
+                .assignments
+                .insert(faction_id.clone(), entity);
+        }
+    }
+    commands.insert_resource(home_assignments);
+
+    // Collect home system positions for safe-zone checks.
+    let home_positions: Vec<[f64; 3]> = home_indices
+        .iter()
+        .map(|&idx| systems[idx].position)
+        .collect();
+
     // --- Spawn hostile presences (#52, #56) ---
     let hostile_fraction = 0.12;
-    let capital_safe_zone = 10.0_f64; // no hostiles within 10 ly of capital
+    let capital_safe_zone = 10.0_f64; // no hostiles within 10 ly of any home system
     let mut hostile_count = 0;
     for &(system_entity, pos, is_capital) in &spawned_systems {
         if is_capital {
             continue;
         }
 
-        // Capital proximity exclusion
-        let dx = pos[0] - capital_pos[0];
-        let dy = pos[1] - capital_pos[1];
-        let dz = pos[2] - capital_pos[2];
-        let dist_from_capital = (dx * dx + dy * dy + dz * dz).sqrt();
-        if dist_from_capital < capital_safe_zone {
+        // Home-system proximity exclusion: skip if within safe zone of ANY home
+        let near_home = home_positions.iter().any(|hp| {
+            let dx = pos[0] - hp[0];
+            let dy = pos[1] - hp[1];
+            let dz = pos[2] - hp[2];
+            (dx * dx + dy * dy + dz * dz).sqrt() < capital_safe_zone
+        });
+        if near_home {
             continue;
         }
 
@@ -713,6 +819,7 @@ pub fn generate_galaxy(
     map_type_registry: Option<Res<MapTypeRegistry>>,
     rng_seed: Option<Res<crate::observer::RngSeed>>,
     hostile_factions: Option<Res<HostileFactions>>,
+    faction_registry: Option<Res<FactionRegistry>>,
 ) {
     let mut rng: rand::rngs::StdRng = match rng_seed.as_deref().and_then(|s| s.0) {
         Some(seed) => {
@@ -779,8 +886,23 @@ pub fn generate_galaxy(
         predefined_arc.clone(),
     );
 
+    // #429: Collect non-passive faction IDs for home system allocation.
+    let non_passive_faction_ids: Vec<String> = faction_registry
+        .as_deref()
+        .map(|reg| {
+            let mut ids: Vec<String> = reg
+                .factions
+                .values()
+                .filter(|def| !def.is_passive)
+                .map(|def| def.id.clone())
+                .collect();
+            ids.sort();
+            ids
+        })
+        .unwrap_or_default();
+
     // Phase B: Choose faction capitals. Honors `on_choose_capitals` if registered.
-    let capitals = run_phase_b(lua, &mut systems, &star_types);
+    let capitals = run_phase_b(lua, &mut systems, &star_types, &non_passive_faction_ids);
 
     // Phase C per-system hook: gather overrides before entity spawning.
     let overrides = run_phase_c_hooks(lua, &systems, &capitals, &star_types);
@@ -910,16 +1032,17 @@ fn run_phase_b(
     lua: Option<&mlua::Lua>,
     systems: &mut Vec<EmptySystem>,
     star_types: &[StarTypeDefinition],
+    non_passive_faction_ids: &[String],
 ) -> CapitalAssignments {
     let Some(lua) = lua else {
-        return default_choose_faction_capitals(systems);
+        return default_choose_faction_capitals(systems, non_passive_faction_ids);
     };
     let Some(func) =
         galaxy_gen_ctx::last_registered_hook(lua, galaxy_gen_ctx::CHOOSE_CAPITALS_HANDLERS)
             .ok()
             .flatten()
     else {
-        return default_choose_faction_capitals(systems);
+        return default_choose_faction_capitals(systems, non_passive_faction_ids);
     };
 
     let snapshots: Vec<SystemSnapshot> = systems
@@ -934,18 +1057,16 @@ fn run_phase_b(
             capital_for_faction: s.capital_for_faction.clone(),
         })
         .collect();
-    // TODO(#182): expose defined faction ids via FactionRegistry once that
-    // resource is available at galaxy-generation time. For now pass empty —
-    // hooks typically know their own faction ids.
-    let ctx = ChooseCapitalsCtx::new(snapshots, Vec::new());
+    // #429: Pass faction IDs so hooks can allocate per-faction home systems.
+    let ctx = ChooseCapitalsCtx::new(snapshots, non_passive_faction_ids.to_vec());
     if let Err(e) = func.call::<()>(ctx.clone()) {
         warn!("on_choose_capitals hook error: {e}; falling back to default");
-        return default_choose_faction_capitals(systems);
+        return default_choose_faction_capitals(systems, non_passive_faction_ids);
     }
     let actions = ctx.take_actions();
     let Some(first) = actions.assignments.first() else {
         warn!("on_choose_capitals made no assignments; falling back to default");
-        return default_choose_faction_capitals(systems);
+        return default_choose_faction_capitals(systems, non_passive_faction_ids);
     };
     let idx = first.system_index;
     if idx == 0 || idx > systems.len() {
@@ -954,11 +1075,26 @@ fn run_phase_b(
             idx,
             systems.len()
         );
-        return default_choose_faction_capitals(systems);
+        return default_choose_faction_capitals(systems, non_passive_faction_ids);
     }
     // Swap the selected capital to index 0, matching default behavior.
     systems.swap(0, idx - 1);
-    CapitalAssignments { capital_idx: 0 }
+    // Build faction_homes from hook assignments.
+    let mut faction_homes = std::collections::HashMap::new();
+    for assignment in &actions.assignments {
+        let adj_idx = if assignment.system_index - 1 == idx - 1 {
+            0
+        } else if assignment.system_index - 1 == 0 {
+            idx - 1
+        } else {
+            assignment.system_index - 1
+        };
+        faction_homes.insert(assignment.faction_id.clone(), adj_idx);
+    }
+    CapitalAssignments {
+        capital_idx: 0,
+        faction_homes,
+    }
 }
 
 /// Phase A' dispatcher (#199): run the `on_after_phase_a` hook if registered.

@@ -252,6 +252,9 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
             run_on_game_start_for_faction(world, &snap.id);
         }
 
+        // #429: Insert HomeSystem component on the empire entity.
+        insert_home_system_on_empire(world, &snap.id);
+
         // #421: Spawn a Ruler entity for this NPC empire.
         spawn_npc_ruler(world, &snap.id, &snap.name);
     }
@@ -278,28 +281,38 @@ fn spawn_npc_ruler(world: &mut World, faction_id: &str, faction_name: &str) {
         return;
     };
 
-    // Find a capital system for this empire: prefer a system where the empire
-    // has a colony (via FactionOwner on the colony → planet → system),
-    // fall back to the global `is_capital` system.
-    let home_system = {
-        let mut colony_q =
-            world.query::<(&crate::colony::Colony, &crate::faction::FactionOwner)>();
-        let mut planet_q = world.query::<&crate::galaxy::Planet>();
-        let colony_planet = colony_q
-            .iter(world)
-            .find(|(_, fo)| fo.0 == empire_entity)
-            .map(|(c, _)| c.planet);
-        colony_planet.and_then(|planet_e| {
-            planet_q.get(world, planet_e).ok().map(|p| p.system)
+    // #429: Find a home system for this empire. Priority:
+    // 1. HomeSystem component on the empire entity
+    // 2. HomeSystemAssignments resource
+    // 3. Colony with FactionOwner → planet → system
+    // 4. Global is_capital fallback
+    let home_system = world
+        .get::<crate::galaxy::HomeSystem>(empire_entity)
+        .map(|h| h.0)
+        .or_else(|| {
+            world
+                .get_resource::<crate::galaxy::HomeSystemAssignments>()
+                .and_then(|a| a.assignments.get(faction_id).copied())
         })
-    }
-    .or_else(|| {
-        let mut sys_q = world.query::<(Entity, &StarSystem)>();
-        sys_q
-            .iter(world)
-            .find(|(_, s)| s.is_capital)
-            .map(|(e, _)| e)
-    });
+        .or_else(|| {
+            let mut colony_q =
+                world.query::<(&crate::colony::Colony, &crate::faction::FactionOwner)>();
+            let mut planet_q = world.query::<&crate::galaxy::Planet>();
+            let colony_planet = colony_q
+                .iter(world)
+                .find(|(_, fo)| fo.0 == empire_entity)
+                .map(|(c, _)| c.planet);
+            colony_planet.and_then(|planet_e| {
+                planet_q.get(world, planet_e).ok().map(|p| p.system)
+            })
+        })
+        .or_else(|| {
+            let mut sys_q = world.query::<(Entity, &StarSystem)>();
+            sys_q
+                .iter(world)
+                .find(|(_, s)| s.is_capital)
+                .map(|(e, _)| e)
+        });
 
     let Some(home_system) = home_system else {
         warn!(
@@ -420,6 +433,31 @@ pub fn run_faction_on_game_start(world: &mut World) {
     };
 
     apply_game_start_actions(world, &faction_id, actions);
+
+    // #429: Insert HomeSystem component on the player empire entity.
+    insert_home_system_on_empire(world, &faction_id);
+}
+
+/// #429: Look up the faction's assigned home system and insert a `HomeSystem`
+/// component on the corresponding Empire entity.
+fn insert_home_system_on_empire(world: &mut World, faction_id: &str) {
+    let home_entity = world
+        .get_resource::<crate::galaxy::HomeSystemAssignments>()
+        .and_then(|a| a.assignments.get(faction_id).copied());
+    let Some(home) = home_entity else {
+        return;
+    };
+    let empire_entity = {
+        let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+        q.iter(world)
+            .find(|(_, f)| f.id == faction_id)
+            .map(|(e, _)| e)
+    };
+    if let Some(empire) = empire_entity {
+        world
+            .entity_mut(empire)
+            .insert(crate::galaxy::HomeSystem(home));
+    }
 }
 
 /// Resolve a `PlanetRef` to a planet `Entity` using the existing-planets list and the
@@ -531,19 +569,32 @@ fn spawn_colony_on_planet(
 }
 
 /// Apply the actions recorded by a faction's `on_game_start` callback to the ECS.
-/// Operates on the capital StarSystem and its planets.
+/// Operates on the faction's assigned home system (from `HomeSystemAssignments`)
+/// and its planets. Falls back to the global `is_capital` system when no assignment
+/// exists (backward compatibility).
 pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: GameStartActions) {
-    // Find the capital system entity, its position, and the list of existing planets
-    // (sorted by name so PlanetRef::Existing(idx) resolves deterministically).
+    // #429: Look up the faction's assigned home system from HomeSystemAssignments.
+    // Fall back to the global is_capital system for backward compat.
     let (capital_entity, capital_pos, capital_name, mut existing_planets) = {
+        let home_entity = world
+            .get_resource::<crate::galaxy::HomeSystemAssignments>()
+            .and_then(|assignments| assignments.assignments.get(faction_id).copied());
+
         let mut sys_q = world.query::<(Entity, &StarSystem, &Position)>();
-        let capital = sys_q
-            .iter(world)
-            .find(|(_, s, _)| s.is_capital)
-            .map(|(e, s, p)| (e, *p, s.name.clone()));
+        let capital = if let Some(home) = home_entity {
+            sys_q
+                .iter(world)
+                .find(|(e, _, _)| *e == home)
+                .map(|(e, s, p)| (e, *p, s.name.clone()))
+        } else {
+            sys_q
+                .iter(world)
+                .find(|(_, s, _)| s.is_capital)
+                .map(|(e, s, p)| (e, *p, s.name.clone()))
+        };
         let Some((entity, pos, name)) = capital else {
             warn!(
-                "No capital StarSystem found while applying on_game_start for '{}'",
+                "No home system found while applying on_game_start for '{}'",
                 faction_id
             );
             return;
