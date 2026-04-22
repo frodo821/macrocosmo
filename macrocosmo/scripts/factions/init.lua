@@ -92,6 +92,9 @@ define_faction {
             },
             starter_ships = {
                 { "explorer_mk1", "Vesk Scout-1" },
+                { "explorer_mk1", "Vesk Scout-2" },
+                { "courier_mk1", "Vesk Courier-1" },
+                { "colony_ship_mk1", "Vesk Colony Ship-1" },
             },
         })
     end,
@@ -114,6 +117,9 @@ define_faction {
             },
             starter_ships = {
                 { "explorer_mk1", "Aurelian Explorer-1" },
+                { "explorer_mk1", "Aurelian Explorer-2" },
+                { "courier_mk1", "Aurelian Courier-1" },
+                { "colony_ship_mk1", "Aurelian Colony Ship-1" },
             },
         })
     end,
