@@ -40,7 +40,11 @@ impl Plugin for GameSetupPlugin {
         )
         .add_systems(
             Startup,
-            run_faction_on_game_start
+            (
+                bevy::ecs::schedule::ApplyDeferred,
+                run_faction_on_game_start,
+            )
+                .chain()
                 .after(crate::galaxy::generate_galaxy)
                 .after(crate::player::spawn_player_empire)
                 .after(crate::colony::spawn_capital_colony)
@@ -55,9 +59,16 @@ impl Plugin for GameSetupPlugin {
         // guarantees the player empire is fully set up before NPC spawns
         // iterate the registry, and existing double-spawn guards
         // (`existing_by_id` + passive-skip) prevent duplicates.
+        // Flush deferred commands from generate_galaxy (which inserts
+        // HomeSystemAssignments via Commands) before run_all_factions_on_game_start
+        // tries to read it.
         .add_systems(
             Startup,
-            run_all_factions_on_game_start
+            (
+                bevy::ecs::schedule::ApplyDeferred,
+                run_all_factions_on_game_start,
+            )
+                .chain()
                 .after(crate::galaxy::generate_galaxy)
                 .after(crate::colony::spawn_capital_colony)
                 .after(crate::scripting::load_all_scripts)
