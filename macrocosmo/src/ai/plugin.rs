@@ -88,6 +88,16 @@ impl Plugin for AiPlugin {
             .init_resource::<super::npc_decision::LastAiDecisionTick>()
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .add_systems(Startup, schema::declare_all)
+            // Declare per-faction metric slots for factions that already exist
+            // at Startup (NPC empires spawned by run_all_factions_on_game_start).
+            // The Added<Faction> filter in declare_foreign_slots_on_awareness
+            // may not catch Startup-spawned entities on the first Update tick.
+            .add_systems(
+                Startup,
+                declare_foreign_slots_for_existing_factions
+                    .after(schema::declare_all)
+                    .after(crate::setup::run_all_factions_on_game_start),
+            )
             .add_systems(
                 Update,
                 (
@@ -152,6 +162,27 @@ impl Plugin for AiPlugin {
 /// Declare a per-faction set of Tier 2 "foreign" metric slots on the bus
 /// as soon as a new `Faction` component is observed.
 ///
+/// Startup system that declares per-faction metric slots for ALL existing
+/// factions (including NPC empires spawned during Startup). The `Added`
+/// filter in `declare_foreign_slots_on_awareness` may not catch entities
+/// added during the same Startup schedule.
+pub fn declare_foreign_slots_for_existing_factions(
+    mut bus: ResMut<AiBusResource>,
+    factions: Query<Entity, With<crate::player::Faction>>,
+) {
+    for entity in &factions {
+        let fid = super::convert::to_ai_faction(entity);
+        for base in super::schema::ids::metric::PER_FACTION_METRIC_BASES {
+            let id = super::schema::ids::metric::for_faction(base, fid);
+            bus.declare_metric(id, macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
+        }
+        for template in super::schema::foreign::foreign_metric_templates() {
+            let id = super::schema::foreign::foreign_metric_id(&template.prefix, fid);
+            bus.declare_metric(id, (template.spec_factory)());
+        }
+    }
+}
+
 /// Runs under [`AiTickSet::MetricProduce`] in `Update`. Idempotent — if the
 /// slot is already declared, `AiBus::declare_metric` merely updates the
 /// spec (and warns in non-Silent mode).
