@@ -40,8 +40,8 @@ define_faction {
             max_building_slots = 6,
         })
         earth:colonize(ctx.faction)
-        -- #280: planetary_capital_t3 must be placed FIRST so it occupies slot 0.
-        earth:add_building("planetary_capital_t3")
+        -- #280: colony_hub_t1 must be placed FIRST so it occupies slot 0.
+        earth:add_building("colony_hub_t1")
         earth:add_building("mine")
         earth:add_building("power_plant")
         earth:add_building("farm")
