@@ -587,16 +587,9 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
     // #429: Look up the faction's assigned home system from HomeSystemAssignments.
     // Fall back to the global is_capital system for backward compat.
     let (capital_entity, capital_pos, capital_name, mut existing_planets) = {
-        let has_resource = world
-            .get_resource::<crate::galaxy::HomeSystemAssignments>()
-            .is_some();
         let home_entity = world
             .get_resource::<crate::galaxy::HomeSystemAssignments>()
             .and_then(|assignments| assignments.assignments.get(faction_id).copied());
-        info!(
-            "apply_game_start_actions('{}': HomeSystemAssignments exists={}, home_entity={:?}",
-            faction_id, has_resource, home_entity
-        );
 
         let mut sys_q = world.query::<(Entity, &StarSystem, &Position)>();
         let capital = if let Some(home) = home_entity {

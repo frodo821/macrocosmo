@@ -733,14 +733,6 @@ pub(crate) fn initialize_systems(
                 .insert(faction_id.clone(), entity);
         }
     }
-    info!(
-        "HomeSystemAssignments: {} faction(s) assigned: {:?}",
-        home_assignments.assignments.len(),
-        home_assignments
-            .assignments
-            .keys()
-            .collect::<Vec<_>>()
-    );
     commands.insert_resource(home_assignments);
 
     // Collect home system positions for safe-zone checks.
