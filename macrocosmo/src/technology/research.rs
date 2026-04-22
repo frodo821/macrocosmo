@@ -155,16 +155,21 @@ pub fn receive_research(
     mut empire_q: Query<&mut ResearchPool, With<crate::player::Empire>>,
     pending: Query<(Entity, &PendingResearch)>,
 ) {
-    // TODO(#418): PendingResearch entities are not yet associated with a
-    // specific empire. For now, all empires receive all pending research.
-    // This should be scoped per-empire once PendingResearch carries an owner.
-    for mut pool in &mut empire_q {
-        for (entity, pr) in &pending {
-            if clock.elapsed >= pr.arrives_at {
-                pool.points += pr.amount;
-                commands.entity(entity).despawn();
-            }
+    // Collect arrived research first, then distribute to all empires and
+    // despawn each entity exactly once.
+    // TODO: PendingResearch should carry an owner empire so points go to the
+    // correct empire only.
+    let arrived: Vec<(Entity, f64)> = pending
+        .iter()
+        .filter(|(_, pr)| clock.elapsed >= pr.arrives_at)
+        .map(|(e, pr)| (e, pr.amount))
+        .collect();
+
+    for (entity, amount) in &arrived {
+        for mut pool in &mut empire_q {
+            pool.points += *amount;
         }
+        commands.entity(*entity).despawn();
     }
 }
 
