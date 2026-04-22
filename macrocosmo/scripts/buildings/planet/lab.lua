@@ -39,9 +39,9 @@ local research_lab_t3 = define_building {
     cost = nil,
     build_time = 15,
     maintenance = 0.5,
-    -- 5 researchers × 0.2 research/pop = 1.0 research
+    -- 15 researchers × 0.2 research/pop = 3.0 research
     modifiers = {
-        { target = "colony.researcher_slot", base_add = 5 },
+        { target = "colony.researcher_slot", base_add = 15 },
     },
     is_system_building = false,
 }
