@@ -308,6 +308,7 @@ pub fn draw_outline(
     faction_owners: &Query<&crate::faction::FactionOwner>,
     viewed_empire: Option<Entity>,
     is_observer: bool,
+    home_system_entity: Option<Entity>,
 ) {
     // #432: Ownership predicate — returns true when the entity belongs to
     // the viewed empire (or always true in observer mode / no empire).
@@ -347,7 +348,7 @@ pub fn draw_outline(
                     if let Ok((entity, star, _, _)) = stars.get(sys) {
                         // Avoid duplicates if multiple colonies on same system
                         if !owned_systems.iter().any(|(e, _, _)| *e == entity) {
-                            owned_systems.push((entity, star.name.clone(), star.is_capital));
+                            owned_systems.push((entity, star.name.clone(), Some(entity) == home_system_entity));
                         }
                     }
                 }

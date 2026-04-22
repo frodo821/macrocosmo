@@ -28,7 +28,7 @@ use crate::components::Position;
 use crate::condition::ScopedFlags;
 use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::FactionRelations;
-use crate::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
+use crate::galaxy::{HomeSystem, Planet, Sovereignty, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::modifier::ModifiedValue;
 use crate::notifications::{NotificationPriority, NotificationQueue};
@@ -392,6 +392,8 @@ fn compute_ui_state(
     planets: Query<&Planet>,
     observer_mode: Res<crate::observer::ObserverMode>,
     observer_view: Res<crate::observer::ObserverView>,
+    home_systems: Query<&HomeSystem>,
+    player_empire_entity_q: Query<Entity, With<PlayerEmpire>>,
 ) {
     crate::prof_span!("compute_ui_state");
     let player_info = player_q
@@ -406,6 +408,10 @@ fn compute_ui_state(
     // ground-truth resource totals (no light-speed delay). In normal play,
     // use the PlayerEmpire's KnowledgeStore as before.
     if observer_mode.enabled {
+        let viewed_home = observer_view
+            .viewing
+            .and_then(|e| home_systems.get(e).ok())
+            .map(|hs| hs.0);
         compute_ui_state_observer(
             &mut ui_state,
             &colonies,
@@ -414,6 +420,7 @@ fn compute_ui_state(
             &all_empire_q,
             &planets,
             &observer_view,
+            viewed_home,
         );
         return;
     }
@@ -421,6 +428,13 @@ fn compute_ui_state(
     let Ok((knowledge, authority_params)) = player_empire_q.single() else {
         return;
     };
+
+    // Resolve the player empire's home system for capital checks.
+    let player_home_system: Option<Entity> = player_empire_entity_q
+        .iter()
+        .next()
+        .and_then(|e| home_systems.get(e).ok())
+        .map(|hs| hs.0);
 
     // Collect resource totals using KnowledgeStore (light-speed delayed) + real-time for local system
     let mut m = Amt::ZERO;
@@ -481,10 +495,8 @@ fn compute_ui_state(
         }
         colony_count += 1;
         if let Some(sys) = colony.system(&planets) {
-            if let Ok((_, star, _, _, _)) = stars.get(sys) {
-                if star.is_capital {
-                    has_capital = true;
-                }
+            if player_home_system == Some(sys) {
+                has_capital = true;
             }
         }
     }
@@ -509,12 +521,9 @@ fn compute_ui_state(
 
     // Capital stockpile for upfront cost checks (research)
     ui_state.capital_stockpile = None;
-    for (sys_entity, star, _, _, _) in stars.iter() {
-        if star.is_capital {
-            if let Ok((s, _)) = system_stockpiles.get(sys_entity) {
-                ui_state.capital_stockpile = Some((s.minerals, s.energy));
-            }
-            break;
+    if let Some(home_sys) = player_home_system {
+        if let Ok((s, _)) = system_stockpiles.get(home_sys) {
+            ui_state.capital_stockpile = Some((s.minerals, s.energy));
         }
     }
 }
@@ -546,6 +555,7 @@ fn compute_ui_state_observer(
     all_empire_q: &Query<&AuthorityParams, With<crate::player::Empire>>,
     planets: &Query<&Planet>,
     observer_view: &crate::observer::ObserverView,
+    home_system_entity: Option<Entity>,
 ) {
     let viewed = match observer_view.viewing {
         Some(e) => e,
@@ -622,10 +632,8 @@ fn compute_ui_state_observer(
             net_f = net_f.add(food_prod.add(SignedAmt(0 - food_cons.raw())));
         }
         colony_count += 1;
-        if let Ok((_, star, _, _, _)) = stars.get(sys) {
-            if star.is_capital {
-                has_capital = true;
-            }
+        if home_system_entity == Some(sys) {
+            has_capital = true;
         }
     }
 
@@ -654,13 +662,10 @@ fn compute_ui_state_observer(
 
     // Capital stockpile for the viewed empire.
     ui_state.capital_stockpile = None;
-    for &sys in &owned_systems {
-        if let Ok((_, star, _, _, _)) = stars.get(sys) {
-            if star.is_capital {
-                if let Ok((s, _)) = system_stockpiles.get(sys) {
-                    ui_state.capital_stockpile = Some((s.minerals, s.energy));
-                }
-                break;
+    if let Some(home_sys) = home_system_entity {
+        if owned_systems.contains(&home_sys) {
+            if let Ok((s, _)) = system_stockpiles.get(home_sys) {
+                ui_state.capital_stockpile = Some((s.minerals, s.energy));
             }
         }
     }
@@ -878,6 +883,11 @@ fn draw_outline_and_tooltips_system(
     };
     let player_system = ui_state.player_system;
 
+    // Resolve the viewed empire's home system for capital checks.
+    let home_system_entity: Option<Entity> = empire_entity
+        .and_then(|e| outline_q.home_systems.get(e).ok())
+        .map(|hs| hs.0);
+
     egui_wants_pointer.0 = ctx.wants_pointer_input();
 
     outline::draw_outline(
@@ -895,6 +905,7 @@ fn draw_outline_and_tooltips_system(
         &outline_q.faction_owners,
         empire_entity,
         obs.observer_mode.enabled,
+        home_system_entity,
     );
 
     draw_map_tooltips(
@@ -910,6 +921,7 @@ fn draw_outline_and_tooltips_system(
         &design_registry,
         knowledge,
         player_system,
+        home_system_entity,
     );
 }
 
@@ -1634,6 +1646,7 @@ fn draw_overlays_system(
     effects_preview: Res<crate::technology::TechEffectsPreview>,
     unlock_index: Res<crate::technology::TechUnlockIndex>,
     obs: ObserverUiState,
+    home_systems: Query<&HomeSystem>,
 ) {
     crate::prof_span!("draw_overlays");
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -1669,13 +1682,15 @@ fn draw_overlays_system(
                 let mineral_cost = tech.cost.minerals;
                 let energy_cost = tech.cost.energy;
 
-                for (sys_entity, star, _, _) in stars.iter() {
-                    if star.is_capital {
-                        if let Ok((mut s, _)) = system_stockpiles.get_mut(sys_entity) {
-                            s.minerals = s.minerals.sub(mineral_cost);
-                            s.energy = s.energy.sub(energy_cost);
-                        }
-                        break;
+                // Deduct from the viewed empire's home system.
+                let home_sys = home_systems
+                    .get(empire_entity)
+                    .ok()
+                    .map(|hs| hs.0);
+                if let Some(sys_entity) = home_sys {
+                    if let Ok((mut s, _)) = system_stockpiles.get_mut(sys_entity) {
+                        s.minerals = s.minerals.sub(mineral_cost);
+                        s.energy = s.energy.sub(energy_cost);
                     }
                 }
 
@@ -1981,6 +1996,7 @@ fn draw_map_tooltips(
     design_registry: &ShipDesignRegistry,
     knowledge: Option<&KnowledgeStore>,
     player_system: Option<Entity>,
+    home_system_entity: Option<Entity>,
 ) {
     // Don't show map tooltips if pointer is over an egui area (panel, overlay, etc.)
     if ctx.is_pointer_over_area() {
@@ -2155,13 +2171,9 @@ fn draw_map_tooltips(
             .gap(12.0)
             .show(|ui: &mut egui::Ui| {
                 ui.label(egui::RichText::new(&star.name).strong());
-                // #430: Gate capital display on KnowledgeStore for remote systems
-                let effective_capital = if is_local {
-                    star.is_capital
-                } else {
-                    k_data.map(|k| k.data.is_capital).unwrap_or(false)
-                };
-                if effective_capital {
+                // Check against the viewed empire's HomeSystem, not star.is_capital
+                let is_my_capital = home_system_entity == Some(star_entity);
+                if is_my_capital {
                     ui.label("Capital system");
                 }
                 if effective_surveyed {
@@ -2204,7 +2216,7 @@ fn draw_map_tooltips(
                                 .weak()
                                 .small(),
                         );
-                    } else if !effective_capital {
+                    } else if !is_my_capital {
                         ui.label(egui::RichText::new("No intelligence").weak().italics());
                     }
                 }

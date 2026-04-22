@@ -8,7 +8,7 @@ use crate::colony::{
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
 use crate::faction::FactionOwner;
-use crate::galaxy::{Anomalies, AtSystem, Hostile, Planet, StarSystem, SystemAttributes};
+use crate::galaxy::{Anomalies, AtSystem, HomeSystem, Hostile, Planet, StarSystem, SystemAttributes};
 use crate::ship::{
     CoreShip, CourierRoute, DockedAt, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement,
     Ship, ShipModifiers, ShipStats,
@@ -170,6 +170,8 @@ pub struct OutlineQueries<'w, 's> {
     pub fleets: Query<'w, 's, (Entity, &'static Fleet, &'static FleetMembers)>,
     /// #432: FactionOwner lookup for ownership filtering in the outline.
     pub faction_owners: Query<'w, 's, &'static crate::faction::FactionOwner>,
+    /// HomeSystem lookup for capital resolution in the outline.
+    pub home_systems: Query<'w, 's, &'static HomeSystem>,
 }
 
 #[derive(SystemParam)]
