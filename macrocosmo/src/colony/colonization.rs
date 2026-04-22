@@ -58,102 +58,21 @@ pub struct PendingColonizationOrder {
 /// Create the capital colony scaffolding (Colony, Buildings, SystemBuildings, ResourceStockpile)
 /// with EMPTY building slots. Buildings and initial ships are added by the faction's
 /// on_game_start Lua callback (see `run_faction_on_game_start` in `scripting::game_start_ctx`).
+/// Legacy capital colony scaffold — now a no-op.
+///
+/// Colony creation is handled by each faction's `on_game_start` Lua
+/// callback (via `initialize_default_capital` / `colonize_planet`).
+/// The old implementation spawned a throwaway colony on the `is_capital`
+/// system that was immediately despawned by `clear_planets`, causing
+/// entity-despawn warnings.
 pub fn spawn_capital_colony(
-    mut commands: Commands,
-    systems: Query<(Entity, &StarSystem)>,
-    planets: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
-    // #297 (S-2): Resolve the player faction so Colony + StarSystem can be
-    // tagged with `FactionOwner` at spawn time. `PlayerEmpire` carries the
-    // canonical diplomatic identity for the human player in single-faction
-    // mode; multi-faction expansion will rewrite this lookup without
-    // changing the spawn-site shape.
-    empire_q: Query<Entity, With<PlayerEmpire>>,
+    _commands: Commands,
+    _systems: Query<(Entity, &StarSystem)>,
+    _planets: Query<(Entity, &crate::galaxy::Planet, &SystemAttributes)>,
+    _empire_q: Query<Entity, With<PlayerEmpire>>,
 ) {
-    // Find the capital star system
-    let capital_system = systems.iter().find(|(_, s)| s.is_capital);
-    let Some((capital_entity, capital_star)) = capital_system else {
-        warn!("No capital star system found; capital colony not created");
-        return;
-    };
-
-    // Find the first planet of the capital system
-    let capital_planet = planets.iter().find(|(_, p, _)| p.system == capital_entity);
-    let Some((planet_entity, _, attributes)) = capital_planet else {
-        warn!("No planet found for capital system; capital colony not created");
-        return;
-    };
-
-    // #297 (S-2): Resolve faction entity; warn + skip attachment if missing
-    // (same defensive pattern used by `tick_build_queue` ship_owner).
-    let faction_entity: Option<Entity> = empire_q.iter().next();
-    if faction_entity.is_none() {
-        warn!(
-            "No PlayerEmpire found when spawning capital colony at {} — \
-             Colony and StarSystem will not carry FactionOwner",
-            capital_star.name
-        );
-    }
-
-    let num_slots = attributes.max_building_slots as usize;
-    let slots = vec![None; num_slots];
-
-    let colony_entity = commands
-        .spawn((
-            Colony {
-                planet: planet_entity,
-                growth_rate: 0.01,
-            },
-            // #250: Production starts at zero; all output comes from buildings
-            // (automation modifiers) + pop-driven job contributions, never from
-            // a hidden base rate. Legacy code seeded this with +5 everywhere,
-            // causing empty colonies to "self-produce" and masking the real
-            // job-system pipeline.
-            Production {
-                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
-                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
-                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
-                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
-            },
-            BuildQueue::default(),
-            Buildings { slots },
-            BuildingQueue::default(),
-            ProductionFocus::default(),
-            MaintenanceCost::default(),
-            FoodConsumption::default(),
-            ColonyPopulation {
-                species: vec![ColonySpecies {
-                    species_id: "human".to_string(),
-                    population: 100,
-                }],
-                growth_accumulator: 0.0,
-            },
-            ColonyJobs::default(),
-            ColonyJobRates::default(),
-        ))
-        .id();
-    // Add ResourceStockpile, ResourceCapacity, and SystemBuildings to the StarSystem entity
-    commands.entity(capital_entity).insert((
-        ResourceStockpile {
-            minerals: Amt::units(500),
-            energy: Amt::units(500),
-            research: Amt::ZERO,
-            food: Amt::units(200),
-            authority: Amt::ZERO,
-        },
-        ResourceCapacity::default(),
-        SystemBuildings::default(),
-        SystemBuildingQueue::default(),
-    ));
-    // #297 (S-2): Tag Colony and StarSystem with their administrative
-    // owner. StarSystem receives FactionOwner because `SystemBuildings` is
-    // attached to the same entity (plan §2C). `Sovereignty.owner` is
-    // derived separately from Core-ship presence (#295) and may disagree
-    // when an enemy Core ship enters the system — that's intentional.
-    if let Some(empire) = faction_entity {
-        commands.entity(colony_entity).insert(FactionOwner(empire));
-        commands.entity(capital_entity).insert(FactionOwner(empire));
-    }
-    info!("Capital colony scaffold created on {}", capital_star.name);
+    // Intentional no-op. All factions create their capital colony via
+    // on_game_start Lua callbacks (#429).
 }
 
 /// #114: Process colonization orders on star systems.

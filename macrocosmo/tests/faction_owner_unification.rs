@@ -92,53 +92,19 @@ fn spawn_capital_system_with_planet(world: &mut World) -> (Entity, Entity) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn spawn_capital_colony_attaches_faction_owner_to_colony_and_system() {
+fn spawn_capital_colony_is_noop() {
+    // spawn_capital_colony is now a no-op — colony creation is handled by
+    // each faction's on_game_start Lua callback (#429).
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
-    // spawn_capital_colony depends on the PlayerEmpire query resolving.
-    let empire = spawn_player_empire_entity(app.world_mut(), "humanity");
-    let (capital_system, _planet) = spawn_capital_system_with_planet(app.world_mut());
+    let _empire = spawn_player_empire_entity(app.world_mut(), "humanity");
+    let (_capital_system, _planet) = spawn_capital_system_with_planet(app.world_mut());
     app.add_systems(Update, macrocosmo::colony::spawn_capital_colony);
     app.update();
 
-    // Exactly one Colony, tagged with FactionOwner pointing at the empire.
-    let mut q = app.world_mut().query::<(Entity, &Colony, &FactionOwner)>();
+    let mut q = app.world_mut().query::<&Colony>();
     let colonies: Vec<_> = q.iter(app.world()).collect();
-    assert_eq!(colonies.len(), 1, "expected exactly one Colony");
-    assert_eq!(
-        colonies[0].2.0, empire,
-        "Colony FactionOwner must match PlayerEmpire"
-    );
-
-    // Capital StarSystem also carries FactionOwner.
-    let sys_owner = app
-        .world()
-        .get::<FactionOwner>(capital_system)
-        .expect("capital StarSystem must carry FactionOwner");
-    assert_eq!(sys_owner.0, empire);
-}
-
-#[test]
-fn spawn_capital_colony_skips_faction_owner_when_no_player_empire() {
-    // Observer-mode-like scenario: no PlayerEmpire exists.
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins);
-    let (capital_system, _planet) = spawn_capital_system_with_planet(app.world_mut());
-    app.add_systems(Update, macrocosmo::colony::spawn_capital_colony);
-    app.update();
-
-    // Colony spawns but carries no FactionOwner.
-    let mut q = app.world_mut().query::<(&Colony, Option<&FactionOwner>)>();
-    let colonies: Vec<_> = q.iter(app.world()).collect();
-    assert_eq!(colonies.len(), 1);
-    assert!(
-        colonies[0].1.is_none(),
-        "Colony must not carry FactionOwner when no PlayerEmpire"
-    );
-    assert!(
-        app.world().get::<FactionOwner>(capital_system).is_none(),
-        "StarSystem must not carry FactionOwner when no PlayerEmpire"
-    );
+    assert_eq!(colonies.len(), 0, "spawn_capital_colony should be a no-op");
 }
 
 // ---------------------------------------------------------------------------
