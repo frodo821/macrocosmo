@@ -1034,6 +1034,71 @@ fn draw_right_panel(
             })
             .unwrap_or_default();
 
+        // Combined build-queue view for system buildings. Mirrors the
+        // colony-side pipeline view: construction / upgrade / demolition
+        // orders interleaved by `order_id` so players see the FIFO
+        // pipeline directly, not just head-order hints per slot.
+        if let Some(bq) = sys_bldg_queue.as_deref() {
+            let mut combined: Vec<(u64, String, i64)> = Vec::new();
+            for o in &bq.queue {
+                let name = building_registry
+                    .get(o.building_id.as_str())
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| o.building_id.0.clone());
+                let label = format!("[Build] {} → slot {}", name, o.target_slot);
+                combined.push((o.order_id, label, o.build_time_remaining));
+            }
+            for o in &bq.upgrade_queue {
+                let target_name = building_registry
+                    .get(o.target_id.as_str())
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| o.target_id.0.clone());
+                let src_name = sys_slots
+                    .get(o.slot_index)
+                    .and_then(|s| s.as_ref())
+                    .map(|bid| {
+                        building_registry
+                            .get(bid.as_str())
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| bid.0.clone())
+                    })
+                    .unwrap_or_else(|| "?".to_string());
+                let label = format!(
+                    "[Up] slot {} {} → {}",
+                    o.slot_index, src_name, target_name
+                );
+                combined.push((o.order_id, label, o.build_time_remaining));
+            }
+            for o in &bq.demolition_queue {
+                let name = building_registry
+                    .get(o.building_id.as_str())
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| o.building_id.0.clone());
+                let label = format!("[Dem] slot {} {}", o.target_slot, name);
+                combined.push((o.order_id, label, o.time_remaining));
+            }
+            combined.sort_by_key(|(id, _, _)| *id);
+
+            if !combined.is_empty() {
+                ui.label(egui::RichText::new("Build Queue").strong());
+                for (order_id, label, remaining) in &combined {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} ({} hd)", label, remaining));
+                        // #436: Only the owner can cancel.
+                        if is_own_system
+                            && ui
+                                .small_button("×")
+                                .on_hover_text("Cancel this order")
+                                .clicked()
+                        {
+                            sys_cancel_request = Some(*order_id);
+                        }
+                    });
+                }
+                ui.separator();
+            }
+        }
+
         for (i, slot) in sys_slots.iter().enumerate() {
             let is_demolishing = sys_bldg_queue
                 .as_ref()

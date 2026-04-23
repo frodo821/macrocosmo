@@ -568,6 +568,71 @@ fn draw_overview_tab(
                 .building_build_time_modifier
                 .final_value();
 
+            // Combined build-queue view: construction / upgrade / demolition
+            // interleaved by `order_id` (FIFO arrival order). Mirrors the
+            // serial-FIFO scheduler in `tick_building_queue` so players can
+            // see the full pipeline rather than inferring it from per-slot
+            // in-progress rows.
+            if let Some(bq) = building_queue.as_deref() {
+                let mut combined: Vec<(u64, String, i64)> = Vec::new();
+                for o in &bq.queue {
+                    let name = building_registry
+                        .get(o.building_id.as_str())
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| o.building_id.0.clone());
+                    let label = format!("[Build] {} → slot {}", name, o.target_slot);
+                    combined.push((o.order_id, label, o.build_time_remaining));
+                }
+                for o in &bq.upgrade_queue {
+                    let target_name = building_registry
+                        .get(o.target_id.as_str())
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| o.target_id.0.clone());
+                    let src_name = buildings
+                        .slots
+                        .get(o.slot_index)
+                        .and_then(|s| s.as_ref())
+                        .map(|bid| {
+                            building_registry
+                                .get(bid.as_str())
+                                .map(|d| d.name.clone())
+                                .unwrap_or_else(|| bid.0.clone())
+                        })
+                        .unwrap_or_else(|| "?".to_string());
+                    let label = format!(
+                        "[Up] slot {} {} → {}",
+                        o.slot_index, src_name, target_name
+                    );
+                    combined.push((o.order_id, label, o.build_time_remaining));
+                }
+                for o in &bq.demolition_queue {
+                    let name = building_registry
+                        .get(o.building_id.as_str())
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| o.building_id.0.clone());
+                    let label = format!("[Dem] slot {} {}", o.target_slot, name);
+                    combined.push((o.order_id, label, o.time_remaining));
+                }
+                combined.sort_by_key(|(id, _, _)| *id);
+
+                if !combined.is_empty() {
+                    ui.label(egui::RichText::new("Build Queue").strong());
+                    for (order_id, label, remaining) in &combined {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} ({} hd)", label, remaining));
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("Cancel this order")
+                                .clicked()
+                            {
+                                cancel_request = Some(*order_id);
+                            }
+                        });
+                    }
+                    ui.separator();
+                }
+            }
+
             for (i, slot) in buildings.slots.iter().enumerate() {
                 let is_demolishing = building_queue
                     .as_ref()
