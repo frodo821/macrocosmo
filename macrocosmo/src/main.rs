@@ -13,6 +13,7 @@ mod event_system;
 mod events;
 mod faction;
 mod galaxy;
+mod game_state;
 mod knowledge;
 mod modifier;
 mod negotiation;
@@ -36,6 +37,7 @@ mod visualization;
 use bevy::prelude::*;
 
 use ai::AiPlayerMode;
+use game_state::NewGameParams;
 use observer::{CliArgs, ObserverMode, ObserverPlugin, RngSeed};
 
 fn main() {
@@ -65,8 +67,26 @@ fn main() {
     // --no-player implies --ai-player: the player empire is AI-driven.
     let ai_player_mode = AiPlayerMode(cli.ai_player || cli.no_player);
 
+    // #439 Phase 1: mirror the CLI flags into `NewGameParams` so the
+    // `OnEnter(NewGame)` world-spawn systems (Phase 3) have a single
+    // source of truth. Until then, `RngSeed` / `ObserverMode` stay as
+    // the canonical resources — this is read-only context.
+    let new_game_params = NewGameParams {
+        seed: cli.seed,
+        scenario_id: None,
+        observer_mode: observer_mode.enabled,
+        faction_override: None,
+    };
+
     let mut app = App::new();
-    app.insert_resource(observer_mode)
+    // `GameState` is registered by `GameSetupPlugin` (via
+    // `GameStatePlugin`) later in the add_plugins chain. `StatesPlugin`
+    // comes in via `DefaultPlugins`, which is installed immediately
+    // below — keeping `init_state` off of `main()` means there's only
+    // one place that owns state registration, and the order is
+    // implicit in the plugin graph.
+    app.insert_resource(new_game_params)
+        .insert_resource(observer_mode)
         .insert_resource(rng_seed)
         .insert_resource(ai_player_mode)
         .add_plugins(DefaultPlugins.set(WindowPlugin {

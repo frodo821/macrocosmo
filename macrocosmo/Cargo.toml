@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 # Bevy default features を落として、本 project で実際に使う subset だけ有効化する。
 # 未使用 (grep confirmed): animation / bevy_audio / bevy_gltf / bevy_pbr / bevy_gilrs /
-# bevy_scene / bevy_text / bevy_ui / bevy_state / bevy_input_focus / bevy_picking +
+# bevy_scene / bevy_text / bevy_ui / bevy_input_focus / bevy_picking +
 # picking backends / png / vorbis / webgl2 / hdr / tonemapping_luts / smaa_luts /
 # custom_cursor / zstd_rust。egui で UI / text を担当するため bevy_ui 系は不要。
 #
@@ -24,6 +24,7 @@ bevy = { version = "0.18.1", default-features = false, features = [
     "bevy_render",
     "bevy_sprite",
     "bevy_sprite_render",
+    "bevy_state",
     "bevy_text",
     "bevy_window",
     "bevy_winit",

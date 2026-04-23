@@ -10,6 +10,7 @@ use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::condition::ScopedFlags;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::game_state::{GameState, GameStatePlugin, LoadSaveRequest};
 use crate::knowledge::KnowledgeStore;
 use crate::modifier::ModifiedValue;
 use crate::observer::{in_observer_mode, not_in_observer_mode};
@@ -32,6 +33,15 @@ pub struct GameSetupPlugin;
 
 impl Plugin for GameSetupPlugin {
     fn build(&self, app: &mut App) {
+        // #439: ensure the `GameState` state machine exists before we
+        // register any `OnEnter` handlers / `dispatch_initial_state`
+        // below. `GameStatePlugin` guards against double-registering
+        // `StatesPlugin` so it is safe to add even when `DefaultPlugins`
+        // already installed it.
+        if !app.is_plugin_added::<GameStatePlugin>() {
+            app.add_plugins(GameStatePlugin);
+        }
+
         app.add_systems(
             Startup,
             apply_faction_presets
@@ -80,8 +90,61 @@ impl Plugin for GameSetupPlugin {
             init_observer_view
                 .after(run_all_factions_on_game_start)
                 .run_if(in_observer_mode),
+        )
+        // #439 Phase 1: after all Startup work is done, flip the state
+        // machine into `NewGame` or `LoadingSave` depending on whether
+        // a `LoadSaveRequest` was inserted. Both middle states
+        // immediately hand off to `InGame` in Phase 1 — Phase 3 fills
+        // them with real world-spawn / save-apply work.
+        //
+        // Gate on `Bootstrapping` so test harnesses that seed `InGame`
+        // via `insert_state(...)` aren't dragged back through the
+        // middle states on their first frame.
+        .add_systems(
+            Startup,
+            dispatch_initial_state
+                .after(run_all_factions_on_game_start)
+                .after(crate::scripting::lifecycle::run_lifecycle_hooks)
+                .after(init_observer_view)
+                .run_if(in_state(GameState::Bootstrapping)),
+        )
+        .add_systems(OnEnter(GameState::NewGame), finish_new_game_transition)
+        .add_systems(
+            OnEnter(GameState::LoadingSave),
+            finish_loading_save_transition,
         );
     }
+}
+
+/// #439 Phase 1 — Startup terminal system. Decides which middle state to
+/// enter once engine bootstrap is complete: if a [`LoadSaveRequest`] was
+/// inserted (by a future `--load` flag or the main menu), go to
+/// [`GameState::LoadingSave`]; otherwise go to [`GameState::NewGame`].
+///
+/// Phase 3 will keep this transition trigger but the `OnEnter` handlers
+/// will do the heavy lifting instead of the current pass-through stubs.
+pub fn dispatch_initial_state(
+    mut next: ResMut<NextState<GameState>>,
+    load_request: Option<Res<LoadSaveRequest>>,
+) {
+    if load_request.is_some() {
+        next.set(GameState::LoadingSave);
+    } else {
+        next.set(GameState::NewGame);
+    }
+}
+
+/// #439 Phase 1 stub — Phase 3 replaces this with the real world-spawn
+/// chain registered on `OnEnter(NewGame)`. For now the spawn work still
+/// runs in `Startup`, so this hook only flips the state to `InGame`.
+pub fn finish_new_game_transition(mut next: ResMut<NextState<GameState>>) {
+    next.set(GameState::InGame);
+}
+
+/// #439 Phase 1 stub — Phase 3 replaces this with the real save-apply
+/// pipeline registered on `OnEnter(LoadingSave)`.
+pub fn finish_loading_save_transition(mut next: ResMut<NextState<GameState>>) {
+    next.set(GameState::InGame);
 }
 
 /// Startup system (observer mode only) that sets `ObserverView.viewing` to

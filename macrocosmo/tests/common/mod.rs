@@ -379,6 +379,14 @@ pub fn spawn_raw_hostile(
 pub fn test_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
+    // #439 Phase 1: integration tests assume the game is already
+    // running, so seed `GameState::InGame` directly. Phase 2 will gate
+    // tick systems on `in_state(InGame)` — without this, those systems
+    // would stop running in the default `Bootstrapping` state.
+    // `GameStatePlugin` pulls in `StatesPlugin` (which `MinimalPlugins`
+    // does not include) and registers the `GameState` machine.
+    app.add_plugins(macrocosmo::game_state::GameStatePlugin);
+    app.insert_state(macrocosmo::game_state::GameState::InGame);
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
     // GameClock is inserted above so AiPlugin's Startup schema::declare_all
@@ -729,6 +737,11 @@ pub fn test_app_with_event_log() -> App {
 pub fn full_test_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
+
+    // #439 Phase 1: see `test_app()` — seed `InGame` so Phase 2-gated
+    // tick systems run.
+    app.add_plugins(macrocosmo::game_state::GameStatePlugin);
+    app.insert_state(macrocosmo::game_state::GameState::InGame);
 
     // --- Core resources ---
     app.insert_resource(GameClock::new(0));
