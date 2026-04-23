@@ -210,12 +210,77 @@ pub fn collect_events(mut reader: MessageReader<GameEvent>, mut log: ResMut<Even
     }
 }
 
-/// Auto-pause when a pause-worthy GameEvent fires
-pub fn auto_pause_on_event(mut reader: MessageReader<GameEvent>, mut speed: ResMut<GameSpeed>) {
-    for event in reader.read() {
-        if event.kind.should_pause() {
-            speed.pause();
+/// Auto-pause when a pause-worthy GameEvent fires.
+///
+/// Filters:
+/// 1. Observer mode — never pause (there is no "player" whose attention
+///    would be interrupted; observer is supposed to run freely).
+/// 2. System-scoped events (`related_system.is_some()`) only pause when
+///    the player empire has a stake in that system — either directly
+///    owning a colony there or owning a ship currently in the system.
+///    Without this, NPC-vs-NPC surveys / combats / colonies in distant
+///    corners of the galaxy would pause the game every few seconds.
+///
+/// Empire-scope events (`related_system.is_none()`) still always pause:
+/// those are intentionally broadcast (e.g. WarDeclared / PlayerRespawn)
+/// and are rare enough to not be noisy. A future pass can add explicit
+/// audience metadata on `GameEvent` to tighten this further.
+pub fn auto_pause_on_event(
+    mut reader: MessageReader<GameEvent>,
+    mut speed: ResMut<GameSpeed>,
+    observer_mode: Option<Res<crate::observer::ObserverMode>>,
+    player_empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    colony_owners: Query<(&crate::colony::Colony, &crate::faction::FactionOwner)>,
+    planets: Query<&crate::galaxy::Planet>,
+    ships: Query<(&crate::ship::Ship, &crate::ship::ShipState)>,
+) {
+    if observer_mode.as_deref().is_some_and(|m| m.enabled) {
+        // Drain the reader so messages don't stack across frames.
+        for _ in reader.read() {}
+        return;
+    }
+
+    let Ok(player_empire) = player_empire_q.single() else {
+        // No PlayerEmpire yet (boot / teardown). Drain and bail.
+        for _ in reader.read() {}
+        return;
+    };
+
+    let is_player_relevant_system = |system: Entity| -> bool {
+        // Colony-ownership path: any player-owned colony in this system.
+        let player_colony_here = colony_owners.iter().any(|(colony, owner)| {
+            if owner.0 != player_empire {
+                return false;
+            }
+            planets
+                .get(colony.planet)
+                .map(|p| p.system == system)
+                .unwrap_or(false)
+        });
+        if player_colony_here {
+            return true;
         }
+        // Ship-presence path: any player-owned ship currently at the system.
+        ships.iter().any(|(ship, state)| {
+            let is_player_ship =
+                matches!(ship.owner, crate::ship::Owner::Empire(e) if e == player_empire);
+            if !is_player_ship {
+                return false;
+            }
+            matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == system)
+        })
+    };
+
+    for event in reader.read() {
+        if !event.kind.should_pause() {
+            continue;
+        }
+        if let Some(sys) = event.related_system {
+            if !is_player_relevant_system(sys) {
+                continue;
+            }
+        }
+        speed.pause();
     }
 }
 
