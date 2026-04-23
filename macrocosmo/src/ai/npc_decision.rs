@@ -368,6 +368,56 @@ impl NpcPolicy for SimpleNpcPolicy {
 #[derive(Resource, Default)]
 pub struct LastAiDecisionTick(pub i64);
 
+/// Rank candidate unsurveyed systems by "accessibility" — an approximation
+/// of travel time that's more useful than raw distance.
+///
+/// FTL routing ([`crate::ship::movement::plan_ftl_route`]) rejects
+/// unsurveyed destinations, so reaching an unsurveyed star always ends in
+/// a sublight leg from the nearest surveyed waypoint. That sublight gap
+/// dominates the surveyor's travel time in the common case, so we rank
+/// targets by:
+///   1. `gap` — distance from the target to the nearest surveyed system
+///      (smaller = closer to the frontier of known space).
+///   2. `home_dist` — distance from the target to the empire's reference
+///      position (ruler's home, or fallback). Tie-breaks same-gap targets
+///      by "prefer systems closer to our base."
+///
+/// When the empire has no surveyed systems at all (fresh start, pre-capital),
+/// gap collapses to raw distance from the reference position — good enough
+/// for the first dispatch.
+///
+/// Returns entity ids in rank order (best first).
+pub fn rank_survey_targets(
+    candidates: &[(Entity, [f64; 3])],
+    surveyed_positions: &[[f64; 3]],
+    reference_pos: [f64; 3],
+) -> Vec<Entity> {
+    let mut scored: Vec<(Entity, f64, f64)> = candidates
+        .iter()
+        .map(|(e, pos)| {
+            let gap = if surveyed_positions.is_empty() {
+                crate::physics::distance_ly_arr(*pos, reference_pos)
+            } else {
+                surveyed_positions
+                    .iter()
+                    .map(|sp| crate::physics::distance_ly_arr(*pos, *sp))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            let home_dist = crate::physics::distance_ly_arr(*pos, reference_pos);
+            (*e, gap, home_dist)
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(
+                a.2.partial_cmp(&b.2)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    scored.into_iter().map(|(e, _, _)| e).collect()
+}
+
 pub fn npc_decision_tick(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastAiDecisionTick>,
@@ -381,12 +431,17 @@ pub fn npc_decision_tick(
         ),
         With<AiControlled>,
     >,
-    // #? SimpleNpcPolicy needs to know which systems exist at all — the
+    // SimpleNpcPolicy needs to know which systems exist at all — the
     // KnowledgeStore only carries entries the empire has already
     // surveyed / been told about (one entry per owned capital at spawn),
     // so `unsurveyed_systems` derived from it was always empty for
     // fresh empires, freezing Explorers in dock.
-    all_stars: Query<Entity, With<crate::galaxy::StarSystem>>,
+    //
+    // Position is pulled alongside so we can rank survey targets by
+    // "accessibility" — distance alone is a poor proxy for travel time
+    // in a universe with FTL, obscured regions, and a surveyed-frontier
+    // requirement.
+    star_positions: Query<(Entity, &crate::components::Position), With<crate::galaxy::StarSystem>>,
     all_ships: Query<(
         Entity,
         &crate::ship::Ship,
@@ -435,18 +490,40 @@ pub fn npc_decision_tick(
         // valid survey target if we haven't surveyed it yet. Fall back
         // to all stars when the empire has no visibility map — defensive
         // for test setups.
-        let mut unsurveyed_systems: Vec<Entity> = Vec::new();
-        for system_entity in all_stars.iter() {
-            if surveyed_ids.contains(&system_entity) {
-                continue;
-            }
-            let knowable = vis_map_opt
-                .map(|vm| vm.get(system_entity) >= SystemVisibilityTier::Catalogued)
-                .unwrap_or(true);
-            if knowable {
-                unsurveyed_systems.push(system_entity);
-            }
-        }
+        let surveyed_positions: Vec<[f64; 3]> = star_positions
+            .iter()
+            .filter(|(e, _)| surveyed_ids.contains(e))
+            .map(|(_, p)| p.as_array())
+            .collect();
+
+        // Resolve the empire's reference position for tiebreaks.
+        let ruler_stationed_system: Option<Entity> = empire_rulers
+            .get(entity)
+            .ok()
+            .and_then(|er| ruler_q.get(er.0).ok())
+            .map(|(s, _)| s.system);
+        let reference_pos: [f64; 3] = ruler_stationed_system
+            .and_then(|sys| {
+                star_positions
+                    .iter()
+                    .find(|(e, _)| *e == sys)
+                    .map(|(_, p)| p.as_array())
+            })
+            .or_else(|| surveyed_positions.first().copied())
+            .unwrap_or([0.0, 0.0, 0.0]);
+
+        let candidates: Vec<(Entity, [f64; 3])> = star_positions
+            .iter()
+            .filter(|(e, _)| !surveyed_ids.contains(e))
+            .filter(|(e, _)| {
+                vis_map_opt
+                    .map(|vm| vm.get(*e) >= SystemVisibilityTier::Catalogued)
+                    .unwrap_or(true)
+            })
+            .map(|(e, p)| (e, p.as_array()))
+            .collect();
+        let unsurveyed_systems =
+            rank_survey_targets(&candidates, &surveyed_positions, reference_pos);
 
         // Build ship inventory for this empire.
         let ships: Vec<ShipInfo> = all_ships

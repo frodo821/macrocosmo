@@ -240,3 +240,65 @@ fn ai_dispatches_surveyor_to_unsurveyed_systems() {
         unsurveyed_count,
     );
 }
+
+/// Regression (unit): with one nearby (2ly) and one far (50ly) unsurveyed
+/// system, the `rank_survey_targets` helper must emit the near target
+/// first. Before the accessibility-sort fix `npc_decision_tick` passed
+/// `unsurveyed_systems` in ECS archetype iteration order, unrelated to
+/// distance — explorers routinely sprinted across the galaxy for their
+/// first survey.
+///
+/// Exercised at the helper level rather than end-to-end because the full
+/// pipeline depends on `ShipState` / `RemoteCommand` variants that change
+/// shape over time; the helper has a stable, trivially-testable contract.
+#[test]
+fn ai_ranks_frontier_adjacent_survey_target_before_distant_one() {
+    use bevy::prelude::*;
+    use macrocosmo::ai::npc_decision::rank_survey_targets;
+
+    let mut world = World::new();
+    let near = world.spawn_empty().id();
+    let far = world.spawn_empty().id();
+
+    let candidates = vec![
+        (far, [50.0, 0.0, 0.0]),
+        (near, [2.0, 0.0, 0.0]),
+    ];
+    let surveyed = vec![[0.0, 0.0, 0.0]]; // one surveyed home
+    let reference_pos = [0.0, 0.0, 0.0];
+
+    let ranked = rank_survey_targets(&candidates, &surveyed, reference_pos);
+    assert_eq!(
+        ranked,
+        vec![near, far],
+        "nearest-to-frontier target must rank first"
+    );
+}
+
+/// Tiebreaker: when two candidates are equidistant from the surveyed
+/// frontier, the one closer to the empire's reference position wins.
+#[test]
+fn ai_ranks_home_closer_target_as_tiebreak() {
+    use bevy::prelude::*;
+    use macrocosmo::ai::npc_decision::rank_survey_targets;
+
+    let mut world = World::new();
+    let left = world.spawn_empty().id();
+    let right = world.spawn_empty().id();
+
+    // Both 5ly from the single surveyed home; right is closer to the
+    // reference_pos.
+    let candidates = vec![
+        (left, [-5.0, 0.0, 0.0]),
+        (right, [5.0, 0.0, 0.0]),
+    ];
+    let surveyed = vec![[0.0, 0.0, 0.0]];
+    let reference_pos = [3.0, 0.0, 0.0];
+
+    let ranked = rank_survey_targets(&candidates, &surveyed, reference_pos);
+    assert_eq!(
+        ranked,
+        vec![right, left],
+        "same-gap ties resolve toward the empire's reference position"
+    );
+}
