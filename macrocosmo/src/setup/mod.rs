@@ -111,7 +111,25 @@ impl Plugin for GameSetupPlugin {
                 .after(crate::scripting::lifecycle::run_lifecycle_hooks)
                 .run_if(in_state(GameState::Bootstrapping)),
         )
-        .add_systems(OnEnter(GameState::LoadingSave), perform_load);
+        .add_systems(OnEnter(GameState::LoadingSave), perform_load)
+        // #439 Phase 4: scene teardown on `OnExit(InGame)`. Runs before
+        // any `OnEnter(NewGame)` spawn system when a re-entry transition
+        // fires (Bevy's `StateTransition` schedule orders exit-handlers
+        // before enter-handlers). `cleanup_ingame_entities` wipes all
+        // `SaveableMarker`-tagged entities (the entire game world);
+        // `reset_ingame_resources` clears tick-accumulated resources and
+        // removes one-shot resources the next `NewGame` spawn chain will
+        // re-insert. Chained so resource resets never race with queued
+        // entity despawns.
+        .add_systems(
+            OnExit(GameState::InGame),
+            (
+                crate::game_state::cleanup_ingame_entities,
+                bevy::ecs::schedule::ApplyDeferred,
+                crate::game_state::reset_ingame_resources,
+            )
+                .chain(),
+        );
     }
 }
 

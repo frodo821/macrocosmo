@@ -4,6 +4,7 @@ mod stars;
 pub mod territory;
 
 pub use camera::camera_controls;
+pub use stars::cleanup_star_visuals;
 
 use std::time::Instant;
 
@@ -103,6 +104,15 @@ impl Plugin for VisualizationPlugin {
             .add_systems(
                 OnEnter(crate::game_state::GameState::InGame),
                 (stars::spawn_star_visuals, camera::center_camera_on_capital),
+            )
+            // #439 Phase 4: despawn star sprites / labels on scene exit
+            // so a fresh scene doesn't stack duplicate visuals. Registered
+            // here next to `spawn_star_visuals` so the lifecycle pair is
+            // obvious — the centralised `GameSetupPlugin` teardown only
+            // handles SaveableMarker-tagged entities.
+            .add_systems(
+                OnExit(crate::game_state::GameState::InGame),
+                stars::cleanup_star_visuals,
             )
             .add_systems(
                 Update,

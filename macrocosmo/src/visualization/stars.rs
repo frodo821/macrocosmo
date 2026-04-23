@@ -33,6 +33,22 @@ pub(super) struct StarLabel;
 #[derive(Component)]
 pub(super) struct BaseStarSize(pub f32);
 
+/// #439 Phase 4 `OnExit(GameState::InGame)` cleanup — despawn every sprite /
+/// label / glow spawned by [`spawn_star_visuals`]. These entities live on
+/// the camera-rendered sprite layer and do **not** carry a
+/// `SaveableMarker` (they are reconstructable view state, not game state),
+/// so the generic `cleanup_ingame_entities` system in `game_state` does
+/// not catch them. `StarVisual` is the common marker attached to all
+/// three kinds (glow, main dot, label), so a single query covers them.
+pub fn cleanup_star_visuals(
+    mut commands: Commands,
+    visuals: Query<Entity, With<StarVisual>>,
+) {
+    for e in &visuals {
+        commands.entity(e).despawn();
+    }
+}
+
 pub fn spawn_star_visuals(
     mut commands: Commands,
     stars: Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
