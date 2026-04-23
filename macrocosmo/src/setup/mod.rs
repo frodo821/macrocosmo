@@ -111,10 +111,7 @@ impl Plugin for GameSetupPlugin {
                 .after(crate::scripting::lifecycle::run_lifecycle_hooks)
                 .run_if(in_state(GameState::Bootstrapping)),
         )
-        .add_systems(
-            OnEnter(GameState::LoadingSave),
-            finish_loading_save_transition,
-        );
+        .add_systems(OnEnter(GameState::LoadingSave), perform_load);
     }
 }
 
@@ -144,10 +141,43 @@ pub fn finish_new_game_transition(mut next: ResMut<NextState<GameState>>) {
     next.set(GameState::InGame);
 }
 
-/// #439 Phase 1 stub — Phase 3 replaces this with the real save-apply
-/// pipeline registered on `OnEnter(LoadingSave)`.
-pub fn finish_loading_save_transition(mut next: ResMut<NextState<GameState>>) {
-    next.set(GameState::InGame);
+/// #439 Phase 3 — `OnEnter(LoadingSave)` system. Decodes the save file
+/// referenced by the [`LoadSaveRequest`] resource (inserted by `--load`
+/// or a future load-game screen), applies it to the world via
+/// [`crate::persistence::load::load_game_from`], and transitions into
+/// `GameState::InGame`.
+///
+/// On failure the world may be in a partially-applied state, so we do
+/// **not** continue to `InGame` — instead we fall back to
+/// `GameState::NewGame` so the user sees a playable world rather than a
+/// broken one, and the decode error is surfaced in the log. A future
+/// UI-level "save corrupt" surface (main-menu work) will replace this
+/// silent fallback with a user-facing diagnostic.
+pub fn perform_load(world: &mut World) {
+    let request = match world.get_resource::<LoadSaveRequest>() {
+        Some(req) => req.clone(),
+        None => {
+            warn!("perform_load: no LoadSaveRequest resource; falling back to NewGame");
+            world
+                .resource_mut::<NextState<GameState>>()
+                .set(GameState::NewGame);
+            return;
+        }
+    };
+    match crate::persistence::load::load_game_from(world, &request.path) {
+        Ok(()) => {
+            info!("Loaded save from {:?}", request.path);
+            world
+                .resource_mut::<NextState<GameState>>()
+                .set(GameState::InGame);
+        }
+        Err(e) => {
+            error!("Failed to load save from {:?}: {e}", request.path);
+            world
+                .resource_mut::<NextState<GameState>>()
+                .set(GameState::NewGame);
+        }
+    }
 }
 
 /// Startup system (observer mode only) that sets `ObserverView.viewing` to

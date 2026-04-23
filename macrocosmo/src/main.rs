@@ -19,6 +19,7 @@ mod modifier;
 mod negotiation;
 mod notifications;
 mod observer;
+mod persistence;
 mod physics;
 mod player;
 mod profiling;
@@ -37,7 +38,7 @@ mod visualization;
 use bevy::prelude::*;
 
 use ai::AiPlayerMode;
-use game_state::NewGameParams;
+use game_state::{LoadSaveRequest, NewGameParams};
 use observer::{CliArgs, ObserverMode, ObserverPlugin, RngSeed};
 
 fn main() {
@@ -88,7 +89,17 @@ fn main() {
     app.insert_resource(new_game_params)
         .insert_resource(observer_mode)
         .insert_resource(rng_seed)
-        .insert_resource(ai_player_mode)
+        .insert_resource(ai_player_mode);
+
+    // #439 Phase 3: `--load <path>` inserts a `LoadSaveRequest`.
+    // `dispatch_initial_state` routes to `GameState::LoadingSave` when
+    // this resource is present, and `perform_load` applies the save.
+    if let Some(path) = cli.load.clone() {
+        info!("Loading save from {:?}", path);
+        app.insert_resource(LoadSaveRequest { path });
+    }
+
+    app
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Macrocosmo".into(),

@@ -4,11 +4,13 @@
 //! needed by #214 observer mode and related features:
 //!
 //! ```text
-//! macrocosmo [--no-player] [--seed N] [--time-horizon H] [--speed S] [--help]
+//! macrocosmo [--no-player] [--seed N] [--time-horizon H] [--speed S] [--load PATH] [--help]
 //! ```
 //!
 //! The parser is intentionally minimal. Unknown flags cause an error
 //! containing the help text so `main.rs` can print it and exit.
+
+use std::path::PathBuf;
 
 /// Parsed command-line arguments.
 ///
@@ -34,6 +36,11 @@ pub struct CliArgs {
     pub time_horizon: Option<i64>,
     /// Optional initial game speed (hexadies per real second).
     pub speed: Option<f64>,
+    /// Optional path to a save file. When set, `main.rs` inserts a
+    /// [`crate::game_state::LoadSaveRequest`] resource so the
+    /// [`crate::game_state::GameState`] state machine enters
+    /// `LoadingSave` instead of `NewGame` on startup (#439 Phase 3).
+    pub load: Option<PathBuf>,
 }
 
 /// Help text printed on `--help` or on parse errors.
@@ -59,6 +66,10 @@ OPTIONS:
                             reaches H hexadies. Only active with --no-player.
     --speed <S>             Initial game speed (hexadies per real second).
                             Decimal values accepted.
+    --load <PATH>           Load a saved game from PATH instead of
+                            starting a new game. Inserts a
+                            LoadSaveRequest resource so the GameState
+                            machine enters LoadingSave on startup.
     --help, -h              Print this help text and exit.
 ";
 
@@ -136,6 +147,12 @@ impl CliArgs {
                         format!("error: --speed value '{v}' is not a valid number\n\n{HELP_TEXT}")
                     })?;
                     out.speed = Some(n);
+                }
+                "--load" => {
+                    let v = iter
+                        .next()
+                        .ok_or_else(|| format!("error: --load requires a path\n\n{HELP_TEXT}"))?;
+                    out.load = Some(PathBuf::from(v));
                 }
                 other => {
                     return Err(format!("error: unknown argument '{other}'\n\n{HELP_TEXT}"));
@@ -255,5 +272,31 @@ mod tests {
         assert_eq!(a.seed, Some(123));
         assert_eq!(a.time_horizon, Some(10000));
         assert_eq!(a.speed, Some(8.0));
+    }
+
+    #[test]
+    fn cli_defaults_have_no_load_path() {
+        let a = parse(&[]).expect("no args ok");
+        assert!(a.load.is_none());
+    }
+
+    #[test]
+    fn cli_parses_load_path() {
+        let a = parse(&["--load", "saves/autosave.bin"]).expect("parse ok");
+        assert_eq!(a.load, Some(PathBuf::from("saves/autosave.bin")));
+    }
+
+    #[test]
+    fn cli_rejects_load_without_value() {
+        let err = parse(&["--load"]).expect_err("should reject");
+        assert!(err.contains("--load"));
+        assert!(err.contains("requires a path"));
+    }
+
+    #[test]
+    fn cli_parses_load_alongside_other_flags() {
+        let a = parse(&["--load", "/tmp/game.bin", "--speed", "2"]).expect("parse ok");
+        assert_eq!(a.load, Some(PathBuf::from("/tmp/game.bin")));
+        assert_eq!(a.speed, Some(2.0));
     }
 }
