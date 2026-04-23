@@ -528,7 +528,19 @@ pub fn process_pending_commands(
     pending: Query<(Entity, &PendingCommand)>,
     mut applied_ids: ResMut<AppliedCommandIds>,
     mut empire_q: Query<
-        (&mut CommandLog, &crate::colony::ConstructionParams),
+        (
+            &mut CommandLog,
+            &crate::colony::ConstructionParams,
+            // #437: Tech + flag state used to re-evaluate
+            // `BuildingDefinition.prerequisites` at arrival. This is the
+            // same pipeline the UI uses to filter the build-buttons list,
+            // so UI and arrival-side stay in sync: a command dispatched
+            // when a gating tech was missing (via scripted/remote bypass)
+            // is rejected here instead of silently being enqueued.
+            &crate::technology::TechTree,
+            &crate::technology::GameFlags,
+            &crate::condition::ScopedFlags,
+        ),
         With<crate::player::PlayerEmpire>,
     >,
     building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
@@ -539,13 +551,35 @@ pub fn process_pending_commands(
     core_ships: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
     station_ships: crate::colony::remote::ApplyStationShipQuery,
 ) {
-    let Ok((mut command_log, construction_params)) = empire_q.single_mut() else {
+    let Ok((mut command_log, construction_params, tech_tree, game_flags, scoped_flags)) =
+        empire_q.single_mut()
+    else {
         return;
     };
     let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
     let bldg_time_mod = construction_params
         .building_build_time_modifier
         .final_value();
+
+    // #437: Build an EvalContext from the current empire state so the
+    // arrival handler can re-check `BuildingDefinition.prerequisites`.
+    let researched_techs: std::collections::HashSet<String> = tech_tree
+        .researched
+        .iter()
+        .map(|t| t.0.clone())
+        .collect();
+    let active_modifiers: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut empire_flags_union: std::collections::HashSet<String> = scoped_flags.flags.clone();
+    empire_flags_union.extend(game_flags.flags.iter().cloned());
+    let empire_buildings: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let prereq_ctx = crate::condition::EvalContext::flat(
+        &researched_techs,
+        &active_modifiers,
+        &empire_buildings,
+        &empire_flags_union,
+    );
 
     for (entity, cmd) in &pending {
         if clock.elapsed >= cmd.arrives_at {
@@ -583,6 +617,7 @@ pub fn process_pending_commands(
                 &planets,
                 system_has_core,
                 &station_ships,
+                Some(&prereq_ctx),
             );
 
             // #268: Record this command as applied for dedup.

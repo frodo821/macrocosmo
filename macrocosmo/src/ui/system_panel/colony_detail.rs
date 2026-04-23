@@ -74,6 +74,12 @@ pub(super) fn draw_colony_detail(
     clock_elapsed: i64,
     // #432: When `false`, build/demolish/upgrade commands are suppressed.
     is_own_colony: bool,
+    // #437: Condition-evaluation context for filtering the "Build Planet
+    // Building" list by `BuildingDefinition.prerequisites`. Reuses the
+    // same struct that gates shipyard deliverables — name kept for
+    // minimal churn (it carries generic empire state, not
+    // deliverable-specific data).
+    build_avail: &super::DeliverableAvailabilityCtx<'_>,
 ) {
     // #432: For foreign colonies, show a minimal label and return.
     if !is_own_colony {
@@ -164,6 +170,7 @@ pub(super) fn draw_colony_detail(
             design_registry,
             building_registry,
             dispatches,
+            build_avail,
         ),
         ColonyPanelTab::PopManagement => {
             draw_pop_management_tab(ui, planet_entity, colonies, colony_pop_view, job_registry)
@@ -325,6 +332,9 @@ fn draw_overview_tab(
     design_registry: &crate::ship_design::ShipDesignRegistry,
     building_registry: &BuildingRegistry,
     dispatches: &mut PendingColonyDispatches,
+    // #437: Context used to filter the "Build Planet Building" button list
+    // by `BuildingDefinition.prerequisites`.
+    build_avail: &super::DeliverableAvailabilityCtx<'_>,
 ) {
     for (
         colony_entity,
@@ -746,7 +756,13 @@ fn draw_overview_tab(
             if let Some(slot_idx) = empty_slot {
                 ui.separator();
                 ui.label(egui::RichText::new("Build Planet Building").strong());
-                let planet_building_defs = building_registry.planet_buildings();
+                // #437: Filter by `BuildingDefinition.prerequisites` against
+                // current empire state. Unsatisfied buildings simply don't
+                // render a button — matches the existing deliverable filter
+                // pattern in `available_shipyard_deliverables`.
+                let eval_ctx = build_avail.as_eval();
+                let planet_building_defs =
+                    building_registry.available_planet_buildings(&eval_ctx);
                 let mut build_building_request: Option<BuildingId> = None;
                 for def in &planet_building_defs {
                     let (base_m, base_e) = def.build_cost();

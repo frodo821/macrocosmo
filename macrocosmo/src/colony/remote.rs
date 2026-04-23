@@ -16,6 +16,7 @@ use crate::colony::{
     DemolitionOrder, SystemBuildingQueue, SystemBuildings, UpgradeOrder,
 };
 use crate::communication::{BuildingKind, BuildingScope, ColonyCommand, RemoteCommand};
+use crate::condition::EvalContext;
 use crate::scripting::building_api::{BuildingDefinition, BuildingId, BuildingRegistry};
 use crate::ship_design::ShipDesignRegistry;
 
@@ -69,6 +70,12 @@ pub fn apply_remote_command(
     planets: &ApplyPlanetsQuery,
     system_has_core: bool,
     station_ships: &ApplyStationShipQuery,
+    // #437: Optional condition-evaluation context used to gate `Queue` /
+    // `Upgrade` building commands by `BuildingDefinition.prerequisites`.
+    // When `None` (test scaffolding that doesn't care about tech gates),
+    // the arrival handler accepts any known building id. Production calls
+    // from `process_pending_commands` always pass `Some`.
+    prereq_ctx: Option<&EvalContext>,
 ) {
     match cmd {
         RemoteCommand::BuildShip { .. } | RemoteCommand::SetProductionFocus { .. } => {
@@ -84,6 +91,7 @@ pub fn apply_remote_command(
             sys_buildings_q,
             system_has_core,
             station_ships,
+            prereq_ctx,
         ),
         RemoteCommand::ShipBuild {
             host_colony,
@@ -255,6 +263,7 @@ fn apply_building_command(
     sys_buildings_q: &mut ApplySystemBuildingsQuery,
     system_has_core: bool,
     station_ships: &ApplyStationShipQuery,
+    prereq_ctx: Option<&EvalContext>,
 ) {
     match &cc.kind {
         BuildingKind::Queue {
@@ -265,6 +274,22 @@ fn apply_building_command(
                 warn!("Queue: unknown building_id '{}'", building_id);
                 return;
             };
+            // #437: Re-evaluate prerequisites at arrival time. A command
+            // dispatched when a gating tech was known can still land after
+            // the tech was cancelled (or if the UI was bypassed). Reject
+            // unmet prerequisites so light-speed delay can't serve as an
+            // end-run around the gate.
+            if let Some(ctx) = prereq_ctx {
+                if let Some(cond) = &def.prerequisites {
+                    if !cond.evaluate(ctx).is_satisfied() {
+                        warn!(
+                            "Queue: prerequisites for '{}' not satisfied at arrival; rejecting",
+                            building_id
+                        );
+                        return;
+                    }
+                }
+            }
             let (base_m, base_e) = def.build_cost();
             let eff_m = base_m.mul_amt(bldg_cost_mod);
             let eff_e = base_e.mul_amt(bldg_cost_mod);
@@ -399,6 +424,22 @@ fn apply_building_command(
             slot_index,
             target_id,
         } => {
+            // #437: Re-evaluate prerequisites of the upgrade target at
+            // arrival. Upgrade targets are full building definitions in
+            // their own right (e.g. `advanced_mine`) — same gate applies.
+            if let Some(ctx) = prereq_ctx {
+                if let Some(target_def) = br.get(target_id) {
+                    if let Some(cond) = &target_def.prerequisites {
+                        if !cond.evaluate(ctx).is_satisfied() {
+                            warn!(
+                                "Upgrade: prerequisites for '{}' not satisfied at arrival; rejecting",
+                                target_id
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
             let upgrade_order =
                 |source_def: &BuildingDefinition, target_id: &str| -> Option<UpgradeOrder> {
                     let up = source_def

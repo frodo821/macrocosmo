@@ -158,6 +158,70 @@ impl BuildingRegistry {
     pub fn is_system_building(&self, id: &str) -> bool {
         self.get(id).is_some_and(|b| b.is_system_building)
     }
+
+    /// #437: Return planet-level buildings whose `prerequisites` evaluate to
+    /// `true` in the given context (or have no prerequisites). Mirrors the
+    /// existing `available_shipyard_deliverables` helper for deliverables.
+    ///
+    /// Used by the system panel build UI to filter which buildings appear as
+    /// clickable buttons, and by the arrival-side validation in
+    /// `colony::remote::apply_building_command` to reject `Queue` /
+    /// `Upgrade` commands whose prerequisites are no longer met (e.g. a
+    /// tech was cancelled between send and arrival — or the UI was
+    /// bypassed entirely via a scripted/remote command).
+    pub fn available_planet_buildings(
+        &self,
+        ctx: &crate::condition::EvalContext,
+    ) -> Vec<&BuildingDefinition> {
+        let mut result: Vec<_> = self
+            .buildings
+            .values()
+            .filter(|b| !b.is_system_building && b.is_direct_buildable)
+            .filter(|b| match &b.prerequisites {
+                Some(cond) => cond.evaluate(ctx).is_satisfied(),
+                None => true,
+            })
+            .collect();
+        result.sort_by(|a, b| a.id.cmp(&b.id));
+        result
+    }
+
+    /// #437: Return system-level buildings whose `prerequisites` evaluate to
+    /// `true`. See [`Self::available_planet_buildings`].
+    pub fn available_system_buildings(
+        &self,
+        ctx: &crate::condition::EvalContext,
+    ) -> Vec<&BuildingDefinition> {
+        let mut result: Vec<_> = self
+            .buildings
+            .values()
+            .filter(|b| b.is_system_building && b.is_direct_buildable)
+            .filter(|b| match &b.prerequisites {
+                Some(cond) => cond.evaluate(ctx).is_satisfied(),
+                None => true,
+            })
+            .collect();
+        result.sort_by(|a, b| a.id.cmp(&b.id));
+        result
+    }
+
+    /// #437: Evaluate a single building's `prerequisites` against `ctx`.
+    /// Returns `true` when the building has no prerequisites or the tree
+    /// evaluates as satisfied. Returns `false` if the id is unknown — an
+    /// unknown building can never be built.
+    pub fn prerequisites_satisfied(
+        &self,
+        id: &str,
+        ctx: &crate::condition::EvalContext,
+    ) -> bool {
+        match self.get(id) {
+            Some(def) => match &def.prerequisites {
+                Some(cond) => cond.evaluate(ctx).is_satisfied(),
+                None => true,
+            },
+            None => false,
+        }
+    }
 }
 
 impl BuildingDefinition {

@@ -77,6 +77,8 @@ pub(super) fn draw_planet_window(
     is_observer: bool,
     // #432: FactionOwner lookup for colony ownership.
     faction_owners: &Query<&FactionOwner>,
+    // #437: Condition-evaluation context for the build-buildings filter.
+    build_avail: &super::DeliverableAvailabilityCtx<'_>,
 ) {
     let Some(sel_planet_entity) = selected_planet.0 else {
         return;
@@ -183,6 +185,7 @@ pub(super) fn draw_planet_window(
                             k_data,
                             clock_elapsed,
                             is_own_colony,
+                            build_avail,
                         );
                     });
             } else {

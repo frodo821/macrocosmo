@@ -60,7 +60,7 @@ pub struct DeliverableAvailabilityCtx<'a> {
 }
 
 impl<'a> DeliverableAvailabilityCtx<'a> {
-    fn as_eval(&self) -> EvalContext<'a> {
+    pub fn as_eval(&self) -> EvalContext<'a> {
         EvalContext {
             researched_techs: self.researched_techs,
             active_modifiers: self.active_modifiers,
@@ -254,6 +254,28 @@ pub fn draw_system_panel(
     // #395: Separate mobile ships from immobile stations.
     let docked_ships = ships_docked_at(sel_entity, ships_query);
     let docked_stations = stations_docked_at(sel_entity, ships_query);
+
+    // #436: System ownership gate — any colony in the system belonging to
+    // the viewed empire makes the system "own" for UI purposes. This
+    // mirrors `outline.rs` which keys the "Empire" tree off per-colony
+    // `FactionOwner`. Observer mode collapses the check (show + allow
+    // everything, matching pre-#436 behaviour).
+    let is_own_system: bool = if is_observer {
+        true
+    } else {
+        let mut own = false;
+        for (ce, c, _, _, _, _, _, _) in colonies.iter() {
+            if c.system(planets) == Some(sel_entity) {
+                if let Ok(fo) = faction_owners.get(ce) {
+                    if fo.0 == viewed_empire {
+                        own = true;
+                        break;
+                    }
+                }
+            }
+        }
+        own
+    };
     // #229: Is the currently-selected ship docked at this system? Enables
     // the "Load" button on DeliverableStockpile rows.
     let selected_ship_docked_here: Option<Entity> = selected_ship
@@ -515,6 +537,7 @@ pub fn draw_system_panel(
                                             remote_commands,
                                             clock.elapsed,
                                             system_has_core,
+                                            is_own_system,
                                         );
                                     });
                             });
@@ -560,6 +583,7 @@ pub fn draw_system_panel(
         viewed_empire,
         is_observer,
         faction_owners,
+        deliverable_avail,
     );
     } // show_planet_window
 }
@@ -884,6 +908,12 @@ fn draw_right_panel(
     remote_commands: &Query<&crate::communication::PendingCommand>,
     clock_elapsed: i64,
     system_has_core: bool,
+    // #436: When `false` (this system belongs to another empire and we are
+    // not in observer mode), suppress building / ship / deliverable
+    // construction UI. The colony-panel side already hides build buttons
+    // for foreign colonies via `is_own_colony`; this gates the parallel
+    // system-level buttons in the right panel.
+    is_own_system: bool,
 ) {
     draw_in_flight_commands_section(ui, sel_entity, remote_commands, clock_elapsed);
 
@@ -1077,44 +1107,57 @@ fn draw_right_panel(
                     let demo_time = def.map(|d| d.demolition_time()).unwrap_or(0);
                     ui.horizontal(|ui| {
                         ui.label(format!("[{}] {}", i, name));
-                        let tooltip = format!(
-                            "Demolish: {} hd | Refund M:{} E:{}",
-                            demo_time,
-                            m_refund.display_compact(),
-                            e_refund.display_compact()
-                        );
-                        // #260: `"Demolish"` matches the planet-side label so
-                        // the button is discoverable. The previous `"X"` was
-                        // effectively hidden.
-                        if ui.small_button("Demolish").on_hover_text(tooltip).clicked() {
-                            sys_demolish_request = Some((i, bid.clone()));
-                        }
-                        if let Some(src_def) = def {
-                            for up in &src_def.upgrade_to {
-                                let target_def = building_registry.get(&up.target_id);
-                                let target_name =
-                                    target_def.map(|d| d.name.as_str()).unwrap_or(&up.target_id);
-                                let eff_m = up.cost_minerals.mul_amt(sys_bldg_cost_mod);
-                                let eff_e = up.cost_energy.mul_amt(sys_bldg_cost_mod);
-                                let base_time = up.build_time.unwrap_or_else(|| {
-                                    target_def.map(|d| d.build_time / 2).unwrap_or(5)
-                                });
-                                let eff_time =
-                                    (base_time as f64 * sys_bldg_time_mod.to_f64()).ceil() as i64;
-                                let tooltip = format!(
-                                    "Upgrade to {} (M:{} E:{} | {} hd)",
-                                    target_name,
-                                    eff_m.display_compact(),
-                                    eff_e.display_compact(),
-                                    eff_time
-                                );
-                                if ui
-                                    .small_button(format!("-> {}", target_name))
-                                    .on_hover_text(tooltip)
-                                    .clicked()
-                                {
-                                    sys_upgrade_request =
-                                        Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
+                        // #436: Only the owning empire may issue Demolish /
+                        // Upgrade — mirrors the planet-side "Foreign Colony"
+                        // gate in `colony_detail`. Observer mode sets
+                        // `is_own_system = true` and retains full access.
+                        if is_own_system {
+                            let tooltip = format!(
+                                "Demolish: {} hd | Refund M:{} E:{}",
+                                demo_time,
+                                m_refund.display_compact(),
+                                e_refund.display_compact()
+                            );
+                            // #260: `"Demolish"` matches the planet-side label so
+                            // the button is discoverable. The previous `"X"` was
+                            // effectively hidden.
+                            if ui.small_button("Demolish").on_hover_text(tooltip).clicked() {
+                                sys_demolish_request = Some((i, bid.clone()));
+                            }
+                            if let Some(src_def) = def {
+                                for up in &src_def.upgrade_to {
+                                    let target_def = building_registry.get(&up.target_id);
+                                    let target_name = target_def
+                                        .map(|d| d.name.as_str())
+                                        .unwrap_or(&up.target_id);
+                                    let eff_m = up.cost_minerals.mul_amt(sys_bldg_cost_mod);
+                                    let eff_e = up.cost_energy.mul_amt(sys_bldg_cost_mod);
+                                    let base_time = up.build_time.unwrap_or_else(|| {
+                                        target_def.map(|d| d.build_time / 2).unwrap_or(5)
+                                    });
+                                    let eff_time = (base_time as f64
+                                        * sys_bldg_time_mod.to_f64())
+                                    .ceil() as i64;
+                                    let tooltip = format!(
+                                        "Upgrade to {} (M:{} E:{} | {} hd)",
+                                        target_name,
+                                        eff_m.display_compact(),
+                                        eff_e.display_compact(),
+                                        eff_time
+                                    );
+                                    if ui
+                                        .small_button(format!("-> {}", target_name))
+                                        .on_hover_text(tooltip)
+                                        .clicked()
+                                    {
+                                        sys_upgrade_request = Some((
+                                            i,
+                                            up.target_id.clone(),
+                                            eff_m,
+                                            eff_e,
+                                            eff_time,
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -1133,10 +1176,12 @@ fn draw_right_panel(
                             let bar = egui::ProgressBar::new(*pct).desired_width(80.0);
                             ui.add(bar);
                             // #275: Cancel an in-progress system construction.
-                            if ui
-                                .small_button("×")
-                                .on_hover_text("Cancel construction")
-                                .clicked()
+                            // #436: Only the owner can cancel.
+                            if is_own_system
+                                && ui
+                                    .small_button("×")
+                                    .on_hover_text("Cancel construction")
+                                    .clicked()
                             {
                                 sys_cancel_request = Some(*order_id);
                             }
@@ -1193,7 +1238,8 @@ fn draw_right_panel(
 
         // Build system building buttons
         // #370: System building construction requires an Infrastructure Core.
-        if system_has_core {
+        // #436: Only the owning empire may construct system buildings.
+        if system_has_core && is_own_system {
             {
                 let pending_slots: Vec<usize> = sys_bldg_queue
                     .as_ref()
@@ -1207,7 +1253,12 @@ fn draw_right_panel(
                 if let Some(slot_idx) = empty_slot {
                     ui.separator();
                     ui.label(egui::RichText::new("Build System Building").strong());
-                    let system_building_defs = building_registry.system_buildings();
+                    // #437: Filter by `BuildingDefinition.prerequisites` —
+                    // buildings gated by unresearched tech disappear from
+                    // the button list, matching the deliverable pattern.
+                    let eval_ctx = deliverable_avail.as_eval();
+                    let system_building_defs =
+                        building_registry.available_system_buildings(&eval_ctx);
                     let bldg_cost_mod = construction_params.building_cost_modifier.final_value();
                     let bldg_time_mod = construction_params
                         .building_build_time_modifier
@@ -1352,10 +1403,12 @@ fn draw_right_panel(
                         );
                     }
                     // #275: Cancel this ship / deliverable build order.
-                    if ui
-                        .small_button("×")
-                        .on_hover_text("Cancel build order")
-                        .clicked()
+                    // #436: Only the owner may cancel.
+                    if is_own_system
+                        && ui
+                            .small_button("×")
+                            .on_hover_text("Cancel build order")
+                            .clicked()
                     {
                         ship_cancel_request = Some((*host, *order_id));
                     }
@@ -1375,7 +1428,8 @@ fn draw_right_panel(
         }
 
         // --- Build buttons (only if a shipyard is present and a host colony exists) ---
-        if has_shipyard {
+        // #436: Foreign systems have no Build / Deliverable buttons.
+        if has_shipyard && is_own_system {
             if let Some(host) = host_colony {
                 let ship_mod = construction_params.ship_cost_modifier.final_value();
                 let ship_time_mod = construction_params.ship_build_time_modifier.final_value();
@@ -1581,7 +1635,12 @@ fn draw_right_panel(
     }
 
     // === #114: Same-system colonization ===
-    if !colonized_planets.is_empty() {
+    // #436: Only the owning empire may colonize planets in this system.
+    // Same-system colonization requires a source colony in the system, so
+    // this is mostly a belt-and-suspenders guard — but it prevents a
+    // player from borrowing another empire's colony as the settler source
+    // when their empires happen to co-inhabit a system.
+    if !colonized_planets.is_empty() && is_own_system {
         let mut colonizable: Vec<(Entity, String, String)> = Vec::new();
         for (pe, planet, attrs) in planet_entities.iter() {
             if planet.system == sel_entity
