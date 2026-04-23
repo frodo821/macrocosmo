@@ -1125,6 +1125,10 @@ fn draw_right_panel(
                                 sys_demolish_request = Some((i, bid.clone()));
                             }
                             if let Some(src_def) = def {
+                                // #437: Respect `target_def.prerequisites` —
+                                // unmet upgrades render disabled (same as the
+                                // planet-building upgrade UI).
+                                let eval_ctx = deliverable_avail.as_eval();
                                 for up in &src_def.upgrade_to {
                                     let target_def = building_registry.get(&up.target_id);
                                     let target_name = target_def
@@ -1138,18 +1142,32 @@ fn draw_right_panel(
                                     let eff_time = (base_time as f64
                                         * sys_bldg_time_mod.to_f64())
                                     .ceil() as i64;
-                                    let tooltip = format!(
-                                        "Upgrade to {} (M:{} E:{} | {} hd)",
-                                        target_name,
-                                        eff_m.display_compact(),
-                                        eff_e.display_compact(),
-                                        eff_time
+                                    let prereq_ok = target_def
+                                        .and_then(|d| d.prerequisites.as_ref())
+                                        .map(|c| c.evaluate(&eval_ctx).is_satisfied())
+                                        .unwrap_or(true);
+                                    let tooltip = if prereq_ok {
+                                        format!(
+                                            "Upgrade to {} (M:{} E:{} | {} hd)",
+                                            target_name,
+                                            eff_m.display_compact(),
+                                            eff_e.display_compact(),
+                                            eff_time
+                                        )
+                                    } else {
+                                        format!(
+                                            "Requires prerequisites for {} (M:{} E:{} | {} hd)",
+                                            target_name,
+                                            eff_m.display_compact(),
+                                            eff_e.display_compact(),
+                                            eff_time
+                                        )
+                                    };
+                                    let response = ui.add_enabled(
+                                        prereq_ok,
+                                        egui::Button::new(format!("-> {}", target_name)).small(),
                                     );
-                                    if ui
-                                        .small_button(format!("-> {}", target_name))
-                                        .on_hover_text(tooltip)
-                                        .clicked()
-                                    {
+                                    if response.on_hover_text(tooltip).clicked() {
                                         sys_upgrade_request = Some((
                                             i,
                                             up.target_id.clone(),
