@@ -255,6 +255,54 @@ fn npc_relations_with_hostiles_are_healthy() {
     }
 }
 
+/// Regression for the Phase 3 fallout in `load_technologies`:
+///
+/// `load_technologies` runs at Startup (registry load) but empires are
+/// spawned on `OnEnter(NewGame)` — at Startup there are no empires yet,
+/// so the old per-entity insert path never fired and empires ended up
+/// with the empty `TechTree::default()` placeholder from their spawn
+/// bundle. The follow-up `attach_tech_tree_to_empires` system
+/// (OnEnter(NewGame), after `spawn_player_empire` /
+/// `run_all_factions_on_game_start`) clones the loaded resource onto
+/// every empire.
+///
+/// Asserts that after the startup pass every spawned empire (player +
+/// NPC) carries a populated `TechTree` matching the registry.
+#[test]
+fn empires_receive_loaded_tech_tree_after_new_game_enter() {
+    use macrocosmo::technology::TechTree;
+
+    let mut app = player_mode_app();
+    app.update();
+
+    // The loaded tech-tree resource must be present and non-empty.
+    let tech_count = app
+        .world()
+        .get_resource::<TechTree>()
+        .map(|t| t.technologies.len())
+        .unwrap_or(0);
+    assert!(
+        tech_count > 0,
+        "TechTree resource should be populated by load_technologies; got {tech_count}"
+    );
+
+    // Every Empire entity — player and NPCs — must carry a TechTree whose
+    // `technologies` map matches the resource (the attach system clones).
+    let mut q = app.world_mut().query::<(&Empire, &TechTree)>();
+    let trees: Vec<usize> = q.iter(app.world()).map(|(_, t)| t.technologies.len()).collect();
+    assert!(
+        !trees.is_empty(),
+        "expected at least one Empire with a TechTree component after OnEnter(NewGame)"
+    );
+    for (i, n) in trees.iter().enumerate() {
+        assert_eq!(
+            *n, tech_count,
+            "empire[{i}] has {n} techs but the loaded registry has {tech_count} — \
+             attach_tech_tree_to_empires did not run or did not see the resource"
+        );
+    }
+}
+
 /// Smoke test: `macrocosmo-ai`'s `mock` feature is wired through the
 /// dev-dependency, proving tests can opt into the feature without leaking
 /// it into the production binary.

@@ -48,8 +48,20 @@ impl Plugin for TechnologyPlugin {
                 Startup,
                 load_technologies
                     .after(crate::scripting::load_all_scripts)
-                    .after(load_tech_branches)
-                    .after(crate::player::spawn_player_empire),
+                    .after(load_tech_branches),
+            )
+            // #439 Phase 3 follow-up: empires are now spawned on
+            // `OnEnter(NewGame)`, long after Startup has finished loading
+            // the `TechTree` resource. Clone the resource onto each
+            // empire before `finish_new_game_transition` hands off to
+            // `InGame`, so game-tick systems that query `&TechTree` see
+            // the real technology definitions.
+            .add_systems(
+                OnEnter(crate::game_state::GameState::NewGame),
+                attach_tech_tree_to_empires
+                    .after(crate::player::spawn_player_empire)
+                    .after(crate::setup::run_all_factions_on_game_start)
+                    .before(crate::setup::finish_new_game_transition),
             )
             .add_systems(
                 Startup,
@@ -380,9 +392,20 @@ pub fn load_tech_branches(
     info!("Tech branch registry loaded with {} branches", count);
 }
 
-/// Parse technology definitions from Lua accumulators.
-/// Scripts are loaded by `load_all_scripts`; this system only parses the results.
-/// Falls back to hardcoded definitions if parsing fails or yields nothing.
+/// Parse technology definitions from Lua accumulators and publish them as a
+/// `TechTree` resource.
+///
+/// Scripts are loaded by `load_all_scripts`; this system only parses the
+/// results. Falls back to hardcoded definitions if parsing fails or yields
+/// nothing.
+///
+/// Runs at `Startup` (registry load — no empires exist yet). The per-empire
+/// `TechTree` component is attached later on `OnEnter(GameState::NewGame)` by
+/// [`attach_tech_tree_to_empires`], which clones this resource onto each
+/// freshly-spawned empire. This separation of "load definitions" vs
+/// "attach per-empire state" is required because #439 Phase 3 moved empire
+/// spawning from Startup to OnEnter(NewGame); keeping the attach step on
+/// the same schedule as the spawn keeps the ordering explicit.
 ///
 /// Validates each tech's `branch` against the loaded `TechBranchRegistry` and
 /// emits a warning (not an error) for unknown branches — the tech is still
@@ -391,7 +414,6 @@ pub fn load_technologies(
     mut commands: Commands,
     engine: Res<crate::scripting::ScriptEngine>,
     branch_registry: Res<TechBranchRegistry>,
-    empire_q: Query<Entity, With<crate::player::Empire>>,
 ) {
     let techs = match parse_tech_definitions(engine.lua()) {
         Ok(parsed) if !parsed.is_empty() => parsed,
@@ -422,16 +444,48 @@ pub fn load_technologies(
         "Tech tree loaded with {} technologies",
         tree.technologies.len()
     );
+    commands.insert_resource(tree);
+}
 
-    // Insert onto all empire entities
-    let empire_entities: Vec<Entity> = empire_q.iter().collect();
-    if empire_entities.is_empty() {
-        warn!("No empire entities found; inserting TechTree as resource fallback");
-        commands.insert_resource(tree);
-    } else {
-        for empire_entity in empire_entities {
-            commands.entity(empire_entity).insert(tree.clone());
+/// `OnEnter(GameState::NewGame)` system — clones the `TechTree` resource
+/// (populated at Startup by [`load_technologies`]) onto every `Empire`
+/// entity that lacks a populated tree.
+///
+/// Empire spawn bundles (`spawn_player_empire`, `empire_bundle` in
+/// `setup::run_all_factions_on_game_start`) insert `TechTree::default()`
+/// as a placeholder so intermediate systems that query `&TechTree` don't
+/// panic. This attach pass replaces those empty placeholders with the
+/// loaded definitions before game-tick systems begin running in
+/// `GameState::InGame`.
+///
+/// Skips empires that already carry a non-empty tree (preserves loaded
+/// saves — `OnEnter(LoadingSave)` restores the per-empire TechTree
+/// component directly from the save file, so this system is a no-op on
+/// that path).
+pub fn attach_tech_tree_to_empires(
+    mut commands: Commands,
+    tree_res: Option<Res<TechTree>>,
+    empires: Query<(Entity, Option<&TechTree>), With<crate::player::Empire>>,
+) {
+    let Some(tree) = tree_res else {
+        warn!("attach_tech_tree_to_empires: TechTree resource missing; empires will carry empty trees");
+        return;
+    };
+    let mut attached = 0usize;
+    for (entity, existing) in &empires {
+        if existing.map(|t| !t.technologies.is_empty()).unwrap_or(false) {
+            continue;
         }
+        commands.entity(entity).insert(tree.clone());
+        attached += 1;
+    }
+    if attached > 0 {
+        info!(
+            "attach_tech_tree_to_empires: populated {} empire{} with {} technologies",
+            attached,
+            if attached == 1 { "" } else { "s" },
+            tree.technologies.len()
+        );
     }
 }
 
