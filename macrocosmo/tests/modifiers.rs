@@ -125,6 +125,53 @@ fn test_building_bonus_via_sync_modifiers() {
     );
 }
 
+/// #438 regression: two Mines in the same colony must stack.
+///
+/// Before the fix `apply_building_modifier` built modifier ids as
+/// `bldg:{building_id}:{target}` — identical for every Mine slot — so
+/// `ModifiedValue::push_modifier` (id-keyed, replace-on-duplicate) kept
+/// only the last contribution. The fix appends the slot index:
+/// `bldg:{building_id}[{slot_idx}]:{target}`, making the ids unique per
+/// placement so the aggregation adds instead of overwrites.
+#[test]
+fn test_multiple_mines_stack_modifiers() {
+    let mut app = test_app();
+
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Stack-System",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    // Two Mines in slots 0 and 1. With the bug, only one would count.
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        sys,
+        Amt::ZERO,
+        Amt::ZERO,
+        vec![
+            Some(BuildingId::new("mine")),
+            Some(BuildingId::new("mine")),
+            None,
+            None,
+        ],
+    );
+
+    app.update();
+
+    let prod = app.world().get::<Production>(colony).unwrap();
+    // Base=5 + Mine#1 base_add=3 + Mine#2 base_add=3 -> effective_base=11
+    assert_eq!(
+        prod.minerals_per_hexadies.final_value(),
+        Amt::units(11),
+        "Expected 11 minerals/hd (5 base + 2 x 3 Mine), got {} — #438 regression",
+        prod.minerals_per_hexadies.final_value()
+    );
+}
+
 // Maintenance modifier affects energy
 
 #[test]
