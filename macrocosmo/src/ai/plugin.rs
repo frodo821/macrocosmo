@@ -53,6 +53,12 @@ impl DerefMut for AiBusResource {
     }
 }
 
+/// Tracks which faction entities already have their per-faction metric slots
+/// declared on the bus. Prevents duplicate `declare_metric` calls (which
+/// would trigger re-declaration warnings) between Startup and Update.
+#[derive(Resource, Default)]
+pub struct DeclaredFactionSlots(pub std::collections::HashSet<Entity>);
+
 /// Ordered system sets for AI-related work under `Update`.
 ///
 /// All three run `.after(crate::time_system::advance_game_time)` and are
@@ -87,11 +93,17 @@ impl Plugin for AiPlugin {
             .init_resource::<super::npc_decision::AiPlayerMode>()
             .init_resource::<super::npc_decision::LastAiDecisionTick>()
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
+            .init_resource::<DeclaredFactionSlots>()
             .add_systems(Startup, schema::declare_all)
-            // Order: declare_foreign_slots_on_awareness must run BEFORE emitters
-            // so Startup-spawned NPC factions have their metric slots declared
-            // before the first emit. `Added<Faction>` catches Startup entities
-            // on the first Update tick.
+            // Declare per-faction metric slots explicitly at Startup for all
+            // existing factions. Mid-game faction spawns are handled by
+            // declare_foreign_slots_on_awareness on Update.
+            .add_systems(
+                Startup,
+                declare_foreign_slots_for_existing_factions
+                    .after(schema::declare_all)
+                    .after(crate::setup::run_all_factions_on_game_start),
+            )
             .add_systems(
                 Update,
                 (
@@ -156,34 +168,59 @@ impl Plugin for AiPlugin {
     }
 }
 
-/// Declare a per-faction set of Tier 2 "foreign" metric slots on the bus
-/// as soon as a new `Faction` component is observed.
-///
-/// Runs under [`AiTickSet::MetricProduce`] in `Update`. Idempotent — if the
-/// slot is already declared, `AiBus::declare_metric` merely updates the
-/// spec (and warns in non-Silent mode).
+/// Declare per-faction metric slots (self + foreign) for a single faction
+/// entity. No-op if already declared for this entity.
+fn declare_faction_slots(
+    bus: &mut AiBus,
+    declared: &mut DeclaredFactionSlots,
+    entity: Entity,
+) {
+    if !declared.0.insert(entity) {
+        return; // already declared
+    }
+    let fid = super::convert::to_ai_faction(entity);
+
+    // Per-faction "self" metric slots.
+    for base in super::schema::ids::metric::PER_FACTION_METRIC_BASES {
+        let id = super::schema::ids::metric::for_faction(base, fid);
+        bus.declare_metric(
+            id,
+            macrocosmo_ai::MetricSpec::gauge(
+                macrocosmo_ai::Retention::Medium,
+                "per-faction self metric",
+            ),
+        );
+    }
+
+    // Foreign-faction metric slots (Tier 2).
+    for template in super::schema::foreign::foreign_metric_templates() {
+        let id = super::schema::foreign::foreign_metric_id(&template.prefix, fid);
+        bus.declare_metric(id, (template.spec_factory)());
+    }
+}
+
+/// Startup system: declare metric slots for all factions that already exist.
+/// Runs after `run_all_factions_on_game_start` so NPC empires are included.
+pub fn declare_foreign_slots_for_existing_factions(
+    mut bus: ResMut<AiBusResource>,
+    mut declared: ResMut<DeclaredFactionSlots>,
+    factions: Query<Entity, With<crate::player::Faction>>,
+) {
+    for entity in &factions {
+        declare_faction_slots(&mut bus, &mut declared, entity);
+    }
+}
+
+/// Update system: declare metric slots for factions spawned mid-game.
+/// Uses `Added<Faction>` to detect new spawns; `DeclaredFactionSlots`
+/// dedup avoids re-declaring factions already handled at Startup.
 pub fn declare_foreign_slots_on_awareness(
     mut bus: ResMut<AiBusResource>,
+    mut declared: ResMut<DeclaredFactionSlots>,
     new_factions: Query<Entity, (With<crate::player::Faction>, Added<crate::player::Faction>)>,
 ) {
     for entity in &new_factions {
-        let fid = super::convert::to_ai_faction(entity);
-
-        // Declare per-faction "self" metric slots so emitters can write
-        // faction-scoped values (e.g. `my_total_ships.faction_42`).
-        for base in super::schema::ids::metric::PER_FACTION_METRIC_BASES {
-            let id = super::schema::ids::metric::for_faction(base, fid);
-            // Re-use the spec from the global declaration (same type / retention).
-            // `declare_metric` is idempotent — if the slot already exists it
-            // merely updates the spec.
-            bus.declare_metric(id, macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
-        }
-
-        // Declare foreign-faction metric slots (Tier 2).
-        for template in super::schema::foreign::foreign_metric_templates() {
-            let id = super::schema::foreign::foreign_metric_id(&template.prefix, fid);
-            bus.declare_metric(id, (template.spec_factory)());
-        }
+        declare_faction_slots(&mut bus, &mut declared, entity);
     }
 }
 
