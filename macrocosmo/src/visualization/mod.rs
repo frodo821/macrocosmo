@@ -4,7 +4,7 @@ mod stars;
 pub mod territory;
 
 pub use camera::camera_controls;
-pub use stars::cleanup_star_visuals;
+pub use stars::{cleanup_star_visuals, spawn_star_visuals};
 
 use std::time::Instant;
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::GalaxyView;
@@ -8,7 +9,7 @@ use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
 use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, ObscuredByGas, Planet, StarSystem};
 use crate::knowledge::{KnowledgeStore, SystemVisibilityMap, SystemVisibilityTier};
-use crate::player::{Player, PlayerEmpire, StationedAt};
+use crate::player::{Empire, Player, PlayerEmpire, StationedAt};
 use crate::ship::{Ship, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
@@ -57,6 +58,11 @@ pub fn spawn_star_visuals(
     view: Res<GalaxyView>,
     empire_q: Query<&KnowledgeStore, With<PlayerEmpire>>,
     player_q: Query<&StationedAt, With<Player>>,
+    // Observer mode: no PlayerEmpire exists, so the knowledge query above
+    // is empty. Rather than early-returning (which left the galaxy map
+    // blank), we grant full ground-truth visibility — observer mode is
+    // explicitly god-view for balance/debug.
+    observer_mode: Res<crate::observer::ObserverMode>,
 ) {
     // Build a set of colonized system entities
     let colonized_systems: std::collections::HashSet<Entity> =
@@ -64,6 +70,9 @@ pub fn spawn_star_visuals(
 
     let knowledge = empire_q.iter().next();
     let player_system = player_q.iter().next().map(|s| s.system);
+    // #417 parity: observer mode collapses the knowledge gate so every
+    // star is rendered as if the player had direct visibility.
+    let god_view = observer_mode.enabled;
 
     for (entity, star, pos, obscured) in &stars {
         let x = pos.x as f32 * view.scale;
@@ -74,7 +83,8 @@ pub fn spawn_star_visuals(
         // remote systems — the live StarSystem flags are global and would
         // leak NPC faction data to the player.
         let is_local = player_system == Some(entity);
-        let effective_capital = if is_local {
+        let use_ground_truth = is_local || god_view;
+        let effective_capital = if use_ground_truth {
             star.is_capital
         } else {
             knowledge
@@ -82,7 +92,7 @@ pub fn spawn_star_visuals(
                 .map(|k| k.data.is_capital)
                 .unwrap_or(false)
         };
-        let effective_surveyed = if is_local {
+        let effective_surveyed = if use_ground_truth {
             star.surveyed
         } else {
             knowledge
@@ -90,7 +100,7 @@ pub fn spawn_star_visuals(
                 .map(|k| k.data.surveyed)
                 .unwrap_or(false)
         };
-        let is_colonized = if is_local {
+        let is_colonized = if use_ground_truth {
             colonized_systems.contains(&entity)
         } else {
             knowledge
@@ -216,11 +226,21 @@ pub fn update_star_colors(
     clock: Res<GameClock>,
     camera_q: Query<&Projection, With<Camera2d>>,
     player_q: Query<&StationedAt, With<Player>>,
+    // See `spawn_star_visuals` for the observer-mode rationale. In god
+    // view we skip the knowledge gate entirely and drive visuals off the
+    // live `StarSystem` / colony state.
+    observer_mode: Res<crate::observer::ObserverMode>,
 ) {
     crate::prof_span!("update_star_colors");
-    let Ok((knowledge, vis_map_opt)) = empire_q.single() else {
+    let god_view = observer_mode.enabled;
+    let empire_row = empire_q.single().ok();
+    if empire_row.is_none() && !god_view {
+        // Normal-mode: no PlayerEmpire → nothing to update. Observer mode
+        // still needs to fall through to refresh colors from ground truth.
         return;
-    };
+    }
+    let knowledge = empire_row.map(|(k, _)| k);
+    let vis_map_opt = empire_row.and_then(|(_, v)| v);
     let player_system = player_q.iter().next().map(|s| s.system);
 
     // Build colonized systems set for local system only (real-time)
@@ -244,31 +264,32 @@ pub fn update_star_colors(
 
     for (vis, mut sprite, glow, base_size) in &mut visuals {
         if let Ok((_, star, obscured)) = stars.get(vis.system_entity) {
+            let use_ground_truth = god_view || player_system == Some(vis.system_entity);
             // #176: Local system uses real-time colonized status, remote uses KnowledgeStore
-            let is_colonized = if player_system == Some(vis.system_entity) {
+            let is_colonized = if use_ground_truth {
                 local_colonized.contains(&vis.system_entity)
             } else {
                 knowledge
-                    .get(vis.system_entity)
+                    .and_then(|k| k.get(vis.system_entity))
                     .map(|k| k.data.colonized)
                     .unwrap_or(false)
             };
             // #434: For remote systems, use knowledge-based survey status only.
             // Do NOT fall back to star.surveyed — it is global.
-            let effective_surveyed = if player_system == Some(vis.system_entity) {
+            let effective_surveyed = if use_ground_truth {
                 star.surveyed
             } else {
                 knowledge
-                    .get(vis.system_entity)
+                    .and_then(|k| k.get(vis.system_entity))
                     .map(|k| k.data.surveyed)
                     .unwrap_or(false)
             };
             // #430: Gate is_capital on KnowledgeStore for remote systems
-            let effective_capital = if player_system == Some(vis.system_entity) {
+            let effective_capital = if use_ground_truth {
                 star.is_capital
             } else {
                 knowledge
-                    .get(vis.system_entity)
+                    .and_then(|k| k.get(vis.system_entity))
                     .map(|k| k.data.is_capital)
                     .unwrap_or(false)
             };
@@ -282,18 +303,25 @@ pub fn update_star_colors(
             let base_color = star_color(&effective_star, is_colonized, obscured.is_some());
             // #392: Tier-based alpha multiplier. Catalogued systems are extra
             // dim; surveyed systems use knowledge age fading.
-            let tier =
+            let tier = if god_view {
+                SystemVisibilityTier::Local
+            } else {
                 vis_map_opt
                     .map(|vm| vm.get(vis.system_entity))
                     .unwrap_or(if effective_surveyed {
                         SystemVisibilityTier::Surveyed
                     } else {
                         SystemVisibilityTier::Catalogued
-                    });
+                    })
+            };
             let alpha_multiplier = if tier == SystemVisibilityTier::Catalogued {
                 0.3 // Catalogued: faint star point only
+            } else if god_view {
+                1.0
             } else {
-                match knowledge.info_age(vis.system_entity, clock.elapsed) {
+                match knowledge
+                    .and_then(|k| k.info_age(vis.system_entity, clock.elapsed))
+                {
                     None => 1.0,
                     Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
                     Some(age) => (1.0 - (age as f32 - 60.0) / 600.0).clamp(0.3, 1.0),
@@ -347,28 +375,28 @@ pub fn update_star_colors(
     // #434: Dynamically update star label visibility based on KnowledgeStore.
     for (vis, mut text_color) in &mut labels {
         if let Ok((_, star, _)) = stars.get(vis.system_entity) {
-            let is_local = player_system == Some(vis.system_entity);
-            let effective_capital = if is_local {
+            let use_ground_truth = god_view || player_system == Some(vis.system_entity);
+            let effective_capital = if use_ground_truth {
                 star.is_capital
             } else {
                 knowledge
-                    .get(vis.system_entity)
+                    .and_then(|k| k.get(vis.system_entity))
                     .map(|k| k.data.is_capital)
                     .unwrap_or(false)
             };
-            let effective_surveyed = if is_local {
+            let effective_surveyed = if use_ground_truth {
                 star.surveyed
             } else {
                 knowledge
-                    .get(vis.system_entity)
+                    .and_then(|k| k.get(vis.system_entity))
                     .map(|k| k.data.surveyed)
                     .unwrap_or(false)
             };
-            let is_colonized = if is_local {
+            let is_colonized = if use_ground_truth {
                 local_colonized.contains(&vis.system_entity)
             } else {
                 knowledge
-                    .get(vis.system_entity)
+                    .and_then(|k| k.get(vis.system_entity))
                     .map(|k| k.data.colonized)
                     .unwrap_or(false)
             };
@@ -387,6 +415,32 @@ pub fn update_star_colors(
     }
 }
 
+/// Bundle that resolves the "viewing" empire for visualization systems.
+/// In normal play this is the `PlayerEmpire` entity; in observer mode
+/// it is whatever empire the top-bar selector is currently focused on
+/// (`ObserverView.viewing`). Collapsing three params into one SystemParam
+/// keeps `draw_galaxy_overlay` under Bevy's 16-param ceiling.
+#[derive(SystemParam)]
+pub struct ViewingEmpireResolver<'w, 's> {
+    pub observer_mode: Res<'w, crate::observer::ObserverMode>,
+    pub observer_view: Res<'w, crate::observer::ObserverView>,
+    pub player_empire: Query<'w, 's, Entity, With<PlayerEmpire>>,
+}
+
+impl<'w, 's> ViewingEmpireResolver<'w, 's> {
+    pub fn resolve(&self) -> Option<Entity> {
+        if self.observer_mode.enabled {
+            self.observer_view.viewing
+        } else {
+            self.player_empire.single().ok()
+        }
+    }
+
+    pub fn is_god_view(&self) -> bool {
+        self.observer_mode.enabled
+    }
+}
+
 pub fn draw_galaxy_overlay(
     mut gizmos: Gizmos,
     player_q: Query<&StationedAt, With<Player>>,
@@ -396,6 +450,9 @@ pub fn draw_galaxy_overlay(
     selected: Res<SelectedSystem>,
     selected_ship: Res<SelectedShip>,
     ships: Query<(Entity, &Ship, &ShipState)>,
+    // Every empire's state — we pick which one via `viewer`. In normal
+    // mode the filter narrows to the player; in observer mode we follow
+    // the top-bar selector.
     empire_params_q: Query<
         (
             Entity,
@@ -403,8 +460,9 @@ pub fn draw_galaxy_overlay(
             &KnowledgeStore,
             Option<&SystemVisibilityMap>,
         ),
-        With<PlayerEmpire>,
+        With<Empire>,
     >,
+    viewer: ViewingEmpireResolver,
     sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
     colonies: Query<(&Colony, &Buildings)>,
     planets: Query<&Planet>,
@@ -435,12 +493,45 @@ pub fn draw_galaxy_overlay(
         );
     }
 
-    let Ok((viewer_empire, global_params, knowledge, vis_map_opt)) = empire_params_q.single()
+    // Resolve the viewing empire. Normal mode: the PlayerEmpire.
+    // Observer mode: whatever empire `ObserverView.viewing` points at (the
+    // top-bar selector). If neither exists, only the galaxy boundary is
+    // drawn (already emitted above).
+    let Some(viewer_entity) = viewer.resolve() else {
+        return;
+    };
+    let Ok((viewer_empire, global_params, knowledge, vis_map_opt)) =
+        empire_params_q.get(viewer_entity)
     else {
         return;
     };
-    let Ok(stationed) = player_q.single() else {
+    // Player ruler location: normal mode reads it from the Player-tagged
+    // Ruler. Observer mode has no Player entity; fall back to the galaxy
+    // capital so the pulse ring still lands somewhere visible.
+    let stationed_system = player_q
+        .iter()
+        .next()
+        .map(|s| s.system)
+        .or_else(|| {
+            if viewer.is_god_view() {
+                stars
+                    .iter()
+                    .find(|(_, s, _)| s.is_capital)
+                    .map(|(e, _, _)| e)
+            } else {
+                None
+            }
+        });
+    let Some(stationed_system) = stationed_system else {
         return;
+    };
+    // Keep existing `stationed.system` accesses working after the
+    // refactor without restructuring the rest of the function.
+    struct StationedRef {
+        system: Entity,
+    }
+    let stationed = StationedRef {
+        system: stationed_system,
     };
     let player_system = stationed.system;
     let Ok((_, _player_star, player_pos)) = stars.get(player_system) else {

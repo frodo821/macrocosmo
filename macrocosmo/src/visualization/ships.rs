@@ -77,11 +77,25 @@ pub fn draw_ships(
     selected_ship: Res<SelectedShip>,
     empire_q: Query<(Entity, &KnowledgeStore), With<PlayerEmpire>>,
     player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    observer_mode: Res<crate::observer::ObserverMode>,
+    observer_view: Res<crate::observer::ObserverView>,
+    all_empire_q: Query<Entity, With<crate::player::Empire>>,
 ) {
     // #434: Only draw player-owned ships on the galaxy map. NPC ships at
     // the player's local system could be drawn in the future, but for now
     // we only show what the player directly controls.
-    let Ok((empire_entity, _knowledge)) = empire_q.single() else {
+    //
+    // Observer mode: no PlayerEmpire exists. Resolve the viewing empire
+    // via `ObserverView` and draw its ships — god-view always shows the
+    // selected NPC empire's fleet so the map isn't blank.
+    let empire_entity = if observer_mode.enabled {
+        observer_view
+            .viewing
+            .and_then(|e| all_empire_q.get(e).ok())
+    } else {
+        empire_q.single().ok().map(|(e, _)| e)
+    };
+    let Some(empire_entity) = empire_entity else {
         return;
     };
     let _player_system = player_q.iter().next().map(|s| s.system);

@@ -315,3 +315,82 @@ fn test_exit_fn_signatures_are_usable_in_a_schedule() {
 }
 
 fn dummy_in_normal_mode() {}
+
+/// Regression for "observer mode shows a blank galaxy map" — the three
+/// `visualization/stars.rs` systems all queried `With<PlayerEmpire>` and
+/// early-returned when observer mode was on, so stars spawned in their
+/// unknown-state (`label_alpha = 0`, dim gray at minimum size) and
+/// `update_star_colors` never touched them again.
+///
+/// Observer mode is god-view by design, so the fix makes the affected
+/// systems skip the knowledge gate entirely (`use_ground_truth = true`)
+/// when `ObserverMode.enabled`. This test asserts that a capital star
+/// spawned in observer mode gets a `StarLabel` with a visible alpha
+/// value (> 0) — which is only possible when the god-view branch fires.
+#[test]
+fn test_observer_mode_spawns_visible_star_labels() {
+    use macrocosmo::colony::Colony;
+    use macrocosmo::components::Position;
+    use macrocosmo::galaxy::{Planet, StarSystem};
+    use macrocosmo::visualization::{GalaxyView, spawn_star_visuals};
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(GameClock::new(0));
+    app.insert_resource(macrocosmo::time_system::GameSpeed::default());
+    app.insert_resource(ObserverMode {
+        enabled: true,
+        ..Default::default()
+    });
+    app.insert_resource(RngSeed::default());
+    app.insert_resource(ObserverView::default());
+    app.insert_resource(GalaxyView { scale: 15.0 });
+
+    // Spawn one NPC capital — no PlayerEmpire, no Player Ruler. Without
+    // the observer-mode fix, `spawn_star_visuals` would emit labels with
+    // `alpha = 0` (invisible), matching the bug.
+    let _capital = app
+        .world_mut()
+        .spawn((
+            StarSystem {
+                name: "Capitalis".into(),
+                surveyed: true,
+                is_capital: true,
+                star_type: "yellow_dwarf".into(),
+            },
+            Position::from([0.0, 0.0, 0.0]),
+        ))
+        .id();
+
+    app.add_systems(Update, spawn_star_visuals);
+    app.update();
+
+    // `spawn_star_visuals` should have emitted a Text2d label with
+    // alpha > 0. We can't easily assert the alpha component from the
+    // color system, but the presence of any `Text2d` entity means the
+    // spawn ran (the query resolution didn't early-return). Combined
+    // with the logic inside the function (capital → label_alpha = 1.0),
+    // the label is visible.
+    let label_count = app
+        .world_mut()
+        .query::<(&Text2d, &TextColor)>()
+        .iter(app.world())
+        .filter(|(text, color)| {
+            text.0 == "Capitalis" && color.0.alpha() > 0.0
+        })
+        .count();
+    assert_eq!(
+        label_count, 1,
+        "observer mode must spawn visible star labels (got {} visible labels for the capital)",
+        label_count,
+    );
+
+    // Also silence unused-import warnings in case the test runner strips
+    // the main assertion — belt and suspenders.
+    let _ = Colony { planet: Entity::PLACEHOLDER, growth_rate: 0.0 };
+    let _ = Planet {
+        name: String::new(),
+        system: Entity::PLACEHOLDER,
+        planet_type: String::new(),
+    };
+}
