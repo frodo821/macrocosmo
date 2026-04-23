@@ -179,26 +179,49 @@ impl Plugin for KnowledgePlugin {
                     .after(crate::player::spawn_player_empire)
                     .after(crate::setup::run_all_factions_on_game_start),
             )
-            .add_systems(Update, propagate_knowledge)
+            .add_systems(
+                Update,
+                propagate_knowledge
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
             .add_systems(
                 Update,
                 update_destroyed_ship_knowledge
-                    .after(propagate_knowledge),
+                    .after(propagate_knowledge)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             .add_systems(
                 Update,
-                (rebuild_relay_network, snapshot_production_knowledge)
+                rebuild_relay_network
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
+            // #439: snapshot_production_knowledge is a UI-facing snapshot and
+            // stays ungated so panels can still render frozen state while the
+            // game is in Bootstrapping / NewGame / LoadingSave.
+            .add_systems(
+                Update,
+                snapshot_production_knowledge
                     .after(crate::time_system::advance_game_time),
             )
+            // #439: ensure_tracked_ship_system is entity-tracking bookkeeping
+            // for the UI and stays ungated; only the downstream tier
+            // recomputation is a game tick.
             .add_systems(
                 Update,
                 (
                     ensure_tracked_ship_system,
                     bevy::ecs::schedule::ApplyDeferred,
-                    update_visibility_tiers,
                 )
                     .chain()
                     .after(crate::time_system::advance_game_time),
+            )
+            .add_systems(
+                Update,
+                update_visibility_tiers
+                    .after(ensure_tracked_ship_system)
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             );
     }
 }

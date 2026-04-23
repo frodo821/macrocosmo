@@ -22,6 +22,11 @@ use common::{full_test_app, test_app};
 fn minimal_ai_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
+    // #439 Phase 2: AiPlugin's decision / marker tick now run only in
+    // `GameState::InGame`. Seed it so tests that touch those systems
+    // (mark_npc_ai_controlled, decision tick) observe them running.
+    app.add_plugins(macrocosmo::game_state::GameStatePlugin);
+    app.insert_state(macrocosmo::game_state::GameState::InGame);
     app.insert_resource(GameClock::new(0));
     app.insert_resource(GameSpeed::default());
     app.add_plugins(AiPlugin);

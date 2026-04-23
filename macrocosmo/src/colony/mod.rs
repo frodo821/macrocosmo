@@ -71,8 +71,16 @@ impl Plugin for ColonyPlugin {
                 Update,
                 (
                     (
-                        tick_timed_effects,
-                        tick_authority,
+                        // #439 Phase 2: tick_timed_effects / tick_authority are
+                        // game-tick logic (read GameClock, advance state per
+                        // delta). Gate them on GameState::InGame so they don't
+                        // run during Bootstrapping / NewGame / LoadingSave.
+                        // The surrounding sync_* + aggregate_job_contributions
+                        // systems intentionally remain ungated — UI depends on
+                        // them producing fresh numbers even while paused.
+                        tick_timed_effects
+                            .run_if(in_state(crate::game_state::GameState::InGame)),
+                        tick_authority.run_if(in_state(crate::game_state::GameState::InGame)),
                         sync_building_modifiers,
                         crate::species::sync_job_assignment,
                         sync_species_modifiers,
@@ -96,7 +104,9 @@ impl Plugin for ColonyPlugin {
                         check_resource_alerts,
                         advance_production_tick,
                     )
-                        .chain(),
+                        .chain()
+                        // #439 Phase 2: pure game-tick chain — gated on InGame.
+                        .run_if(in_state(crate::game_state::GameState::InGame)),
                 )
                     .chain()
                     .after(crate::time_system::advance_game_time)
@@ -121,9 +131,17 @@ impl Plugin for ColonyPlugin {
                     fire_sovereignty_events,
                 )
                     .chain()
-                    .after(crate::time_system::advance_game_time),
+                    .after(crate::time_system::advance_game_time)
+                    // #439 Phase 2: sovereignty transitions are game-tick logic.
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
-            .add_systems(Update, apply_pending_colonization_orders);
+            .add_systems(
+                Update,
+                apply_pending_colonization_orders
+                    // #439 Phase 2: consumes queued colonization orders; must
+                    // not run during Bootstrapping / NewGame / LoadingSave.
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            );
     }
 }
 

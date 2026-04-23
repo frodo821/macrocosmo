@@ -214,11 +214,23 @@ impl Plugin for ShipPlugin {
         // #334 Phase 1: register command-dispatch message types + allocator
         // before any dispatcher/handler system that references them.
         app.add_plugins(command_events::CommandEventsPlugin);
+        // #439 Phase 2: Modifier/HP sync systems are NOT gated on
+        // `GameState::InGame` — they are pure pipeline syncs (no damage
+        // application, no time-delta integration) and must keep running
+        // during construction / load so the modifier cache stays coherent
+        // before gameplay starts.
         app.add_systems(
             Update,
             (
                 sync_ship_module_modifiers,
                 sync_ship_hitpoints.after(sync_ship_module_modifiers),
+            )
+                .after(crate::time_system::advance_game_time)
+                .before(crate::colony::advance_production_tick),
+        );
+        app.add_systems(
+            Update,
+            (
                 tick_shield_regen,
                 sublight_movement_system,
                 process_ftl_travel,
@@ -277,7 +289,8 @@ impl Plugin for ShipPlugin {
                     .after(handlers::handle_attack_requested),
             )
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #298 (S-4): Conquered Core lifecycle — transition, wartime lock,
         // and peacetime recovery. Separate `add_systems` call to stay under
@@ -290,7 +303,8 @@ impl Plugin for ShipPlugin {
                 conquered::tick_conquered_recovery.after(conquered::enforce_conquered_hp_lock),
             )
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #334 Phase 1–3: dispatcher + per-variant handlers. Kept in its
         // own `add_systems` call so we stay under Bevy 0.18's 20-arm
@@ -334,7 +348,8 @@ impl Plugin for ShipPlugin {
                 // that emits `CoreDeployRequested` this tick.
                 .before(core_deliverable::handle_core_deploy_requested)
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #334 Phase 1: CommandExecuted → CommandLog bridge. Runs after the
         // route poller (which emits terminal CommandExecuted for deferred
@@ -356,7 +371,8 @@ impl Plugin for ShipPlugin {
                 .after(handlers::handle_attack_requested)
                 .after(core_deliverable::handle_core_deploy_requested)
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #334 Phase 4: CommandExecuted → Lua `on_command_completed` hook.
         // Runs alongside the CommandLog bridge — both read the same
@@ -382,7 +398,8 @@ impl Plugin for ShipPlugin {
                 .after(handlers::handle_attack_requested)
                 .after(core_deliverable::handle_core_deploy_requested)
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #291: Fleet departure detection — fires `macrocosmo:fleet_system_left`
         // when a ship's ShipState transitions from InSystem to InFTL/SubLight.
@@ -396,7 +413,8 @@ impl Plugin for ShipPlugin {
                 .after(handlers::handle_move_requested)
                 .after(handlers::handle_move_to_coordinates_requested)
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #128: Poll route tasks after Commands emitted by handlers are flushed.
         app.add_systems(
@@ -408,7 +426,8 @@ impl Plugin for ShipPlugin {
                 .chain()
                 .after(handlers::handle_attack_requested)
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #384: Harbour lifecycle systems. Separate `add_systems` call to stay
         // under Bevy's tuple-arm limit.
@@ -424,7 +443,8 @@ impl Plugin for ShipPlugin {
                 harbour::force_undock_on_harbour_destroy.after(resolve_combat),
             )
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #384: Combat ROE harbour systems — auto-undock/re-dock.
         app.add_systems(
@@ -434,9 +454,12 @@ impl Plugin for ShipPlugin {
                 harbour::auto_return_dock_after_combat.after(resolve_combat),
             )
                 .after(crate::time_system::advance_game_time)
-                .before(crate::colony::advance_production_tick),
+                .before(crate::colony::advance_production_tick)
+                .run_if(in_state(crate::game_state::GameState::InGame)),
         );
         // #384: Docked modifier propagation — runs after module sync.
+        // #439 Phase 2: NOT gated on `InGame` — shares the modifier-pipeline
+        // sync category as `sync_ship_module_modifiers` / `sync_ship_hitpoints`.
         app.add_systems(
             Update,
             harbour::sync_docked_modifiers

@@ -594,7 +594,9 @@ impl Plugin for EventSystemPlugin {
             .insert_resource(EventBus::default())
             .add_systems(
                 Update,
-                tick_events.after(crate::time_system::advance_game_time),
+                tick_events
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             );
     }
 }

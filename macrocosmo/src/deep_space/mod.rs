@@ -687,7 +687,8 @@ impl Plugin for DeepSpacePlugin {
                 )
                     .after(crate::time_system::advance_game_time)
                     .after(crate::ship::sublight_movement_system)
-                    .after(crate::ship::process_ftl_travel),
+                    .after(crate::ship::process_ftl_travel)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             );
     }
 }

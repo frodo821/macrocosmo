@@ -189,7 +189,17 @@ impl Plugin for EventsPlugin {
             .insert_resource(EventLog::default())
             .init_resource::<NextEventId>()
             .init_resource::<crate::knowledge::NotifiedEventIds>()
-            .add_systems(Update, (collect_events, auto_pause_on_event));
+            // `collect_events` is intentionally NOT gated on GameState —
+            // events emitted during setup / save-loading should still
+            // populate the log so the UI sees them on transition to
+            // InGame. (#439 Phase 2.)
+            .add_systems(Update, collect_events)
+            // Auto-pause is game-tick behaviour: only meaningful once the
+            // clock is ticking, so gate it on InGame.
+            .add_systems(
+                Update,
+                auto_pause_on_event.run_if(in_state(crate::game_state::GameState::InGame)),
+            );
     }
 }
 

@@ -137,18 +137,24 @@ impl Plugin for FactionRelationsPlugin {
             )
             .add_systems(
                 Update,
-                tick_diplomatic_events.after(crate::time_system::advance_game_time),
+                tick_diplomatic_events
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // #324: Detect annihilation (no Core ships + no colonies → Extinct).
             .add_systems(
                 Update,
-                detect_annihilation.after(crate::time_system::advance_game_time),
+                detect_annihilation
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // #405: Detect faction discovery (player ships co-located with
             // NPC ships/colonies, or explicit FactionRelations entries).
             .add_systems(
                 Update,
-                detect_faction_discovery.after(crate::time_system::advance_game_time),
+                detect_faction_discovery
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             );
     }
 }

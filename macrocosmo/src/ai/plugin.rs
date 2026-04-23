@@ -104,18 +104,26 @@ impl Plugin for AiPlugin {
                     .after(schema::declare_all)
                     .after(crate::setup::run_all_factions_on_game_start),
             )
+            // Foreign-slot declaration must run during Bootstrapping /
+            // NewGame / LoadingSave too — it reacts to `Added<Faction>` so
+            // freshly-spawned empires get their metric slots before the
+            // first InGame tick fires the emitters. Intentionally NOT
+            // gated on `GameState::InGame` (#439 Phase 2).
+            .add_systems(
+                Update,
+                declare_foreign_slots_on_awareness.in_set(AiTickSet::MetricProduce),
+            )
+            // Metric emitters are game-tick work — gate on InGame.
             .add_systems(
                 Update,
                 (
-                    declare_foreign_slots_on_awareness,
-                    (
-                        super::emitters::emit_military_metrics,
-                        super::emitters::emit_economic_metrics,
-                        super::emitters::emit_foreign_metrics,
-                    ),
+                    super::emitters::emit_military_metrics,
+                    super::emitters::emit_economic_metrics,
+                    super::emitters::emit_foreign_metrics,
                 )
-                    .chain()
-                    .in_set(AiTickSet::MetricProduce),
+                    .after(declare_foreign_slots_on_awareness)
+                    .in_set(AiTickSet::MetricProduce)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // Mark empires as AiControlled before the decision tick runs.
             .add_systems(
@@ -125,12 +133,15 @@ impl Plugin for AiPlugin {
                     super::npc_decision::mark_player_ai_controlled,
                 )
                     .before(AiTickSet::MetricProduce)
-                    .after(crate::time_system::advance_game_time),
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // NPC decision tick — SimpleNpcPolicy reads metrics and emits commands.
             .add_systems(
                 Update,
-                super::npc_decision::npc_decision_tick.in_set(AiTickSet::Reason),
+                super::npc_decision::npc_decision_tick
+                    .in_set(AiTickSet::Reason)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // Command consumer — drains AI commands and converts to ECS actions.
             // `process_ruler_boarding` runs after `drain_ai_commands` to handle
@@ -142,7 +153,8 @@ impl Plugin for AiPlugin {
                     super::command_consumer::process_ruler_boarding
                         .after(super::command_consumer::drain_ai_commands),
                 )
-                    .in_set(AiTickSet::CommandDrain),
+                    .in_set(AiTickSet::CommandDrain)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             .configure_sets(
                 Update,

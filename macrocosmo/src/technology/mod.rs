@@ -78,14 +78,19 @@ impl Plugin for TechnologyPlugin {
                     flush_research,
                 )
                     .chain()
-                    .after(crate::time_system::advance_game_time),
+                    .after(crate::time_system::advance_game_time)
+                    // #439 Phase 2: research pipeline is pure game-tick.
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             .add_systems(
                 Update,
                 apply_tech_effects
                     .after(tick_research)
                     .before(propagate_tech_knowledge)
-                    .after(crate::time_system::advance_game_time),
+                    .after(crate::time_system::advance_game_time)
+                    // #439 Phase 2: mutates GlobalParams / GameBalance / flags;
+                    // only runs when a fresh tech completes (via tick_research).
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // #245: Broadcast tech-sourced colony modifiers into every colony's
             // Production / ColonyJobRates / ColonyJobs every tick. Runs AFTER
@@ -96,6 +101,10 @@ impl Plugin for TechnologyPlugin {
             // tech:* modifier id always lands on top of the freshly-rebuilt
             // buckets, and `tick_production` (which runs next) reads the
             // combined value.
+            //
+            // #439 Phase 2: NOT gated on GameState::InGame — this is a sync
+            // system, idempotent per tick, and UI wants fresh numbers even
+            // while paused / pre-InGame.
             .add_systems(
                 Update,
                 sync_tech_colony_modifiers
@@ -109,11 +118,18 @@ impl Plugin for TechnologyPlugin {
                 (propagate_tech_knowledge, receive_tech_knowledge)
                     .chain()
                     .after(apply_tech_effects)
-                    .after(crate::time_system::advance_game_time),
+                    .after(crate::time_system::advance_game_time)
+                    // #439 Phase 2: light-speed tech knowledge propagation is
+                    // game-tick (walks elapsed-since-discovery against light
+                    // delay).
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // #160: Keep AuthorityParams' base values in sync with GameBalance.
             // Runs after apply_tech_effects (which may alter GameBalance) and
             // before tick_timed_effects / tick_authority.
+            //
+            // #439 Phase 2: NOT gated — sync system, keeps UI / params fresh
+            // while paused / pre-InGame.
             .add_systems(
                 Update,
                 sync_authority_params_from_balance
