@@ -372,7 +372,21 @@ pub fn npc_decision_tick(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastAiDecisionTick>,
     mut bus: ResMut<AiBusResource>,
-    npcs: Query<(Entity, &Faction, &KnowledgeStore), With<AiControlled>>,
+    npcs: Query<
+        (
+            Entity,
+            &Faction,
+            &KnowledgeStore,
+            Option<&crate::knowledge::SystemVisibilityMap>,
+        ),
+        With<AiControlled>,
+    >,
+    // #? SimpleNpcPolicy needs to know which systems exist at all — the
+    // KnowledgeStore only carries entries the empire has already
+    // surveyed / been told about (one entry per owned capital at spawn),
+    // so `unsurveyed_systems` derived from it was always empty for
+    // fresh empires, freezing Explorers in dock.
+    all_stars: Query<Entity, With<crate::galaxy::StarSystem>>,
     all_ships: Query<(
         Entity,
         &crate::ship::Ship,
@@ -386,26 +400,51 @@ pub fn npc_decision_tick(
     mut policy: Local<SimpleNpcPolicy>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
+    use crate::knowledge::SystemVisibilityTier;
+
     let now = clock.elapsed;
     if now <= last_tick.0 {
         return;
     }
     last_tick.0 = now;
 
-    for (entity, faction, knowledge) in &npcs {
-        // Extract system intel from KnowledgeStore.
+    for (entity, faction, knowledge, vis_map_opt) in &npcs {
+        // Extract system intel. Hostile / colonizable signals still come
+        // from the KnowledgeStore (those require detailed snapshots),
+        // but `unsurveyed_systems` is derived from the galaxy-wide star
+        // list minus whatever the empire has already surveyed —
+        // otherwise freshly-spawned empires never find survey targets
+        // because their KnowledgeStore is empty aside from the capital.
         let mut hostile_systems = Vec::new();
-        let mut unsurveyed_systems = Vec::new();
         let mut colonizable_systems = Vec::new();
+        let mut surveyed_ids: std::collections::HashSet<Entity> =
+            std::collections::HashSet::new();
         for (_, k) in knowledge.iter() {
             if k.data.has_hostile {
                 hostile_systems.push(k.system);
             }
-            if !k.data.surveyed {
-                unsurveyed_systems.push(k.system);
+            if k.data.surveyed {
+                surveyed_ids.insert(k.system);
+                if !k.data.colonized {
+                    colonizable_systems.push(k.system);
+                }
             }
-            if k.data.surveyed && !k.data.colonized {
-                colonizable_systems.push(k.system);
+        }
+        // Every catalogued system (which, right now, means every system
+        // in the galaxy thanks to `initialize_visibility_tiers`) is a
+        // valid survey target if we haven't surveyed it yet. Fall back
+        // to all stars when the empire has no visibility map — defensive
+        // for test setups.
+        let mut unsurveyed_systems: Vec<Entity> = Vec::new();
+        for system_entity in all_stars.iter() {
+            if surveyed_ids.contains(&system_entity) {
+                continue;
+            }
+            let knowable = vis_map_opt
+                .map(|vm| vm.get(system_entity) >= SystemVisibilityTier::Catalogued)
+                .unwrap_or(true);
+            if knowable {
+                unsurveyed_systems.push(system_entity);
             }
         }
 

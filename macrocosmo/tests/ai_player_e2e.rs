@@ -139,3 +139,104 @@ fn ai_player_attacks_hostiles_when_strong_enough() {
         );
     }
 }
+
+/// Regression: AI explorers sat in dock because `npc_decision_tick` pulled
+/// `unsurveyed_systems` from `KnowledgeStore.iter()`, which only contains
+/// surveyed entries (plus the empire's capital at spawn). A fresh NPC's
+/// store therefore yielded zero unsurveyed targets and `SimpleNpcPolicy`
+/// never emitted a `survey_system` command. The fix walks the galaxy-wide
+/// `StarSystem` query instead, filtered against the empire's surveyed set,
+/// so Rule 2 fires for every unsurveyed system the empire can see.
+#[test]
+fn ai_dispatches_surveyor_to_unsurveyed_systems() {
+    use bevy::prelude::*;
+    use macrocosmo::knowledge::SystemVisibilityMap;
+    use macrocosmo::ship::command_events::SurveyRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire { name: "Surveyors".into() },
+            PlayerEmpire,
+            Faction {
+                id: "surveyors".into(),
+                name: "Surveyors".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            macrocosmo::knowledge::KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let frontier =
+        spawn_test_system(app.world_mut(), "Frontier", [3.0, 0.0, 0.0], 1.0, false, false);
+
+    // Seed the visibility map so both systems are at least Catalogued —
+    // this matches what `initialize_visibility_tiers` does at game start.
+    app.world_mut()
+        .entity_mut(empire)
+        .get_mut::<SystemVisibilityMap>()
+        .unwrap()
+        .set(home, macrocosmo::knowledge::SystemVisibilityTier::Local);
+    app.world_mut()
+        .entity_mut(empire)
+        .get_mut::<SystemVisibilityMap>()
+        .unwrap()
+        .set(
+            frontier,
+            macrocosmo::knowledge::SystemVisibilityTier::Catalogued,
+        );
+
+    // Idle Explorer with survey capability parked at home.
+    let explorer = spawn_test_ship(
+        app.world_mut(),
+        "Explorer",
+        "explorer_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    app.world_mut()
+        .entity_mut(explorer)
+        .get_mut::<Ship>()
+        .unwrap()
+        .owner = Owner::Empire(empire);
+
+    // Bevy requires the message channel to exist before we can collect it.
+    app.world_mut()
+        .resource_mut::<Messages<SurveyRequested>>()
+        .update();
+
+    for _ in 0..5 {
+        advance_time(&mut app, 1);
+    }
+
+    // Survey pipeline end-state: either the surveyor has moved off home
+    // under an AI-issued survey plan, or at minimum the bus registered
+    // an `unsurveyed_systems > 0` signal (which was stuck at 0 with the
+    // broken `KnowledgeStore.iter()` derivation).
+    let moved_off_home = app
+        .world()
+        .get::<ShipState>(explorer)
+        .map(|s| !matches!(s, ShipState::InSystem { system } if *system == home))
+        .unwrap_or(false);
+
+    let bus = app
+        .world()
+        .resource::<macrocosmo::ai::plugin::AiBusResource>();
+    let unsurveyed_count = bus
+        .0
+        .current(&macrocosmo_ai::MetricId::from("unsurveyed_systems"))
+        .unwrap_or(0.0);
+
+    assert!(
+        moved_off_home || unsurveyed_count > 0.0,
+        "AI must either dispatch the explorer off home or register at least \
+         one unsurveyed system on the bus (unsurveyed_count = {})",
+        unsurveyed_count,
+    );
+}
