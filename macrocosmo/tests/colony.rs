@@ -2390,3 +2390,223 @@ fn test_system_building_queue_persists_order_during_construction() {
     // means no station ship has been spawned yet for slot 0.
     assert!(sb.max_slots > 0);
 }
+
+// ---------------------------------------------------------------------------
+// FIFO-across-queues serialization: construction / upgrade / demolition share
+// a single pipeline on a `BuildingQueue`. Only the head order (by
+// `order_id`) advances per tick; the others wait. Prior behavior let
+// upgrades and demolitions progress in parallel with new construction,
+// which surprised players watching slots visibly upgrade while the build
+// queue was "full".
+// ---------------------------------------------------------------------------
+
+fn spawn_serialization_colony(
+    app: &mut App,
+    sys: Entity,
+    initial_slots: Vec<Option<BuildingId>>,
+    bq: BuildingQueue,
+) -> Entity {
+    let planet_sys = find_planet(app.world_mut(), sys);
+    set_system_stockpile(
+        app.world_mut(),
+        sys,
+        ResourceStockpile {
+            minerals: Amt::units(10_000),
+            energy: Amt::units(10_000),
+            research: Amt::ZERO,
+            food: Amt::units(100),
+            authority: Amt::ZERO,
+        },
+    );
+    app.world_mut()
+        .spawn((
+            Colony {
+                planet: planet_sys,
+                growth_rate: 0.0,
+            },
+            Production {
+                minerals_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                energy_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                research_per_hexadies: ModifiedValue::new(Amt::ZERO),
+                food_per_hexadies: ModifiedValue::new(Amt::ZERO),
+            },
+            BuildQueue::default(),
+            Buildings {
+                slots: initial_slots,
+            },
+            bq,
+            ProductionFocus::default(),
+            MaintenanceCost::default(),
+            FoodConsumption::default(),
+        ))
+        .id()
+}
+
+#[test]
+fn test_construction_serializes_pending_upgrade() {
+    let mut app = test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Serial-Build-Upgrade",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let mut bq = BuildingQueue::default();
+    // Construction pushed first → order_id=1 (oldest).
+    bq.push_build_order(BuildingOrder {
+        order_id: 0,
+        building_id: BuildingId::new("mine"),
+        target_slot: 1,
+        minerals_remaining: Amt::units(150),
+        energy_remaining: Amt::units(50),
+        build_time_remaining: 20,
+    });
+    // Upgrade pushed second → order_id=2, must wait.
+    bq.push_upgrade_order(UpgradeOrder {
+        order_id: 0,
+        slot_index: 0,
+        target_id: BuildingId::new("advanced_mine"),
+        minerals_remaining: Amt::units(100),
+        energy_remaining: Amt::units(50),
+        build_time_remaining: 20,
+    });
+
+    spawn_serialization_colony(
+        &mut app,
+        sys,
+        vec![Some(BuildingId::new("mine")), None, None, None],
+        bq,
+    );
+
+    advance_time(&mut app, 5);
+
+    let mut q = app.world_mut().query::<&BuildingQueue>();
+    let bq = q.iter(app.world()).next().expect("building queue");
+    assert_eq!(bq.queue.len(), 1, "construction must still be pending");
+    assert_eq!(bq.upgrade_queue.len(), 1, "upgrade must still be pending");
+    assert_eq!(
+        bq.queue[0].build_time_remaining, 15,
+        "construction should have advanced 5 hexadies"
+    );
+    assert_eq!(
+        bq.upgrade_queue[0].build_time_remaining, 20,
+        "upgrade should not have advanced while construction is the FIFO head"
+    );
+}
+
+#[test]
+fn test_older_upgrade_blocks_newer_construction() {
+    let mut app = test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Serial-Upgrade-First",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let mut bq = BuildingQueue::default();
+    // Upgrade pushed first → order_id=1 (oldest).
+    bq.push_upgrade_order(UpgradeOrder {
+        order_id: 0,
+        slot_index: 0,
+        target_id: BuildingId::new("advanced_mine"),
+        minerals_remaining: Amt::units(100),
+        energy_remaining: Amt::units(50),
+        build_time_remaining: 20,
+    });
+    // Construction pushed second → order_id=2, must wait.
+    bq.push_build_order(BuildingOrder {
+        order_id: 0,
+        building_id: BuildingId::new("mine"),
+        target_slot: 1,
+        minerals_remaining: Amt::units(150),
+        energy_remaining: Amt::units(50),
+        build_time_remaining: 20,
+    });
+
+    spawn_serialization_colony(
+        &mut app,
+        sys,
+        vec![Some(BuildingId::new("mine")), None, None, None],
+        bq,
+    );
+
+    advance_time(&mut app, 5);
+
+    let mut q = app.world_mut().query::<&BuildingQueue>();
+    let bq = q.iter(app.world()).next().expect("building queue");
+    assert_eq!(bq.upgrade_queue.len(), 1, "upgrade must still be pending");
+    assert_eq!(bq.queue.len(), 1, "construction must still be pending");
+    assert_eq!(
+        bq.upgrade_queue[0].build_time_remaining, 15,
+        "upgrade should have advanced 5 hexadies"
+    );
+    assert_eq!(
+        bq.queue[0].build_time_remaining, 20,
+        "construction should not have advanced while upgrade is the FIFO head"
+    );
+}
+
+#[test]
+fn test_demolition_waits_for_earlier_construction() {
+    let mut app = test_app();
+    let sys = spawn_test_system(
+        app.world_mut(),
+        "Serial-Build-Demo",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    let mut bq = BuildingQueue::default();
+    // Construction pushed first → order_id=1 (oldest).
+    bq.push_build_order(BuildingOrder {
+        order_id: 0,
+        building_id: BuildingId::new("mine"),
+        target_slot: 1,
+        minerals_remaining: Amt::units(150),
+        energy_remaining: Amt::units(50),
+        build_time_remaining: 20,
+    });
+    // Demolition pushed second → order_id=2, must wait.
+    bq.push_demolition_order(DemolitionOrder {
+        order_id: 0,
+        target_slot: 0,
+        building_id: BuildingId::new("mine"),
+        time_remaining: 10,
+        minerals_refund: Amt::ZERO,
+        energy_refund: Amt::ZERO,
+    });
+
+    spawn_serialization_colony(
+        &mut app,
+        sys,
+        vec![Some(BuildingId::new("mine")), None, None, None],
+        bq,
+    );
+
+    advance_time(&mut app, 5);
+
+    let mut q = app.world_mut().query::<&BuildingQueue>();
+    let bq = q.iter(app.world()).next().expect("building queue");
+    assert_eq!(bq.queue.len(), 1, "construction must still be pending");
+    assert_eq!(
+        bq.demolition_queue.len(),
+        1,
+        "demolition must still be pending"
+    );
+    assert_eq!(
+        bq.queue[0].build_time_remaining, 15,
+        "construction should have advanced 5 hexadies"
+    );
+    assert_eq!(
+        bq.demolition_queue[0].time_remaining, 10,
+        "demolition timer should not drain while construction is the FIFO head"
+    );
+}

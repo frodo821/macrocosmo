@@ -587,6 +587,37 @@ pub fn tick_build_queue(
     }
 }
 
+/// Which sub-queue a `BuildingQueue` head order came from. Used by the
+/// FIFO-across-queues scheduler to decide which head to advance next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueKind {
+    Construction,
+    Upgrade,
+    Demolition,
+}
+
+/// Pick the oldest pending head order across the three sub-queues.
+///
+/// Serializes construction / upgrade / demolition so only the single
+/// oldest order (by `order_id`) consumes resources and time per tick.
+/// Prior behavior progressed all three kinds in parallel, which
+/// surprised players watching slots upgrade while new builds were
+/// ostensibly queued behind them.
+fn next_pending(bq: &BuildingQueue) -> Option<QueueKind> {
+    let c = bq.queue.first().map(|o| o.order_id);
+    let u = bq.upgrade_queue.first().map(|o| o.order_id);
+    let d = bq.demolition_queue.first().map(|o| o.order_id);
+    [
+        (c, QueueKind::Construction),
+        (u, QueueKind::Upgrade),
+        (d, QueueKind::Demolition),
+    ]
+    .into_iter()
+    .filter_map(|(id, k)| id.map(|id| (id, k)))
+    .min_by_key(|(id, _)| *id)
+    .map(|(_, k)| k)
+}
+
 pub fn tick_building_queue(
     clock: Res<GameClock>,
     last_tick: Res<LastProductionTick>,
@@ -639,201 +670,215 @@ pub fn tick_building_queue(
                 .add(existing.energy_refunded);
         }
 
-        // --- Process construction queue ---
+        // Serialize the three sub-queues by `order_id`. Only the single
+        // oldest head advances per tick. Completions pop the head and the
+        // next iteration re-picks the new oldest across queues.
         for _ in 0..delta {
-            if bq.queue.is_empty() {
+            let Some(kind) = next_pending(&bq) else {
                 break;
-            }
-            let order = &mut bq.queue[0];
+            };
+            match kind {
+                QueueKind::Construction => {
+                    let order = &mut bq.queue[0];
 
-            let minerals_transfer = order.minerals_remaining.min(available_minerals);
-            order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
-            available_minerals = available_minerals.sub(minerals_transfer);
-            minerals_consumed = minerals_consumed.add(minerals_transfer);
+                    let minerals_transfer = order.minerals_remaining.min(available_minerals);
+                    order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
+                    available_minerals = available_minerals.sub(minerals_transfer);
+                    minerals_consumed = minerals_consumed.add(minerals_transfer);
 
-            let energy_transfer = order.energy_remaining.min(available_energy);
-            order.energy_remaining = order.energy_remaining.sub(energy_transfer);
-            available_energy = available_energy.sub(energy_transfer);
-            energy_consumed = energy_consumed.add(energy_transfer);
+                    let energy_transfer = order.energy_remaining.min(available_energy);
+                    order.energy_remaining = order.energy_remaining.sub(energy_transfer);
+                    available_energy = available_energy.sub(energy_transfer);
+                    energy_consumed = energy_consumed.add(energy_transfer);
 
-            // #232: Only advance the countdown when resources actually moved
-            // this tick, or when no resources are needed anymore. Otherwise
-            // a starved build would have its timer drain past zero while
-            // the completion check (which also requires 0 remaining cost)
-            // keeps blocking completion.
-            let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
-            let no_more_needed =
-                order.minerals_remaining == Amt::ZERO && order.energy_remaining == Amt::ZERO;
-            super::build_tick::maybe_tick_build_time(
-                &mut order.build_time_remaining,
-                transferred,
-                no_more_needed,
-            );
-
-            if bq.queue[0].minerals_remaining == Amt::ZERO
-                && bq.queue[0].energy_remaining == Amt::ZERO
-                && bq.queue[0].build_time_remaining <= 0
-            {
-                let completed = bq.queue.remove(0);
-                if completed.target_slot < buildings.slots.len() {
-                    info!(
-                        "Building '{}' completed in slot {}",
-                        completed.building_id, completed.target_slot
+                    // #232: Only advance the countdown when resources actually moved
+                    // this tick, or when no resources are needed anymore. Otherwise
+                    // a starved build would have its timer drain past zero while
+                    // the completion check (which also requires 0 remaining cost)
+                    // keeps blocking completion.
+                    let transferred =
+                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let no_more_needed = order.minerals_remaining == Amt::ZERO
+                        && order.energy_remaining == Amt::ZERO;
+                    super::build_tick::maybe_tick_build_time(
+                        &mut order.build_time_remaining,
+                        transferred,
+                        no_more_needed,
                     );
-                    let completed_id = completed.building_id.0.clone();
-                    let completed_slot = completed.target_slot;
-                    buildings.slots[completed.target_slot] = Some(completed.building_id);
-                    // #281: Fire macrocosmo:building_built for planet-level
-                    // construction. Payload carries cause/building_id/system/
-                    // colony/slot so Lua filter handlers (incl. definition
-                    // `on_built` hooks) can react to the specific building.
-                    let mut payload = std::collections::HashMap::new();
-                    payload.insert("cause".to_string(), "construction".to_string());
-                    payload.insert("building_id".to_string(), completed_id);
-                    payload.insert("slot".to_string(), completed_slot.to_string());
-                    payload.insert("system".to_string(), sys.to_bits().to_string());
-                    payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
-                    event_system.fire_event_with_payload(
-                        Some(colony_entity),
-                        clock.elapsed,
-                        Box::new(crate::event_system::LuaDefinedEventContext::new(
-                            crate::event_system::BUILDING_BUILT_EVENT,
-                            payload,
-                        )),
-                    );
-                } else {
-                    warn!(
-                        "Building '{}' completed but target slot {} is out of range (max {})",
-                        completed.building_id,
-                        completed.target_slot,
-                        buildings.slots.len()
-                    );
+
+                    if bq.queue[0].minerals_remaining == Amt::ZERO
+                        && bq.queue[0].energy_remaining == Amt::ZERO
+                        && bq.queue[0].build_time_remaining <= 0
+                    {
+                        let completed = bq.queue.remove(0);
+                        if completed.target_slot < buildings.slots.len() {
+                            info!(
+                                "Building '{}' completed in slot {}",
+                                completed.building_id, completed.target_slot
+                            );
+                            let completed_id = completed.building_id.0.clone();
+                            let completed_slot = completed.target_slot;
+                            buildings.slots[completed.target_slot] =
+                                Some(completed.building_id);
+                            // #281: Fire macrocosmo:building_built for planet-level
+                            // construction. Payload carries cause/building_id/system/
+                            // colony/slot so Lua filter handlers (incl. definition
+                            // `on_built` hooks) can react to the specific building.
+                            let mut payload = std::collections::HashMap::new();
+                            payload.insert("cause".to_string(), "construction".to_string());
+                            payload.insert("building_id".to_string(), completed_id);
+                            payload.insert("slot".to_string(), completed_slot.to_string());
+                            payload.insert("system".to_string(), sys.to_bits().to_string());
+                            payload.insert(
+                                "colony".to_string(),
+                                colony_entity.to_bits().to_string(),
+                            );
+                            event_system.fire_event_with_payload(
+                                Some(colony_entity),
+                                clock.elapsed,
+                                Box::new(crate::event_system::LuaDefinedEventContext::new(
+                                    crate::event_system::BUILDING_BUILT_EVENT,
+                                    payload,
+                                )),
+                            );
+                        } else {
+                            warn!(
+                                "Building '{}' completed but target slot {} is out of range (max {})",
+                                completed.building_id,
+                                completed.target_slot,
+                                buildings.slots.len()
+                            );
+                        }
+                    }
                 }
-            }
-        }
+                QueueKind::Upgrade => {
+                    let upgrade = &mut bq.upgrade_queue[0];
 
-        // --- Process demolition queue ---
-        let mut completed_demolitions = Vec::new();
-        for demo in bq.demolition_queue.iter_mut() {
-            demo.time_remaining -= delta;
-            if demo.time_remaining <= 0 {
-                completed_demolitions.push(demo.target_slot);
-            }
-        }
-        for slot_idx in completed_demolitions {
-            if let Some(pos) = bq
-                .demolition_queue
-                .iter()
-                .position(|d| d.target_slot == slot_idx)
-            {
-                let completed = bq.demolition_queue.remove(pos);
-                if slot_idx < buildings.slots.len() {
-                    let building_name = buildings.slots[slot_idx]
-                        .as_ref()
-                        .map(|bid| bid.0.clone())
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    buildings.slots[slot_idx] = None;
-                    minerals_refunded = minerals_refunded.add(completed.minerals_refund);
-                    energy_refunded = energy_refunded.add(completed.energy_refund);
-                    info!(
-                        "Building {} demolished in slot {}, refunded M:{} E:{}",
-                        building_name, slot_idx, completed.minerals_refund, completed.energy_refund
+                    let minerals_transfer = upgrade.minerals_remaining.min(available_minerals);
+                    upgrade.minerals_remaining = upgrade.minerals_remaining.sub(minerals_transfer);
+                    available_minerals = available_minerals.sub(minerals_transfer);
+                    minerals_consumed = minerals_consumed.add(minerals_transfer);
+
+                    let energy_transfer = upgrade.energy_remaining.min(available_energy);
+                    upgrade.energy_remaining = upgrade.energy_remaining.sub(energy_transfer);
+                    available_energy = available_energy.sub(energy_transfer);
+                    energy_consumed = energy_consumed.add(energy_transfer);
+
+                    let transferred =
+                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
+                        && upgrade.energy_remaining == Amt::ZERO;
+                    super::build_tick::maybe_tick_build_time(
+                        &mut upgrade.build_time_remaining,
+                        transferred,
+                        no_more_needed,
                     );
-                    event_system.fire_event(
-                        "building_demolished",
-                        Some(colony_entity),
-                        clock.elapsed,
-                    );
-                    event_system.fire_event_with_payload(
-                        Some(colony_entity),
-                        clock.elapsed,
-                        Box::new(BuildingLostCtx {
-                            date: clock.elapsed,
-                            building_id: building_name,
-                            slot: slot_idx,
-                            cause: BuildingLostCause::Demolished,
-                            colony_entity,
-                            system_entity: sys,
-                        }),
-                    );
+
+                    if upgrade.minerals_remaining == Amt::ZERO
+                        && upgrade.energy_remaining == Amt::ZERO
+                        && upgrade.build_time_remaining <= 0
+                    {
+                        let completed = bq.upgrade_queue.remove(0);
+                        if completed.slot_index < buildings.slots.len() {
+                            let old_name = buildings.slots[completed.slot_index]
+                                .as_ref()
+                                .map(|bid| bid.0.clone())
+                                .unwrap_or_else(|| "empty".to_string());
+                            buildings.slots[completed.slot_index] =
+                                Some(completed.target_id.clone());
+                            info!(
+                                "Building upgrade completed: {} -> {} in slot {}",
+                                old_name, completed.target_id, completed.slot_index
+                            );
+                            event_system.fire_event(
+                                "building_upgraded",
+                                Some(colony_entity),
+                                clock.elapsed,
+                            );
+                            // #281: Fire macrocosmo:building_built with cause="upgrade" so
+                            // Lua definition `on_upgraded` hooks (and external filters)
+                            // see the completion alongside the legacy
+                            // `building_upgraded` event.
+                            let mut payload = std::collections::HashMap::new();
+                            payload.insert("cause".to_string(), "upgrade".to_string());
+                            payload.insert(
+                                "building_id".to_string(),
+                                completed.target_id.0.clone(),
+                            );
+                            payload.insert("previous_id".to_string(), old_name);
+                            payload.insert(
+                                "slot".to_string(),
+                                completed.slot_index.to_string(),
+                            );
+                            payload.insert("system".to_string(), sys.to_bits().to_string());
+                            payload.insert(
+                                "colony".to_string(),
+                                colony_entity.to_bits().to_string(),
+                            );
+                            event_system.fire_event_with_payload(
+                                Some(colony_entity),
+                                clock.elapsed,
+                                Box::new(crate::event_system::LuaDefinedEventContext::new(
+                                    crate::event_system::BUILDING_BUILT_EVENT,
+                                    payload,
+                                )),
+                            );
+                            // #280: If the upgraded building declares colony_slots,
+                            // expand the colony's slot count to match.
+                            if let Some(new_def) =
+                                building_registry.get(completed.target_id.as_str())
+                            {
+                                if let Some(fixed) = new_def.colony_slots {
+                                    if fixed > buildings.slots.len() {
+                                        buildings.slots.resize(fixed, None);
+                                        info!(
+                                            "Colony hub upgrade expanded slots to {}",
+                                            fixed
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-            }
-        }
-
-        // --- Process upgrade queue ---
-        let mut completed_upgrades = Vec::new();
-        for (idx, upgrade) in bq.upgrade_queue.iter_mut().enumerate() {
-            for _ in 0..delta {
-                let minerals_transfer = upgrade.minerals_remaining.min(available_minerals);
-                upgrade.minerals_remaining = upgrade.minerals_remaining.sub(minerals_transfer);
-                available_minerals = available_minerals.sub(minerals_transfer);
-                minerals_consumed = minerals_consumed.add(minerals_transfer);
-
-                let energy_transfer = upgrade.energy_remaining.min(available_energy);
-                upgrade.energy_remaining = upgrade.energy_remaining.sub(energy_transfer);
-                available_energy = available_energy.sub(energy_transfer);
-                energy_consumed = energy_consumed.add(energy_transfer);
-
-                // #232: See construction-queue branch above — only tick the
-                // timer when progress is happening or no progress is needed.
-                let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
-                let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
-                    && upgrade.energy_remaining == Amt::ZERO;
-                super::build_tick::maybe_tick_build_time(
-                    &mut upgrade.build_time_remaining,
-                    transferred,
-                    no_more_needed,
-                );
-
-                if upgrade.minerals_remaining == Amt::ZERO
-                    && upgrade.energy_remaining == Amt::ZERO
-                    && upgrade.build_time_remaining <= 0
-                {
-                    completed_upgrades.push(idx);
-                    break;
-                }
-            }
-        }
-        // Process completed upgrades in reverse to keep indices valid
-        for idx in completed_upgrades.into_iter().rev() {
-            let completed = bq.upgrade_queue.remove(idx);
-            if completed.slot_index < buildings.slots.len() {
-                let old_name = buildings.slots[completed.slot_index]
-                    .as_ref()
-                    .map(|bid| bid.0.clone())
-                    .unwrap_or_else(|| "empty".to_string());
-                buildings.slots[completed.slot_index] = Some(completed.target_id.clone());
-                info!(
-                    "Building upgrade completed: {} -> {} in slot {}",
-                    old_name, completed.target_id, completed.slot_index
-                );
-                event_system.fire_event("building_upgraded", Some(colony_entity), clock.elapsed);
-                // #281: Fire macrocosmo:building_built with cause="upgrade" so
-                // Lua definition `on_upgraded` hooks (and external filters)
-                // see the completion alongside the legacy
-                // `building_upgraded` event.
-                let mut payload = std::collections::HashMap::new();
-                payload.insert("cause".to_string(), "upgrade".to_string());
-                payload.insert("building_id".to_string(), completed.target_id.0.clone());
-                payload.insert("previous_id".to_string(), old_name);
-                payload.insert("slot".to_string(), completed.slot_index.to_string());
-                payload.insert("system".to_string(), sys.to_bits().to_string());
-                payload.insert("colony".to_string(), colony_entity.to_bits().to_string());
-                event_system.fire_event_with_payload(
-                    Some(colony_entity),
-                    clock.elapsed,
-                    Box::new(crate::event_system::LuaDefinedEventContext::new(
-                        crate::event_system::BUILDING_BUILT_EVENT,
-                        payload,
-                    )),
-                );
-                // #280: If the upgraded building declares colony_slots,
-                // expand the colony's slot count to match.
-                if let Some(new_def) = building_registry.get(completed.target_id.as_str()) {
-                    if let Some(fixed) = new_def.colony_slots {
-                        if fixed > buildings.slots.len() {
-                            buildings.slots.resize(fixed, None);
-                            info!("Colony hub upgrade expanded slots to {}", fixed);
+                QueueKind::Demolition => {
+                    let demo = &mut bq.demolition_queue[0];
+                    demo.time_remaining -= 1;
+                    if demo.time_remaining <= 0 {
+                        let completed = bq.demolition_queue.remove(0);
+                        let slot_idx = completed.target_slot;
+                        if slot_idx < buildings.slots.len() {
+                            let building_name = buildings.slots[slot_idx]
+                                .as_ref()
+                                .map(|bid| bid.0.clone())
+                                .unwrap_or_else(|| "Unknown".to_string());
+                            buildings.slots[slot_idx] = None;
+                            minerals_refunded = minerals_refunded.add(completed.minerals_refund);
+                            energy_refunded = energy_refunded.add(completed.energy_refund);
+                            info!(
+                                "Building {} demolished in slot {}, refunded M:{} E:{}",
+                                building_name,
+                                slot_idx,
+                                completed.minerals_refund,
+                                completed.energy_refund
+                            );
+                            event_system.fire_event(
+                                "building_demolished",
+                                Some(colony_entity),
+                                clock.elapsed,
+                            );
+                            event_system.fire_event_with_payload(
+                                Some(colony_entity),
+                                clock.elapsed,
+                                Box::new(BuildingLostCtx {
+                                    date: clock.elapsed,
+                                    building_id: building_name,
+                                    slot: slot_idx,
+                                    cause: BuildingLostCause::Demolished,
+                                    colony_entity,
+                                    system_entity: sys,
+                                }),
+                            );
                         }
                     }
                 }

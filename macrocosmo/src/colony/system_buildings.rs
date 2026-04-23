@@ -566,6 +566,31 @@ fn clear_prefixed(scope: &mut crate::modifier::ScopedModifiers, prefix: &str) {
     }
 }
 
+/// Which sub-queue a `SystemBuildingQueue` head order came from. Mirrors
+/// the `BuildingQueue` scheduler: serializes construction / upgrade /
+/// demolition so only the oldest order advances per tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SysQueueKind {
+    Construction,
+    Upgrade,
+    Demolition,
+}
+
+fn next_pending_sys(bq: &SystemBuildingQueue) -> Option<SysQueueKind> {
+    let c = bq.queue.first().map(|o| o.order_id);
+    let u = bq.upgrade_queue.first().map(|o| o.order_id);
+    let d = bq.demolition_queue.first().map(|o| o.order_id);
+    [
+        (c, SysQueueKind::Construction),
+        (u, SysQueueKind::Upgrade),
+        (d, SysQueueKind::Demolition),
+    ]
+    .into_iter()
+    .filter_map(|(id, k)| id.map(|id| (id, k)))
+    .min_by_key(|(id, _)| *id)
+    .map(|(_, k)| k)
+}
+
 /// Tick system-level building construction/demolition queues on StarSystem entities.
 /// On construction completion, spawn a station Ship with SlotAssignment.
 /// On demolition, despawn the station Ship in that slot.
@@ -600,220 +625,238 @@ pub fn tick_system_building_queue(
         let mut minerals_refunded = Amt::ZERO;
         let mut energy_refunded = Amt::ZERO;
 
-        // --- Process construction queue ---
+        // Serialize the three sub-queues by `order_id`. See
+        // `BuildingQueue::next_pending` for the rationale.
         for _ in 0..delta {
-            if bq.queue.is_empty() {
+            let Some(kind) = next_pending_sys(&bq) else {
                 break;
-            }
-            let order = &mut bq.queue[0];
+            };
+            match kind {
+                SysQueueKind::Construction => {
+                    let order = &mut bq.queue[0];
 
-            let minerals_transfer = order.minerals_remaining.min(available_minerals);
-            order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
-            available_minerals = available_minerals.sub(minerals_transfer);
-            minerals_consumed = minerals_consumed.add(minerals_transfer);
+                    let minerals_transfer = order.minerals_remaining.min(available_minerals);
+                    order.minerals_remaining = order.minerals_remaining.sub(minerals_transfer);
+                    available_minerals = available_minerals.sub(minerals_transfer);
+                    minerals_consumed = minerals_consumed.add(minerals_transfer);
 
-            let energy_transfer = order.energy_remaining.min(available_energy);
-            order.energy_remaining = order.energy_remaining.sub(energy_transfer);
-            available_energy = available_energy.sub(energy_transfer);
-            energy_consumed = energy_consumed.add(energy_transfer);
+                    let energy_transfer = order.energy_remaining.min(available_energy);
+                    order.energy_remaining = order.energy_remaining.sub(energy_transfer);
+                    available_energy = available_energy.sub(energy_transfer);
+                    energy_consumed = energy_consumed.add(energy_transfer);
 
-            let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
-            let no_more_needed =
-                order.minerals_remaining == Amt::ZERO && order.energy_remaining == Amt::ZERO;
-            super::build_tick::maybe_tick_build_time(
-                &mut order.build_time_remaining,
-                transferred,
-                no_more_needed,
-            );
-
-            if bq.queue[0].minerals_remaining == Amt::ZERO
-                && bq.queue[0].energy_remaining == Amt::ZERO
-                && bq.queue[0].build_time_remaining <= 0
-            {
-                let completed = bq.queue.remove(0);
-                let completed_slot = completed.target_slot;
-                if completed_slot < buildings.max_slots {
-                    info!(
-                        "System building '{}' completed in slot {}",
-                        completed.building_id, completed_slot
-                    );
-                    let completed_id = completed.building_id.0.clone();
-                    // #281: Fire macrocosmo:building_built for system-level construction.
-                    let mut payload = std::collections::HashMap::new();
-                    payload.insert("cause".to_string(), "construction".to_string());
-                    payload.insert("building_id".to_string(), completed_id.clone());
-                    payload.insert("slot".to_string(), completed_slot.to_string());
-                    payload.insert("system".to_string(), system_entity.to_bits().to_string());
-                    event_system.fire_event_with_payload(
-                        Some(system_entity),
-                        clock.elapsed,
-                        Box::new(crate::event_system::LuaDefinedEventContext::new(
-                            crate::event_system::BUILDING_BUILT_EVENT,
-                            payload,
-                        )),
+                    let transferred =
+                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let no_more_needed = order.minerals_remaining == Amt::ZERO
+                        && order.energy_remaining == Amt::ZERO;
+                    super::build_tick::maybe_tick_build_time(
+                        &mut order.build_time_remaining,
+                        transferred,
+                        no_more_needed,
                     );
 
-                    // Spawn a station Ship with SlotAssignment if the building has ship_design_id.
-                    if let Some(def) = building_registry.get(&completed_id) {
-                        if let Some(ref design_id) = def.ship_design_id {
-                            let owner = faction_q
-                                .get(system_entity)
-                                .ok()
-                                .map(|fo| Owner::Empire(fo.0))
-                                .unwrap_or(Owner::Neutral);
-                            let station_name = def.name.clone();
-                            let ship_entity = crate::ship::spawn_ship(
-                                &mut commands,
-                                design_id,
-                                station_name,
-                                system_entity,
-                                *sys_position,
-                                owner,
-                                &design_registry,
-                            );
-                            commands
-                                .entity(ship_entity)
-                                .insert(SlotAssignment(completed_slot));
+                    if bq.queue[0].minerals_remaining == Amt::ZERO
+                        && bq.queue[0].energy_remaining == Amt::ZERO
+                        && bq.queue[0].build_time_remaining <= 0
+                    {
+                        let completed = bq.queue.remove(0);
+                        let completed_slot = completed.target_slot;
+                        if completed_slot < buildings.max_slots {
                             info!(
-                                "Spawned station ship '{}' for system building '{}' in slot {}",
-                                design_id, def.id, completed_slot
+                                "System building '{}' completed in slot {}",
+                                completed.building_id, completed_slot
+                            );
+                            let completed_id = completed.building_id.0.clone();
+                            // #281: Fire macrocosmo:building_built for system-level construction.
+                            let mut payload = std::collections::HashMap::new();
+                            payload.insert("cause".to_string(), "construction".to_string());
+                            payload.insert("building_id".to_string(), completed_id.clone());
+                            payload.insert("slot".to_string(), completed_slot.to_string());
+                            payload.insert(
+                                "system".to_string(),
+                                system_entity.to_bits().to_string(),
+                            );
+                            event_system.fire_event_with_payload(
+                                Some(system_entity),
+                                clock.elapsed,
+                                Box::new(crate::event_system::LuaDefinedEventContext::new(
+                                    crate::event_system::BUILDING_BUILT_EVENT,
+                                    payload,
+                                )),
+                            );
+
+                            // Spawn a station Ship with SlotAssignment if the building has ship_design_id.
+                            if let Some(def) = building_registry.get(&completed_id) {
+                                if let Some(ref design_id) = def.ship_design_id {
+                                    let owner = faction_q
+                                        .get(system_entity)
+                                        .ok()
+                                        .map(|fo| Owner::Empire(fo.0))
+                                        .unwrap_or(Owner::Neutral);
+                                    let station_name = def.name.clone();
+                                    let ship_entity = crate::ship::spawn_ship(
+                                        &mut commands,
+                                        design_id,
+                                        station_name,
+                                        system_entity,
+                                        *sys_position,
+                                        owner,
+                                        &design_registry,
+                                    );
+                                    commands
+                                        .entity(ship_entity)
+                                        .insert(SlotAssignment(completed_slot));
+                                    info!(
+                                        "Spawned station ship '{}' for system building '{}' in slot {}",
+                                        design_id, def.id, completed_slot
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                SysQueueKind::Upgrade => {
+                    let upgrade = &mut bq.upgrade_queue[0];
+
+                    let minerals_transfer = upgrade.minerals_remaining.min(available_minerals);
+                    upgrade.minerals_remaining = upgrade.minerals_remaining.sub(minerals_transfer);
+                    available_minerals = available_minerals.sub(minerals_transfer);
+                    minerals_consumed = minerals_consumed.add(minerals_transfer);
+
+                    let energy_transfer = upgrade.energy_remaining.min(available_energy);
+                    upgrade.energy_remaining = upgrade.energy_remaining.sub(energy_transfer);
+                    available_energy = available_energy.sub(energy_transfer);
+                    energy_consumed = energy_consumed.add(energy_transfer);
+
+                    let transferred =
+                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
+                        && upgrade.energy_remaining == Amt::ZERO;
+                    super::build_tick::maybe_tick_build_time(
+                        &mut upgrade.build_time_remaining,
+                        transferred,
+                        no_more_needed,
+                    );
+
+                    if upgrade.minerals_remaining == Amt::ZERO
+                        && upgrade.energy_remaining == Amt::ZERO
+                        && upgrade.build_time_remaining <= 0
+                    {
+                        let completed = bq.upgrade_queue.remove(0);
+                        if completed.slot_index < buildings.max_slots {
+                            // Find the old building name from the ship in this slot.
+                            let old_name = building_id_in_slot(
+                                system_entity,
+                                completed.slot_index,
+                                &ship_q,
+                                &building_registry,
+                            )
+                            .map(|bid| bid.0)
+                            .unwrap_or_else(|| "empty".to_string());
+
+                            // Despawn old station ship and spawn the upgraded one.
+                            if let Some(old_ship) =
+                                ship_in_slot(system_entity, completed.slot_index, &ship_q)
+                            {
+                                commands.entity(old_ship).despawn();
+                            }
+                            // Spawn the new station ship for the upgraded building.
+                            if let Some(def) =
+                                building_registry.get(completed.target_id.as_str())
+                            {
+                                if let Some(ref design_id) = def.ship_design_id {
+                                    let owner = faction_q
+                                        .get(system_entity)
+                                        .ok()
+                                        .map(|fo| Owner::Empire(fo.0))
+                                        .unwrap_or(Owner::Neutral);
+                                    let ship_entity = crate::ship::spawn_ship(
+                                        &mut commands,
+                                        design_id,
+                                        def.name.clone(),
+                                        system_entity,
+                                        *sys_position,
+                                        owner,
+                                        &design_registry,
+                                    );
+                                    commands
+                                        .entity(ship_entity)
+                                        .insert(SlotAssignment(completed.slot_index));
+                                }
+                            }
+
+                            info!(
+                                "System building upgrade completed: {} -> {} in slot {}",
+                                old_name, completed.target_id, completed.slot_index
+                            );
+                            event_system.fire_event(
+                                "building_upgraded",
+                                Some(system_entity),
+                                clock.elapsed,
+                            );
+                            let mut payload = std::collections::HashMap::new();
+                            payload.insert("cause".to_string(), "upgrade".to_string());
+                            payload.insert(
+                                "building_id".to_string(),
+                                completed.target_id.0.clone(),
+                            );
+                            payload.insert("previous_id".to_string(), old_name);
+                            payload.insert(
+                                "slot".to_string(),
+                                completed.slot_index.to_string(),
+                            );
+                            payload.insert(
+                                "system".to_string(),
+                                system_entity.to_bits().to_string(),
+                            );
+                            event_system.fire_event_with_payload(
+                                Some(system_entity),
+                                clock.elapsed,
+                                Box::new(crate::event_system::LuaDefinedEventContext::new(
+                                    crate::event_system::BUILDING_BUILT_EVENT,
+                                    payload,
+                                )),
                             );
                         }
                     }
                 }
-            }
-        }
+                SysQueueKind::Demolition => {
+                    let demo = &mut bq.demolition_queue[0];
+                    demo.time_remaining -= 1;
+                    if demo.time_remaining <= 0 {
+                        let completed = bq.demolition_queue.remove(0);
+                        let slot_idx = completed.target_slot;
+                        if slot_idx < buildings.max_slots {
+                            let building_name = completed.building_id.0.as_str();
+                            info!(
+                                "System building {} demolished in slot {}, refunded M:{} E:{}",
+                                building_name,
+                                slot_idx,
+                                completed.minerals_refund,
+                                completed.energy_refund
+                            );
 
-        // --- Process demolition queue ---
-        let mut completed_demolitions = Vec::new();
-        for demo in bq.demolition_queue.iter_mut() {
-            demo.time_remaining -= delta;
-            if demo.time_remaining <= 0 {
-                completed_demolitions.push(demo.target_slot);
-            }
-        }
-        for slot_idx in completed_demolitions {
-            if let Some(pos) = bq
-                .demolition_queue
-                .iter()
-                .position(|d| d.target_slot == slot_idx)
-            {
-                let completed = bq.demolition_queue.remove(pos);
-                if slot_idx < buildings.max_slots {
-                    let building_name = completed.building_id.0.as_str();
-                    info!(
-                        "System building {} demolished in slot {}, refunded M:{} E:{}",
-                        building_name, slot_idx, completed.minerals_refund, completed.energy_refund
-                    );
+                            // Despawn the station ship in this slot.
+                            if let Some(ship_entity) =
+                                ship_in_slot(system_entity, slot_idx, &ship_q)
+                            {
+                                commands.entity(ship_entity).despawn();
+                                info!(
+                                    "Despawned station ship in slot {} for demolished building '{}'",
+                                    slot_idx, building_name
+                                );
+                            }
 
-                    // Despawn the station ship in this slot.
-                    if let Some(ship_entity) = ship_in_slot(system_entity, slot_idx, &ship_q) {
-                        commands.entity(ship_entity).despawn();
-                        info!(
-                            "Despawned station ship in slot {} for demolished building '{}'",
-                            slot_idx, building_name
-                        );
-                    }
-
-                    minerals_refunded = minerals_refunded.add(completed.minerals_refund);
-                    energy_refunded = energy_refunded.add(completed.energy_refund);
-                    event_system.fire_event(
-                        "building_demolished",
-                        Some(system_entity),
-                        clock.elapsed,
-                    );
-                }
-            }
-        }
-
-        // --- Process upgrade queue ---
-        let mut completed_upgrades = Vec::new();
-        for (idx, upgrade) in bq.upgrade_queue.iter_mut().enumerate() {
-            for _ in 0..delta {
-                let minerals_transfer = upgrade.minerals_remaining.min(available_minerals);
-                upgrade.minerals_remaining = upgrade.minerals_remaining.sub(minerals_transfer);
-                available_minerals = available_minerals.sub(minerals_transfer);
-                minerals_consumed = minerals_consumed.add(minerals_transfer);
-
-                let energy_transfer = upgrade.energy_remaining.min(available_energy);
-                upgrade.energy_remaining = upgrade.energy_remaining.sub(energy_transfer);
-                available_energy = available_energy.sub(energy_transfer);
-                energy_consumed = energy_consumed.add(energy_transfer);
-
-                let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
-                let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
-                    && upgrade.energy_remaining == Amt::ZERO;
-                super::build_tick::maybe_tick_build_time(
-                    &mut upgrade.build_time_remaining,
-                    transferred,
-                    no_more_needed,
-                );
-
-                if upgrade.minerals_remaining == Amt::ZERO
-                    && upgrade.energy_remaining == Amt::ZERO
-                    && upgrade.build_time_remaining <= 0
-                {
-                    completed_upgrades.push(idx);
-                    break;
-                }
-            }
-        }
-        for idx in completed_upgrades.into_iter().rev() {
-            let completed = bq.upgrade_queue.remove(idx);
-            if completed.slot_index < buildings.max_slots {
-                // Find the old building name from the ship in this slot.
-                let old_name = building_id_in_slot(system_entity, completed.slot_index, &ship_q, &building_registry)
-                    .map(|bid| bid.0)
-                    .unwrap_or_else(|| "empty".to_string());
-
-                // Despawn old station ship and spawn the upgraded one.
-                if let Some(old_ship) =
-                    ship_in_slot(system_entity, completed.slot_index, &ship_q)
-                {
-                    commands.entity(old_ship).despawn();
-                }
-                // Spawn the new station ship for the upgraded building.
-                if let Some(def) = building_registry.get(completed.target_id.as_str()) {
-                    if let Some(ref design_id) = def.ship_design_id {
-                        let owner = faction_q
-                            .get(system_entity)
-                            .ok()
-                            .map(|fo| Owner::Empire(fo.0))
-                            .unwrap_or(Owner::Neutral);
-                        let ship_entity = crate::ship::spawn_ship(
-                            &mut commands,
-                            design_id,
-                            def.name.clone(),
-                            system_entity,
-                            *sys_position,
-                            owner,
-                            &design_registry,
-                        );
-                        commands
-                            .entity(ship_entity)
-                            .insert(SlotAssignment(completed.slot_index));
+                            minerals_refunded = minerals_refunded.add(completed.minerals_refund);
+                            energy_refunded = energy_refunded.add(completed.energy_refund);
+                            event_system.fire_event(
+                                "building_demolished",
+                                Some(system_entity),
+                                clock.elapsed,
+                            );
+                        }
                     }
                 }
-
-                info!(
-                    "System building upgrade completed: {} -> {} in slot {}",
-                    old_name, completed.target_id, completed.slot_index
-                );
-                event_system.fire_event("building_upgraded", Some(system_entity), clock.elapsed);
-                let mut payload = std::collections::HashMap::new();
-                payload.insert("cause".to_string(), "upgrade".to_string());
-                payload.insert("building_id".to_string(), completed.target_id.0.clone());
-                payload.insert("previous_id".to_string(), old_name);
-                payload.insert("slot".to_string(), completed.slot_index.to_string());
-                payload.insert("system".to_string(), system_entity.to_bits().to_string());
-                event_system.fire_event_with_payload(
-                    Some(system_entity),
-                    clock.elapsed,
-                    Box::new(crate::event_system::LuaDefinedEventContext::new(
-                        crate::event_system::BUILDING_BUILT_EVENT,
-                        payload,
-                    )),
-                );
             }
         }
 
