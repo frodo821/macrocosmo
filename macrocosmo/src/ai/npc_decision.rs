@@ -296,7 +296,23 @@ impl NpcPolicy for SimpleNpcPolicy {
             commands.push(cmd);
         }
 
-        // Rule 5: Colony building — fill empty building slots
+        // Rule 5a: System building — construct a shipyard when a
+        // Core-equipped system exists but no shipyard does. Without this
+        // the empire can never reach `can_build_ships == 1.0`, blocking
+        // Rules 6/8 permanently. `systems_with_core > 0` is the #370 gate.
+        // The handler-side dedup (`handle_build_structure` skips if the
+        // same building id is already queued) absorbs per-tick re-emission
+        // while the queue drains.
+        let systems_with_core = bus
+            .current(&metric::for_faction("systems_with_core", faction_id))
+            .unwrap_or(0.0);
+        if can_build < 1.0 && systems_with_core > 0.0 && colony_count > 0.0 {
+            let cmd = Command::new(cmd_ids::build_structure(), faction_id.clone(), now)
+                .with_param("building_id", CommandValue::Str("shipyard".into()));
+            commands.push(cmd);
+        }
+
+        // Rule 5b: Colony building — fill empty building slots
         let free_slots = bus
             .current(&metric::for_faction("free_building_slots", faction_id))
             .unwrap_or(0.0);

@@ -163,7 +163,22 @@ pub fn emit_economic_metrics(
     planet_attrs: Query<&SystemAttributes, With<Planet>>,
     tech_tree: Option<Res<TechTree>>,
     ai_building_registry: Option<Res<crate::colony::BuildingRegistry>>,
+    core_ships: Query<
+        (&crate::galaxy::AtSystem, &FactionOwner),
+        With<crate::ship::CoreShip>,
+    >,
 ) {
+    // Per-empire: set of systems with at least one Core-equipped ship.
+    // Used to gate system-building construction (Infrastructure Core is
+    // required to place shipyards / ports / research labs — see #370).
+    let mut core_systems_per_empire: HashMap<Entity, HashSet<Entity>> = HashMap::new();
+    for (at, owner) in &core_ships {
+        core_systems_per_empire
+            .entry(owner.0)
+            .or_default()
+            .insert(at.0);
+    }
+
     // Pre-compute system-level building info per owner empire, keyed by empire entity.
     let mut shipyard_counts: HashMap<Entity, f64> = HashMap::new();
     let mut port_counts: HashMap<Entity, f64> = HashMap::new();
@@ -356,6 +371,11 @@ pub fn emit_economic_metrics(
         let sys_port = port_counts.get(&empire_entity).copied().unwrap_or(0.0);
         writer.emit(&metric::for_faction("systems_with_shipyard", fid), sys_shipyard);
         writer.emit(&metric::for_faction("systems_with_port", fid), sys_port);
+        let sys_core = core_systems_per_empire
+            .get(&empire_entity)
+            .map(|s| s.len() as f64)
+            .unwrap_or(0.0);
+        writer.emit(&metric::for_faction("systems_with_core", fid), sys_core);
         writer.emit(&metric::for_faction("max_building_slots", fid), max_slots);
         writer.emit(&metric::for_faction("used_building_slots", fid), used_slots);
         writer.emit(&metric::for_faction("free_building_slots", fid), max_slots - used_slots);

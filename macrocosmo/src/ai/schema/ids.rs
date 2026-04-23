@@ -83,6 +83,7 @@ pub mod metric {
         // 1.7 Infrastructure
         "systems_with_shipyard",
         "systems_with_port",
+        "systems_with_core",
         "max_building_slots",
         "used_building_slots",
         "free_building_slots",
@@ -227,6 +228,9 @@ pub mod metric {
     }
     pub fn systems_with_port() -> MetricId {
         MetricId::from("systems_with_port")
+    }
+    pub fn systems_with_core() -> MetricId {
+        MetricId::from("systems_with_core")
     }
     pub fn max_building_slots() -> MetricId {
         MetricId::from("max_building_slots")

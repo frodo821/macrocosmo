@@ -60,6 +60,24 @@ pub struct BuildResearchParams<'w, 's> {
     empire_tech: Query<'w, 's, (&'static mut TechTree, &'static mut ResearchQueue), With<Empire>>,
     colonies: Query<'w, 's, (Entity, &'static Colony, &'static Buildings, &'static mut BuildingQueue)>,
     planets: Query<'w, 's, &'static Planet>,
+    /// System-level building queues + slot state, used by the system-
+    /// building branch of `handle_build_structure` to route shipyard /
+    /// port / lab orders to the correct queue.
+    system_builds: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static crate::colony::SystemBuildings,
+            &'static mut crate::colony::SystemBuildingQueue,
+        ),
+        With<StarSystem>,
+    >,
+    /// Tracks which systems host a Core-equipped ship. Required gate for
+    /// system-building construction (#370): shipyard / port / lab are only
+    /// buildable in systems with an Infrastructure Core.
+    core_at_system:
+        Query<'w, 's, &'static crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
 }
 
 /// Drain AI commands from the bus and apply them to the game world.
@@ -718,20 +736,10 @@ fn handle_build_structure(
         return;
     };
 
-    // System buildings (shipyard, port, etc.) are not built through
-    // BuildingQueue — they go through SystemBuildingQueue. This handler
-    // only supports planet-level buildings.
-    if building_def.is_system_building {
-        debug!(
-            "build_structure: '{}' is a system building, not handled by this command",
-            building_id_str
-        );
-        return;
-    }
-
     let minerals_cost = building_def.minerals_cost;
     let energy_cost = building_def.energy_cost;
     let build_time = building_def.build_time;
+    let is_system_building = building_def.is_system_building;
 
     // Determine target system for ownership check
     let target_system = params
@@ -747,6 +755,88 @@ fn handle_build_structure(
         .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
         .map(|(e, _)| e)
         .collect();
+
+    // System-level buildings (shipyard, port, research lab, ...) route
+    // through `SystemBuildingQueue` on the StarSystem, not the per-colony
+    // `BuildingQueue`. We pick the first owned system that:
+    //   - hosts a Core ship (#370 gate);
+    //   - has a free system-building slot;
+    //   - does not already have a pending order for the same building id
+    //     (protects against the per-tick emit/retry loop while metrics
+    //     catch up — same-tick duplicates would otherwise stack).
+    if is_system_building {
+        let bid = crate::scripting::building_api::BuildingId::new(&building_id_str);
+        let core_systems: std::collections::HashSet<Entity> =
+            br.core_at_system.iter().map(|at| at.0).collect();
+        if let Some(ref target) = target_system {
+            if !owned_systems.contains(target) || !core_systems.contains(target) {
+                debug!(
+                    "build_structure (system): target {:?} not owned or lacks Core",
+                    target
+                );
+                return;
+            }
+        }
+        let mut queued = false;
+        for (sys_entity, sys_bldgs, mut sbq) in br.system_builds.iter_mut() {
+            if !owned_systems.contains(&sys_entity) {
+                continue;
+            }
+            if !core_systems.contains(&sys_entity) {
+                continue;
+            }
+            if let Some(ref target) = target_system {
+                if sys_entity != *target {
+                    continue;
+                }
+            }
+            if sbq
+                .queue
+                .iter()
+                .any(|o| o.building_id.as_str() == building_id_str)
+            {
+                debug!(
+                    "build_structure (system): '{}' already queued at {:?}, skipping",
+                    building_id_str, sys_entity
+                );
+                continue;
+            }
+            let sys_slots = crate::colony::system_buildings::slots_view(
+                sys_entity,
+                sys_bldgs.max_slots,
+                &br.station_ships,
+                building_registry,
+            );
+            let pending_slots: std::collections::HashSet<usize> =
+                sbq.queue.iter().map(|o| o.target_slot).collect();
+            let empty_slot = sys_slots
+                .iter()
+                .enumerate()
+                .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
+            let Some(slot_idx) = empty_slot else { continue };
+            sbq.push_build_order(crate::colony::building_queue::BuildingOrder {
+                order_id: 0,
+                building_id: bid.clone(),
+                target_slot: slot_idx,
+                minerals_remaining: minerals_cost,
+                energy_remaining: energy_cost,
+                build_time_remaining: build_time,
+            });
+            info!(
+                "build_structure (system): queued '{}' at system {:?} (slot {}) for empire {:?}",
+                building_id_str, sys_entity, slot_idx, empire_entity
+            );
+            queued = true;
+            break;
+        }
+        if !queued {
+            debug!(
+                "build_structure (system): no Core-equipped system with a free slot for '{}' (empire {:?})",
+                building_id_str, empire_entity
+            );
+        }
+        return;
+    }
 
     // Find a colony with an empty building slot
     let bid = crate::scripting::building_api::BuildingId::new(&building_id_str);

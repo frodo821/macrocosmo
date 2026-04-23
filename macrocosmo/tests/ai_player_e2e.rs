@@ -9,7 +9,10 @@ use macrocosmo::ai::{AiControlled, AiPlayerMode};
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{Owner, Ship, ShipState};
 
-use common::{advance_time, spawn_raw_hostile, spawn_test_ship, spawn_test_system, test_app};
+use common::{
+    advance_time, spawn_mock_core_ship, spawn_raw_hostile, spawn_test_colony, spawn_test_ship,
+    spawn_test_system, test_app,
+};
 
 /// With hostiles present and enough ships, the AI should issue attack_target
 /// and move ships toward the hostile system.
@@ -300,5 +303,135 @@ fn ai_ranks_home_closer_target_as_tiebreak() {
         ranked,
         vec![right, left],
         "same-gap ties resolve toward the empire's reference position"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// System-building AI (Rule 5a): previously the AI never emitted a shipyard
+// order. `handle_build_structure` treated `is_system_building == true` as a
+// silent drop, and `SimpleNpcPolicy` only ever asked for planet buildings
+// (mine / farm / power plant). The result was a soft-locked empire stuck
+// at `can_build_ships == 0` — no ships, no fleet composition, no fortify.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ai_builds_shipyard_when_core_present_and_no_shipyard() {
+    use macrocosmo::amount::Amt;
+    use macrocosmo::colony::SystemBuildingQueue;
+    use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap};
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(true));
+
+    // `npc_decision_tick` queries `Empire + Faction + KnowledgeStore +
+    // AiControlled`, so the test empire needs `KnowledgeStore` + a
+    // `SystemVisibilityMap` for the policy to see it at all.
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Shipyard Seeker".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "shipyard_seeker".into(),
+                name: "Shipyard Seeker".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            SystemVisibilityMap::default(),
+        ))
+        .id();
+
+    // Home system with a colony and a Core-equipped ship. `update_sovereignty`
+    // will stamp Sovereignty.owner from (CoreShip, AtSystem, FactionOwner)
+    // before the AI consumes metrics.
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    spawn_test_colony(
+        app.world_mut(),
+        home,
+        Amt::units(1_000),
+        Amt::units(1_000),
+        vec![None, None, None, None],
+    );
+    spawn_mock_core_ship(app.world_mut(), home, empire);
+
+    for _ in 0..6 {
+        advance_time(&mut app, 1);
+    }
+
+    let sbq = app
+        .world()
+        .get::<SystemBuildingQueue>(home)
+        .expect("home system must carry SystemBuildingQueue");
+    assert!(
+        sbq.queue
+            .iter()
+            .any(|o| o.building_id.as_str() == "shipyard"),
+        "AI should have queued a shipyard at the Core-equipped system; queue ids: {:?}",
+        sbq.queue
+            .iter()
+            .map(|o| o.building_id.as_str().to_string())
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn ai_skips_system_building_without_core() {
+    use macrocosmo::amount::Amt;
+    use macrocosmo::colony::SystemBuildingQueue;
+    use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap};
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(true));
+
+    app.world_mut()
+        .spawn((
+            Empire {
+                name: "Coreless".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "coreless".into(),
+                name: "Coreless".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            SystemVisibilityMap::default(),
+        ));
+
+    // Home system with a colony but NO Core ship — system-building
+    // construction (#370) must stay gated off.
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    spawn_test_colony(
+        app.world_mut(),
+        home,
+        Amt::units(1_000),
+        Amt::units(1_000),
+        vec![None, None, None, None],
+    );
+
+    for _ in 0..6 {
+        advance_time(&mut app, 1);
+    }
+
+    // Without a Core, `systems_with_core == 0` so Rule 5a must not fire,
+    // and even if it did the handler would refuse. Assert the queue holds
+    // no system-level building order.
+    let sbq = app.world().get::<SystemBuildingQueue>(home);
+    let queued_system = sbq
+        .map(|q| {
+            q.queue
+                .iter()
+                .map(|o| o.building_id.as_str().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        queued_system.is_empty(),
+        "AI must not queue system buildings in a Coreless system; got {:?}",
+        queued_system
     );
 }

@@ -437,6 +437,14 @@ fn declare_metrics(bus: &mut AiBus) {
         ),
     );
     bus.declare_metric(
+        m::systems_with_core(),
+        spec(
+            MetricType::Gauge,
+            Retention::Long,
+            "count of owned systems with an Infrastructure Core ship (#370 gate for system-building construction)",
+        ),
+    );
+    bus.declare_metric(
         m::max_building_slots(),
         spec(
             MetricType::Gauge,
