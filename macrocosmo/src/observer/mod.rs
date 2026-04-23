@@ -74,7 +74,12 @@ impl Plugin for ObserverPlugin {
         app.init_resource::<ObserverMode>()
             .init_resource::<ObserverView>()
             .init_resource::<RngSeed>()
-            .add_systems(Startup, apply_initial_speed.run_if(in_observer_mode))
+            // #439 Phase 3: gameplay config (initial speed) is a
+            // new-game construction step.
+            .add_systems(
+                OnEnter(crate::game_state::GameState::NewGame),
+                apply_initial_speed.run_if(in_observer_mode),
+            )
             .add_systems(
                 Update,
                 (

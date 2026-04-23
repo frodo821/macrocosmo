@@ -170,8 +170,12 @@ impl Plugin for KnowledgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RelayNetwork>()
             .init_resource::<DestroyedShipRegistry>()
+            // #439 Phase 3: world-spawn systems migrated from Startup to
+            // OnEnter(NewGame). Capital knowledge seeding + initial
+            // visibility-tier computation only runs during new-game
+            // construction; load-from-save rehydrates these differently.
             .add_systems(
-                Startup,
+                OnEnter(crate::game_state::GameState::NewGame),
                 (initialize_capital_knowledge, initialize_visibility_tiers)
                     .chain()
                     .after(crate::galaxy::generate_galaxy)

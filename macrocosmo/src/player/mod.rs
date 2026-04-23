@@ -8,6 +8,7 @@ use crate::components::Position;
 use crate::condition::ScopedFlags;
 use crate::empire::CommsParams;
 use crate::galaxy::StarSystem;
+use crate::game_state::GameState;
 use crate::knowledge::{KnowledgeStore, SystemVisibilityMap};
 use crate::physics;
 use crate::ship::{Ship, ShipState};
@@ -22,18 +23,20 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         use crate::observer::not_in_observer_mode;
 
-        app.add_systems(Startup, spawn_player_empire.run_if(not_in_observer_mode))
-            .add_systems(
-                Startup,
-                (
-                    bevy::ecs::schedule::ApplyDeferred,
-                    spawn_player,
-                )
-                    .chain()
-                    .after(crate::galaxy::generate_galaxy)
-                    .after(crate::scripting::load_faction_registry)
-                    .run_if(not_in_observer_mode),
-            )
+        // #439 Phase 3: player empire + Ruler spawn is a new-game
+        // construction step, moved from Startup to OnEnter(NewGame).
+        app.add_systems(
+            OnEnter(GameState::NewGame),
+            spawn_player_empire.run_if(not_in_observer_mode),
+        )
+        .add_systems(
+            OnEnter(GameState::NewGame),
+            (bevy::ecs::schedule::ApplyDeferred, spawn_player)
+                .chain()
+                .after(crate::galaxy::generate_galaxy)
+                .after(spawn_player_empire)
+                .run_if(not_in_observer_mode),
+        )
             .add_systems(
                 Update,
                 update_ruler_location.after(crate::time_system::advance_game_time),

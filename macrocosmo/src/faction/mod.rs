@@ -114,12 +114,15 @@ impl Plugin for FactionRelationsPlugin {
         app.init_resource::<FactionRelations>()
             .init_resource::<HostileFactions>()
             .init_resource::<KnownFactions>()
+            // #439 Phase 3: world-spawn systems migrated from Startup to
+            // OnEnter(NewGame).
+            //
+            // #293 follow-up: `spawn_hostile_factions` runs before
+            // `generate_galaxy` so hostiles can be spawned with
+            // `FactionOwner` directly. `generate_galaxy` carries the
+            // reverse `.after(spawn_hostile_factions)` in galaxy/mod.rs.
             .add_systems(
-                Startup,
-                // #293 follow-up: `spawn_hostile_factions` runs before
-                // `generate_galaxy` so hostiles can be spawned with
-                // `FactionOwner` directly. `generate_galaxy` carries the
-                // reverse `.after(spawn_hostile_factions)` in galaxy/mod.rs.
+                OnEnter(crate::game_state::GameState::NewGame),
                 spawn_hostile_factions.after(crate::player::spawn_player_empire),
             )
             // #173: After NPC empires have been promoted to `Empire`
@@ -130,7 +133,7 @@ impl Plugin for FactionRelationsPlugin {
             // hostiles as Neutral / standing=0 and never engage under the
             // aggressive ROE.
             .add_systems(
-                Startup,
+                OnEnter(crate::game_state::GameState::NewGame),
                 seed_npc_relations
                     .after(spawn_hostile_factions)
                     .after(crate::setup::run_all_factions_on_game_start),

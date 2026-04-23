@@ -232,12 +232,18 @@ fn test_apply_initial_speed_sets_game_speed() {
         ..Default::default()
     });
 
+    // #439 Phase 3: `apply_initial_speed` moved from Startup to
+    // OnEnter(GameState::NewGame). Register the state machine and seed
+    // `NewGame` so the OnEnter handler fires on first update.
+    app.add_plugins(macrocosmo::game_state::GameStatePlugin);
+    app.insert_state(macrocosmo::game_state::GameState::NewGame);
+
     app.update();
 
     let speed = app.world().resource::<macrocosmo::time_system::GameSpeed>();
     assert!(
         (speed.hexadies_per_second - 4.0).abs() < 1e-9,
-        "initial speed should be applied at Startup, got {}",
+        "initial speed should be applied on OnEnter(NewGame), got {}",
         speed.hexadies_per_second
     );
 }

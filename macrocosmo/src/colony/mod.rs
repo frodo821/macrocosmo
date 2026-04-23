@@ -39,24 +39,29 @@ impl Plugin for ColonyPlugin {
             .init_resource::<PendingSovereigntyChanges>()
             .add_systems(
                 Startup,
-                (
-                    load_building_registry.after(crate::scripting::load_all_scripts),
-                    // #297 (S-2): `spawn_capital_colony` now consults
-                    // `PlayerEmpire` so the capital Colony + StarSystem get
-                    // `FactionOwner` tagged at spawn. Explicit ordering
-                    // guarantees the empire entity exists first.
-                    spawn_capital_colony
-                        .after(crate::galaxy::generate_galaxy)
-                        .after(crate::player::spawn_player_empire),
-                ),
+                load_building_registry.after(crate::scripting::load_all_scripts),
             )
-            // #250: Prime the colony sync pipeline at the end of Startup so
-            // the UI's first frame shows correct production rates. Without
-            // this, sync only runs on Update and `aggregate_job_contributions`
-            // first fires after Startup completes — meaning the first render
-            // reads Production with only the legacy base value loaded.
+            // #439 Phase 3: world-spawn systems migrated from Startup to
+            // OnEnter(NewGame). `spawn_capital_colony` constructs the
+            // capital, and the sync chain primes production rates so the
+            // first UI frame reads correct numbers.
+            //
+            // #297 (S-2): `spawn_capital_colony` consults `PlayerEmpire`
+            // so the capital Colony + StarSystem get `FactionOwner` tagged
+            // at spawn. `.after(spawn_player_empire)` guarantees the
+            // empire entity exists first.
             .add_systems(
-                Startup,
+                OnEnter(crate::game_state::GameState::NewGame),
+                spawn_capital_colony
+                    .after(crate::galaxy::generate_galaxy)
+                    .after(crate::player::spawn_player_empire),
+            )
+            // #250: Prime the colony sync pipeline at the end of new-game
+            // construction so the UI's first frame shows correct
+            // production rates. The legacy explanation (first-frame
+            // staleness) still applies under the OnEnter schedule.
+            .add_systems(
+                OnEnter(crate::game_state::GameState::NewGame),
                 (
                     sync_building_modifiers,
                     crate::species::sync_job_assignment,

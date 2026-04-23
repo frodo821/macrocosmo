@@ -97,8 +97,11 @@ impl Plugin for VisualizationPlugin {
             .insert_resource(OutlineExpandedSystems::default())
             .insert_resource(CycleSelection::default())
             .add_systems(Startup, camera::setup_camera)
+            // #439 Phase 3: star visuals and camera centering read
+            // constructed StarSystem entities, so they run after the
+            // world build completes — OnEnter(InGame).
             .add_systems(
-                PostStartup,
+                OnEnter(crate::game_state::GameState::InGame),
                 (stars::spawn_star_visuals, camera::center_camera_on_capital),
             )
             .add_systems(

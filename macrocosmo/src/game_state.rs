@@ -19,10 +19,10 @@
 //! `Clone + Eq + Hash`, and keeping context out of the enum also makes
 //! it trivial to read via ordinary `SystemParam`s).
 //!
-//! Phase 1 intentionally keeps the middle states as flow-through: the
-//! actual world-spawn / save-apply work still runs in `Startup`. Phase 3
-//! will migrate those systems into `OnEnter(NewGame)` /
-//! `OnEnter(LoadingSave)`.
+//! Phase 3 migrated world-spawn systems from `Startup` to
+//! `OnEnter(GameState::NewGame)`; see `galaxy/player/colony/faction/
+//! knowledge/ai/observer/setup` plugins. `OnEnter(GameState::LoadingSave)`
+//! remains a flow-through stub until the save-apply pipeline lands.
 
 use std::path::PathBuf;
 

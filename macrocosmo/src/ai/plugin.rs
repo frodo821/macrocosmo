@@ -95,13 +95,15 @@ impl Plugin for AiPlugin {
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .init_resource::<DeclaredFactionSlots>()
             .add_systems(Startup, schema::declare_all)
-            // Declare per-faction metric slots explicitly at Startup for all
-            // existing factions. Mid-game faction spawns are handled by
-            // declare_foreign_slots_on_awareness on Update.
+            // #439 Phase 3: `declare_foreign_slots_for_existing_factions`
+            // must run after NPC empires have spawned, so it moves with
+            // the world-spawn chain to `OnEnter(NewGame)`. `schema::declare_all`
+            // stays on Startup — it only registers bus topic names.
+            // Mid-game faction spawns are still handled by
+            // `declare_foreign_slots_on_awareness` on Update.
             .add_systems(
-                Startup,
+                OnEnter(crate::game_state::GameState::NewGame),
                 declare_foreign_slots_for_existing_factions
-                    .after(schema::declare_all)
                     .after(crate::setup::run_all_factions_on_game_start),
             )
             // Foreign-slot declaration must run during Bootstrapping /

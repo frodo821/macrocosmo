@@ -6,6 +6,7 @@ mod types;
 use bevy::prelude::*;
 
 use crate::amount::Amt;
+use crate::game_state::GameState;
 use crate::modifier::ScopedModifiers;
 use crate::scripting::galaxy_api::{PlanetTypeRegistry, StarTypeRegistry};
 use crate::scripting::map_api::{MapTypeRegistry, PredefinedSystemRegistry};
@@ -43,22 +44,16 @@ impl Plugin for GalaxyPlugin {
                 Startup,
                 load_biome_registry.after(crate::scripting::load_all_scripts),
             )
+            // #439 Phase 3: world-spawn systems migrated from Startup to
+            // OnEnter(NewGame). Registry loads stay on Startup; galaxy /
+            // region construction only happens when entering a fresh game.
             .add_systems(
-                Startup,
-                generate_galaxy
-                    .after(load_galaxy_types)
-                    .after(load_biome_registry)
-                    .after(crate::scripting::load_predefined_system_registry)
-                    .after(crate::scripting::load_map_type_registry)
-                    .after(crate::faction::spawn_hostile_factions)
-                    .after(crate::scripting::load_faction_registry),
+                OnEnter(GameState::NewGame),
+                generate_galaxy.after(crate::faction::spawn_hostile_factions),
             )
             .add_systems(
-                Startup,
-                place_forbidden_regions
-                    .after(generate_galaxy)
-                    .after(crate::scripting::load_region_type_registry)
-                    .after(crate::scripting::load_region_spec_queue),
+                OnEnter(GameState::NewGame),
+                place_forbidden_regions.after(generate_galaxy),
             );
     }
 }

@@ -42,14 +42,24 @@ impl Plugin for GameSetupPlugin {
             app.add_plugins(GameStatePlugin);
         }
 
+        // #439 Phase 3: world-spawn systems migrated from Startup to
+        // OnEnter(GameState::NewGame). The chain below mirrors the
+        // previous Startup ordering; each .after(...) reference points
+        // at a system that is also registered on OnEnter(NewGame) in
+        // its owning plugin (see e.g. galaxy/player/colony/faction/
+        // knowledge/ai/observer plugins).
+        //
+        // #173 / Flush-deferred-commands notes from the old Startup
+        // registration still apply: `run_all_factions_on_game_start`
+        // reads `HomeSystemAssignments` which `generate_galaxy` inserts
+        // via `Commands`, so ApplyDeferred runs between galaxy build
+        // and NPC spawn.
         app.add_systems(
-            Startup,
-            apply_faction_presets
-                .after(crate::player::spawn_player_empire)
-                .after(crate::scripting::load_faction_registry),
+            OnEnter(GameState::NewGame),
+            apply_faction_presets.after(crate::player::spawn_player_empire),
         )
         .add_systems(
-            Startup,
+            OnEnter(GameState::NewGame),
             (
                 bevy::ecs::schedule::ApplyDeferred,
                 run_faction_on_game_start,
@@ -58,22 +68,11 @@ impl Plugin for GameSetupPlugin {
                 .after(crate::galaxy::generate_galaxy)
                 .after(crate::player::spawn_player_empire)
                 .after(crate::colony::spawn_capital_colony)
-                .after(crate::scripting::load_all_scripts)
-                .after(crate::scripting::load_faction_registry)
                 .after(apply_faction_presets)
                 .run_if(not_in_observer_mode),
         )
-        // #173: `run_all_factions_on_game_start` spawns NPC empires for every
-        // registered non-passive faction. Runs in BOTH player and observer
-        // modes so NPC empires exist in regular play. `.after(run_faction_on_game_start)`
-        // guarantees the player empire is fully set up before NPC spawns
-        // iterate the registry, and existing double-spawn guards
-        // (`existing_by_id` + passive-skip) prevent duplicates.
-        // Flush deferred commands from generate_galaxy (which inserts
-        // HomeSystemAssignments via Commands) before run_all_factions_on_game_start
-        // tries to read it.
         .add_systems(
-            Startup,
+            OnEnter(GameState::NewGame),
             (
                 bevy::ecs::schedule::ApplyDeferred,
                 run_all_factions_on_game_start,
@@ -81,21 +80,27 @@ impl Plugin for GameSetupPlugin {
                 .chain()
                 .after(crate::galaxy::generate_galaxy)
                 .after(crate::colony::spawn_capital_colony)
-                .after(crate::scripting::load_all_scripts)
-                .after(crate::scripting::load_faction_registry)
                 .after(run_faction_on_game_start),
         )
         .add_systems(
-            Startup,
+            OnEnter(GameState::NewGame),
             init_observer_view
                 .after(run_all_factions_on_game_start)
                 .run_if(in_observer_mode),
         )
-        // #439 Phase 1: after all Startup work is done, flip the state
-        // machine into `NewGame` or `LoadingSave` depending on whether
-        // a `LoadSaveRequest` was inserted. Both middle states
-        // immediately hand off to `InGame` in Phase 1 — Phase 3 fills
-        // them with real world-spawn / save-apply work.
+        // Finalize: flip state to InGame. Runs after every other
+        // OnEnter(NewGame) system so world construction is complete
+        // before tick systems start.
+        .add_systems(
+            OnEnter(GameState::NewGame),
+            finish_new_game_transition
+                .after(run_all_factions_on_game_start)
+                .after(init_observer_view),
+        )
+        // #439 Phase 1: flip the state machine into `NewGame` or
+        // `LoadingSave` depending on whether a `LoadSaveRequest` was
+        // inserted. This stays on Startup — the middle states consume
+        // it.
         //
         // Gate on `Bootstrapping` so test harnesses that seed `InGame`
         // via `insert_state(...)` aren't dragged back through the
@@ -103,12 +108,9 @@ impl Plugin for GameSetupPlugin {
         .add_systems(
             Startup,
             dispatch_initial_state
-                .after(run_all_factions_on_game_start)
                 .after(crate::scripting::lifecycle::run_lifecycle_hooks)
-                .after(init_observer_view)
                 .run_if(in_state(GameState::Bootstrapping)),
         )
-        .add_systems(OnEnter(GameState::NewGame), finish_new_game_transition)
         .add_systems(
             OnEnter(GameState::LoadingSave),
             finish_loading_save_transition,
@@ -134,9 +136,10 @@ pub fn dispatch_initial_state(
     }
 }
 
-/// #439 Phase 1 stub — Phase 3 replaces this with the real world-spawn
-/// chain registered on `OnEnter(NewGame)`. For now the spawn work still
-/// runs in `Startup`, so this hook only flips the state to `InGame`.
+/// #439 Phase 3 — terminal `OnEnter(NewGame)` system. Runs after the
+/// full world-spawn chain (see `GameSetupPlugin::build`) and flips the
+/// state to `InGame` so game-tick systems under
+/// `run_if(in_state(InGame))` begin running.
 pub fn finish_new_game_transition(mut next: ResMut<NextState<GameState>>) {
     next.set(GameState::InGame);
 }
