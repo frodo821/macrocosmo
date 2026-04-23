@@ -80,6 +80,13 @@ pub struct DestroyedShipRecord {
     pub last_known_system: Option<Entity>,
     /// Set to `true` once the "Missing" notification has been emitted.
     pub marked_missing: bool,
+    /// #435: Human-readable description for the pending `ShipDestroyed`
+    /// event. The event is fired when light from the destruction arrives
+    /// at the player empire's viewer, NOT at destruction time.
+    pub destroyed_description: String,
+    /// #435: Set to `true` once the player-facing `ShipDestroyed` event
+    /// has been emitted (prevents re-firing across subsequent ticks).
+    pub event_emitted: bool,
 }
 
 /// Grace period (in hexadies) before a destroyed ship is considered "missing."
@@ -92,6 +99,26 @@ pub const MISSING_GRACE_HEXADIES: i64 = 5;
 #[derive(Resource, Default, Clone, Debug)]
 pub struct DestroyedShipRegistry {
     pub records: Vec<DestroyedShipRecord>,
+}
+
+/// #435: A single `GameEvent` whose emission is deferred until light reaches
+/// the player empire's viewer. Separate from [`DestroyedShipRegistry`] because
+/// combat produces multi-ship aggregate events (e.g. `CombatDefeat` "All
+/// ships destroyed by X") that are not tied to a single pending ship record.
+#[derive(Clone, Debug)]
+pub struct DelayedCombatEvent {
+    pub origin_pos: [f64; 3],
+    pub destruction_tick: i64,
+    pub kind: crate::events::GameEventKind,
+    pub description: String,
+    pub related_system: Option<Entity>,
+}
+
+/// #435: Queue of combat-origin events that are waiting for light to reach
+/// the player. Drained by [`drain_delayed_combat_events`].
+#[derive(Resource, Default, Clone, Debug)]
+pub struct DelayedCombatEventQueue {
+    pub pending: Vec<DelayedCombatEvent>,
 }
 
 /// #392: 4-tier system visibility model.
@@ -170,6 +197,9 @@ impl Plugin for KnowledgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RelayNetwork>()
             .init_resource::<DestroyedShipRegistry>()
+            // #435: holds CombatDefeat-style aggregate events until light from
+            // the combat site reaches the player empire's viewer.
+            .init_resource::<DelayedCombatEventQueue>()
             // #439 Phase 3: world-spawn systems migrated from Startup to
             // OnEnter(NewGame). Capital knowledge seeding + initial
             // visibility-tier computation only runs during new-game
@@ -192,6 +222,16 @@ impl Plugin for KnowledgePlugin {
                 Update,
                 update_destroyed_ship_knowledge
                     .after(propagate_knowledge)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
+            // #435: drain queued remote-combat events whose light has now
+            // reached the player empire's viewer. Game-tick only — pause
+            // GameSpeed should hold events too.
+            .add_systems(
+                Update,
+                drain_delayed_combat_events
+                    .after(update_destroyed_ship_knowledge)
+                    .after(crate::time_system::advance_game_time)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             .add_systems(
@@ -1119,9 +1159,14 @@ pub fn propagate_knowledge(
     } // end empire loop
 }
 
-/// #409: Check destroyed ship records. Two-phase transition:
+/// #409 / #435: Check destroyed ship records. Two-phase transition:
 /// 1. After `MISSING_GRACE_HEXADIES` → mark snapshot as Missing, emit ShipMissing event
-/// 2. After full light-speed delay → mark snapshot as Destroyed, remove record
+/// 2. After full light-speed delay → mark snapshot as Destroyed, emit ShipDestroyed event, remove record
+///
+/// #435: The `ShipDestroyed` [`GameEvent`] is fired **here**, not at the site
+/// where combat despawns the ship. This ensures the player's event log entry
+/// arrives at the same time as the ghost-to-destroyed transition, respecting
+/// the light-speed communication constraint.
 pub fn update_destroyed_ship_knowledge(
     clock: Res<GameClock>,
     positions: Query<&Position>,
@@ -1171,6 +1216,23 @@ pub fn update_destroyed_ship_knowledge(
                         source: ObservationSource::Direct,
                     });
                 }
+
+                // #435: Fire the ShipDestroyed event for the player empire,
+                // at the moment light arrives (not at destruction time).
+                // Non-player empires only update their KnowledgeStore.
+                if Some(empire_entity) == player_empire
+                    && !record.event_emitted
+                    && !record.destroyed_description.is_empty()
+                {
+                    events.write(crate::events::GameEvent::new(
+                        &mut next_id,
+                        clock.elapsed,
+                        crate::events::GameEventKind::ShipDestroyed,
+                        record.destroyed_description.clone(),
+                        record.last_known_system,
+                    ));
+                    record.event_emitted = true;
+                }
             } else {
                 all_received_destruction = false;
 
@@ -1206,6 +1268,55 @@ pub fn update_destroyed_ship_knowledge(
 
         // Only remove the record when ALL empires have received the destruction.
         !all_received_destruction
+    });
+}
+
+/// #435: Drain [`DelayedCombatEventQueue`], firing each event at the tick
+/// when light from its origin reaches the player empire's viewer. Events
+/// without a player empire are dropped silently (observer mode; the event
+/// log belongs to the player).
+pub fn drain_delayed_combat_events(
+    clock: Res<GameClock>,
+    positions: Query<&Position>,
+    empire_q: Query<
+        (Entity, &crate::player::EmpireViewerSystem),
+        (With<crate::player::Empire>, With<crate::player::PlayerEmpire>),
+    >,
+    mut queue: ResMut<DelayedCombatEventQueue>,
+    mut events: MessageWriter<crate::events::GameEvent>,
+    mut next_id: ResMut<NextEventId>,
+) {
+    // Snapshot the player empire viewer position; bail out in observer mode.
+    let player_viewer_pos: Option<[f64; 3]> = empire_q
+        .iter()
+        .next()
+        .and_then(|(_, viewer)| positions.get(viewer.0).ok())
+        .map(|p| p.as_array());
+
+    let Some(viewer_pos) = player_viewer_pos else {
+        // Observer mode: drop pending combat events so they don't accumulate
+        // indefinitely. Matches the historical behaviour where the event log
+        // is only surfaced to the player.
+        queue.pending.clear();
+        return;
+    };
+
+    queue.pending.retain(|ev| {
+        let distance = physics::distance_ly_arr(viewer_pos, ev.origin_pos);
+        let delay = physics::light_delay_hexadies(distance);
+        let arrives_at = ev.destruction_tick + delay;
+        if clock.elapsed >= arrives_at {
+            events.write(crate::events::GameEvent::new(
+                &mut next_id,
+                clock.elapsed,
+                ev.kind.clone(),
+                ev.description.clone(),
+                ev.related_system,
+            ));
+            false // drop from queue
+        } else {
+            true // retain; light hasn't arrived yet
+        }
     });
 }
 

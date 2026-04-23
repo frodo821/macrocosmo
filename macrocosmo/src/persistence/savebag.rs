@@ -4521,6 +4521,15 @@ pub struct SavedDestroyedShipRecord {
     pub last_known_system_bits: Option<u64>,
     #[serde(default)]
     pub marked_missing: bool,
+    /// #435: Pre-built description for the light-delayed `ShipDestroyed`
+    /// event. Defaults to empty for legacy saves — in which case the event
+    /// simply won't fire (the snapshot still transitions to Destroyed).
+    #[serde(default)]
+    pub destroyed_description: String,
+    /// #435: Tracks whether the player-facing `ShipDestroyed` event has
+    /// already been emitted, to prevent re-firing across save/load cycles.
+    #[serde(default)]
+    pub event_emitted: bool,
 }
 
 impl SavedDestroyedShipRecord {
@@ -4533,6 +4542,8 @@ impl SavedDestroyedShipRecord {
             design_id: self.design_id,
             last_known_system: self.last_known_system_bits.map(|b| remap_entity(b, map)),
             marked_missing: self.marked_missing,
+            destroyed_description: self.destroyed_description,
+            event_emitted: self.event_emitted,
         }
     }
 }

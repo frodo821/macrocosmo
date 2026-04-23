@@ -415,6 +415,9 @@ pub fn test_app() -> App {
     // and friends. Instantiated without the full NotificationsPlugin because
     // the plugin registers egui-coupled systems that tests don't want.
     app.init_resource::<macrocosmo::knowledge::DestroyedShipRegistry>();
+    // #435: DelayedCombatEventQueue is a ResMut parameter on resolve_combat
+    // so it must be initialised before the combat system runs.
+    app.init_resource::<macrocosmo::knowledge::DelayedCombatEventQueue>();
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
     app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
     // #249: EventId allocator + dedupe set must exist whenever a system that
@@ -717,6 +720,10 @@ pub fn test_app() -> App {
 /// collected into EventLog. Needed for tests that check EventLog entries.
 /// NOTE: Do not combine with tests that rely on EventSystem.fired_log timing,
 /// because the extra MessageReader<GameEvent> system can alter scheduling.
+///
+/// #435: Also registers the light-speed delayed knowledge / event systems
+/// (`update_destroyed_ship_knowledge` + `drain_delayed_combat_events`) so
+/// the full destruction → event-log pipeline can be exercised in tests.
 pub fn test_app_with_event_log() -> App {
     let mut app = test_app();
     app.add_systems(
@@ -724,6 +731,20 @@ pub fn test_app_with_event_log() -> App {
         macrocosmo::events::collect_events
             .after(macrocosmo::time_system::advance_game_time)
             .after(macrocosmo::ship::pursuit::detect_hostiles_system),
+    );
+    // #435: Chain the deferred-event systems so they fire BEFORE
+    // collect_events in the same frame. This matches production ordering
+    // (knowledge update → event write → collect_events).
+    app.add_systems(
+        Update,
+        (
+            macrocosmo::knowledge::update_destroyed_ship_knowledge,
+            macrocosmo::knowledge::drain_delayed_combat_events,
+        )
+            .chain()
+            .after(macrocosmo::time_system::advance_game_time)
+            .after(macrocosmo::ship::pursuit::detect_hostiles_system)
+            .before(macrocosmo::events::collect_events),
     );
     app
 }
@@ -795,6 +816,8 @@ pub fn full_test_app() -> App {
 
     // --- #233 Notification pipeline resources ---
     app.init_resource::<macrocosmo::knowledge::DestroyedShipRegistry>();
+    // #435: DelayedCombatEventQueue is a ResMut parameter on resolve_combat.
+    app.init_resource::<macrocosmo::knowledge::DelayedCombatEventQueue>();
     app.init_resource::<macrocosmo::knowledge::PendingFactQueue>();
     app.init_resource::<macrocosmo::knowledge::RelayNetwork>();
     // #249: EventId allocator + dedupe set must exist whenever a system that
@@ -955,6 +978,18 @@ pub fn full_test_app() -> App {
     );
     app.add_systems(Update, propagate_knowledge);
     app.add_systems(Update, macrocosmo::knowledge::snapshot_production_knowledge);
+    // #409 / #435: Light-speed delayed destruction pipeline — included so the
+    // full_test_app exercises the Query conflict detection across these
+    // systems too.
+    app.add_systems(
+        Update,
+        macrocosmo::knowledge::update_destroyed_ship_knowledge.after(propagate_knowledge),
+    );
+    app.add_systems(
+        Update,
+        macrocosmo::knowledge::drain_delayed_combat_events
+            .after(macrocosmo::knowledge::update_destroyed_ship_knowledge),
+    );
 
     // --- Deep space (from DeepSpacePlugin) ---
     app.init_resource::<macrocosmo::deep_space::StructureRegistry>();

@@ -11,8 +11,8 @@ use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, StarSystem};
 use crate::knowledge::{
-    CombatVictor, DestroyedShipRecord, DestroyedShipRegistry, FactSysParam, KnowledgeFact,
-    PlayerVantage,
+    CombatVictor, DelayedCombatEventQueue, DestroyedShipRecord, DestroyedShipRegistry,
+    FactSysParam, KnowledgeFact, PlayerVantage,
 };
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
@@ -217,6 +217,7 @@ pub fn resolve_combat(
     mut fact_sys: FactSysParam,
     mut bus: AiBusWriter,
     mut destroyed_registry: ResMut<DestroyedShipRegistry>,
+    mut delayed_combat_events: ResMut<DelayedCombatEventQueue>,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -471,7 +472,12 @@ pub fn resolve_combat(
             }
 
             for (entity, name, design_id) in &destroyed_ships {
-                // #409: Record destruction for light-speed delayed snapshot update.
+                // #435: Build the player-facing description up front so the
+                // pending record can fire the ShipDestroyed event when light
+                // arrives (see `update_destroyed_ship_knowledge`).
+                let desc = format!("{} destroyed in combat at {}", name, system_name);
+                // #409 / #435: Record destruction for light-speed delayed
+                // snapshot update AND event emission.
                 if let Some(pos) = system_pos_arr {
                     destroyed_registry.records.push(DestroyedShipRecord {
                         entity: *entity,
@@ -481,9 +487,13 @@ pub fn resolve_combat(
                         design_id: design_id.clone(),
                         last_known_system: Some(*system_entity),
                         marked_missing: false,
+                        destroyed_description: desc.clone(),
+                        event_emitted: false,
                     });
                 }
-                // #59: Check if player is aboard this ship — respawn at capital
+                // #59: Check if player is aboard this ship — respawn at capital.
+                // PlayerRespawn is an engine-level event (not a remote
+                // observation) and therefore stays immediate.
                 if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
                     if let Some(aboard_ship) = aboard {
                         if aboard_ship.ship == *entity {
@@ -510,16 +520,13 @@ pub fn resolve_combat(
                     }
                 }
                 commands.entity(*entity).despawn();
-                // #409: Per-ship destruction uses ShipDestroyed (not CombatDefeat).
+                // #435: The ShipDestroyed `GameEvent` itself is now fired by
+                // `update_destroyed_ship_knowledge` once light reaches the
+                // player empire's viewer. We still dual-write the
+                // `CombatOutcome` fact here because the fact pipeline has its
+                // own (relay-aware) light-delay machinery that governs banner
+                // delivery.
                 let event_id = fact_sys.allocate_event_id();
-                let desc = format!("{} destroyed in combat at {}", name, system_name);
-                events.write(GameEvent {
-                    id: event_id,
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::ShipDestroyed,
-                    description: desc.clone(),
-                    related_system: Some(*system_entity),
-                });
                 if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
                     let fact = KnowledgeFact::CombatOutcome {
                         event_id: Some(event_id),
@@ -546,13 +553,19 @@ pub fn resolve_combat(
                     "All ships destroyed by {} at {}",
                     hostile_label, system_name
                 );
-                events.write(GameEvent {
-                    id: event_id,
-                    timestamp: clock.elapsed,
-                    kind: GameEventKind::CombatDefeat,
-                    description: desc.clone(),
-                    related_system: Some(*system_entity),
-                });
+                // #435: Defer the CombatDefeat event until light from the
+                // engagement reaches the player empire's viewer.
+                if let Some(pos) = system_pos_arr {
+                    delayed_combat_events.pending.push(
+                        crate::knowledge::DelayedCombatEvent {
+                            origin_pos: pos,
+                            destruction_tick: clock.elapsed,
+                            kind: GameEventKind::CombatDefeat,
+                            description: desc.clone(),
+                            related_system: Some(*system_entity),
+                        },
+                    );
+                }
                 if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
                     let fact = KnowledgeFact::CombatOutcome {
                         event_id: Some(event_id),
@@ -789,7 +802,13 @@ pub fn resolve_combat(
                     .unwrap_or_else(|_| "Unknown".to_string());
 
                 for (entity, name, design_id) in &destroyed_a {
-                    // #409: Record destruction for light-speed delayed snapshot update.
+                    // #435: Build description up front for the light-delayed event.
+                    let desc = format!(
+                        "{} ({}) destroyed by {} at {}",
+                        name, faction_a_name, faction_b_name, system_name
+                    );
+                    // #409 / #435: Record destruction for light-speed delayed
+                    // snapshot update AND ShipDestroyed event emission.
                     if let Some(pos) = system_pos_arr {
                         destroyed_registry.records.push(DestroyedShipRecord {
                             entity: *entity,
@@ -799,9 +818,12 @@ pub fn resolve_combat(
                             design_id: design_id.clone(),
                             last_known_system: Some(*system_entity),
                             marked_missing: false,
+                            destroyed_description: desc.clone(),
+                            event_emitted: false,
                         });
                     }
-                    // Check if player is aboard.
+                    // Check if player is aboard. PlayerRespawn stays immediate
+                    // (engine-level, not a remote observation).
                     if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
                         if let Some(aboard_ship) = aboard {
                             if aboard_ship.ship == *entity {
@@ -827,18 +849,9 @@ pub fn resolve_combat(
                         }
                     }
                     commands.entity(*entity).despawn();
+                    // #435: ShipDestroyed event is deferred; the fact pipeline
+                    // keeps its own light-delay path for the banner side.
                     let event_id = fact_sys.allocate_event_id();
-                    let desc = format!(
-                        "{} ({}) destroyed by {} at {}",
-                        name, faction_a_name, faction_b_name, system_name
-                    );
-                    events.write(GameEvent {
-                        id: event_id,
-                        timestamp: clock.elapsed,
-                        kind: GameEventKind::ShipDestroyed,
-                        description: desc.clone(),
-                        related_system: Some(*system_entity),
-                    });
                     if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
                         let fact = KnowledgeFact::CombatOutcome {
                             event_id: Some(event_id),
@@ -851,7 +864,13 @@ pub fn resolve_combat(
                 }
 
                 for (entity, name, design_id) in &destroyed_b {
-                    // #409: Record destruction for light-speed delayed snapshot update.
+                    // #435: Build description up front for the light-delayed event.
+                    let desc = format!(
+                        "{} ({}) destroyed by {} at {}",
+                        name, faction_b_name, faction_a_name, system_name
+                    );
+                    // #409 / #435: Record destruction for light-speed delayed
+                    // snapshot update AND ShipDestroyed event emission.
                     if let Some(pos) = system_pos_arr {
                         destroyed_registry.records.push(DestroyedShipRecord {
                             entity: *entity,
@@ -861,6 +880,8 @@ pub fn resolve_combat(
                             design_id: design_id.clone(),
                             last_known_system: Some(*system_entity),
                             marked_missing: false,
+                            destroyed_description: desc.clone(),
+                            event_emitted: false,
                         });
                     }
                     if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
@@ -888,18 +909,9 @@ pub fn resolve_combat(
                         }
                     }
                     commands.entity(*entity).despawn();
+                    // #435: ShipDestroyed event is deferred; the fact pipeline
+                    // keeps its own light-delay path for the banner side.
                     let event_id = fact_sys.allocate_event_id();
-                    let desc = format!(
-                        "{} ({}) destroyed by {} at {}",
-                        name, faction_b_name, faction_a_name, system_name
-                    );
-                    events.write(GameEvent {
-                        id: event_id,
-                        timestamp: clock.elapsed,
-                        kind: GameEventKind::ShipDestroyed,
-                        description: desc.clone(),
-                        related_system: Some(*system_entity),
-                    });
                     if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
                         let fact = KnowledgeFact::CombatOutcome {
                             event_id: Some(event_id),
