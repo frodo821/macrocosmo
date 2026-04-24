@@ -12,6 +12,7 @@
 //! - Anomaly detection
 //! - Balance sweep CLI binary
 
+pub mod agent_scenario;
 pub mod assertions;
 pub mod record;
 pub mod recorder;
@@ -32,6 +33,10 @@ pub use record::{
 pub use record::ScenarioConfig;
 pub use recorder::RecordingBus;
 pub use replayer::{ReplayError, replay};
+pub use agent_scenario::{
+    AgentPlaythrough, AgentScenario, FactionAgentSpec, FactionTrace, LongTermWrapper,
+    MidTermWrapper, ShortTermWrapper, run_agent_scenario,
+};
 pub use scenario::{
     EvidencePulse, MetricScript, Scenario, SyntheticDynamics, TickFn, run_scenario,
 };

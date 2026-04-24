@@ -1,0 +1,340 @@
+//! Default mid-term agent — translates intents into campaign ops.
+//!
+//! Strategy:
+//!
+//! 1. Drop / log each expired intent (`OverrideReason::Expired`).
+//! 2. Sort remaining intents by `effective_priority(now)` descending.
+//! 3. Drop / log intents below `stale_threshold`
+//!    (`OverrideReason::StaleIntent`).
+//! 4. For each remaining intent, synthesize an ObjectiveId from
+//!    `(kind, params["metric"])` and issue `Start` + `Transition(Active)`
+//!    if no matching campaign exists, or `AttachIntent` if one is
+//!    already active for this objective.
+//! 5. Honor `supersedes` — when an intent supersedes a prior one whose
+//!    campaign is still active, `AttachIntent` the new intent id onto
+//!    the existing campaign (no fresh Start). The orchestrator applies
+//!    ops idempotently.
+//!
+//! Game-side agents replace this wholesale; see
+//! `docs/ai-three-layer.md` §MidTermDefault.
+
+use crate::agent::{
+    CampaignOp, MidTermAgent, MidTermInput, MidTermOutput, OverrideEntry, OverrideReason,
+};
+use crate::campaign::CampaignState;
+use crate::ids::ObjectiveId;
+use crate::intent::Intent;
+
+/// Config for [`IntentDrivenMidTerm`].
+#[derive(Debug, Clone)]
+pub struct MidTermDefaultConfig {
+    /// Intents with `effective_priority(now) < stale_threshold` are
+    /// overridden (not applied) and logged.
+    pub stale_threshold: f32,
+}
+
+impl Default for MidTermDefaultConfig {
+    fn default() -> Self {
+        Self {
+            stale_threshold: 0.1,
+        }
+    }
+}
+
+/// Default mid-term agent: `Intent → CampaignOp` translator.
+#[derive(Debug, Default)]
+pub struct IntentDrivenMidTerm {
+    pub config: MidTermDefaultConfig,
+}
+
+impl IntentDrivenMidTerm {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_config(mut self, config: MidTermDefaultConfig) -> Self {
+        self.config = config;
+        self
+    }
+}
+
+/// Synthesize an ObjectiveId for an intent: `{kind}[:{metric_key}]`.
+///
+/// The intent's params may carry a `metric:<name>` key
+/// (emitted by the default long-term agent); when present, it is
+/// appended so different metrics get distinct campaigns.
+fn objective_id_for(intent: &Intent) -> ObjectiveId {
+    let kind = intent.spec.kind.as_str();
+    let metric_key = intent
+        .spec
+        .params
+        .0
+        .keys()
+        .find(|k| k.starts_with("metric:"))
+        .map(|k| k.strip_prefix("metric:").unwrap_or("").to_string());
+    match metric_key {
+        Some(m) if !m.is_empty() => ObjectiveId::from(format!("{kind}:{m}")),
+        _ => ObjectiveId::from(kind),
+    }
+}
+
+impl MidTermAgent for IntentDrivenMidTerm {
+    fn tick(&mut self, input: MidTermInput<'_>) -> MidTermOutput {
+        let mut ops = Vec::new();
+        let mut log = Vec::new();
+
+        // Collect (score, intent) after filtering expired.
+        let mut scored: Vec<(f32, &Intent)> = Vec::with_capacity(input.inbox.len());
+        for intent in input.inbox {
+            if intent.is_expired(input.now) {
+                log.push(OverrideEntry {
+                    intent_id: intent.id.clone(),
+                    intent_kind: intent.spec.kind.clone(),
+                    reason: OverrideReason::Expired,
+                    at: input.now,
+                });
+                continue;
+            }
+            let score = intent.effective_priority(input.now);
+            scored.push((score, intent));
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (score, intent) in scored {
+            if score < self.config.stale_threshold {
+                log.push(OverrideEntry {
+                    intent_id: intent.id.clone(),
+                    intent_kind: intent.spec.kind.clone(),
+                    reason: OverrideReason::StaleIntent,
+                    at: input.now,
+                });
+                continue;
+            }
+
+            let objective_id = objective_id_for(intent);
+
+            // Supersedes handling: if the supersedes target's campaign
+            // is still live, re-point it at this new intent.
+            if let Some(superseded_id) = &intent.spec.supersedes {
+                if let Some(existing) = input
+                    .campaigns
+                    .iter()
+                    .find(|c| c.source_intent.as_ref() == Some(superseded_id))
+                {
+                    log.push(OverrideEntry {
+                        intent_id: superseded_id.clone(),
+                        intent_kind: intent.spec.kind.clone(),
+                        reason: OverrideReason::Superseded,
+                        at: input.now,
+                    });
+                    ops.push(CampaignOp::AttachIntent {
+                        campaign_id: existing.id.clone(),
+                        intent_id: intent.id.clone(),
+                    });
+                    // Ensure active (in case it was suspended).
+                    if existing.state != CampaignState::Active {
+                        ops.push(CampaignOp::Transition {
+                            campaign_id: existing.id.clone(),
+                            to: CampaignState::Active,
+                            at: input.now,
+                        });
+                    }
+                    continue;
+                }
+            }
+
+            // If a campaign with this objective exists, attach the new
+            // intent (and re-activate if needed).
+            if let Some(existing) = input.campaigns.iter().find(|c| c.id == objective_id) {
+                if existing.source_intent.as_ref() != Some(&intent.id) {
+                    ops.push(CampaignOp::AttachIntent {
+                        campaign_id: existing.id.clone(),
+                        intent_id: intent.id.clone(),
+                    });
+                }
+                if existing.state != CampaignState::Active
+                    && !existing.state.is_terminal()
+                {
+                    ops.push(CampaignOp::Transition {
+                        campaign_id: existing.id.clone(),
+                        to: CampaignState::Active,
+                        at: input.now,
+                    });
+                }
+            } else {
+                // Fresh campaign.
+                ops.push(CampaignOp::Start {
+                    objective_id: objective_id.clone(),
+                    source_intent: Some(intent.id.clone()),
+                    at: input.now,
+                });
+                ops.push(CampaignOp::Transition {
+                    campaign_id: objective_id,
+                    to: CampaignState::Active,
+                    at: input.now,
+                });
+            }
+        }
+
+        MidTermOutput {
+            campaign_ops: ops,
+            override_log: log,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::bus::AiBus;
+    use crate::campaign::Campaign;
+    use crate::ids::{FactionId, IntentId, IntentKindId, IntentTargetRef};
+    use crate::intent::{IntentParams, IntentSpec, RationaleSnapshot};
+    use crate::value_expr::ValueExpr;
+    use crate::warning::WarningMode;
+
+    fn make_intent(id: &str, kind: &str, issued_at: i64, arrives_at: i64) -> Intent {
+        let spec = IntentSpec {
+            kind: IntentKindId::from(kind),
+            params: IntentParams::new().with("metric:econ", ValueExpr::Literal(1.0)),
+            priority: 0.8,
+            importance: 0.9,
+            half_life: None,
+            expires_at_offset: None,
+            rationale: RationaleSnapshot::empty(),
+            supersedes: None,
+            target: IntentTargetRef::from("faction"),
+            delivery_hint: None,
+        };
+        Intent {
+            id: IntentId::from(id),
+            spec,
+            issued_at,
+            arrives_at,
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn starts_fresh_campaign_from_intent() {
+        let bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let mut agent = IntentDrivenMidTerm::new();
+        let intent = make_intent("intent_1", "pursue_metric", 0, 1);
+        let input = MidTermInput {
+            bus: &bus,
+            faction: FactionId(0),
+            inbox: std::slice::from_ref(&intent),
+            campaigns: &[],
+            now: 1,
+            params: None,
+        };
+        let out = agent.tick(input);
+        assert_eq!(out.campaign_ops.len(), 2); // Start + Transition
+        matches!(out.campaign_ops[0], CampaignOp::Start { .. });
+        matches!(out.campaign_ops[1], CampaignOp::Transition { .. });
+    }
+
+    #[test]
+    fn attaches_intent_to_existing_campaign_with_same_objective() {
+        let bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let mut agent = IntentDrivenMidTerm::new();
+        let intent = make_intent("intent_2", "pursue_metric", 10, 11);
+        let mut existing = Campaign::new(objective_id_for(&intent), 0);
+        existing.state = CampaignState::Active;
+        existing.source_intent = Some(IntentId::from("intent_1"));
+        let input = MidTermInput {
+            bus: &bus,
+            faction: FactionId(0),
+            inbox: std::slice::from_ref(&intent),
+            campaigns: std::slice::from_ref(&existing),
+            now: 11,
+            params: None,
+        };
+        let out = agent.tick(input);
+        assert_eq!(out.campaign_ops.len(), 1);
+        match &out.campaign_ops[0] {
+            CampaignOp::AttachIntent { intent_id, .. } => {
+                assert_eq!(intent_id.as_str(), "intent_2");
+            }
+            other => panic!("expected AttachIntent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stale_intent_is_overridden_not_applied() {
+        let bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let mut agent = IntentDrivenMidTerm::new();
+        let mut intent = make_intent("intent_3", "pursue_metric", 0, 1);
+        intent.spec.priority = 0.05; // below default 0.1 stale threshold
+        let input = MidTermInput {
+            bus: &bus,
+            faction: FactionId(0),
+            inbox: std::slice::from_ref(&intent),
+            campaigns: &[],
+            now: 1,
+            params: None,
+        };
+        let out = agent.tick(input);
+        assert_eq!(out.campaign_ops.len(), 0);
+        assert_eq!(out.override_log.len(), 1);
+        assert_eq!(out.override_log[0].reason, OverrideReason::StaleIntent);
+    }
+
+    #[test]
+    fn expired_intent_is_overridden_not_applied() {
+        let bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let mut agent = IntentDrivenMidTerm::new();
+        let mut intent = make_intent("intent_4", "pursue_metric", 0, 1);
+        intent.expires_at = Some(5);
+        let input = MidTermInput {
+            bus: &bus,
+            faction: FactionId(0),
+            inbox: std::slice::from_ref(&intent),
+            campaigns: &[],
+            now: 10,
+            params: None,
+        };
+        let out = agent.tick(input);
+        assert_eq!(out.campaign_ops.len(), 0);
+        assert_eq!(out.override_log.len(), 1);
+        assert_eq!(out.override_log[0].reason, OverrideReason::Expired);
+    }
+
+    #[test]
+    fn supersedes_reroutes_existing_campaign() {
+        let bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let mut agent = IntentDrivenMidTerm::new();
+        let mut intent = make_intent("intent_new", "pursue_metric", 20, 21);
+        intent.spec.supersedes = Some(IntentId::from("intent_old"));
+        let old_objective = ObjectiveId::from("old_campaign");
+        let mut existing = Campaign::new(old_objective.clone(), 0);
+        existing.state = CampaignState::Active;
+        existing.source_intent = Some(IntentId::from("intent_old"));
+        let input = MidTermInput {
+            bus: &bus,
+            faction: FactionId(0),
+            inbox: std::slice::from_ref(&intent),
+            campaigns: std::slice::from_ref(&existing),
+            now: 21,
+            params: None,
+        };
+        let out = agent.tick(input);
+        // One Superseded log entry + one AttachIntent (old campaign was
+        // still Active so no additional Transition).
+        assert_eq!(out.override_log.len(), 1);
+        assert_eq!(out.override_log[0].reason, OverrideReason::Superseded);
+        assert_eq!(out.campaign_ops.len(), 1);
+        match &out.campaign_ops[0] {
+            CampaignOp::AttachIntent {
+                campaign_id,
+                intent_id,
+            } => {
+                assert_eq!(campaign_id, &old_objective);
+                assert_eq!(intent_id.as_str(), "intent_new");
+            }
+            other => panic!("expected AttachIntent, got {other:?}"),
+        }
+    }
+
+}

@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ids::ObjectiveId;
+use crate::ids::{IntentId, ObjectiveId};
 use crate::time::Tick;
 
 /// Lifecycle state of a campaign.
@@ -61,6 +61,10 @@ pub struct Campaign {
     pub state: CampaignState,
     pub started_at: Tick,
     pub last_transition: Tick,
+    /// Intent that this campaign was started to pursue, if any. `None`
+    /// means the campaign is mid-agent-local (e.g. continuing default
+    /// behavior) and is not tied to a specific upstream intent.
+    pub source_intent: Option<IntentId>,
 }
 
 /// Errors arising from illegal state transitions.
@@ -80,7 +84,13 @@ impl Campaign {
             state: CampaignState::Proposed,
             started_at: at,
             last_transition: at,
+            source_intent: None,
         }
+    }
+
+    pub fn with_source_intent(mut self, intent: IntentId) -> Self {
+        self.source_intent = Some(intent);
+        self
     }
 
     /// Attempt a transition to `to`. Returns `Ok(())` if legal; leaves state

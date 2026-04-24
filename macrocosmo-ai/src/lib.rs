@@ -12,18 +12,25 @@
 //!
 //! Phase 1 + 2 の範囲については issue #195 を参照。
 
+pub mod agent;
 pub mod ai_params;
 pub mod assessment;
 pub mod bus;
 pub mod campaign;
 pub mod command;
 pub mod condition;
+pub mod dispatcher;
 pub mod eval;
 pub mod evidence;
 pub mod feasibility;
 pub mod ids;
+pub mod intent;
+pub mod long_term_default;
+pub mod mid_term_default;
 pub mod nash;
 pub mod objective;
+pub mod orchestrator;
+pub mod short_term_default;
 pub mod precondition;
 pub mod precondition_cache;
 pub mod projection;
@@ -32,6 +39,7 @@ pub mod spec;
 pub mod standing;
 pub mod time;
 pub mod value_expr;
+pub mod victory;
 pub mod warning;
 
 #[cfg(any(test, feature = "mock"))]
@@ -59,12 +67,26 @@ pub use assessment::{
     compute_overall_confidence, compute_tech_lead, compute_threat_level,
     critical_violation_penalty, gather_trajectory_metric_ids, objective_kind,
 };
+pub use agent::{
+    CampaignOp, LongTermAgent, LongTermInput, LongTermOutput, MidTermAgent, MidTermInput,
+    MidTermOutput, OverrideEntry, OverrideReason, ShortTermAgent, ShortTermInput, ShortTermOutput,
+    target_faction_wide,
+};
 pub use command::{Command, CommandParams, CommandValue, SerializedCommand};
+pub use dispatcher::{DispatchResult, FixedDelayDispatcher, IntentDispatcher};
 pub use evidence::StandingEvidence;
 pub use ids::{
-    CommandKindId, EntityRef, EvidenceKindId, FactionId, FactionRef, IntentId, MetricId,
-    ObjectiveId, SystemRef,
+    CommandKindId, DeliveryHintId, EntityRef, EvidenceKindId, FactionId, FactionRef, IntentId,
+    IntentKindId, IntentTargetRef, MetricId, ObjectiveId, ShortContext, SystemRef,
 };
+pub use intent::{Intent, IntentParams, IntentSpec, RationaleSnapshot};
+pub use long_term_default::{LongTermDefaultConfig, ObjectiveDrivenLongTerm};
+pub use mid_term_default::{IntentDrivenMidTerm, MidTermDefaultConfig};
+pub use orchestrator::{
+    DropEntry, Orchestrator, OrchestratorConfig, OrchestratorOutput, OrchestratorState,
+    PendingSpec,
+};
+pub use short_term_default::{CampaignReactiveShort, ShortTermDefaultConfig};
 pub use projection::{
     CompoundDelta, CompoundEffect, ConfidenceDecay, LinearFit, MetricPair, ProjectionFidelity,
     ProjectionModel, ProjectionNaming, StrategicWindow, ThresholdGate, Trajectory,
@@ -79,4 +101,5 @@ pub use standing::{
     StandingLevelThresholds, StandingSubject,
 };
 pub use time::{Tick, TimestampedValue};
+pub use victory::{VictoryCondition, VictoryStatus};
 pub use warning::WarningMode;

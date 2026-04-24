@@ -120,6 +120,35 @@ arc_str_id! {
     IntentId
 }
 
+arc_str_id! {
+    /// Open-kind identifier for an intent kind (e.g. `"pursue_metric"`,
+    /// `"fortify"`, `"steer_crisis"`). Game / scenario layer defines its
+    /// own vocabulary; `macrocosmo-ai` passes these through without
+    /// interpreting them.
+    IntentKindId
+}
+
+arc_str_id! {
+    /// Open-kind address an intent is destined for (e.g. `"faction"`,
+    /// `"sector:alpha"`, `"fleet:42"`). Resolved to a concrete Mid-term
+    /// agent instance by the integration layer.
+    IntentTargetRef
+}
+
+arc_str_id! {
+    /// Open-kind delivery-mechanism hint (e.g. `"urgent"`, `"routine"`,
+    /// `"best_effort"`). `IntentDispatcher` impls may honor or ignore.
+    DeliveryHintId
+}
+
+arc_str_id! {
+    /// Open-kind context label for a short-term agent instance (e.g.
+    /// `"fleet:42"`, `"colony:sol"`, `"faction"`). Lets multiple short
+    /// agents within the same faction address themselves without macrocosmo-ai
+    /// knowing the physical model.
+    ShortContext
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
