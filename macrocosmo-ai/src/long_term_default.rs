@@ -52,6 +52,18 @@ pub struct LongTermDefaultConfig {
     pub pursue_kind: IntentKindId,
     /// Kind for prerequisite-preservation intents.
     pub preserve_kind: IntentKindId,
+    /// **Preemptive preservation** — emit a `preserve_metric` intent
+    /// when a prereq metric is currently satisfied but within
+    /// `safety_margin` of the threshold (= close to violation).
+    ///
+    /// With `safety_margin = 0.0` the agent only reacts to actual
+    /// violations (reactive behavior — the pre-tuning default). Higher
+    /// values make the agent preemptive; typical values correlate with
+    /// the metric's tick-over-tick rate of change.
+    ///
+    /// Only affects `prerequisites` — `win` targets are always emitted
+    /// strictly when unsatisfied (no preemption on the win side).
+    pub safety_margin: f64,
 }
 
 impl Default for LongTermDefaultConfig {
@@ -65,6 +77,7 @@ impl Default for LongTermDefaultConfig {
             target: IntentTargetRef::from("faction"),
             pursue_kind: IntentKindId::from("pursue_metric"),
             preserve_kind: IntentKindId::from("preserve_metric"),
+            safety_margin: 0.0,
         }
     }
 }
@@ -233,14 +246,23 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
             );
         }
 
+        // Prerequisites — preemptive when within `safety_margin`.
+        //
+        // For `direction = true` (must be above threshold), "close to
+        // violation" means `current - threshold < safety_margin`. The
+        // violated case (`current <= threshold`) is a strict subset
+        // (distance is non-positive). For `direction = false`, mirror:
+        // `threshold - current < safety_margin`.
         for (metric, threshold, direction) in prereq_targets {
             let current = input.bus.current(&metric).unwrap_or(f64::NAN);
-            let satisfied = if direction {
-                current > threshold
+            let distance = if direction {
+                current - threshold
             } else {
-                current < threshold
+                threshold - current
             };
-            if satisfied {
+            let within_margin = distance < self.config.safety_margin;
+            let violated = distance <= 0.0;
+            if !within_margin && !violated {
                 continue;
             }
             emit(
