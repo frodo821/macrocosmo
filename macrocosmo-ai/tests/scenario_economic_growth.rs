@@ -41,6 +41,7 @@ fn economic_growth_reaches_victory() {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses: Vec::new(),
+            command_responses: BTreeMap::new(),
         },
     };
     let base = Scenario::new(config);

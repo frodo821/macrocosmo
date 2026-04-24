@@ -79,6 +79,7 @@ fn temporal_no_campaign_flip_flop_on_stable_input() {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses: Vec::new(),
+            command_responses: std::collections::BTreeMap::new(),
         },
     };
     let base = Scenario::new(cfg);
@@ -324,6 +325,7 @@ fn base_config(name: &str, duration: i64) -> ScenarioConfig {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses: Vec::new(),
+            command_responses: std::collections::BTreeMap::new(),
         },
     }
 }

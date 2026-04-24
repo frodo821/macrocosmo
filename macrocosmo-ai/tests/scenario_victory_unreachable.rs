@@ -56,6 +56,7 @@ fn victory_becomes_unreachable_when_prereq_fails() {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses: Vec::new(),
+            command_responses: std::collections::BTreeMap::new(),
         },
     };
     let base = Scenario::new(config);

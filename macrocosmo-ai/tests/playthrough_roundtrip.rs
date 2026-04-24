@@ -55,6 +55,7 @@ fn config(name: &str, seed: u64) -> ScenarioConfig {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses,
+            command_responses: std::collections::BTreeMap::new(),
         },
     }
 }

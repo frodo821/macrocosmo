@@ -31,7 +31,7 @@ use crate::warning::WarningMode;
 
 use super::record::{Playthrough, PlaythroughMeta};
 use super::recorder::RecordingBus;
-use super::scenario::{EvidencePulse, Scenario};
+use super::scenario::{EvidencePulse, MetricEffect, Scenario};
 
 /// Per-faction orchestrator setup.
 pub struct FactionAgentSpec {
@@ -119,6 +119,24 @@ impl ShortTermAgent for ShortTermWrapper {
     }
 }
 
+/// Apply one `MetricEffect` to the bus at tick `t`. Reads the current
+/// value (if any) to compute `Add` / `Multiply`, then re-emits.
+fn apply_metric_effect(rb: &mut RecordingBus, effect: &MetricEffect, t: Tick) {
+    match effect {
+        MetricEffect::Add { metric, delta } => {
+            let current = rb.bus().current(metric).unwrap_or(0.0);
+            rb.emit(metric, current + *delta, t);
+        }
+        MetricEffect::Multiply { metric, factor } => {
+            let current = rb.bus().current(metric).unwrap_or(1.0);
+            rb.emit(metric, current * *factor, t);
+        }
+        MetricEffect::Set { metric, value } => {
+            rb.emit(metric, *value, t);
+        }
+    }
+}
+
 /// Bundles an orchestrator with its per-faction aux state so we can
 /// iterate factions per tick without ownership contortions.
 struct Paired {
@@ -134,8 +152,22 @@ pub fn run_agent_scenario(scenario: AgentScenario) -> AgentPlaythrough {
 
     let mut rb = RecordingBus::new(AiBus::with_warning_mode(WarningMode::Silent));
 
-    // Declare scripted metric topics.
-    for id in base.config.dynamics.metric_scripts.keys() {
+    // Declare every metric referenced by either scripts or
+    // command_responses — effects may introduce metrics not in scripts.
+    let mut referenced_metrics: std::collections::BTreeSet<crate::ids::MetricId> =
+        base.config.dynamics.metric_scripts.keys().cloned().collect();
+    for effects in base.config.dynamics.command_responses.values() {
+        for e in effects {
+            match e {
+                MetricEffect::Add { metric, .. }
+                | MetricEffect::Multiply { metric, .. }
+                | MetricEffect::Set { metric, .. } => {
+                    referenced_metrics.insert(metric.clone());
+                }
+            }
+        }
+    }
+    for id in &referenced_metrics {
         rb.declare_metric(
             id.clone(),
             crate::spec::MetricSpec::gauge(
@@ -244,6 +276,15 @@ pub fn run_agent_scenario(scenario: AgentScenario) -> AgentPlaythrough {
                 // Also emit onto the recording bus so the serialized
                 // playthrough carries the command.
                 rb.emit_command(cmd.clone());
+                // Apply command-response effects to the bus (feedback
+                // loop — lets AI's commands bend scripted trajectories).
+                if let Some(effects) =
+                    base.config.dynamics.command_responses.get(&cmd.kind)
+                {
+                    for effect in effects {
+                        apply_metric_effect(&mut rb, effect, t);
+                    }
+                }
             }
             // Snapshot current campaigns.
             let snapshot: Vec<Campaign> = p.orch.state.campaigns.clone();
@@ -301,6 +342,7 @@ mod tests {
             dynamics: SyntheticDynamics {
                 metric_scripts,
                 evidence_pulses: Vec::new(),
+                command_responses: BTreeMap::new(),
             },
         };
         let base = Scenario::new(config);

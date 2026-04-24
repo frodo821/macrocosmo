@@ -66,6 +66,7 @@ fn survival_under_threat_reaches_time_based_victory() {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses: Vec::new(),
+            command_responses: BTreeMap::new(),
         },
     };
     let base = Scenario::new(config);

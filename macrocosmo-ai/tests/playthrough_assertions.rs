@@ -32,6 +32,7 @@ fn trivial_config(name: &str) -> ScenarioConfig {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses: Vec::new(),
+            command_responses: std::collections::BTreeMap::new(),
         },
     }
 }

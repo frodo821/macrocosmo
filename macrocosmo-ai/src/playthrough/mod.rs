@@ -38,5 +38,5 @@ pub use agent_scenario::{
     MidTermWrapper, ShortTermWrapper, run_agent_scenario,
 };
 pub use scenario::{
-    EvidencePulse, MetricScript, Scenario, SyntheticDynamics, TickFn, run_scenario,
+    EvidencePulse, MetricEffect, MetricScript, Scenario, SyntheticDynamics, TickFn, run_scenario,
 };

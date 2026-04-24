@@ -55,6 +55,7 @@ fn long_emits_preserve_before_prereq_violates() {
         dynamics: SyntheticDynamics {
             metric_scripts,
             evidence_pulses: Vec::new(),
+            command_responses: BTreeMap::new(),
         },
     };
     let base = Scenario::new(config);

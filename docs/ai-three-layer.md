@@ -458,6 +458,34 @@ pub struct OrchestratorOutput {
 - metric の現状値と目標値の差分で command を emit
 - active Campaign 無し → `Command` 空リスト (= no-op)
 
+## Command → Metric フィードバック (scenario harness)
+
+抽象シナリオで "AI が実際に勝てるか" を測れるように、
+`SyntheticDynamics.command_responses: BTreeMap<CommandKindId, Vec<MetricEffect>>`
+を導入。短期 agent が発した command の `kind` にマッチする effect を
+**同 tick 内、scripted metrics の後** に bus に上乗せ:
+
+```rust
+pub enum MetricEffect {
+    Add      { metric: MetricId, delta: f64 },
+    Multiply { metric: MetricId, factor: f64 },
+    Set      { metric: MetricId, value: f64 },
+}
+```
+
+**注意**: feedback を回したい metric は `metric_scripts` に入れない
+(script は毎 tick 絶対値を再設定するので累積が潰れる)。feedback only の
+metric は `command_responses` 経由で自動 declare される。
+
+**パターン**:
+- `metric_scripts` = 自然進化 / 外部環境
+- `command_responses` = AI による介入
+- 組合せ: `Add` effect は script ベースライン + AI 介入の **累積** を表現
+
+`docs/ai-three-layer.md` 付随の `scenario_ai_driven_growth` テストで
+baseline (feedback なし = 不達) vs AI 介入ありで victory reach の差を
+paired assertion。
+
 ## シナリオ harness 拡張
 
 既存 `playthrough::scenario::Scenario` の上に層を作る:

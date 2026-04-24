@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::AiBus;
 use crate::evidence::StandingEvidence;
-use crate::ids::{EvidenceKindId, FactionId, MetricId};
+use crate::ids::{CommandKindId, EvidenceKindId, FactionId, MetricId};
 use crate::time::Tick;
 
 use super::record::{Playthrough, PlaythroughMeta, ScenarioConfig};
@@ -81,12 +81,42 @@ pub struct EvidencePulse {
     pub at: Tick,
 }
 
+/// How an emitted `Command` is allowed to perturb the scripted bus.
+///
+/// Abstract scenarios use these to close the feedback loop: the
+/// short-term agent emits a command (say `pursue_metric:econ`), and
+/// the scenario declares that command ⇒ `Add { econ, +1.0 }`. Over
+/// many ticks the agent's commands bend the metric trajectory, so we
+/// can observe whether the 3-layer stack actually pushes the world
+/// toward its `VictoryCondition`.
+///
+/// Effects apply **after** `MetricScript` baselines each tick, so
+/// `metric_scripts` gives the natural evolution and
+/// `command_responses` is the AI's intervention layered on top.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MetricEffect {
+    /// `metric += delta` per command firing.
+    Add { metric: MetricId, delta: f64 },
+    /// `metric *= factor` per command firing.
+    Multiply { metric: MetricId, factor: f64 },
+    /// Override the metric with a fixed value.
+    Set { metric: MetricId, value: f64 },
+}
+
 /// The set of scripted inputs for a scenario run. Deterministic: identical
 /// `SyntheticDynamics` + seed produces an identical playthrough.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SyntheticDynamics {
     pub metric_scripts: BTreeMap<MetricId, MetricScript>,
     pub evidence_pulses: Vec<EvidencePulse>,
+    /// Command-kind → metric effects. When an emitted command matches
+    /// a key here, each effect is applied to the bus at the current
+    /// tick (in declaration order).
+    ///
+    /// Uses `BTreeMap` for deterministic iteration. Empty when not
+    /// configured (= no feedback, purely scripted dynamics).
+    #[serde(default)]
+    pub command_responses: BTreeMap<CommandKindId, Vec<MetricEffect>>,
 }
 
 /// Type alias for a per-tick closure. The closure may emit additional
@@ -210,6 +240,7 @@ mod tests {
             dynamics: SyntheticDynamics {
                 metric_scripts,
                 evidence_pulses: Vec::new(),
+                command_responses: BTreeMap::new(),
             },
         }
     }
