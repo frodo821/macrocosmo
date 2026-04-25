@@ -188,3 +188,94 @@ cat ~/.claude/projects/-Users-csakai-repos-macrocosmo/memory/project_ai_three_la
 - `IntentSpec` も同様 (現状 11 fields)
 - `OrchestratorState` にいろんな log が積もる (drop_log, override_log, intent_queue,
   pending_specs) → 長時間 scenario で線形成長、game integration 時に capped queue 化検討
+
+---
+
+# Round 7-8 追記 (2026-04-25 後半セッション)
+
+## Round 7 — adversarial zero-sum + maintenance pursuit
+
+`c68c990 feat(ai): adversarial zero-sum scenario + Won-maintenance pursuit option`
+
+抽象 scenario で zero-sum dynamics (`+own, -opp` の cross-effect を `command_responses` で encode) を書いて挙動観察したところ、**asymmetric power scenario で弱い faction が勝つ逆転現象**が発生。原因を追ったところ:
+
+- `Mid.abandon_on_terminal` が `Won → Succeeded` で active campaign を捨てる
+- metric が adversary に侵食されて閾値割れ → Long が再 emit するまでに lag
+- その間 adversary は monotonic に伸びる → 弱い側が勝つ
+
+修正: `MidTermDefaultConfig.treat_won_as_terminal: bool` を追加 (default `true` で後方互換)。`false` のとき Won は abandon せず Active 維持 → Short が emit を続けて閾値を defend する **maintenance pursuit** モードになる。
+
+設計上の結論: macrocosmo の core mechanic (光速遅延で他 faction の score 不可視 → AI は自 metric maximize 一択) と整合。score-race モデルでは threshold を「通過点」として扱い、達成後も Short の惰性 emit で score を伸ばし続ける。Long は閾値到達までガイド、達成後は Short が `treat_won_as_terminal=false` 経由で maintain。
+
+新規 scenario:
+- `symmetric_zero_sum_yields_stalemate` — 完全対称 → 互いに打ち消し → 誰も勝たない (PASS)
+- `asymmetric_strength_decides_the_race` — f0=+2/-1, f1=+1/-1 → maintenance pursuit で f0 が ~tick 50 で Won 後も伸び続け、ore_0 が 250 まで到達 (PASS)
+
+28 test binary green (元 27 + adversarial 1)。
+
+### 露出した将来課題
+
+「Long が閾値達成で停止 → 戦略の動的再評価が失われる」 + 「Long の戦略空間が pursue_metric 1 個のみ」。本格的な adversarial では **複数 strategy candidate を持つ Long** が必要 (例: concentrate vs distribute、offense vs defense)。これは `StrategyCandidate` trait + utility 比較の **Round 9 以降の architectural work** で対応。
+
+## Round 8 — game integration 最小スケルトン
+
+`54a5d9f feat(scripting): Lua-table parser for AI VictoryCondition`
+`c36adfa feat(ai): FactionOrchestrator skeleton + registry resource`
+`a94a37e feat(ai): wire FactionOrchestrator into AiPlugin (Step 2-3+6)`
+
+macrocosmo-ai の 3 層 orchestrator を game crate に **additive** に統合 (既存 `SimpleNpcPolicy` と並列動作、 revert 容易)。
+
+### 構成要素
+
+- **Step 0** (`macrocosmo/src/scripting/victory_api.rs`): Lua-table → `VictoryCondition` parser。`define_victory` global 等の Lua-side wiring は後回し、parser surface だけ整備。「Lua が将来構築する table を Rust から直接渡せる」形。
+- **Step 1** (`macrocosmo/src/ai/orchestrator_runtime.rs`):
+  - `FactionOrchestrator` newtype (Orchestrator + FixedDelayDispatcher + VictoryCondition)
+  - `OrchestratorRegistry` Resource (`HashMap<Entity, FactionOrchestrator>`)
+  - `new_demo` constructor — Step 0 の parser 経由で demo VictoryCondition (`colony_count.faction_<n> > 1.0`) を構築
+  - cadence: `long_cadence=5, mid_cadence=2`、dispatcher delay=2 hexadies
+- **Step 2** (plugin): `register_demo_orchestrator` を `OnEnter(NewGame)` で 1 NPC empire に arm
+- **Step 3** (plugin): `run_orchestrators` を `AiTickSet::Reason` `.after(npc_decision_tick)` で per-tick 駆動。produced commands は bus に emit (drain_ai_commands が unknown として silent ignore)
+- **Step 6**: per-command observer log (`ai_orch_cmd` target)
+
+### Demo
+
+```bash
+RUST_LOG=info,ai_orch=info,ai_orch_cmd=info \
+  cargo run --bin macrocosmo -- --no-player --seed 1 --speed 4 --time-horizon 30
+```
+
+期待 log: `AI orchestrator armed for ...` → 数 tick で `ai_orch tick=N long=true mid=true short=true cmds=K status=Ongoing { progress: 0.0 }` → colony_count >= 1 で `status=Won` 維持 (Round 7 maintenance 動作)。
+
+## 副次 fix: ObscuredByGas dead code 削除
+
+`28de3cb fix(galaxy): remove ObscuredByGas dead prototype + bump SAVE_VERSION`
+
+observer mode で挙動観察中に発見。 ObscuredByGas は #145 (CLOSED, milestone 0.2.0) で `ForbiddenRegion` (metaball field、 Lua-defined region types) に置き換えられたが、 削除されず残ってた visual-only prototype。
+
+症状:
+- 15% の system が click 不能 (`collect_candidates` が `obscured.is_some()` で skip)
+- glow halo なし、 0.15-alpha sprite だけで「halo がない system がいくつか」状態
+- NPC が ObscuredByGas を意識せず survey 命令を発行 → 別 race (下記) で loop 化が表面化
+
+削除箇所: galaxy/{mod,generation}.rs、 visualization/{stars,mod}.rs、 persistence/{save,load,savebag}.rs。SAVE_VERSION 7 → 8、 minimal_game.bin fixture regen。
+
+将来 nebula 風 FTL inhibition は `define_region_type { capabilities = { blocks_ftl = ... } }` で Lua 側に実装する (Rust 機構は `galaxy/region.rs` に既存)。
+
+## 残課題: NPC survey loop (BRP debug 待ち)
+
+ObscuredByGas 削除後も、特定 system に対して 30 hexadies 周期で survey 進捗が 0 にリセットされて永遠に終わらない症状が継続。NPC の再 emit ではなく、**1 つの survey command が dispatcher → handler → start_survey の loop を作ってる**疑い。
+
+候補:
+- `handle_survey_requested` の auto re-insert path (`docked_system != target` で `[MoveTo, Survey]` を queue head に挿入) が specific 条件で loop
+- bridge insertion で生まれた system の position randomness で `start_survey` 内の range check に引っかかる、 など
+
+debug 戦略:
+- BRP `world.query` で問題 ship の `CommandQueue + ShipState + Position` 取得 → loop の起源特定
+- ただし大半の component が `Reflect` 未実装で BRP から見えない → **Reflect 全 derive を Round 9 prep で先に landed させる**
+
+## Round 9 候補 (優先順)
+
+1. **Reflect 全 derive + register_type 一括対応** (worktree agent で並行実施中) — BRP 完全対応
+2. **survey loop の root cause 特定 + fix** (Reflect 完了後 BRP で調査 → fix + regression test)
+3. **NPC が `unsurveyed_systems` リストを正しく管理** (KnowledgeStore 連携不在) — survey loop と隣接する別 issue
+4. **Long の戦略選択機構** (`StrategyCandidate` trait、 concentrate vs distribute scenario) — Round 7 で露出した本質的課題
