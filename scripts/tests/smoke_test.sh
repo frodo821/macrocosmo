@@ -88,15 +88,15 @@ echo ""
 echo "=== BRP Smoke Tests ==="
 echo ""
 
-# 1. bevy/list — list registered methods
-echo "--- Test 1: bevy/list ---"
-assert_ok "bevy/list" \
-    '{"jsonrpc":"2.0","id":1,"method":"bevy/list","params":{}}'
+# 1. rpc.discover — list registered methods (was bevy/list pre-0.18)
+echo "--- Test 1: rpc.discover ---"
+assert_ok "rpc.discover" \
+    '{"jsonrpc":"2.0","id":1,"method":"rpc.discover","params":{}}'
 
-# 2. bevy/query — query Ship entities
+# 2. world.query — query Ship entities (was bevy/query pre-0.18)
 echo "--- Test 2: query Ship entities ---"
 assert_ok "query ships" \
-    '{"jsonrpc":"2.0","id":2,"method":"bevy/query","params":{"data":{"components":["macrocosmo::ship::Ship"]}}}'
+    '{"jsonrpc":"2.0","id":2,"method":"world.query","params":{"data":{"components":["macrocosmo::ship::Ship"],"option":[],"has":[]},"filter":{"with":[],"without":[]},"strict":false}}'
 
 # 3. macrocosmo/advance_time
 echo "--- Test 3: advance_time ---"

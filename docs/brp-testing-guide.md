@@ -34,15 +34,77 @@ Responses contain either `"result"` or `"error"`.
 
 ### Built-in Bevy methods
 
-| Method | Description |
+> **重要**: `bevy_remote` 0.17 で名前空間が `bevy/*` から `world.*` / `registry.*` に変更されている。0.18.1 で確定。古い `bevy/query` 等は **存在しない**。
+
+#### World ops
+
+| Method | Params struct | Description |
+|---|---|---|
+| `world.query` | `BrpQueryParams` | Query entities by component(後述) |
+| `world.get_components` | `BrpGetComponentsParams` | Get components on an entity |
+| `world.list_components` | `BrpListComponentsParams` | List components on an entity (or all registered) |
+| `world.spawn_entity` | `BrpSpawnEntityParams` | Spawn a new entity with components |
+| `world.insert_components` | `BrpInsertComponentsParams` | Insert components on an entity |
+| `world.remove_components` | `BrpRemoveComponentsParams` | Remove components from an entity |
+| `world.despawn_entity` | `BrpDespawnEntityParams` | Despawn an entity |
+| `world.reparent_entities` | `BrpReparentEntitiesParams` | Adjust hierarchy parent |
+| `world.mutate_components` | `BrpMutateComponentsParams` | In-place mutate component fields |
+| `world.trigger_event` | — | Fire a `bevy_ecs::event::Event` |
+
+#### Resource ops
+
+| Method | Params struct |
 |---|---|
-| `bevy/list` | List all registered BRP methods |
-| `bevy/query` | Query entities by component type |
-| `bevy/get` | Get components from a specific entity |
-| `bevy/insert` | Insert components on an entity |
-| `bevy/remove` | Remove components from an entity |
-| `bevy/spawn` | Spawn a new entity |
-| `bevy/despawn` | Despawn an entity |
+| `world.get_resources` | `BrpGetResourcesParams` |
+| `world.insert_resources` | `BrpInsertResourcesParams` |
+| `world.remove_resources` | `BrpRemoveResourcesParams` |
+| `world.list_resources` | — (no params) |
+| `world.mutate_resources` | `BrpMutateResourcesParams` |
+
+#### Watch (streaming)
+
+| Method | 内容 |
+|---|---|
+| `world.get_components+watch` | `world.get_components` の per-tick stream |
+| `world.list_components+watch` | `world.list_components` の per-tick stream |
+
+#### Discovery
+
+| Method | 内容 |
+|---|---|
+| `registry.schema` | 登録済 reflection 型のスキーマを返す |
+| `rpc.discover` | OpenRPC service discovery |
+
+### Param shape リファレンス
+
+#### `world.query`
+
+```json
+{
+  "data": {
+    "components": ["macrocosmo::ship::Ship"],   // 必須取得
+    "option":     [],                            // 任意取得
+    "has":        []                             // 存在確認のみ
+  },
+  "filter": {
+    "with":    [],                               // 必須
+    "without": []                                // 除外
+  },
+  "strict": false                                // 不明型を skip(false)/error(true)
+}
+```
+
+#### `world.get_components`
+
+```json
+{
+  "entity": 4294967296,
+  "components": ["macrocosmo::ship::Ship"],
+  "strict": false
+}
+```
+
+`entity` は `Entity::to_bits()` の数値(JSON 上は number)。
 
 ### Custom game methods
 
@@ -90,7 +152,8 @@ curl -s -X POST localhost:15702 \
 
 ```bash
 curl -s -X POST localhost:15702 \
-  -d '{"jsonrpc":"2.0","id":1,"method":"bevy/query","params":{"data":{"components":["macrocosmo::ship::Ship"]}}}'
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"world.query","params":{"data":{"components":["macrocosmo::ship::Ship"],"option":[],"has":[]},"filter":{"with":[],"without":[]},"strict":false}}'
 # Expect: non-empty result array
 ```
 
