@@ -12,12 +12,12 @@ use macrocosmo::components::Position;
 use macrocosmo::condition::ScopedFlags;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
+use macrocosmo::faction::FactionOwner;
 use macrocosmo::galaxy::{
     Anomalies, Planet, Sovereignty, StarSystem, SystemAttributes, SystemModifiers,
 };
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
-use macrocosmo::faction::FactionOwner;
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::ship::*;
@@ -66,7 +66,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None, colony_slots: None,
+        ship_design_id: None,
+        colony_slots: None,
     });
     registry.insert(BuildingDefinition {
         id: "power_plant".into(),
@@ -89,7 +90,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None, colony_slots: None,
+        ship_design_id: None,
+        colony_slots: None,
     });
     registry.insert(BuildingDefinition {
         id: "research_lab".into(),
@@ -113,7 +115,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_upgraded: None,
         dismantlable: true,
         ship_design_id: Some("station_research_lab_v1".into()),
-            colony_slots: None,
+        colony_slots: None,
     });
     registry.insert(BuildingDefinition {
         id: "shipyard".into(),
@@ -188,7 +190,8 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None, colony_slots: None,
+        ship_design_id: None,
+        colony_slots: None,
     });
     registry
 }
@@ -947,10 +950,7 @@ pub fn full_test_app() -> App {
         )
             .chain(),
     );
-    app.add_systems(
-        Update,
-        macrocosmo::colony::sync_system_capability_modifiers,
-    );
+    app.add_systems(Update, macrocosmo::colony::sync_system_capability_modifiers);
     // #303 (S-10): Sovereignty change detection + cascade + event firing.
     app.init_resource::<macrocosmo::colony::PendingSovereigntyChanges>();
     app.add_systems(
@@ -1282,10 +1282,9 @@ pub fn spawn_test_colony(
 
     // Add SystemBuildings and SystemBuildingQueue to the StarSystem if not already present
     if world.get::<SystemBuildings>(system).is_none() {
-        world.entity_mut(system).insert((
-            SystemBuildings::default(),
-            SystemBuildingQueue::default(),
-        ));
+        world
+            .entity_mut(system)
+            .insert((SystemBuildings::default(), SystemBuildingQueue::default()));
     }
 
     // Find the empire entity to set FactionOwner
