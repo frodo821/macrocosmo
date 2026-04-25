@@ -454,6 +454,10 @@ fn apply_component_bag(
     if let Some(sa) = &bag.slot_assignment {
         ec.insert(sa.clone().into_live());
     }
+    // Round 9 PR #2 Step 4: restore AI dedup marker on ships.
+    if let Some(pa) = &bag.pending_assignment {
+        ec.insert(pa.clone().into_live(map));
+    }
 
     // Pending command entities
     if let Some(p) = &bag.pending_ship_command {

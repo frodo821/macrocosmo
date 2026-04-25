@@ -89,7 +89,9 @@ use super::savebag::*;
 /// `comms_params` to NPC empire spawn — this is a new wire field on
 /// existing entities, so postcard sequential decoding requires a
 /// version bump.
-pub const SAVE_VERSION: u32 = 9;
+/// Round 9 PR #2 Step 4: added `pending_assignment` field to
+/// `SavedComponentBag` (mirror of `crate::ai::assignments::PendingAssignment`).
+pub const SAVE_VERSION: u32 = 10;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -594,6 +596,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     // SlotAssignment on station ships.
     if let Some(sa) = e_ref.get::<SlotAssignment>() {
         bag.slot_assignment = Some(SavedSlotAssignment::from_live(sa));
+    }
+    // Round 9 PR #2 Step 4: AI dedup marker on ships.
+    if let Some(pa) = e_ref.get::<crate::ai::assignments::PendingAssignment>() {
+        bag.pending_assignment = Some(SavedPendingAssignment::from_live(pa));
     }
 
     // Pending command entities

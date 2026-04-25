@@ -102,6 +102,7 @@ pub struct BuildResearchParams<'w, 's> {
 
 /// Drain AI commands from the bus and apply them to the game world.
 pub fn drain_ai_commands(
+    mut commands_buf: Commands,
     mut drainer: AiBusDrainer,
     ships: Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     sovereignty: Query<(Entity, &Sovereignty), With<StarSystem>>,
@@ -158,6 +159,7 @@ pub fn drain_ai_commands(
                     w,
                     &mut next_cmd_id,
                     clock.elapsed,
+                    &mut commands_buf,
                 );
             }
         } else if kind_str == cmd_ids::colonize_system().as_str() {
@@ -343,6 +345,15 @@ fn handle_attack_target(
 }
 
 /// Handle `survey_system`: dispatch the specified survey ship to the target system.
+///
+/// Stamps each dispatched ship with a [`crate::ai::assignments::PendingAssignment`]
+/// so subsequent NPC decision ticks can dedup against in-flight surveys
+/// (Round 9 PR #2 Step 4). The marker is removed by
+/// [`crate::ship::handlers::handle_survey_requested`] on terminal results
+/// (Ok / Rejected) and swept after `SURVEY_ASSIGNMENT_LIFETIME` hexadies
+/// by [`crate::ai::assignments::sweep_stale_assignments`] in case the
+/// handler never fires.
+#[allow(clippy::too_many_arguments)]
 fn handle_survey_system(
     issuer: &macrocosmo_ai::FactionId,
     params: &macrocosmo_ai::CommandParams,
@@ -351,7 +362,10 @@ fn handle_survey_system(
     survey_writer: &mut MessageWriter<SurveyRequested>,
     next_cmd_id: &mut NextCommandId,
     now: i64,
+    commands_buf: &mut Commands,
 ) {
+    use crate::ai::assignments::{PendingAssignment, SURVEY_ASSIGNMENT_LIFETIME};
+
     let target_system = match params.get("target_system") {
         Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
         _ => {
@@ -384,6 +398,14 @@ fn handle_survey_system(
             target_system,
             issued_at: now,
         });
+        commands_buf
+            .entity(ship_entity)
+            .insert(PendingAssignment::survey_system(
+                empire_entity,
+                target_system,
+                now,
+                SURVEY_ASSIGNMENT_LIFETIME,
+            ));
         dispatched += 1;
     }
 

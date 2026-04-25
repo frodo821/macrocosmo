@@ -175,12 +175,17 @@ impl Plugin for AiPlugin {
             // Command consumer — drains AI commands and converts to ECS actions.
             // `process_ruler_boarding` runs after `drain_ai_commands` to handle
             // deferred ruler boarding (needs mutable Ship access).
+            // `sweep_stale_assignments` runs alongside the consumer in the
+            // same set so the sweep happens at the natural "AI command
+            // resolution" boundary; it has no data dependency on
+            // `drain_ai_commands`.
             .add_systems(
                 Update,
                 (
                     super::command_consumer::drain_ai_commands,
                     super::command_consumer::process_ruler_boarding
                         .after(super::command_consumer::drain_ai_commands),
+                    super::assignments::sweep_stale_assignments,
                 )
                     .in_set(AiTickSet::CommandDrain)
                     .run_if(in_state(crate::game_state::GameState::InGame)),

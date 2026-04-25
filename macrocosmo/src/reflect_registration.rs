@@ -36,6 +36,8 @@ impl Plugin for ReflectRegistrationPlugin {
 /// the Bevy type registry. Called once from
 /// [`ReflectRegistrationPlugin::build`].
 pub fn register_all_types(app: &mut App) {
+    // crate::ai::assignments
+    app.register_type::<crate::ai::assignments::PendingAssignment>();
     // crate::ai::command_consumer
     app.register_type::<crate::ai::command_consumer::PendingRulerBoarding>();
     // crate::ai::debug_log

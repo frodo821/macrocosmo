@@ -22,6 +22,7 @@ use bevy::prelude::*;
 
 use macrocosmo_ai::{Command, CommandValue};
 
+use crate::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
 use crate::ai::convert::{to_ai_faction, to_ai_system};
 use crate::ai::plugin::AiBusResource;
 use crate::ai::schema::ids::{command as cmd_ids, metric};
@@ -465,6 +466,10 @@ pub fn npc_decision_tick(
     design_registry: Option<Res<crate::ship_design::ShipDesignRegistry>>,
     empire_rulers: Query<&EmpireRuler, With<Empire>>,
     ruler_q: Query<(&StationedAt, Option<&AboardShip>), With<Ruler>>,
+    // Round 9 PR #2 Step 4: dedup against in-flight survey dispatches so
+    // we don't double-assign two surveyors to the same target across
+    // overlapping decision ticks. Marker is per-faction.
+    pending_assignments: Query<(Entity, &PendingAssignment)>,
     mut policy: Local<SimpleNpcPolicy>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
@@ -477,6 +482,29 @@ pub fn npc_decision_tick(
     last_tick.0 = now;
 
     for (entity, faction, knowledge, vis_map_opt) in &npcs {
+        // Round 9 PR #2 Step 4: pre-collect this faction's in-flight
+        // assignments so we can filter both ship and target candidates.
+        // `pending_survey_targets` excludes systems already being
+        // surveyed by one of our ships; `pending_assigned_ships`
+        // excludes ships already carrying a marker (defense in depth —
+        // by the time the handler runs, queue.is_empty() is also false,
+        // but the marker covers the same-tick race).
+        let mut pending_survey_targets: std::collections::HashSet<Entity> =
+            std::collections::HashSet::new();
+        let mut pending_assigned_ships: std::collections::HashSet<Entity> =
+            std::collections::HashSet::new();
+        for (ship_entity, pa) in &pending_assignments {
+            if pa.faction != entity {
+                continue;
+            }
+            pending_assigned_ships.insert(ship_entity);
+            if pa.kind == AssignmentKind::Survey {
+                if let AssignmentTarget::System(sys) = pa.target {
+                    pending_survey_targets.insert(sys);
+                }
+            }
+        }
+
         // Extract system intel. Hostile / colonizable signals still come
         // from the KnowledgeStore (those require detailed snapshots),
         // but `unsurveyed_systems` is derived from the galaxy-wide star
@@ -527,6 +555,11 @@ pub fn npc_decision_tick(
         let candidates: Vec<(Entity, [f64; 3])> = star_positions
             .iter()
             .filter(|(e, _)| !surveyed_ids.contains(e))
+            // Round 9 PR #2 Step 4: skip targets that already have a
+            // surveyor in flight — prevents the "Vesk Scout-2 chases Vesk
+            // Scout-1" double dispatch the handler-side dedup couldn't
+            // catch from prior commits.
+            .filter(|(e, _)| !pending_survey_targets.contains(e))
             .filter(|(e, _)| {
                 vis_map_opt
                     .map(|vm| vm.get(*e) >= SystemVisibilityTier::Catalogued)
@@ -538,6 +571,13 @@ pub fn npc_decision_tick(
             rank_survey_targets(&candidates, &surveyed_positions, reference_pos);
 
         // Build ship inventory for this empire.
+        // Round 9 PR #2 Step 4: ships carrying a `PendingAssignment` are
+        // treated as non-idle even if their command queue hasn't yet been
+        // populated by the handler (the marker is the AI-side "intent
+        // already issued" signal). This closes the same-tick race where
+        // `drain_ai_commands` writes a `SurveyRequested` event but
+        // `handle_survey_requested` hasn't yet pushed the `MoveTo` /
+        // `Survey` pair into the queue.
         let ships: Vec<ShipInfo> = all_ships
             .iter()
             .filter(|(_, ship, _, _)| ship.owner == crate::ship::Owner::Empire(entity))
@@ -546,7 +586,8 @@ pub fn npc_decision_tick(
                     crate::ship::ShipState::InSystem { system } => Some(*system),
                     _ => None,
                 };
-                let is_idle = system.is_some() && queue.commands.is_empty();
+                let has_pending = pending_assigned_ships.contains(&ship_entity);
+                let is_idle = system.is_some() && queue.commands.is_empty() && !has_pending;
                 let can_survey = design_registry
                     .as_ref()
                     .is_some_and(|r| r.can_survey(&ship.design_id));

@@ -1620,6 +1620,66 @@ impl SavedConqueredCore {
     }
 }
 
+/// Round 9 PR #2 Step 4: Wire format for
+/// [`PendingAssignment`](crate::ai::assignments::PendingAssignment) — the
+/// per-ship "AI already issued this command, don't re-dispatch" marker.
+///
+/// `kind` is encoded as a `u8`:
+/// - `0` = `AssignmentKind::Survey`.
+///
+/// `target` is encoded as a `(u8, u64)`:
+/// - tag `0` (`AssignmentTarget::System`) → entity bits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPendingAssignment {
+    pub faction_bits: u64,
+    pub kind: u8,
+    pub target_tag: u8,
+    pub target_bits: u64,
+    pub since: i64,
+    pub stale_at: i64,
+}
+
+impl SavedPendingAssignment {
+    pub fn from_live(v: &crate::ai::assignments::PendingAssignment) -> Self {
+        let kind = match v.kind {
+            crate::ai::assignments::AssignmentKind::Survey => 0,
+        };
+        let (target_tag, target_bits) = match v.target {
+            crate::ai::assignments::AssignmentTarget::System(e) => (0u8, e.to_bits()),
+        };
+        Self {
+            faction_bits: v.faction.to_bits(),
+            kind,
+            target_tag,
+            target_bits,
+            since: v.since,
+            stale_at: v.stale_at,
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::ai::assignments::PendingAssignment {
+        let kind = match self.kind {
+            // `Survey` is the only currently-defined kind; future variants
+            // will fan in additional match arms with explicit tags.
+            _ => crate::ai::assignments::AssignmentKind::Survey,
+        };
+        let target = match self.target_tag {
+            // `System` is the only currently-defined target; same fan-in
+            // story as `kind` above.
+            _ => crate::ai::assignments::AssignmentTarget::System(remap_entity(
+                self.target_bits,
+                map,
+            )),
+        };
+        crate::ai::assignments::PendingAssignment {
+            faction: remap_entity(self.faction_bits, map),
+            kind,
+            target,
+            since: self.since,
+            stale_at: self.stale_at,
+        }
+    }
+}
+
 /// #324: Wire format for [`Extinct`](crate::faction::Extinct).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedExtinct {
@@ -4694,6 +4754,13 @@ pub struct SavedComponentBag {
     /// #421: Forward-reference from empire to its Ruler entity.
     #[serde(default)]
     pub empire_ruler: Option<SavedEmpireRuler>,
+    /// Round 9 PR #2 Step 4: AI-side "command already issued, don't
+    /// double-dispatch" marker on ship entities. Persisted so a save
+    /// taken while a survey is in flight reloads with the dedup state
+    /// intact (otherwise the AI could re-issue on the next decision tick
+    /// of the resumed game).
+    #[serde(default)]
+    pub pending_assignment: Option<SavedPendingAssignment>,
 }
 
 impl RemapEntities for SavedComponentBag {

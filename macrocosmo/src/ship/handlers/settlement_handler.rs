@@ -17,6 +17,7 @@ use crate::components::Position;
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
 
+use crate::ai::assignments::PendingAssignment;
 use crate::faction::FactionOwner;
 use crate::galaxy::AtSystem;
 use crate::ship::command_events::{
@@ -28,6 +29,7 @@ use crate::ship::{CommandQueue, Owner, QueuedCommand, Ship, ShipState};
 
 #[allow(clippy::too_many_arguments)]
 pub fn handle_survey_requested(
+    mut commands_buf: Commands,
     clock: Res<GameClock>,
     balance: Res<crate::technology::GameBalance>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<crate::player::Empire>>,
@@ -52,6 +54,11 @@ pub fn handle_survey_requested(
                 },
                 completed_at: clock.elapsed,
             });
+            // Round 9 PR #2 Step 4: ship unavailable means despawned or
+            // missing required components — Bevy already drops the
+            // `PendingAssignment` component with the entity; nothing to do.
+            // The sweeper handles the rare "ship still exists but unqueryable"
+            // case via `stale_at`.
             continue;
         };
 
@@ -73,6 +80,9 @@ pub fn handle_survey_requested(
                     },
                     completed_at: clock.elapsed,
                 });
+                // Round 9 PR #2 Step 4: terminal Rejected — clear marker so
+                // the next AI tick can re-evaluate this ship.
+                commands_buf.entity(req.ship).remove::<PendingAssignment>();
                 continue;
             }
         };
@@ -88,6 +98,8 @@ pub fn handle_survey_requested(
                 },
                 completed_at: clock.elapsed,
             });
+            // Round 9 PR #2 Step 4: terminal Rejected — clear marker.
+            commands_buf.entity(req.ship).remove::<PendingAssignment>();
             continue;
         };
 
@@ -141,6 +153,9 @@ pub fn handle_survey_requested(
                     result: CommandResult::Ok,
                     completed_at: clock.elapsed,
                 });
+                // Round 9 PR #2 Step 4: terminal Ok — survey is now in
+                // progress, so the AI marker is no longer needed.
+                commands_buf.entity(req.ship).remove::<PendingAssignment>();
             }
             Err(e) => {
                 warn!("Queue: Survey failed for {}: {}", ship.name, e);
@@ -153,6 +168,8 @@ pub fn handle_survey_requested(
                     },
                     completed_at: clock.elapsed,
                 });
+                // Round 9 PR #2 Step 4: terminal Rejected — clear marker.
+                commands_buf.entity(req.ship).remove::<PendingAssignment>();
             }
         }
         queue.sync_prediction(ship_pos.as_array(), docked_system);
