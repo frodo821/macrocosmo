@@ -279,3 +279,41 @@ debug 戦略:
 2. **survey loop の root cause 特定 + fix** (Reflect 完了後 BRP で調査 → fix + regression test)
 3. **NPC が `unsurveyed_systems` リストを正しく管理** (KnowledgeStore 連携不在) — survey loop と隣接する別 issue
 4. **Long の戦略選択機構** (`StrategyCandidate` trait、 concentrate vs distribute scenario) — Round 7 で露出した本質的課題
+
+---
+
+# Round 9 進捗 (2026-04-25 後半)
+
+## Reflect 全 derive 完了
+
+`6e7b747 → 988ae36 → fd4861f → 08145b3` (4 commits) で全 Component / Resource に Reflect derive + ReflectRegistrationPlugin で 209 register_type。 macrocosmo-ai は engine-agnostic 維持 (CI ai-core-isolation 通る、 wrapper boundary で reflect(ignore))。 これで BRP `world.query` が全 ECS state に対して動く。
+
+## BRP で survey loop 解析 → 3 つの相互関連 bug 特定
+
+- **Bug 1 NPC duplicate survey emit race**: `idle_surveyors.zip(unsurveyed_systems)` で同じ target に複数 ship 割当
+- **Bug 2 AI 命令の光速遅延無視**: `bus.emit_command` → `drain_ai_commands` 同 tick 即消費、 PendingCommand 経由してない
+- **Bug 3 `fact_sys.record` が player-only**: observer mode で vantage=None になり 全 KnowledgeStore に積まれない
+
+これらは「player-only 前提」という同じ root から派生。 Plan agent で per-faction generalize architectural plan を draft → 3 PR 構成。
+
+## PR #1 + PR #2 完了 (本セッション)
+
+| PR | commits | scope |
+|---|---|---|
+| **#1 (knowledge per-faction)** | `33ea009`, `47a83e7`, `b3b36ac` | `FactionVantage`、 per-empire `PendingFactQueue` Component、 全 8 fact-emitting callsite を `record_for` 経由に migrate、 `FactionVantageQueries` SystemParam、 NPC bundle に `CommsParams` 追加 |
+| **#2 (PendingAssignment dedup)** | `ce93186` | `PendingAssignment` Component + `AssignmentKind::Survey` + `AssignmentTarget::System` + `sweep_stale_assignments` system + `npc_decision_tick` で dedup + handler resolve、 regression test 3 件 |
+| **integration** | `<次 commit>` | SAVE_VERSION 8→10 (両 PR 重ね bump 解消)、 minimal_game.bin fixture regen |
+
+70 lib + integration binaries all green。
+
+## PR #3 (次セッション)
+
+`AiCommandOutbox` + `dispatch_ai_pending_commands` + `process_ai_pending_commands` で AI command を `PendingCommand` 経由 light-speed 化。 既存 `compute_fact_arrival` 再利用で relay-aware delay。 Plan agent draft の Step 5-6 + follow-up Step 7-8 (Colonize parity + relay-aware MacrocosmoDispatcher)。
+
+## Round 9 完了基準
+
+- [x] Reflect 全 derive (BRP query 動く)
+- [x] knowledge per-faction generalize (Bug 3 解消)
+- [x] PendingAssignment dedup (Bug 1 race 止め)
+- [ ] AI command 光速遅延 (Bug 2、 PR #3 で対応)
+- [ ] 再起動 + BRP で survey loop 消失確認
