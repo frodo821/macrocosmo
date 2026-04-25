@@ -25,9 +25,13 @@ use std::sync::Arc;
 use ahash::AHashMap;
 
 use crate::agent::{LongTermAgent, LongTermInput, LongTermOutput};
+use crate::bus::AiBus;
 use crate::condition::{Condition, ConditionAtom};
 use crate::ids::{IntentId, IntentKindId, IntentTargetRef, MetricId};
 use crate::intent::{IntentParams, IntentSpec, RationaleSnapshot};
+use crate::projection::{
+    self, ThresholdGate, TrajectoryConfig, WindowDetectionConfig, WindowKind, detect_windows,
+};
 use crate::time::Tick;
 use crate::value_expr::ValueExpr;
 
@@ -82,6 +86,18 @@ pub struct LongTermDefaultConfig {
     /// the remaining pursuits. Default `2` — i.e., retry once with
     /// extended window, then surrender.
     pub max_retries_before_fallback: usize,
+    /// When `true`, the long agent uses projection-driven validity
+    /// windows: for each leaf metric the agent runs `project()` over
+    /// recent bus history, looks for a `ThresholdRace` window via
+    /// `detect_windows()`, and uses `reached_at - now` as the
+    /// per-leaf `expires_at_offset`. Static `default_validity_window`
+    /// is used only as a fallback when projection produces no
+    /// crossing (flat trajectory, insufficient history, etc.).
+    ///
+    /// Default `false` to preserve the previous behavior.
+    pub use_projection_window: bool,
+    /// Trajectory parameters used when `use_projection_window = true`.
+    pub projection_config: TrajectoryConfig,
 }
 
 impl Default for LongTermDefaultConfig {
@@ -99,6 +115,8 @@ impl Default for LongTermDefaultConfig {
             default_validity_window: None,
             retry_window_extension: 2.0,
             max_retries_before_fallback: 2,
+            use_projection_window: false,
+            projection_config: TrajectoryConfig::default(),
         }
     }
 }
@@ -163,6 +181,56 @@ fn key(kind: &str, metric: &str) -> Arc<str> {
     Arc::from(format!("{kind}/{metric}"))
 }
 
+/// Project per-leaf validity windows from bus history. For each
+/// `(metric, threshold)` pair, fits a trajectory and checks whether
+/// the projected path crosses the threshold; if so, returns
+/// `reached_at - now` as the validity window.
+///
+/// Used by [`ObjectiveDrivenLongTerm`] when
+/// `LongTermDefaultConfig.use_projection_window` is set. Metrics
+/// that don't cross or lack enough history are absent from the map
+/// (caller falls back to the static default).
+fn project_validity_windows(
+    bus: &AiBus,
+    now: Tick,
+    leaves: &[(MetricId, f64, bool)],
+    cfg: &TrajectoryConfig,
+) -> AHashMap<MetricId, Tick> {
+    if leaves.is_empty() {
+        return AHashMap::new();
+    }
+    let metric_ids: Vec<MetricId> = leaves.iter().map(|(m, _, _)| m.clone()).collect();
+    let trajectories = projection::project(bus, &metric_ids, cfg, now, &[]);
+    let gates: Vec<ThresholdGate> = leaves
+        .iter()
+        .map(|(m, t, _)| ThresholdGate {
+            metric: m.clone(),
+            threshold: *t,
+        })
+        .collect();
+    let det_cfg = WindowDetectionConfig {
+        threshold_gates: gates,
+        // We want every crossing, not just the most intense — pass
+        // through low-confidence projections too.
+        min_intensity: 0.0,
+        ..WindowDetectionConfig::default()
+    };
+    let windows = detect_windows(&trajectories, now, &det_cfg);
+
+    let mut out = AHashMap::new();
+    for w in &windows {
+        if let WindowKind::ThresholdRace {
+            metric, reached_at, ..
+        } = &w.kind
+        {
+            if *reached_at > now {
+                out.insert(metric.clone(), *reached_at - now);
+            }
+        }
+    }
+    out
+}
+
 /// Walk a `Condition` tree collecting leaf `(metric, threshold, direction)`
 /// entries. `direction = true` means "must be above threshold",
 /// `false` means "must be below".
@@ -218,6 +286,21 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
         let mut prereq_targets = Vec::new();
         collect_metric_targets(&input.victory.prerequisites, &mut prereq_targets);
 
+        // Per-leaf projected validity windows. Empty when feature off
+        // or projection lacks data; emit() falls back to default_window.
+        let projected_windows: AHashMap<MetricId, Tick> = if self.config.use_projection_window {
+            let mut all_leaves = win_targets.clone();
+            all_leaves.extend(prereq_targets.iter().cloned());
+            project_validity_windows(
+                input.bus,
+                input.now,
+                &all_leaves,
+                &self.config.projection_config,
+            )
+        } else {
+            AHashMap::new()
+        };
+
         let default_window = self.config.default_validity_window;
         let extension = self.config.retry_window_extension.max(1.0);
         let max_retries = self.config.max_retries_before_fallback;
@@ -231,7 +314,8 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                     current: f64,
                     intents: &mut Vec<IntentSpec>,
                     last_id_by_key: &AHashMap<Arc<str>, IntentId>,
-                    drop_counts: &AHashMap<Arc<str>, usize>|
+                    drop_counts: &AHashMap<Arc<str>, usize>,
+                    projected_windows: &AHashMap<MetricId, Tick>|
          -> bool {
             let k = key(kind.as_str(), metric.as_str());
             let drops = drop_counts.get(&k).copied().unwrap_or(0);
@@ -259,9 +343,10 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                 ValueExpr::Literal(current),
             );
 
-            // Adaptive expiry: extend by `extension^drops` whenever we
-            // have a default window and we've seen prior drops.
-            let expires_at_offset = default_window.map(|w| {
+            // Per-leaf base window: prefer projection-driven, fall back to static.
+            let base_window = projected_windows.get(&metric).copied().or(default_window);
+            // Adaptive expiry: extend by `extension^drops` for each prior drop.
+            let expires_at_offset = base_window.map(|w| {
                 let mult = extension.powi(drops as i32);
                 ((w as f64) * mult).round() as Tick
             });
@@ -309,6 +394,7 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                 &mut intents,
                 &self.last_id_by_key,
                 &self.drop_counts,
+                &projected_windows,
             );
         }
 
@@ -342,6 +428,7 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                 &mut intents,
                 &self.last_id_by_key,
                 &self.drop_counts,
+                &projected_windows,
             );
         }
 
