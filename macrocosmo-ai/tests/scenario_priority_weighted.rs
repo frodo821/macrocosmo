@@ -31,7 +31,7 @@ use macrocosmo_ai::condition::Condition;
 use macrocosmo_ai::ids::{CommandKindId, FactionId, IntentKindId, IntentTargetRef, MetricId};
 use macrocosmo_ai::playthrough::scenario::SyntheticDynamics;
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, MetricEffect, run_agent_scenario, Scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, MetricEffect, Scenario, ScenarioConfig, run_agent_scenario,
 };
 use macrocosmo_ai::{
     CampaignReactiveShort, FixedDelayDispatcher, IntentDrivenMidTerm, IntentParams, IntentSpec,
@@ -53,10 +53,8 @@ impl LongTermAgent for EmitTwoOnce {
             intents: vec![
                 IntentSpec {
                     kind: IntentKindId::from("pursue_metric"),
-                    params: IntentParams::new().with(
-                        "metric:vital",
-                        macrocosmo_ai::ValueExpr::Literal(0.0),
-                    ),
+                    params: IntentParams::new()
+                        .with("metric:vital", macrocosmo_ai::ValueExpr::Literal(0.0)),
                     priority: 0.9,
                     importance: 0.9,
                     half_life: None,
@@ -68,10 +66,8 @@ impl LongTermAgent for EmitTwoOnce {
                 },
                 IntentSpec {
                     kind: IntentKindId::from("pursue_metric"),
-                    params: IntentParams::new().with(
-                        "metric:cosmetic",
-                        macrocosmo_ai::ValueExpr::Literal(0.0),
-                    ),
+                    params: IntentParams::new()
+                        .with("metric:cosmetic", macrocosmo_ai::ValueExpr::Literal(0.0)),
                     priority: 0.3,
                     importance: 0.9,
                     half_life: None,
@@ -157,7 +153,10 @@ fn legacy_mode_emits_equal_counts() {
     let vital = count_kind(trace, "pursue_metric:vital");
     let cosmetic = count_kind(trace, "pursue_metric:cosmetic");
 
-    assert!(vital > 100, "expected most ticks to fire vital, got {vital}");
+    assert!(
+        vital > 100,
+        "expected most ticks to fire vital, got {vital}"
+    );
     assert!(
         cosmetic > 100,
         "expected most ticks to fire cosmetic, got {cosmetic}"

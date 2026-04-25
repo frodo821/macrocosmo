@@ -271,11 +271,7 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
         // emitter (`metric:<name>` param key); when missing, the drop
         // is bucketed under the kind alone.
         for d in input.recent_drops {
-            let metric_str = d
-                .metric_hint
-                .as_ref()
-                .map(|s| s.as_ref())
-                .unwrap_or("");
+            let metric_str = d.metric_hint.as_ref().map(|s| s.as_ref()).unwrap_or("");
             let k = key(d.spec_kind.as_str(), metric_str);
             *self.drop_counts.entry(k).or_insert(0) += 1;
         }
@@ -335,7 +331,10 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
             let mut params = IntentParams::new()
                 .with("metric", ValueExpr::Literal(0.0))
                 .with("threshold", ValueExpr::Literal(threshold))
-                .with("direction", ValueExpr::Literal(if direction { 1.0 } else { 0.0 }));
+                .with(
+                    "direction",
+                    ValueExpr::Literal(if direction { 1.0 } else { 0.0 }),
+                );
             // Encode metric name as a params key `metric:<name>` so dispatchers
             // / mid-term agents can retrieve it without extra primitives.
             params = params.with(

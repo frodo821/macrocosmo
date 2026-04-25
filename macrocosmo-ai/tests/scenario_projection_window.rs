@@ -36,7 +36,7 @@ use macrocosmo_ai::ids::{CommandKindId, FactionId, MetricId};
 use macrocosmo_ai::long_term_default::{LongTermDefaultConfig, ObjectiveDrivenLongTerm};
 use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, MetricEffect, run_agent_scenario, Scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, MetricEffect, Scenario, ScenarioConfig, run_agent_scenario,
 };
 use macrocosmo_ai::projection::TrajectoryConfig;
 use macrocosmo_ai::{
@@ -154,7 +154,10 @@ fn offsets_for_metric(
 
 #[test]
 fn projection_yields_per_leaf_asymmetric_windows() {
-    let pt = run_agent_scenario(AgentScenario::new(Scenario::new(config()), vec![spec(true)]));
+    let pt = run_agent_scenario(AgentScenario::new(
+        Scenario::new(config()),
+        vec![spec(true)],
+    ));
     let trace = &pt.per_faction[0];
 
     let fast_offsets = offsets_for_metric(trace, "fast");
@@ -208,7 +211,10 @@ fn projection_off_yields_uniform_windows() {
     // When projection is OFF, every intent uses the static default
     // window (modulo retry extensions, but the zero-delay dispatcher
     // never drops, so all stay at the default).
-    let pt = run_agent_scenario(AgentScenario::new(Scenario::new(config()), vec![spec(false)]));
+    let pt = run_agent_scenario(AgentScenario::new(
+        Scenario::new(config()),
+        vec![spec(false)],
+    ));
     let trace = &pt.per_faction[0];
 
     let fast_offsets = offsets_for_metric(trace, "fast");

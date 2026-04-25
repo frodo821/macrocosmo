@@ -21,14 +21,14 @@
 
 use std::collections::BTreeMap;
 
+use macrocosmo_ai::VictoryCondition;
+use macrocosmo_ai::VictoryStatus;
 use macrocosmo_ai::condition::{Condition, ConditionAtom};
 use macrocosmo_ai::ids::{CommandKindId, FactionId, MetricId};
 use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, MetricEffect, run_agent_scenario, Scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, MetricEffect, Scenario, ScenarioConfig, run_agent_scenario,
 };
-use macrocosmo_ai::VictoryCondition;
-use macrocosmo_ai::VictoryStatus;
 
 fn base_config(command_feedback: bool) -> ScenarioConfig {
     let mut metric_scripts = BTreeMap::new();

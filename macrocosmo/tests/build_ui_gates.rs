@@ -300,9 +300,7 @@ fn available_system_buildings_filters_by_prerequisites() {
     let ctx_with = EvalContext::flat(&with_tech, &empty, &empty, &empty);
 
     assert!(
-        registry
-            .available_system_buildings(&ctx_without)
-            .is_empty(),
+        registry.available_system_buildings(&ctx_without).is_empty(),
         "gated system building must be hidden without the tech"
     );
     assert_eq!(
@@ -395,13 +393,8 @@ fn queue_building_rejected_when_prerequisites_unmet_on_arrival() {
     let mut app = build_app();
     install_gated_registry(app.world_mut());
 
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -442,13 +435,8 @@ fn queue_building_accepted_when_prerequisites_met_on_arrival() {
     let mut app = build_app();
     install_gated_registry(app.world_mut());
 
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -492,13 +480,8 @@ fn queue_system_building_rejected_when_prerequisites_unmet() {
     let mut app = build_app();
     install_gated_registry(app.world_mut());
 
-    let (sys, _planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, _planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let _colony = spawn_test_colony(
         app.world_mut(),
         sys,
@@ -600,13 +583,8 @@ fn upgrade_building_rejected_when_target_prerequisites_unmet() {
     });
     app.world_mut().insert_resource(registry);
 
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -679,13 +657,8 @@ fn queue_building_respects_empire_flag_prerequisites() {
     });
     app.world_mut().insert_resource(registry);
 
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,
@@ -763,13 +736,8 @@ fn queue_building_rejected_without_required_flag() {
     });
     app.world_mut().insert_resource(registry);
 
-    let (sys, planet) = spawn_test_system_with_planet(
-        app.world_mut(),
-        "Target",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-    );
+    let (sys, planet) =
+        spawn_test_system_with_planet(app.world_mut(), "Target", [10.0, 0.0, 0.0], 1.0, true);
     let colony = spawn_test_colony(
         app.world_mut(),
         planet,

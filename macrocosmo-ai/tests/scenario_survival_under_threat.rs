@@ -23,23 +23,20 @@
 
 use std::collections::BTreeMap;
 
-use macrocosmo_ai::condition::{Condition, ConditionAtom};
-use macrocosmo_ai::ids::{FactionId, MetricId};
-use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, run_agent_scenario, Scenario, ScenarioConfig,
-};
-use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::VictoryCondition;
 use macrocosmo_ai::VictoryStatus;
+use macrocosmo_ai::condition::{Condition, ConditionAtom};
+use macrocosmo_ai::ids::{FactionId, MetricId};
+use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
+use macrocosmo_ai::playthrough::{
+    AgentScenario, FactionAgentSpec, Scenario, ScenarioConfig, run_agent_scenario,
+};
 
 #[test]
 fn survival_under_threat_reaches_time_based_victory() {
     let mut metric_scripts = BTreeMap::new();
     // Observer's own strength: constant.
-    metric_scripts.insert(
-        MetricId::from("my_strength"),
-        MetricScript::Constant(30.0),
-    );
+    metric_scripts.insert(MetricId::from("my_strength"), MetricScript::Constant(30.0));
     // Rival's strength (foreign slot): sinusoidal threat.
     metric_scripts.insert(
         MetricId::from("foreign.my_strength.faction_1"),

@@ -2796,12 +2796,8 @@ fn test_is_capital_propagated_in_system_snapshot() {
         .id();
 
     // Spawn player stationed at capital
-    app.world_mut().spawn((
-        Player,
-        StationedAt {
-            system: capital,
-        },
-    ));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: capital }));
 
     // Spawn a colony so knowledge init finds the capital
     spawn_test_colony(

@@ -197,7 +197,15 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             .map(|last| now - last >= self.config.long_cadence)
             .unwrap_or(true);
         if run_long {
-            self.run_long(bus, victory, status.clone(), ai_params, dispatcher, now, &mut out);
+            self.run_long(
+                bus,
+                victory,
+                status.clone(),
+                ai_params,
+                dispatcher,
+                now,
+                &mut out,
+            );
             self.state.last_long_tick = Some(now);
         }
 
@@ -213,7 +221,15 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             .unwrap_or(true);
         let run_mid = mid_due || !inbox.is_empty();
         if run_mid {
-            self.run_mid(bus, &inbox, victory, status.clone(), ai_params, now, &mut out);
+            self.run_mid(
+                bus,
+                &inbox,
+                victory,
+                status.clone(),
+                ai_params,
+                now,
+                &mut out,
+            );
             self.state.last_mid_tick = Some(now);
         }
 
@@ -393,7 +409,12 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
                 to,
                 at,
             } => {
-                if let Some(c) = self.state.campaigns.iter_mut().find(|c| &c.id == campaign_id) {
+                if let Some(c) = self
+                    .state
+                    .campaigns
+                    .iter_mut()
+                    .find(|c| &c.id == campaign_id)
+                {
                     let _ = c.transition(*to, *at); // swallow illegal-transition errors
                 }
             }
@@ -401,7 +422,12 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
                 campaign_id,
                 intent_id,
             } => {
-                if let Some(c) = self.state.campaigns.iter_mut().find(|c| &c.id == campaign_id) {
+                if let Some(c) = self
+                    .state
+                    .campaigns
+                    .iter_mut()
+                    .find(|c| &c.id == campaign_id)
+                {
                     c.source_intent = Some(intent_id.clone());
                 }
             }
@@ -409,7 +435,12 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
                 campaign_id,
                 weight,
             } => {
-                if let Some(c) = self.state.campaigns.iter_mut().find(|c| &c.id == campaign_id) {
+                if let Some(c) = self
+                    .state
+                    .campaigns
+                    .iter_mut()
+                    .find(|c| &c.id == campaign_id)
+                {
                     c.weight = *weight;
                 }
             }

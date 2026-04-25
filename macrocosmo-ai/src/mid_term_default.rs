@@ -251,8 +251,7 @@ impl MidTermAgent for IntentDrivenMidTerm {
             // weight = priority * importance. Acts as the campaign's
             // share of short-agent command budget. Float-clamped non-
             // negative; safe to skip when stamp_weights is off.
-            let intent_weight =
-                (intent.spec.priority * intent.spec.importance).max(0.0) as f64;
+            let intent_weight = (intent.spec.priority * intent.spec.importance).max(0.0) as f64;
 
             // Supersedes handling: if the supersedes target's campaign
             // is still live, re-point it at this new intent.
@@ -309,9 +308,7 @@ impl MidTermAgent for IntentDrivenMidTerm {
                         weight: intent_weight,
                     });
                 }
-                if existing.state != CampaignState::Active
-                    && !existing.state.is_terminal()
-                {
+                if existing.state != CampaignState::Active && !existing.state.is_terminal() {
                     ops.push(CampaignOp::Transition {
                         campaign_id: existing.id.clone(),
                         to: CampaignState::Active,
@@ -561,5 +558,4 @@ mod tests {
             other => panic!("expected AttachIntent, got {other:?}"),
         }
     }
-
 }

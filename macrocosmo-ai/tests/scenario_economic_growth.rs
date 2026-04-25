@@ -12,14 +12,14 @@
 
 use std::collections::BTreeMap;
 
-use macrocosmo_ai::condition::{Condition, ConditionAtom};
-use macrocosmo_ai::ids::{FactionId, MetricId};
-use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, run_agent_scenario, Scenario, ScenarioConfig,
-};
-use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::VictoryCondition;
 use macrocosmo_ai::VictoryStatus;
+use macrocosmo_ai::condition::{Condition, ConditionAtom};
+use macrocosmo_ai::ids::{FactionId, MetricId};
+use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
+use macrocosmo_ai::playthrough::{
+    AgentScenario, FactionAgentSpec, Scenario, ScenarioConfig, run_agent_scenario,
+};
 
 #[test]
 fn economic_growth_reaches_victory() {

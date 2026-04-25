@@ -375,9 +375,7 @@ fn test_observer_mode_spawns_visible_star_labels() {
         .world_mut()
         .query::<(&Text2d, &TextColor)>()
         .iter(app.world())
-        .filter(|(text, color)| {
-            text.0 == "Capitalis" && color.0.alpha() > 0.0
-        })
+        .filter(|(text, color)| text.0 == "Capitalis" && color.0.alpha() > 0.0)
         .count();
     assert_eq!(
         label_count, 1,
@@ -387,7 +385,10 @@ fn test_observer_mode_spawns_visible_star_labels() {
 
     // Also silence unused-import warnings in case the test runner strips
     // the main assertion — belt and suspenders.
-    let _ = Colony { planet: Entity::PLACEHOLDER, growth_rate: 0.0 };
+    let _ = Colony {
+        planet: Entity::PLACEHOLDER,
+        growth_rate: 0.0,
+    };
     let _ = Planet {
         name: String::new(),
         system: Entity::PLACEHOLDER,

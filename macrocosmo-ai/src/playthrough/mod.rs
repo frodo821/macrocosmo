@@ -30,13 +30,13 @@ pub use record::{
 // `ScenarioConfig` is re-exported at the top-level of `playthrough` for
 // convenience, but also remains accessible via `playthrough::record` for
 // explicit imports.
-pub use record::ScenarioConfig;
-pub use recorder::RecordingBus;
-pub use replayer::{ReplayError, replay};
 pub use agent_scenario::{
     AgentPlaythrough, AgentScenario, FactionAgentSpec, FactionTrace, LongTermWrapper,
     MidTermWrapper, ShortTermWrapper, run_agent_scenario,
 };
+pub use record::ScenarioConfig;
+pub use recorder::RecordingBus;
+pub use replayer::{ReplayError, replay};
 pub use scenario::{
     EvidencePulse, MetricEffect, MetricScript, Scenario, SyntheticDynamics, TickFn, run_scenario,
 };

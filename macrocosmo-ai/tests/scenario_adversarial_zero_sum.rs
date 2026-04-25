@@ -241,7 +241,12 @@ fn asymmetric_strength_decides_the_race() {
     assert!(
         won_0.is_some(),
         "stronger faction 0 should reach Won; timeline tail: {:?}",
-        trace_0.victory_timeline.iter().rev().take(5).collect::<Vec<_>>()
+        trace_0
+            .victory_timeline
+            .iter()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
     );
 
     // (2) Weaker faction 1 must not win — its metric is flat.

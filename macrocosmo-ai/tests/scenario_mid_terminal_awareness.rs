@@ -23,15 +23,15 @@
 
 use std::collections::BTreeMap;
 
+use macrocosmo_ai::VictoryCondition;
+use macrocosmo_ai::VictoryStatus;
 use macrocosmo_ai::campaign::CampaignState;
 use macrocosmo_ai::condition::{Condition, ConditionAtom};
 use macrocosmo_ai::ids::{FactionId, MetricId};
 use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, run_agent_scenario, Scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, Scenario, ScenarioConfig, run_agent_scenario,
 };
-use macrocosmo_ai::VictoryCondition;
-use macrocosmo_ai::VictoryStatus;
 
 #[test]
 fn mid_abandons_campaigns_after_unreachable() {
@@ -173,9 +173,10 @@ fn mid_succeeds_campaigns_on_won() {
     // circuit). Mid never starts campaigns. No Active to mark
     // Succeeded — but the test passes when no Active campaigns
     // linger and command_history is empty.
-    let any_active_ever = trace.campaign_snapshots.iter().any(|(_, snap)| {
-        snap.iter().any(|c| c.state == CampaignState::Active)
-    });
+    let any_active_ever = trace
+        .campaign_snapshots
+        .iter()
+        .any(|(_, snap)| snap.iter().any(|c| c.state == CampaignState::Active));
     assert!(
         !any_active_ever,
         "no campaigns should ever activate when victory is already Won"

@@ -1499,7 +1499,8 @@ fn save_load_round_trips_colony_faction_owner() {
         "FactionOwner must point at the reloaded PlayerEmpire entity"
     );
     // Population is now tracked in ColonyPopulation, not Colony
-    let dst_pop = dst.get::<macrocosmo::species::ColonyPopulation>(dst_colony_entity)
+    let dst_pop = dst
+        .get::<macrocosmo::species::ColonyPopulation>(dst_colony_entity)
         .expect("loaded colony must have ColonyPopulation");
     assert_eq!(dst_pop.total(), 1_000);
 }
@@ -1749,7 +1750,7 @@ fn test_migration_assigns_slot_to_station_ships_without_slot_assignment() {
         on_upgraded: None,
         dismantlable: true,
         ship_design_id: Some("station_shipyard_v1".into()),
-            colony_slots: None,
+        colony_slots: None,
     });
     dst.insert_resource(building_reg);
     let mut design_reg = ShipDesignRegistry::default();

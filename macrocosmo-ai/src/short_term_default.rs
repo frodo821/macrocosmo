@@ -90,8 +90,7 @@ impl CampaignReactiveShort {
                 campaign.id.as_str()
             ))
         };
-        let mut cmd = Command::new(kind, faction, now)
-            .with_param("campaign", campaign.id.as_str());
+        let mut cmd = Command::new(kind, faction, now).with_param("campaign", campaign.id.as_str());
         if let Some(src) = &campaign.source_intent {
             cmd = cmd.with_param("source_intent", src.as_str());
         }

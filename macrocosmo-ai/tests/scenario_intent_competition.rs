@@ -31,20 +31,20 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use macrocosmo_ai::campaign::CampaignState;
-use macrocosmo_ai::condition::{Condition, ConditionAtom};
-use macrocosmo_ai::ids::{CommandKindId, FactionId, MetricId};
-use macrocosmo_ai::mid_term_default::{IntentDrivenMidTerm, MidTermDefaultConfig};
-use macrocosmo_ai::playthrough::scenario::SyntheticDynamics;
-use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, MetricEffect, run_agent_scenario, Scenario, ScenarioConfig,
-};
 use macrocosmo_ai::CampaignReactiveShort;
 use macrocosmo_ai::FixedDelayDispatcher;
 use macrocosmo_ai::ObjectiveDrivenLongTerm;
 use macrocosmo_ai::OrchestratorConfig;
 use macrocosmo_ai::VictoryCondition;
 use macrocosmo_ai::VictoryStatus;
+use macrocosmo_ai::campaign::CampaignState;
+use macrocosmo_ai::condition::{Condition, ConditionAtom};
+use macrocosmo_ai::ids::{CommandKindId, FactionId, MetricId};
+use macrocosmo_ai::mid_term_default::{IntentDrivenMidTerm, MidTermDefaultConfig};
+use macrocosmo_ai::playthrough::scenario::SyntheticDynamics;
+use macrocosmo_ai::playthrough::{
+    AgentScenario, FactionAgentSpec, MetricEffect, Scenario, ScenarioConfig, run_agent_scenario,
+};
 
 fn config() -> ScenarioConfig {
     let metric_scripts = BTreeMap::new();
@@ -222,9 +222,8 @@ fn intent_competition_with_guardrail_wins() {
 
     // Both campaigns suspended at some point (lockstep guardrail).
     let suspended_econ = trace.campaign_snapshots.iter().any(|(_, snap)| {
-        snap.iter().any(|c| {
-            c.id.as_str() == "pursue_metric:econ" && c.state == CampaignState::Suspended
-        })
+        snap.iter()
+            .any(|c| c.id.as_str() == "pursue_metric:econ" && c.state == CampaignState::Suspended)
     });
     let suspended_military = trace.campaign_snapshots.iter().any(|(_, snap)| {
         snap.iter().any(|c| {

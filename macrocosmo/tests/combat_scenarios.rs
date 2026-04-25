@@ -45,9 +45,9 @@ use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::ship::*;
 use macrocosmo::ship_design::{ModuleDefinition, ModuleRegistry, WeaponStats};
 
+use macrocosmo::ai::AiBusResource;
 use macrocosmo::ai::convert::to_ai_faction;
 use macrocosmo::ai::schema::ids::evidence;
-use macrocosmo::ai::AiBusResource;
 
 use common::{advance_time, spawn_test_system, test_app};
 
@@ -565,13 +565,18 @@ fn ship_vs_ship_combat_emits_standing_evidence() {
         let mut q = app
             .world_mut()
             .query_filtered::<Entity, With<PlayerEmpire>>();
-        q.iter(app.world()).next().expect("player empire must exist")
+        q.iter(app.world())
+            .next()
+            .expect("player empire must exist")
     };
 
     // Spawn a second faction.
     let enemy_faction = app
         .world_mut()
-        .spawn(Faction::new("enemy_evidence_faction", "Enemy Evidence Faction"))
+        .spawn(Faction::new(
+            "enemy_evidence_faction",
+            "Enemy Evidence Faction",
+        ))
         .id();
 
     // Set both sides to War.

@@ -154,8 +154,13 @@ pub fn run_agent_scenario(scenario: AgentScenario) -> AgentPlaythrough {
 
     // Declare every metric referenced by either scripts or
     // command_responses — effects may introduce metrics not in scripts.
-    let mut referenced_metrics: std::collections::BTreeSet<crate::ids::MetricId> =
-        base.config.dynamics.metric_scripts.keys().cloned().collect();
+    let mut referenced_metrics: std::collections::BTreeSet<crate::ids::MetricId> = base
+        .config
+        .dynamics
+        .metric_scripts
+        .keys()
+        .cloned()
+        .collect();
     for effects in base.config.dynamics.command_responses.values() {
         for e in effects {
             match e {
@@ -260,13 +265,9 @@ pub fn run_agent_scenario(scenario: AgentScenario) -> AgentPlaythrough {
 
         // 3. Per-faction orchestrator tick.
         for p in paired.iter_mut() {
-            let out = p.orch.tick(
-                rb.bus_mut(),
-                p.dispatcher.as_mut(),
-                &p.victory,
-                None,
-                t,
-            );
+            let out = p
+                .orch
+                .tick(rb.bus_mut(), p.dispatcher.as_mut(), &p.victory, None, t);
             let trace = &mut traces[p.trace_idx];
 
             for intent in &out.intents_sent {
@@ -288,9 +289,7 @@ pub fn run_agent_scenario(scenario: AgentScenario) -> AgentPlaythrough {
                 rb.emit_command(cmd.clone());
                 // Apply command-response effects to the bus (feedback
                 // loop — lets AI's commands bend scripted trajectories).
-                if let Some(effects) =
-                    base.config.dynamics.command_responses.get(&cmd.kind)
-                {
+                if let Some(effects) = base.config.dynamics.command_responses.get(&cmd.kind) {
                     for effect in effects {
                         apply_metric_effect(&mut rb, effect, t);
                     }
@@ -335,10 +334,7 @@ mod tests {
                 to: 200.0,
             },
         );
-        metric_scripts.insert(
-            MetricId::from("stockpile"),
-            MetricScript::Constant(5.0),
-        );
+        metric_scripts.insert(MetricId::from("stockpile"), MetricScript::Constant(5.0));
         let config = ScenarioConfig {
             name: "growth".into(),
             seed: 1,
@@ -379,9 +375,16 @@ mod tests {
             "expected short-agent commands once a campaign is Active"
         );
         assert!(
-            trace.victory_timeline.iter().any(|(_, s)| matches!(s, VictoryStatus::Won)),
+            trace
+                .victory_timeline
+                .iter()
+                .any(|(_, s)| matches!(s, VictoryStatus::Won)),
             "expected victory to transition to Won by end of scenario; timeline: {:?}",
-            trace.victory_timeline.iter().map(|(t, s)| (*t, s.clone())).collect::<Vec<_>>()
+            trace
+                .victory_timeline
+                .iter()
+                .map(|(t, s)| (*t, s.clone()))
+                .collect::<Vec<_>>()
         );
     }
 }

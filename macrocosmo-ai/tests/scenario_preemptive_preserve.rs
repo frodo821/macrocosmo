@@ -31,7 +31,7 @@ use macrocosmo_ai::ids::{FactionId, MetricId};
 use macrocosmo_ai::long_term_default::{LongTermDefaultConfig, ObjectiveDrivenLongTerm};
 use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, run_agent_scenario, Scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, Scenario, ScenarioConfig, run_agent_scenario,
 };
 use macrocosmo_ai::{FixedDelayDispatcher, OrchestratorConfig, VictoryCondition};
 

@@ -24,10 +24,7 @@ fn lua_building_registry() -> BuildingRegistry {
     let engine = ScriptEngine::new().unwrap();
     let init_path = engine.scripts_dir().join("init.lua");
     if !init_path.exists() {
-        panic!(
-            "scripts/init.lua not found at {:?}",
-            init_path
-        );
+        panic!("scripts/init.lua not found at {:?}", init_path);
     }
     engine.load_file(&init_path).unwrap();
     let defs = parse_building_definitions(engine.lua()).unwrap();
@@ -179,7 +176,8 @@ fn test_demolish_rejected_for_non_dismantlable() {
         on_built: None,
         on_upgraded: None,
         dismantlable: false,
-        ship_design_id: None, colony_slots: None,
+        ship_design_id: None,
+        colony_slots: None,
     });
 
     let def = reg.get("hub_test").unwrap();

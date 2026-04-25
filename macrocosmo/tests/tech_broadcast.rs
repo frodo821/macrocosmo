@@ -643,7 +643,8 @@ fn job_slot_registry() -> macrocosmo::colony::BuildingRegistry {
         on_built: None,
         on_upgraded: None,
         dismantlable: true,
-        ship_design_id: None, colony_slots: None,
+        ship_design_id: None,
+        colony_slots: None,
     });
     registry
 }

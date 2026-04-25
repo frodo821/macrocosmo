@@ -15,7 +15,7 @@ use macrocosmo_ai::condition::{Condition, ConditionAtom};
 use macrocosmo_ai::ids::{FactionId, IntentTargetRef, MetricId};
 use macrocosmo_ai::playthrough::scenario::{MetricScript, Scenario, SyntheticDynamics};
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, run_agent_scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, ScenarioConfig, run_agent_scenario,
 };
 use macrocosmo_ai::{
     FixedDelayDispatcher, Intent, IntentParams, IntentSpec, LongTermAgent, LongTermInput,
@@ -83,10 +83,8 @@ fn temporal_no_campaign_flip_flop_on_stable_input() {
         },
     };
     let base = Scenario::new(cfg);
-    let victory = VictoryCondition::simple(
-        metric_above("econ", 100.0),
-        metric_above("stockpile", 0.0),
-    );
+    let victory =
+        VictoryCondition::simple(metric_above("econ", 100.0), metric_above("stockpile", 0.0));
     let mut spec = FactionAgentSpec::with_defaults(FactionId(0), victory, 0);
     spec.orchestrator_config.long_cadence = 1;
     spec.orchestrator_config.mid_cadence = 1;
@@ -303,10 +301,7 @@ fn informational_stale_intent_overridden_by_mid() {
         .campaign_snapshots
         .iter()
         .any(|(_, snap)| !snap.is_empty());
-    assert!(
-        !has_any_campaign,
-        "stale intent must not start a campaign"
-    );
+    assert!(!has_any_campaign, "stale intent must not start a campaign");
 }
 
 // ---------------------------------------------------------------------------

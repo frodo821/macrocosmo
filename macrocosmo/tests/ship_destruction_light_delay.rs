@@ -116,10 +116,8 @@ fn remote_ship_destruction_event_respects_light_delay() {
     let remote = spawn_test_system(app.world_mut(), "Doom-Zone", remote_pos, 0.7, true, false);
 
     // Put the player and empire viewer at the capital (origin).
-    app.world_mut().spawn((
-        Player,
-        StationedAt { system: capital },
-    ));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: capital }));
     let empire = empire_entity(app.world_mut());
     set_empire_viewer_system(app.world_mut(), empire, capital);
 
@@ -155,10 +153,14 @@ fn remote_ship_destruction_event_respects_light_delay() {
             .filter(|e| e.kind == GameEventKind::ShipDestroyed)
             .count();
         assert_eq!(
-            ship_destroyed_count, 0,
+            ship_destroyed_count,
+            0,
             "ShipDestroyed event must NOT fire at the destruction tick for a \
              remote combat (light-speed delay violation). EventLog: {:?}",
-            log.entries.iter().map(|e| &e.description).collect::<Vec<_>>()
+            log.entries
+                .iter()
+                .map(|e| &e.description)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -194,13 +196,13 @@ fn remote_ship_destruction_event_respects_light_delay() {
             ship_destroyed.is_some(),
             "ShipDestroyed event must fire once light reaches the player. \
              EventLog: {:?}",
-            log.entries.iter().map(|e| &e.description).collect::<Vec<_>>()
+            log.entries
+                .iter()
+                .map(|e| &e.description)
+                .collect::<Vec<_>>()
         );
         assert!(
-            ship_destroyed
-                .unwrap()
-                .description
-                .contains("Far-Away-1"),
+            ship_destroyed.unwrap().description.contains("Far-Away-1"),
             "ShipDestroyed description should name the destroyed ship"
         );
     }
@@ -228,19 +230,10 @@ fn remote_combat_defeat_event_respects_light_delay() {
 
     // 10 LY away → delay = 600 hexadies.
     let remote_pos = [10.0, 0.0, 0.0];
-    let remote = spawn_test_system(
-        app.world_mut(),
-        "Doom-Zone-2",
-        remote_pos,
-        0.7,
-        true,
-        false,
-    );
+    let remote = spawn_test_system(app.world_mut(), "Doom-Zone-2", remote_pos, 0.7, true, false);
 
-    app.world_mut().spawn((
-        Player,
-        StationedAt { system: capital },
-    ));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: capital }));
     let empire = empire_entity(app.world_mut());
     set_empire_viewer_system(app.world_mut(), empire, capital);
 
@@ -269,10 +262,14 @@ fn remote_combat_defeat_event_respects_light_delay() {
             .filter(|e| e.kind == GameEventKind::CombatDefeat)
             .count();
         assert_eq!(
-            combat_defeat_count, 0,
+            combat_defeat_count,
+            0,
             "CombatDefeat event must NOT fire at the destruction tick for \
              a remote combat. EventLog: {:?}",
-            log.entries.iter().map(|e| &e.description).collect::<Vec<_>>()
+            log.entries
+                .iter()
+                .map(|e| &e.description)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -291,10 +288,16 @@ fn remote_combat_defeat_event_respects_light_delay() {
             combat_defeat.is_some(),
             "CombatDefeat event must fire after light-speed delay. \
              EventLog: {:?}",
-            log.entries.iter().map(|e| &e.description).collect::<Vec<_>>()
+            log.entries
+                .iter()
+                .map(|e| &e.description)
+                .collect::<Vec<_>>()
         );
         assert!(
-            combat_defeat.unwrap().description.contains("All ships destroyed"),
+            combat_defeat
+                .unwrap()
+                .description
+                .contains("All ships destroyed"),
             "CombatDefeat description should match the canonical text"
         );
     }
@@ -310,10 +313,8 @@ fn local_ship_destruction_event_fires_immediately() {
 
     let capital = spawn_capital(app.world_mut());
 
-    app.world_mut().spawn((
-        Player,
-        StationedAt { system: capital },
-    ));
+    app.world_mut()
+        .spawn((Player, StationedAt { system: capital }));
     let empire = empire_entity(app.world_mut());
     set_empire_viewer_system(app.world_mut(), empire, capital);
 
@@ -348,7 +349,10 @@ fn local_ship_destruction_event_fires_immediately() {
             ship_destroyed.is_some(),
             "ShipDestroyed must fire immediately for local combat (delay=0). \
              EventLog: {:?}",
-            log.entries.iter().map(|e| &e.description).collect::<Vec<_>>()
+            log.entries
+                .iter()
+                .map(|e| &e.description)
+                .collect::<Vec<_>>()
         );
     }
 }

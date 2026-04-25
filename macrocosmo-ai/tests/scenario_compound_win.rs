@@ -21,14 +21,14 @@
 
 use std::collections::BTreeMap;
 
+use macrocosmo_ai::VictoryCondition;
+use macrocosmo_ai::VictoryStatus;
 use macrocosmo_ai::condition::{Condition, ConditionAtom};
 use macrocosmo_ai::ids::{FactionId, MetricId};
 use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, run_agent_scenario, Scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, Scenario, ScenarioConfig, run_agent_scenario,
 };
-use macrocosmo_ai::VictoryCondition;
-use macrocosmo_ai::VictoryStatus;
 
 #[test]
 fn compound_win_pursues_each_leaf_independently() {

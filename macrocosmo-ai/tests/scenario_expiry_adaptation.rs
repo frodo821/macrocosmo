@@ -32,7 +32,7 @@ use macrocosmo_ai::ids::{CommandKindId, FactionId, MetricId};
 use macrocosmo_ai::long_term_default::{LongTermDefaultConfig, ObjectiveDrivenLongTerm};
 use macrocosmo_ai::playthrough::scenario::{MetricScript, SyntheticDynamics};
 use macrocosmo_ai::playthrough::{
-    AgentScenario, FactionAgentSpec, MetricEffect, run_agent_scenario, Scenario, ScenarioConfig,
+    AgentScenario, FactionAgentSpec, MetricEffect, Scenario, ScenarioConfig, run_agent_scenario,
 };
 use macrocosmo_ai::{
     CampaignReactiveShort, FixedDelayDispatcher, IntentDrivenMidTerm, OrchestratorConfig,
@@ -98,9 +98,7 @@ fn spec_with_long(long_cfg: LongTermDefaultConfig, dispatch_delay: i64) -> Facti
         long: Box::new(ObjectiveDrivenLongTerm::new().with_config(long_cfg)),
         mid: Box::new(IntentDrivenMidTerm::new()),
         short: Box::new(CampaignReactiveShort::new()),
-        dispatcher: Box::new(
-            FixedDelayDispatcher::new(dispatch_delay).with_expiry_check(true),
-        ),
+        dispatcher: Box::new(FixedDelayDispatcher::new(dispatch_delay).with_expiry_check(true)),
         orchestrator_config: {
             let mut c = OrchestratorConfig::default();
             c.long_cadence = 5;

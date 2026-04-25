@@ -31,15 +31,15 @@ mod common;
 use bevy::ecs::schedule::ApplyDeferred;
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
-use macrocosmo::ai::plugin::DeclaredFactionSlots;
 use macrocosmo::ai::AiBusResource;
+use macrocosmo::ai::plugin::DeclaredFactionSlots;
 use macrocosmo::colony::LastProductionTick;
 use macrocosmo::communication::{AppliedCommandIds, NextRemoteCommandId};
 use macrocosmo::events::EventLog;
 use macrocosmo::faction::{FactionRelations, HostileFactions, KnownFactions};
 use macrocosmo::galaxy::{GalaxyConfig, HomeSystemAssignments};
 use macrocosmo::game_state::{
-    cleanup_ingame_entities, reset_ingame_resources, GameState, GameStatePlugin,
+    GameState, GameStatePlugin, cleanup_ingame_entities, reset_ingame_resources,
 };
 use macrocosmo::knowledge::{
     DestroyedShipRegistry, NextEventId, NotifiedEventIds, PendingFactQueue, RelayNetwork,
@@ -241,7 +241,9 @@ fn reset_ingame_resources_restores_defaults_and_removes_one_shot_resources() {
         "GalaxyConfig must be removed on scene exit (OnEnter(NewGame) re-inserts it)"
     );
     assert!(
-        app.world().get_resource::<HomeSystemAssignments>().is_none(),
+        app.world()
+            .get_resource::<HomeSystemAssignments>()
+            .is_none(),
         "HomeSystemAssignments must be removed on scene exit"
     );
 }

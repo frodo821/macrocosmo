@@ -289,7 +289,10 @@ fn empires_receive_loaded_tech_tree_after_new_game_enter() {
     // Every Empire entity — player and NPCs — must carry a TechTree whose
     // `technologies` map matches the resource (the attach system clones).
     let mut q = app.world_mut().query::<(&Empire, &TechTree)>();
-    let trees: Vec<usize> = q.iter(app.world()).map(|(_, t)| t.technologies.len()).collect();
+    let trees: Vec<usize> = q
+        .iter(app.world())
+        .map(|(_, t)| t.technologies.len())
+        .collect();
     assert!(
         !trees.is_empty(),
         "expected at least one Empire with a TechTree component after OnEnter(NewGame)"

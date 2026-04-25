@@ -27,7 +27,9 @@ fn ai_player_attacks_hostiles_when_strong_enough() {
     let empire_entity = app
         .world_mut()
         .spawn((
-            Empire { name: "Test Empire".to_string() },
+            Empire {
+                name: "Test Empire".to_string(),
+            },
             PlayerEmpire,
             Faction {
                 id: "test_empire".to_string(),
@@ -105,10 +107,7 @@ fn ai_player_attacks_hostiles_when_strong_enough() {
     }
 
     // Also check if AiControlled was applied to the player empire.
-    let has_ai_controlled = app
-        .world()
-        .entity(empire_entity)
-        .contains::<AiControlled>();
+    let has_ai_controlled = app.world().entity(empire_entity).contains::<AiControlled>();
     assert!(
         has_ai_controlled,
         "Player empire should have AiControlled marker when AiPlayerMode(true)"
@@ -162,7 +161,9 @@ fn ai_dispatches_surveyor_to_unsurveyed_systems() {
     let empire = app
         .world_mut()
         .spawn((
-            Empire { name: "Surveyors".into() },
+            Empire {
+                name: "Surveyors".into(),
+            },
             PlayerEmpire,
             Faction {
                 id: "surveyors".into(),
@@ -176,8 +177,14 @@ fn ai_dispatches_surveyor_to_unsurveyed_systems() {
         .id();
 
     let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
-    let frontier =
-        spawn_test_system(app.world_mut(), "Frontier", [3.0, 0.0, 0.0], 1.0, false, false);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [3.0, 0.0, 0.0],
+        1.0,
+        false,
+        false,
+    );
 
     // Seed the visibility map so both systems are at least Catalogued —
     // this matches what `initialize_visibility_tiers` does at game start.
@@ -263,10 +270,7 @@ fn ai_ranks_frontier_adjacent_survey_target_before_distant_one() {
     let near = world.spawn_empty().id();
     let far = world.spawn_empty().id();
 
-    let candidates = vec![
-        (far, [50.0, 0.0, 0.0]),
-        (near, [2.0, 0.0, 0.0]),
-    ];
+    let candidates = vec![(far, [50.0, 0.0, 0.0]), (near, [2.0, 0.0, 0.0])];
     let surveyed = vec![[0.0, 0.0, 0.0]]; // one surveyed home
     let reference_pos = [0.0, 0.0, 0.0];
 
@@ -291,10 +295,7 @@ fn ai_ranks_home_closer_target_as_tiebreak() {
 
     // Both 5ly from the single surveyed home; right is closer to the
     // reference_pos.
-    let candidates = vec![
-        (left, [-5.0, 0.0, 0.0]),
-        (right, [5.0, 0.0, 0.0]),
-    ];
+    let candidates = vec![(left, [-5.0, 0.0, 0.0]), (right, [5.0, 0.0, 0.0])];
     let surveyed = vec![[0.0, 0.0, 0.0]];
     let reference_pos = [3.0, 0.0, 0.0];
 
@@ -386,21 +387,20 @@ fn ai_skips_system_building_without_core() {
     let mut app = test_app();
     app.insert_resource(AiPlayerMode(true));
 
-    app.world_mut()
-        .spawn((
-            Empire {
-                name: "Coreless".into(),
-            },
-            PlayerEmpire,
-            Faction {
-                id: "coreless".into(),
-                name: "Coreless".into(),
-                can_diplomacy: false,
-                allowed_diplomatic_options: Default::default(),
-            },
-            KnowledgeStore::default(),
-            SystemVisibilityMap::default(),
-        ));
+    app.world_mut().spawn((
+        Empire {
+            name: "Coreless".into(),
+        },
+        PlayerEmpire,
+        Faction {
+            id: "coreless".into(),
+            name: "Coreless".into(),
+            can_diplomacy: false,
+            allowed_diplomatic_options: Default::default(),
+        },
+        KnowledgeStore::default(),
+        SystemVisibilityMap::default(),
+    ));
 
     // Home system with a colony but NO Core ship — system-building
     // construction (#370) must stay gated off.

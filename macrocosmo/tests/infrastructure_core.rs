@@ -902,10 +902,9 @@ fn core_deploy_does_not_overwrite_existing_system_buildings() {
     let empire = empire_entity(app.world_mut());
 
     // Pre-attach SystemBuildings with a shipyard in slot 0.
-    app.world_mut().entity_mut(sys).insert((
-        SystemBuildings::default(),
-        SystemBuildingQueue::default(),
-    ));
+    app.world_mut()
+        .entity_mut(sys)
+        .insert((SystemBuildings::default(), SystemBuildingQueue::default()));
 
     {
         let mut reg = app.world_mut().resource_mut::<ShipDesignRegistry>();

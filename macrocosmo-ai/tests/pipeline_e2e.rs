@@ -10,10 +10,10 @@ use macrocosmo_ai::command::Command;
 use macrocosmo_ai::condition::ConditionAtom;
 use macrocosmo_ai::feasibility::{FeasibilityFormula, FeasibilityTerm};
 use macrocosmo_ai::objective::{Objective, PreconditionSet as ObjPreconditionSet, SuccessCriteria};
+use macrocosmo_ai::projection::window::{MetricPair, WindowDetectionConfig, detect_windows};
 use macrocosmo_ai::projection::{
     ProjectionNaming, TrajectoryConfig, emit_projections_to_bus, project,
 };
-use macrocosmo_ai::projection::window::{MetricPair, WindowDetectionConfig, detect_windows};
 use macrocosmo_ai::value_expr::MetricRef;
 use macrocosmo_ai::{
     AiBus, AssessmentConfig, Condition, FactionId, MetricId, MetricSpec, ObjectiveId,
@@ -43,8 +43,18 @@ fn emit_stub_economy(bus: &mut AiBus, tick: i64, minerals_rate: f64, energy_rate
     declare_and_emit(bus, "net_production_food", 80.0, tick);
     declare_and_emit(bus, "net_production_research", 30.0, tick);
     declare_and_emit(bus, "net_production_authority", 3.0, tick);
-    declare_and_emit(bus, "stockpile_minerals", 500.0 + minerals_rate * tick as f64, tick);
-    declare_and_emit(bus, "stockpile_energy", 400.0 + energy_rate * tick as f64, tick);
+    declare_and_emit(
+        bus,
+        "stockpile_minerals",
+        500.0 + minerals_rate * tick as f64,
+        tick,
+    );
+    declare_and_emit(
+        bus,
+        "stockpile_energy",
+        400.0 + energy_rate * tick as f64,
+        tick,
+    );
     declare_and_emit(bus, "stockpile_food", 300.0, tick);
     declare_and_emit(bus, "population_total", 3000.0 + tick as f64 * 10.0, tick);
     declare_and_emit(bus, "population_growth_rate", 0.03, tick);
@@ -125,18 +135,23 @@ fn stub_metrics_produce_valid_assessment_and_projections() {
             threshold: 500.0,
         })),
         FeasibilityFormula::WeightedSum(vec![
-            FeasibilityTerm::new(0.6, macrocosmo_ai::ValueExpr::Metric(
-                MetricRef::new(MetricId::from("projection.net_production_minerals.horizon_end")),
-            )),
+            FeasibilityTerm::new(
+                0.6,
+                macrocosmo_ai::ValueExpr::Metric(MetricRef::new(MetricId::from(
+                    "projection.net_production_minerals.horizon_end",
+                ))),
+            ),
             FeasibilityTerm::new(0.001, macrocosmo_ai::ValueExpr::Literal(1.0)),
         ]),
     );
-    let precondition_set = PreconditionSet::new(vec![
-        PreconditionItem::new("has_colonies", severity::MODERATE, Condition::Atom(ConditionAtom::MetricAbove {
+    let precondition_set = PreconditionSet::new(vec![PreconditionItem::new(
+        "has_colonies",
+        severity::MODERATE,
+        Condition::Atom(ConditionAtom::MetricAbove {
             metric: MetricId::from("colony_count"),
             threshold: 1.0,
-        })),
-    ]);
+        }),
+    )]);
     let mut tracker = PreconditionTracker::new();
     let config = AssessmentConfig::default();
 
@@ -152,9 +167,18 @@ fn stub_metrics_produce_valid_assessment_and_projections() {
         &StubParams,
     );
 
-    assert!(assessment.economic_capacity > 0.0, "economy should be non-trivial");
-    assert!(assessment.feasibility > 0.0, "feasibility should be positive with growing economy");
-    assert!(assessment.confidence > 0.0, "confidence should be non-zero with fresh data");
+    assert!(
+        assessment.economic_capacity > 0.0,
+        "economy should be non-trivial"
+    );
+    assert!(
+        assessment.feasibility > 0.0,
+        "feasibility should be positive with growing economy"
+    );
+    assert!(
+        assessment.confidence > 0.0,
+        "confidence should be non-zero with fresh data"
+    );
     assert_eq!(assessment.objective_precondition_summary.satisfied, 1);
     assert_eq!(assessment.objective_precondition_summary.total, 1);
 }
@@ -174,16 +198,24 @@ fn feasibility_drives_campaign_activation() {
         ObjectiveId::from("expand"),
         ObjPreconditionSet::always(),
         SuccessCriteria::new(Condition::Always),
-        FeasibilityFormula::WeightedSum(vec![
-            FeasibilityTerm::new(1.0, macrocosmo_ai::ValueExpr::Literal(0.8)),
-        ]),
+        FeasibilityFormula::WeightedSum(vec![FeasibilityTerm::new(
+            1.0,
+            macrocosmo_ai::ValueExpr::Literal(0.8),
+        )]),
     );
     let precondition_set = PreconditionSet::new(vec![]);
     let mut tracker = PreconditionTracker::new();
 
     let assessment = build_assessment(
-        &bus, me, &[], &objective, &precondition_set, &mut tracker, now,
-        &AssessmentConfig::default(), &StubParams,
+        &bus,
+        me,
+        &[],
+        &objective,
+        &precondition_set,
+        &mut tracker,
+        now,
+        &AssessmentConfig::default(),
+        &StubParams,
     );
 
     // Campaign starts as Proposed.
@@ -195,7 +227,11 @@ fn feasibility_drives_campaign_activation() {
     if assessment.feasibility > activation_threshold {
         campaign.transition(CampaignState::Active, now).unwrap();
     }
-    assert_eq!(campaign.state, CampaignState::Active, "campaign should activate when feasibility exceeds threshold");
+    assert_eq!(
+        campaign.state,
+        CampaignState::Active,
+        "campaign should activate when feasibility exceeds threshold"
+    );
 }
 
 /// Full pipeline to command drain: assessment → command emit → drain.
@@ -222,16 +258,24 @@ fn pipeline_emits_and_drains_commands() {
         ObjectiveId::from("conquer"),
         ObjPreconditionSet::always(),
         SuccessCriteria::new(Condition::Always),
-        FeasibilityFormula::WeightedSum(vec![
-            FeasibilityTerm::new(1.0, macrocosmo_ai::ValueExpr::Literal(0.9)),
-        ]),
+        FeasibilityFormula::WeightedSum(vec![FeasibilityTerm::new(
+            1.0,
+            macrocosmo_ai::ValueExpr::Literal(0.9),
+        )]),
     );
     let precondition_set = PreconditionSet::new(vec![]);
     let mut tracker = PreconditionTracker::new();
 
     let assessment = build_assessment(
-        &bus, me, &[], &objective, &precondition_set, &mut tracker, now,
-        &AssessmentConfig::default(), &StubParams,
+        &bus,
+        me,
+        &[],
+        &objective,
+        &precondition_set,
+        &mut tracker,
+        now,
+        &AssessmentConfig::default(),
+        &StubParams,
     );
     assert!(assessment.feasibility > 0.5);
 
@@ -296,7 +340,12 @@ fn feasibility_reads_projected_bus_values() {
     let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
 
     for tick in (10..=100).step_by(10) {
-        declare_and_emit(&mut bus, "net_production_minerals", 100.0 + tick as f64 * 3.0, tick);
+        declare_and_emit(
+            &mut bus,
+            "net_production_minerals",
+            100.0 + tick as f64 * 3.0,
+            tick,
+        );
     }
 
     let now = 100;
@@ -312,11 +361,9 @@ fn feasibility_reads_projected_bus_values() {
     // Feasibility formula references the projected value.
     let formula = FeasibilityFormula::WeightedSum(vec![FeasibilityTerm::new(
         0.001,
-        macrocosmo_ai::ValueExpr::Metric(
-            MetricRef::new(
-                MetricId::from("projection.net_production_minerals.horizon_end"),
-            ),
-        ),
+        macrocosmo_ai::ValueExpr::Metric(MetricRef::new(MetricId::from(
+            "projection.net_production_minerals.horizon_end",
+        ))),
     )]);
 
     let score = macrocosmo_ai::feasibility::evaluate(&formula, &bus, now, None);

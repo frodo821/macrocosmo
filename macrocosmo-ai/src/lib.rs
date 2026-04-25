@@ -30,11 +30,11 @@ pub mod mid_term_default;
 pub mod nash;
 pub mod objective;
 pub mod orchestrator;
-pub mod short_term_default;
 pub mod precondition;
 pub mod precondition_cache;
 pub mod projection;
 pub mod retention;
+pub mod short_term_default;
 pub mod spec;
 pub mod standing;
 pub mod time;
@@ -59,6 +59,11 @@ pub use precondition::{
 pub use precondition_cache::{CacheStats, PreconditionCacheRegistry};
 pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
+pub use agent::{
+    CampaignOp, LongTermAgent, LongTermInput, LongTermOutput, MidTermAgent, MidTermInput,
+    MidTermOutput, OverrideEntry, OverrideReason, ShortTermAgent, ShortTermInput, ShortTermOutput,
+    target_faction_wide,
+};
 pub use assessment::{
     Assessment, AssessmentConfig, EconomicBaseline, EconomicCapacityWeights, EconomicSnapshot,
     FleetSnapshot, ObjectiveKind, ResourceVector, TechLeadWeights, TechPositionSnapshot,
@@ -66,11 +71,6 @@ pub use assessment::{
     compute_economic_capacity, compute_feasibility, compute_fleet_readiness,
     compute_overall_confidence, compute_tech_lead, compute_threat_level,
     critical_violation_penalty, gather_trajectory_metric_ids, objective_kind,
-};
-pub use agent::{
-    CampaignOp, LongTermAgent, LongTermInput, LongTermOutput, MidTermAgent, MidTermInput,
-    MidTermOutput, OverrideEntry, OverrideReason, ShortTermAgent, ShortTermInput, ShortTermOutput,
-    target_faction_wide,
 };
 pub use command::{Command, CommandParams, CommandValue, SerializedCommand};
 pub use dispatcher::{DispatchResult, FixedDelayDispatcher, IntentDispatcher};
@@ -83,10 +83,8 @@ pub use intent::{Intent, IntentParams, IntentSpec, RationaleSnapshot};
 pub use long_term_default::{LongTermDefaultConfig, ObjectiveDrivenLongTerm};
 pub use mid_term_default::{IntentDrivenMidTerm, MidTermDefaultConfig};
 pub use orchestrator::{
-    DropEntry, Orchestrator, OrchestratorConfig, OrchestratorOutput, OrchestratorState,
-    PendingSpec,
+    DropEntry, Orchestrator, OrchestratorConfig, OrchestratorOutput, OrchestratorState, PendingSpec,
 };
-pub use short_term_default::{CampaignReactiveShort, ShortTermDefaultConfig};
 pub use projection::{
     CompoundDelta, CompoundEffect, ConfidenceDecay, LinearFit, MetricPair, ProjectionFidelity,
     ProjectionModel, ProjectionNaming, StrategicWindow, ThresholdGate, Trajectory,
@@ -95,6 +93,7 @@ pub use projection::{
     project_metric, volatility,
 };
 pub use retention::Retention;
+pub use short_term_default::{CampaignReactiveShort, ShortTermDefaultConfig};
 pub use spec::{CommandSpec, EvidenceSpec, MetricSpec, MetricType};
 pub use standing::{
     EvidenceContribution, EvidenceKindConfig, PerceivedStanding, StandingConfig, StandingLevel,
