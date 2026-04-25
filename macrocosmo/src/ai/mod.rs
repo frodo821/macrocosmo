@@ -44,6 +44,7 @@ pub mod debug_log;
 pub mod emit;
 pub mod emitters;
 pub mod npc_decision;
+pub mod orchestrator_runtime;
 pub mod plugin;
 pub mod schema;
 
