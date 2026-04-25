@@ -167,11 +167,16 @@ impl std::fmt::Display for ScriptsDirError {
 
 impl std::error::Error for ScriptsDirError {}
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct ScriptEngine {
+    /// `mlua::Lua` is an external (non-`Reflect`) handle.
+    #[reflect(ignore)]
     lua: Lua,
     scripts_dir: PathBuf,
     /// Shared buffer for Lua print output, used by the console UI.
+    /// `Mutex<Vec<LogEntry>>` is opaque to reflection.
+    #[reflect(ignore)]
     print_buffer: SharedPrintBuffer,
 }
 

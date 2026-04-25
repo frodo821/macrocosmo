@@ -15,9 +15,23 @@ use std::sync::{Arc, Mutex};
 
 /// Game-managed RNG for Lua scripts. Wrapped in `Arc<Mutex<_>>` so it can
 /// be shared with Lua callbacks (which can fire at any time).
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct GameRng {
+    /// `Mutex<Xoshiro256PlusPlus>` is not `Reflect` (external rng type
+    /// + interior mutability). The resource itself appears in the type
+    /// registry so BRP can confirm presence; the RNG state is opaque.
+    #[reflect(ignore, default = "default_xoshiro_handle")]
     inner: Arc<Mutex<Xoshiro256PlusPlus>>,
+}
+
+/// Default-constructor for the `#[reflect(ignore)]` `inner` field. The
+/// reflection layer never reads this — it exists only so `FromReflect`
+/// has a value to plug in. `Xoshiro256PlusPlus` does not implement
+/// `Default`, so we seed from OS entropy on the rare reconstruction
+/// path.
+fn default_xoshiro_handle() -> Arc<Mutex<Xoshiro256PlusPlus>> {
+    Arc::new(Mutex::new(Xoshiro256PlusPlus::from_os_rng()))
 }
 
 impl Default for GameRng {

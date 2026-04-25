@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 /// Source context for a log entry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 #[allow(dead_code)]
 pub enum LogSource {
     /// User-typed console input (echo).
@@ -23,7 +23,7 @@ pub enum LogSource {
 }
 
 /// A single log entry.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct LogEntry {
     pub text: String,
     pub source: LogSource,
@@ -36,11 +36,14 @@ pub struct LogEntry {
 pub type SharedPrintBuffer = Arc<Mutex<Vec<LogEntry>>>;
 
 /// Bevy resource that accumulates Lua log output for display in the console.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct LogBuffer {
     pub entries: VecDeque<LogEntry>,
     pub capacity: usize,
     /// Shared buffer that Lua's print function writes into.
+    /// `Mutex<Vec<LogEntry>>` is not `Reflect` (interior mutability).
+    #[reflect(ignore)]
     pub shared: SharedPrintBuffer,
 }
 

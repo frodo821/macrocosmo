@@ -33,13 +33,15 @@ use crate::time_system::GameClock;
 /// Marker component: this empire's decisions are made by the AI policy.
 /// Applied to NPC empires automatically, and optionally to the player
 /// empire when `--ai-player` is passed or `AiPlayerMode(true)` is set.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct AiControlled;
 
 /// Resource that opts the player empire into AI control.
 /// Default is `false` — normal gameplay where the player makes decisions.
 /// Set to `true` to let the AI policy drive the player empire.
-#[derive(Resource, Debug, Clone, Copy, Default)]
+#[derive(Resource, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Resource)]
 pub struct AiPlayerMode(pub bool);
 
 /// System that marks all NPC empires (those with `Empire` but without
@@ -378,7 +380,8 @@ impl NpcPolicy for SimpleNpcPolicy {
 /// The player empire is also marked when [`AiPlayerMode`]`(true)` is set.
 /// Tracks the last game tick at which AI decisions were made, so the
 /// policy runs once per hexadies advance, not every render frame.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct LastAiDecisionTick(pub i64);
 
 /// Rank candidate unsurveyed systems by "accessibility" — an approximation

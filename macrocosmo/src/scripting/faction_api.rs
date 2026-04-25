@@ -10,7 +10,7 @@ use crate::faction::RelationState;
 /// A `FactionDefinition` may reference one of these via its `faction_type`
 /// field; the type supplies defaults for new diplomatic relations and
 /// gates the diplomacy UI (`can_diplomacy`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct FactionTypeDefinition {
     pub id: String,
     /// Whether this faction type can engage in formal diplomacy
@@ -40,7 +40,8 @@ pub struct FactionTypeDefinition {
 }
 
 /// Registry of all faction-type definitions loaded from Lua.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct FactionTypeRegistry {
     pub types: HashMap<String, FactionTypeDefinition>,
 }
@@ -59,7 +60,7 @@ impl FactionTypeRegistry {
 /// referenced [`FactionTypeDefinition`] at parse time. The `faction_type`
 /// string is kept as metadata but is NOT used for runtime behavior
 /// decisions — all runtime lookups read from the faction instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct FactionDefinition {
     pub id: String,
     pub name: String,
@@ -90,7 +91,8 @@ pub struct FactionDefinition {
 }
 
 /// Registry of all faction definitions loaded from Lua.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct FactionRegistry {
     pub factions: HashMap<String, FactionDefinition>,
 }
@@ -235,7 +237,7 @@ pub fn parse_faction_type_definitions(
 ///
 /// When the receiver picks this response, the `event_id` string is fired
 /// through the event system so Lua `on()` handlers can react.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct DiplomaticOptionResponse {
     /// Unique response id within the option (e.g. "accept", "reject").
     pub id: String,
@@ -252,7 +254,7 @@ pub struct DiplomaticOptionResponse {
 /// [`DiplomaticOptionResponse`] entries, and a `payload_schema` hint that
 /// describes the `HashMap<String,String>` fields carried by the in-flight
 /// [`crate::faction::DiplomaticEvent`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct DiplomaticOptionDefinition {
     pub id: String,
     pub name: String,
@@ -269,7 +271,8 @@ pub struct DiplomaticOptionDefinition {
 }
 
 /// Registry of all diplomatic-option definitions loaded from Lua.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct DiplomaticOptionRegistry {
     pub options: HashMap<String, DiplomaticOptionDefinition>,
 }

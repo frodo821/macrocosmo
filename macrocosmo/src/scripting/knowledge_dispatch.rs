@@ -36,7 +36,7 @@ use super::knowledge_registry::KnowledgeSubscriptionRegistry;
 
 /// Lifecycle suffix for a knowledge event id (`<kind>@<lifecycle>` or
 /// `*@<lifecycle>`). v1 supports only `recorded` and `observed`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, bevy::reflect::Reflect)]
 pub enum KnowledgeLifecycle {
     Recorded,
     Observed,
@@ -367,7 +367,7 @@ pub fn deep_copy_table(
 // ======================================================================
 
 /// A pending knowledge record request from Rust-origin code.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct PendingKnowledgeRecord {
     pub kind_id: String,
     pub origin_system: Option<Entity>,
@@ -377,7 +377,8 @@ pub struct PendingKnowledgeRecord {
 
 /// Resource queue for Rust-origin knowledge records awaiting @recorded
 /// dispatch. Drained by [`dispatch_knowledge_recorded`] each tick.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct PendingKnowledgeRecords {
     pub records: Vec<PendingKnowledgeRecord>,
 }

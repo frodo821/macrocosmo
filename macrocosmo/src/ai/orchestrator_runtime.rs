@@ -118,8 +118,15 @@ fn build_demo_victory(lua: &mlua::Lua, faction: FactionId) -> mlua::Result<Victo
 /// Populated by [`register_demo_orchestrator`] on `OnEnter(NewGame)`.
 /// Lookup is `O(1)` via `bevy::platform` `HashMap` (the same
 /// `HashMap` flavor used elsewhere in the AI integration layer).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct OrchestratorRegistry {
+    /// `FactionOrchestrator` wraps `Orchestrator<Long, Mid, Short>` from
+    /// the engine-agnostic `macrocosmo-ai` crate (no `bevy_reflect`
+    /// dependency allowed; see `ai-core-isolation.yml` CI). The
+    /// resource itself appears in the BRP type registry, but per-faction
+    /// orchestrator state is opaque to reflection.
+    #[reflect(ignore)]
     pub by_entity: HashMap<Entity, FactionOrchestrator>,
 }
 

@@ -10,7 +10,7 @@ use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::scripting::modifier_api::parse_parsed_modifiers;
 
 /// An upgrade path from one building to another.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct UpgradePath {
     /// Target building ID to upgrade to.
     pub target_id: String,
@@ -24,7 +24,7 @@ pub struct UpgradePath {
 
 /// A building definition parsed from Lua `define_building { ... }` calls.
 /// This is the single source of truth for all building properties at runtime.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct BuildingDefinition {
     pub id: String,
     pub name: String,
@@ -77,7 +77,7 @@ pub struct BuildingDefinition {
 /// Parameters for a named building capability.
 /// Supports arbitrary named parameters (e.g. `ftl_range_bonus`, `travel_time_factor`).
 /// For simple capabilities, `params` may be empty or contain a single "value" entry.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct CapabilityParams {
     pub params: HashMap<String, f64>,
 }
@@ -95,7 +95,7 @@ impl CapabilityParams {
 }
 
 /// Strongly-typed building identifier. Wraps the string id from BuildingDefinition.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, bevy::reflect::Reflect)]
 pub struct BuildingId(pub String);
 
 impl BuildingId {
@@ -116,7 +116,8 @@ impl std::fmt::Display for BuildingId {
 
 /// Registry of all building definitions loaded from Lua scripts.
 /// Single source of truth for building properties at runtime.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct BuildingRegistry {
     pub buildings: HashMap<String, BuildingDefinition>,
 }

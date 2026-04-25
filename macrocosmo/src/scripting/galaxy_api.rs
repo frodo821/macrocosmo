@@ -4,7 +4,7 @@ use bevy::prelude::*;
 /// Target strings follow the shared convention (e.g. "system.research_bonus",
 /// "ship.shield_regen"). Unknown targets are retained but not applied — they can be
 /// wired up later without script changes.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct StarTypeModifier {
     pub target: String,
     pub base_add: f64,
@@ -13,7 +13,7 @@ pub struct StarTypeModifier {
 }
 
 /// A star type definition parsed from Lua `define_star_type { ... }` calls.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct StarTypeDefinition {
     pub id: String,
     pub name: String,
@@ -28,7 +28,7 @@ pub struct StarTypeDefinition {
 }
 
 /// A planet type definition parsed from Lua `define_planet_type { ... }` calls.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct PlanetTypeDefinition {
     pub id: String,
     pub name: String,
@@ -58,7 +58,7 @@ pub struct BiomeLuaDefinition {
 }
 
 /// Resource generation biases for a planet type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ResourceBias {
     pub minerals: f64,
     pub energy: f64,
@@ -66,13 +66,15 @@ pub struct ResourceBias {
 }
 
 /// Registry of all star type definitions loaded from Lua scripts.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct StarTypeRegistry {
     pub types: Vec<StarTypeDefinition>,
 }
 
 /// Registry of all planet type definitions loaded from Lua scripts.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PlanetTypeRegistry {
     pub types: Vec<PlanetTypeDefinition>,
 }

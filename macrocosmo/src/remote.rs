@@ -225,7 +225,8 @@ fn lua_value_to_string(value: &mlua::Value) -> String {
 
 /// Collects inputs that were pressed by BRP handlers and need to be released
 /// on the following frame so that Bevy's `just_pressed` detection works.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PendingInputReleases {
     pub mouse_buttons: Vec<MouseButton>,
     pub keys: Vec<KeyCode>,
@@ -498,12 +499,14 @@ use std::io::Cursor;
 
 /// Holds the latest captured screenshot as a base64-encoded PNG string plus
 /// dimensions. Written by the entity observer, consumed by the BRP handler.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ScreenshotBuffer {
     pub data: Option<ScreenshotData>,
 }
 
 /// Payload returned by the `macrocosmo/screenshot` method.
+#[derive(Reflect)]
 pub struct ScreenshotData {
     pub base64: String,
     pub width: u32,

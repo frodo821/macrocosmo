@@ -564,7 +564,7 @@ pub struct ChooseCapitalsActions {
 }
 
 /// Read-only snapshot of a system that Phase B hooks can inspect.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct SystemSnapshot {
     pub name: String,
     pub position: PositionF64,

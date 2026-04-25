@@ -26,7 +26,7 @@ use std::collections::HashMap;
 /// Optional per-attribute overrides for a predefined planet. All fields are
 /// optional; missing fields fall back to the planet type's defaults when the
 /// system is spawned (mirrors the #181 `on_initialize_system` override path).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, bevy::reflect::Reflect)]
 pub struct PlanetAttributesSpec {
     pub habitability: Option<f64>,
     pub mineral_richness: Option<f64>,
@@ -36,7 +36,7 @@ pub struct PlanetAttributesSpec {
 }
 
 /// A planet inside a `define_predefined_system { ... }` block.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct PredefinedPlanetSpec {
     pub name: String,
     pub planet_type_id: String,
@@ -44,7 +44,7 @@ pub struct PredefinedPlanetSpec {
 }
 
 /// A predefined star system definition (e.g. "sol" with Mercury/Venus/Earth).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct PredefinedSystemDefinition {
     pub id: String,
     pub name: String,
@@ -58,7 +58,8 @@ pub struct PredefinedSystemDefinition {
 }
 
 /// Registry of all predefined system definitions loaded from Lua.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct PredefinedSystemRegistry {
     pub systems: HashMap<String, PredefinedSystemDefinition>,
 }
@@ -67,7 +68,7 @@ pub struct PredefinedSystemRegistry {
 /// in the `_map_type_definitions` accumulator (since mlua `Function` is not
 /// `Send`); this struct only carries the metadata + a `has_generator` flag
 /// so Rust code can decide whether to dispatch to the Lua callback.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct MapTypeDefinition {
     pub id: String,
     pub name: String,
@@ -77,7 +78,8 @@ pub struct MapTypeDefinition {
 
 /// Registry of map type definitions + currently active id (set by
 /// `set_active_map_type` from Lua).
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct MapTypeRegistry {
     pub types: HashMap<String, MapTypeDefinition>,
     /// Id of the map type currently selected by Lua via `set_active_map_type`.

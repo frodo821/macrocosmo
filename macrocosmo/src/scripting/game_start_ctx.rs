@@ -16,7 +16,7 @@ pub enum PlanetRef {
 
 /// Attribute overrides for a planet (or a freshly spawned planet).
 /// Any field set to `Some` overrides the planet's default attribute.
-#[derive(Default, Clone, Debug, PartialEq)]
+#[derive(Default, Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub struct PlanetAttributesSpec {
     pub habitability: Option<f64>,
     pub mineral_richness: Option<f64>,

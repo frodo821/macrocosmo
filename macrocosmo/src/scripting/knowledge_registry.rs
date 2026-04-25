@@ -42,11 +42,18 @@ pub const PENDING_KNOWLEDGE_SUBSCRIPTIONS: &str = "_pending_knowledge_subscripti
 ///
 /// Lookup is `HashMap` O(1) on both buckets; dispatch iterates the
 /// per-bucket `Vec` in registration order.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct KnowledgeSubscriptionRegistry {
     /// Exact pattern -> subscribers in registration order.
+    /// Subscriber values are `mlua::RegistryKey` handles (external,
+    /// non-`Reflect`); the keys (pattern strings) remain visible.
+    #[reflect(ignore)]
     pub exact: HashMap<String, Vec<mlua::RegistryKey>>,
     /// Wildcard lifecycle -> subscribers in registration order.
+    /// Subscriber values are `mlua::RegistryKey` handles (opaque to
+    /// reflection).
+    #[reflect(ignore)]
     pub wildcard: HashMap<KnowledgeLifecycle, Vec<mlua::RegistryKey>>,
 }
 

@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 /// A Lua-defined anomaly that can be discovered during surveys.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct AnomalyDefinition {
     pub id: String,
     pub name: String,
@@ -14,7 +14,7 @@ pub struct AnomalyDefinition {
 }
 
 /// An effect that an anomaly applies when discovered.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum AnomalyEffectDef {
     /// Upgrade a resource level (minerals/energy/research).
     ResourceBonus { resource: String },
@@ -27,7 +27,8 @@ pub enum AnomalyEffectDef {
 }
 
 /// Registry of all anomaly definitions loaded from Lua scripts.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct AnomalyRegistry {
     pub anomalies: Vec<AnomalyDefinition>,
 }

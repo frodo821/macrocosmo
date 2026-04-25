@@ -32,7 +32,8 @@ use crate::time_system::GameClock;
 // ---------------------------------------------------------------------------
 
 /// Holds open file handles for the two JSONL log streams.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct AiLogConfig {
     decision_writer: BufWriter<File>,
     world_state_writer: BufWriter<File>,

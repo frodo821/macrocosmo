@@ -43,7 +43,8 @@ use crate::time_system::GameClock;
 /// consumed by [`process_ruler_boarding`]. This indirection avoids adding
 /// mutable Ship access to `drain_ai_commands` (which would conflict with
 /// the existing read-only Ship query).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PendingRulerBoarding {
     /// `(ruler_entity, ship_entity, target_system)`
     pub requests: Vec<(Entity, Entity, Entity)>,
@@ -1250,7 +1251,8 @@ mod tests {
     use crate::time_system::{GameClock, GameSpeed};
     use macrocosmo_ai::{Command, WarningMode};
 
-    #[derive(Resource)]
+    #[derive(Resource, Reflect)]
+    #[reflect(Resource)]
     struct MoveCount(usize);
 
     fn count_moves(mut reader: MessageReader<MoveRequested>, mut count: ResMut<MoveCount>) {
@@ -2081,7 +2083,8 @@ mod tests {
     // ── retreat tests ────────────────────────────────────────────────
 
     /// Collect (ship, target) pairs from MoveRequested messages.
-    #[derive(Resource, Default)]
+    #[derive(Resource, Default, Reflect)]
+    #[reflect(Resource)]
     struct MoveTargets(Vec<(Entity, Entity)>);
 
     fn collect_move_targets(

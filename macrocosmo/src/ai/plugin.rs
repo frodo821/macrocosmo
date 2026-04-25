@@ -30,8 +30,16 @@ use crate::ai::schema;
 /// Default `WarningMode` is [`WarningMode::Enabled`] (the `AiBus::default()`
 /// behaviour), which logs through the `log` crate when the bus sees a
 /// misuse (emitting to an undeclared topic, time-reversed emits, etc.).
-#[derive(Resource, Debug, Default)]
-pub struct AiBusResource(pub AiBus);
+#[derive(Resource, Debug, Default, Reflect)]
+#[reflect(Resource)]
+pub struct AiBusResource(
+    /// `AiBus` lives in the engine-agnostic `macrocosmo-ai` crate which
+    /// cannot take a `bevy_reflect` dependency (`ai-core-isolation.yml`
+    /// CI). The wrapper resource still appears in the type registry for
+    /// BRP, but the inner bus is not introspectable via reflection.
+    #[reflect(ignore)]
+    pub AiBus,
+);
 
 impl AiBusResource {
     /// Construct with an explicit [`WarningMode`].
@@ -56,7 +64,8 @@ impl DerefMut for AiBusResource {
 /// Tracks which faction entities already have their per-faction metric slots
 /// declared on the bus. Prevents duplicate `declare_metric` calls (which
 /// would trigger re-declaration warnings) between Startup and Update.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct DeclaredFactionSlots(pub std::collections::HashSet<Entity>);
 
 /// Ordered system sets for AI-related work under `Update`.
