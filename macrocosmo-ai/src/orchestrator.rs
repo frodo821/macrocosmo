@@ -375,6 +375,14 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
                     c.source_intent = Some(intent_id.clone());
                 }
             }
+            CampaignOp::SetWeight {
+                campaign_id,
+                weight,
+            } => {
+                if let Some(c) = self.state.campaigns.iter_mut().find(|c| &c.id == campaign_id) {
+                    c.weight = *weight;
+                }
+            }
         }
     }
 

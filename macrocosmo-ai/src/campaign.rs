@@ -65,6 +65,15 @@ pub struct Campaign {
     /// means the campaign is mid-agent-local (e.g. continuing default
     /// behavior) and is not tied to a specific upstream intent.
     pub source_intent: Option<IntentId>,
+    /// Relative weight for short-term agents that allocate command
+    /// budget across active campaigns (e.g. priority-weighted
+    /// emission). `1.0` means "default share" — higher weights get
+    /// more commands per unit time, lower weights fewer. Mid-term
+    /// agents typically stamp this from the source intent's
+    /// `priority` (or `priority * importance`). Default `1.0` keeps
+    /// the legacy "one command per active campaign per tick" behavior
+    /// when the short agent doesn't honor weights.
+    pub weight: f64,
 }
 
 /// Errors arising from illegal state transitions.
@@ -85,11 +94,17 @@ impl Campaign {
             started_at: at,
             last_transition: at,
             source_intent: None,
+            weight: 1.0,
         }
     }
 
     pub fn with_source_intent(mut self, intent: IntentId) -> Self {
         self.source_intent = Some(intent);
+        self
+    }
+
+    pub fn with_weight(mut self, weight: f64) -> Self {
+        self.weight = weight;
         self
     }
 

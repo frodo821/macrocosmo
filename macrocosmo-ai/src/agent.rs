@@ -101,6 +101,13 @@ pub enum CampaignOp {
         campaign_id: ObjectiveId,
         intent_id: IntentId,
     },
+    /// Update the priority weight on an existing campaign. Used by
+    /// short-term agents that allocate budget proportional to
+    /// campaign weights.
+    SetWeight {
+        campaign_id: ObjectiveId,
+        weight: f64,
+    },
 }
 
 /// Recorded reason for not honoring an inbox intent (debug + tuning).

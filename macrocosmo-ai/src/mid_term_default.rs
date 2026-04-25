@@ -47,6 +47,14 @@ pub struct MidTermDefaultConfig {
     /// the [`crate::long_term_default::ObjectiveDrivenLongTerm`]
     /// pursue convention.
     pub guardrail_pursue_prefix: String,
+    /// When `true`, Mid stamps `Campaign.weight` from intent
+    /// `priority * importance` on Start / AttachIntent and emits
+    /// `CampaignOp::SetWeight` when an attach changes the value.
+    /// Short-term agents that honor weights (see
+    /// `CampaignReactiveShort.priority_weighted`) use this for
+    /// fractional command scheduling. Default `true` — even when
+    /// short ignores weights, the data on the Campaign is harmless.
+    pub stamp_weights: bool,
 }
 
 impl Default for MidTermDefaultConfig {
@@ -55,6 +63,7 @@ impl Default for MidTermDefaultConfig {
             stale_threshold: 0.1,
             prereq_guardrail: 0.0,
             guardrail_pursue_prefix: "pursue_metric:".into(),
+            stamp_weights: true,
         }
     }
 }
@@ -180,6 +189,12 @@ impl MidTermAgent for IntentDrivenMidTerm {
 
             let objective_id = objective_id_for(intent);
 
+            // weight = priority * importance. Acts as the campaign's
+            // share of short-agent command budget. Float-clamped non-
+            // negative; safe to skip when stamp_weights is off.
+            let intent_weight =
+                (intent.spec.priority * intent.spec.importance).max(0.0) as f64;
+
             // Supersedes handling: if the supersedes target's campaign
             // is still live, re-point it at this new intent.
             if let Some(superseded_id) = &intent.spec.supersedes {
@@ -198,6 +213,14 @@ impl MidTermAgent for IntentDrivenMidTerm {
                         campaign_id: existing.id.clone(),
                         intent_id: intent.id.clone(),
                     });
+                    if self.config.stamp_weights
+                        && (existing.weight - intent_weight).abs() > f64::EPSILON
+                    {
+                        ops.push(CampaignOp::SetWeight {
+                            campaign_id: existing.id.clone(),
+                            weight: intent_weight,
+                        });
+                    }
                     // Ensure active (in case it was suspended).
                     if existing.state != CampaignState::Active {
                         ops.push(CampaignOp::Transition {
@@ -219,6 +242,14 @@ impl MidTermAgent for IntentDrivenMidTerm {
                         intent_id: intent.id.clone(),
                     });
                 }
+                if self.config.stamp_weights
+                    && (existing.weight - intent_weight).abs() > f64::EPSILON
+                {
+                    ops.push(CampaignOp::SetWeight {
+                        campaign_id: existing.id.clone(),
+                        weight: intent_weight,
+                    });
+                }
                 if existing.state != CampaignState::Active
                     && !existing.state.is_terminal()
                 {
@@ -235,6 +266,12 @@ impl MidTermAgent for IntentDrivenMidTerm {
                     source_intent: Some(intent.id.clone()),
                     at: input.now,
                 });
+                if self.config.stamp_weights {
+                    ops.push(CampaignOp::SetWeight {
+                        campaign_id: objective_id.clone(),
+                        weight: intent_weight,
+                    });
+                }
                 ops.push(CampaignOp::Transition {
                     campaign_id: objective_id,
                     to: CampaignState::Active,
@@ -344,9 +381,11 @@ mod tests {
             victory: &test_victory(),
         };
         let out = agent.tick(input);
-        assert_eq!(out.campaign_ops.len(), 2); // Start + Transition
+        // Start + SetWeight + Transition (stamp_weights default = true).
+        assert_eq!(out.campaign_ops.len(), 3);
         matches!(out.campaign_ops[0], CampaignOp::Start { .. });
-        matches!(out.campaign_ops[1], CampaignOp::Transition { .. });
+        matches!(out.campaign_ops[1], CampaignOp::SetWeight { .. });
+        matches!(out.campaign_ops[2], CampaignOp::Transition { .. });
     }
 
     #[test]
@@ -367,13 +406,16 @@ mod tests {
             victory: &test_victory(),
         };
         let out = agent.tick(input);
-        assert_eq!(out.campaign_ops.len(), 1);
+        // AttachIntent + SetWeight (existing.weight=1.0, intent
+        // weight=0.8*0.9=0.72 ≠ 1.0).
+        assert_eq!(out.campaign_ops.len(), 2);
         match &out.campaign_ops[0] {
             CampaignOp::AttachIntent { intent_id, .. } => {
                 assert_eq!(intent_id.as_str(), "intent_2");
             }
             other => panic!("expected AttachIntent, got {other:?}"),
         }
+        matches!(out.campaign_ops[1], CampaignOp::SetWeight { .. });
     }
 
     #[test]
@@ -438,11 +480,12 @@ mod tests {
             victory: &test_victory(),
         };
         let out = agent.tick(input);
-        // One Superseded log entry + one AttachIntent (old campaign was
-        // still Active so no additional Transition).
+        // One Superseded log entry + AttachIntent + SetWeight (existing
+        // campaign was still Active so no additional Transition; weight
+        // changes from 1.0 default to 0.72).
         assert_eq!(out.override_log.len(), 1);
         assert_eq!(out.override_log[0].reason, OverrideReason::Superseded);
-        assert_eq!(out.campaign_ops.len(), 1);
+        assert_eq!(out.campaign_ops.len(), 2);
         match &out.campaign_ops[0] {
             CampaignOp::AttachIntent {
                 campaign_id,
