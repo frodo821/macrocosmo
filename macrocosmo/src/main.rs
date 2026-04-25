@@ -24,6 +24,7 @@ mod persistence;
 mod physics;
 mod player;
 mod profiling;
+mod reflect_registration;
 #[cfg(feature = "remote")]
 mod remote;
 mod scripting;
@@ -140,6 +141,11 @@ fn main() {
         ai::AiPlugin,
         casus_belli::CasusBelliPlugin,
         ObserverPlugin,
+        // BRP type-registration: every Reflect Component / Resource
+        // is registered here so `world.query` returns full results
+        // when `--features remote` is enabled. See
+        // `src/reflect_registration.rs` for the details.
+        reflect_registration::ReflectRegistrationPlugin,
     ))
     .add_plugins(ui::UiPlugin);
 
