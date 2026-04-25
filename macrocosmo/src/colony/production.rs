@@ -13,7 +13,8 @@ use super::{
 };
 
 /// #29: Production focus weights for colony output
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct ProductionFocus {
     pub minerals_weight: Amt,
     pub energy_weight: Amt,
@@ -75,7 +76,8 @@ impl ProductionFocus {
 }
 
 /// Per-colony production rates as ModifiedValues.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Production {
     pub minerals_per_hexadies: ModifiedValue,
     pub energy_per_hexadies: ModifiedValue,
@@ -94,7 +96,8 @@ pub struct Production {
 /// - The job's own declaration (`define_job { modifiers = ... }`, `base_add`)
 /// - Species modifiers with `target = "job:<id>::..."`
 /// - Tech / event effects with `target = "job:<id>::..."`
-#[derive(Component, Default, Debug)]
+#[derive(Component, Default, Debug, Reflect)]
+#[reflect(Component)]
 pub struct ColonyJobRates {
     buckets: std::collections::HashMap<(String, String), ModifiedValue>,
 }

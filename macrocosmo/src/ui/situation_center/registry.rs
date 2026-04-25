@@ -28,8 +28,13 @@ use super::tab::{OngoingTab, OngoingTabAdapter, SituationTab, TabId, TabMeta};
 /// tab types from any plugin. The registry is append-only — tabs cannot
 /// be removed in the current ESC-1 API. Hot-reload / un-registration
 /// lands with the Lua tab API.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct SituationTabRegistry {
+    /// Trait-object tabs are dyn-incompatible with `Reflect` (the
+    /// `SituationTab` trait is not `Reflect`). The registry resource
+    /// itself appears in the type registry so BRP can confirm presence.
+    #[reflect(ignore)]
     tabs: Vec<Box<dyn SituationTab>>,
 }
 

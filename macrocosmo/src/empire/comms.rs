@@ -18,7 +18,8 @@ use bevy::prelude::*;
 use crate::modifier::ModifiedValue;
 
 /// Empire-level FTL Comm modifier bundle. See module docs for field meanings.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct CommsParams {
     pub empire_relay_range: ModifiedValue,
     pub empire_relay_inv_latency: ModifiedValue,

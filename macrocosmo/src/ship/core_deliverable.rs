@@ -45,7 +45,8 @@ use crate::time_system::GameClock;
 /// sovereignty on a star system. Combined with the immobile hull definition
 /// (`sublight_speed = 0`, `ftl_range = 0`), the marker guarantees that
 /// sovereignty is bound to a persistent, non-moving presence.
-#[derive(Component, Default, Clone, Copy, Debug)]
+#[derive(Component, Default, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct CoreShip;
 
 /// Spawn a Core ship at `position` in `system`, attaching [`CoreShip`] and

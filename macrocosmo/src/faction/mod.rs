@@ -58,7 +58,7 @@ use bevy::prelude::*;
 // ---------------------------------------------------------------------------
 
 /// Reason an empire became extinct.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum ExtinctionReason {
     /// The empire lost all Core ships and all colonies.
     AllCoresAndColoniesLost,
@@ -71,7 +71,8 @@ pub enum ExtinctionReason {
 ///
 /// The entity is **not** despawned — it stays in the world so relation
 /// history, name, and final state remain accessible for UI and logs.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct Extinct {
     /// Game clock tick (hexadies) when extinction was detected.
     pub since: i64,
@@ -88,7 +89,8 @@ pub struct Extinct {
 ///   (e.g. diplomatic action, war declaration).
 ///
 /// The diplomacy panel only displays factions present in this set.
-#[derive(Resource, Default, Debug, Clone)]
+#[derive(Resource, Default, Debug, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct KnownFactions {
     pub factions: HashSet<Entity>,
 }
@@ -218,7 +220,8 @@ pub fn seed_npc_relations(
 /// player's faction entity and this owner. Entities without `FactionOwner`
 /// have no diplomatic identity and are skipped by combat (#168 — minimal
 /// migration: legacy spawns without FactionOwner do not trigger combat).
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct FactionOwner(pub Entity);
 
 /// Resource holding the entity ids of the auto-spawned passive factions
@@ -226,7 +229,8 @@ pub struct FactionOwner(pub Entity);
 ///
 /// `Option` so that startup ordering issues degrade gracefully — code that
 /// reads this should `if let Some(e) = res.space_creature` rather than panic.
-#[derive(Resource, Default, Debug, Clone, Copy)]
+#[derive(Resource, Default, Debug, Clone, Copy, Reflect)]
+#[reflect(Resource)]
 pub struct HostileFactions {
     pub space_creature: Option<Entity>,
     pub ancient_defense: Option<Entity>,
@@ -298,7 +302,7 @@ pub fn spawn_hostile_factions(
 }
 
 /// Diplomatic state between two factions, viewed from a single direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, bevy::reflect::Reflect)]
 pub enum RelationState {
     /// No formal diplomatic relationship. Hostile actions may still occur if
     /// `standing < 0` and the actor's ROE allows it.
@@ -339,7 +343,7 @@ impl RelationState {
 /// `(A, B)` and `(B, A)` are stored as independent [`FactionView`] entries
 /// in [`FactionRelations`] so light-speed delayed updates can leave the two
 /// directions temporarily inconsistent.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct FactionView {
     pub state: RelationState,
     /// Standing in `[-100.0, +100.0]`. Negative values indicate hostility,
@@ -420,7 +424,8 @@ impl FactionView {
 /// Keyed by `(from, to)` faction entities. Each direction is independent;
 /// `(A, B)` may be `War` while `(B, A)` is still `Peace` if the war
 /// declaration has not yet propagated at light-speed.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct FactionRelations {
     pub relations: HashMap<(Entity, Entity), FactionView>,
     /// #324: Factions whose relations are frozen (Extinct). Mutation methods
@@ -959,7 +964,8 @@ pub fn entity_owner_from_query(
 /// by [`tick_diplomatic_events`] which applies `FactionRelations` state
 /// changes. All other option ids are delivered into the receiver's
 /// [`DiplomaticInbox`] for player/AI action.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct DiplomaticEvent {
     /// Faction entity that originated the event.
     pub from: Entity,
@@ -975,7 +981,7 @@ pub struct DiplomaticEvent {
 
 /// A single item sitting in a faction's inbox, ready for the player/AI to act
 /// upon.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct PendingInboxItem {
     /// Faction entity that sent the item.
     pub from: Entity,
@@ -992,7 +998,8 @@ pub struct PendingInboxItem {
 ///
 /// Attached to faction entities that can receive diplomatic options (typically
 /// empire factions with `can_diplomacy = true`).
-#[derive(Component, Default, Clone, Debug)]
+#[derive(Component, Default, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct DiplomaticInbox {
     pub items: Vec<PendingInboxItem>,
 }

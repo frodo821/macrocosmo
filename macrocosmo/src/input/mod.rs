@@ -46,7 +46,17 @@ pub mod config;
 /// have to distinguish left/right modifier variants at lookup time
 /// (matching player intuition — "Ctrl+S" is "Ctrl+S" regardless of which
 /// Ctrl key was used).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    bevy::reflect::Reflect,
+)]
 pub struct KeyCombo {
     /// The primary key (non-modifier — e.g. `KeyCode::F2`, `KeyCode::Space`).
     /// Serialised as a stable string label via [`crate::input::config`].
@@ -158,7 +168,8 @@ impl KeyCombo {
 /// step. Player overrides loaded from `keybindings.toml` later in the
 /// startup sequence layer on top via [`Self::set`]; the original default is
 /// remembered so a single binding (or the entire map) can be reset.
-#[derive(Resource, Debug, Clone, Default)]
+#[derive(Resource, Debug, Clone, Default, Reflect)]
+#[reflect(Resource)]
 pub struct KeybindingRegistry {
     /// Currently active binding for each action.
     bindings: HashMap<String, KeyCombo>,

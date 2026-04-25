@@ -47,13 +47,16 @@ use super::ObservationSource;
 ///
 /// Allocated by [`NextEventId`] via [`NextEventId::allocate`]. Copy semantics
 /// so it's cheap to pass into both a `GameEvent` and a `KnowledgeFact`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default, bevy::reflect::Reflect,
+)]
 pub struct EventId(pub u64);
 
 /// Monotonic counter resource that hands out fresh [`EventId`]s. Ids start at
 /// 1 so that `EventId::default()` (which returns 0) can represent "no id yet"
 /// when useful.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Reflect)]
+#[reflect(Resource)]
 pub struct NextEventId {
     counter: u64,
 }
@@ -104,7 +107,8 @@ impl NextEventId {
 /// has surfaced a banner — typically because the fact is still in flight in
 /// [`PendingFactQueue`]) remain until they reach `true` or are explicitly
 /// closed via [`Self::close`].
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Reflect)]
+#[reflect(Resource)]
 pub struct NotifiedEventIds {
     notified: HashMap<EventId, bool>,
 }
@@ -172,7 +176,7 @@ pub fn sweep_notified_event_ids(mut notified: ResMut<NotifiedEventIds>) {
 pub const FTL_RELAY_BASE_MULTIPLIER: f64 = 10.0;
 
 /// Combat victor designator for [`KnowledgeFact::CombatOutcome`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum CombatVictor {
     /// Player-side victory.
     Player,
@@ -192,7 +196,7 @@ pub enum CombatVictor {
 /// `GameEvent` flow and the fact pipeline, and multi-fact events (per-ship +
 /// wipe CombatDefeat). Scout-only facts with no `GameEvent` counterpart keep
 /// `event_id = None`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum KnowledgeFact {
     /// A hostile contact was detected in deep space (#186 pursuit).
     HostileDetected {
@@ -559,7 +563,7 @@ impl KnowledgeFact {
 
 /// A [`KnowledgeFact`] plus the timing + provenance metadata the arrival
 /// scheduler needs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct PerceivedFact {
     pub fact: KnowledgeFact,
     /// Hexadies at which the event actually happened at its origin.
@@ -583,7 +587,8 @@ pub struct PerceivedFact {
 ///     player's vantage point" (snapshot).
 ///   - `PendingFactQueue` → "what *happened* that the player will hear about
 ///     at time T" (delta).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PendingFactQueue {
     pub facts: Vec<PerceivedFact>,
 }
@@ -645,7 +650,7 @@ impl PendingFactQueue {
 ///
 /// Built once per tick by [`collect_relay_snapshots`] so the arrival-time
 /// helpers don't need to touch ECS queries.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct RelaySnapshot {
     pub position: [f64; 3],
     /// Effective range after `empire_relay_range` modifiers. Zero / negative
@@ -658,7 +663,8 @@ pub struct RelaySnapshot {
 /// Lightweight snapshot of the empire's relay network. MVP assumption:
 /// **all relays belong to one network**; proper multi-network BFS is future
 /// work. See issue #233 design notes.
-#[derive(Resource, Default, Clone, Debug)]
+#[derive(Resource, Default, Clone, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct RelayNetwork {
     pub relays: Vec<RelaySnapshot>,
 }

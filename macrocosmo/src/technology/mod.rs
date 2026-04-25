@@ -155,7 +155,8 @@ impl Plugin for TechnologyPlugin {
 /// Global parameters modified by researched technologies.
 /// Contains ship/movement-related bonuses. Production and population bonuses
 /// have been moved to the modifier system (EmpireModifiers).
-#[derive(Resource, Component, Debug, Clone)]
+#[derive(Resource, Component, Debug, Clone, Reflect)]
+#[reflect(Component, Resource)]
 pub struct GlobalParams {
     /// Added to base sublight speed
     pub sublight_speed_bonus: f64,
@@ -183,7 +184,8 @@ impl Default for GlobalParams {
 
 /// Empire-wide modifiers applied via the modifier system.
 /// Replaces the production/population fields that were in GlobalParams.
-#[derive(Resource, Component)]
+#[derive(Resource, Component, Reflect)]
+#[reflect(Component, Resource)]
 pub struct EmpireModifiers {
     pub population_growth: ModifiedValue,
 }
@@ -214,7 +216,8 @@ impl Default for EmpireModifiers {
 /// - `COLONIZATION_*_COST` stores whole units (`Amt::units(300)`).
 /// - `BASE_AUTHORITY_PER_HEXADIES` / `AUTHORITY_COST_PER_COLONY` are kept in
 ///   sync with `AuthorityParams` via `sync_authority_params_from_balance`.
-#[derive(Resource, Component, Debug, Clone)]
+#[derive(Resource, Component, Debug, Clone, Reflect)]
+#[reflect(Component, Resource)]
 pub struct GameBalance {
     /// Initial FTL speed as multiple of light speed. Base = 10.0
     pub initial_ftl_speed_c: ModifiedValue,
@@ -350,7 +353,8 @@ impl GameBalance {
 }
 
 /// Tracks boolean flags set by technology effects (e.g. unlocked buildings).
-#[derive(Resource, Component, Default, Debug, Clone)]
+#[derive(Resource, Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component, Resource)]
 pub struct GameFlags {
     pub flags: HashSet<String>,
 }

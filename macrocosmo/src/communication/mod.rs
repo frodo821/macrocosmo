@@ -36,7 +36,8 @@ impl Plugin for CommunicationPlugin {
 /// dispatcher's `NextCommandId` (ship/command_events) because remote commands
 /// go through a different code path (`send_remote_command`), but they share
 /// the same `CommandId` type so courier relay dedup works uniformly.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Reflect)]
+#[reflect(Resource)]
 pub struct NextRemoteCommandId(pub u64);
 
 impl NextRemoteCommandId {
@@ -50,7 +51,8 @@ impl NextRemoteCommandId {
 
 /// Set of command IDs that have already been applied. Used to deduplicate
 /// commands that arrive both via light-speed and via courier relay (#268).
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct AppliedCommandIds(pub HashSet<CommandId>);
 
 /// Max consecutive frames the dispatcher will retain an un-dispatchable
@@ -70,7 +72,8 @@ pub const MAX_DISPATCH_RETRY_FRAMES: u32 = 300;
 /// lost. `retry_frames` tracks consecutive unresolved frames; once it
 /// reaches `MAX_DISPATCH_RETRY_FRAMES` the queue is dropped with a
 /// warning to keep observation sessions bounded.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PendingColonyDispatches {
     pub queue: Vec<PendingColonyDispatch>,
     /// Consecutive frames the dispatcher has seen a non-empty queue
@@ -79,13 +82,15 @@ pub struct PendingColonyDispatches {
     pub retry_frames: u32,
 }
 
+#[derive(bevy::reflect::Reflect)]
 pub struct PendingColonyDispatch {
     pub target_system: Entity,
     pub command: RemoteCommand,
 }
 
 /// A message in transit (light-speed or via courier)
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Message {
     /// Source position when sent
     pub origin: [f64; 3],
@@ -99,7 +104,7 @@ pub struct Message {
     pub content: MessageContent,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum MessageContent {
     /// A command from the player to a remote system
     Command(CommandPayload),
@@ -107,13 +112,13 @@ pub enum MessageContent {
     Report(ReportPayload),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct CommandPayload {
     pub target_system: Entity,
     pub command_type: CommandType,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum CommandType {
     /// Update the autonomous AI's standing orders
     UpdateOrders,
@@ -121,7 +126,7 @@ pub enum CommandType {
     DirectAction(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ReportPayload {
     pub source_system: Entity,
     /// Hexadies when this information was current
@@ -129,7 +134,8 @@ pub struct ReportPayload {
 }
 
 /// A courier ship carrying messages physically
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct CourierShip {
     pub origin: [f64; 3],
     pub destination: [f64; 3],
@@ -187,7 +193,8 @@ pub fn process_courier_ships(
 // ---------------------------------------------------------------------------
 
 /// A command the player has issued to a remote system that hasn't arrived yet.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct PendingCommand {
     /// #268: Stable ID for dedup when a courier relays the same command.
     pub id: CommandId,
@@ -207,7 +214,7 @@ pub struct PendingCommand {
 /// builds carry their own `host_colony` entity; `ShipBuild` re-resolves
 /// from `ShipDesignRegistry` at arrival while `DeliverableBuild` freezes
 /// the full payload at send time (defs live in `StructureRegistry`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum RemoteCommand {
     BuildShip {
         design_id: String,
@@ -252,13 +259,13 @@ pub enum RemoteCommand {
 
 /// Building-slot op against the target system. `scope` picks planet-level
 /// vs system-level; `kind` is the action.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ColonyCommand {
     pub scope: BuildingScope,
     pub kind: BuildingKind,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bevy::reflect::Reflect)]
 pub enum BuildingScope {
     /// Acts on the planet-level `BuildingQueue` of the colony on this planet.
     Planet(Entity),
@@ -266,7 +273,7 @@ pub enum BuildingScope {
     System,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum BuildingKind {
     Queue {
         building_id: String,
@@ -321,7 +328,8 @@ impl RemoteCommand {
 }
 
 /// Tracks command status for UI display.
-#[derive(Resource, Component, Default)]
+#[derive(Resource, Component, Default, Reflect)]
+#[reflect(Component, Resource)]
 pub struct CommandLog {
     pub entries: Vec<CommandLogEntry>,
 }
@@ -331,7 +339,7 @@ pub struct CommandLog {
 /// `status` carries richer information for dispatcher/handler-driven
 /// commands. Defaults to `Pending` so save fixtures that predate this
 /// field decode unchanged.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum CommandLogStatus {
     /// Legacy remote command awaiting light-speed arrival (kept as the
     /// default so existing entries continue to display unchanged).
@@ -349,6 +357,7 @@ pub enum CommandLogStatus {
     Deferred,
 }
 
+#[derive(bevy::reflect::Reflect)]
 pub struct CommandLogEntry {
     pub description: String,
     pub sent_at: i64,

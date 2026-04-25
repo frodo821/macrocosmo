@@ -63,7 +63,8 @@ pub enum GameState {
 /// Parameters for a new-game construction pass. Populated from the CLI
 /// (or, in the future, from a main-menu screen) **before** transitioning
 /// into [`GameState::NewGame`]. Consumed by world-spawn systems.
-#[derive(Resource, Clone, Debug, Default)]
+#[derive(Resource, Clone, Debug, Default, Reflect)]
+#[reflect(Resource)]
 pub struct NewGameParams {
     /// Deterministic RNG seed for galaxy generation. `None` = random.
     pub seed: Option<u64>,
@@ -78,7 +79,8 @@ pub struct NewGameParams {
 /// Request to restore a game from a save file on disk. Inserted by
 /// `--load <path>` (or a future load-game screen) **before** transitioning
 /// into [`GameState::LoadingSave`].
-#[derive(Resource, Clone, Debug)]
+#[derive(Resource, Clone, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct LoadSaveRequest {
     pub path: PathBuf,
 }

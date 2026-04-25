@@ -24,14 +24,14 @@ use crate::scripting::knowledge_dispatch::KNOWLEDGE_PAYLOAD_DEPTH_LIMIT;
 
 /// Serde-compatible snapshot of a Lua payload table. Survives without
 /// holding any Lua references.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct PayloadSnapshot {
     pub fields: HashMap<String, PayloadValue>,
 }
 
 /// Individual payload field value. Mirrors Lua's type system minus
 /// Function / UserData (which are schema violations).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum PayloadValue {
     Number(f64),
     Int(i64),

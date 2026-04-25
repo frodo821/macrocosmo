@@ -7,7 +7,9 @@ use crate::condition::Condition;
 
 /// Module size tier — constrains which hull slots accept which modules.
 /// A module fits in a slot when `module.size <= slot.max_size`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash, bevy::reflect::Reflect,
+)]
 pub enum ModuleSize {
     #[default]
     Small,
@@ -37,13 +39,14 @@ impl ModuleSize {
 }
 
 /// Defines a module slot type (weapon, utility, engine, special).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct SlotTypeDefinition {
     pub id: String,
     pub name: String,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct SlotTypeRegistry {
     pub types: HashMap<String, SlotTypeDefinition>,
 }
@@ -59,7 +62,7 @@ impl SlotTypeRegistry {
 }
 
 /// A slot on a hull.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct HullSlot {
     pub slot_type: String,
     pub count: u32,
@@ -69,7 +72,7 @@ pub struct HullSlot {
 }
 
 /// Defines a ship hull.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct HullDefinition {
     pub id: String,
     pub name: String,
@@ -92,7 +95,8 @@ pub struct HullDefinition {
     pub is_capital: bool,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct HullRegistry {
     pub hulls: HashMap<String, HullDefinition>,
 }
@@ -108,7 +112,7 @@ impl HullRegistry {
 }
 
 /// Weapon-specific stats for a module.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct WeaponStats {
     pub track: f64,
     pub precision: f64,
@@ -125,7 +129,7 @@ pub struct WeaponStats {
 }
 
 /// A modifier that a module applies when equipped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ModuleModifier {
     pub target: String,
     pub base_add: f64,
@@ -134,7 +138,7 @@ pub struct ModuleModifier {
 }
 
 /// An upgrade path from one module to another.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ModuleUpgradePath {
     /// Target module ID to upgrade to.
     pub target_id: String,
@@ -145,7 +149,7 @@ pub struct ModuleUpgradePath {
 }
 
 /// Defines a ship module.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ModuleDefinition {
     pub id: String,
     pub name: String,
@@ -179,7 +183,8 @@ pub struct ModuleDefinition {
     pub size: ModuleSize,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ModuleRegistry {
     pub modules: HashMap<String, ModuleDefinition>,
 }
@@ -195,14 +200,14 @@ impl ModuleRegistry {
 }
 
 /// A slot assignment in a ship design.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct DesignSlotAssignment {
     pub slot_type: String,
     pub module_id: String,
 }
 
 /// A complete ship design (template).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ShipDesignDefinition {
     pub id: String,
     pub name: String,
@@ -467,7 +472,8 @@ impl ShipDesignDefinition {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ShipDesignRegistry {
     pub designs: HashMap<String, ShipDesignDefinition>,
 }

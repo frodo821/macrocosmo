@@ -45,7 +45,8 @@ use super::{Ship, ShipState};
 /// [`detect_fleet_departures`] to determine whether a departure from
 /// a star system occurred (as opposed to departing from deep-space
 /// Loitering, which should NOT fire `fleet_system_left`).
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
 pub struct LastDockedSystem(pub Option<Entity>);
 
 // ---------------------------------------------------------------------------

@@ -32,12 +32,14 @@ pub const COLONIZATION_POPULATION_TRANSFER: f64 = 10.0;
 pub const COLONIZATION_MIN_POPULATION: f64 = 20.0;
 
 /// #114: Queue for same-system colonization orders (attached to StarSystem entities).
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct ColonizationQueue {
     pub orders: Vec<ColonizationOrder>,
 }
 
 /// #114: A single colonization order in the queue.
+#[derive(bevy::reflect::Reflect)]
 pub struct ColonizationOrder {
     pub target_planet: Entity,
     pub source_colony: Entity,
@@ -48,7 +50,8 @@ pub struct ColonizationOrder {
 }
 
 /// #114: Pending colonization order spawned by UI, consumed by `apply_pending_colonization_orders`.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct PendingColonizationOrder {
     pub system_entity: Entity,
     pub target_planet: Entity,

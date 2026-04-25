@@ -162,6 +162,15 @@ pub struct ReplayState {
 }
 
 /// Resource backing the AI Debug UI.
+///
+/// **Reflect skipped**: this resource transitively contains types from
+/// the engine-agnostic `macrocosmo-ai` crate (`AiBus`, `BusSnapshot`,
+/// `Playthrough`, `MetricId`, etc.). `macrocosmo-ai` cannot take a
+/// `bevy_reflect` dependency (enforced by `ai-core-isolation.yml`),
+/// and `AiBus` is not `Clone`, so neither field-level Reflect nor
+/// `#[reflect(opaque)]` (which requires `Clone`) can be applied. As a
+/// result `AiDebugUi` is not introspectable via BRP — this is fine
+/// because it's a UI debug overlay, not gameplay state.
 #[derive(Resource, Default)]
 pub struct AiDebugUi {
     pub open: bool,

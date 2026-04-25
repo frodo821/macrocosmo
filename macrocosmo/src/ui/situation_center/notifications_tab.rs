@@ -92,7 +92,8 @@ pub enum PushOutcome {
 /// [`Notification::ack_cascade`] so the tree-level "ack all" semantics
 /// stay consistent with the ESC-1 `ack_cascade` unit tests. Ack only
 /// touches the entry and its descendants — siblings are untouched.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Reflect)]
+#[reflect(Resource)]
 pub struct EscNotificationQueue {
     /// Newest-first stack of top-level notifications.
     pub items: Vec<Notification>,

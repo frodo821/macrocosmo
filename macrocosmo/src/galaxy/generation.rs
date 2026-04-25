@@ -20,8 +20,8 @@ use super::biome::resolve_biome_id;
 use super::types::{default_planet_types, default_star_types};
 use super::{
     Anomalies, AtSystem, Biome, BiomeRegistry, GalaxyConfig, Hostile, HostileHitpoints,
-    HostileStats, Planet, Sovereignty, StarSystem, StarTypeModifierSet,
-    SystemAttributes, SystemModifiers,
+    HostileStats, Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes,
+    SystemModifiers,
 };
 use crate::amount::SignedAmt;
 use crate::faction::{FactionOwner, HostileFactions};
@@ -71,7 +71,8 @@ pub(crate) struct CapitalAssignments {
 /// Maps faction ids to their assigned home StarSystem entity. Built during
 /// galaxy generation and consumed by `run_on_game_start_for_faction` to
 /// route each faction's `on_game_start` callback to the correct system.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct HomeSystemAssignments {
     pub assignments: std::collections::HashMap<String, Entity>,
 }

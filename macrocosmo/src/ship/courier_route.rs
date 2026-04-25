@@ -37,7 +37,7 @@ use super::{Cargo, CommandQueue, Owner, QueuedCommand, Ship, ShipState};
 pub const COURIER_DEFAULT_CARGO_CAPACITY: Amt = Amt::units(500);
 
 /// Behaviour selector for an automated courier route.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum CourierMode {
     /// Carry knowledge snapshots between waypoints.
     KnowledgeRelay,
@@ -65,7 +65,8 @@ impl CourierMode {
 /// at. When a courier docks at `waypoints[current_index]`, the system
 /// performs the pickup/deliver action for that stop and advances the
 /// index.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct CourierRoute {
     pub waypoints: Vec<Entity>,
     pub current_index: usize,
@@ -101,7 +102,8 @@ impl CourierRoute {
 }
 
 /// Knowledge snapshots carried by a courier between docks.
-#[derive(Component, Default, Clone, Debug)]
+#[derive(Component, Default, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct CourierKnowledgeCargo {
     pub entries: Vec<SystemKnowledge>,
 }
@@ -115,7 +117,7 @@ impl CourierKnowledgeCargo {
 /// #268: A single in-flight command carried by a courier ship. The original
 /// `PendingCommand` entity is kept alive (light-speed race), and the courier
 /// emits a new light-speed relay from the closest waypoint to the target.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct CarriedCommandEntry {
     /// Stable ID — preserved through relay so dedup works.
     pub cmd_id: CommandId,
@@ -136,7 +138,8 @@ pub struct CarriedCommandEntry {
 /// Entries are picked up at each waypoint (if their target lies roughly
 /// in the direction of travel) and released at the closest waypoint to
 /// the target, spawning a new light-speed `PendingCommand` from there.
-#[derive(Component, Default, Clone, Debug)]
+#[derive(Component, Default, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct CarriedCommands {
     pub entries: Vec<CarriedCommandEntry>,
 }

@@ -8,7 +8,7 @@ use crate::modifier::ParsedModifier;
 // Species definitions
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct SpeciesDefinition {
     pub id: String,
     pub name: String,
@@ -20,7 +20,8 @@ pub struct SpeciesDefinition {
     pub modifiers: Vec<ParsedModifier>,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct SpeciesRegistry {
     pub species: HashMap<String, SpeciesDefinition>,
 }
@@ -39,13 +40,14 @@ impl SpeciesRegistry {
 // Colony population
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ColonySpecies {
     pub species_id: String,
     pub population: u32,
 }
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct ColonyPopulation {
     pub species: Vec<ColonySpecies>,
     /// Sub-integer growth accumulated over ticks. When |accumulator| >= 1.0,
@@ -78,7 +80,7 @@ impl ColonyPopulation {
 // Job definitions
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct JobDefinition {
     pub id: String,
     pub label: String,
@@ -106,7 +108,8 @@ impl JobDefinition {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct JobRegistry {
     pub jobs: HashMap<String, JobDefinition>,
 }
@@ -125,7 +128,7 @@ impl JobRegistry {
 // Colony jobs
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct JobSlot {
     pub job_id: String,
     pub capacity: u32,
@@ -152,7 +155,8 @@ impl JobSlot {
     }
 }
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct ColonyJobs {
     pub slots: Vec<JobSlot>,
 }

@@ -31,7 +31,7 @@ use crate::time_system::GameSpeed;
 /// an option with a cost, the amounts are subtracted from the player's
 /// capital system stockpile before `on_chosen` runs. Options whose cost
 /// exceeds available resources are shown greyed-out and non-clickable.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct ChoiceCost {
     pub minerals: Amt,
     pub energy: Amt,
@@ -47,7 +47,7 @@ impl ChoiceCost {
 /// reference (key into the `_pending_choices_by_id[choice_id].options[i]`
 /// sub-table) to keep the `PendingChoice` resource cheaply cloneable and
 /// avoid holding a `mlua::Function` across frames (which needs a live `Lua`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ChoiceOption {
     pub label: String,
     pub description: Option<String>,
@@ -69,7 +69,8 @@ pub struct ChoiceOption {
 
 /// The single currently-active modal choice. `None` means no choice is
 /// pending and the dialog is hidden.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PendingChoice {
     pub current: Option<ActiveChoice>,
     /// Additional choices queued behind `current`. Shown one at a time;
@@ -80,7 +81,7 @@ pub struct PendingChoice {
 /// A choice currently under the player's attention. `lua_id` is the key under
 /// which the full Lua table (including per-option `on_chosen` callbacks)
 /// lives in the global `_active_choices` registry table.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ActiveChoice {
     pub lua_id: u64,
     pub title: String,
@@ -466,7 +467,8 @@ fn apply_modifier_to_params(
 /// `PendingChoiceSelection` with the chosen option index; this system
 /// subtracts cost, runs `on_chosen`, applies the resulting effects, clears
 /// the choice, and unpauses the game once no choice remains active.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PendingChoiceSelection {
     /// 1-based option index the player just clicked. Consumed on apply.
     pub pick: Option<usize>,

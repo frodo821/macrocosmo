@@ -84,7 +84,8 @@ impl EventContext for BuildingLostCtx {
     }
 }
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct BuildQueue {
     pub queue: Vec<BuildOrder>,
     /// #275: Monotonic counter used to stamp stable `BuildOrder::order_id`
@@ -124,7 +125,7 @@ impl BuildQueue {
 /// queue only built ships). `Deliverable` adds the new path used by #223:
 /// completed deliverables are pushed into the system's `DeliverableStockpile`
 /// instead of spawning a `Ship` entity.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, bevy::reflect::Reflect)]
 pub enum BuildKind {
     #[default]
     Ship,
@@ -133,6 +134,7 @@ pub enum BuildKind {
     },
 }
 
+#[derive(bevy::reflect::Reflect)]
 pub struct BuildOrder {
     /// #275: Stable id assigned at push time. Used by cancel commands to
     /// survive queue shifts under light-speed delay (the index at
@@ -184,7 +186,8 @@ pub enum CancelledOrderKind {
     Upgrade,
 }
 
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Buildings {
     pub slots: Vec<Option<BuildingId>>, // None = empty slot
 }
@@ -223,7 +226,8 @@ impl Buildings {
     }
 }
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct BuildingQueue {
     pub queue: Vec<BuildingOrder>,
     pub demolition_queue: Vec<DemolitionOrder>,
@@ -235,6 +239,7 @@ pub struct BuildingQueue {
     pub next_order_id: u64,
 }
 
+#[derive(bevy::reflect::Reflect)]
 pub struct BuildingOrder {
     /// #275: Stable id (see `BuildOrder::order_id`).
     pub order_id: u64,
@@ -245,6 +250,7 @@ pub struct BuildingOrder {
     pub build_time_remaining: i64,
 }
 
+#[derive(bevy::reflect::Reflect)]
 pub struct DemolitionOrder {
     /// #275: Stable id (see `BuildOrder::order_id`).
     pub order_id: u64,
@@ -258,6 +264,7 @@ pub struct DemolitionOrder {
 /// An order to upgrade an existing building in a slot to a new building type.
 /// During the upgrade, the original building remains active. On completion,
 /// the slot's building ID is replaced with the target.
+#[derive(bevy::reflect::Reflect)]
 pub struct UpgradeOrder {
     /// #275: Stable id (see `BuildOrder::order_id`).
     pub order_id: u64,

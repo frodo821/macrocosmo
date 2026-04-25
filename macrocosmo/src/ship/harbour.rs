@@ -17,7 +17,8 @@ use super::{
 
 /// Tracks which docked modifier IDs were applied to this ship, so we can
 /// clean them up on undock or harbour change.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct AppliedDockedModifiers(pub Vec<String>);
 
 /// Returns the total hull size of all ships currently docked at `harbour_entity`.

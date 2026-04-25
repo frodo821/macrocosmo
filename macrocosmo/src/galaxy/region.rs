@@ -28,7 +28,7 @@ pub type RegionTypeId = String;
 
 /// Per-capability parameters attached to a region or region type. MVP uses
 /// only the `strength` field (everything else is reserved for 1.0.0+).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, bevy::reflect::Reflect)]
 pub struct CapabilityParams {
     /// Strength multiplier (1.0 = fully active). Not yet consumed by the
     /// engine — present so Lua can forward-declare future semantics.
@@ -38,7 +38,8 @@ pub struct CapabilityParams {
 /// A forbidden region in space. Placed at galaxy-generation time as a Bevy
 /// entity carrying this component; spheres list + threshold define the
 /// effective volume.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct ForbiddenRegion {
     pub id: RegionId,
     pub type_id: RegionTypeId,
@@ -85,7 +86,7 @@ impl ForbiddenRegion {
 }
 
 /// Lua-defined region type (id, capabilities, visual params).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub struct RegionTypeDefinition {
     pub id: String,
     pub name: String,
@@ -95,7 +96,8 @@ pub struct RegionTypeDefinition {
 }
 
 /// Registry of all region type definitions loaded from Lua.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct RegionTypeRegistry {
     pub types: HashMap<String, RegionTypeDefinition>,
 }
@@ -103,7 +105,7 @@ pub struct RegionTypeRegistry {
 /// A placement spec (one entry per `galaxy_generation.add_region_spec { ... }`
 /// call from Lua). Consumed by the placement algorithm at galaxy-generation
 /// time.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub struct RegionSpec {
     pub type_id: String,
     pub count_range: (u32, u32),
@@ -130,7 +132,8 @@ impl Default for RegionSpec {
 /// Accumulator resource. Populated via the Lua helper
 /// `galaxy_generation.add_region_spec { ... }`, drained by the placement
 /// system at galaxy-generation time.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct RegionSpecQueue {
     pub specs: Vec<RegionSpec>,
 }

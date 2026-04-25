@@ -11,7 +11,8 @@ use super::{Colony, LastProductionTick, Production, ResourceStockpile};
 /// Colony-level food consumption as a ModifiedValue (food/hexady).
 /// The sync_food_consumption system sets the base each tick based on population;
 /// tech modifiers (e.g. Hydroponics -20%) stay attached as multiplier modifiers.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct FoodConsumption {
     pub food_per_hexadies: ModifiedValue,
 }

@@ -36,7 +36,8 @@ use crate::condition::Condition;
 use crate::ship::Owner;
 
 /// A structure placed at arbitrary galactic coordinates, not attached to any star system.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct DeepSpaceStructure {
     pub definition_id: String,
     pub name: String,
@@ -44,7 +45,7 @@ pub struct DeepSpaceStructure {
 }
 
 /// #119: Direction for an `FTLCommRelay` pair.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum CommDirection {
     /// Both endpoints relay knowledge to each other.
     Bidirectional,
@@ -65,7 +66,8 @@ pub enum CommDirection {
 /// When the partner entity is despawned, the component becomes "unpaired" —
 /// `verify_relay_pairings_system` clears the component (entity reverts to a
 /// plain deep-space structure) so no stale propagation occurs.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct FTLCommRelay {
     pub paired_with: Entity,
     pub direction: CommDirection,
@@ -131,21 +133,22 @@ pub fn pair_relay_command(
 }
 
 /// Hitpoints for a deep-space structure.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct StructureHitpoints {
     pub current: f64,
     pub max: f64,
 }
 
 /// Resource cost for building a structure.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct ResourceCost {
     pub minerals: Amt,
     pub energy: Amt,
 }
 
 /// Parameters for a named capability (e.g. detection range for sensors).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct CapabilityParams {
     pub range: f64,
     // Extensible: add more fields as needed.
@@ -153,7 +156,7 @@ pub struct CapabilityParams {
 
 /// #223: An edge in the deliverable upgrade graph — a platform kit can be
 /// upgraded to `target_id` by spending `cost` over `build_time` hexadies.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct UpgradeEdge {
     pub target_id: String,
     pub cost: ResourceCost,
@@ -164,7 +167,7 @@ pub struct UpgradeEdge {
 /// declared via `define_deliverable` (i.e. can be built directly at a shipyard
 /// and transported in a ship's Cargo). World-only structures declared via
 /// `define_structure` leave this as `None`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct DeliverableMetadata {
     pub cost: ResourceCost,
     pub build_time: i64,
@@ -183,7 +186,7 @@ pub struct DeliverableMetadata {
 /// shipyard-buildable deliverables. The `deliverable` field distinguishes them:
 ///   - `Some(_)` — shipyard-buildable (via `define_deliverable`)
 ///   - `None`    — world-spawn only / upgrade output (via `define_structure`)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct DeliverableDefinition {
     pub id: String,
     pub name: String,
@@ -249,7 +252,8 @@ pub type StructureDefinition = DeliverableDefinition;
 /// `source_id`, built once during `load_structure_definitions` by combining
 /// each definition's `upgrade_to[*]` with any other definition's self-declared
 /// `upgrade_from` that names `source_id`. `upgrade_to` wins on conflict.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct DeliverableRegistry {
     pub definitions: HashMap<String, DeliverableDefinition>,
     pub effective_edges: HashMap<String, Vec<UpgradeEdge>>,
@@ -430,7 +434,8 @@ pub fn default_structure_definitions() -> Vec<StructureDefinition> {
 /// `UpgradeEdge.cost` every time the structure is upgraded via a
 /// `ConstructionPlatform`. When the structure is dismantled, the resulting
 /// `Scrapyard.remaining = lifetime_cost * scrap_refund`.
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug, Default, Reflect)]
+#[reflect(Component)]
 pub struct LifetimeCost(pub ResourceCost);
 
 /// #223: Marker component on a freshly-deployed construction platform that is
@@ -442,7 +447,8 @@ pub struct LifetimeCost(pub ResourceCost);
 /// `target_id.is_none()` means the player hasn't yet chosen which upgrade edge
 /// to pursue; transfers are refused until a target is selected. UI can default
 /// `target_id` to the sole edge when `upgrade_to` has exactly one element.
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug, Default, Reflect)]
+#[reflect(Component)]
 pub struct ConstructionPlatform {
     pub target_id: Option<String>,
     pub accumulated: ResourceCost,
@@ -453,7 +459,8 @@ pub struct ConstructionPlatform {
 /// `remaining` pool into its own Cargo via `QueuedCommand::LoadFromScrapyard`.
 /// When `remaining.is_zero()`, the entity is despawned next tick by
 /// `tick_scrapyard_despawn`.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct Scrapyard {
     pub remaining: ResourceCost,
     pub original_definition_id: String,

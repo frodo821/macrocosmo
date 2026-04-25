@@ -187,7 +187,8 @@ impl Material2d for TerritoryMaterial {
 }
 
 /// Marker component for the territory overlay quad.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct TerritoryQuad;
 
 pub struct TerritoryPlugin;

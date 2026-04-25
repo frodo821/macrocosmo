@@ -52,7 +52,7 @@ pub use perceived::{FactionId, PerceivedInfo, perceived_fleet, perceived_system}
 ///
 /// Writers must use `Direct`, `Relay`, or `Scout`. `Stale` is a read-side
 /// overlay applied by [`perceived::perceived_system`] — see module docs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, bevy::reflect::Reflect)]
 pub enum ObservationSource {
     /// Optical / baseline sensor (light-speed propagation, surveys, sensor buoys).
     Direct,
@@ -70,7 +70,7 @@ pub enum ObservationSource {
 pub const STALE_THRESHOLD_HEXADIES: i64 = 600;
 
 /// #409: Record of a ship destroyed in combat, pending light-speed notification.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct DestroyedShipRecord {
     pub entity: Entity,
     pub destruction_pos: [f64; 3],
@@ -96,7 +96,8 @@ pub const MISSING_GRACE_HEXADIES: i64 = 5;
 /// #409: Registry of ships destroyed but whose destruction hasn't reached the
 /// player yet (light-speed delay). Once light arrives, the corresponding
 /// `ShipSnapshot` is marked `Destroyed` and the record is removed.
-#[derive(Resource, Default, Clone, Debug)]
+#[derive(Resource, Default, Clone, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct DestroyedShipRegistry {
     pub records: Vec<DestroyedShipRecord>,
 }
@@ -105,7 +106,7 @@ pub struct DestroyedShipRegistry {
 /// the player empire's viewer. Separate from [`DestroyedShipRegistry`] because
 /// combat produces multi-ship aggregate events (e.g. `CombatDefeat` "All
 /// ships destroyed by X") that are not tied to a single pending ship record.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct DelayedCombatEvent {
     pub origin_pos: [f64; 3],
     pub destruction_tick: i64,
@@ -116,7 +117,8 @@ pub struct DelayedCombatEvent {
 
 /// #435: Queue of combat-origin events that are waiting for light to reach
 /// the player. Drained by [`drain_delayed_combat_events`].
-#[derive(Resource, Default, Clone, Debug)]
+#[derive(Resource, Default, Clone, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct DelayedCombatEventQueue {
     pub pending: Vec<DelayedCombatEvent>,
 }
@@ -131,7 +133,7 @@ pub struct DelayedCombatEventQueue {
 /// | Local | Own ship in system | Everything (real-time) |
 ///
 /// For V1: Local == Connected (relay/courier connection detection deferred).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, bevy::reflect::Reflect)]
 pub enum SystemVisibilityTier {
     Catalogued,
     Surveyed,
@@ -164,7 +166,8 @@ impl SystemVisibilityTier {
 /// #392: Per-system visibility tier map, attached to each empire entity.
 ///
 /// Systems not present in the map default to `Catalogued`.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct SystemVisibilityMap {
     tiers: HashMap<Entity, SystemVisibilityTier>,
 }
@@ -188,7 +191,8 @@ impl SystemVisibilityMap {
 
 /// #392: Tracks the previous system a ship was in, so `update_visibility_tiers`
 /// can recalculate both the old and new system when a ship moves.
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct TrackedShipSystem(pub Option<Entity>);
 
 pub struct KnowledgePlugin;
@@ -268,7 +272,7 @@ impl Plugin for KnowledgePlugin {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct SystemKnowledge {
     pub system: Entity,
     pub observed_at: i64,
@@ -278,7 +282,7 @@ pub struct SystemKnowledge {
     pub source: ObservationSource,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct SystemSnapshot {
     pub name: String,
     pub position: [f64; 3],
@@ -317,7 +321,7 @@ pub struct SystemSnapshot {
 /// #269: Snapshot of a single colony's observable state at the moment of
 /// last observation. Carries enough data for the remote colony detail
 /// panel to render without reading live components.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ColonySnapshot {
     pub colony_entity: Entity,
     pub planet_entity: Entity,
@@ -336,21 +340,21 @@ pub struct ColonySnapshot {
     pub upgrade_queue: Vec<UpgradeSnapshot>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct BuildQueueEntrySnapshot {
     pub building_id: crate::scripting::building_api::BuildingId,
     pub target_slot: usize,
     pub build_time_remaining: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct DemolitionSnapshot {
     pub target_slot: usize,
     pub building_id: crate::scripting::building_api::BuildingId,
     pub time_remaining: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct UpgradeSnapshot {
     pub slot_index: usize,
     pub target_id: crate::scripting::building_api::BuildingId,
@@ -358,7 +362,7 @@ pub struct UpgradeSnapshot {
 }
 
 /// #175: Snapshot of a ship's last known state for light-speed delayed visibility.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct ShipSnapshot {
     pub entity: Entity,
     pub name: String,
@@ -373,7 +377,7 @@ pub struct ShipSnapshot {
 }
 
 /// Simplified ship state for knowledge snapshots.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub enum ShipSnapshotState {
     InSystem,
     InTransit,
@@ -389,7 +393,8 @@ pub enum ShipSnapshotState {
     },
 }
 
-#[derive(Resource, Component, Default)]
+#[derive(Resource, Component, Default, Reflect)]
+#[reflect(Component, Resource)]
 pub struct KnowledgeStore {
     entries: HashMap<Entity, SystemKnowledge>,
     /// #175: Ship snapshots keyed by ship entity. Updated via light-speed propagation.

@@ -28,7 +28,7 @@ use crate::scripting::ScriptEngine;
 use crate::time_system::GameClock;
 
 /// Definition of a Casus Belli loaded from Lua.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct CasusBelliDefinition {
     /// Unique string id (e.g. `"core_attack"`).
     pub id: String,
@@ -45,7 +45,7 @@ pub struct CasusBelliDefinition {
 }
 
 /// A single demand imposed at war's end.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct DemandSpec {
     /// Machine-readable demand type (e.g. `"return_cores"`, `"reparations"`).
     pub kind: String,
@@ -54,7 +54,7 @@ pub struct DemandSpec {
 }
 
 /// A group of optional demands the winner may select from.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct AdditionalDemandGroup {
     pub label: String,
     pub max_picks: u32,
@@ -62,7 +62,7 @@ pub struct AdditionalDemandGroup {
 }
 
 /// A named scenario describing how a war can end.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct EndScenario {
     /// Machine-readable id (e.g. `"white_peace"`, `"unconditional_surrender"`).
     pub id: String,
@@ -74,7 +74,8 @@ pub struct EndScenario {
 }
 
 /// Registry of all CB definitions loaded from Lua at startup.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct CasusBelliRegistry {
     pub definitions: HashMap<String, CasusBelliDefinition>,
 }
@@ -86,7 +87,7 @@ impl CasusBelliRegistry {
 }
 
 /// A currently active war between two factions, justified by a CB.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct ActiveWar {
     /// The CB that justified this war.
     pub cb_id: String,
@@ -99,7 +100,8 @@ pub struct ActiveWar {
 }
 
 /// Resource tracking all active wars.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct ActiveWars {
     pub wars: Vec<ActiveWar>,
 }

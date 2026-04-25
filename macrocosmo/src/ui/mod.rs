@@ -53,17 +53,19 @@ use params::{
 };
 
 /// Resource tracking whether the research overlay is open.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ResearchPanelOpen(pub bool);
 
 /// #304: Resource tracking whether the diplomacy panel is open.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct DiplomacyPanelOpen(pub bool);
 
 /// #252: Selected tab in the colony detail panel. `Overview` retains the
 /// pre-existing income/buildings view; `PopManagement` shows population
 /// breakdown, job slot assignments, and per-job production contributions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, bevy::reflect::Reflect)]
 pub enum ColonyPanelTab {
     #[default]
     Overview,
@@ -72,7 +74,8 @@ pub enum ColonyPanelTab {
 
 /// Intermediate resource holding pre-computed UI data shared across systems.
 /// Written by `compute_ui_state`, read by drawing systems.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct UiState {
     pub player_system: Option<Entity>,
     pub player_entity: Option<Entity>,
@@ -97,6 +100,7 @@ pub struct UiState {
 /// A single registered UI element with its semantic ID, display text, and
 /// screen-space bounding rectangle. Used by the BRP `find_ui_element` /
 /// `list_ui_elements` commands to let automated test drivers locate widgets.
+#[derive(bevy::reflect::Reflect)]
 pub struct UiElement {
     pub id: String,
     pub text: String,
@@ -112,7 +116,8 @@ pub struct UiElement {
 /// The resource is only inserted when the `remote` cargo feature is enabled.
 /// UI systems access it as `Option<ResMut<UiElementRegistry>>` so the code
 /// compiles regardless.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct UiElementRegistry {
     pub elements: Vec<UiElement>,
 }

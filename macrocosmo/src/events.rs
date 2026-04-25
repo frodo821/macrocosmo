@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::knowledge::{EventId, NextEventId};
 use crate::time_system::GameSpeed;
 
-#[derive(Message, Clone, Debug)]
+#[derive(Message, Clone, Debug, bevy::reflect::Reflect)]
 pub struct GameEvent {
     /// #249: Unique id used to dedupe notification banners that arrive through
     /// both the legacy event log and the `KnowledgeFact` pipeline for the same
@@ -40,7 +40,7 @@ impl GameEvent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum GameEventKind {
     ShipArrived,
     SurveyComplete,
@@ -157,7 +157,8 @@ impl GameEventKind {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct EventLog {
     pub entries: Vec<GameEvent>,
     pub max_entries: usize,

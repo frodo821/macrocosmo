@@ -16,22 +16,37 @@ use crate::time_system::GameClock;
 
 use super::{SelectedShip, SelectedSystem};
 
-#[derive(Component)]
+/// BRP type-registration hook. The four star-visual `Component`s below
+/// are `pub(super)` (private to the visualization module), so they can
+/// only be referenced from within this file — `register_all_types`
+/// reaches them via this re-exported helper instead of by direct path.
+pub fn register_star_types(app: &mut App) {
+    app.register_type::<StarVisual>();
+    app.register_type::<StarGlow>();
+    app.register_type::<StarLabel>();
+    app.register_type::<BaseStarSize>();
+}
+
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub(super) struct StarVisual {
     pub system_entity: Entity,
 }
 
 /// Marks a sprite as a glow halo behind a star.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub(super) struct StarGlow;
 
 /// #434: Marks a Text2d entity as a star name label so `update_star_colors`
 /// can dynamically show/hide it based on KnowledgeStore.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub(super) struct StarLabel;
 
 /// Stores the base pixel size of a star sprite so zoom-responsive scaling can reference it.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub(super) struct BaseStarSize(pub f32);
 
 /// #439 Phase 4 `OnExit(GameState::InGame)` cleanup — despawn every sprite /

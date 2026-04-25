@@ -34,7 +34,7 @@ use std::collections::HashMap;
 pub const DEFAULT_BIOME_ID: &str = "default";
 
 /// A biome definition parsed from Lua `define_biome { ... }` calls.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct BiomeDefinition {
     pub id: String,
     pub display_name: String,
@@ -42,7 +42,8 @@ pub struct BiomeDefinition {
 }
 
 /// Registry of all biome definitions loaded from Lua scripts.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct BiomeRegistry {
     pub biomes: HashMap<String, BiomeDefinition>,
 }
@@ -75,7 +76,8 @@ impl BiomeRegistry {
 ///
 /// For pre-alpha this is purely descriptive — no derived production or
 /// habitability bonuses (those are explicitly out of scope; see #335).
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct Biome {
     pub id: String,
 }

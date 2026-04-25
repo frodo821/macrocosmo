@@ -28,7 +28,8 @@ pub use system_buildings::*;
 
 pub struct ColonyPlugin;
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct LastProductionTick(pub i64);
 
 impl Plugin for ColonyPlugin {
@@ -148,7 +149,8 @@ impl Plugin for ColonyPlugin {
     }
 }
 
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Colony {
     pub planet: Entity,
     pub growth_rate: f64,
@@ -161,7 +163,8 @@ impl Colony {
     }
 }
 
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct ResourceStockpile {
     pub minerals: Amt,
     pub energy: Amt,
@@ -173,7 +176,8 @@ pub struct ResourceStockpile {
 /// #223: Per-star-system cargo-item stockpile. Shipyard-built deliverables
 /// land here when construction completes, ready to be loaded onto a ship's
 /// Cargo via `QueuedCommand::LoadDeliverable`.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct DeliverableStockpile {
     pub items: Vec<crate::ship::CargoItem>,
 }
@@ -196,7 +200,8 @@ impl DeliverableStockpile {
     }
 }
 
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct ResourceCapacity {
     pub minerals: Amt,
     pub energy: Amt,
@@ -218,7 +223,8 @@ impl Default for ResourceCapacity {
 /// Global construction cost/time modifiers. Base = 1.0 for all fields.
 /// Techs push multiplier modifiers (e.g. -0.15 for "15% cheaper ships").
 /// Effective cost = base_cost * modifier.final_value().
-#[derive(Resource, Component)]
+#[derive(Resource, Component, Reflect)]
+#[reflect(Component, Resource)]
 pub struct ConstructionParams {
     pub ship_cost_modifier: ModifiedValue,
     pub building_cost_modifier: ModifiedValue,
@@ -372,7 +378,8 @@ pub fn tick_timed_effects(
 }
 
 /// Tracks cooldowns for resource alerts to prevent spamming the same alert every tick.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct AlertCooldowns {
     cooldowns: std::collections::HashMap<(String, Entity), i64>,
 }

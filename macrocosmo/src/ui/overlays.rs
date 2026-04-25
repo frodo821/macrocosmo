@@ -13,7 +13,8 @@ use crate::technology::{
 use super::ResearchPanelOpen;
 
 /// Resource tracking the ship designer overlay state.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct ShipDesignerState {
     pub open: bool,
     pub selected_hull: Option<String>,

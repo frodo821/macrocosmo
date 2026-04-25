@@ -21,7 +21,8 @@ use bevy::prelude::*;
 /// as the system-level Defense Fleet created by an Infrastructure Core
 /// deploy. Downstream systems (#220) can query for this to automatically
 /// assign newly-built defense platforms to the correct fleet.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
 pub struct DefenseFleet {
     /// The star system entity this Defense Fleet is anchored to.
     pub system: Entity,

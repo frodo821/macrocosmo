@@ -12,7 +12,8 @@ use super::{Buildings, Colony, LastProductionTick, ResourceStockpile};
 /// Colony-level maintenance cost as a ModifiedValue (energy/hexady).
 /// The sync_maintenance_modifiers system pushes building and ship maintenance
 /// as base_add modifiers; tick_maintenance reads final_value().
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct MaintenanceCost {
     pub energy_per_hexadies: ModifiedValue,
 }

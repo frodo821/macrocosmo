@@ -18,7 +18,7 @@ use crate::scripting::ScriptEngine;
 use crate::time_system::{GameClock, GameSpeed};
 
 /// Severity / behavior class for a banner notification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum NotificationPriority {
     /// Routine information. Goes to the event log only — never produces a
     /// banner.
@@ -68,7 +68,7 @@ impl NotificationPriority {
 }
 
 /// One in-flight banner notification.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct Notification {
     pub id: u64,
     pub title: String,
@@ -88,7 +88,8 @@ pub struct Notification {
 ///
 /// Newest notifications are at the *front* of the queue (index 0) so the UI
 /// renders them at the top of the stack.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct NotificationQueue {
     pub items: Vec<Notification>,
     next_id: u64,

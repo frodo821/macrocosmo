@@ -18,7 +18,7 @@ use crate::ship_design::{
 use super::tree::{TechId, TechTree};
 
 /// What category of game element a tech unlocks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum UnlockKind {
     Module,
     Building,
@@ -32,7 +32,7 @@ pub enum UnlockKind {
 }
 
 /// A single thing unlocked by a technology.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct UnlockEntry {
     pub kind: UnlockKind,
     pub id: String,
@@ -43,7 +43,8 @@ pub struct UnlockEntry {
 ///
 /// Built once at startup by `build_tech_unlock_index` after all registries
 /// (modules, buildings, structures, technologies) have been loaded.
-#[derive(Resource, Default, Debug, Clone)]
+#[derive(Resource, Default, Debug, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct TechUnlockIndex {
     pub unlocks: HashMap<String, Vec<UnlockEntry>>,
 }

@@ -70,6 +70,11 @@ pub struct PlannedRoute {
 }
 
 /// Component attached to a ship while its route is being computed asynchronously.
+///
+/// **Reflect skipped**: holds a `bevy::tasks::Task` handle which is
+/// neither `Reflect` nor `Default`-constructible (an in-flight async
+/// task has no natural default). The component's lifetime is bounded
+/// by `poll_pending_routes`, so missing it from BRP is acceptable.
 #[derive(Component)]
 pub struct PendingRoute {
     pub task: Task<Option<PlannedRoute>>,
@@ -85,7 +90,8 @@ pub struct PendingRoute {
 }
 
 /// Resource: count of pending route computations. When > 0, game time is paused.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct RouteCalculationsPending {
     pub count: u32,
 }

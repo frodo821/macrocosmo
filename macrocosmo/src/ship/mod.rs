@@ -56,7 +56,8 @@ use crate::ship_design::ShipDesignRegistry;
 
 // --- #34: Command queue ---
 
-#[derive(Component, Default, Clone)]
+#[derive(Component, Default, Clone, Reflect)]
+#[reflect(Component)]
 pub struct CommandQueue {
     pub commands: Vec<QueuedCommand>,
     /// Predicted position after all queued commands execute
@@ -125,7 +126,7 @@ impl CommandQueue {
 /// constructs them yet. The enum is exhaustively matched by the scout
 /// pipeline regardless, so the constructors themselves are load-bearing.
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum ReportMode {
     /// If an FTL Comm Relay covers both the scout position and the player
     /// empire at observation-completion time, the report is delivered
@@ -137,7 +138,7 @@ pub enum ReportMode {
     Return,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum QueuedCommand {
     MoveTo {
         system: Entity,
@@ -473,7 +474,8 @@ impl Plugin for ShipPlugin {
 // --- #57: Rules of Engagement ---
 
 /// Controls automatic combat behavior for a ship.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+#[reflect(Component)]
 pub enum RulesOfEngagement {
     /// Always attack hostiles in system
     Aggressive,
@@ -511,7 +513,8 @@ impl RulesOfEngagement {
 // --- #33: Pending ship command system ---
 
 /// A command queued for a remote ship, waiting for light-speed communication delay.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct PendingShipCommand {
     pub ship: Entity,
     pub command: ShipCommand,
@@ -519,7 +522,7 @@ pub struct PendingShipCommand {
 }
 
 /// The kinds of commands that can be issued to a ship.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum ShipCommand {
     MoveTo {
         destination: Entity,
@@ -536,14 +539,15 @@ pub enum ShipCommand {
 }
 
 /// A module equipped in a specific slot on a ship.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct EquippedModule {
     pub slot_type: String,
     pub module_id: String,
 }
 
 /// Per-ship modifier scopes, driven by equipped modules and tech effects.
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct ShipModifiers {
     pub speed: ScopedModifiers,
     pub ftl_range: ScopedModifiers,
@@ -561,7 +565,8 @@ pub struct ShipModifiers {
 }
 
 /// Cached computed stats for a ship, derived from ShipModifiers.
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct ShipStats {
     pub speed: CachedValue,
     pub ftl_range: CachedValue,
@@ -576,7 +581,8 @@ pub struct ShipStats {
 
 /// 3-layer hit point model: shield → armor → hull.
 /// Shield regenerates over time; armor/hull require docking at a Port.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct ShipHitpoints {
     pub hull: f64,
     pub hull_max: f64,
@@ -587,7 +593,7 @@ pub struct ShipHitpoints {
     pub shield_regen: f64, // per hexadies
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bevy::reflect::Reflect)]
 pub enum Owner {
     Empire(Entity),
     Neutral,
@@ -600,7 +606,8 @@ impl Owner {
     }
 }
 
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Ship {
     pub name: String,
     pub design_id: String,
@@ -653,21 +660,25 @@ impl Ship {
 /// - filter = "self" | "*" | "<hull_id>"
 /// - target = the modifier target string (e.g. "ship.speed")
 /// - modifier = the Modifier to apply
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct HarbourModifiers(pub Vec<(String, String, crate::modifier::Modifier)>);
 
 /// #384: Transient marker on ships undocked for combat, tracking their original harbour.
 /// After combat resolves with no hostiles remaining, the ship attempts to re-dock.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
 pub struct UndockedForCombat(pub Entity);
 
 /// Orthogonal marker: ship is docked at a specific entity (port, station, etc.).
 /// Added/removed independently of `ShipState`. Not yet used by game logic —
 /// introduced in #383 for future #372-B work.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
 pub struct DockedAt(pub Entity);
 
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub enum ShipState {
     InSystem {
         system: Entity,
@@ -732,7 +743,7 @@ pub enum ShipState {
 }
 
 /// #223: An item in a ship's cargo hold other than bulk resources.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum CargoItem {
     /// A shipyard-built deliverable awaiting deployment.
     Deliverable { definition_id: String },
@@ -748,7 +759,8 @@ impl CargoItem {
 }
 
 /// Cargo hold for Courier ships (and potentially others).
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct Cargo {
     pub minerals: Amt,
     pub energy: Amt,
@@ -811,7 +823,8 @@ impl Cargo {
 /// #103: Survey data carried by an FTL-capable ship back to the player's system.
 /// Stored on the ship when survey completes until the ship docks at the player's
 /// StationedAt system, at which point the results are published.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct SurveyData {
     /// The system that was surveyed.
     pub target_system: Entity,

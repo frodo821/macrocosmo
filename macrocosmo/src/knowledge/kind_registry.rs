@@ -79,7 +79,7 @@ impl std::error::Error for KindRegistryError {}
 /// `<namespace>:<name>` is the **recommended** form but not enforced at parse
 /// time — plan §0.5 9.6 says namespace-less ids are `warn only`. The warn
 /// path is emitted by [`parse_id_with_warn`] for the Lua load callsite.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, bevy::reflect::Reflect)]
 pub struct KnowledgeKindId {
     raw: String,
 }
@@ -188,7 +188,7 @@ pub fn split_event_id(raw: &str) -> Option<ParsedEventId<'_>> {
 /// Loose v1 payload schema: top-level field names mapped to type tags.
 /// Nested tables as schema values are rejected by [`parse_payload_schema`]
 /// (nested schemas are v2).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, bevy::reflect::Reflect)]
 pub struct PayloadSchema {
     pub fields: HashMap<String, PayloadFieldType>,
 }
@@ -201,7 +201,7 @@ impl PayloadSchema {
 
 /// Type tag for a payload field. Matches the Lua-facing strings `"number"`,
 /// `"string"`, `"boolean"`, `"table"`, `"entity"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bevy::reflect::Reflect)]
 pub enum PayloadFieldType {
     Number,
     String,
@@ -235,14 +235,14 @@ impl PayloadFieldType {
 }
 
 /// Whether a kind was defined by Rust (`core:*`) or by Lua (`define_knowledge`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum KindOrigin {
     Core,
     Lua,
 }
 
 /// A single knowledge kind definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct KnowledgeKindDef {
     pub id: KnowledgeKindId,
     pub payload_schema: PayloadSchema,
@@ -250,7 +250,8 @@ pub struct KnowledgeKindDef {
 }
 
 /// Bevy resource keyed by the raw id string (equal to `KnowledgeKindId::as_str`).
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct KindRegistry {
     pub kinds: HashMap<String, KnowledgeKindDef>,
 }

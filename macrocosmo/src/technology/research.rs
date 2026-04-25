@@ -13,7 +13,8 @@ use crate::time_system::GameClock;
 use super::tree::{TechId, TechTree};
 
 /// Current research target and accumulated points.
-#[derive(Resource, Component, Default)]
+#[derive(Resource, Component, Default, Reflect)]
+#[reflect(Component, Resource)]
 pub struct ResearchQueue {
     pub current: Option<TechId>,
     pub accumulated: f64,
@@ -46,17 +47,20 @@ impl ResearchQueue {
 }
 
 /// Global research points pool (accumulated from colonies).
-#[derive(Resource, Component, Default)]
+#[derive(Resource, Component, Default, Reflect)]
+#[reflect(Component, Resource)]
 pub struct ResearchPool {
     pub points: f64,
 }
 
 /// Tracks the last game tick at which research was collected, to compute delta.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct LastResearchTick(pub i64);
 
 /// A research packet in transit from a colony to the capital at light speed.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct PendingResearch {
     pub amount: f64,
     pub arrives_at: i64,
@@ -64,19 +68,22 @@ pub struct PendingResearch {
 
 /// Tracks which technologies a star system "knows about".
 /// Tech effects only apply to colonies in systems that have received the knowledge.
-#[derive(Component, Default, Debug)]
+#[derive(Component, Default, Debug, Reflect)]
+#[reflect(Component)]
 pub struct TechKnowledge {
     pub known_techs: HashSet<TechId>,
 }
 
 /// Techs that were just researched this tick, to be propagated to systems.
-#[derive(Resource, Component, Default)]
+#[derive(Resource, Component, Default, Reflect)]
+#[reflect(Component, Resource)]
 pub struct RecentlyResearched {
     pub techs: Vec<TechId>,
 }
 
 /// A technology propagating from the capital to a target system at light speed.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct PendingKnowledgePropagation {
     pub tech_id: TechId,
     pub target_system: Entity,

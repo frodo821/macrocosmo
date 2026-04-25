@@ -84,7 +84,7 @@ impl ResourceKind {
 /// One sample = tick + value for each tracked resource. Stored as a
 /// tagged struct rather than a HashMap per sample to keep the plot
 /// path allocation-free during `render`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bevy::reflect::Reflect)]
 pub struct ResourceSample {
     pub tick: i64,
     pub minerals: f64,
@@ -107,7 +107,8 @@ impl ResourceSample {
 }
 
 /// Bounded ring buffer of empire-wide resource totals.
-#[derive(Resource, Default, Debug, Clone)]
+#[derive(Resource, Default, Debug, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct ResourceTrendHistory {
     pub samples: VecDeque<ResourceSample>,
     pub last_tick: i64,

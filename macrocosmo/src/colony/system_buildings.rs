@@ -19,7 +19,8 @@ pub const DEFAULT_SYSTEM_BUILDING_SLOTS: usize = 6;
 
 /// System-level buildings capacity on StarSystem entities.
 /// The actual building data lives on station Ship entities via `SlotAssignment`.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct SystemBuildings {
     pub max_slots: usize,
 }
@@ -34,7 +35,8 @@ impl Default for SystemBuildings {
 
 /// Slot assignment for station ships that occupy a system building slot.
 /// The `usize` is the slot number within the system's `SystemBuildings.max_slots`.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct SlotAssignment(pub usize);
 
 // ---------------------------------------------------------------------------
@@ -332,7 +334,8 @@ pub fn ship_in_slot(
 // ---------------------------------------------------------------------------
 
 /// Build queue for system-level buildings, placed on StarSystem entities.
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct SystemBuildingQueue {
     pub queue: Vec<BuildingOrder>,
     pub demolition_queue: Vec<DemolitionOrder>,

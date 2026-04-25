@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 /// How to merge multiple items of the same kind within a single agreement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum MergeStrategy {
     /// Keep all items as separate line-items (e.g. territory cessions).
     List,
@@ -38,7 +38,7 @@ impl MergeStrategy {
 }
 
 /// Definition of a negotiation item kind loaded from Lua.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct NegotiationItemKindDefinition {
     /// Unique string id (e.g. `"resources"`, `"territory"`).
     pub id: String,
@@ -53,7 +53,8 @@ pub struct NegotiationItemKindDefinition {
 }
 
 /// Registry of all negotiation item kinds, populated at startup from Lua.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct NegotiationItemKindRegistry {
     pub kinds: HashMap<String, NegotiationItemKindDefinition>,
 }

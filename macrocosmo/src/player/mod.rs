@@ -82,46 +82,54 @@ pub fn spawn_player_empire(mut commands: Commands) {
 }
 
 /// The physical avatar of an empire's leader. Every empire gets one.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Ruler {
     pub name: String,
     pub empire: Entity,
 }
 
 /// Forward-reference on empire entity pointing to its Ruler entity.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct EmpireRuler(pub Entity);
 
 /// Marker: this Ruler is the human-controlled player.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Player;
 
 /// Player is stationed on a planet in a star system
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct StationedAt {
     pub system: Entity,
 }
 
 /// Player is aboard a ship (moving or stationary)
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct AboardShip {
     pub ship: Entity,
 }
 
 /// An empire entity represents a faction/civilization.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Empire {
     pub name: String,
 }
 
 /// Marker component for the player's empire entity.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct PlayerEmpire;
 
 /// The star system used as the light-speed reference point for an empire's
 /// knowledge propagation. For the player empire this tracks `StationedAt`;
 /// for NPC empires it is set to the capital system at spawn.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct EmpireViewerSystem(pub Entity);
 
 /// Faction identity component. Defines which faction an empire belongs to.
@@ -131,7 +139,8 @@ pub struct EmpireViewerSystem(pub Entity);
 /// from [`crate::scripting::faction_api::FactionDefinition`] at spawn time.
 /// Runtime code reads these fields directly instead of looking up the
 /// faction type registry.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct Faction {
     pub id: String,
     pub name: String,

@@ -18,7 +18,8 @@ pub const MONTHS_PER_YEAR: i64 = 12;
 pub const HEXADIES_PER_YEAR: i64 = HEXADIES_PER_MONTH * MONTHS_PER_YEAR; // 60
 
 /// Game clock based on integer hexadies (6-day units)
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct GameClock {
     /// Total elapsed hexadies
     pub elapsed: i64,
@@ -54,7 +55,8 @@ impl GameClock {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct GameSpeed {
     /// Hexadies per real second. 0 = paused.
     pub hexadies_per_second: f64,

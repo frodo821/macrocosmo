@@ -4,7 +4,8 @@ use bevy_egui::egui;
 use crate::scripting::log_buffer::{LogBuffer, LogSource};
 
 /// Persistent state for the in-game Lua console overlay.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ConsoleState {
     /// Whether the console window is visible.
     pub visible: bool,

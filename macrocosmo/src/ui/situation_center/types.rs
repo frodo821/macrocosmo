@@ -43,7 +43,7 @@ pub type NotificationId = u64;
 /// `crate::notifications::NotificationPriority` which drives the banner
 /// stack (Low/Medium/High with TTL / pause semantics). ESC Notifications
 /// are post-hoc, ack-gated, and have no TTL, so the shape differs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, bevy::reflect::Reflect)]
 pub enum Severity {
     #[default]
     Info,
@@ -88,7 +88,7 @@ pub enum EventSource {
 
 /// Origin entity for a [`Notification`]. See [`EventSource`] for rationale
 /// behind the twin types.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, bevy::reflect::Reflect)]
 pub enum NotificationSource {
     #[default]
     None,
@@ -142,7 +142,7 @@ impl Event {
 /// Wiring (queue + push API + light-speed bridge) is #345 scope. ESC-1
 /// only defines the shape so the `NotificationsTab` placeholder compiles
 /// and tabs can reason about the final structure.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct Notification {
     pub id: NotificationId,
     pub source: NotificationSource,

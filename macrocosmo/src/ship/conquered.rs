@@ -33,7 +33,8 @@ use super::{CoreShip, Owner, Ship, ShipHitpoints, ShipState};
 /// - Hull HP is locked at 1.0 (no further damage)
 /// - Normal ship repair (`tick_ship_repair`) is skipped
 /// - Recovery ticks only when peacetime + attacker fleet absent
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct ConqueredCore {
     /// The faction entity that conquered this Core.
     pub attacker_faction: Entity,

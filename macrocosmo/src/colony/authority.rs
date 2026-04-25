@@ -29,7 +29,8 @@ pub const AUTHORITY_DEFICIT_PENALTY: Amt = Amt::new(0, 500);
 
 /// Configurable authority parameters. Tech effects can push modifiers to
 /// adjust authority production or cost scaling.
-#[derive(Resource, Component)]
+#[derive(Resource, Component, Reflect)]
+#[reflect(Component, Resource)]
 pub struct AuthorityParams {
     /// Authority produced per hexady by the capital colony. Base = 1.0
     pub production: ModifiedValue,
@@ -227,6 +228,7 @@ pub const SOVEREIGNTY_CHANGED_EVENT: &str = "macrocosmo:sovereignty_changed";
 /// so Lua handlers can distinguish initial claims from conquests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Cession, Secession reserved for future #305 / secession mechanics
+#[derive(bevy::reflect::Reflect)]
 pub enum SovereigntyChangeReason {
     /// Enemy Core deployed / conquered existing Core.
     Conquest,
@@ -257,7 +259,7 @@ impl fmt::Display for SovereigntyChangeReason {
 /// event. Built by [`update_sovereignty`] when it detects an owner change,
 /// then stored on [`PendingSovereigntyChanges`] for the cascade system and
 /// eventually forwarded to `EventSystem::fire_event_with_payload`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct SovereigntyChangedContext {
     pub system: Entity,
     pub system_name: String,
@@ -303,7 +305,8 @@ impl EventContext for SovereigntyChangedContext {
 /// Resource that queues sovereignty changes detected by [`update_sovereignty`]
 /// for the downstream [`cascade_sovereignty_changes`] system. Drained each
 /// tick to avoid stale events.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct PendingSovereigntyChanges {
     pub changes: Vec<SovereigntyChangedContext>,
 }

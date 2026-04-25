@@ -119,12 +119,16 @@ impl EventContext for LuaDefinedEventContext {
 /// for backward-compatibility with pre-existing tests that construct
 /// `LuaFunctionRef(42)` literals — those cases never had a real function,
 /// so we map them to a `None` inner key.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct LuaFunctionRef {
     /// Deprecated placeholder id, kept for the `LuaFunctionRef(i64)` tuple
     /// constructor that still appears in tests. Use `key()` to check for a
     /// real Lua function instead.
     pub id: i64,
+    /// `mlua::RegistryKey` is an external (non-`Reflect`) handle, so the
+    /// boxed Lua function is opaque to reflection. The outer ref / the
+    /// debug `id` field are still introspectable.
+    #[reflect(ignore)]
     inner: Option<Arc<mlua::RegistryKey>>,
 }
 
@@ -185,7 +189,7 @@ pub fn time_to_hexadies(years: i64, months: i64, sd: i64) -> i64 {
 }
 
 /// Defines how an event is triggered.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum EventTrigger {
     /// Fired explicitly by fire_event() or on_expire_event.
     Manual,
@@ -207,7 +211,7 @@ pub enum EventTrigger {
 }
 
 /// A scripted event definition loaded from Lua.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct EventDefinition {
     pub id: String,
     pub name: String,
@@ -217,7 +221,7 @@ pub struct EventDefinition {
 }
 
 /// An event that is waiting to fire at a specific time.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct PendingEvent {
     pub event_id: String,
     pub target: Option<Entity>,
@@ -236,18 +240,22 @@ pub struct PendingEvent {
 ///
 /// `EventSystem` is transient (not savebag'd as of #288), so the trait
 /// object does not need `Serialize`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct FiredEvent {
     pub event_id: String,
     pub target: Option<Entity>,
     pub fired_at: i64,
     /// Optional EventContext payload for EventBus dispatch. Cloning a
     /// `FiredEvent` shares the context via `Arc` rather than deep-copying.
+    /// Trait-object payload — opaque to reflection because `dyn
+    /// EventContext` cannot implement `TypePath`.
+    #[reflect(ignore)]
     pub payload: Option<Arc<dyn EventContext>>,
 }
 
 /// Resource holding all event definitions and pending events.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct EventSystem {
     pub definitions: HashMap<String, EventDefinition>,
     pub pending: Vec<PendingEvent>,
@@ -393,7 +401,8 @@ pub const FLEET_SYSTEM_LEFT_EVENT: &str = "macrocosmo:fleet_system_left";
 ///
 /// The `handler_count` field tracks the number of registered handlers for
 /// informational purposes (it is not used for dispatch logic).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct EventBus {
     pub handler_count: usize,
 }

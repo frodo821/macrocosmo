@@ -65,7 +65,8 @@ pub const DETECTION_COOLDOWN_HEXADIES: i64 = 60;
 /// Keys are the target's [`Entity`]. Values are the game-clock hexadies at
 /// which the detection was last recorded. Entries older than
 /// [`DETECTION_COOLDOWN_HEXADIES`] are pruned lazily.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct DetectedHostiles {
     pub entries: HashMap<Entity, i64>,
 }

@@ -54,7 +54,8 @@ pub const SCOUT_MODULE_ID: &str = "scout_module";
 /// Attached to the ship as a component when [`tick_scout_observation`]
 /// finishes its timer. Consumed by [`process_scout_report`] once delivery
 /// conditions are met.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct ScoutReport {
     /// The system that was observed.
     pub target_system: Entity,

@@ -24,7 +24,8 @@ use super::research::RecentlyResearched;
 ///
 /// The append-only semantics make late-spawning colonies idempotently pick
 /// up already-researched tech effects on their first tick.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct PendingColonyTechModifiers {
     pub entries: Vec<(TechId, ParsedModifier)>,
 }
@@ -46,7 +47,8 @@ impl PendingColonyTechModifiers {
 }
 
 /// Stores the effects applied by each researched technology, for UI display.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct TechEffectsLog {
     pub effects: HashMap<TechId, Vec<DescriptiveEffect>>,
 }
@@ -60,7 +62,8 @@ pub struct TechEffectsLog {
 ///
 /// This is distinct from `TechEffectsLog`, which records effects only after
 /// a tech has actually been researched.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct TechEffectsPreview {
     pub effects: HashMap<TechId, Vec<DescriptiveEffect>>,
 }

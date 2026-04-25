@@ -1,15 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
+use bevy::ecs::reflect::{ReflectComponent, ReflectResource};
+use bevy::reflect::Reflect;
+
 use crate::amount::Amt;
 
 /// Unique identifier for a technology.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, bevy::reflect::Reflect)]
 pub struct TechId(pub String);
 
 /// A tech branch definition loaded from Lua via `define_tech_branch { ... }`.
 /// Branches group related technologies for UI organisation. Their identity is
 /// purely string-based; the engine never special-cases individual branch IDs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct TechBranchDefinition {
     /// Stable string identifier (e.g. "social", "industrial").
     pub id: String,
@@ -22,7 +25,8 @@ pub struct TechBranchDefinition {
 }
 
 /// Registry of all tech branch definitions, indexed by id.
-#[derive(bevy::prelude::Resource, Default, Debug, Clone)]
+#[derive(bevy::prelude::Resource, Default, Debug, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct TechBranchRegistry {
     pub branches: HashMap<String, TechBranchDefinition>,
     /// Insertion order so the UI presents branches in a stable, script-defined order.
@@ -84,7 +88,7 @@ pub fn default_tech_branches() -> Vec<TechBranchDefinition> {
 
 /// Upfront resource cost to begin researching a technology.
 /// Research points (flow) are tracked separately via `cost_research`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, bevy::reflect::Reflect)]
 pub struct TechCost {
     /// Research points needed to complete (flow cost).
     pub research: Amt,
@@ -106,7 +110,7 @@ impl TechCost {
 }
 
 /// A single technology definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bevy::reflect::Reflect)]
 pub struct Technology {
     pub id: TechId,
     pub name: String,
@@ -122,7 +126,8 @@ pub struct Technology {
 }
 
 /// The complete technology tree, indexed by TechId.
-#[derive(bevy::prelude::Resource, bevy::prelude::Component, Debug, Clone, Default)]
+#[derive(bevy::prelude::Resource, bevy::prelude::Component, Debug, Clone, Default, Reflect)]
+#[reflect(Component, Resource)]
 pub struct TechTree {
     pub technologies: HashMap<TechId, Technology>,
     pub researched: HashSet<TechId>,

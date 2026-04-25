@@ -25,7 +25,7 @@ use crate::amount::Amt;
 /// `CommandRequested` messages and the terminal `CommandExecuted` so
 /// `CommandLog` and (future) #268 relay dedup can match them without string
 /// keys. Monotonic per-game-session.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, bevy::reflect::Reflect)]
 pub struct CommandId(pub u64);
 
 impl CommandId {
@@ -36,7 +36,8 @@ impl CommandId {
 /// zero on a fresh game (implicit via `Default`); persistence of this
 /// counter is intentionally *not* a save-format concern — command ids do
 /// not need to survive save/load (in-flight messages are frame-transient).
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Reflect)]
+#[reflect(Resource)]
 pub struct NextCommandId(pub u64);
 
 impl NextCommandId {

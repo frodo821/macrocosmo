@@ -94,13 +94,15 @@ pub const SCRIPTS_VERSION: &str = "0.1";
 /// save knows which entities are game-owned (vs. engine-/editor-owned).
 /// Phase A always assigns [`SaveId`] as well; this marker is reserved for
 /// selective despawn on load.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
 pub struct SaveableMarker;
 
 /// Stable per-entity save identifier. Assigned by the save pipeline if not
 /// already present on the entity; surfaced on load so a subsequent save keeps
 /// ids stable (needed to diff saves and to preserve entity identity in logs).
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Component)]
 pub struct SaveId(pub u64);
 
 // ---------------------------------------------------------------------------

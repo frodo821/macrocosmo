@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 
-use bevy::prelude::Resource;
+use bevy::prelude::{ReflectResource, Resource};
+use bevy::reflect::Reflect;
 
 use super::tab::TabId;
 use super::types::Severity;
@@ -17,7 +18,7 @@ use super::types::Severity;
 ///
 /// `Default` is intentionally trivial — new tabs don't have to opt in to
 /// every field. Fields are `pub` so tab renderers can mutate directly.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct TabState {
     /// Free-form filter string (e.g. "minerals" / "Corvette").
     pub filter: String,
@@ -36,7 +37,8 @@ pub struct TabState {
 /// 1. panel open / closed,
 /// 2. which tab is active,
 /// 3. per-tab scratch state keyed by `TabId`.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Reflect)]
+#[reflect(Resource)]
 pub struct SituationCenterState {
     /// Whether the panel is visible this frame.
     pub open: bool,

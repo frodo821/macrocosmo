@@ -25,7 +25,8 @@ use bevy::prelude::*;
 use crate::time_system::GameSpeed;
 
 /// Global observer-mode resource. `enabled = false` in normal play.
-#[derive(Resource, Debug, Clone, Default)]
+#[derive(Resource, Debug, Clone, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ObserverMode {
     pub enabled: bool,
     /// Optional deterministic seed (copied from `RngSeed` for convenience).
@@ -42,7 +43,8 @@ pub struct ObserverMode {
 /// Current faction the observer is inspecting. One-way mirrored to
 /// `AiDebugUi::governor::GovernorState::faction` so the F10 panel follows
 /// the top-bar selector.
-#[derive(Resource, Debug, Clone, Default)]
+#[derive(Resource, Debug, Clone, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ObserverView {
     /// The `Faction` entity being focused. `None` until the selector has
     /// been initialised from the spawned empire list.
@@ -51,7 +53,8 @@ pub struct ObserverView {
 
 /// Global RNG seed for galaxy generation. Populated from the CLI whether
 /// or not observer mode is enabled so the flag is useful for bug repros.
-#[derive(Resource, Debug, Clone, Copy, Default)]
+#[derive(Resource, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Resource)]
 pub struct RngSeed(pub Option<u64>);
 
 /// Run-condition: observer mode is active.

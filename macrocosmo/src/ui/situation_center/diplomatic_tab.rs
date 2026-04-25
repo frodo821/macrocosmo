@@ -86,14 +86,15 @@ impl OngoingTab for DiplomaticStandingTab {
 
 /// History snapshot: previous-tick standing + relation state per
 /// `(from, to)` key. Populated by `record_diplomatic_history`.
-#[derive(Resource, Default, Debug, Clone)]
+#[derive(Resource, Default, Debug, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct DiplomaticStandingHistory {
     pub entries: HashMap<(Entity, Entity), DiplomaticSnapshot>,
     /// Tick at which the history was last refreshed.
     pub last_tick: i64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bevy::reflect::Reflect)]
 pub struct DiplomaticSnapshot {
     pub standing: f64,
     pub state: RelationState,

@@ -60,7 +60,8 @@ impl Plugin for GalaxyPlugin {
 
 /// Galaxy configuration resource, inserted by generate_galaxy so other systems
 /// (e.g. visualization) can reference galaxy parameters.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct GalaxyConfig {
     pub radius: f64,
     pub num_systems: usize,
@@ -68,11 +69,13 @@ pub struct GalaxyConfig {
 
 /// Marks which StarSystem entity is this empire's home system.
 /// Attached to the Empire entity, not the StarSystem.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct HomeSystem(pub Entity);
 
 /// A star system in the galaxy
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct StarSystem {
     pub name: String,
     /// Whether this system has been surveyed (precise data available)
@@ -84,7 +87,8 @@ pub struct StarSystem {
 }
 
 /// A planet orbiting a star system.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Planet {
     pub name: String,
     /// The parent star system entity.
@@ -113,7 +117,8 @@ pub fn roman_numeral(n: usize) -> &'static str {
 }
 
 /// Physical and economic attributes of a star system.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct SystemAttributes {
     /// Habitability score: 0.0 (uninhabitable) to 1.0 (ideal).
     pub habitability: f64,
@@ -204,7 +209,8 @@ pub fn is_colonizable(habitability: f64) -> bool {
 }
 
 /// Sovereignty status of a star system
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct Sovereignty {
     pub owner: Option<Owner>,
     pub control_score: f64,
@@ -222,12 +228,14 @@ pub struct Sovereignty {
 /// Component declaring which star system this entity occupies. Attached to
 /// hostile entities (space_creature / ancient_defense) so the visibility /
 /// combat / knowledge layers can key their per-system maps.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct AtSystem(pub Entity);
 
 /// Hitpoints for a hostile entity. Separate from [`crate::ship::ShipHitpoints`]
 /// which applies to player ships.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct HostileHitpoints {
     pub hp: f64,
     pub max_hp: f64,
@@ -237,7 +245,8 @@ pub struct HostileHitpoints {
 /// `FactionTypeDefinition.strength` scaled by an environmental modifier
 /// at galaxy generation time (distance-from-center). `evasion` comes
 /// straight from the faction type definition.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct HostileStats {
     pub strength: f64,
     pub evasion: f64,
@@ -247,24 +256,27 @@ pub struct HostileStats {
 /// `FactionOwner`-bearing entities (ships, structures). Hostile-side queries
 /// use `With<Hostile>` to stay disjoint from ship-side queries and avoid
 /// Bevy B0001 conflicts.
-#[derive(Component, Default, Clone, Copy, Debug)]
+#[derive(Component, Default, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
 pub struct Hostile;
 
 /// Marker for systems that have port facilities
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct PortFacility {
     /// The other star system entity this port connects to
     pub partner: Entity,
 }
 
 /// Persistent anomalies/points of interest discovered during surveys.
-#[derive(Component, Default, Clone, Debug)]
+#[derive(Component, Default, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct Anomalies {
     pub discoveries: Vec<Anomaly>,
 }
 
 /// A single anomaly discovered during a survey.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct Anomaly {
     pub id: String,
     pub name: String,
@@ -275,7 +287,8 @@ pub struct Anomaly {
 /// Modifiers that apply to a star system.
 /// Ship combat stats, plus system-level building capabilities expressed as
 /// modifiers (shipyard capacity, port effects).
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct SystemModifiers {
     pub ship_speed: ScopedModifiers,
     pub ship_attack: ScopedModifiers,
@@ -308,7 +321,8 @@ impl Default for SystemModifiers {
 /// Retained for inspection and for targets that are not yet wired into
 /// typed scopes (e.g. "system.research_bonus"). Targets with known typed
 /// scopes are additionally applied to `SystemModifiers` etc.
-#[derive(Component, Default, Clone, Debug)]
+#[derive(Component, Default, Clone, Debug, Reflect)]
+#[reflect(Component)]
 pub struct StarTypeModifierSet {
     pub entries: Vec<crate::scripting::galaxy_api::StarTypeModifier>,
 }

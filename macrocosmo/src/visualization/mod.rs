@@ -4,7 +4,7 @@ mod stars;
 pub mod territory;
 
 pub use camera::camera_controls;
-pub use stars::{cleanup_star_visuals, spawn_star_visuals};
+pub use stars::{cleanup_star_visuals, register_star_types, spawn_star_visuals};
 
 use std::time::Instant;
 
@@ -20,7 +20,8 @@ use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
 use crate::time_system::GameClock;
 
 /// Context menu shown when left-clicking a star while a ship is selected.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct ContextMenu {
     pub open: bool,
     pub position: [f32; 2],
@@ -34,7 +35,7 @@ pub struct ContextMenu {
 /// a `QueuedCommand::DeployDeliverable` onto the ship's CommandQueue. Clicks
 /// that land close to a star snap to the star's coordinates; clicks on empty
 /// space deploy at the cursor's world position (z = 0). Escape cancels.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bevy::reflect::Reflect)]
 pub struct DeployPending {
     pub ship: Entity,
     pub item_index: usize,
@@ -80,7 +81,8 @@ pub fn resolve_deploy_target(
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct DeployMode(pub Option<DeployPending>);
 
 pub struct VisualizationPlugin;
@@ -131,16 +133,19 @@ impl Plugin for VisualizationPlugin {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct SelectedSystem(pub Option<Entity>);
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct SelectedShip(pub Option<Entity>);
 
 /// #407: Multi-ship selection resource. Maintains an ordered list of selected
 /// ship entities. `SelectedShip` is kept in sync with `primary()` via
 /// `sync_selected_ship_from_ships`.
-#[derive(Resource, Default, Debug, Clone)]
+#[derive(Resource, Default, Debug, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct SelectedShips(pub Vec<Entity>);
 
 impl SelectedShips {
@@ -186,11 +191,13 @@ impl SelectedShips {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct SelectedPlanet(pub Option<Entity>);
 
 /// Tracks which systems are expanded in the outline panel.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct OutlineExpandedSystems(pub std::collections::HashSet<Entity>);
 
 impl Default for OutlineExpandedSystems {
@@ -200,7 +207,7 @@ impl Default for OutlineExpandedSystems {
 }
 
 /// Distinguishes candidate types in `CycleSelection` for proper selection dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bevy::reflect::Reflect)]
 pub enum CycleKind {
     Ship,
     StarSystem,
@@ -219,7 +226,7 @@ impl CycleKind {
 }
 
 /// A selectable entity near the click position.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bevy::reflect::Reflect)]
 pub struct CycleCandidate {
     pub entity: Entity,
     pub kind: CycleKind,
@@ -231,7 +238,8 @@ pub struct CycleCandidate {
 /// On single click, the nearest/highest-priority candidate is selected (normal
 /// behavior). On double-click (same position within `DOUBLE_CLICK_TIME` and
 /// `DOUBLE_CLICK_RADIUS_PX`), the next candidate in the cycle is selected.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct CycleSelection {
     /// All candidates near the last click position, sorted by cycle order.
     pub candidates: Vec<CycleCandidate>,
@@ -259,14 +267,16 @@ const DOUBLE_CLICK_TIME: f32 = 0.4;
 /// Maximum pixel distance between clicks for double-click detection.
 const DOUBLE_CLICK_RADIUS_PX: f32 = 5.0;
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct GalaxyView {
     pub scale: f32,
 }
 
 /// Resource set each frame by the UI system to indicate egui is consuming pointer input.
 /// Camera controls check this to avoid scroll-zoom when the pointer is over a UI panel.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
 pub struct EguiWantsPointer(pub bool);
 
 /// #368: Bundled selection state to keep `click_select_system` under Bevy's

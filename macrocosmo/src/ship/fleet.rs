@@ -34,7 +34,8 @@ use super::Ship;
 /// the sibling [`FleetMembers`] component to keep this struct trivially
 /// cloneable and to let downstream γ-2 work (FleetState) layer cleanly on
 /// top of the marker.
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct Fleet {
     /// Human-readable label. For auto-created single-ship fleets this
     /// defaults to the ship's name; the player can rename in γ-6 UI.
@@ -46,7 +47,8 @@ pub struct Fleet {
 
 /// The list of ship entities that belong to a [`Fleet`]. Order is not
 /// semantically meaningful in γ-1 (γ-6 may re-use it for formation rank).
-#[derive(Component, Debug, Clone, Default)]
+#[derive(Component, Debug, Clone, Default, Reflect)]
+#[reflect(Component)]
 pub struct FleetMembers(pub Vec<Entity>);
 
 impl FleetMembers {
