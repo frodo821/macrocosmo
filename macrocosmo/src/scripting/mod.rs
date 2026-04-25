@@ -27,6 +27,7 @@ pub mod region_api;
 pub mod ship_design_api;
 pub mod species_api;
 pub mod structure_api;
+pub mod victory_api;
 
 // Re-exports for backward compatibility
 pub use engine::{
