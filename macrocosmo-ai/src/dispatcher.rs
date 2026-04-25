@@ -60,23 +60,54 @@ pub trait IntentDispatcher {
         issued_at: Tick,
         from: FactionId,
     ) -> DispatchResult;
+
+    /// Pre-flight estimate of dispatch delay for `(spec, from)` without
+    /// committing any resources. Used by AI agents to decide whether
+    /// the intent's `expires_at_offset` window can accommodate the
+    /// delivery time, so they can either widen the window or fall
+    /// back to an alternative pursuit.
+    ///
+    /// Returns `None` when the dispatcher cannot estimate (== "ask
+    /// at dispatch time"). Default impl returns `None` for backward
+    /// compatibility — concrete dispatchers override.
+    fn estimate_delay(&self, _spec: &IntentSpec, _from: FactionId) -> Option<Tick> {
+        None
+    }
 }
 
-/// Default dispatcher: stamps a fixed scalar delay and always returns
-/// `Sent`. Enough for abstract scenarios where there is no physical
-/// geography.
+/// Default dispatcher: stamps a fixed scalar delay. Always returns
+/// `Sent` unless `drop_when_expiry_exceeded` is set (then returns
+/// `Dropped` for intents whose `expires_at_offset` is too short to
+/// accommodate the delay).
+///
+/// Useful both for abstract scenarios and as a building block in
+/// game-side dispatchers that want to reuse the expiry comparison.
 #[derive(Debug, Clone)]
 pub struct FixedDelayDispatcher {
     pub delay: Tick,
+    /// When `true`, intents whose `expires_at_offset < delay` are
+    /// dropped pre-flight ("delivery would arrive after expiry =
+    /// no point sending"). The drop's `reason` carries both numbers
+    /// so AI agents can adapt. Default `false` keeps existing
+    /// behavior (always Sent).
+    pub drop_when_expiry_exceeded: bool,
 }
 
 impl FixedDelayDispatcher {
     pub fn new(delay: Tick) -> Self {
-        Self { delay }
+        Self {
+            delay,
+            drop_when_expiry_exceeded: false,
+        }
     }
 
     pub fn zero_delay() -> Self {
-        Self { delay: 0 }
+        Self::new(0)
+    }
+
+    pub fn with_expiry_check(mut self, on: bool) -> Self {
+        self.drop_when_expiry_exceeded = on;
+        self
     }
 }
 
@@ -88,6 +119,18 @@ impl IntentDispatcher for FixedDelayDispatcher {
         issued_at: Tick,
         _from: FactionId,
     ) -> DispatchResult {
+        if self.drop_when_expiry_exceeded {
+            if let Some(expiry_offset) = spec.expires_at_offset {
+                if self.delay > expiry_offset {
+                    return DispatchResult::Dropped {
+                        reason: Arc::from(format!(
+                            "estimated delay {} > expiry offset {} (futile)",
+                            self.delay, expiry_offset
+                        )),
+                    };
+                }
+            }
+        }
         let arrives_at = issued_at + self.delay;
         let expires_at = spec.expires_at_offset.map(|o| issued_at + o);
         DispatchResult::Sent(Intent {
@@ -97,6 +140,10 @@ impl IntentDispatcher for FixedDelayDispatcher {
             arrives_at,
             expires_at,
         })
+    }
+
+    fn estimate_delay(&self, _spec: &IntentSpec, _from: FactionId) -> Option<Tick> {
+        Some(self.delay)
     }
 }
 

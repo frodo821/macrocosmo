@@ -64,6 +64,24 @@ pub struct LongTermDefaultConfig {
     /// Only affects `prerequisites` — `win` targets are always emitted
     /// strictly when unsatisfied (no preemption on the win side).
     pub safety_margin: f64,
+    /// Default validity window (relative offset from `issued_at`)
+    /// stamped onto every emitted intent's `expires_at_offset`.
+    /// Dispatchers that compare `estimate_delay()` against expiry can
+    /// drop intents whose window the carrier cannot meet — see
+    /// `FixedDelayDispatcher.drop_when_expiry_exceeded`.
+    ///
+    /// `None` (default) means "no expiry" (intent stays valid until
+    /// stale_threshold or hard expiry from supersedes). Setting this
+    /// is the easiest way to opt into adaptive retry / fallback.
+    pub default_validity_window: Option<Tick>,
+    /// On retry after a drop, multiply the previous `expires_at_offset`
+    /// by this factor. Default `2.0` (doubles each retry).
+    pub retry_window_extension: f64,
+    /// After this many drops for the same `(kind, metric)` pair, the
+    /// long agent **stops emitting** that pursuit and falls back to
+    /// the remaining pursuits. Default `2` — i.e., retry once with
+    /// extended window, then surrender.
+    pub max_retries_before_fallback: usize,
 }
 
 impl Default for LongTermDefaultConfig {
@@ -78,6 +96,9 @@ impl Default for LongTermDefaultConfig {
             pursue_kind: IntentKindId::from("pursue_metric"),
             preserve_kind: IntentKindId::from("preserve_metric"),
             safety_margin: 0.0,
+            default_validity_window: None,
+            retry_window_extension: 2.0,
+            max_retries_before_fallback: 2,
         }
     }
 }
@@ -99,6 +120,14 @@ pub struct ObjectiveDrivenLongTerm {
     /// via [`ObjectiveDrivenLongTerm::record_minted`] when the
     /// dispatcher succeeds — abstract scenarios can ignore this.
     pub last_id_by_key: AHashMap<Arc<str>, IntentId>,
+    /// Drop counter per `(kind, metric)` key. Each drop observed
+    /// via `LongTermInput.recent_drops` increments the counter for
+    /// that key. Reset is implicit — currently the agent never
+    /// resets, it just stops emitting once the cap is reached.
+    /// `record_minted` *could* reset on success but that's not
+    /// modeled yet (would re-introduce flapping in cyclical drop
+    /// patterns).
+    pub drop_counts: AHashMap<Arc<str>, usize>,
 }
 
 impl ObjectiveDrivenLongTerm {
@@ -106,6 +135,7 @@ impl ObjectiveDrivenLongTerm {
         Self {
             config: LongTermDefaultConfig::default(),
             last_id_by_key: AHashMap::new(),
+            drop_counts: AHashMap::new(),
         }
     }
 
@@ -167,11 +197,30 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
             return LongTermOutput::default();
         }
 
+        // Ingest recent drops — bump per-(kind, metric) drop counter so
+        // subsequent emits for that key extend the validity window or
+        // fall back. `metric_hint` is the metric encoded by our own
+        // emitter (`metric:<name>` param key); when missing, the drop
+        // is bucketed under the kind alone.
+        for d in input.recent_drops {
+            let metric_str = d
+                .metric_hint
+                .as_ref()
+                .map(|s| s.as_ref())
+                .unwrap_or("");
+            let k = key(d.spec_kind.as_str(), metric_str);
+            *self.drop_counts.entry(k).or_insert(0) += 1;
+        }
+
         let mut intents = Vec::new();
         let mut win_targets = Vec::new();
         collect_metric_targets(&input.victory.win, &mut win_targets);
         let mut prereq_targets = Vec::new();
         collect_metric_targets(&input.victory.prerequisites, &mut prereq_targets);
+
+        let default_window = self.config.default_validity_window;
+        let extension = self.config.retry_window_extension.max(1.0);
+        let max_retries = self.config.max_retries_before_fallback;
 
         let emit = |kind: &IntentKindId,
                     priority: f32,
@@ -181,12 +230,20 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                     direction: bool,
                     current: f64,
                     intents: &mut Vec<IntentSpec>,
-                    last_id_by_key: &AHashMap<Arc<str>, IntentId>| {
+                    last_id_by_key: &AHashMap<Arc<str>, IntentId>,
+                    drop_counts: &AHashMap<Arc<str>, usize>|
+         -> bool {
             let k = key(kind.as_str(), metric.as_str());
+            let drops = drop_counts.get(&k).copied().unwrap_or(0);
+            // Fallback: surrender this leaf after the configured cap.
+            if drops >= max_retries {
+                return false;
+            }
+
             let mut rationale_metrics = AHashMap::new();
             rationale_metrics.insert(metric.clone(), current);
             let note = Arc::from(format!(
-                "{} {metric}: current={current} threshold={threshold} (dir={})",
+                "{} {metric}: current={current} threshold={threshold} (dir={}, retries={drops})",
                 kind.as_str(),
                 if direction { "above" } else { "below" }
             ));
@@ -202,13 +259,20 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                 ValueExpr::Literal(current),
             );
 
+            // Adaptive expiry: extend by `extension^drops` whenever we
+            // have a default window and we've seen prior drops.
+            let expires_at_offset = default_window.map(|w| {
+                let mult = extension.powi(drops as i32);
+                ((w as f64) * mult).round() as Tick
+            });
+
             intents.push(IntentSpec {
                 kind: kind.clone(),
                 params,
                 priority,
                 importance,
                 half_life: None,
-                expires_at_offset: None,
+                expires_at_offset,
                 rationale: RationaleSnapshot {
                     metrics_seen: rationale_metrics,
                     objective_id: None,
@@ -218,6 +282,7 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                 target: IntentTargetRef::from("faction"),
                 delivery_hint: None,
             });
+            true
         };
 
         let target = self.config.target.clone();
@@ -243,6 +308,7 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                 current,
                 &mut intents,
                 &self.last_id_by_key,
+                &self.drop_counts,
             );
         }
 
@@ -275,6 +341,7 @@ impl LongTermAgent for ObjectiveDrivenLongTerm {
                 current,
                 &mut intents,
                 &self.last_id_by_key,
+                &self.drop_counts,
             );
         }
 
@@ -329,6 +396,7 @@ mod tests {
             active_campaigns: &campaigns,
             now: 1,
             params: None,
+            recent_drops: &[],
         };
         let out = agent.tick(input);
         assert_eq!(out.intents.len(), 1);
@@ -352,6 +420,7 @@ mod tests {
             active_campaigns: &campaigns,
             now: 1,
             params: None,
+            recent_drops: &[],
         };
         let out = agent.tick(input);
         assert_eq!(out.intents.len(), 0, "both satisfied, no emit");
@@ -376,6 +445,7 @@ mod tests {
             active_campaigns: &campaigns,
             now: 1,
             params: None,
+            recent_drops: &[],
         };
         let out = agent.tick(input);
         assert_eq!(out.intents.len(), 1);
@@ -396,6 +466,7 @@ mod tests {
             active_campaigns: &campaigns,
             now: 1,
             params: None,
+            recent_drops: &[],
         };
         let out = agent.tick(input);
         assert_eq!(out.intents.len(), 0);
@@ -418,6 +489,7 @@ mod tests {
             active_campaigns: &campaigns,
             now: 1,
             params: None,
+            recent_drops: &[],
         };
         let out_a = agent.tick(input_a);
         assert_eq!(out_a.intents.len(), 1);
@@ -436,6 +508,7 @@ mod tests {
             active_campaigns: &campaigns,
             now: 31,
             params: None,
+            recent_drops: &[],
         };
         let out_b = agent.tick(input_b);
         assert_eq!(out_b.intents.len(), 1);

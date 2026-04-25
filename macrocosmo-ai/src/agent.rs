@@ -41,6 +41,12 @@ pub struct LongTermInput<'a> {
     pub active_campaigns: &'a [&'a Campaign],
     pub now: Tick,
     pub params: Option<&'a (dyn AiParamsExt + 'a)>,
+    /// Drops since last long tick. Lets the long agent see futile
+    /// intent emissions and adapt — extend `expires_at_offset`,
+    /// fall back to a different pursuit, or surrender that leaf.
+    /// Empty by default (orchestrator passes new entries since the
+    /// previous long tick).
+    pub recent_drops: &'a [crate::orchestrator::DropEntry],
 }
 
 #[derive(Debug, Default)]

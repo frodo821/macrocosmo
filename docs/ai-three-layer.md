@@ -458,6 +458,38 @@ pub struct OrchestratorOutput {
 - metric の現状値と目標値の差分で command を emit
 - active Campaign 無し → `Command` 空リスト (= no-op)
 
+## 時間軸のスケーリング
+
+Tick は `i64` なので 18 万 tick 規模 (実 game の 3000 年想定) でも問題ない。
+だが scenario / game でスケールが大きく違う点に注意:
+
+| 用途 | duration | long_cadence | half_life | dispatch delay |
+|---|---|---|---|---|
+| 抽象 scenario (logic test) | 200 〜 1500 | 1 〜 10 | 30 〜 60 | 0 〜 25 |
+| 実 game (3000 年) | 180 000 | 100 〜 300 | 5000 〜 15 000 | 100 〜 2000 |
+
+### スケール不変な params (metric / priority 単位)
+- `LongTermDefaultConfig.safety_margin` (metric units)
+- `MidTermDefaultConfig.prereq_guardrail` (metric units)
+- `MidTermDefaultConfig.stale_threshold` (priority units、ただし decay 経由で
+  間接的に half_life に依存)
+- すべての metric threshold (`VictoryCondition.win` 等)
+
+### スケール依存な params (tick 単位)
+- `OrchestratorConfig.long_cadence`, `mid_cadence`
+- `IntentSpec.half_life`, `expires_at_offset`
+- dispatcher 内部の delay 計算
+- `time_limit`
+
+### tuning の指針
+
+`dispatch_delay : half_life : long_cadence : duration` の **比率** を
+scenario と game で揃える。例えば dispatch_delay が duration の 0.3% 程度に
+収まるよう各 scenario を構成すれば、挙動は scale-invariant に保てる。
+
+将来 `TimeProfile` プリセットを導入する余地はあるが、現時点では各 config を
+直接設定する。
+
 ## Command → Metric フィードバック (scenario harness)
 
 抽象シナリオで "AI が実際に勝てるか" を測れるように、

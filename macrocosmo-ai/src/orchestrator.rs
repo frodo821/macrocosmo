@@ -66,6 +66,17 @@ pub struct PendingSpec {
     pub deferred_since: Tick,
 }
 
+/// Pull a `metric:<name>` key out of an `IntentSpec.params` (the
+/// convention used by `ObjectiveDrivenLongTerm`) to populate
+/// `DropEntry.metric_hint`. Returns the name without the prefix.
+fn extract_metric_hint(spec: &IntentSpec) -> Option<Arc<str>> {
+    spec.params
+        .0
+        .keys()
+        .find(|k| k.starts_with("metric:"))
+        .map(|k| Arc::from(k.strip_prefix("metric:").unwrap_or("").to_string()))
+}
+
 /// Recorded drop — intent could not be delivered at all.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DropEntry {
@@ -73,6 +84,13 @@ pub struct DropEntry {
     pub target: IntentTargetRef,
     pub reason: Arc<str>,
     pub at: Tick,
+    /// Convenience hint: the `metric:<name>` key from `IntentSpec.params`,
+    /// if present (this is the convention used by
+    /// [`crate::long_term_default::ObjectiveDrivenLongTerm`] to encode
+    /// the targeted metric). Lets the long agent track drops per
+    /// `(kind, metric)` rather than only per-kind without re-extracting
+    /// the spec.
+    pub metric_hint: Option<Arc<str>>,
 }
 
 /// Per-tick output surface. The orchestrator owns in-flight state;
@@ -107,6 +125,10 @@ pub struct OrchestratorState {
     pub override_log: Vec<OverrideEntry>,
     pub drop_log: Vec<DropEntry>,
     pub next_intent_seq: u64,
+    /// Index into `drop_log` where the slice handed to the next long
+    /// tick begins. Lets long agents see only the drops that happened
+    /// since their previous tick, without re-presenting old ones.
+    pub drops_seen_by_long_until: usize,
 }
 
 /// Drives one faction's three-layer AI loop.
@@ -231,6 +253,7 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
                         target: p.spec.target.clone(),
                         reason,
                         at: now,
+                        metric_hint: extract_metric_hint(&p.spec),
                     };
                     self.state.drop_log.push(entry.clone());
                     out.drop_events.push(entry);
@@ -272,6 +295,8 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
         out: &mut OrchestratorOutput,
     ) {
         let campaigns: Vec<&Campaign> = self.state.campaigns.iter().collect();
+        let recent_drops: &[DropEntry] =
+            &self.state.drop_log[self.state.drops_seen_by_long_until..];
         let input = LongTermInput {
             bus,
             faction: self.faction,
@@ -280,9 +305,11 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             active_campaigns: &campaigns,
             now,
             params: ai_params,
+            recent_drops,
         };
         let long_out = self.long.tick(input);
         out.long_fired = true;
+        self.state.drops_seen_by_long_until = self.state.drop_log.len();
 
         for spec in long_out.intents {
             let id = self.mint_intent_id();
@@ -304,6 +331,7 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
                         target: spec.target.clone(),
                         reason,
                         at: now,
+                        metric_hint: extract_metric_hint(&spec),
                     };
                     self.state.drop_log.push(entry.clone());
                     out.drop_events.push(entry);
