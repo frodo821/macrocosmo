@@ -19,14 +19,18 @@
 //! the parser evolves.
 
 use bevy::platform::collections::HashMap;
-use bevy::prelude::{Entity, Resource};
+use bevy::prelude::*;
 
 use macrocosmo_ai::{
     CampaignReactiveShort, FactionId, FixedDelayDispatcher, IntentDrivenMidTerm,
-    ObjectiveDrivenLongTerm, Orchestrator, OrchestratorConfig, VictoryCondition,
+    ObjectiveDrivenLongTerm, Orchestrator, OrchestratorConfig, Tick, VictoryCondition,
 };
 
+use crate::ai::convert::to_ai_faction;
+use crate::ai::plugin::AiBusResource;
+use crate::player::{Empire, PlayerEmpire};
 use crate::scripting::victory_api::parse_ai_victory_condition;
+use crate::time_system::GameClock;
 
 /// Per-faction bundle: one three-layer [`Orchestrator`], one
 /// [`FixedDelayDispatcher`], and the faction's [`VictoryCondition`].
@@ -111,13 +115,87 @@ fn build_demo_victory(lua: &mlua::Lua, faction: FactionId) -> mlua::Result<Victo
 /// Bevy `Resource` mapping each faction `Entity` to its
 /// [`FactionOrchestrator`].
 ///
-/// Empty by default; populated by Step 2's plugin-wiring system as
-/// NPC factions are spawned. Lookup is `O(1)` via `bevy::platform`
-/// `HashMap` (the same `HashMap` flavor used elsewhere in the AI
-/// integration layer).
+/// Populated by [`register_demo_orchestrator`] on `OnEnter(NewGame)`.
+/// Lookup is `O(1)` via `bevy::platform` `HashMap` (the same
+/// `HashMap` flavor used elsewhere in the AI integration layer).
 #[derive(Resource, Default)]
 pub struct OrchestratorRegistry {
     pub by_entity: HashMap<Entity, FactionOrchestrator>,
+}
+
+/// One-shot system: arm a single demo orchestrator for the first NPC
+/// empire that exists at `OnEnter(GameState::NewGame)`. Logs once.
+///
+/// This is intentionally minimal: the multi-Mid / multi-Short cluster
+/// shape (one Mid per region, one Short per fleet) belongs to a later
+/// round. Today we run **one** orchestrator per NPC faction, and the
+/// demo only arms the first NPC found so logs stay readable.
+pub fn register_demo_orchestrator(
+    mut registry: ResMut<OrchestratorRegistry>,
+    npc_empires: Query<Entity, (With<Empire>, Without<PlayerEmpire>)>,
+) {
+    let Some(entity) = npc_empires.iter().next() else {
+        info!(target: "ai_orch", "no NPC empire found; skipping orchestrator arm");
+        return;
+    };
+    let fid = to_ai_faction(entity);
+    registry
+        .by_entity
+        .insert(entity, FactionOrchestrator::new_demo(fid));
+    info!(target: "ai_orch", "AI orchestrator armed for entity={entity:?} faction={fid:?}");
+}
+
+/// Per-tick driver for all registered orchestrators.
+///
+/// Skips when `GameClock` has not advanced since last call (game is
+/// paused / sub-hexadies fraction not crossed). For each registered
+/// orchestrator: tick once, push produced commands back onto the bus
+/// so the existing `drain_ai_commands` consumer observes them, log
+/// activity. The command consumer logs unknown command kinds as
+/// `unknown` and falls through — appropriate for the skeleton: the
+/// orchestrator's `pursue_metric:*` kinds have no game-side mapping
+/// yet, so they are observed-only.
+pub fn run_orchestrators(
+    mut bus: ResMut<AiBusResource>,
+    mut registry: ResMut<OrchestratorRegistry>,
+    clock: Res<GameClock>,
+    mut last_tick: Local<i64>,
+) {
+    let now: Tick = clock.elapsed;
+    if now <= *last_tick {
+        return;
+    }
+    *last_tick = now;
+
+    for (entity, fo) in registry.by_entity.iter_mut() {
+        let out =
+            fo.orchestrator
+                .tick(&mut bus.0, &mut fo.dispatcher, &fo.victory, None, now);
+        for cmd in &out.commands {
+            // Per-command observer log — `pursue_metric:*` kinds have
+            // no game-side mapping yet, so `drain_ai_commands` will
+            // `debug!` "not handled" and ignore them. The info-level
+            // log here makes them visible without `RUST_LOG=debug`.
+            info!(
+                target: "ai_orch_cmd",
+                "tick={now} entity={entity:?} cmd_kind={} issuer={:?}",
+                cmd.kind.as_str(),
+                cmd.issuer,
+            );
+            bus.0.emit_command(cmd.clone());
+        }
+        if out.long_fired || out.mid_fired || !out.commands.is_empty() {
+            info!(
+                target: "ai_orch",
+                "tick={now} entity={entity:?} long={} mid={} short={} cmds={} status={:?}",
+                out.long_fired,
+                out.mid_fired,
+                out.short_fired,
+                out.commands.len(),
+                out.victory_status,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

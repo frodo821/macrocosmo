@@ -94,6 +94,7 @@ impl Plugin for AiPlugin {
             .init_resource::<super::npc_decision::LastAiDecisionTick>()
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .init_resource::<DeclaredFactionSlots>()
+            .init_resource::<super::orchestrator_runtime::OrchestratorRegistry>()
             .add_systems(Startup, schema::declare_all)
             // #439 Phase 3: `declare_foreign_slots_for_existing_factions`
             // must run after NPC empires have spawned, so it moves with
@@ -103,8 +104,12 @@ impl Plugin for AiPlugin {
             // `declare_foreign_slots_on_awareness` on Update.
             .add_systems(
                 OnEnter(crate::game_state::GameState::NewGame),
-                declare_foreign_slots_for_existing_factions
-                    .after(crate::setup::run_all_factions_on_game_start),
+                (
+                    declare_foreign_slots_for_existing_factions
+                        .after(crate::setup::run_all_factions_on_game_start),
+                    super::orchestrator_runtime::register_demo_orchestrator
+                        .after(declare_foreign_slots_for_existing_factions),
+                ),
             )
             // Foreign-slot declaration must run during Bootstrapping /
             // NewGame / LoadingSave too — it reacts to `Added<Faction>` so
@@ -142,6 +147,19 @@ impl Plugin for AiPlugin {
             .add_systems(
                 Update,
                 super::npc_decision::npc_decision_tick
+                    .in_set(AiTickSet::Reason)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
+            // Three-layer orchestrator tick — runs alongside (not instead
+            // of) `SimpleNpcPolicy`. Ordered `.after(npc_decision_tick)`
+            // to avoid `ResMut<AiBusResource>` contention within the same
+            // schedule step. Both write the bus; the orchestrator only
+            // emits `pursue_metric:*` kinds which `drain_ai_commands`
+            // logs as `unknown` and ignores — observed-only for now.
+            .add_systems(
+                Update,
+                super::orchestrator_runtime::run_orchestrators
+                    .after(super::npc_decision::npc_decision_tick)
                     .in_set(AiTickSet::Reason)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
