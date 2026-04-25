@@ -12,7 +12,7 @@ use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats, StarSystem};
 use crate::knowledge::{
     CombatVictor, DelayedCombatEventQueue, DestroyedShipRecord, DestroyedShipRegistry,
-    FactSysParam, KnowledgeFact, PlayerVantage,
+    FactSysParam, FactionVantageQueries, KnowledgeFact,
 };
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship_design::ModuleRegistry;
@@ -213,11 +213,14 @@ pub fn resolve_combat(
     module_registry: Res<ModuleRegistry>,
     systems: Query<(Entity, &StarSystem, &Position)>,
     mut events: MessageWriter<GameEvent>,
-    mut player_q: Query<(Entity, &mut StationedAt, Option<&AboardShip>), With<Player>>,
+    player_q: Query<(Entity, Option<&AboardShip>), With<Player>>,
     mut fact_sys: FactSysParam,
     mut bus: AiBusWriter,
     mut destroyed_registry: ResMut<DestroyedShipRegistry>,
     mut delayed_combat_events: ResMut<DelayedCombatEventQueue>,
+    // Round 9 PR #1 Step 3: per-faction routing — bundled into a
+    // single `SystemParam` to stay under Bevy's 16-param limit.
+    vantage_q: FactionVantageQueries,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
@@ -241,20 +244,10 @@ pub fn resolve_combat(
         })
         .collect();
 
-    // #249: Snapshot player vantage once — used by CombatVictory / CombatDefeat fact dual-writes.
-    let player_stationed_system = player_q.iter().next().map(|(_, s, _)| s.system);
-    let player_pos: Option<[f64; 3]> = player_stationed_system
-        .and_then(|s| systems.get(s).ok())
-        .map(|(_, _, p)| p.as_array());
-    let ruler_aboard = player_q
-        .iter()
-        .next()
-        .and_then(|(_, _, a)| a.map(|_| ()))
-        .is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    // Round 9 PR #1 Step 3: collect every empire's vantage for combat
+    // fact routing. Pre-PR this only built the player's vantage so NPC
+    // empires never received CombatVictory / CombatDefeat records.
+    let vantages = vantage_q.collect();
 
     for (hostile_entity, system_entity, hostile_strength, hostile_evasion, hostile_faction) in
         &hostile_data
@@ -412,14 +405,14 @@ pub fn resolve_combat(
                 description: desc.clone(),
                 related_system: Some(*system_entity),
             });
-            if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+            if let Some(op) = system_pos_arr {
                 let fact = KnowledgeFact::CombatOutcome {
                     event_id: Some(event_id),
                     system: *system_entity,
                     victor: CombatVictor::Player,
                     detail: desc,
                 };
-                fact_sys.record(fact, op, clock.elapsed, &v);
+                fact_sys.record_for(fact, &vantages, op, clock.elapsed);
             }
             continue;
         }
@@ -498,7 +491,7 @@ pub fn resolve_combat(
                 // #59: Check if player is aboard this ship — respawn at capital.
                 // PlayerRespawn is an engine-level event (not a remote
                 // observation) and therefore stays immediate.
-                if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
+                if let Ok((player_entity, aboard)) = player_q.single() {
                     if let Some(aboard_ship) = aboard {
                         if aboard_ship.ship == *entity {
                             // Find capital system entity
@@ -506,8 +499,15 @@ pub fn resolve_combat(
                                 .iter()
                                 .find(|(_, s, _)| s.is_capital)
                                 .map(|(e, _, _)| e);
+                            // Round 9 PR #1 Step 3: write StationedAt
+                            // via Commands::insert so we can keep
+                            // player_q read-only and avoid a B0001
+                            // conflict with FactionVantageQueries'
+                            // rulers query.
                             if let Some(cap_entity) = capital_entity {
-                                stationed.system = cap_entity;
+                                commands
+                                    .entity(player_entity)
+                                    .insert(StationedAt { system: cap_entity });
                             }
                             commands
                                 .entity(player_entity)
@@ -531,14 +531,14 @@ pub fn resolve_combat(
                 // own (relay-aware) light-delay machinery that governs banner
                 // delivery.
                 let event_id = fact_sys.allocate_event_id();
-                if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                if let Some(op) = system_pos_arr {
                     let fact = KnowledgeFact::CombatOutcome {
                         event_id: Some(event_id),
                         system: *system_entity,
                         victor: CombatVictor::Hostile,
                         detail: desc,
                     };
-                    fact_sys.record(fact, op, clock.elapsed, &v);
+                    fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                 }
             }
 
@@ -570,14 +570,14 @@ pub fn resolve_combat(
                             related_system: Some(*system_entity),
                         });
                 }
-                if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                if let Some(op) = system_pos_arr {
                     let fact = KnowledgeFact::CombatOutcome {
                         event_id: Some(event_id),
                         system: *system_entity,
                         victor: CombatVictor::Hostile,
                         detail: desc,
                     };
-                    fact_sys.record(fact, op, clock.elapsed, &v);
+                    fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                 }
             }
         }
@@ -828,7 +828,7 @@ pub fn resolve_combat(
                     }
                     // Check if player is aboard. PlayerRespawn stays immediate
                     // (engine-level, not a remote observation).
-                    if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
+                    if let Ok((player_entity, aboard)) = player_q.single() {
                         if let Some(aboard_ship) = aboard {
                             if aboard_ship.ship == *entity {
                                 let capital_entity = systems
@@ -836,7 +836,9 @@ pub fn resolve_combat(
                                     .find(|(_, s, _)| s.is_capital)
                                     .map(|(e, _, _)| e);
                                 if let Some(cap_entity) = capital_entity {
-                                    stationed.system = cap_entity;
+                                    commands
+                                        .entity(player_entity)
+                                        .insert(StationedAt { system: cap_entity });
                                 }
                                 commands
                                     .entity(player_entity)
@@ -856,14 +858,14 @@ pub fn resolve_combat(
                     // #435: ShipDestroyed event is deferred; the fact pipeline
                     // keeps its own light-delay path for the banner side.
                     let event_id = fact_sys.allocate_event_id();
-                    if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                    if let Some(op) = system_pos_arr {
                         let fact = KnowledgeFact::CombatOutcome {
                             event_id: Some(event_id),
                             system: *system_entity,
                             victor: CombatVictor::Hostile,
                             detail: desc,
                         };
-                        fact_sys.record(fact, op, clock.elapsed, &v);
+                        fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                     }
                 }
 
@@ -888,7 +890,7 @@ pub fn resolve_combat(
                             event_emitted: false,
                         });
                     }
-                    if let Ok((player_entity, mut stationed, aboard)) = player_q.single_mut() {
+                    if let Ok((player_entity, aboard)) = player_q.single() {
                         if let Some(aboard_ship) = aboard {
                             if aboard_ship.ship == *entity {
                                 let capital_entity = systems
@@ -896,7 +898,9 @@ pub fn resolve_combat(
                                     .find(|(_, s, _)| s.is_capital)
                                     .map(|(e, _, _)| e);
                                 if let Some(cap_entity) = capital_entity {
-                                    stationed.system = cap_entity;
+                                    commands
+                                        .entity(player_entity)
+                                        .insert(StationedAt { system: cap_entity });
                                 }
                                 commands
                                     .entity(player_entity)
@@ -916,14 +920,14 @@ pub fn resolve_combat(
                     // #435: ShipDestroyed event is deferred; the fact pipeline
                     // keeps its own light-delay path for the banner side.
                     let event_id = fact_sys.allocate_event_id();
-                    if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                    if let Some(op) = system_pos_arr {
                         let fact = KnowledgeFact::CombatOutcome {
                             event_id: Some(event_id),
                             system: *system_entity,
                             victor: CombatVictor::Hostile,
                             detail: desc,
                         };
-                        fact_sys.record(fact, op, clock.elapsed, &v);
+                        fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                     }
                 }
 
@@ -942,14 +946,14 @@ pub fn resolve_combat(
                             description: desc.clone(),
                             related_system: Some(*system_entity),
                         });
-                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                        if let Some(op) = system_pos_arr {
                             let fact = KnowledgeFact::CombatOutcome {
                                 event_id: Some(event_id),
                                 system: *system_entity,
                                 victor: CombatVictor::Player,
                                 detail: desc,
                             };
-                            fact_sys.record(fact, op, clock.elapsed, &v);
+                            fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                         }
                     }
                     CombatOutcome::DefenderWon { .. } => {
@@ -965,14 +969,14 @@ pub fn resolve_combat(
                             description: desc.clone(),
                             related_system: Some(*system_entity),
                         });
-                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                        if let Some(op) = system_pos_arr {
                             let fact = KnowledgeFact::CombatOutcome {
                                 event_id: Some(event_id),
                                 system: *system_entity,
                                 victor: CombatVictor::Player,
                                 detail: desc,
                             };
-                            fact_sys.record(fact, op, clock.elapsed, &v);
+                            fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                         }
                     }
                     CombatOutcome::AttackerRetreated { .. } => {
@@ -988,14 +992,14 @@ pub fn resolve_combat(
                             description: desc.clone(),
                             related_system: Some(*system_entity),
                         });
-                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                        if let Some(op) = system_pos_arr {
                             let fact = KnowledgeFact::CombatOutcome {
                                 event_id: Some(event_id),
                                 system: *system_entity,
                                 victor: CombatVictor::Hostile,
                                 detail: desc,
                             };
-                            fact_sys.record(fact, op, clock.elapsed, &v);
+                            fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                         }
                     }
                     CombatOutcome::DefenderRetreated { .. } => {
@@ -1011,14 +1015,14 @@ pub fn resolve_combat(
                             description: desc.clone(),
                             related_system: Some(*system_entity),
                         });
-                        if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
+                        if let Some(op) = system_pos_arr {
                             let fact = KnowledgeFact::CombatOutcome {
                                 event_id: Some(event_id),
                                 system: *system_entity,
                                 victor: CombatVictor::Player,
                                 detail: desc,
                             };
-                            fact_sys.record(fact, op, clock.elapsed, &v);
+                            fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                         }
                     }
                     CombatOutcome::MutualRetreat => {

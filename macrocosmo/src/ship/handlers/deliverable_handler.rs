@@ -20,8 +20,7 @@ use crate::deep_space::{
     ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry,
     spawn_deliverable_entity,
 };
-use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
-use crate::player::{AboardShip, Player, StationedAt};
+use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::ship::command_events::{
     CommandExecuted, CommandKind, CommandResult, CoreDeployRequested, DeployDeliverableRequested,
     LoadDeliverableRequested, LoadFromScrapyardRequested, TransferToStructureRequested,
@@ -57,20 +56,12 @@ pub fn handle_load_deliverable_requested(
     )>,
     mut stockpiles: Query<&mut DeliverableStockpile>,
     star_systems: Query<(Entity, &Position), (Without<Ship>, With<crate::galaxy::StarSystem>)>,
-    player_q: Query<&StationedAt, Without<Ship>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
     let mass_per_slot_raw = balance.mass_per_item_slot().0;
-    let player_system = player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| star_systems.get(s).ok())
-        .map(|(_, p)| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = vantage_q.collect();
 
     for req in reqs.read() {
         let Ok((ship, state, _ship_pos, mut queue, mut cargo, ship_mods)) = ships.get_mut(req.ship)
@@ -196,7 +187,7 @@ pub fn handle_load_deliverable_requested(
         });
         let origin_pos: Option<[f64; 3]> =
             star_systems.get(req.system).ok().map(|(_, p)| p.as_array());
-        if let (Some(v), Some(op)) = (vantage, origin_pos) {
+        if let Some(op) = origin_pos {
             let fact = KnowledgeFact::StructureBuilt {
                 event_id: Some(event_id),
                 system: Some(req.system),
@@ -205,7 +196,7 @@ pub fn handle_load_deliverable_requested(
                 destroyed: false,
                 detail: desc,
             };
-            fact_sys.record(fact, op, clock.elapsed, &v);
+            fact_sys.record_for(fact, &vantages, op, clock.elapsed);
         }
 
         executed.write(CommandExecuted {
@@ -249,19 +240,11 @@ pub fn handle_deploy_deliverable_requested(
     )>,
     existing_cores: Query<&crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
     star_systems: Query<(Entity, &Position), (Without<Ship>, With<crate::galaxy::StarSystem>)>,
-    player_q: Query<&StationedAt, Without<Ship>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
-    let player_system = player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| star_systems.get(s).ok())
-        .map(|(_, p)| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = vantage_q.collect();
 
     for req in reqs.read() {
         let Ok((ship_entity, ship, state, ship_pos, mut queue, mut cargo)) =
@@ -490,17 +473,15 @@ pub fn handle_deploy_deliverable_requested(
             related_system: None,
         });
         let origin_pos = req.position;
-        if let Some(v) = vantage {
-            let fact = KnowledgeFact::StructureBuilt {
-                event_id: Some(event_id),
-                system: None,
-                kind: "deployed_deliverable".into(),
-                name: def_id.clone(),
-                destroyed: false,
-                detail: desc,
-            };
-            fact_sys.record(fact, origin_pos, clock.elapsed, &v);
-        }
+        let fact = KnowledgeFact::StructureBuilt {
+            event_id: Some(event_id),
+            system: None,
+            kind: "deployed_deliverable".into(),
+            name: def_id.clone(),
+            destroyed: false,
+            detail: desc,
+        };
+        fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
 
         executed.write(CommandExecuted {
             command_id: req.command_id,

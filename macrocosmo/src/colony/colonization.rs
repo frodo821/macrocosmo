@@ -6,9 +6,9 @@ use crate::components::Position;
 use crate::events::GameEvent;
 use crate::faction::FactionOwner;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
-use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
+use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::modifier::ModifiedValue;
-use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
+use crate::player::PlayerEmpire;
 use crate::ship::{Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
@@ -94,23 +94,15 @@ pub fn tick_colonization_queue(
     source_owners: Query<&FactionOwner>,
     planet_query: Query<(Entity, &Planet, &SystemAttributes)>,
     positions: Query<&Position>,
-    player_q: Query<&StationedAt, With<Player>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
     building_registry: Res<super::BuildingRegistry>,
     design_registry: Res<ShipDesignRegistry>,
     ship_q: Query<(&Ship, &ShipState)>,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
-    let player_system = player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| positions.get(s).ok())
-        .map(|p| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = vantage_q.collect();
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
@@ -241,7 +233,7 @@ pub fn tick_colonization_queue(
             });
             let origin_pos: Option<[f64; 3]> =
                 positions.get(system_entity).ok().map(|p| p.as_array());
-            if let (Some(v), Some(op)) = (vantage, origin_pos) {
+            if let Some(op) = origin_pos {
                 let fact = KnowledgeFact::ColonyEstablished {
                     event_id: Some(event_id),
                     system: system_entity,
@@ -249,7 +241,7 @@ pub fn tick_colonization_queue(
                     name: planet_name.clone(),
                     detail: desc,
                 };
-                fact_sys.record(fact, op, clock.elapsed, &v);
+                fact_sys.record_for(fact, &vantages, op, clock.elapsed);
             }
 
             // #387: Auto-spawn a Shipyard station if none exists in this system.

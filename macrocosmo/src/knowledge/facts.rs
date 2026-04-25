@@ -1025,9 +1025,17 @@ impl<'w, 's> FactSysParam<'w, 's> {
     /// [`FactionVantage`] slice and forwards to [`Self::record_for`].
     /// The faction id used for the wrap is the first `PlayerEmpire` (or
     /// `Entity::PLACEHOLDER` if none — typical observer / headless
-    /// startup before empires spawn). Callsites should migrate to
-    /// `record_for` directly once they have access to the empire
-    /// entity (Step 3).
+    /// startup before empires spawn).
+    ///
+    /// **Deprecated**: all production callsites in macrocosmo have been
+    /// migrated to [`Self::record_for`] in Step 3. This adapter remains
+    /// only so the `notification_knowledge_pipeline` integration tests
+    /// keep working without a full `FactionVantageQueries` setup.
+    /// Remove once those tests migrate to per-faction wiring.
+    #[deprecated(
+        since = "0.3.1",
+        note = "Round 9 PR #1: use `record_for(...)` with `FactionVantageQueries::collect()` instead. See `src/knowledge/mod.rs::collect_faction_vantages`."
+    )]
     pub fn record(
         &mut self,
         fact: KnowledgeFact,

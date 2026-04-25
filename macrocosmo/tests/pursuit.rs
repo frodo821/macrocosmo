@@ -157,7 +157,17 @@ fn count_hostile_detected(app: &App) -> usize {
 // #233: `HostileDetected` now surfaces through `PendingFactQueue`, so the
 // pursuit tests that assert on banners need both pipelines registered plus
 // a `Player` entity so `detect_hostiles_system` can compute an arrival time.
+//
+// Round 9 PR #1 Step 3: `detect_hostiles_system` now routes through
+// `record_for` instead of building the queue write itself. To get a
+// non-empty `vantages` slice, the player empire (spawned by `test_app`)
+// also needs an `EmpireRuler` pointing at a Ruler entity that carries
+// `StationedAt` (or `EmpireViewerSystem`). We attach the missing wiring
+// here so detection still records facts into the queue.
 fn test_app_with_notifications() -> App {
+    use macrocosmo::knowledge::PendingFactQueue;
+    use macrocosmo::player::{EmpireRuler, EmpireViewerSystem, Player, Ruler, StationedAt};
+
     let mut app = test_app_with_event_log();
     app.add_systems(
         Update,
@@ -167,13 +177,48 @@ fn test_app_with_notifications() -> App {
         )
             .after(macrocosmo::ship::pursuit::detect_hostiles_system),
     );
-    // Spawn a minimal Player + capital system at origin so the new #233 fact
-    // pipeline has a target coordinate. Place the player at the same origin
-    // as the detector so local notifications surface instantly.
-    let system = app.world_mut().spawn(Position::from([0.0, 0.0, 0.0])).id();
-    app.world_mut().spawn((
-        macrocosmo::player::Player,
-        macrocosmo::player::StationedAt { system },
+    // Spawn a minimal capital StarSystem at origin so the per-faction fact
+    // pipeline has a target coordinate. Place the empire's reference here
+    // so local notifications surface instantly when origin == ref_pos.
+    let system = app
+        .world_mut()
+        .spawn((
+            Position::from([0.0, 0.0, 0.0]),
+            macrocosmo::galaxy::StarSystem {
+                name: "TestCapital".into(),
+                surveyed: true,
+                is_capital: true,
+                star_type: "yellow_dwarf".into(),
+            },
+        ))
+        .id();
+    let player_empire = {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<Entity, With<PlayerEmpire>>();
+        q.iter(app.world())
+            .next()
+            .expect("player empire must exist")
+    };
+    let ruler = app
+        .world_mut()
+        .spawn((
+            Ruler {
+                name: "Test Ruler".into(),
+                empire: player_empire,
+            },
+            StationedAt { system },
+            Player,
+        ))
+        .id();
+    app.world_mut().entity_mut(player_empire).insert((
+        EmpireRuler(ruler),
+        EmpireViewerSystem(system),
+        // Round 9 PR #1 Step 2: per-empire fact queue Component.
+        // `test_app()` uses `spawn_test_empire` which doesn't spawn one,
+        // so the production drain has nothing to read. Insert it here
+        // for the pursuit test's notification-pipeline assertion.
+        PendingFactQueue::default(),
     ));
     app
 }

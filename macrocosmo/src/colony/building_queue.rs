@@ -8,8 +8,7 @@ use crate::components::Position;
 use crate::event_system::{BUILDING_LOST_EVENT, EventContext};
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Planet, StarSystem};
-use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
-use crate::player::{AboardShip, Player, StationedAt};
+use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::scripting::building_api::BuildingId;
 use crate::ship::{CargoItem, Owner, Ship, ShipState, spawn_ship};
 use crate::time_system::GameClock;
@@ -381,25 +380,17 @@ pub fn tick_build_queue(
     planets: Query<&Planet>,
     sys_mods_q: Query<&crate::galaxy::SystemModifiers, With<StarSystem>>,
     mut events: MessageWriter<GameEvent>,
-    player_q: Query<(&StationedAt, Option<&AboardShip>), With<Player>>,
     mut fact_sys: FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;
     }
 
-    // #249: Player vantage snapshot (once per tick).
-    let player_info = player_q.iter().next();
-    let player_system = player_info.map(|(s, _)| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| positions.get(s).ok())
-        .map(|p| p.as_array());
-    let ruler_aboard = player_info.map(|(_, a)| a.is_some()).unwrap_or(false);
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    // Round 9 PR #1 Step 3: collect every empire's vantage.
+    let vantages = vantage_q.collect();
 
     // Per-order completion info (#223).
     enum Completion {
@@ -535,7 +526,7 @@ pub fn tick_build_queue(
                         });
                         let origin_pos: Option<[f64; 3]> =
                             positions.get(result.system).ok().map(|p| p.as_array());
-                        if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                        if let Some(op) = origin_pos {
                             let fact = KnowledgeFact::StructureBuilt {
                                 event_id: Some(event_id),
                                 system: Some(result.system),
@@ -544,7 +535,7 @@ pub fn tick_build_queue(
                                 destroyed: false,
                                 detail: desc,
                             };
-                            fact_sys.record(fact, op, clock.elapsed, &v);
+                            fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                         }
                         info!("Ship built and launched: {}", display_name);
                     }
@@ -576,7 +567,7 @@ pub fn tick_build_queue(
                     });
                     let origin_pos: Option<[f64; 3]> =
                         positions.get(result.system).ok().map(|p| p.as_array());
-                    if let (Some(v), Some(op)) = (vantage, origin_pos) {
+                    if let Some(op) = origin_pos {
                         let fact = KnowledgeFact::StructureBuilt {
                             event_id: Some(event_id),
                             system: Some(result.system),
@@ -585,7 +576,7 @@ pub fn tick_build_queue(
                             destroyed: false,
                             detail: desc,
                         };
-                        fact_sys.record(fact, op, clock.elapsed, &v);
+                        fact_sys.record_for(fact, &vantages, op, clock.elapsed);
                     }
                     info!("Deliverable produced: {} @ {}", display_name, sys_name);
                 }

@@ -10,7 +10,7 @@ use crate::colony::{
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{AtSystem, Hostile, StarSystem, SystemAttributes};
-use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
+use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
@@ -25,11 +25,16 @@ pub const SETTLING_DURATION_HEXADIES: i64 = 60;
 
 /// Bundled player-related queries to keep `process_settling` under Bevy's
 /// 16-parameter limit for `IntoSystemSet`.
+///
+/// Round 9 PR #1 Step 3: also embeds [`FactionVantageQueries`] so callers
+/// can route facts through `record_for` without bumping into the param
+/// limit when adding the per-empire vantage queries.
 #[derive(SystemParam)]
 pub struct SettlementPlayerQueries<'w, 's> {
     pub empire_entity_q: Query<'w, 's, Entity, With<crate::player::PlayerEmpire>>,
     pub player_q: Query<'w, 's, &'static StationedAt, Without<Ship>>,
     pub ruler_aboard_q: Query<'w, 's, &'static AboardShip, With<Player>>,
+    pub vantage_q: FactionVantageQueries<'w, 's>,
 }
 
 /// System that processes ongoing settling operations. When the timer completes,
@@ -62,15 +67,7 @@ pub fn process_settling(
     building_registry: Res<crate::colony::BuildingRegistry>,
     design_registry: Res<crate::ship_design::ShipDesignRegistry>,
 ) {
-    let player_system = player_queries.player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| systems.get(s).ok())
-        .map(|(_, p)| p.as_array());
-    let ruler_aboard = player_queries.ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = player_queries.vantage_q.collect();
     // #387: Pre-collect systems that already have a shipyard station to avoid
     // spawning duplicates. We snapshot before the mutable iteration because
     // the ships query is borrowed mutably in the loop body.
@@ -140,16 +137,14 @@ pub fn process_settling(
                     description: desc.clone(),
                     related_system: Some(system_entity),
                 });
-                if let Some(v) = vantage {
-                    let fact = KnowledgeFact::ColonyFailed {
-                        event_id: Some(event_id),
-                        system: system_entity,
-                        name: star_system.name.clone(),
-                        reason: "hostile presence".into(),
-                    };
-                    let _ = desc;
-                    fact_sys.record(fact, sys_pos_arr, clock.elapsed, &v);
-                }
+                let fact = KnowledgeFact::ColonyFailed {
+                    event_id: Some(event_id),
+                    system: system_entity,
+                    name: star_system.name.clone(),
+                    reason: "hostile presence".into(),
+                };
+                let _ = desc;
+                fact_sys.record_for(fact, &vantages, sys_pos_arr, clock.elapsed);
                 continue;
             }
 
@@ -321,16 +316,14 @@ pub fn process_settling(
                 description: desc.clone(),
                 related_system: Some(system_entity),
             });
-            if let Some(v) = vantage {
-                let fact = KnowledgeFact::ColonyEstablished {
-                    event_id: Some(event_id),
-                    system: system_entity,
-                    planet: planet_entity,
-                    name: system_name.clone(),
-                    detail: desc,
-                };
-                fact_sys.record(fact, sys_pos_arr, clock.elapsed, &v);
-            }
+            let fact = KnowledgeFact::ColonyEstablished {
+                event_id: Some(event_id),
+                system: system_entity,
+                planet: planet_entity,
+                name: system_name.clone(),
+                detail: desc,
+            };
+            fact_sys.record_for(fact, &vantages, sys_pos_arr, clock.elapsed);
 
             info!("Colony established at {}", system_name);
 
@@ -367,19 +360,11 @@ pub fn process_refitting(
     mut ships: Query<(Entity, &mut Ship, &mut ShipState)>,
     mut events: MessageWriter<GameEvent>,
     systems: Query<(&StarSystem, &Position)>,
-    player_q: Query<&StationedAt, Without<Ship>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
-    let player_system = player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| systems.get(s).ok())
-        .map(|(_, p)| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = vantage_q.collect();
 
     for (_entity, mut ship, mut state) in &mut ships {
         let (system, completes_at, new_modules, target_revision) = match &*state {
@@ -418,17 +403,15 @@ pub fn process_refitting(
                 description: desc.clone(),
                 related_system: Some(system),
             });
-            if let Some(v) = vantage {
-                let fact = KnowledgeFact::StructureBuilt {
-                    event_id: Some(event_id),
-                    system: Some(system),
-                    kind: "refit".into(),
-                    name: ship.name.clone(),
-                    destroyed: false,
-                    detail: desc,
-                };
-                fact_sys.record(fact, sys_pos_arr, clock.elapsed, &v);
-            }
+            let fact = KnowledgeFact::StructureBuilt {
+                event_id: Some(event_id),
+                system: Some(system),
+                kind: "refit".into(),
+                name: ship.name.clone(),
+                destroyed: false,
+                detail: desc,
+            };
+            fact_sys.record_for(fact, &vantages, sys_pos_arr, clock.elapsed);
         }
     }
 }

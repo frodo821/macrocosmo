@@ -37,14 +37,10 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::components::Position;
-use crate::empire::CommsParams;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
-use crate::knowledge::{
-    KnowledgeFact, NextEventId, PendingFactQueue, PerceivedFact, RelayNetwork, compute_fact_arrival,
-};
+use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::physics;
-use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::time_system::GameClock;
 
 use super::{Owner, RulesOfEngagement, Ship, ShipState};
@@ -183,14 +179,12 @@ pub fn detect_hostiles_system(
     )>,
     mut detected: Query<&mut DetectedHostiles>,
     mut events: MessageWriter<GameEvent>,
-    mut fact_queue: ResMut<PendingFactQueue>,
-    mut next_event_id: ResMut<NextEventId>,
-    mut notified_ids: ResMut<crate::knowledge::NotifiedEventIds>,
-    relay_network: Option<Res<RelayNetwork>>,
-    player_q: Query<&StationedAt, With<Player>>,
-    empire_q: Query<&CommsParams, With<PlayerEmpire>>,
+    mut fact_sys: FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
     let now = clock.elapsed;
+    let vantages = vantage_q.collect();
 
     // Snapshot every ship's (position, faction, name, deep-space) once so we
     // can cross-reference them in O(n²) without re-borrowing the query.
@@ -319,12 +313,13 @@ pub fn detect_hostiles_system(
                 det.target_pos[1],
                 det.target_pos[2],
             );
-            // #249: Shared EventId between the legacy GameEvent and the paired
-            // KnowledgeFact so NotifiedEventIds dedupe keeps only one banner.
-            // Register before push (tri-state map: missing == "treated as
-            // notified", so the first try_notify on a registered entry wins).
-            let event_id = next_event_id.allocate();
-            notified_ids.register(event_id);
+            // #249 + Round 9 Step 3: shared EventId between the legacy
+            // GameEvent and the paired KnowledgeFact (NotifiedEventIds
+            // dedupe), routed through `record_for` so every empire sees
+            // it (light-delayed per their vantage). FactSysParam handles
+            // both the EventId allocation/registration and the relay /
+            // light-speed math.
+            let event_id = fact_sys.allocate_event_id();
             // EventLog + auto_pause still receive the raw event (the notification
             // path is the one gaining light-speed delay).
             events.write(GameEvent {
@@ -335,41 +330,18 @@ pub fn detect_hostiles_system(
                 related_system: None,
             });
 
-            // #233: Notification via PendingFactQueue — 50 ly remote detections
-            // used to alert the player instantly, violating the light-speed
-            // contract. Routing through `compute_fact_arrival` respects that
-            // contract and also enables relay-accelerated propagation when
-            // coverage exists.
-            let player_pos_arr = player_q
-                .iter()
-                .next()
-                .and_then(|s| positions.get(s.system).ok())
-                .map(|p| p.as_array());
-            if let Some(player_pos) = player_pos_arr {
-                let comms_fallback = CommsParams::default();
-                let comms = empire_q.iter().next().unwrap_or(&comms_fallback);
-                let empty_relays: Vec<crate::knowledge::RelaySnapshot> = Vec::new();
-                let relays_slice = relay_network
-                    .as_deref()
-                    .map(|n| n.relays.as_slice())
-                    .unwrap_or(&empty_relays);
-                let plan =
-                    compute_fact_arrival(now, det.target_pos, player_pos, relays_slice, comms);
-                fact_queue.record(PerceivedFact {
-                    fact: KnowledgeFact::HostileDetected {
-                        event_id: Some(event_id),
-                        target: det.target,
-                        detector: det.detector,
-                        target_pos: det.target_pos,
-                        description,
-                    },
-                    observed_at: now,
-                    arrives_at: plan.arrives_at,
-                    source: plan.source,
-                    origin_pos: det.target_pos,
-                    related_system: None,
-                });
-            }
+            // #233: Routing through `record_for` respects the
+            // light-speed contract (50 ly detections used to alert the
+            // player instantly) and also enables relay-accelerated
+            // propagation when coverage exists.
+            let fact = KnowledgeFact::HostileDetected {
+                event_id: Some(event_id),
+                target: det.target,
+                detector: det.detector,
+                target_pos: det.target_pos,
+                description,
+            };
+            fact_sys.record_for(fact, &vantages, det.target_pos, now);
         }
     }
 }

@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::StarSystem;
-use crate::knowledge::{FactSysParam, KnowledgeFact, PlayerVantage};
+use crate::knowledge::{FactSysParam, FactionVantage, FactionVantageQueries, KnowledgeFact};
 use crate::physics::{distance_ly, distance_ly_arr, sublight_travel_hexadies};
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
@@ -89,20 +89,12 @@ pub fn sublight_movement_system(
     )>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
-    player_q: Query<&StationedAt, Without<Ship>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
     mut event_system: ResMut<crate::event_system::EventSystem>,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
-    let player_system = player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| systems.get(s).ok())
-        .map(|(_, p)| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = vantage_q.collect();
     for (mut state, mut pos, ship, mut last_docked) in query.iter_mut() {
         let (origin, destination, target_system, departed_at, arrival_at) = match *state {
             ShipState::SubLight {
@@ -126,7 +118,7 @@ pub fn sublight_movement_system(
                 destination,
                 clock.elapsed,
                 &mut events,
-                vantage.as_ref(),
+                &vantages,
                 &systems,
                 &mut fact_sys,
             );
@@ -166,7 +158,7 @@ pub fn sublight_movement_system(
                 destination,
                 clock.elapsed,
                 &mut events,
-                vantage.as_ref(),
+                &vantages,
                 &systems,
                 &mut fact_sys,
             );
@@ -354,20 +346,12 @@ pub fn process_ftl_travel(
     )>,
     systems: Query<(&StarSystem, &Position), Without<Ship>>,
     mut events: MessageWriter<GameEvent>,
-    player_q: Query<&StationedAt, Without<Ship>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut fact_sys: FactSysParam,
     mut event_system: ResMut<crate::event_system::EventSystem>,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
-    let player_system = player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| systems.get(s).ok())
-        .map(|(_, p)| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = vantage_q.collect();
 
     for (ship, mut state, mut ship_pos, last_docked) in ships.iter_mut() {
         let (destination_system, arrival_at) = match *state {
@@ -409,15 +393,13 @@ pub fn process_ftl_travel(
                     description: desc.clone(),
                     related_system: Some(destination_system),
                 });
-                if let Some(v) = vantage {
-                    let fact = KnowledgeFact::ShipArrived {
-                        event_id: Some(event_id),
-                        system: Some(destination_system),
-                        name: ship.name.clone(),
-                        detail: desc,
-                    };
-                    fact_sys.record(fact, dest_pos.as_array(), clock.elapsed, &v);
-                }
+                let fact = KnowledgeFact::ShipArrived {
+                    event_id: Some(event_id),
+                    system: Some(destination_system),
+                    name: ship.name.clone(),
+                    detail: desc,
+                };
+                fact_sys.record_for(fact, &vantages, dest_pos.as_array(), clock.elapsed);
                 info!("Ship {} arrived at {} via FTL", ship.name, star.name);
             } else {
                 warn!("Ship {} FTL destination entity no longer exists", ship.name);
@@ -427,6 +409,10 @@ pub fn process_ftl_travel(
 }
 
 /// #249 helper — shared dual-write for sublight `ShipArrived` events.
+///
+/// Round 9 PR #1 Step 3: `vantages` replaces the legacy
+/// `Option<&PlayerVantage>` — `record_for` is a no-op on an empty
+/// slice, matching the previous "no player vantage" branch.
 #[allow(clippy::too_many_arguments)]
 fn write_ship_arrived_dual(
     target_system: Option<Entity>,
@@ -434,7 +420,7 @@ fn write_ship_arrived_dual(
     destination: [f64; 3],
     now: i64,
     events: &mut MessageWriter<GameEvent>,
-    vantage: Option<&PlayerVantage>,
+    vantages: &[FactionVantage],
     systems: &Query<(&StarSystem, &Position), Without<Ship>>,
     fact_sys: &mut FactSysParam,
 ) {
@@ -463,15 +449,13 @@ fn write_ship_arrived_dual(
         related_system: related,
     });
 
-    if let Some(v) = vantage {
-        let fact = KnowledgeFact::ShipArrived {
-            event_id: Some(event_id),
-            system: related,
-            name: ship.name.clone(),
-            detail: desc,
-        };
-        fact_sys.record(fact, origin_pos, now, v);
-    }
+    let fact = KnowledgeFact::ShipArrived {
+        event_id: Some(event_id),
+        system: related,
+        name: ship.name.clone(),
+        detail: desc,
+    };
+    fact_sys.record_for(fact, vantages, origin_pos, now);
 }
 
 // --- Auto-route planning (#49) ---

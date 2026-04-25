@@ -573,20 +573,12 @@ pub fn tick_platform_upgrade(
         &mut ConstructionPlatform,
     )>,
     positions: Query<&crate::components::Position>,
-    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
-    ruler_aboard_q: Query<&crate::player::AboardShip, With<crate::player::Player>>,
     mut fact_sys: crate::knowledge::FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: crate::knowledge::FactionVantageQueries,
 ) {
-    use crate::knowledge::{KnowledgeFact, PlayerVantage};
-    let player_system = player_q.iter().next().map(|s| s.system);
-    let player_pos: Option<[f64; 3]> = player_system
-        .and_then(|s| positions.get(s).ok())
-        .map(|p| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    use crate::knowledge::KnowledgeFact;
+    let vantages = vantage_q.collect();
     for (entity, mut structure, mut lifetime, mut platform) in platforms.iter_mut() {
         let Some(target_id) = platform.target_id.clone() else {
             continue;
@@ -643,7 +635,7 @@ pub fn tick_platform_upgrade(
                 )),
             );
             let origin_pos: Option<[f64; 3]> = positions.get(entity).ok().map(|p| p.as_array());
-            if let (Some(v), Some(op)) = (vantage, origin_pos) {
+            if let Some(op) = origin_pos {
                 let fact = KnowledgeFact::StructureBuilt {
                     event_id: Some(event_id),
                     system: None,
@@ -652,7 +644,7 @@ pub fn tick_platform_upgrade(
                     destroyed: false,
                     detail: desc,
                 };
-                fact_sys.record(fact, op, clock.elapsed, &v);
+                fact_sys.record_for(fact, &vantages, op, clock.elapsed);
             }
             info!(
                 "Deep-space structure {:?} upgraded → {}",

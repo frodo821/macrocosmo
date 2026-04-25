@@ -42,12 +42,106 @@ use crate::colony::ResourceStockpile;
 use crate::components::Position;
 use crate::galaxy::StarSystem;
 use crate::physics;
-use crate::player::{Ruler, StationedAt};
+use crate::player::{AboardShip, Empire, EmpireRuler, EmpireViewerSystem, Ruler, StationedAt};
 use crate::ship::{Ship, ShipState};
 use crate::time_system::GameClock;
 
 #[allow(unused_imports)]
 pub use perceived::{FactionId, PerceivedInfo, perceived_fleet, perceived_system};
+
+/// Round 9 PR #1 Step 3: Bundled `SystemParam` for the queries that
+/// [`collect_faction_vantages`] needs. Lets fact-emitting systems
+/// migrate to per-faction routing without bumping into Bevy's 16-param
+/// limit on `SystemParam`-style functions.
+///
+/// `positions` is constrained to `With<StarSystem>` so it does not
+/// conflict with mutable `Query<&mut Position>` parameters in
+/// systems that move ships (B0001 — see
+/// `sublight_movement_system`). The ruler's reference position is
+/// always a StarSystem entity, so the constraint matches the helper's
+/// access pattern.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct FactionVantageQueries<'w, 's> {
+    pub empires: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static EmpireRuler,
+            Option<&'static EmpireViewerSystem>,
+        ),
+        With<Empire>,
+    >,
+    pub rulers:
+        Query<'w, 's, (Option<&'static StationedAt>, Option<&'static AboardShip>), With<Ruler>>,
+    pub positions: Query<'w, 's, &'static Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
+}
+
+impl<'w, 's> FactionVantageQueries<'w, 's> {
+    /// Convenience: snapshot every empire's vantage in one call.
+    pub fn collect(&self) -> Vec<facts::FactionVantage> {
+        collect_faction_vantages(&self.empires, &self.rulers, &self.positions)
+    }
+}
+
+/// Round 9 PR #1 Step 3: Collect a [`FactionVantage`] for every empire
+/// that has a Ruler with a known reference position.
+///
+/// "Known reference position" means the empire either:
+/// 1. has an `EmpireViewerSystem` component (the canonical
+///    light-speed reference set by `sync_ruler_viewer_system`), OR
+/// 2. has a Ruler with a `StationedAt` system that resolves to a
+///    `Position` (fallback path used during the brief window between
+///    Ruler spawn and the first `sync_ruler_viewer_system` tick).
+///
+/// `ruler_aboard` mirrors the legacy `PlayerVantage::ruler_aboard`
+/// field and is set when the empire's Ruler entity carries an
+/// `AboardShip` component.
+///
+/// Empires whose ruler has no resolvable position (no StationedAt and
+/// no EmpireViewerSystem, or a stale entity) are skipped — they cannot
+/// receive light-speed-routed observations.
+///
+/// `Owner::Neutral` ships (hostile / pirate factions) have no Empire
+/// entity, so events those ships emit fall through this helper with
+/// an empty result and `record_for` becomes a no-op for them. Pre-PR
+/// behaviour for those ships was player-only routing; observer mode
+/// dropped them silently. We adopt the observer-mode contract: events
+/// from Neutral ships now do not route into any empire's queue. The
+/// player can still see the consequences via the legacy `GameEvent`
+/// stream + visibility-tier propagation; this loss is intentional and
+/// matches the per-faction-knowledge philosophy.
+pub fn collect_faction_vantages(
+    empires: &Query<(Entity, &EmpireRuler, Option<&EmpireViewerSystem>), With<Empire>>,
+    rulers: &Query<(Option<&StationedAt>, Option<&AboardShip>), With<Ruler>>,
+    positions: &Query<&Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
+) -> Vec<facts::FactionVantage> {
+    let mut out: Vec<facts::FactionVantage> = Vec::new();
+    for (empire_entity, empire_ruler, viewer_opt) in empires.iter() {
+        let Ok((stationed_opt, aboard_opt)) = rulers.get(empire_ruler.0) else {
+            continue;
+        };
+        // Reference system: prefer EmpireViewerSystem (kept in sync by
+        // sync_ruler_viewer_system), fall back to the Ruler's
+        // StationedAt for the spawn-tick window before that system has
+        // run.
+        let ref_system = viewer_opt
+            .map(|v| v.0)
+            .or_else(|| stationed_opt.map(|s| s.system));
+        let Some(ref_system) = ref_system else {
+            continue;
+        };
+        let Ok(pos) = positions.get(ref_system) else {
+            continue;
+        };
+        out.push(facts::FactionVantage {
+            faction: empire_entity,
+            ref_pos: pos.as_array(),
+            ruler_aboard: aboard_opt.is_some(),
+        });
+    }
+    out
+}
 
 /// Observation source tag for knowledge entries.
 ///

@@ -3,11 +3,11 @@ use bevy::prelude::*;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{Anomalies, AtSystem, Hostile, StarSystem, SystemAttributes};
 use crate::knowledge::{
-    FactSysParam, KnowledgeFact, KnowledgeStore, ObservationSource, PlayerVantage, SystemKnowledge,
-    SystemSnapshot,
+    FactSysParam, FactionVantageQueries, KnowledgeFact, KnowledgeStore, ObservationSource,
+    SystemKnowledge, SystemSnapshot,
 };
 use crate::physics::{distance_ly_arr, light_delay_hexadies};
-use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
+use crate::player::{Player, PlayerEmpire, StationedAt};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
@@ -123,12 +123,13 @@ pub fn process_surveys(
     >,
     hostiles: Query<&AtSystem, With<Hostile>>,
     player_q: Query<&StationedAt, With<Player>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
     balance: Res<crate::technology::GameBalance>,
     anomaly_registry: Option<Res<crate::scripting::anomaly_api::AnomalyRegistry>>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction fact routing.
+    vantage_q: FactionVantageQueries,
 ) {
     let initial_ftl_speed_c = balance.initial_ftl_speed_c();
     let mut rng = rand::rng();
@@ -145,12 +146,10 @@ pub fn process_surveys(
         .map(|p| p.ftl_speed_multiplier)
         .unwrap_or(1.0);
 
-    // #249: Snapshot the player's vantage point once — used by fact dual-write.
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_system_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    // Round 9 PR #1 Step 3: collect every empire's vantage so the
+    // dual-write below routes a survey discovery into ALL empires'
+    // PendingFactQueues, not just the player's.
+    let vantages = vantage_q.collect();
 
     for (ship_entity, ship, mut state, mut ship_hp, ship_pos, mut cmd_queue) in ships.iter_mut() {
         let (target_system, completes_at) = match *state {
@@ -205,14 +204,14 @@ pub fn process_surveys(
                             description: desc.clone(),
                             related_system: Some(target_system),
                         });
-                        if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                        if let Some(origin_pos) = sys_pos_arr {
                             let fact = KnowledgeFact::SurveyComplete {
                                 event_id: Some(event_id),
                                 system: target_system,
                                 system_name: system_name.clone(),
                                 detail: desc,
                             };
-                            fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                            fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                         }
 
                         let has_hostile = hostiles.iter().any(|at| at.0 == target_system);
@@ -227,7 +226,7 @@ pub fn process_surveys(
                                 description: desc.clone(),
                                 related_system: Some(target_system),
                             });
-                            if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                            if let Some(origin_pos) = sys_pos_arr {
                                 let fact = KnowledgeFact::HostileDetected {
                                     event_id: Some(event_id),
                                     target: Entity::PLACEHOLDER,
@@ -235,7 +234,7 @@ pub fn process_surveys(
                                     target_pos: origin_pos,
                                     description: desc,
                                 };
-                                fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                                fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                             }
                         }
 
@@ -268,14 +267,14 @@ pub fn process_surveys(
                                 description: desc.clone(),
                                 related_system: Some(target_system),
                             });
-                            if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                            if let Some(origin_pos) = sys_pos_arr {
                                 let fact = KnowledgeFact::AnomalyDiscovered {
                                     event_id: Some(event_id),
                                     system: target_system,
                                     anomaly_id: aid,
                                     detail: desc,
                                 };
-                                fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                                fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                             }
                         }
                     }
@@ -308,7 +307,7 @@ pub fn process_surveys(
                                 description: desc.clone(),
                                 related_system: Some(target_system),
                             });
-                            if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                            if let Some(origin_pos) = sys_pos_arr {
                                 let fact = KnowledgeFact::HostileDetected {
                                     event_id: Some(event_id),
                                     target: Entity::PLACEHOLDER,
@@ -316,7 +315,7 @@ pub fn process_surveys(
                                     target_pos: origin_pos,
                                     description: desc,
                                 };
-                                fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                                fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                             }
                         }
 
@@ -386,14 +385,14 @@ pub fn process_surveys(
                         description: desc.clone(),
                         related_system: Some(target_system),
                     });
-                    if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                    if let Some(origin_pos) = sys_pos_arr {
                         let fact = KnowledgeFact::SurveyComplete {
                             event_id: Some(event_id),
                             system: target_system,
                             system_name: system_name.clone(),
                             detail: desc,
                         };
-                        fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                        fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                     }
 
                     // Check for hostile presence at this system
@@ -409,7 +408,7 @@ pub fn process_surveys(
                             description: desc.clone(),
                             related_system: Some(target_system),
                         });
-                        if let (Some(v), Some(origin_pos)) = (vantage, sys_pos_arr) {
+                        if let Some(origin_pos) = sys_pos_arr {
                             let fact = KnowledgeFact::HostileDetected {
                                 event_id: Some(event_id),
                                 target: Entity::PLACEHOLDER,
@@ -417,7 +416,7 @@ pub fn process_surveys(
                                 target_pos: origin_pos,
                                 description: desc,
                             };
-                            fact_sys.record(fact, origin_pos, clock.elapsed, &v);
+                            fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                         }
                     }
 
@@ -453,10 +452,11 @@ pub fn deliver_survey_results(
     ships: Query<(Entity, &Ship, &ShipState, &SurveyData)>,
     mut systems: Query<(&mut StarSystem, &crate::components::Position), Without<Ship>>,
     player_q: Query<&StationedAt, With<Player>>,
-    ruler_aboard_q: Query<&AboardShip, With<Player>>,
     mut empire_q: Query<&mut KnowledgeStore, With<PlayerEmpire>>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
+    // Round 9 PR #1 Step 3: per-faction routing.
+    vantage_q: FactionVantageQueries,
 ) {
     let player_system = match player_q.iter().next() {
         Some(s) => s.system,
@@ -465,12 +465,14 @@ pub fn deliver_survey_results(
 
     // #249: Player vantage — delivered at player's docked system, so origin
     // matches player_pos → local path in `record_fact_or_local`.
+    // Round 9 PR #1 Step 3: also collect every other empire's vantage so
+    // the FTL-delivery banner does not skip NPC observers entirely. NPC
+    // empires already see the surveyed flag via the light-speed path in
+    // `process_surveys`, but routing through `record_for` keeps every
+    // empire's `PendingFactQueue` aware of the formal `SurveyComplete`
+    // fact (with its own arrival time per vantage).
     let player_pos: Option<[f64; 3]> = systems.get(player_system).ok().map(|(_, p)| p.as_array());
-    let ruler_aboard = ruler_aboard_q.iter().next().is_some();
-    let vantage = player_pos.map(|pos| PlayerVantage {
-        player_pos: pos,
-        ruler_aboard,
-    });
+    let vantages = vantage_q.collect();
 
     for (ship_entity, ship, state, survey_data) in &ships {
         let ShipState::InSystem { system: docked_at } = state else {
@@ -522,14 +524,14 @@ pub fn deliver_survey_results(
             description: desc.clone(),
             related_system: Some(target),
         });
-        if let (Some(v), Some(pp)) = (vantage, player_pos) {
+        if let Some(pp) = player_pos {
             let fact = KnowledgeFact::SurveyComplete {
                 event_id: Some(event_id),
                 system: target,
                 system_name: survey_data.system_name.clone(),
                 detail: desc,
             };
-            fact_sys.record(fact, pp, clock.elapsed, &v);
+            fact_sys.record_for(fact, &vantages, pp, clock.elapsed);
         }
 
         // #127: If anomaly was discovered, fire AnomalyDiscovered event on delivery
@@ -546,14 +548,14 @@ pub fn deliver_survey_results(
                 description: desc.clone(),
                 related_system: Some(target),
             });
-            if let (Some(v), Some(pp)) = (vantage, player_pos) {
+            if let Some(pp) = player_pos {
                 let fact = KnowledgeFact::AnomalyDiscovered {
                     event_id: Some(event_id),
                     system: target,
                     anomaly_id: anomaly_id.clone(),
                     detail: desc,
                 };
-                fact_sys.record(fact, pp, clock.elapsed, &v);
+                fact_sys.record_for(fact, &vantages, pp, clock.elapsed);
             }
         }
 
