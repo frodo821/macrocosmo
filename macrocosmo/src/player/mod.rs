@@ -9,7 +9,7 @@ use crate::condition::ScopedFlags;
 use crate::empire::CommsParams;
 use crate::galaxy::StarSystem;
 use crate::game_state::GameState;
-use crate::knowledge::{KnowledgeStore, SystemVisibilityMap};
+use crate::knowledge::{KnowledgeStore, PendingFactQueue, SystemVisibilityMap};
 use crate::physics;
 use crate::ship::{Ship, ShipState};
 use crate::technology::{
@@ -76,6 +76,10 @@ pub fn spawn_player_empire(mut commands: Commands) {
             ScopedFlags::default(),
             PendingColonyTechModifiers::default(),
             CommsParams::default(),
+            // Round 9 PR #1 Step 2: per-empire fact queue. Callsites
+            // migrate from the legacy `Resource<PendingFactQueue>` to
+            // per-faction routing in Step 3.
+            PendingFactQueue::default(),
         ),
     ));
     info!("Player empire entity spawned");

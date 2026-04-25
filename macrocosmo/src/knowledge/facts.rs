@@ -579,16 +579,26 @@ pub struct PerceivedFact {
     pub related_system: Option<Entity>,
 }
 
-/// Resource holding facts waiting for their light-speed / relay arrival time.
+/// Holds facts waiting for their light-speed / relay arrival time.
 ///
 /// Parallel to (not merged with) [`KnowledgeStore`](super::KnowledgeStore).
 /// Responsibility split:
-///   - `KnowledgeStore` → "what is the world like right now, from the
-///     player's vantage point" (snapshot).
-///   - `PendingFactQueue` → "what *happened* that the player will hear about
-///     at time T" (delta).
-#[derive(Resource, Default, Reflect)]
-#[reflect(Resource)]
+///   - `KnowledgeStore` → "what is the world like right now, from this
+///     empire's vantage point" (snapshot).
+///   - `PendingFactQueue` → "what *happened* that this empire will hear
+///     about at time T" (delta).
+///
+/// Round 9 PR #1 Step 2: `PendingFactQueue` is now both a `Resource`
+/// (legacy player-empire-only queue, drained by
+/// `dispatch_knowledge_observed`) **and** a `Component` attached to
+/// every `Empire` entity. Step 3 migrates production callsites from
+/// the Resource path to per-empire Components via
+/// [`FactSysParam::record_for`]; until then the Component is added on
+/// every empire spawn but stays empty for NPC empires (the player
+/// empire continues to receive both). Once all callsites are migrated
+/// the Resource derive will be removed in a follow-up PR.
+#[derive(Resource, Component, Default, Reflect)]
+#[reflect(Resource, Component)]
 pub struct PendingFactQueue {
     pub facts: Vec<PerceivedFact>,
 }

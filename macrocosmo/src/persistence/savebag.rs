@@ -4609,6 +4609,14 @@ pub struct SavedComponentBag {
     pub knowledge_store: Option<SavedKnowledgeStore>,
     pub command_log: Option<SavedCommandLog>,
     pub pending_colony_tech_modifiers: Option<SavedPendingColonyTechModifiers>,
+    /// Round 9 PR #1 Step 2: per-empire `PendingFactQueue` component.
+    /// The legacy `SavedResources::pending_fact_queue` (Resource form)
+    /// is preserved during the dual-write transition; once Step 3
+    /// migrates all callsites the Resource path will be removed.
+    /// `#[serde(default)]` so saves written before this field round-trip
+    /// to `None` (load treats absent as empty queue).
+    #[serde(default)]
+    pub pending_fact_queue: Option<SavedPendingFactQueue>,
     // Ship
     pub ship: Option<SavedShip>,
     pub ship_state: Option<SavedShipState>,

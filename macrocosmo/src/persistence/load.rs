@@ -394,6 +394,10 @@ fn apply_component_bag(
     if let Some(ks) = &bag.knowledge_store {
         ec.insert(ks.clone().into_live(map));
     }
+    // Round 9 PR #1 Step 2: per-empire fact queue Component.
+    if let Some(pq) = &bag.pending_fact_queue {
+        ec.insert(pq.clone().into_live(map));
+    }
     if let Some(cl) = &bag.command_log {
         ec.insert(cl.clone().into_live());
     }

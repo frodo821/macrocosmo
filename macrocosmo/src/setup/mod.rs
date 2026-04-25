@@ -274,6 +274,14 @@ fn empire_bundle(
             CommandLog::default(),
             ScopedFlags::default(),
             PendingColonyTechModifiers::default(),
+            // Round 9 PR #1 Step 2: NPC empires now also get a
+            // `CommsParams` (previously only the player empire had
+            // it — `compute_fact_arrival` for NPC-issued facts in
+            // Step 3 needs it) and an empty per-empire
+            // `PendingFactQueue`. Step 3 wires production callsites
+            // to `record_for` so the queue actually fills.
+            crate::empire::CommsParams::default(),
+            crate::knowledge::PendingFactQueue::default(),
         ),
     )
 }

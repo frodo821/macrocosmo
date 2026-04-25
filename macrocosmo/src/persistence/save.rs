@@ -84,7 +84,12 @@ use super::savebag::*;
 // SlotAssignment refactor: `slot_assignment` field + SystemBuildings→max_slots.
 /// #421: Added `ruler` and `empire_ruler` fields to `SavedComponentBag`,
 /// and renamed `player_aboard` to `ruler_aboard` on `SavedShip`.
-pub const SAVE_VERSION: u32 = 8;
+/// Round 9 PR #1 Step 2: `pending_fact_queue` field added to
+/// `SavedComponentBag` (per-empire queue Component); also added
+/// `comms_params` to NPC empire spawn — this is a new wire field on
+/// existing entities, so postcard sequential decoding requires a
+/// version bump.
+pub const SAVE_VERSION: u32 = 9;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -530,6 +535,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if let Some(ks) = e_ref.get::<KnowledgeStore>() {
         bag.knowledge_store = Some(SavedKnowledgeStore::from_live(ks));
+    }
+    // Round 9 PR #1 Step 2: per-empire fact queue Component.
+    if let Some(pq) = e_ref.get::<PendingFactQueue>() {
+        bag.pending_fact_queue = Some(SavedPendingFactQueue::from_live(pq));
     }
     if let Some(cl) = e_ref.get::<CommandLog>() {
         bag.command_log = Some(SavedCommandLog::from_live(cl));
