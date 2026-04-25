@@ -60,12 +60,28 @@ pub struct MidTermDefaultConfig {
     /// - `Unreachable` / `TimedOut` → transition all `Active`
     ///   campaigns to `Abandoned` (path closed, no point continuing).
     /// - `Won` → transition all `Active` campaigns to `Succeeded`
-    ///   (work is done).
+    ///   (work is done) — *only* if `treat_won_as_terminal` is also
+    ///   `true`.
     ///
     /// On a terminal status the inbox is also ignored (no new
     /// campaigns are started). Default `true` — mirrors the
     /// long-term agent's `is_terminal()` short-circuit.
     pub abandon_on_terminal: bool,
+    /// When `true` (default), `Won` is treated as a terminal status:
+    /// Active campaigns transition to `Succeeded` and the inbox is
+    /// ignored, matching `Unreachable` / `TimedOut`. Appropriate for
+    /// "achieve once" goals where reaching the threshold means the
+    /// objective is permanently complete.
+    ///
+    /// Set to `false` for **maintenance** goals where the win can be
+    /// undone (adversarial scenarios, "control N% territory" style
+    /// objectives). When `false`, the mid agent ignores `Won` for
+    /// abandon purposes — Active campaigns stay Active so the short
+    /// agent keeps emitting commands to defend the threshold against
+    /// erosion. The inbox is still processed (new intents land
+    /// normally). `Unreachable` / `TimedOut` remain terminal
+    /// regardless.
+    pub treat_won_as_terminal: bool,
 }
 
 impl Default for MidTermDefaultConfig {
@@ -76,6 +92,7 @@ impl Default for MidTermDefaultConfig {
             guardrail_pursue_prefix: "pursue_metric:".into(),
             stamp_weights: true,
             abandon_on_terminal: true,
+            treat_won_as_terminal: true,
         }
     }
 }
@@ -179,7 +196,8 @@ impl MidTermAgent for IntentDrivenMidTerm {
         if self.config.abandon_on_terminal {
             use crate::victory::VictoryStatus::*;
             let target_state = match input.victory_status {
-                Won => Some(CampaignState::Succeeded),
+                Won if self.config.treat_won_as_terminal => Some(CampaignState::Succeeded),
+                Won => None,
                 Unreachable | TimedOut => Some(CampaignState::Abandoned),
                 Ongoing { .. } => None,
             };
