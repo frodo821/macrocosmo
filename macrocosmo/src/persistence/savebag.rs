@@ -1087,12 +1087,6 @@ impl SavedEmpire {
 pub struct SavedPlayerEmpire;
 
 // ---------------------------------------------------------------------------
-// Obscured marker
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedObscuredByGas;
-
 // ===========================================================================
 // Phase B wire types
 // ===========================================================================
@@ -4577,7 +4571,6 @@ pub struct SavedComponentBag {
     pub hostile_stats: Option<SavedHostileStats>,
     #[serde(default)]
     pub hostile_marker: Option<SavedHostileMarker>,
-    pub obscured_by_gas: Option<SavedObscuredByGas>,
     pub port_facility: Option<SavedPortFacility>,
     pub anomalies: Option<SavedAnomalies>,
     pub forbidden_region: Option<SavedForbiddenRegion>,

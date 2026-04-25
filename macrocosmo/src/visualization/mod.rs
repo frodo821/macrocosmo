@@ -14,7 +14,7 @@ use bevy_egui::EguiContexts;
 
 use crate::components::Position;
 use crate::deep_space::DeepSpaceStructure;
-use crate::galaxy::{ObscuredByGas, StarSystem};
+use crate::galaxy::StarSystem;
 use crate::player::Player;
 use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState};
 use crate::time_system::GameClock;
@@ -352,7 +352,7 @@ fn ship_pixel_position(
 fn collect_candidates(
     world_pos: Vec2,
     ship_q: &Query<(Entity, &Ship, &ShipState)>,
-    stars: &Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
+    stars: &Query<(Entity, &StarSystem, &Position)>,
     dss_q: &Query<(Entity, &Position), With<DeepSpaceStructure>>,
     star_positions: &Query<&Position, With<StarSystem>>,
     clock: &GameClock,
@@ -376,10 +376,7 @@ fn collect_candidates(
     }
 
     // Stars
-    for (entity, _star, pos, obscured) in stars {
-        if obscured.is_some() {
-            continue;
-        }
+    for (entity, _star, pos) in stars {
         let star_px = Vec2::new(pos.x as f32 * view_scale, pos.y as f32 * view_scale);
         let dist = world_pos.distance(star_px);
         if dist < click_radius {
@@ -456,7 +453,7 @@ pub fn click_select_system(
     keybindings: Option<Res<crate::input::KeybindingRegistry>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    stars: Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
+    stars: Query<(Entity, &StarSystem, &Position)>,
     ship_q: Query<(Entity, &Ship, &ShipState)>,
     star_positions: Query<&Position, With<StarSystem>>,
     dss_q: Query<(Entity, &Position), With<DeepSpaceStructure>>,
@@ -658,7 +655,7 @@ pub fn draw_deploy_preview_gizmo(
     deploy_mode: Res<DeployMode>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    stars: Query<(&StarSystem, &Position, Option<&ObscuredByGas>)>,
+    stars: Query<(&StarSystem, &Position)>,
     view: Res<GalaxyView>,
     mut gizmos: Gizmos,
 ) {
@@ -680,10 +677,7 @@ pub fn draw_deploy_preview_gizmo(
 
     // Find the nearest visible star within the snap radius.
     let mut best: Option<(Vec2, f32)> = None;
-    for (_star, pos, obscured) in &stars {
-        if obscured.is_some() {
-            continue;
-        }
+    for (_star, pos) in &stars {
         let star_px = Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale);
         let dist = world_pos.distance(star_px);
         if dist < DEPLOY_STAR_SNAP_RADIUS_PX && best.map(|(_, d)| dist < d).unwrap_or(true) {

@@ -20,7 +20,7 @@ use super::biome::resolve_biome_id;
 use super::types::{default_planet_types, default_star_types};
 use super::{
     Anomalies, AtSystem, Biome, BiomeRegistry, GalaxyConfig, Hostile, HostileHitpoints,
-    HostileStats, ObscuredByGas, Planet, Sovereignty, StarSystem, StarTypeModifierSet,
+    HostileStats, Planet, Sovereignty, StarSystem, StarTypeModifierSet,
     SystemAttributes, SystemModifiers,
 };
 use crate::amount::SignedAmt;
@@ -621,11 +621,6 @@ pub(crate) fn initialize_systems(
         }
     }
 
-    // Gas obscured systems (15%)
-    let gas_indices: Vec<usize> = (0..actual_count)
-        .filter(|_| rng.random_range(0.0_f32..1.0) < 0.15)
-        .collect();
-
     // Track spawned system entities and positions for hostile spawning
     let mut spawned_systems: Vec<(Entity, [f64; 3], bool)> = Vec::with_capacity(actual_count);
 
@@ -686,10 +681,6 @@ pub(crate) fn initialize_systems(
         let star_entity = entity.id();
 
         spawned_systems.push((star_entity, sys.position, is_capital));
-
-        if gas_indices.contains(&i) && !is_capital {
-            commands.entity(star_entity).insert(ObscuredByGas);
-        }
 
         // Spawn planets for this star system. Planet names from
         // `spawn_planet` hook calls are used verbatim; default-generated

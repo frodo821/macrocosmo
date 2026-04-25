@@ -7,7 +7,7 @@ use super::GalaxyView;
 use crate::colony::{Buildings, Colony};
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
-use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, ObscuredByGas, Planet, StarSystem};
+use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, Planet, StarSystem};
 use crate::knowledge::{KnowledgeStore, SystemVisibilityMap, SystemVisibilityTier};
 use crate::player::{Empire, Player, PlayerEmpire, StationedAt};
 use crate::ship::{Ship, ShipState};
@@ -49,7 +49,7 @@ pub fn cleanup_star_visuals(mut commands: Commands, visuals: Query<Entity, With<
 
 pub fn spawn_star_visuals(
     mut commands: Commands,
-    stars: Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
+    stars: Query<(Entity, &StarSystem, &Position)>,
     colonies: Query<&Colony>,
     planets: Query<&Planet>,
     view: Res<GalaxyView>,
@@ -71,10 +71,9 @@ pub fn spawn_star_visuals(
     // star is rendered as if the player had direct visibility.
     let god_view = observer_mode.enabled;
 
-    for (entity, star, pos, obscured) in &stars {
+    for (entity, star, pos) in &stars {
         let x = pos.x as f32 * view.scale;
         let y = pos.y as f32 * view.scale;
-        let is_obscured = obscured.is_some();
 
         // #434: Gate is_capital/surveyed/colonized on KnowledgeStore for
         // remote systems — the live StarSystem flags are global and would
@@ -112,7 +111,7 @@ pub fn spawn_star_visuals(
             surveyed: effective_surveyed,
             is_capital: effective_capital,
         };
-        let color = star_color(&effective_star, is_colonized, is_obscured);
+        let color = star_color(&effective_star, is_colonized);
 
         // Determine base size based on knowledge-gated status
         let size = if effective_capital {
@@ -125,29 +124,27 @@ pub fn spawn_star_visuals(
             10.0
         };
 
-        // Spawn glow halo behind the star (skip for obscured stars)
-        if !is_obscured {
-            let [r, g, b, _] = color.to_srgba().to_f32_array();
-            let glow_alpha = if effective_capital || is_colonized {
-                0.2
-            } else {
-                0.15
-            };
-            let glow_size = size * 3.0;
-            commands.spawn((
-                StarVisual {
-                    system_entity: entity,
-                },
-                StarGlow,
-                BaseStarSize(glow_size),
-                Sprite {
-                    color: Color::srgba(r, g, b, glow_alpha),
-                    custom_size: Some(Vec2::splat(glow_size)),
-                    ..default()
-                },
-                Transform::from_xyz(x, y, -0.1),
-            ));
-        }
+        // Spawn glow halo behind the star
+        let [r, g, b, _] = color.to_srgba().to_f32_array();
+        let glow_alpha = if effective_capital || is_colonized {
+            0.2
+        } else {
+            0.15
+        };
+        let glow_size = size * 3.0;
+        commands.spawn((
+            StarVisual {
+                system_entity: entity,
+            },
+            StarGlow,
+            BaseStarSize(glow_size),
+            Sprite {
+                color: Color::srgba(r, g, b, glow_alpha),
+                custom_size: Some(Vec2::splat(glow_size)),
+                ..default()
+            },
+            Transform::from_xyz(x, y, -0.1),
+        ));
 
         // Spawn main star dot
         commands.spawn((
@@ -191,10 +188,8 @@ pub fn spawn_star_visuals(
     }
 }
 
-pub(super) fn star_color(star: &StarSystem, colonized: bool, obscured: bool) -> Color {
-    if obscured {
-        Color::srgba(0.2, 0.2, 0.25, 0.15) // Barely visible
-    } else if star.is_capital {
+pub(super) fn star_color(star: &StarSystem, colonized: bool) -> Color {
+    if star.is_capital {
         Color::srgb(1.0, 0.84, 0.0) // Gold
     } else if colonized {
         Color::srgb(0.3, 1.0, 0.3) // Bright green, more saturated
@@ -209,7 +204,7 @@ pub(super) fn star_color(star: &StarSystem, colonized: bool, obscured: bool) -> 
 // #40: Also handles zoom-responsive sizing and glow color updates
 // #176: Uses KnowledgeStore for remote system colonized status
 pub fn update_star_colors(
-    stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
+    stars: Query<(Entity, &StarSystem)>,
     mut visuals: Query<
         (
             &StarVisual,
@@ -263,7 +258,7 @@ pub fn update_star_colors(
     let zoom_factor = (1.0 + (camera_scale - 1.0) * 0.5).max(1.0);
 
     for (vis, mut sprite, glow, base_size) in &mut visuals {
-        if let Ok((_, star, obscured)) = stars.get(vis.system_entity) {
+        if let Ok((_, star)) = stars.get(vis.system_entity) {
             let use_ground_truth = god_view || player_system == Some(vis.system_entity);
             // #176: Local system uses real-time colonized status, remote uses KnowledgeStore
             let is_colonized = if use_ground_truth {
@@ -300,7 +295,7 @@ pub fn update_star_colors(
                 surveyed: effective_surveyed,
                 is_capital: effective_capital,
             };
-            let base_color = star_color(&effective_star, is_colonized, obscured.is_some());
+            let base_color = star_color(&effective_star, is_colonized);
             // #392: Tier-based alpha multiplier. Catalogued systems are extra
             // dim; surveyed systems use knowledge age fading.
             let tier = if god_view {
@@ -372,7 +367,7 @@ pub fn update_star_colors(
 
     // #434: Dynamically update star label visibility based on KnowledgeStore.
     for (vis, mut text_color) in &mut labels {
-        if let Ok((_, star, _)) = stars.get(vis.system_entity) {
+        if let Ok((_, star)) = stars.get(vis.system_entity) {
             let use_ground_truth = god_view || player_system == Some(vis.system_entity);
             let effective_capital = if use_ground_truth {
                 star.is_capital

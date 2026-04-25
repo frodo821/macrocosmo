@@ -250,10 +250,6 @@ pub struct HostileStats {
 #[derive(Component, Default, Clone, Copy, Debug)]
 pub struct Hostile;
 
-/// Marker for systems obscured by interstellar gas
-#[derive(Component)]
-pub struct ObscuredByGas;
-
 /// Marker for systems that have port facilities
 #[derive(Component)]
 pub struct PortFacility {

@@ -44,7 +44,7 @@ use crate::events::EventLog;
 use crate::faction::{DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionRelations};
 use crate::galaxy::{
     Anomalies, AtSystem, Biome, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints,
-    HostileStats, ObscuredByGas, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
+    HostileStats, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::{DestroyedShipRegistry, KnowledgeStore, PendingFactQueue};
 use crate::notifications::NotificationQueue;
@@ -84,7 +84,7 @@ use super::savebag::*;
 // SlotAssignment refactor: `slot_assignment` field + SystemBuildings→max_slots.
 /// #421: Added `ruler` and `empire_ruler` fields to `SavedComponentBag`,
 /// and renamed `player_aboard` to `ruler_aboard` on `SavedShip`.
-pub const SAVE_VERSION: u32 = 7;
+pub const SAVE_VERSION: u32 = 8;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -369,9 +369,6 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if e_ref.get::<Hostile>().is_some() {
         bag.hostile_marker = Some(SavedHostileMarker);
-    }
-    if e_ref.get::<ObscuredByGas>().is_some() {
-        bag.obscured_by_gas = Some(SavedObscuredByGas);
     }
     if let Some(p) = e_ref.get::<PortFacility>() {
         bag.port_facility = Some(SavedPortFacility::from_live(p));

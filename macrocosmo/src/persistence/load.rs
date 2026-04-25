@@ -230,9 +230,6 @@ fn apply_component_bag(
     if bag.hostile_marker.is_some() {
         ec.insert(crate::galaxy::Hostile);
     }
-    if bag.obscured_by_gas.is_some() {
-        ec.insert(crate::galaxy::ObscuredByGas);
-    }
     if let Some(p) = &bag.port_facility {
         ec.insert(p.clone().into_live(map));
     }
