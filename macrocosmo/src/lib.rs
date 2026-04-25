@@ -14,6 +14,7 @@ pub mod events;
 pub mod faction;
 pub mod galaxy;
 pub mod game_state;
+pub mod input;
 pub mod knowledge;
 pub mod modifier;
 pub mod negotiation;

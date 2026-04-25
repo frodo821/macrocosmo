@@ -39,7 +39,7 @@ pub use notifications_tab::{
     EscNotificationQueue, NotificationsTab, PendingAck, PushOutcome, apply_pending_acks_system,
     drain_pending_acks_for_tests, enqueue_pending_ack,
 };
-pub use panel::{TOGGLE_KEY, draw_situation_center_system, toggle_situation_center};
+pub use panel::{DEFAULT_TOGGLE_KEY, draw_situation_center_system, toggle_situation_center};
 pub use registry::{AppSituationExt, SituationTabRegistry};
 pub use resource_trends_tab::{ResourceTrendHistory, ResourceTrendsTab, record_resource_trends};
 pub use ship_ops_tab::ShipOperationsTab;

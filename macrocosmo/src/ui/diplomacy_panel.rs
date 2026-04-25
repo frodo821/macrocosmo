@@ -24,8 +24,10 @@ use crate::scripting::faction_api::{
 };
 use crate::time_system::GameClock;
 
-/// F2 toggle keycode for the diplomacy panel.
-pub const TOGGLE_KEY: KeyCode = KeyCode::F2;
+// #347: the F2 toggle is now registered with `KeybindingRegistry` under
+// `crate::input::actions::UI_TOGGLE_DIPLOMACY`. The previous
+// `pub const TOGGLE_KEY: KeyCode = KeyCode::F2;` constant has been
+// removed; consumers should look up the binding through the registry.
 
 /// Action returned by the diplomacy panel to the caller system.
 pub enum DiplomacyAction {

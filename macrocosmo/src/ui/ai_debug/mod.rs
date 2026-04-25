@@ -175,9 +175,19 @@ pub struct AiDebugUi {
     pub last_snapshot: Option<BusSnapshot>,
 }
 
-/// Toggle the debug window with F10.
-pub fn toggle_ai_debug(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<AiDebugUi>) {
-    if keys.just_pressed(KeyCode::F10) {
+/// Toggle the debug window. Default binding is F10; rebindable via the
+/// #347 keybinding registry under
+/// [`crate::input::actions::UI_TOGGLE_AI_DEBUG`].
+pub fn toggle_ai_debug(
+    keys: Res<ButtonInput<KeyCode>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
+    mut ui: ResMut<AiDebugUi>,
+) {
+    let pressed = match keybindings.as_deref() {
+        Some(kb) => kb.is_just_pressed(crate::input::actions::UI_TOGGLE_AI_DEBUG, &keys),
+        None => keys.just_pressed(KeyCode::F10),
+    };
+    if pressed {
         ui.open = !ui.open;
     }
 }

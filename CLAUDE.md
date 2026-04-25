@@ -54,6 +54,7 @@ src/
 ├── player/              # Player, StationedAt, AboardShip, update_player_location
 ├── species.rs           # SpeciesDefinition, JobDefinition
 ├── physics/             # Distance, light delay, travel time calculations
+├── input/               # KeybindingRegistry + KeyCombo + TOML persistence (#347)
 ├── time_system/         # GameClock (hexadies), GameSpeed
 ├── visualization/       # Galaxy map rendering (sprites, gizmos, camera, territory shader)
 │   ├── mod.rs           # Star visuals, ship drawing, ghost markers, camera controls
@@ -106,6 +107,8 @@ tests/                   # 382 tests (275 unit + 107 integration, 11 test files)
 **Scoped Conditions.** `ConditionAtom { kind: AtomKind, scope: ConditionScope }` — atoms carry scope (Any/Empire/System/Planet/Ship). `EvalContext` has named scope slots with `ScopeData` (flags, buildings). `ConditionScope::Any` searches ship→planet→system→empire. Lua supports both static tables (`has_tech("x")`) and function-based prerequisites (`function(ctx) return ctx.empire:has_tech("x") end`). `ConditionCtx` UserData is stateless — builds condition tables, doesn't evaluate.
 
 **ScopedFlags.** `ScopedFlags` component on PlayerEmpire entity (future: StarSystem/Planet/Ship). Parallel to `GameFlags` (staged migration). `_pending_flags` drained from Lua into both in lifecycle hooks.
+
+**KeybindingRegistry (#347).** All player-facing keybinds go through `crate::input::KeybindingRegistry` — a `Resource` mapping stable `action_id` strings (declared in `crate::input::actions::*`) to `KeyCombo`s. Systems take `Option<Res<KeybindingRegistry>>` and call `kb.is_just_pressed("ui.toggle_situation_center", &keys)` instead of `keys.just_pressed(KeyCode::F3)`. The `Option` lets headless tests fall back to a hardcoded `KeyCode` literal so legacy `test_app()` / `full_test_app()` setups keep working without installing `KeybindingPlugin`. Adding a new keybind: declare an `action_id` constant in `input::actions`, call `register_default` in `register_engine_defaults` (or your plugin's `build`), and use `is_just_pressed` / `is_pressed` at the call site. Player overrides persist to `<config>/macrocosmo/keybindings.toml` (loaded once at Startup; conflict warnings via `bevy::log::warn!`). Rebinding UI is intentionally out of scope until a follow-up PR.
 
 ## Development Workflow
 

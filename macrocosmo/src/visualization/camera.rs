@@ -33,6 +33,7 @@ pub fn center_camera_on_capital(
 
 pub fn camera_controls(
     keys: Res<ButtonInput<KeyCode>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
     time: Res<Time>,
     mut camera_q: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -49,17 +50,32 @@ pub fn camera_controls(
     };
 
     let pan_speed = 300.0 * current_scale * time.delta_secs();
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        transform.translation.y += pan_speed;
-    }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
-        transform.translation.y -= pan_speed;
-    }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        transform.translation.x -= pan_speed;
-    }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        transform.translation.x += pan_speed;
+
+    // #347: WASD + arrow-key panning routed through the keybinding registry.
+    // Headless tests without `KeybindingPlugin` skip pan/zoom-by-key but
+    // mouse-scroll zoom still works (it doesn't need keybindings).
+    if let Some(keybindings) = keybindings.as_deref() {
+        use crate::input::actions;
+        let pressed = |id: &str| keybindings.is_pressed(id, &keys);
+        if pressed(actions::CAMERA_PAN_UP) || pressed(actions::CAMERA_PAN_UP_ALT) {
+            transform.translation.y += pan_speed;
+        }
+        if pressed(actions::CAMERA_PAN_DOWN) || pressed(actions::CAMERA_PAN_DOWN_ALT) {
+            transform.translation.y -= pan_speed;
+        }
+        if pressed(actions::CAMERA_PAN_LEFT) || pressed(actions::CAMERA_PAN_LEFT_ALT) {
+            transform.translation.x -= pan_speed;
+        }
+        if pressed(actions::CAMERA_PAN_RIGHT) || pressed(actions::CAMERA_PAN_RIGHT_ALT) {
+            transform.translation.x += pan_speed;
+        }
+        if keybindings.is_just_pressed(actions::CAMERA_RECENTER, &keys) {
+            transform.translation.x = 0.0;
+            transform.translation.y = 0.0;
+            if let Projection::Orthographic(ref mut ortho) = *projection {
+                ortho.scale = 1.0;
+            }
+        }
     }
 
     let egui_wants_input = egui_wants_pointer.is_some_and(|r| r.0);
@@ -68,14 +84,6 @@ pub fn camera_controls(
         let zoom_delta = -scroll.delta.y * 0.1;
         if let Projection::Orthographic(ref mut ortho) = *projection {
             ortho.scale = (ortho.scale + zoom_delta).clamp(0.2, 10.0);
-        }
-    }
-
-    if keys.just_pressed(KeyCode::Home) {
-        transform.translation.x = 0.0;
-        transform.translation.y = 0.0;
-        if let Projection::Orthographic(ref mut ortho) = *projection {
-            ortho.scale = 1.0;
         }
     }
 }

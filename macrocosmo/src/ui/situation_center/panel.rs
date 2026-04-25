@@ -29,20 +29,32 @@ use super::tab::{TabBadge, TabId, TabMeta};
 #[cfg(test)]
 use super::types::Severity;
 
-/// Hardcoded keybind. Tracked for replacement in #347 (In-game
-/// keybinding manager).
-pub const TOGGLE_KEY: KeyCode = KeyCode::F3;
+/// Default keybind for the ESC toggle. Re-exported for tests and any
+/// remaining code that wants to know the *default* binding (e.g. tooltip
+/// hints). Live binding lookup goes through
+/// [`crate::input::KeybindingRegistry`] under
+/// [`crate::input::actions::UI_TOGGLE_SITUATION_CENTER`] (#347).
+pub const DEFAULT_TOGGLE_KEY: KeyCode = KeyCode::F3;
 
 /// Toggle the ESC panel when the player presses the configured key.
 ///
 /// Registered in `Update` (not `EguiPrimaryContextPass`) so the toggle
 /// fires exactly once per press regardless of frame pacing in the UI
 /// schedule.
+///
+/// #347: Looks the binding up via [`crate::input::KeybindingRegistry`].
+/// The registry is `Option<Res<…>>` so headless tests that don't install
+/// `KeybindingPlugin` fall back to the [`DEFAULT_TOGGLE_KEY`] check.
 pub fn toggle_situation_center(
     keys: Res<ButtonInput<KeyCode>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
     mut state: ResMut<SituationCenterState>,
 ) {
-    if keys.just_pressed(TOGGLE_KEY) {
+    let pressed = match keybindings.as_deref() {
+        Some(kb) => kb.is_just_pressed(crate::input::actions::UI_TOGGLE_SITUATION_CENTER, &keys),
+        None => keys.just_pressed(DEFAULT_TOGGLE_KEY),
+    };
+    if pressed {
         state.open = !state.open;
     }
 }
@@ -254,15 +266,15 @@ mod tests {
         // Frame 1: press F3.
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
-            .press(TOGGLE_KEY);
+            .press(DEFAULT_TOGGLE_KEY);
         app.update();
         assert!(app.world().resource::<SituationCenterState>().open);
 
         // Frame 2: release, no change.
         {
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.release(TOGGLE_KEY);
-            keys.clear_just_pressed(TOGGLE_KEY);
+            keys.release(DEFAULT_TOGGLE_KEY);
+            keys.clear_just_pressed(DEFAULT_TOGGLE_KEY);
         }
         app.update();
         assert!(app.world().resource::<SituationCenterState>().open);
@@ -270,7 +282,7 @@ mod tests {
         // Frame 3: re-press → flips back.
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
-            .press(TOGGLE_KEY);
+            .press(DEFAULT_TOGGLE_KEY);
         app.update();
         assert!(!app.world().resource::<SituationCenterState>().open);
     }

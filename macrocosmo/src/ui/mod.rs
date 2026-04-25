@@ -16,7 +16,6 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::amount::{Amt, SignedAmt};
 use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
-use crate::observer::{ObserverMode, ObserverView};
 use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
     AuthorityParams, BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams,
@@ -32,6 +31,7 @@ use crate::galaxy::{HomeSystem, Planet, Sovereignty, StarSystem, SystemAttribute
 use crate::knowledge::KnowledgeStore;
 use crate::modifier::ModifiedValue;
 use crate::notifications::{NotificationPriority, NotificationQueue};
+use crate::observer::{ObserverMode, ObserverView};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
 use crate::scripting::building_api::BuildingRegistry;
 use crate::scripting::faction_api::DiplomaticOptionRegistry;
@@ -985,7 +985,11 @@ fn draw_main_panels_system(
         return;
     };
     // #417: Resolve empire entity — PlayerEmpire in normal mode, ObserverView in observer mode.
-    let empire_entity = resolve_ui_empire_raw(&selection.player_empire_q, &selection.observer_mode, &selection.observer_view);
+    let empire_entity = resolve_ui_empire_raw(
+        &selection.player_empire_q,
+        &selection.observer_mode,
+        &selection.observer_view,
+    );
     let Some(empire_entity) = empire_entity else {
         return;
     };
@@ -1021,17 +1025,18 @@ fn draw_main_panels_system(
         .map(|(id, _)| id.0.clone())
         .collect();
     let active_modifiers: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let (empire_flags_union, empire_buildings) = match deliverables_res.empire_flags.get(empire_entity) {
-        Ok((game_flags, scoped_flags)) => {
-            let mut union: std::collections::HashSet<String> = scoped_flags.flags.clone();
-            union.extend(game_flags.flags.iter().cloned());
-            (union, std::collections::HashSet::<String>::new())
-        }
-        Err(_) => (
-            std::collections::HashSet::<String>::new(),
-            std::collections::HashSet::<String>::new(),
-        ),
-    };
+    let (empire_flags_union, empire_buildings) =
+        match deliverables_res.empire_flags.get(empire_entity) {
+            Ok((game_flags, scoped_flags)) => {
+                let mut union: std::collections::HashSet<String> = scoped_flags.flags.clone();
+                union.extend(game_flags.flags.iter().cloned());
+                (union, std::collections::HashSet::<String>::new())
+            }
+            Err(_) => (
+                std::collections::HashSet::<String>::new(),
+                std::collections::HashSet::<String>::new(),
+            ),
+        };
     let deliverable_avail = system_panel::DeliverableAvailabilityCtx {
         researched_techs: &researched_techs,
         active_modifiers: &active_modifiers,
@@ -1642,7 +1647,10 @@ fn draw_overlays_system(
         (&mut ResourceStockpile, Option<&ResourceCapacity>),
         With<StarSystem>,
     >,
-    mut empire_q: Query<(&TechTree, &ResearchPool, &mut ResearchQueue), With<crate::player::Empire>>,
+    mut empire_q: Query<
+        (&TechTree, &ResearchPool, &mut ResearchQueue),
+        With<crate::player::Empire>,
+    >,
     branch_registry: Res<crate::technology::TechBranchRegistry>,
     effects_preview: Res<crate::technology::TechEffectsPreview>,
     unlock_index: Res<crate::technology::TechUnlockIndex>,
@@ -1684,10 +1692,7 @@ fn draw_overlays_system(
                 let energy_cost = tech.cost.energy;
 
                 // Deduct from the viewed empire's home system.
-                let home_sys = home_systems
-                    .get(empire_entity)
-                    .ok()
-                    .map(|hs| hs.0);
+                let home_sys = home_systems.get(empire_entity).ok().map(|hs| hs.0);
                 if let Some(sys_entity) = home_sys {
                     if let Ok((mut s, _)) = system_stockpiles.get_mut(sys_entity) {
                         s.minerals = s.minerals.sub(mineral_cost);
@@ -1738,19 +1743,40 @@ fn draw_overlays_system(
 // #304: F2 toggle for the diplomacy panel (runs in Update)
 // ---------------------------------------------------------------------------
 
-fn toggle_diplomacy_panel(keys: Res<ButtonInput<KeyCode>>, mut open: ResMut<DiplomacyPanelOpen>) {
-    if keys.just_pressed(diplomacy_panel::TOGGLE_KEY) {
+fn toggle_diplomacy_panel(
+    keys: Res<ButtonInput<KeyCode>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
+    mut open: ResMut<DiplomacyPanelOpen>,
+) {
+    let pressed = match keybindings.as_deref() {
+        Some(kb) => kb.is_just_pressed(crate::input::actions::UI_TOGGLE_DIPLOMACY, &keys),
+        None => keys.just_pressed(KeyCode::F2),
+    };
+    if pressed {
         open.0 = !open.0;
     }
 }
 
 // ---------------------------------------------------------------------------
-// #310: toggle_console — Alt+F2 toggles the Lua console
+// #310: toggle_console — Alt+F2 toggles the Lua console (default binding;
+// rebindable via #347 keybinding registry).
 // ---------------------------------------------------------------------------
 
-fn toggle_console(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<console::ConsoleState>) {
-    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
-    if alt && keys.just_pressed(KeyCode::F2) {
+fn toggle_console(
+    keys: Res<ButtonInput<KeyCode>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
+    mut state: ResMut<console::ConsoleState>,
+) {
+    let pressed = match keybindings.as_deref() {
+        Some(kb) => kb.is_just_pressed(crate::input::actions::UI_TOGGLE_CONSOLE, &keys),
+        None => {
+            // Fallback for headless tests with no `KeybindingPlugin` —
+            // mirrors the pre-#347 hardcoded check exactly.
+            let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+            alt && keys.just_pressed(KeyCode::F2)
+        }
+    };
+    if pressed {
         state.visible = !state.visible;
         if state.visible {
             state.scroll_to_bottom = true;
@@ -1900,10 +1926,7 @@ fn draw_diplomacy_overlay_system(
 // System 6: draw_bottom_bar_system
 // ---------------------------------------------------------------------------
 
-fn draw_bottom_bar_system(
-    mut contexts: EguiContexts,
-    event_log: Res<EventLog>,
-) {
+fn draw_bottom_bar_system(mut contexts: EguiContexts, event_log: Res<EventLog>) {
     crate::prof_span!("draw_bottom_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -2248,14 +2271,17 @@ fn draw_map_tooltips(
 fn apply_design_refit(
     ship_entity: Entity,
     system_entity: Entity,
-    ships_query: &mut Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
     design_registry: &ShipDesignRegistry,
     hull_registry: &HullRegistry,

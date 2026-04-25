@@ -453,6 +453,7 @@ fn apply_candidate_selection(
 pub fn click_select_system(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     stars: Query<(Entity, &StarSystem, &Position, Option<&ObscuredByGas>)>,
@@ -465,9 +466,16 @@ pub fn click_select_system(
     mut command_queues: Query<&mut CommandQueue>,
     mut egui_contexts: EguiContexts,
 ) {
+    // #347: SELECTION_CANCEL is bound to Escape by default. Fall back to a
+    // raw Escape check when no registry is installed (headless tests) so
+    // existing behaviour is preserved.
+    let cancel_pressed = match keybindings.as_deref() {
+        Some(kb) => kb.is_just_pressed(crate::input::actions::SELECTION_CANCEL, &keys),
+        None => keys.just_pressed(KeyCode::Escape),
+    };
     // Escape handling — cancel deploy mode first if active, otherwise fall
     // through to the existing ship / system deselection logic.
-    if keys.just_pressed(KeyCode::Escape) {
+    if cancel_pressed {
         if sel.deploy_mode.0.is_some() {
             sel.deploy_mode.0 = None;
             return;

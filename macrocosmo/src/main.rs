@@ -14,6 +14,7 @@ mod events;
 mod faction;
 mod galaxy;
 mod game_state;
+mod input;
 mod knowledge;
 mod modifier;
 mod negotiation;
@@ -61,7 +62,10 @@ fn main() {
         };
         info!(
             "Starting in observer mode ({source}): seed={:?}, time_horizon={:?}, speed={:?}, read_only={}",
-            observer_mode.seed, observer_mode.time_horizon, observer_mode.initial_speed, observer_mode.read_only
+            observer_mode.seed,
+            observer_mode.time_horizon,
+            observer_mode.initial_speed,
+            observer_mode.read_only
         );
     }
 
@@ -99,42 +103,45 @@ fn main() {
         app.insert_resource(LoadSaveRequest { path });
     }
 
-    app
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Macrocosmo".into(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Macrocosmo".into(),
+            resolution: (1280, 720).into(),
             ..default()
-        }))
-        .add_plugins((
-            time_system::GameTimePlugin,
-            galaxy::GalaxyPlugin,
-            player::PlayerPlugin,
-            communication::CommunicationPlugin,
-            visualization::VisualizationPlugin,
-            knowledge::KnowledgePlugin,
-            ship::ShipPlugin,
-            colony::ColonyPlugin,
-            scripting::ScriptingPlugin,
-            technology::TechnologyPlugin,
-            event_system::EventSystemPlugin,
-            events::EventsPlugin,
-            species::SpeciesPlugin,
-            ship_design::ShipDesignPlugin,
-        ))
-        .add_plugins((
-            deep_space::DeepSpacePlugin,
-            setup::GameSetupPlugin,
-            notifications::NotificationsPlugin,
-            faction::FactionRelationsPlugin,
-            choice::ChoicesPlugin,
-            ai::AiPlugin,
-            casus_belli::CasusBelliPlugin,
-            ObserverPlugin,
-        ))
-        .add_plugins(ui::UiPlugin);
+        }),
+        ..default()
+    }))
+    .add_plugins((
+        // #347: Keybinding registry must be inserted before any plugin
+        // that registers a keybind-driven system, so the registry is
+        // available when those systems first run.
+        input::KeybindingPlugin,
+        time_system::GameTimePlugin,
+        galaxy::GalaxyPlugin,
+        player::PlayerPlugin,
+        communication::CommunicationPlugin,
+        visualization::VisualizationPlugin,
+        knowledge::KnowledgePlugin,
+        ship::ShipPlugin,
+        colony::ColonyPlugin,
+        scripting::ScriptingPlugin,
+        technology::TechnologyPlugin,
+        event_system::EventSystemPlugin,
+        events::EventsPlugin,
+        species::SpeciesPlugin,
+        ship_design::ShipDesignPlugin,
+    ))
+    .add_plugins((
+        deep_space::DeepSpacePlugin,
+        setup::GameSetupPlugin,
+        notifications::NotificationsPlugin,
+        faction::FactionRelationsPlugin,
+        choice::ChoicesPlugin,
+        ai::AiPlugin,
+        casus_belli::CasusBelliPlugin,
+        ObserverPlugin,
+    ))
+    .add_plugins(ui::UiPlugin);
 
     #[cfg(feature = "remote")]
     {

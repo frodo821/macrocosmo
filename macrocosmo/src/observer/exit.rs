@@ -50,13 +50,23 @@ pub fn check_all_empires_eliminated(
     }
 }
 
-/// Immediate exit on Escape key. The key-input resource is optional so
-/// this system is inert in headless test apps that don't register
-/// `InputPlugin`.
-pub fn esc_to_exit(keys: Option<Res<ButtonInput<KeyCode>>>, mut exit: MessageWriter<AppExit>) {
+/// Immediate exit on the configured "observer.exit" keybind (default
+/// Escape). The key-input resource is optional so this system is inert
+/// in headless test apps that don't register `InputPlugin`. The
+/// keybinding registry is also optional so observer-mode tests that don't
+/// install `KeybindingPlugin` still see the legacy Escape behaviour.
+pub fn esc_to_exit(
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
+    mut exit: MessageWriter<AppExit>,
+) {
     let Some(keys) = keys else { return };
-    if keys.just_pressed(KeyCode::Escape) {
-        info!("Observer mode: Esc pressed, exiting");
+    let pressed = match keybindings.as_deref() {
+        Some(kb) => kb.is_just_pressed(crate::input::actions::OBSERVER_EXIT, &keys),
+        None => keys.just_pressed(KeyCode::Escape),
+    };
+    if pressed {
+        info!("Observer mode: exit keybind pressed, exiting");
         exit.write(AppExit::Success);
     }
 }

@@ -37,15 +37,15 @@ impl Plugin for PlayerPlugin {
                 .after(spawn_player_empire)
                 .run_if(not_in_observer_mode),
         )
-            .add_systems(
-                Update,
-                update_ruler_location.after(crate::time_system::advance_game_time),
-            )
-            .add_systems(
-                Update,
-                sync_ruler_viewer_system.after(update_ruler_location),
-            )
-            .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
+        .add_systems(
+            Update,
+            update_ruler_location.after(crate::time_system::advance_game_time),
+        )
+        .add_systems(
+            Update,
+            sync_ruler_viewer_system.after(update_ruler_location),
+        )
+        .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
     }
 }
 
@@ -199,12 +199,8 @@ pub fn spawn_player(
         .as_ref()
         .and_then(|ha| ha.assignments.get(&faction.id).copied());
 
-    let capital_entity = home.or_else(|| {
-        capitals
-            .iter()
-            .find(|(_, s)| s.is_capital)
-            .map(|(e, _)| e)
-    });
+    let capital_entity =
+        home.or_else(|| capitals.iter().find(|(_, s)| s.is_capital).map(|(e, _)| e));
 
     let Some(entity) = capital_entity else {
         warn!("No home system found for player!");
@@ -216,23 +212,22 @@ pub fn spawn_player(
         .map(|(_, s)| s.name.clone())
         .unwrap_or_else(|_| "unknown".into());
 
-    spawn_ruler_for_empire(
-        &mut commands,
-        empire_entity,
-        entity,
-        "Player".into(),
-        true,
-    );
+    spawn_ruler_for_empire(&mut commands, empire_entity, entity, "Player".into(), true);
     info!("Player Ruler starts at home system: {}", system_name);
 }
 
 pub fn log_player_info(
     keys: Res<ButtonInput<KeyCode>>,
+    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
     player_q: Query<&StationedAt, With<Player>>,
     systems: Query<(&StarSystem, &Position)>,
     all_systems: Query<(Entity, &StarSystem, &Position)>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyI) {
+    let pressed = match keybindings.as_deref() {
+        Some(kb) => kb.is_just_pressed(crate::input::actions::DEBUG_LOG_PLAYER_INFO, &keys),
+        None => keys.just_pressed(KeyCode::KeyI),
+    };
+    if !pressed {
         return;
     }
 
