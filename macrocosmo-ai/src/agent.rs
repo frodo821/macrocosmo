@@ -82,6 +82,13 @@ pub struct MidTermInput<'a> {
     /// integrations may pass the same `VictoryCondition` value the
     /// long-term agent saw on the same tick.
     pub victory: &'a VictoryCondition,
+    /// Pre-computed victory status for this tick. Mirrors what the
+    /// long-term agent received — gives the mid-agent the signal it
+    /// needs to abandon active campaigns when the path to victory is
+    /// closed (Unreachable / TimedOut) or to mark them Succeeded
+    /// when the goal is met (Won). Game integrations should pass the
+    /// same value used by the long-term agent on this tick.
+    pub victory_status: VictoryStatus,
 }
 
 #[derive(Debug, Default)]

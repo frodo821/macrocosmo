@@ -213,7 +213,7 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             .unwrap_or(true);
         let run_mid = mid_due || !inbox.is_empty();
         if run_mid {
-            self.run_mid(bus, &inbox, victory, ai_params, now, &mut out);
+            self.run_mid(bus, &inbox, victory, status.clone(), ai_params, now, &mut out);
             self.state.last_mid_tick = Some(now);
         }
 
@@ -345,6 +345,7 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
         bus: &AiBus,
         inbox: &[Intent],
         victory: &VictoryCondition,
+        victory_status: VictoryStatus,
         ai_params: Option<&dyn AiParamsExt>,
         now: Tick,
         out: &mut OrchestratorOutput,
@@ -357,6 +358,7 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             now,
             params: ai_params,
             victory,
+            victory_status,
         };
         let mid_out = self.mid.tick(input);
         out.mid_fired = true;

@@ -55,6 +55,17 @@ pub struct MidTermDefaultConfig {
     /// fractional command scheduling. Default `true` — even when
     /// short ignores weights, the data on the Campaign is harmless.
     pub stamp_weights: bool,
+    /// When `true`, the mid agent reacts to a terminal
+    /// `victory_status`:
+    /// - `Unreachable` / `TimedOut` → transition all `Active`
+    ///   campaigns to `Abandoned` (path closed, no point continuing).
+    /// - `Won` → transition all `Active` campaigns to `Succeeded`
+    ///   (work is done).
+    ///
+    /// On a terminal status the inbox is also ignored (no new
+    /// campaigns are started). Default `true` — mirrors the
+    /// long-term agent's `is_terminal()` short-circuit.
+    pub abandon_on_terminal: bool,
 }
 
 impl Default for MidTermDefaultConfig {
@@ -64,6 +75,7 @@ impl Default for MidTermDefaultConfig {
             prereq_guardrail: 0.0,
             guardrail_pursue_prefix: "pursue_metric:".into(),
             stamp_weights: true,
+            abandon_on_terminal: true,
         }
     }
 }
@@ -158,6 +170,35 @@ impl MidTermAgent for IntentDrivenMidTerm {
     fn tick(&mut self, input: MidTermInput<'_>) -> MidTermOutput {
         let mut ops = Vec::new();
         let mut log = Vec::new();
+
+        // Terminal short-circuit (mirror of `LongTermAgent.is_terminal()`):
+        // when victory is Won / Unreachable / TimedOut, transition
+        // active campaigns and stop processing the inbox. Saves the
+        // short-term agent from emitting commands for campaigns that
+        // can no longer matter.
+        if self.config.abandon_on_terminal {
+            use crate::victory::VictoryStatus::*;
+            let target_state = match input.victory_status {
+                Won => Some(CampaignState::Succeeded),
+                Unreachable | TimedOut => Some(CampaignState::Abandoned),
+                Ongoing { .. } => None,
+            };
+            if let Some(to) = target_state {
+                for c in input.campaigns {
+                    if c.state == CampaignState::Active {
+                        ops.push(CampaignOp::Transition {
+                            campaign_id: c.id.clone(),
+                            to,
+                            at: input.now,
+                        });
+                    }
+                }
+                return MidTermOutput {
+                    campaign_ops: ops,
+                    override_log: log,
+                };
+            }
+        }
 
         // Collect (score, intent) after filtering expired.
         let mut scored: Vec<(f32, &Intent)> = Vec::with_capacity(input.inbox.len());
@@ -379,6 +420,7 @@ mod tests {
             now: 1,
             params: None,
             victory: &test_victory(),
+            victory_status: crate::victory::VictoryStatus::Ongoing { progress: 0.0 },
         };
         let out = agent.tick(input);
         // Start + SetWeight + Transition (stamp_weights default = true).
@@ -404,6 +446,7 @@ mod tests {
             now: 11,
             params: None,
             victory: &test_victory(),
+            victory_status: crate::victory::VictoryStatus::Ongoing { progress: 0.0 },
         };
         let out = agent.tick(input);
         // AttachIntent + SetWeight (existing.weight=1.0, intent
@@ -432,6 +475,7 @@ mod tests {
             now: 1,
             params: None,
             victory: &test_victory(),
+            victory_status: crate::victory::VictoryStatus::Ongoing { progress: 0.0 },
         };
         let out = agent.tick(input);
         assert_eq!(out.campaign_ops.len(), 0);
@@ -453,6 +497,7 @@ mod tests {
             now: 10,
             params: None,
             victory: &test_victory(),
+            victory_status: crate::victory::VictoryStatus::Ongoing { progress: 0.0 },
         };
         let out = agent.tick(input);
         assert_eq!(out.campaign_ops.len(), 0);
@@ -478,6 +523,7 @@ mod tests {
             now: 21,
             params: None,
             victory: &test_victory(),
+            victory_status: crate::victory::VictoryStatus::Ongoing { progress: 0.0 },
         };
         let out = agent.tick(input);
         // One Superseded log entry + AttachIntent + SetWeight (existing
