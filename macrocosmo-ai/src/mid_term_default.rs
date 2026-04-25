@@ -22,7 +22,8 @@ use crate::agent::{
     CampaignOp, MidTermAgent, MidTermInput, MidTermOutput, OverrideEntry, OverrideReason,
 };
 use crate::campaign::CampaignState;
-use crate::ids::ObjectiveId;
+use crate::condition::{Condition, ConditionAtom};
+use crate::ids::{MetricId, ObjectiveId};
 use crate::intent::Intent;
 
 /// Config for [`IntentDrivenMidTerm`].
@@ -31,12 +32,29 @@ pub struct MidTermDefaultConfig {
     /// Intents with `effective_priority(now) < stale_threshold` are
     /// overridden (not applied) and logged.
     pub stale_threshold: f32,
+    /// **Guardrail**: when any prereq metric is within
+    /// `prereq_guardrail` of its threshold, suspend any
+    /// `pursue_metric:*` campaigns until the metric recovers. When
+    /// the prereq lifts back above the margin, suspended pursuits
+    /// transition back to `Active`.
+    ///
+    /// Default `0.0` keeps the pre-tuning behavior (mid never
+    /// throttles based on prereq state).
+    pub prereq_guardrail: f64,
+    /// Prefix used to identify campaigns governed by the guardrail.
+    /// Campaigns whose `id.as_str()` starts with this prefix are
+    /// candidates for throttling. Default `"pursue_metric:"` matches
+    /// the [`crate::long_term_default::ObjectiveDrivenLongTerm`]
+    /// pursue convention.
+    pub guardrail_pursue_prefix: String,
 }
 
 impl Default for MidTermDefaultConfig {
     fn default() -> Self {
         Self {
             stale_threshold: 0.1,
+            prereq_guardrail: 0.0,
+            guardrail_pursue_prefix: "pursue_metric:".into(),
         }
     }
 }
@@ -55,6 +73,55 @@ impl IntentDrivenMidTerm {
     pub fn with_config(mut self, config: MidTermDefaultConfig) -> Self {
         self.config = config;
         self
+    }
+}
+
+/// Walk a prereq `Condition` tree and return any metric leaves whose
+/// current bus value is within `margin` of the threshold (= near or
+/// past violation).
+fn prereq_metrics_in_danger(
+    bus: &crate::bus::AiBus,
+    cond: &Condition,
+    margin: f64,
+) -> Vec<MetricId> {
+    let mut leaves = Vec::new();
+    collect_leaves(cond, &mut leaves);
+    leaves
+        .into_iter()
+        .filter(|(metric, threshold, direction)| {
+            let cur = match bus.current(metric) {
+                Some(v) => v,
+                None => return false,
+            };
+            let distance = if *direction {
+                cur - *threshold
+            } else {
+                *threshold - cur
+            };
+            distance < margin
+        })
+        .map(|(m, _, _)| m)
+        .collect()
+}
+
+fn collect_leaves(cond: &Condition, out: &mut Vec<(MetricId, f64, bool)>) {
+    match cond {
+        Condition::Always | Condition::Never => {}
+        Condition::Atom(a) => match a {
+            ConditionAtom::MetricAbove { metric, threshold } => {
+                out.push((metric.clone(), *threshold, true));
+            }
+            ConditionAtom::MetricBelow { metric, threshold } => {
+                out.push((metric.clone(), *threshold, false));
+            }
+            _ => {}
+        },
+        Condition::All(children) | Condition::Any(children) | Condition::OneOf(children) => {
+            for c in children {
+                collect_leaves(c, out);
+            }
+        }
+        Condition::Not(inner) => collect_leaves(inner, out),
     }
 }
 
@@ -176,6 +243,47 @@ impl MidTermAgent for IntentDrivenMidTerm {
             }
         }
 
+        // Guardrail pass: walk prereq metric leaves, suspend / resume
+        // pursue campaigns based on whether each leaf is within the
+        // configured margin. We treat the post-ops campaign view (the
+        // `Start` we just queued may not have applied yet, but
+        // `apply_campaign_op` is idempotent so a redundant Transition
+        // here is fine).
+        if self.config.prereq_guardrail > 0.0 {
+            let in_danger = prereq_metrics_in_danger(
+                input.bus,
+                &input.victory.prerequisites,
+                self.config.prereq_guardrail,
+            );
+            for c in input.campaigns {
+                if !c
+                    .id
+                    .as_str()
+                    .starts_with(&self.config.guardrail_pursue_prefix)
+                {
+                    continue;
+                }
+                let should_suspend = !in_danger.is_empty();
+                match c.state {
+                    CampaignState::Active if should_suspend => {
+                        ops.push(CampaignOp::Transition {
+                            campaign_id: c.id.clone(),
+                            to: CampaignState::Suspended,
+                            at: input.now,
+                        });
+                    }
+                    CampaignState::Suspended if !should_suspend => {
+                        ops.push(CampaignOp::Transition {
+                            campaign_id: c.id.clone(),
+                            to: CampaignState::Active,
+                            at: input.now,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         MidTermOutput {
             campaign_ops: ops,
             override_log: log,
@@ -192,7 +300,12 @@ mod tests {
     use crate::ids::{FactionId, IntentId, IntentKindId, IntentTargetRef};
     use crate::intent::{IntentParams, IntentSpec, RationaleSnapshot};
     use crate::value_expr::ValueExpr;
+    use crate::victory::VictoryCondition;
     use crate::warning::WarningMode;
+
+    fn test_victory() -> VictoryCondition {
+        VictoryCondition::simple(Condition::Always, Condition::Always)
+    }
 
     fn make_intent(id: &str, kind: &str, issued_at: i64, arrives_at: i64) -> Intent {
         let spec = IntentSpec {
@@ -228,6 +341,7 @@ mod tests {
             campaigns: &[],
             now: 1,
             params: None,
+            victory: &test_victory(),
         };
         let out = agent.tick(input);
         assert_eq!(out.campaign_ops.len(), 2); // Start + Transition
@@ -250,6 +364,7 @@ mod tests {
             campaigns: std::slice::from_ref(&existing),
             now: 11,
             params: None,
+            victory: &test_victory(),
         };
         let out = agent.tick(input);
         assert_eq!(out.campaign_ops.len(), 1);
@@ -274,6 +389,7 @@ mod tests {
             campaigns: &[],
             now: 1,
             params: None,
+            victory: &test_victory(),
         };
         let out = agent.tick(input);
         assert_eq!(out.campaign_ops.len(), 0);
@@ -294,6 +410,7 @@ mod tests {
             campaigns: &[],
             now: 10,
             params: None,
+            victory: &test_victory(),
         };
         let out = agent.tick(input);
         assert_eq!(out.campaign_ops.len(), 0);
@@ -318,6 +435,7 @@ mod tests {
             campaigns: std::slice::from_ref(&existing),
             now: 21,
             params: None,
+            victory: &test_victory(),
         };
         let out = agent.tick(input);
         // One Superseded log entry + one AttachIntent (old campaign was

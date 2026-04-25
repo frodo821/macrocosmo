@@ -248,6 +248,16 @@ pub fn run_agent_scenario(scenario: AgentScenario) -> AgentPlaythrough {
             }
         }
 
+        // 2b. User tick closure — runs **before** orchestrator so it
+        // can seed initial values (tick 0) or push passive dynamics
+        // that the AI then reacts to in the same tick. The pure
+        // `run_scenario` runs tick_fn at the end of the tick (it has
+        // no agents to react), but agent scenarios benefit from
+        // pre-tick injection.
+        if let Some(tf) = &base.tick_fn {
+            (tf)(&mut rb, t);
+        }
+
         // 3. Per-faction orchestrator tick.
         for p in paired.iter_mut() {
             let out = p.orch.tick(
@@ -289,11 +299,6 @@ pub fn run_agent_scenario(scenario: AgentScenario) -> AgentPlaythrough {
             // Snapshot current campaigns.
             let snapshot: Vec<Campaign> = p.orch.state.campaigns.clone();
             trace.campaign_snapshots.push((t, snapshot));
-        }
-
-        // 4. User tick closure (if provided).
-        if let Some(tf) = &base.tick_fn {
-            (tf)(&mut rb, t);
         }
     }
 

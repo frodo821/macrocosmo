@@ -70,6 +70,12 @@ pub struct MidTermInput<'a> {
     pub campaigns: &'a [Campaign],
     pub now: Tick,
     pub params: Option<&'a (dyn AiParamsExt + 'a)>,
+    /// The faction's victory condition. Lets the mid-agent inspect
+    /// prerequisite metrics directly to decide whether to throttle
+    /// in-flight pursuits when prereqs approach violation. Game
+    /// integrations may pass the same `VictoryCondition` value the
+    /// long-term agent saw on the same tick.
+    pub victory: &'a VictoryCondition,
 }
 
 #[derive(Debug, Default)]
