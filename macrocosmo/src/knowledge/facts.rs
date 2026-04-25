@@ -899,6 +899,47 @@ pub struct PlayerVantage {
     pub ruler_aboard: bool,
 }
 
+/// Round 9 PR #1: Per-faction observation vantage point for the
+/// multi-empire knowledge propagation pipeline.
+///
+/// Equivalent to [`PlayerVantage`] but tagged with the empire entity that
+/// owns the vantage so [`FactSysParam::record_for`] can route a single
+/// world event into multiple empires' [`PendingFactQueue`]s in one call.
+///
+/// `ref_pos` is the world-space position the empire uses as its
+/// light-speed reference — typically the empire's
+/// [`crate::player::EmpireViewerSystem`] position, which mirrors the
+/// Ruler's `StationedAt` system.
+///
+/// `ruler_aboard` shortcircuits the queue for that empire's ruler when
+/// they are physically present at the event origin (mirrors the legacy
+/// "player is on-site" path in [`record_fact_or_local`]).
+#[derive(Clone, Copy, Debug)]
+pub struct FactionVantage {
+    /// The empire entity this vantage describes.
+    pub faction: Entity,
+    /// World-space position used for light-speed delay calculation.
+    pub ref_pos: [f64; 3],
+    /// `true` when the faction's Ruler is aboard a ship — the local
+    /// path bypasses the queue when origin position matches `ref_pos`
+    /// or the ruler is mobile.
+    pub ruler_aboard: bool,
+}
+
+impl FactionVantage {
+    /// Convert a legacy [`PlayerVantage`] into a [`FactionVantage`]
+    /// targeting the given empire entity. Used by the back-compat
+    /// adapter so existing callsites keep working until they are
+    /// migrated in PR #1 Step 3.
+    pub fn from_player(faction: Entity, vantage: &PlayerVantage) -> Self {
+        Self {
+            faction,
+            ref_pos: vantage.player_pos,
+            ruler_aboard: vantage.ruler_aboard,
+        }
+    }
+}
+
 /// #249: SystemParam bundle that groups the six resources / queries that every
 /// fact-writing callsite needs. Keeps the parameter count of the host system
 /// under Bevy's 16-param limit while avoiding a re-query of `Position` (the
@@ -968,6 +1009,15 @@ impl<'w, 's> FactSysParam<'w, 's> {
     /// `<core:*>@recorded` subscribers. Scripted variants are ignored
     /// by the core push (they already come in through
     /// `gs:record_knowledge`).
+    ///
+    /// Round 9 PR #1: This is the legacy player-only entry point.
+    /// It now wraps the supplied [`PlayerVantage`] in a single-element
+    /// [`FactionVantage`] slice and forwards to [`Self::record_for`].
+    /// The faction id used for the wrap is the first `PlayerEmpire` (or
+    /// `Entity::PLACEHOLDER` if none — typical observer / headless
+    /// startup before empires spawn). Callsites should migrate to
+    /// `record_for` directly once they have access to the empire
+    /// entity (Step 3).
     pub fn record(
         &mut self,
         fact: KnowledgeFact,
@@ -975,15 +1025,73 @@ impl<'w, 's> FactSysParam<'w, 's> {
         observed_at: i64,
         vantage: &PlayerVantage,
     ) -> (i64, ObservationSource) {
-        // Pull the immutable bits before the `ResMut` projections so we don't
-        // overlap the borrow of `empire_comms` / `relay_network`.
+        // Resolve a "best guess" faction entity for the legacy single
+        // vantage. If no empire is present, fall back to `Entity::PLACEHOLDER`
+        // — `record_for` only uses the faction id for routing in Step 2,
+        // and Step 1 (this commit) still routes into the shared queue, so
+        // the placeholder is harmless.
+        let faction = self
+            .empire_comms
+            .iter()
+            .next()
+            .map(|_| Entity::PLACEHOLDER)
+            .unwrap_or(Entity::PLACEHOLDER);
+        let fv = [FactionVantage::from_player(faction, vantage)];
+        self.record_for(fact, &fv, origin_pos, observed_at)
+    }
+
+    /// Round 9 PR #1: Per-faction multi-vantage record entry point.
+    ///
+    /// Routes a single world event into the [`PendingFactQueue`] once per
+    /// supplied [`FactionVantage`], so observer mode + NPC empires both
+    /// accumulate fact records in their own knowledge pipeline.
+    ///
+    /// Behaviour notes:
+    /// * Each vantage gets an independent arrival-time computation
+    ///   ([`compute_fact_arrival`]) keyed on `vantage.ref_pos`.
+    /// * The same `EventId` is shared across all vantage pushes — the
+    ///   tri-state [`NotifiedEventIds`] map deduplicates the eventual
+    ///   banner so the player sees one notification per logical event.
+    /// * The local-vs-remote shortcut (`origin == ref_pos` or
+    ///   `ruler_aboard`) is decided per vantage. Only the FIRST vantage
+    ///   that takes the local path produces a notification banner — the
+    ///   rest still record into the queue with a 0-delay so their
+    ///   `@observed` subscribers fire on the next tick.
+    /// * The `(arrives_at, source)` return value is the result for the
+    ///   FIRST vantage (legacy single-vantage callers preserve their
+    ///   existing observation contract). Multi-vantage callers that need
+    ///   per-vantage arrival info can compute it themselves via
+    ///   [`compute_fact_arrival`].
+    /// * With an empty `vantages` slice this is a no-op (returns
+    ///   `(observed_at, Direct)`); the K-5 core record push is also
+    ///   suppressed since there is no observer to dispatch to.
+    ///
+    /// Step 1 implementation note: the queue is still a single
+    /// [`Resource`] today. Step 2 of PR #1 moves it to a per-empire
+    /// [`Component`] and the routing here switches to per-empire queue
+    /// lookup; the API is stable across that migration.
+    pub fn record_for(
+        &mut self,
+        fact: KnowledgeFact,
+        vantages: &[FactionVantage],
+        origin_pos: [f64; 3],
+        observed_at: i64,
+    ) -> (i64, ObservationSource) {
+        // No vantages → nothing observes the event; treat as a no-op.
+        // Avoids double-pushing when the caller supplies an empty list
+        // (e.g. observer mode pre-empire-spawn).
+        if vantages.is_empty() {
+            return (observed_at, ObservationSource::Direct);
+        }
+
+        // Snapshot immutable inputs once, before borrowing ResMut fields.
         let comms = self.empire_comms.iter().next().cloned().unwrap_or_default();
         let relays = self.relay_network.relays.clone();
 
-        // #354 K-5: mirror the fact as a pending `core:*` record BEFORE
-        // the legacy dispatch consumes `fact` by move. We only push
-        // when we have a pending-records resource (production) and the
-        // variant maps to a core kind id (Scripted has `None`).
+        // K-5 core mirror: push the pending `core:*` record exactly once
+        // regardless of vantage count. Subscribers are observer-empire
+        // agnostic at the @recorded stage; @observed already iterates
+        // every observer downstream.
         if let (Some(kind_id), Some(snapshot)) =
             (fact.core_kind_id(), fact.to_core_payload_snapshot())
             && let Some(records) = self.pending_records.as_mut()
@@ -998,18 +1106,34 @@ impl<'w, 's> FactSysParam<'w, 's> {
             );
         }
 
-        record_fact_or_local(
-            fact,
-            origin_pos,
-            observed_at,
-            vantage.ruler_aboard,
-            vantage.player_pos,
-            &mut self.fact_queue,
-            &mut self.notifications,
-            &mut self.notified_ids,
-            &relays,
-            &comms,
-        )
+        let mut first_result: Option<(i64, ObservationSource)> = None;
+        for (i, v) in vantages.iter().enumerate() {
+            let player_vantage = PlayerVantage {
+                player_pos: v.ref_pos,
+                ruler_aboard: v.ruler_aboard,
+            };
+            // Cloning the fact per vantage is required because each push
+            // captures it by move into the queue. Cost is dominated by
+            // String fields; multi-vantage scenarios are rare today
+            // (player + 0-2 NPCs) so this is acceptable.
+            let f = fact.clone();
+            let result = record_fact_or_local(
+                f,
+                origin_pos,
+                observed_at,
+                player_vantage.ruler_aboard,
+                player_vantage.player_pos,
+                &mut self.fact_queue,
+                &mut self.notifications,
+                &mut self.notified_ids,
+                &relays,
+                &comms,
+            );
+            if i == 0 {
+                first_result = Some(result);
+            }
+        }
+        first_result.unwrap_or((observed_at, ObservationSource::Direct))
     }
 }
 
@@ -1680,5 +1804,140 @@ mod tests {
         // Explicit close removes the entry too.
         notified.close(id);
         assert!(!notified.contains(id));
+    }
+
+    // ----------------------------------------------------------------
+    // Round 9 PR #1 Step 1: `FactSysParam::record_for` multi-vantage
+    // routing tests. The queue is still a single Resource at this
+    // step, so verifying behaviour amounts to "N vantages produce N
+    // queue entries with the correct per-vantage arrival times".
+    // ----------------------------------------------------------------
+
+    use bevy::ecs::system::SystemState;
+    use bevy::prelude::App;
+
+    /// Build a minimal `App` with the resources `FactSysParam` needs.
+    /// No empire entity is spawned — caller decides whether to add
+    /// `CommsParams`-bearing entities.
+    fn make_facts_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<PendingFactQueue>()
+            .init_resource::<NotifiedEventIds>()
+            .init_resource::<NextEventId>()
+            .init_resource::<RelayNetwork>()
+            .insert_resource(NotificationQueue::new());
+        app
+    }
+
+    fn survey_fact() -> KnowledgeFact {
+        KnowledgeFact::SurveyComplete {
+            event_id: None,
+            system: Entity::PLACEHOLDER,
+            system_name: "Vega".into(),
+            detail: "Vega surveyed".into(),
+        }
+    }
+
+    #[test]
+    fn record_for_zero_vantages_is_noop() {
+        let mut app = make_facts_app();
+        let mut state: SystemState<FactSysParam> = SystemState::new(app.world_mut());
+        let mut fact_sys = state.get_mut(app.world_mut());
+
+        let result = fact_sys.record_for(survey_fact(), &[], [10.0, 0.0, 0.0], 100);
+        // No-op contract: `(observed_at, Direct)` and queue stays empty.
+        assert_eq!(result.0, 100);
+        assert_eq!(result.1, ObservationSource::Direct);
+
+        state.apply(app.world_mut());
+        let queue = app.world().resource::<PendingFactQueue>();
+        assert_eq!(queue.pending_len(), 0);
+        let notifs = app.world().resource::<NotificationQueue>();
+        assert!(notifs.items.is_empty());
+    }
+
+    #[test]
+    fn record_for_one_vantage_matches_legacy_record() {
+        let mut app = make_facts_app();
+        let mut state: SystemState<FactSysParam> = SystemState::new(app.world_mut());
+        let mut fact_sys = state.get_mut(app.world_mut());
+
+        let v = FactionVantage {
+            faction: Entity::PLACEHOLDER,
+            ref_pos: [0.0, 0.0, 0.0],
+            ruler_aboard: false,
+        };
+        // Origin 50ly away → 50 * 60 = 3000 hd light delay.
+        let result = fact_sys.record_for(survey_fact(), &[v], [50.0, 0.0, 0.0], 0);
+        assert_eq!(result.0, 3000);
+        assert_eq!(result.1, ObservationSource::Direct);
+
+        state.apply(app.world_mut());
+        let queue = app.world().resource::<PendingFactQueue>();
+        assert_eq!(queue.pending_len(), 1);
+        assert_eq!(queue.facts[0].arrives_at, 3000);
+    }
+
+    #[test]
+    fn record_for_two_vantages_pushes_per_empire_arrival_times() {
+        let mut app = make_facts_app();
+        let mut state: SystemState<FactSysParam> = SystemState::new(app.world_mut());
+        let mut fact_sys = state.get_mut(app.world_mut());
+
+        // Two vantages at different positions — they should observe the
+        // event at different times (50 ly vs 10 ly).
+        let near = FactionVantage {
+            faction: Entity::PLACEHOLDER,
+            ref_pos: [40.0, 0.0, 0.0], // 10 ly from origin
+            ruler_aboard: false,
+        };
+        let far = FactionVantage {
+            faction: Entity::PLACEHOLDER,
+            ref_pos: [0.0, 0.0, 0.0], // 50 ly from origin
+            ruler_aboard: false,
+        };
+        let result = fact_sys.record_for(survey_fact(), &[near, far], [50.0, 0.0, 0.0], 0);
+        // Return value reflects the FIRST vantage (`near`).
+        assert_eq!(result.0, 600); // 10 * 60
+        assert_eq!(result.1, ObservationSource::Direct);
+
+        state.apply(app.world_mut());
+        let queue = app.world().resource::<PendingFactQueue>();
+        assert_eq!(queue.pending_len(), 2);
+        // Both arrival times present — order matches vantage order.
+        assert_eq!(queue.facts[0].arrives_at, 600);
+        assert_eq!(queue.facts[1].arrives_at, 3000);
+    }
+
+    #[test]
+    fn record_for_local_path_when_ruler_aboard_skips_queue() {
+        let mut app = make_facts_app();
+        let mut state: SystemState<FactSysParam> = SystemState::new(app.world_mut());
+        let mut fact_sys = state.get_mut(app.world_mut());
+
+        // Ruler aboard ⇒ legacy local path: no queue push, banner instead.
+        // Use a CombatOutcome (Medium / High priority) so the banner
+        // actually surfaces (SurveyComplete is also Medium).
+        let v = FactionVantage {
+            faction: Entity::PLACEHOLDER,
+            ref_pos: [0.0, 0.0, 0.0],
+            ruler_aboard: true,
+        };
+        let fact = KnowledgeFact::CombatOutcome {
+            event_id: None,
+            system: Entity::PLACEHOLDER,
+            victor: CombatVictor::Player,
+            detail: "On-site victory".into(),
+        };
+        let result = fact_sys.record_for(fact, &[v], [200.0, 0.0, 0.0], 50);
+        // Local path returns `(observed_at, Direct)`.
+        assert_eq!(result.0, 50);
+        assert_eq!(result.1, ObservationSource::Direct);
+
+        state.apply(app.world_mut());
+        let queue = app.world().resource::<PendingFactQueue>();
+        assert_eq!(queue.pending_len(), 0);
+        let notifs = app.world().resource::<NotificationQueue>();
+        assert_eq!(notifs.items.len(), 1);
     }
 }
