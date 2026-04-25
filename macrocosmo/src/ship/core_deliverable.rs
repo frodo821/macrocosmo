@@ -244,10 +244,9 @@ pub fn handle_core_deploy_requested(
         // does not already have them. Core deployment alone is sufficient for
         // system building construction — colony is NOT required.
         if existing_system_buildings.get(system).is_err() {
-            commands.entity(system).insert((
-                SystemBuildings::default(),
-                SystemBuildingQueue::default(),
-            ));
+            commands
+                .entity(system)
+                .insert((SystemBuildings::default(), SystemBuildingQueue::default()));
             // Tag the StarSystem with FactionOwner so the administrative owner
             // matches the Core deployer (same pattern as settlement.rs).
             if let Some(faction) = winner.faction_owner {

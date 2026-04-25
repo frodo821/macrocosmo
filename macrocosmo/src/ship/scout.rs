@@ -216,25 +216,29 @@ pub fn tick_scout_observation(
     // empire considers non-aggressive do not register as "hostile" in
     // scout reports. Build lazily per viewer empire.
     let mut hostile_map_cache: HashMap<Option<Entity>, HashMap<Entity, f64>> = HashMap::new();
-    let build_hostile_map =
-        |viewer: Option<Entity>,
-         hostiles: &Query<(&AtSystem, &HostileStats, Option<&crate::faction::FactionOwner>), With<Hostile>>,
-         relations: &crate::faction::FactionRelations|
-         -> HashMap<Entity, f64> {
-            let mut map: HashMap<Entity, f64> = HashMap::new();
-            for (at_system, stats, owner) in hostiles.iter() {
-                let include = match (viewer, owner) {
-                    (Some(v), Some(o)) => relations
-                        .get_or_default(v, o.0)
-                        .can_attack_aggressive(),
-                    _ => true,
-                };
-                if include {
-                    *map.entry(at_system.0).or_insert(0.0) += stats.strength;
-                }
+    let build_hostile_map = |viewer: Option<Entity>,
+                             hostiles: &Query<
+        (
+            &AtSystem,
+            &HostileStats,
+            Option<&crate::faction::FactionOwner>,
+        ),
+        With<Hostile>,
+    >,
+                             relations: &crate::faction::FactionRelations|
+     -> HashMap<Entity, f64> {
+        let mut map: HashMap<Entity, f64> = HashMap::new();
+        for (at_system, stats, owner) in hostiles.iter() {
+            let include = match (viewer, owner) {
+                (Some(v), Some(o)) => relations.get_or_default(v, o.0).can_attack_aggressive(),
+                _ => true,
+            };
+            if include {
+                *map.entry(at_system.0).or_insert(0.0) += stats.strength;
             }
-            map
-        };
+        }
+        map
+    };
 
     // First pass: collect an owned snapshot of every ship so we can sensor-
     // scan without borrowing the mutable query twice. Also identify which
@@ -253,11 +257,11 @@ pub fn tick_scout_observation(
     let mut all_ships: Vec<ShipObservation> = Vec::new();
     let mut completions: Vec<(
         Entity,
-        Entity,           // target_system
-        Entity,           // origin_system
+        Entity, // target_system
+        Entity, // origin_system
         ReportMode,
         [f64; 3],
-        Option<Entity>,   // owner empire entity
+        Option<Entity>, // owner empire entity
     )> = Vec::new();
 
     for (ship_entity, ship, state, ship_pos, hp) in ships.iter() {
@@ -320,7 +324,9 @@ pub fn tick_scout_observation(
         }
     }
 
-    for (ship_entity, target_system, origin_system, report_mode, scout_pos, owner_empire) in completions {
+    for (ship_entity, target_system, origin_system, report_mode, scout_pos, owner_empire) in
+        completions
+    {
         // Build per-empire hostile map (cached).
         let hostile_map = hostile_map_cache
             .entry(owner_empire)

@@ -746,9 +746,9 @@ pub fn detect_annihilation(
     }
 
     for (empire_entity, faction) in &empires {
-        let has_sovereignty = sovereignties.iter().any(|sov| {
-            sov.owner == Some(crate::ship::Owner::Empire(empire_entity))
-        });
+        let has_sovereignty = sovereignties
+            .iter()
+            .any(|sov| sov.owner == Some(crate::ship::Owner::Empire(empire_entity)));
         if has_sovereignty {
             continue;
         }
@@ -2214,7 +2214,9 @@ mod tests {
         let empire = app
             .world_mut()
             .spawn((
-                crate::player::Empire { name: "TestEmpire".into() },
+                crate::player::Empire {
+                    name: "TestEmpire".into(),
+                },
                 crate::player::Faction::new("default", "TestEmpire"),
             ))
             .id();
@@ -2249,7 +2251,9 @@ mod tests {
         let empire = app
             .world_mut()
             .spawn((
-                crate::player::Empire { name: "Doomed".into() },
+                crate::player::Empire {
+                    name: "Doomed".into(),
+                },
                 crate::player::Faction::new("default", "Doomed"),
             ))
             .id();
@@ -2282,7 +2286,9 @@ mod tests {
         let empire = app
             .world_mut()
             .spawn((
-                crate::player::Empire { name: "GracePeriod".into() },
+                crate::player::Empire {
+                    name: "GracePeriod".into(),
+                },
                 crate::player::Faction::new("default", "GracePeriod"),
             ))
             .id();

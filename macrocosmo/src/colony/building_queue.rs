@@ -696,8 +696,7 @@ pub fn tick_building_queue(
                     // a starved build would have its timer drain past zero while
                     // the completion check (which also requires 0 remaining cost)
                     // keeps blocking completion.
-                    let transferred =
-                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
                     let no_more_needed = order.minerals_remaining == Amt::ZERO
                         && order.energy_remaining == Amt::ZERO;
                     super::build_tick::maybe_tick_build_time(
@@ -718,8 +717,7 @@ pub fn tick_building_queue(
                             );
                             let completed_id = completed.building_id.0.clone();
                             let completed_slot = completed.target_slot;
-                            buildings.slots[completed.target_slot] =
-                                Some(completed.building_id);
+                            buildings.slots[completed.target_slot] = Some(completed.building_id);
                             // #281: Fire macrocosmo:building_built for planet-level
                             // construction. Payload carries cause/building_id/system/
                             // colony/slot so Lua filter handlers (incl. definition
@@ -729,10 +727,8 @@ pub fn tick_building_queue(
                             payload.insert("building_id".to_string(), completed_id);
                             payload.insert("slot".to_string(), completed_slot.to_string());
                             payload.insert("system".to_string(), sys.to_bits().to_string());
-                            payload.insert(
-                                "colony".to_string(),
-                                colony_entity.to_bits().to_string(),
-                            );
+                            payload
+                                .insert("colony".to_string(), colony_entity.to_bits().to_string());
                             event_system.fire_event_with_payload(
                                 Some(colony_entity),
                                 clock.elapsed,
@@ -764,8 +760,7 @@ pub fn tick_building_queue(
                     available_energy = available_energy.sub(energy_transfer);
                     energy_consumed = energy_consumed.add(energy_transfer);
 
-                    let transferred =
-                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
                     let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
                         && upgrade.energy_remaining == Amt::ZERO;
                     super::build_tick::maybe_tick_build_time(
@@ -801,20 +796,13 @@ pub fn tick_building_queue(
                             // `building_upgraded` event.
                             let mut payload = std::collections::HashMap::new();
                             payload.insert("cause".to_string(), "upgrade".to_string());
-                            payload.insert(
-                                "building_id".to_string(),
-                                completed.target_id.0.clone(),
-                            );
+                            payload
+                                .insert("building_id".to_string(), completed.target_id.0.clone());
                             payload.insert("previous_id".to_string(), old_name);
-                            payload.insert(
-                                "slot".to_string(),
-                                completed.slot_index.to_string(),
-                            );
+                            payload.insert("slot".to_string(), completed.slot_index.to_string());
                             payload.insert("system".to_string(), sys.to_bits().to_string());
-                            payload.insert(
-                                "colony".to_string(),
-                                colony_entity.to_bits().to_string(),
-                            );
+                            payload
+                                .insert("colony".to_string(), colony_entity.to_bits().to_string());
                             event_system.fire_event_with_payload(
                                 Some(colony_entity),
                                 clock.elapsed,
@@ -831,10 +819,7 @@ pub fn tick_building_queue(
                                 if let Some(fixed) = new_def.colony_slots {
                                     if fixed > buildings.slots.len() {
                                         buildings.slots.resize(fixed, None);
-                                        info!(
-                                            "Colony hub upgrade expanded slots to {}",
-                                            fixed
-                                        );
+                                        info!("Colony hub upgrade expanded slots to {}", fixed);
                                     }
                                 }
                             }

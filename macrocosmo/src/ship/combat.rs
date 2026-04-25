@@ -466,7 +466,11 @@ pub fn resolve_combat(
                             }
                         }
                     } else if hp.hull <= 0.0 {
-                        destroyed_ships.push((ship_entity, ship.name.clone(), ship.design_id.clone()));
+                        destroyed_ships.push((
+                            ship_entity,
+                            ship.name.clone(),
+                            ship.design_id.clone(),
+                        ));
                     }
                 }
             }
@@ -556,15 +560,15 @@ pub fn resolve_combat(
                 // #435: Defer the CombatDefeat event until light from the
                 // engagement reaches the player empire's viewer.
                 if let Some(pos) = system_pos_arr {
-                    delayed_combat_events.pending.push(
-                        crate::knowledge::DelayedCombatEvent {
+                    delayed_combat_events
+                        .pending
+                        .push(crate::knowledge::DelayedCombatEvent {
                             origin_pos: pos,
                             destruction_tick: clock.elapsed,
                             kind: GameEventKind::CombatDefeat,
                             description: desc.clone(),
                             related_system: Some(*system_entity),
-                        },
-                    );
+                        });
                 }
                 if let (Some(v), Some(op)) = (vantage, system_pos_arr) {
                     let fact = KnowledgeFact::CombatOutcome {

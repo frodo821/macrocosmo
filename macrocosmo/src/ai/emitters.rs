@@ -17,8 +17,8 @@ use crate::colony::{
     SlotAssignment,
 };
 use crate::faction::FactionOwner;
-use crate::galaxy::{BASE_CARRYING_CAPACITY, Planet, StarSystem, SystemAttributes};
 use crate::galaxy::{AtSystem, Hostile, Sovereignty};
+use crate::galaxy::{BASE_CARRYING_CAPACITY, Planet, StarSystem, SystemAttributes};
 use crate::knowledge::KnowledgeStore;
 use crate::player::Empire;
 use crate::ship::{CoreShip, Owner, Ship, ShipHitpoints, ShipModifiers, ShipState};
@@ -88,12 +88,27 @@ pub fn emit_military_metrics(
             }
         }
 
-        writer.emit(&metric::for_faction("my_total_ships", faction_id), total_ships);
-        writer.emit(&metric::for_faction("my_strength", faction_id), total_strength);
-        writer.emit(&metric::for_faction("my_total_attack", faction_id), total_attack);
-        writer.emit(&metric::for_faction("my_total_defense", faction_id), total_defense);
+        writer.emit(
+            &metric::for_faction("my_total_ships", faction_id),
+            total_ships,
+        );
+        writer.emit(
+            &metric::for_faction("my_strength", faction_id),
+            total_strength,
+        );
+        writer.emit(
+            &metric::for_faction("my_total_attack", faction_id),
+            total_attack,
+        );
+        writer.emit(
+            &metric::for_faction("my_total_defense", faction_id),
+            total_defense,
+        );
         writer.emit(&metric::for_faction("my_armor", faction_id), total_armor);
-        writer.emit(&metric::for_faction("my_shields", faction_id), total_shields);
+        writer.emit(
+            &metric::for_faction("my_shields", faction_id),
+            total_shields,
+        );
         writer.emit(
             &metric::for_faction("my_shield_regen_rate", faction_id),
             total_shield_regen,
@@ -114,7 +129,10 @@ pub fn emit_military_metrics(
         } else {
             0.0
         };
-        writer.emit(&metric::for_faction("my_fleet_ready", faction_id), fleet_ready);
+        writer.emit(
+            &metric::for_faction("my_fleet_ready", faction_id),
+            fleet_ready,
+        );
 
         writer.emit(
             &metric::for_faction("my_has_flagship", faction_id),
@@ -163,10 +181,7 @@ pub fn emit_economic_metrics(
     planet_attrs: Query<&SystemAttributes, With<Planet>>,
     tech_tree: Option<Res<TechTree>>,
     ai_building_registry: Option<Res<crate::colony::BuildingRegistry>>,
-    core_ships: Query<
-        (&crate::galaxy::AtSystem, &FactionOwner),
-        With<crate::ship::CoreShip>,
-    >,
+    core_ships: Query<(&crate::galaxy::AtSystem, &FactionOwner), With<crate::ship::CoreShip>>,
 ) {
     // Per-empire: set of systems with at least one Core-equipped ship.
     // Used to gate system-building construction (Infrastructure Core is
@@ -276,14 +291,32 @@ pub fn emit_economic_metrics(
         }
 
         // Emit production metrics
-        writer.emit(&metric::for_faction("net_production_minerals", fid), total_minerals_rate);
-        writer.emit(&metric::for_faction("net_production_energy", fid), total_energy_rate);
-        writer.emit(&metric::for_faction("net_production_food", fid), total_food_rate);
-        writer.emit(&metric::for_faction("net_production_research", fid), total_research_rate);
+        writer.emit(
+            &metric::for_faction("net_production_minerals", fid),
+            total_minerals_rate,
+        );
+        writer.emit(
+            &metric::for_faction("net_production_energy", fid),
+            total_energy_rate,
+        );
+        writer.emit(
+            &metric::for_faction("net_production_food", fid),
+            total_food_rate,
+        );
+        writer.emit(
+            &metric::for_faction("net_production_research", fid),
+            total_research_rate,
+        );
 
         // Emit population metrics
-        writer.emit(&metric::for_faction("population_total", fid), total_population);
-        writer.emit(&metric::for_faction("population_growth_rate", fid), total_growth_rate);
+        writer.emit(
+            &metric::for_faction("population_total", fid),
+            total_population,
+        );
+        writer.emit(
+            &metric::for_faction("population_growth_rate", fid),
+            total_growth_rate,
+        );
         writer.emit(
             &metric::for_faction("population_carrying_capacity", fid),
             total_carrying_capacity,
@@ -296,7 +329,10 @@ pub fn emit_economic_metrics(
         writer.emit(&metric::for_faction("population_ratio", fid), pop_ratio);
 
         // Emit food metrics
-        writer.emit(&metric::for_faction("food_consumption_rate", fid), total_food_consumption);
+        writer.emit(
+            &metric::for_faction("food_consumption_rate", fid),
+            total_food_consumption,
+        );
         writer.emit(
             &metric::for_faction("food_surplus", fid),
             total_food_rate - total_food_consumption,
@@ -321,9 +357,8 @@ pub fn emit_economic_metrics(
         let mut total_authority_debt: f64 = 0.0;
 
         for (_sys_entity, stockpile, capacity, sovereignty) in &stockpiles {
-            let is_owned = sovereignty.is_some_and(|sov| {
-                sov.owner == Some(Owner::Empire(empire_entity))
-            });
+            let is_owned =
+                sovereignty.is_some_and(|sov| sov.owner == Some(Owner::Empire(empire_entity)));
             if !is_owned {
                 continue;
             }
@@ -340,10 +375,16 @@ pub fn emit_economic_metrics(
             }
         }
 
-        writer.emit(&metric::for_faction("stockpile_minerals", fid), total_minerals);
+        writer.emit(
+            &metric::for_faction("stockpile_minerals", fid),
+            total_minerals,
+        );
         writer.emit(&metric::for_faction("stockpile_energy", fid), total_energy);
         writer.emit(&metric::for_faction("stockpile_food", fid), total_food);
-        writer.emit(&metric::for_faction("stockpile_authority", fid), total_authority);
+        writer.emit(
+            &metric::for_faction("stockpile_authority", fid),
+            total_authority,
+        );
 
         let ratio_minerals = if total_cap_minerals > 0.0 {
             (total_minerals / total_cap_minerals).min(1.0)
@@ -360,16 +401,31 @@ pub fn emit_economic_metrics(
         } else {
             0.0
         };
-        writer.emit(&metric::for_faction("stockpile_ratio_minerals", fid), ratio_minerals);
-        writer.emit(&metric::for_faction("stockpile_ratio_energy", fid), ratio_energy);
-        writer.emit(&metric::for_faction("stockpile_ratio_food", fid), ratio_food);
+        writer.emit(
+            &metric::for_faction("stockpile_ratio_minerals", fid),
+            ratio_minerals,
+        );
+        writer.emit(
+            &metric::for_faction("stockpile_ratio_energy", fid),
+            ratio_energy,
+        );
+        writer.emit(
+            &metric::for_faction("stockpile_ratio_food", fid),
+            ratio_food,
+        );
 
-        writer.emit(&metric::for_faction("total_authority_debt", fid), total_authority_debt);
+        writer.emit(
+            &metric::for_faction("total_authority_debt", fid),
+            total_authority_debt,
+        );
 
         // Infrastructure metrics
         let sys_shipyard = shipyard_counts.get(&empire_entity).copied().unwrap_or(0.0);
         let sys_port = port_counts.get(&empire_entity).copied().unwrap_or(0.0);
-        writer.emit(&metric::for_faction("systems_with_shipyard", fid), sys_shipyard);
+        writer.emit(
+            &metric::for_faction("systems_with_shipyard", fid),
+            sys_shipyard,
+        );
         writer.emit(&metric::for_faction("systems_with_port", fid), sys_port);
         let sys_core = core_systems_per_empire
             .get(&empire_entity)
@@ -378,7 +434,10 @@ pub fn emit_economic_metrics(
         writer.emit(&metric::for_faction("systems_with_core", fid), sys_core);
         writer.emit(&metric::for_faction("max_building_slots", fid), max_slots);
         writer.emit(&metric::for_faction("used_building_slots", fid), used_slots);
-        writer.emit(&metric::for_faction("free_building_slots", fid), max_slots - used_slots);
+        writer.emit(
+            &metric::for_faction("free_building_slots", fid),
+            max_slots - used_slots,
+        );
         writer.emit(
             &metric::for_faction("can_build_ships", fid),
             if sys_shipyard > 0.0 { 1.0 } else { 0.0 },
@@ -389,9 +448,15 @@ pub fn emit_economic_metrics(
         if let Some(ref tree) = tech_tree {
             let researched = tree.researched.len() as f64;
             let total = tree.technologies.len() as f64;
-            writer.emit(&metric::for_faction("tech_total_researched", fid), researched);
+            writer.emit(
+                &metric::for_faction("tech_total_researched", fid),
+                researched,
+            );
             let completion = if total > 0.0 { researched / total } else { 0.0 };
-            writer.emit(&metric::for_faction("tech_completion_percent", fid), completion);
+            writer.emit(
+                &metric::for_faction("tech_completion_percent", fid),
+                completion,
+            );
         }
     }
 
@@ -462,10 +527,7 @@ pub fn emit_foreign_metrics(
             // would be ideal, but the existing schema declares slots as
             // "foreign.<metric>.faction_<target_id>". Since the bus is shared,
             // we emit global estimates (same for all observers for now).
-            writer.emit(
-                &foreign_metric_id("foreign.strength", target_fid),
-                strength,
-            );
+            writer.emit(&foreign_metric_id("foreign.strength", target_fid), strength);
             writer.emit(
                 &foreign_metric_id("foreign.fleet_count", target_fid),
                 fleet_count,
@@ -493,16 +555,27 @@ mod tests {
     /// Spawn an empire entity and declare its per-faction metric slots.
     /// Returns the empire entity.
     fn spawn_empire(app: &mut App) -> Entity {
-        let entity = app.world_mut().spawn((
-            Empire { name: "Test Empire".into() },
-            Faction::new("test_empire", "Test Empire"),
-        )).id();
+        let entity = app
+            .world_mut()
+            .spawn((
+                Empire {
+                    name: "Test Empire".into(),
+                },
+                Faction::new("test_empire", "Test Empire"),
+            ))
+            .id();
         // Declare per-faction metric slots on the bus.
         let fid = to_ai_faction(entity);
         let mut bus = app.world_mut().resource_mut::<AiBusResource>();
         for base in crate::ai::schema::ids::metric::PER_FACTION_METRIC_BASES {
             let id = metric::for_faction(base, fid);
-            bus.0.declare_metric(id, macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
+            bus.0.declare_metric(
+                id,
+                macrocosmo_ai::MetricSpec::gauge(
+                    macrocosmo_ai::Retention::Medium,
+                    "per-faction self metric",
+                ),
+            );
         }
         entity
     }
@@ -586,7 +659,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let total = bus.current(&metric::for_faction("my_total_ships", fid)).unwrap();
+        let total = bus
+            .current(&metric::for_faction("my_total_ships", fid))
+            .unwrap();
         assert!((total - 3.0).abs() < 1e-9);
     }
 
@@ -599,7 +674,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let ready = bus.current(&metric::for_faction("my_fleet_ready", fid)).unwrap();
+        let ready = bus
+            .current(&metric::for_faction("my_fleet_ready", fid))
+            .unwrap();
         assert!((ready - 0.5).abs() < 1e-9);
     }
 
@@ -611,7 +688,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let flag = bus.current(&metric::for_faction("my_has_flagship", fid)).unwrap();
+        let flag = bus
+            .current(&metric::for_faction("my_has_flagship", fid))
+            .unwrap();
         assert!((flag - 0.0).abs() < 1e-9);
 
         // Now add a core ship.
@@ -619,7 +698,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let flag = bus.current(&metric::for_faction("my_has_flagship", fid)).unwrap();
+        let flag = bus
+            .current(&metric::for_faction("my_has_flagship", fid))
+            .unwrap();
         assert!((flag - 1.0).abs() < 1e-9);
     }
 
@@ -632,8 +713,12 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let attack = bus.current(&metric::for_faction("my_total_attack", fid)).unwrap();
-        let defense = bus.current(&metric::for_faction("my_total_defense", fid)).unwrap();
+        let attack = bus
+            .current(&metric::for_faction("my_total_attack", fid))
+            .unwrap();
+        let defense = bus
+            .current(&metric::for_faction("my_total_defense", fid))
+            .unwrap();
         // 2 ships x 10 attack = 20
         assert!((attack - 20.0).abs() < 1e-9);
         // 2 ships x 5 defense = 10
@@ -648,7 +733,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let vuln = bus.current(&metric::for_faction("my_vulnerability_score", fid)).unwrap();
+        let vuln = bus
+            .current(&metric::for_faction("my_vulnerability_score", fid))
+            .unwrap();
         // hull=40/50, armor=15/20, shield=8/10 => current=63, max=80
         // vuln = 1 - 63/80 = 0.2125
         assert!((vuln - 0.2125).abs() < 1e-4);
@@ -774,7 +861,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let count = bus.current(&metric::for_faction("colony_count", fid)).unwrap();
+        let count = bus
+            .current(&metric::for_faction("colony_count", fid))
+            .unwrap();
         assert!((count - 2.0).abs() < 1e-9);
     }
 
@@ -787,8 +876,12 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let minerals = bus.current(&metric::for_faction("net_production_minerals", fid)).unwrap();
-        let energy = bus.current(&metric::for_faction("net_production_energy", fid)).unwrap();
+        let minerals = bus
+            .current(&metric::for_faction("net_production_minerals", fid))
+            .unwrap();
+        let energy = bus
+            .current(&metric::for_faction("net_production_energy", fid))
+            .unwrap();
         // 10.0 + 5.0 = 15.0
         assert!((minerals - 15.0).abs() < 0.01);
         // 5.0 + 3.0 = 8.0
@@ -803,8 +896,12 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let minerals = bus.current(&metric::for_faction("stockpile_minerals", fid)).unwrap();
-        let energy = bus.current(&metric::for_faction("stockpile_energy", fid)).unwrap();
+        let minerals = bus
+            .current(&metric::for_faction("stockpile_minerals", fid))
+            .unwrap();
+        let energy = bus
+            .current(&metric::for_faction("stockpile_energy", fid))
+            .unwrap();
         assert!((minerals - 500.0).abs() < 0.01);
         assert!((energy - 300.0).abs() < 0.01);
     }
@@ -818,8 +915,12 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let ratio_m = bus.current(&metric::for_faction("stockpile_ratio_minerals", fid)).unwrap();
-        let ratio_e = bus.current(&metric::for_faction("stockpile_ratio_energy", fid)).unwrap();
+        let ratio_m = bus
+            .current(&metric::for_faction("stockpile_ratio_minerals", fid))
+            .unwrap();
+        let ratio_e = bus
+            .current(&metric::for_faction("stockpile_ratio_energy", fid))
+            .unwrap();
         // 500/1000 = 0.5
         assert!((ratio_m - 0.5).abs() < 0.01);
         // 300/1000 = 0.3
@@ -835,7 +936,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let pop = bus.current(&metric::for_faction("population_total", fid)).unwrap();
+        let pop = bus
+            .current(&metric::for_faction("population_total", fid))
+            .unwrap();
         assert!((pop - 150.0).abs() < 1e-9);
 
         let capacity = bus
@@ -854,7 +957,9 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let surplus = bus.current(&metric::for_faction("food_surplus", fid)).unwrap();
+        let surplus = bus
+            .current(&metric::for_faction("food_surplus", fid))
+            .unwrap();
         assert!((surplus - 3.0).abs() < 0.01);
     }
 
@@ -867,9 +972,15 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let max = bus.current(&metric::for_faction("max_building_slots", fid)).unwrap();
-        let used = bus.current(&metric::for_faction("used_building_slots", fid)).unwrap();
-        let free = bus.current(&metric::for_faction("free_building_slots", fid)).unwrap();
+        let max = bus
+            .current(&metric::for_faction("max_building_slots", fid))
+            .unwrap();
+        let used = bus
+            .current(&metric::for_faction("used_building_slots", fid))
+            .unwrap();
+        let free = bus
+            .current(&metric::for_faction("free_building_slots", fid))
+            .unwrap();
         assert!((max - 4.0).abs() < 1e-9);
         assert!((used - 2.0).abs() < 1e-9);
         assert!((free - 2.0).abs() < 1e-9);
@@ -892,11 +1003,17 @@ mod tests {
         app.update();
 
         let bus = app.world().resource::<AiBusResource>();
-        let count = bus.current(&metric::for_faction("colony_count", fid)).unwrap();
+        let count = bus
+            .current(&metric::for_faction("colony_count", fid))
+            .unwrap();
         assert!((count - 0.0).abs() < 1e-9);
-        let minerals = bus.current(&metric::for_faction("net_production_minerals", fid)).unwrap();
+        let minerals = bus
+            .current(&metric::for_faction("net_production_minerals", fid))
+            .unwrap();
         assert!((minerals - 0.0).abs() < 1e-9);
-        let pop = bus.current(&metric::for_faction("population_total", fid)).unwrap();
+        let pop = bus
+            .current(&metric::for_faction("population_total", fid))
+            .unwrap();
         assert!((pop - 0.0).abs() < 1e-9);
     }
 
@@ -918,16 +1035,22 @@ mod tests {
 
     /// Spawn a second empire (foreign) and declare its foreign metric slots.
     fn spawn_foreign_empire(app: &mut App, name: &str) -> Entity {
-        let entity = app.world_mut().spawn((
-            Empire { name: name.into() },
-            Faction::new(name, name),
-        )).id();
+        let entity = app
+            .world_mut()
+            .spawn((Empire { name: name.into() }, Faction::new(name, name)))
+            .id();
         let fid = to_ai_faction(entity);
         // Declare per-faction self metric slots.
         let mut bus = app.world_mut().resource_mut::<AiBusResource>();
         for base in crate::ai::schema::ids::metric::PER_FACTION_METRIC_BASES {
             let id = metric::for_faction(base, fid);
-            bus.0.declare_metric(id, macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
+            bus.0.declare_metric(
+                id,
+                macrocosmo_ai::MetricSpec::gauge(
+                    macrocosmo_ai::Retention::Medium,
+                    "per-faction self metric",
+                ),
+            );
         }
         // Declare foreign metric slots for this faction.
         for template in crate::ai::schema::foreign::foreign_metric_templates() {
@@ -963,11 +1086,21 @@ mod tests {
         let bus = app.world().resource::<AiBusResource>();
 
         // Empire A should see empire B's 2 ships.
-        let fleet = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.fleet_count", fid_b)).unwrap();
+        let fleet = bus
+            .current(&crate::ai::schema::foreign::foreign_metric_id(
+                "foreign.fleet_count",
+                fid_b,
+            ))
+            .unwrap();
         assert!((fleet - 2.0).abs() < 1e-9);
 
         // Strength: each ship has attack=10, defense=5, hp=40+15+8=63 => per ship = 78.
-        let strength = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.strength", fid_b)).unwrap();
+        let strength = bus
+            .current(&crate::ai::schema::foreign::foreign_metric_id(
+                "foreign.strength",
+                fid_b,
+            ))
+            .unwrap();
         assert!((strength - 156.0).abs() < 1e-9);
     }
 
@@ -996,7 +1129,12 @@ mod tests {
         let fid_b = to_ai_faction(empire_b);
         let bus = app.world().resource::<AiBusResource>();
 
-        let col_count = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.colony_count", fid_b)).unwrap();
+        let col_count = bus
+            .current(&crate::ai::schema::foreign::foreign_metric_id(
+                "foreign.colony_count",
+                fid_b,
+            ))
+            .unwrap();
         assert!((col_count - 2.0).abs() < 1e-9);
     }
 
@@ -1013,7 +1151,10 @@ mod tests {
         let bus = app.world().resource::<AiBusResource>();
 
         // foreign.strength.faction_<A> should NOT have been emitted (no observer sees self).
-        let strength = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.strength", fid_a));
+        let strength = bus.current(&crate::ai::schema::foreign::foreign_metric_id(
+            "foreign.strength",
+            fid_a,
+        ));
         assert!(strength.is_none());
     }
 
@@ -1039,11 +1180,26 @@ mod tests {
         let fid_b = to_ai_faction(empire_b);
         let bus = app.world().resource::<AiBusResource>();
 
-        let fleet = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.fleet_count", fid_b)).unwrap();
+        let fleet = bus
+            .current(&crate::ai::schema::foreign::foreign_metric_id(
+                "foreign.fleet_count",
+                fid_b,
+            ))
+            .unwrap();
         assert!((fleet - 0.0).abs() < 1e-9);
-        let strength = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.strength", fid_b)).unwrap();
+        let strength = bus
+            .current(&crate::ai::schema::foreign::foreign_metric_id(
+                "foreign.strength",
+                fid_b,
+            ))
+            .unwrap();
         assert!((strength - 0.0).abs() < 1e-9);
-        let col = bus.current(&crate::ai::schema::foreign::foreign_metric_id("foreign.colony_count", fid_b)).unwrap();
+        let col = bus
+            .current(&crate::ai::schema::foreign::foreign_metric_id(
+                "foreign.colony_count",
+                fid_b,
+            ))
+            .unwrap();
         assert!((col - 0.0).abs() < 1e-9);
     }
 }

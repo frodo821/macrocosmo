@@ -215,8 +215,7 @@ impl Plugin for KnowledgePlugin {
             )
             .add_systems(
                 Update,
-                propagate_knowledge
-                    .run_if(in_state(crate::game_state::GameState::InGame)),
+                propagate_knowledge.run_if(in_state(crate::game_state::GameState::InGame)),
             )
             .add_systems(
                 Update,
@@ -245,8 +244,7 @@ impl Plugin for KnowledgePlugin {
             // game is in Bootstrapping / NewGame / LoadingSave.
             .add_systems(
                 Update,
-                snapshot_production_knowledge
-                    .after(crate::time_system::advance_game_time),
+                snapshot_production_knowledge.after(crate::time_system::advance_game_time),
             )
             // #439: ensure_tracked_ship_system is entity-tracking bookkeeping
             // for the UI and stays ungated; only the downstream tier
@@ -552,12 +550,7 @@ fn initialize_visibility_tiers(
 ) {
     for (empire_entity, knowledge, mut vis_map) in &mut empire_q {
         for (system_entity, _star) in &systems {
-            let tier = determine_tier_for_system(
-                system_entity,
-                empire_entity,
-                &ships,
-                knowledge,
-            );
+            let tier = determine_tier_for_system(system_entity, empire_entity, &ships, knowledge);
             vis_map.set(system_entity, tier);
         }
     }
@@ -611,12 +604,7 @@ pub fn update_visibility_tiers(
     // Recalculate tier for each affected system, for every empire.
     for (empire_entity, knowledge, mut vis_map) in &mut empire_q {
         for &system in &affected_systems {
-            let tier = determine_tier_for_system(
-                system,
-                empire_entity,
-                &all_ships,
-                knowledge,
-            );
+            let tier = determine_tier_for_system(system, empire_entity, &all_ships, knowledge);
             vis_map.set(system, tier);
         }
     }
@@ -625,7 +613,11 @@ pub fn update_visibility_tiers(
 fn initialize_capital_knowledge(
     mut commands: Commands,
     mut empire_q: Query<
-        (Entity, &mut KnowledgeStore, Option<&crate::galaxy::HomeSystem>),
+        (
+            Entity,
+            &mut KnowledgeStore,
+            Option<&crate::galaxy::HomeSystem>,
+        ),
         With<crate::player::Empire>,
     >,
     systems: Query<(Entity, &StarSystem, &Position)>,
@@ -812,7 +804,9 @@ fn build_colony_snapshots(
 ) -> Vec<ColonySnapshot> {
     use crate::galaxy::{BASE_CARRYING_CAPACITY, FOOD_PER_POP_PER_HEXADIES};
     let mut out = Vec::new();
-    for (colony_entity, colony, production, buildings, bq, maintenance, food, col_pop) in colonies.iter() {
+    for (colony_entity, colony, production, buildings, bq, maintenance, food, col_pop) in
+        colonies.iter()
+    {
         if colony.system(planets) != Some(system) {
             continue;
         }
@@ -906,12 +900,7 @@ fn build_colony_snapshots(
 pub fn propagate_knowledge(
     clock: Res<GameClock>,
     ruler_q: Query<&StationedAt, Or<(With<Ruler>, With<crate::player::Player>)>>,
-    systems: Query<(
-        Entity,
-        &StarSystem,
-        &Position,
-        Option<&ResourceStockpile>,
-    )>,
+    systems: Query<(Entity, &StarSystem, &Position, Option<&ResourceStockpile>)>,
     station_ships: Query<(
         Entity,
         &crate::ship::Ship,
@@ -981,181 +970,184 @@ pub fn propagate_knowledge(
             }
         }
 
-    for (entity, star, sys_pos, stockpile) in &systems {
-        // #392: Only propagate system knowledge to systems with tier >= Surveyed.
-        // Catalogued-only systems (no survey data) get no knowledge snapshots.
-        // V1: Surveyed/Connected/Local all receive light-speed updates;
-        // the Surveyed-vs-Connected distinction (frozen vs. live) is deferred
-        // to V2 when relay/courier connection detection is implemented.
-        //
-        // #434: Only propagate to systems the empire has visibility for.
-        // Do NOT fall back to the live `star.surveyed` flag — it is global
-        // and would leak NPC-surveyed systems to the player.
-        if let Some(vis_map) = vis_map_opt {
-            let tier = vis_map.get(entity);
-            if !tier.can_see_planets() {
+        for (entity, star, sys_pos, stockpile) in &systems {
+            // #392: Only propagate system knowledge to systems with tier >= Surveyed.
+            // Catalogued-only systems (no survey data) get no knowledge snapshots.
+            // V1: Surveyed/Connected/Local all receive light-speed updates;
+            // the Surveyed-vs-Connected distinction (frozen vs. live) is deferred
+            // to V2 when relay/courier connection detection is implemented.
+            //
+            // #434: Only propagate to systems the empire has visibility for.
+            // Do NOT fall back to the live `star.surveyed` flag — it is global
+            // and would leak NPC-surveyed systems to the player.
+            if let Some(vis_map) = vis_map_opt {
+                let tier = vis_map.get(entity);
+                if !tier.can_see_planets() {
+                    continue;
+                }
+            }
+
+            let distance = physics::distance_ly(viewer_pos, sys_pos);
+            let delay = physics::light_delay_hexadies(distance);
+            let observed_at = clock.elapsed - delay;
+
+            if observed_at < 0 {
                 continue;
             }
+
+            let dominated = store
+                .get(entity)
+                .is_some_and(|existing| existing.observed_at >= observed_at);
+
+            if dominated {
+                continue;
+            }
+
+            let sys_mods = system_modifiers_q.get(entity).ok();
+            let sys_has_port = sys_mods
+                .map(|m| m.port_repair.value().final_value() > Amt::ZERO)
+                .unwrap_or(false);
+            let sys_has_shipyard = sys_mods
+                .map(|m| m.shipyard_capacity.value().final_value() > Amt::ZERO)
+                .unwrap_or(false);
+            let snapshot = build_system_snapshot(
+                entity,
+                star,
+                sys_pos,
+                stockpile,
+                sys_has_port,
+                sys_has_shipyard,
+                &colonies,
+                &planets,
+                &planet_attrs,
+                &hostile_map,
+            );
+
+            store.update(SystemKnowledge {
+                system: entity,
+                observed_at,
+                received_at: clock.elapsed,
+                data: snapshot,
+                source: ObservationSource::Direct,
+            });
         }
 
-        let distance = physics::distance_ly(viewer_pos, sys_pos);
-        let delay = physics::light_delay_hexadies(distance);
-        let observed_at = clock.elapsed - delay;
+        // #175 / #188: Ship knowledge propagation.
+        // Ships are visible based on the light delay from their position to the
+        // empire's viewer system.
+        let viewer_pos_arr = viewer_pos.as_array();
+        for (ship_entity, ship, state, hp) in &ships {
+            // Compute the ship's current world position as an [f64; 3].
+            // NOTE (#392 V2): Ship snapshot visibility gating by tier (>= Connected)
+            // is deferred. V1 continues to propagate all ship snapshots via
+            // light-speed delay. The display layer handles tier-based filtering.
+            let ship_pos_arr: Option<[f64; 3]> = match state {
+                ShipState::InSystem { system } => positions.get(*system).ok().map(|p| p.as_array()),
+                ShipState::Surveying { target_system, .. } => {
+                    positions.get(*target_system).ok().map(|p| p.as_array())
+                }
+                ShipState::Settling { system, .. } => {
+                    positions.get(*system).ok().map(|p| p.as_array())
+                }
+                ShipState::Refitting { system, .. } => {
+                    positions.get(*system).ok().map(|p| p.as_array())
+                }
+                ShipState::InFTL { origin_system, .. } => {
+                    // FTL ships are typically invisible to baseline sensors anyway, but use
+                    // the origin system as a coarse reference (matches existing behavior).
+                    positions.get(*origin_system).ok().map(|p| p.as_array())
+                }
+                ShipState::SubLight {
+                    origin,
+                    destination,
+                    departed_at,
+                    arrival_at,
+                    ..
+                } => {
+                    // #188: Interpolate sublight position so the light delay reflects the
+                    // ship's actual deep-space location, not (0,0,0).
+                    let total = (*arrival_at - *departed_at) as f64;
+                    let elapsed = (clock.elapsed - *departed_at) as f64;
+                    let t = if total > 0.0 {
+                        (elapsed / total).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    Some([
+                        origin[0] + (destination[0] - origin[0]) * t,
+                        origin[1] + (destination[1] - origin[1]) * t,
+                        origin[2] + (destination[2] - origin[2]) * t,
+                    ])
+                }
+                // #185: Loitering — coordinate is encoded in the state itself.
+                ShipState::Loitering { position } => Some(*position),
+                // #217: Scouting ships are parked at the target system's
+                // position (they sit in orbit while the observation timer ticks).
+                ShipState::Scouting { target_system, .. } => {
+                    positions.get(*target_system).ok().map(|p| p.as_array())
+                }
+            };
 
-        if observed_at < 0 {
-            continue;
+            let Some(ship_pos_arr) = ship_pos_arr else {
+                continue;
+            };
+
+            let distance = physics::distance_ly_arr(viewer_pos_arr, ship_pos_arr);
+            let delay = physics::light_delay_hexadies(distance);
+            let observed_at = clock.elapsed - delay;
+
+            if observed_at < 0 {
+                continue;
+            }
+
+            let dominated = store
+                .get_ship(ship_entity)
+                .is_some_and(|existing| existing.observed_at >= observed_at);
+            if dominated {
+                continue;
+            }
+
+            let (snapshot_state, last_system) = match state {
+                ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
+                ShipState::SubLight { target_system, .. } => {
+                    (ShipSnapshotState::InTransit, *target_system)
+                }
+                ShipState::InFTL {
+                    destination_system, ..
+                } => (ShipSnapshotState::InTransit, Some(*destination_system)),
+                ShipState::Surveying { target_system, .. } => {
+                    (ShipSnapshotState::Surveying, Some(*target_system))
+                }
+                ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
+                ShipState::Refitting { system, .. } => {
+                    (ShipSnapshotState::Refitting, Some(*system))
+                }
+                // #185: Loitering snapshot carries its position so the UI can render the
+                // ship's last-known location even after it has moved on.
+                ShipState::Loitering { position } => (
+                    ShipSnapshotState::Loitering {
+                        position: *position,
+                    },
+                    None,
+                ),
+                // #217: Scouting — surface like Surveying to external observers.
+                ShipState::Scouting { target_system, .. } => {
+                    (ShipSnapshotState::Surveying, Some(*target_system))
+                }
+            };
+
+            store.update_ship(ShipSnapshot {
+                entity: ship_entity,
+                name: ship.name.clone(),
+                design_id: ship.design_id.clone(),
+                last_known_state: snapshot_state,
+                last_known_system: last_system,
+                observed_at,
+                hp: hp.hull,
+                hp_max: hp.hull_max,
+                source: ObservationSource::Direct,
+            });
         }
-
-        let dominated = store
-            .get(entity)
-            .is_some_and(|existing| existing.observed_at >= observed_at);
-
-        if dominated {
-            continue;
-        }
-
-        let sys_mods = system_modifiers_q.get(entity).ok();
-        let sys_has_port = sys_mods
-            .map(|m| m.port_repair.value().final_value() > Amt::ZERO)
-            .unwrap_or(false);
-        let sys_has_shipyard = sys_mods
-            .map(|m| m.shipyard_capacity.value().final_value() > Amt::ZERO)
-            .unwrap_or(false);
-        let snapshot = build_system_snapshot(
-            entity,
-            star,
-            sys_pos,
-            stockpile,
-            sys_has_port,
-            sys_has_shipyard,
-            &colonies,
-            &planets,
-            &planet_attrs,
-            &hostile_map,
-        );
-
-        store.update(SystemKnowledge {
-            system: entity,
-            observed_at,
-            received_at: clock.elapsed,
-            data: snapshot,
-            source: ObservationSource::Direct,
-        });
-    }
-
-    // #175 / #188: Ship knowledge propagation.
-    // Ships are visible based on the light delay from their position to the
-    // empire's viewer system.
-    let viewer_pos_arr = viewer_pos.as_array();
-    for (ship_entity, ship, state, hp) in &ships {
-        // Compute the ship's current world position as an [f64; 3].
-        // NOTE (#392 V2): Ship snapshot visibility gating by tier (>= Connected)
-        // is deferred. V1 continues to propagate all ship snapshots via
-        // light-speed delay. The display layer handles tier-based filtering.
-        let ship_pos_arr: Option<[f64; 3]> = match state {
-            ShipState::InSystem { system } => positions.get(*system).ok().map(|p| p.as_array()),
-            ShipState::Surveying { target_system, .. } => {
-                positions.get(*target_system).ok().map(|p| p.as_array())
-            }
-            ShipState::Settling { system, .. } => positions.get(*system).ok().map(|p| p.as_array()),
-            ShipState::Refitting { system, .. } => {
-                positions.get(*system).ok().map(|p| p.as_array())
-            }
-            ShipState::InFTL { origin_system, .. } => {
-                // FTL ships are typically invisible to baseline sensors anyway, but use
-                // the origin system as a coarse reference (matches existing behavior).
-                positions.get(*origin_system).ok().map(|p| p.as_array())
-            }
-            ShipState::SubLight {
-                origin,
-                destination,
-                departed_at,
-                arrival_at,
-                ..
-            } => {
-                // #188: Interpolate sublight position so the light delay reflects the
-                // ship's actual deep-space location, not (0,0,0).
-                let total = (*arrival_at - *departed_at) as f64;
-                let elapsed = (clock.elapsed - *departed_at) as f64;
-                let t = if total > 0.0 {
-                    (elapsed / total).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                Some([
-                    origin[0] + (destination[0] - origin[0]) * t,
-                    origin[1] + (destination[1] - origin[1]) * t,
-                    origin[2] + (destination[2] - origin[2]) * t,
-                ])
-            }
-            // #185: Loitering — coordinate is encoded in the state itself.
-            ShipState::Loitering { position } => Some(*position),
-            // #217: Scouting ships are parked at the target system's
-            // position (they sit in orbit while the observation timer ticks).
-            ShipState::Scouting { target_system, .. } => {
-                positions.get(*target_system).ok().map(|p| p.as_array())
-            }
-        };
-
-        let Some(ship_pos_arr) = ship_pos_arr else {
-            continue;
-        };
-
-        let distance = physics::distance_ly_arr(viewer_pos_arr, ship_pos_arr);
-        let delay = physics::light_delay_hexadies(distance);
-        let observed_at = clock.elapsed - delay;
-
-        if observed_at < 0 {
-            continue;
-        }
-
-        let dominated = store
-            .get_ship(ship_entity)
-            .is_some_and(|existing| existing.observed_at >= observed_at);
-        if dominated {
-            continue;
-        }
-
-        let (snapshot_state, last_system) = match state {
-            ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
-            ShipState::SubLight { target_system, .. } => {
-                (ShipSnapshotState::InTransit, *target_system)
-            }
-            ShipState::InFTL {
-                destination_system, ..
-            } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-            ShipState::Surveying { target_system, .. } => {
-                (ShipSnapshotState::Surveying, Some(*target_system))
-            }
-            ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
-            ShipState::Refitting { system, .. } => (ShipSnapshotState::Refitting, Some(*system)),
-            // #185: Loitering snapshot carries its position so the UI can render the
-            // ship's last-known location even after it has moved on.
-            ShipState::Loitering { position } => (
-                ShipSnapshotState::Loitering {
-                    position: *position,
-                },
-                None,
-            ),
-            // #217: Scouting — surface like Surveying to external observers.
-            ShipState::Scouting { target_system, .. } => {
-                (ShipSnapshotState::Surveying, Some(*target_system))
-            }
-        };
-
-        store.update_ship(ShipSnapshot {
-            entity: ship_entity,
-            name: ship.name.clone(),
-            design_id: ship.design_id.clone(),
-            last_known_state: snapshot_state,
-            last_known_system: last_system,
-            observed_at,
-            hp: hp.hull,
-            hp_max: hp.hull_max,
-            source: ObservationSource::Direct,
-        });
-    }
-
     } // end empire loop
 }
 
@@ -1171,7 +1163,11 @@ pub fn update_destroyed_ship_knowledge(
     clock: Res<GameClock>,
     positions: Query<&Position>,
     mut empire_q: Query<
-        (Entity, &mut KnowledgeStore, &crate::player::EmpireViewerSystem),
+        (
+            Entity,
+            &mut KnowledgeStore,
+            &crate::player::EmpireViewerSystem,
+        ),
         With<crate::player::Empire>,
     >,
     mut registry: ResMut<DestroyedShipRegistry>,
@@ -1280,7 +1276,10 @@ pub fn drain_delayed_combat_events(
     positions: Query<&Position>,
     empire_q: Query<
         (Entity, &crate::player::EmpireViewerSystem),
-        (With<crate::player::Empire>, With<crate::player::PlayerEmpire>),
+        (
+            With<crate::player::Empire>,
+            With<crate::player::PlayerEmpire>,
+        ),
     >,
     mut queue: ResMut<DelayedCombatEventQueue>,
     mut events: MessageWriter<crate::events::GameEvent>,
@@ -1325,10 +1324,7 @@ pub fn drain_delayed_combat_events(
 pub fn snapshot_production_knowledge(
     clock: Res<GameClock>,
     positions: Query<&Position>,
-    mut empire_q: Query<
-        &mut KnowledgeStore,
-        With<crate::player::Empire>,
-    >,
+    mut empire_q: Query<&mut KnowledgeStore, With<crate::player::Empire>>,
     colonies: Query<(
         &crate::colony::Colony,
         Option<&crate::colony::Production>,
@@ -1336,7 +1332,6 @@ pub fn snapshot_production_knowledge(
     )>,
     planets: Query<&crate::galaxy::Planet>,
 ) {
-
     for mut store in &mut empire_q {
         // For each system that already has a knowledge entry, update production data.
         // Collect keys first to avoid borrow issues.
@@ -1352,16 +1347,13 @@ pub fn snapshot_production_knowledge(
             for (colony, production, maintenance) in colonies.iter() {
                 if colony.system(&planets) == Some(system_entity) {
                     if let Some(prod) = production {
-                        prod_minerals =
-                            prod_minerals.add(prod.minerals_per_hexadies.final_value());
+                        prod_minerals = prod_minerals.add(prod.minerals_per_hexadies.final_value());
                         prod_energy = prod_energy.add(prod.energy_per_hexadies.final_value());
                         prod_food = prod_food.add(prod.food_per_hexadies.final_value());
-                        prod_research =
-                            prod_research.add(prod.research_per_hexadies.final_value());
+                        prod_research = prod_research.add(prod.research_per_hexadies.final_value());
                     }
                     if let Some(maint) = maintenance {
-                        maint_energy =
-                            maint_energy.add(maint.energy_per_hexadies.final_value());
+                        maint_energy = maint_energy.add(maint.energy_per_hexadies.final_value());
                     }
                 }
             }

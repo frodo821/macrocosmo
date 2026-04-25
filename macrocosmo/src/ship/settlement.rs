@@ -297,10 +297,9 @@ pub fn process_settling(
 
             // Add SystemBuildings and SystemBuildingQueue if not already present
             if existing_system_buildings.get(system_entity).is_err() {
-                commands.entity(system_entity).insert((
-                    SystemBuildings::default(),
-                    SystemBuildingQueue::default(),
-                ));
+                commands
+                    .entity(system_entity)
+                    .insert((SystemBuildings::default(), SystemBuildingQueue::default()));
                 // #297 (S-2): When this settling created SystemBuildings on a
                 // previously-unowned StarSystem, also tag it with
                 // `FactionOwner` so the "administrative owner" of the system

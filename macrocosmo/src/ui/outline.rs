@@ -4,9 +4,9 @@ use bevy_egui::egui;
 use crate::colony::{BuildQueue, BuildingQueue, Buildings, Colony, Production};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::ship::Owner;
 use crate::ship::fleet::{Fleet, FleetMembers};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
-use crate::ship::{Owner};
 use crate::ship_design::ShipDesignRegistry;
 use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedShips, SelectedSystem};
 
@@ -337,281 +337,287 @@ pub fn draw_outline(
             ui.separator();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-            // Collect systems that have colonies (owned systems)
-            // #432: Only include colonies belonging to the viewed empire.
-            let mut owned_systems: Vec<(Entity, String, bool)> = Vec::new();
-            for (colony_entity, colony, _, _, _, _, _, _) in colonies.iter() {
-                if !is_own_colony(colony_entity) {
-                    continue;
-                }
-                if let Some(sys) = colony.system(planets) {
-                    if let Ok((entity, star, _, _)) = stars.get(sys) {
-                        // Avoid duplicates if multiple colonies on same system
-                        if !owned_systems.iter().any(|(e, _, _)| *e == entity) {
-                            owned_systems.push((entity, star.name.clone(), Some(entity) == home_system_entity));
-                        }
+                // Collect systems that have colonies (owned systems)
+                // #432: Only include colonies belonging to the viewed empire.
+                let mut owned_systems: Vec<(Entity, String, bool)> = Vec::new();
+                for (colony_entity, colony, _, _, _, _, _, _) in colonies.iter() {
+                    if !is_own_colony(colony_entity) {
+                        continue;
                     }
-                }
-            }
-
-            // Sort: capital first, then alphabetical
-            owned_systems.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-
-            // Auto-expand capital system on first encounter
-            for (entity, _, is_capital) in &owned_systems {
-                if *is_capital && !expanded.0.contains(entity) {
-                    // Check if we've ever toggled this -- use a sentinel approach:
-                    // On first frame, expand capital systems by default.
-                    // We use a simple heuristic: if expanded set is empty, initialize defaults.
-                }
-            }
-            // Initialize defaults: if the expanded set has never been populated,
-            // expand capital systems by default.
-            if expanded.0.is_empty() && !owned_systems.is_empty() {
-                for (entity, _, is_capital) in &owned_systems {
-                    if *is_capital {
-                        expanded.0.insert(*entity);
-                    }
-                }
-            }
-
-            for (system_entity, system_name, is_capital) in &owned_systems {
-                let is_system_selected = selected_system.0 == Some(*system_entity);
-
-                let is_expanded = draw_system_header(
-                    ui,
-                    *system_entity,
-                    system_name,
-                    *is_capital,
-                    is_system_selected,
-                    expanded,
-                    selected_system,
-                    planets,
-                );
-
-                if is_expanded {
-                    // #395/#406: Show stations separately from ships with visual distinction
-                    // #432: Filter by viewed empire unless observer mode.
-                    let ship_owner_filter = if is_observer { None } else { viewed_empire };
-                    let system_stations = stations_at(*system_entity, ships, ship_owner_filter);
-                    let docked = ships_docked_at(*system_entity, ships, ship_owner_filter);
-                    let has_both = !system_stations.is_empty() && !docked.is_empty();
-                    if !system_stations.is_empty() {
-                        ui.indent(format!("outline_stations_{:?}", system_entity), |ui| {
-                            // #406: Anchor icon + teal color for stations header
-                            ui.label(
-                                egui::RichText::new("\u{2693} Stations")
-                                    .small()
-                                    .color(egui::Color32::from_rgb(0, 200, 180)),
-                            );
-                            draw_ship_list(
-                                ui,
-                                &system_stations,
-                                ships,
-                                selected_ship,
-                                selected_ships,
-                                design_registry,
-                                Some(*system_entity),
-                                selected_system,
-                                true,
-                            );
-                        });
-                    }
-                    // #406: Separator between stations and ships when both exist
-                    if has_both {
-                        ui.separator();
-                    }
-                    // #407: Group docked ships by fleet
-                    ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
-                        // #406: Ships sub-header when both sections exist
-                        if has_both {
-                            ui.label(
-                                egui::RichText::new("\u{2694} Ships")
-                                    .small()
-                                    .color(egui::Color32::from_rgb(200, 200, 120)),
-                            );
-                        }
-                        draw_fleet_grouped_ship_list(
-                            ui,
-                            &docked,
-                            ships,
-                            selected_ship,
-                            selected_ships,
-                            design_registry,
-                            fleets,
-                            Some(*system_entity),
-                            selected_system,
-                        );
-                    });
-                }
-            }
-
-            // Collect owned system entities for lookup
-            let owned_system_entities: Vec<Entity> =
-                owned_systems.iter().map(|(e, _, _)| *e).collect();
-
-            // "Stationed Elsewhere" section for ships docked at unowned systems
-            // #395: Immobile ships (stations) are excluded here.
-            // #432: Filter by viewed empire ownership.
-            let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
-                Vec::new();
-            for (entity, ship, state, _, _, _) in ships.iter() {
-                if ship.is_immobile() {
-                    continue;
-                }
-                if !is_own_ship(ship) {
-                    continue;
-                }
-                if let ShipState::InSystem { system } = &*state {
-                    if !owned_system_entities.contains(system) {
-                        // Find or create entry for this system
-                        if let Ok((_, star, _, _)) = stars.get(*system) {
-                            if let Some(entry) = unowned_system_ships
-                                .iter_mut()
-                                .find(|(e, _, _)| *e == *system)
-                            {
-                                entry
-                                    .2
-                                    .push((entity, ship.name.clone(), ship.design_id.clone()));
-                            } else {
-                                unowned_system_ships.push((
-                                    *system,
+                    if let Some(sys) = colony.system(planets) {
+                        if let Ok((entity, star, _, _)) = stars.get(sys) {
+                            // Avoid duplicates if multiple colonies on same system
+                            if !owned_systems.iter().any(|(e, _, _)| *e == entity) {
+                                owned_systems.push((
+                                    entity,
                                     star.name.clone(),
-                                    vec![(entity, ship.name.clone(), ship.design_id.clone())],
+                                    Some(entity) == home_system_entity,
                                 ));
                             }
                         }
                     }
                 }
-            }
-            unowned_system_ships.sort_by(|a, b| a.1.cmp(&b.1));
-            for entry in &mut unowned_system_ships {
-                entry.2.sort_by(|a, b| a.1.cmp(&b.1));
-            }
 
-            if !unowned_system_ships.is_empty() {
-                ui.separator();
-                egui::CollapsingHeader::new("Stationed Elsewhere")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        // Auto-expand unowned system headers on first encounter
-                        for (system_entity, _, _) in &unowned_system_ships {
-                            if !expanded.0.contains(system_entity) {
-                                expanded.0.insert(*system_entity);
-                            }
+                // Sort: capital first, then alphabetical
+                owned_systems.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+
+                // Auto-expand capital system on first encounter
+                for (entity, _, is_capital) in &owned_systems {
+                    if *is_capital && !expanded.0.contains(entity) {
+                        // Check if we've ever toggled this -- use a sentinel approach:
+                        // On first frame, expand capital systems by default.
+                        // We use a simple heuristic: if expanded set is empty, initialize defaults.
+                    }
+                }
+                // Initialize defaults: if the expanded set has never been populated,
+                // expand capital systems by default.
+                if expanded.0.is_empty() && !owned_systems.is_empty() {
+                    for (entity, _, is_capital) in &owned_systems {
+                        if *is_capital {
+                            expanded.0.insert(*entity);
                         }
+                    }
+                }
 
-                        for (system_entity, system_name, docked) in &unowned_system_ships {
-                            let is_system_selected = selected_system.0 == Some(*system_entity);
+                for (system_entity, system_name, is_capital) in &owned_systems {
+                    let is_system_selected = selected_system.0 == Some(*system_entity);
 
-                            let is_expanded = draw_unowned_system_header(
-                                ui,
-                                *system_entity,
-                                system_name,
-                                is_system_selected,
-                                expanded,
-                                selected_system,
-                                planets,
-                            );
+                    let is_expanded = draw_system_header(
+                        ui,
+                        *system_entity,
+                        system_name,
+                        *is_capital,
+                        is_system_selected,
+                        expanded,
+                        selected_system,
+                        planets,
+                    );
 
-                            if is_expanded {
-                                ui.indent(
-                                    format!("outline_unowned_ships_{:?}", system_entity),
-                                    |ui| {
-                                        draw_fleet_grouped_ship_list(
-                                            ui,
-                                            docked,
-                                            ships,
-                                            selected_ship,
-                                            selected_ships,
-                                            design_registry,
-                                            fleets,
-                                            Some(*system_entity),
-                                            selected_system,
-                                        );
-                                    },
+                    if is_expanded {
+                        // #395/#406: Show stations separately from ships with visual distinction
+                        // #432: Filter by viewed empire unless observer mode.
+                        let ship_owner_filter = if is_observer { None } else { viewed_empire };
+                        let system_stations = stations_at(*system_entity, ships, ship_owner_filter);
+                        let docked = ships_docked_at(*system_entity, ships, ship_owner_filter);
+                        let has_both = !system_stations.is_empty() && !docked.is_empty();
+                        if !system_stations.is_empty() {
+                            ui.indent(format!("outline_stations_{:?}", system_entity), |ui| {
+                                // #406: Anchor icon + teal color for stations header
+                                ui.label(
+                                    egui::RichText::new("\u{2693} Stations")
+                                        .small()
+                                        .color(egui::Color32::from_rgb(0, 200, 180)),
                                 );
-                            }
-                        }
-                    });
-            }
-
-            // "In Transit" section for ships not docked
-            // #395: Immobile ships are excluded (they should never be in transit).
-            // #432: Filter by viewed empire ownership.
-            let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
-            for (entity, ship, state, _, _, _) in ships.iter() {
-                if ship.is_immobile() {
-                    continue;
-                }
-                if !is_own_ship(ship) {
-                    continue;
-                }
-                let status = match &*state {
-                    ShipState::InSystem { .. } => continue,
-                    ShipState::SubLight { .. } => "Moving",
-                    ShipState::InFTL { .. } => "FTL",
-                    ShipState::Surveying { .. } => "Surveying",
-                    ShipState::Settling { .. } => "Settling",
-                    ShipState::Refitting { .. } => continue,
-                    ShipState::Loitering { .. } => "Loitering",
-                    ShipState::Scouting { .. } => "Scouting",
-                };
-                in_transit.push((entity, ship.name.clone(), ship.design_id.clone(), status));
-            }
-            in_transit.sort_by(|a, b| a.1.cmp(&b.1));
-
-            if !in_transit.is_empty() {
-                ui.separator();
-                egui::CollapsingHeader::new("In Transit")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for (entity, name, design_id, status) in &in_transit {
-                            let label = format!("{} [{}]", name, status);
-                            let is_selected = selected_ships.contains(*entity);
-                            let design_name = design_registry
-                                .get(design_id.as_str())
-                                .map(|d| d.name.clone())
-                                .unwrap_or_else(|| design_id.clone());
-                            let mut response = ui.selectable_label(is_selected, &label);
-                            if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
-                                response = response.on_hover_ui(|ui| {
-                                    ship_tooltip(ui, &ship, &_state, &hp, &design_name);
-                                });
-                            }
-                            // #408: Context menu on in-transit ships
-                            let can_survey = design_registry.can_survey(design_id);
-                            let can_colonize = design_registry.can_colonize(design_id);
-                            let ctx_name = name.clone();
-                            let ctx_design_name = design_name.clone();
-                            let ctx_entity = *entity;
-                            response.context_menu(|ui| {
-                                draw_ship_context_menu(
+                                draw_ship_list(
                                     ui,
-                                    &ctx_name,
-                                    &ctx_design_name,
-                                    ctx_entity,
-                                    None, // no parent system for in-transit
-                                    can_survey,
-                                    can_colonize,
-                                    false,
+                                    &system_stations,
+                                    ships,
                                     selected_ship,
                                     selected_ships,
+                                    design_registry,
+                                    Some(*system_entity),
                                     selected_system,
+                                    true,
                                 );
                             });
-                            if response.clicked() {
-                                let shift_held = ui.input(|i| i.modifiers.shift);
-                                if shift_held {
-                                    selected_ships.toggle(*entity);
+                        }
+                        // #406: Separator between stations and ships when both exist
+                        if has_both {
+                            ui.separator();
+                        }
+                        // #407: Group docked ships by fleet
+                        ui.indent(format!("outline_ships_{:?}", system_entity), |ui| {
+                            // #406: Ships sub-header when both sections exist
+                            if has_both {
+                                ui.label(
+                                    egui::RichText::new("\u{2694} Ships")
+                                        .small()
+                                        .color(egui::Color32::from_rgb(200, 200, 120)),
+                                );
+                            }
+                            draw_fleet_grouped_ship_list(
+                                ui,
+                                &docked,
+                                ships,
+                                selected_ship,
+                                selected_ships,
+                                design_registry,
+                                fleets,
+                                Some(*system_entity),
+                                selected_system,
+                            );
+                        });
+                    }
+                }
+
+                // Collect owned system entities for lookup
+                let owned_system_entities: Vec<Entity> =
+                    owned_systems.iter().map(|(e, _, _)| *e).collect();
+
+                // "Stationed Elsewhere" section for ships docked at unowned systems
+                // #395: Immobile ships (stations) are excluded here.
+                // #432: Filter by viewed empire ownership.
+                let mut unowned_system_ships: Vec<(Entity, String, Vec<(Entity, String, String)>)> =
+                    Vec::new();
+                for (entity, ship, state, _, _, _) in ships.iter() {
+                    if ship.is_immobile() {
+                        continue;
+                    }
+                    if !is_own_ship(ship) {
+                        continue;
+                    }
+                    if let ShipState::InSystem { system } = &*state {
+                        if !owned_system_entities.contains(system) {
+                            // Find or create entry for this system
+                            if let Ok((_, star, _, _)) = stars.get(*system) {
+                                if let Some(entry) = unowned_system_ships
+                                    .iter_mut()
+                                    .find(|(e, _, _)| *e == *system)
+                                {
+                                    entry.2.push((
+                                        entity,
+                                        ship.name.clone(),
+                                        ship.design_id.clone(),
+                                    ));
                                 } else {
-                                    selected_ships.set_single(*entity);
+                                    unowned_system_ships.push((
+                                        *system,
+                                        star.name.clone(),
+                                        vec![(entity, ship.name.clone(), ship.design_id.clone())],
+                                    ));
                                 }
-                                selected_ship.0 = selected_ships.primary();
                             }
                         }
-                    });
-            }
+                    }
+                }
+                unowned_system_ships.sort_by(|a, b| a.1.cmp(&b.1));
+                for entry in &mut unowned_system_ships {
+                    entry.2.sort_by(|a, b| a.1.cmp(&b.1));
+                }
+
+                if !unowned_system_ships.is_empty() {
+                    ui.separator();
+                    egui::CollapsingHeader::new("Stationed Elsewhere")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            // Auto-expand unowned system headers on first encounter
+                            for (system_entity, _, _) in &unowned_system_ships {
+                                if !expanded.0.contains(system_entity) {
+                                    expanded.0.insert(*system_entity);
+                                }
+                            }
+
+                            for (system_entity, system_name, docked) in &unowned_system_ships {
+                                let is_system_selected = selected_system.0 == Some(*system_entity);
+
+                                let is_expanded = draw_unowned_system_header(
+                                    ui,
+                                    *system_entity,
+                                    system_name,
+                                    is_system_selected,
+                                    expanded,
+                                    selected_system,
+                                    planets,
+                                );
+
+                                if is_expanded {
+                                    ui.indent(
+                                        format!("outline_unowned_ships_{:?}", system_entity),
+                                        |ui| {
+                                            draw_fleet_grouped_ship_list(
+                                                ui,
+                                                docked,
+                                                ships,
+                                                selected_ship,
+                                                selected_ships,
+                                                design_registry,
+                                                fleets,
+                                                Some(*system_entity),
+                                                selected_system,
+                                            );
+                                        },
+                                    );
+                                }
+                            }
+                        });
+                }
+
+                // "In Transit" section for ships not docked
+                // #395: Immobile ships are excluded (they should never be in transit).
+                // #432: Filter by viewed empire ownership.
+                let mut in_transit: Vec<(Entity, String, String, &str)> = Vec::new();
+                for (entity, ship, state, _, _, _) in ships.iter() {
+                    if ship.is_immobile() {
+                        continue;
+                    }
+                    if !is_own_ship(ship) {
+                        continue;
+                    }
+                    let status = match &*state {
+                        ShipState::InSystem { .. } => continue,
+                        ShipState::SubLight { .. } => "Moving",
+                        ShipState::InFTL { .. } => "FTL",
+                        ShipState::Surveying { .. } => "Surveying",
+                        ShipState::Settling { .. } => "Settling",
+                        ShipState::Refitting { .. } => continue,
+                        ShipState::Loitering { .. } => "Loitering",
+                        ShipState::Scouting { .. } => "Scouting",
+                    };
+                    in_transit.push((entity, ship.name.clone(), ship.design_id.clone(), status));
+                }
+                in_transit.sort_by(|a, b| a.1.cmp(&b.1));
+
+                if !in_transit.is_empty() {
+                    ui.separator();
+                    egui::CollapsingHeader::new("In Transit")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for (entity, name, design_id, status) in &in_transit {
+                                let label = format!("{} [{}]", name, status);
+                                let is_selected = selected_ships.contains(*entity);
+                                let design_name = design_registry
+                                    .get(design_id.as_str())
+                                    .map(|d| d.name.clone())
+                                    .unwrap_or_else(|| design_id.clone());
+                                let mut response = ui.selectable_label(is_selected, &label);
+                                if let Ok((_, ship, _state, _, hp, _)) = ships.get(*entity) {
+                                    response = response.on_hover_ui(|ui| {
+                                        ship_tooltip(ui, &ship, &_state, &hp, &design_name);
+                                    });
+                                }
+                                // #408: Context menu on in-transit ships
+                                let can_survey = design_registry.can_survey(design_id);
+                                let can_colonize = design_registry.can_colonize(design_id);
+                                let ctx_name = name.clone();
+                                let ctx_design_name = design_name.clone();
+                                let ctx_entity = *entity;
+                                response.context_menu(|ui| {
+                                    draw_ship_context_menu(
+                                        ui,
+                                        &ctx_name,
+                                        &ctx_design_name,
+                                        ctx_entity,
+                                        None, // no parent system for in-transit
+                                        can_survey,
+                                        can_colonize,
+                                        false,
+                                        selected_ship,
+                                        selected_ships,
+                                        selected_system,
+                                    );
+                                });
+                                if response.clicked() {
+                                    let shift_held = ui.input(|i| i.modifiers.shift);
+                                    if shift_held {
+                                        selected_ships.toggle(*entity);
+                                    } else {
+                                        selected_ships.set_single(*entity);
+                                    }
+                                    selected_ship.0 = selected_ships.primary();
+                                }
+                            }
+                        });
+                }
             }); // ScrollArea
         });
 }

@@ -51,7 +51,10 @@ pub fn handle_move_requested(
     // dispatcher already popped the MoveTo).
     mut ships: Query<
         (&Ship, &mut ShipState, &Position, Option<&RulesOfEngagement>),
-        (Without<routing::PendingRoute>, Without<crate::colony::SlotAssignment>),
+        (
+            Without<routing::PendingRoute>,
+            Without<crate::colony::SlotAssignment>,
+        ),
     >,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
@@ -200,7 +203,10 @@ pub fn handle_move_requested(
             continue;
         };
         let origin_pos_arr = origin_pos.as_array();
-        let port_params = sys_mods_q.get(docked_sys).map(PortParams::from_system_modifiers).unwrap_or(PortParams::NONE);
+        let port_params = sys_mods_q
+            .get(docked_sys)
+            .map(PortParams::from_system_modifiers)
+            .unwrap_or(PortParams::NONE);
         let effective_ftl_range = if ship.ftl_range > 0.0 {
             ship.ftl_range + global_params.ftl_range_bonus + port_params.ftl_range_bonus
         } else {

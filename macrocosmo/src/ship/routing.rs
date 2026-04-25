@@ -764,7 +764,10 @@ pub fn poll_pending_routes(
                     }
                     continue;
                 };
-                let port_params = sys_mods_q.get(docked_system).map(PortParams::from_system_modifiers).unwrap_or(PortParams::NONE);
+                let port_params = sys_mods_q
+                    .get(docked_system)
+                    .map(PortParams::from_system_modifiers)
+                    .unwrap_or(PortParams::NONE);
                 match crate::ship::movement::start_ftl_travel_full(
                     &mut state,
                     ship,

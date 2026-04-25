@@ -41,10 +41,7 @@ pub(super) struct BaseStarSize(pub f32);
 /// so the generic `cleanup_ingame_entities` system in `game_state` does
 /// not catch them. `StarVisual` is the common marker attached to all
 /// three kinds (glow, main dot, label), so a single query covers them.
-pub fn cleanup_star_visuals(
-    mut commands: Commands,
-    visuals: Query<Entity, With<StarVisual>>,
-) {
+pub fn cleanup_star_visuals(mut commands: Commands, visuals: Query<Entity, With<StarVisual>>) {
     for e in &visuals {
         commands.entity(e).despawn();
     }
@@ -213,12 +210,15 @@ pub(super) fn star_color(star: &StarSystem, colonized: bool, obscured: bool) -> 
 // #176: Uses KnowledgeStore for remote system colonized status
 pub fn update_star_colors(
     stars: Query<(Entity, &StarSystem, Option<&ObscuredByGas>)>,
-    mut visuals: Query<(
-        &StarVisual,
-        &mut Sprite,
-        Option<&StarGlow>,
-        Option<&mut BaseStarSize>,
-    ), Without<StarLabel>>,
+    mut visuals: Query<
+        (
+            &StarVisual,
+            &mut Sprite,
+            Option<&StarGlow>,
+            Option<&mut BaseStarSize>,
+        ),
+        Without<StarLabel>,
+    >,
     mut labels: Query<(&StarVisual, &mut TextColor), With<StarLabel>>,
     empire_q: Query<(&KnowledgeStore, Option<&SystemVisibilityMap>), With<PlayerEmpire>>,
     colonies: Query<&Colony>,
@@ -319,9 +319,7 @@ pub fn update_star_colors(
             } else if god_view {
                 1.0
             } else {
-                match knowledge
-                    .and_then(|k| k.info_age(vis.system_entity, clock.elapsed))
-                {
+                match knowledge.and_then(|k| k.info_age(vis.system_entity, clock.elapsed)) {
                     None => 1.0,
                     Some(age) if age < 60 => 1.0, // Fresh (< 1 year)
                     Some(age) => (1.0 - (age as f32 - 60.0) / 600.0).clamp(0.3, 1.0),
@@ -508,20 +506,16 @@ pub fn draw_galaxy_overlay(
     // Player ruler location: normal mode reads it from the Player-tagged
     // Ruler. Observer mode has no Player entity; fall back to the galaxy
     // capital so the pulse ring still lands somewhere visible.
-    let stationed_system = player_q
-        .iter()
-        .next()
-        .map(|s| s.system)
-        .or_else(|| {
-            if viewer.is_god_view() {
-                stars
-                    .iter()
-                    .find(|(_, s, _)| s.is_capital)
-                    .map(|(e, _, _)| e)
-            } else {
-                None
-            }
-        });
+    let stationed_system = player_q.iter().next().map(|s| s.system).or_else(|| {
+        if viewer.is_god_view() {
+            stars
+                .iter()
+                .find(|(_, s, _)| s.is_capital)
+                .map(|(e, _, _)| e)
+        } else {
+            None
+        }
+    });
     let Some(stationed_system) = stationed_system else {
         return;
     };

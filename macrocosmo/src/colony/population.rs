@@ -69,36 +69,46 @@ pub fn tick_population_growth(
 
     let colony_data: Vec<(Entity, u32, f64, Amt, Amt, f64, Entity, Entity)> = colonies
         .iter()
-        .filter_map(|(colony, pop, production, food_consumption, faction_owner)| {
-            let sys = colony.system(&planets)?;
-            let total_pop = pop.total();
-            let food_consumed = if let Some(fc) = food_consumption {
-                fc.food_per_hexadies.final_value().mul_u64(d)
-            } else {
-                Amt::from_f64(total_pop as f64)
-                    .mul_amt(FOOD_PER_POP_PER_HEXADIES)
-                    .mul_u64(d)
-            };
-            let hab_score = planet_attrs
-                .get(colony.planet)
-                .map(|attr| attr.habitability)
-                .unwrap_or(0.5);
-            let food_prod = production.food_per_hexadies.final_value();
-            Some((
-                colony.planet,
-                total_pop,
-                colony.growth_rate,
-                food_consumed,
-                food_prod,
-                hab_score,
-                sys,
-                faction_owner.0,
-            ))
-        })
+        .filter_map(
+            |(colony, pop, production, food_consumption, faction_owner)| {
+                let sys = colony.system(&planets)?;
+                let total_pop = pop.total();
+                let food_consumed = if let Some(fc) = food_consumption {
+                    fc.food_per_hexadies.final_value().mul_u64(d)
+                } else {
+                    Amt::from_f64(total_pop as f64)
+                        .mul_amt(FOOD_PER_POP_PER_HEXADIES)
+                        .mul_u64(d)
+                };
+                let hab_score = planet_attrs
+                    .get(colony.planet)
+                    .map(|attr| attr.habitability)
+                    .unwrap_or(0.5);
+                let food_prod = production.food_per_hexadies.final_value();
+                Some((
+                    colony.planet,
+                    total_pop,
+                    colony.growth_rate,
+                    food_consumed,
+                    food_prod,
+                    hab_score,
+                    sys,
+                    faction_owner.0,
+                ))
+            },
+        )
         .collect();
 
-    for (_planet_entity, _population, _growth_rate, food_consumed, _food_prod, _hab_score, sys, _owner) in
-        &colony_data
+    for (
+        _planet_entity,
+        _population,
+        _growth_rate,
+        food_consumed,
+        _food_prod,
+        _hab_score,
+        sys,
+        _owner,
+    ) in &colony_data
     {
         if let Ok(mut stockpile) = stockpiles.get_mut(*sys) {
             stockpile.food = stockpile.food.sub(*food_consumed);
@@ -198,9 +208,7 @@ fn pick_species_weighted(
 }
 
 /// Synchronise food consumption based on current population.
-pub fn sync_food_consumption(
-    mut query: Query<(&ColonyPopulation, &mut FoodConsumption)>,
-) {
+pub fn sync_food_consumption(mut query: Query<(&ColonyPopulation, &mut FoodConsumption)>) {
     use crate::galaxy::FOOD_PER_POP_PER_HEXADIES;
 
     for (pop, mut consumption) in &mut query {

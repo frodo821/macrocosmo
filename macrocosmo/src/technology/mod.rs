@@ -468,12 +468,17 @@ pub fn attach_tech_tree_to_empires(
     empires: Query<(Entity, Option<&TechTree>), With<crate::player::Empire>>,
 ) {
     let Some(tree) = tree_res else {
-        warn!("attach_tech_tree_to_empires: TechTree resource missing; empires will carry empty trees");
+        warn!(
+            "attach_tech_tree_to_empires: TechTree resource missing; empires will carry empty trees"
+        );
         return;
     };
     let mut attached = 0usize;
     for (entity, existing) in &empires {
-        if existing.map(|t| !t.technologies.is_empty()).unwrap_or(false) {
+        if existing
+            .map(|t| !t.technologies.is_empty())
+            .unwrap_or(false)
+        {
             continue;
         }
         commands.entity(entity).insert(tree.clone());

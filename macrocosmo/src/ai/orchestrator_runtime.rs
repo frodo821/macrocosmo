@@ -168,9 +168,9 @@ pub fn run_orchestrators(
     *last_tick = now;
 
     for (entity, fo) in registry.by_entity.iter_mut() {
-        let out =
-            fo.orchestrator
-                .tick(&mut bus.0, &mut fo.dispatcher, &fo.victory, None, now);
+        let out = fo
+            .orchestrator
+            .tick(&mut bus.0, &mut fo.dispatcher, &fo.victory, None, now);
         for cmd in &out.commands {
             // Per-command observer log — `pursue_metric:*` kinds have
             // no game-side mapping yet, so `drain_ai_commands` will

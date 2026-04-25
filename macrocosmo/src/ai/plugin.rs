@@ -202,11 +202,7 @@ impl Plugin for AiPlugin {
 
 /// Declare per-faction metric slots (self + foreign) for a single faction
 /// entity. No-op if already declared for this entity.
-fn declare_faction_slots(
-    bus: &mut AiBus,
-    declared: &mut DeclaredFactionSlots,
-    entity: Entity,
-) {
+fn declare_faction_slots(bus: &mut AiBus, declared: &mut DeclaredFactionSlots, entity: Entity) {
     if !declared.0.insert(entity) {
         return; // already declared
     }

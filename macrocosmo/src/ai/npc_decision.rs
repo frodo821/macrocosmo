@@ -249,10 +249,7 @@ impl NpcPolicy for SimpleNpcPolicy {
             .collect();
         if !context.unsurveyed_systems.is_empty() && !idle_surveyors.is_empty() {
             // Send one survey ship per unsurveyed system (up to available ships).
-            for (ship, &target) in idle_surveyors
-                .iter()
-                .zip(context.unsurveyed_systems.iter())
-            {
+            for (ship, &target) in idle_surveyors.iter().zip(context.unsurveyed_systems.iter()) {
                 let cmd = Command::new(cmd_ids::survey_system(), faction_id.clone(), now)
                     .with_param("target_system", CommandValue::System(to_ai_system(target)))
                     .with_param("ship_count", CommandValue::I64(1))
@@ -426,10 +423,7 @@ pub fn rank_survey_targets(
     scored.sort_by(|a, b| {
         a.1.partial_cmp(&b.1)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                a.2.partial_cmp(&b.2)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+            .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
     });
     scored.into_iter().map(|(e, _, _)| e).collect()
 }
@@ -488,8 +482,7 @@ pub fn npc_decision_tick(
         // because their KnowledgeStore is empty aside from the capital.
         let mut hostile_systems = Vec::new();
         let mut colonizable_systems = Vec::new();
-        let mut surveyed_ids: std::collections::HashSet<Entity> =
-            std::collections::HashSet::new();
+        let mut surveyed_ids: std::collections::HashSet<Entity> = std::collections::HashSet::new();
         for (_, k) in knowledge.iter() {
             if k.data.has_hostile {
                 hostile_systems.push(k.system);
@@ -651,7 +644,13 @@ mod tests {
         // Declare + emit per-faction slots.
         for (name, value) in metrics {
             let id = metric::for_faction(name, faction);
-            bus.declare_metric(id.clone(), macrocosmo_ai::MetricSpec::gauge(macrocosmo_ai::Retention::Medium, "per-faction self metric"));
+            bus.declare_metric(
+                id.clone(),
+                macrocosmo_ai::MetricSpec::gauge(
+                    macrocosmo_ai::Retention::Medium,
+                    "per-faction self metric",
+                ),
+            );
             bus.emit(&id, *value, 10);
         }
         // Also declare the global metrics that remain un-suffixed.
@@ -1350,13 +1349,7 @@ mod tests {
         };
 
         let mut policy = SimpleNpcPolicy::default();
-        let cmds = policy.decide(
-            "test_faction",
-            test_faction_entity(),
-            10,
-            &bus,
-            &ctx,
-        );
+        let cmds = policy.decide("test_faction", test_faction_entity(), 10, &bus, &ctx);
 
         assert_eq!(cmds.len(), 2, "should emit attack_target + move_ruler");
         assert_eq!(cmds[0].kind.as_str(), "attack_target");
@@ -1408,15 +1401,13 @@ mod tests {
         };
 
         let mut policy = SimpleNpcPolicy::default();
-        let cmds = policy.decide(
-            "test_faction",
-            test_faction_entity(),
-            10,
-            &bus,
-            &ctx,
-        );
+        let cmds = policy.decide("test_faction", test_faction_entity(), 10, &bus, &ctx);
 
-        assert_eq!(cmds.len(), 1, "should only emit attack_target, not move_ruler");
+        assert_eq!(
+            cmds.len(),
+            1,
+            "should only emit attack_target, not move_ruler"
+        );
         assert_eq!(cmds[0].kind.as_str(), "attack_target");
     }
 }

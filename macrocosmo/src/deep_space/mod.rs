@@ -1097,7 +1097,8 @@ pub fn relay_knowledge_propagate_system(
                 continue;
             }
 
-            let reverse = crate::colony::system_buildings::build_reverse_design_map(&building_registry);
+            let reverse =
+                crate::colony::system_buildings::build_reverse_design_map(&building_registry);
             let relay_has_port = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
                 slot.is_some()
                     && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)

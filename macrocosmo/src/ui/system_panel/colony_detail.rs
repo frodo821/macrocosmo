@@ -50,14 +50,17 @@ pub(super) fn draw_colony_detail(
         ),
         With<crate::galaxy::StarSystem>,
     >,
-    ships_query: &mut Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     construction_params: &ConstructionParams,
     planets: &Query<&crate::galaxy::Planet>,
     _hull_registry: &crate::ship_design::HullRegistry,
@@ -319,14 +322,17 @@ fn draw_overview_tab(
         ),
         With<crate::galaxy::StarSystem>,
     >,
-    ships_query: &mut Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     construction_params: &ConstructionParams,
     planets: &Query<&crate::galaxy::Planet>,
     design_registry: &crate::ship_design::ShipDesignRegistry,
@@ -599,10 +605,8 @@ fn draw_overview_tab(
                                 .unwrap_or_else(|| bid.0.clone())
                         })
                         .unwrap_or_else(|| "?".to_string());
-                    let label = format!(
-                        "[Up] slot {} {} → {}",
-                        o.slot_index, src_name, target_name
-                    );
+                    let label =
+                        format!("[Up] slot {} {} → {}", o.slot_index, src_name, target_name);
                     combined.push((o.order_id, label, o.build_time_remaining));
                 }
                 for o in &bq.demolition_queue {
@@ -849,8 +853,7 @@ fn draw_overview_tab(
                 // render a button — matches the existing deliverable filter
                 // pattern in `available_shipyard_deliverables`.
                 let eval_ctx = build_avail.as_eval();
-                let planet_building_defs =
-                    building_registry.available_planet_buildings(&eval_ctx);
+                let planet_building_defs = building_registry.available_planet_buildings(&eval_ctx);
                 let mut build_building_request: Option<BuildingId> = None;
                 for def in &planet_building_defs {
                     let (base_m, base_e) = def.build_cost();

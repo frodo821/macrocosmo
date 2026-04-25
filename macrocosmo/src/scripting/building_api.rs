@@ -209,11 +209,7 @@ impl BuildingRegistry {
     /// Returns `true` when the building has no prerequisites or the tree
     /// evaluates as satisfied. Returns `false` if the id is unknown — an
     /// unknown building can never be built.
-    pub fn prerequisites_satisfied(
-        &self,
-        id: &str,
-        ctx: &crate::condition::EvalContext,
-    ) -> bool {
+    pub fn prerequisites_satisfied(&self, id: &str, ctx: &crate::condition::EvalContext) -> bool {
         match self.get(id) {
             Some(def) => match &def.prerequisites {
                 Some(cond) => cond.evaluate(ctx).is_satisfied(),

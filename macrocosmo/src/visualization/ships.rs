@@ -89,9 +89,7 @@ pub fn draw_ships(
     // via `ObserverView` and draw its ships — god-view always shows the
     // selected NPC empire's fleet so the map isn't blank.
     let empire_entity = if observer_mode.enabled {
-        observer_view
-            .viewing
-            .and_then(|e| all_empire_q.get(e).ok())
+        observer_view.viewing.and_then(|e| all_empire_q.get(e).ok())
     } else {
         empire_q.single().ok().map(|(e, _)| e)
     };
@@ -552,16 +550,15 @@ pub fn draw_ships(
             }
 
             let pos = match &snapshot.last_known_state {
-                ShipSnapshotState::Loitering { position } => {
-                    Some(Vec2::new(
-                        position[0] as f32 * view.scale,
-                        position[1] as f32 * view.scale,
-                    ))
-                }
+                ShipSnapshotState::Loitering { position } => Some(Vec2::new(
+                    position[0] as f32 * view.scale,
+                    position[1] as f32 * view.scale,
+                )),
                 _ => snapshot.last_known_system.and_then(|sys| {
-                    stars.get(sys).ok().map(|p| {
-                        Vec2::new(p.x as f32 * view.scale, p.y as f32 * view.scale)
-                    })
+                    stars
+                        .get(sys)
+                        .ok()
+                        .map(|p| Vec2::new(p.x as f32 * view.scale, p.y as f32 * view.scale))
                 }),
             };
 

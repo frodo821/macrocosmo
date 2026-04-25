@@ -128,9 +128,7 @@ pub fn draw_console(
                                 LogSource::ConsoleResult => {
                                     (egui::Color32::from_rgb(200, 255, 200), "= ")
                                 }
-                                LogSource::Error => {
-                                    (egui::Color32::from_rgb(255, 100, 100), "! ")
-                                }
+                                LogSource::Error => (egui::Color32::from_rgb(255, 100, 100), "! "),
                                 LogSource::Event(_) => (egui::Color32::from_rgb(255, 220, 80), ""),
                                 LogSource::Lifecycle(_) => {
                                     (egui::Color32::from_rgb(180, 220, 255), "")

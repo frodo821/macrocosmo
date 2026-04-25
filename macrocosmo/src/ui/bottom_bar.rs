@@ -22,13 +22,9 @@ pub fn draw_bottom_bar(ctx: &egui::Context, event_log: &EventLog) {
                     .show(ui, |ui| {
                         for entry in recent.iter().rev() {
                             let [r, g, b] = entry.kind.category().color();
-                            let text = format!(
-                                "[hd {}] {}",
-                                entry.timestamp, entry.description,
-                            );
+                            let text = format!("[hd {}] {}", entry.timestamp, entry.description,);
                             ui.label(
-                                egui::RichText::new(text)
-                                    .color(egui::Color32::from_rgb(r, g, b)),
+                                egui::RichText::new(text).color(egui::Color32::from_rgb(r, g, b)),
                             );
                         }
                     });

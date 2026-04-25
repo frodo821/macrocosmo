@@ -129,24 +129,24 @@ pub fn draw_system_panel(
         (&mut ResourceStockpile, Option<&ResourceCapacity>),
         With<StarSystem>,
     >,
-    ships_query: &mut Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     positions: &Query<&Position>,
     knowledge: &KnowledgeStore,
     clock: &GameClock,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
-    system_buildings_q: &mut Query<(
-        Option<&SystemBuildings>,
-        Option<&mut SystemBuildingQueue>,
-    )>,
+    system_buildings_q: &mut Query<(Option<&SystemBuildings>, Option<&mut SystemBuildingQueue>)>,
     station_ships_q: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     sys_mods_q: &Query<&crate::galaxy::SystemModifiers>,
     hull_registry: &crate::ship_design::HullRegistry,
@@ -557,34 +557,34 @@ pub fn draw_system_panel(
         .map(|t| t >= crate::knowledge::SystemVisibilityTier::Surveyed)
         .unwrap_or(effective_surveyed);
     if show_planet_window {
-    draw_planet_window(
-        ctx,
-        sel_entity,
-        selected_planet,
-        &colonized_planets,
-        stars,
-        colonies,
-        colony_pop_view,
-        system_stockpiles,
-        ships_query,
-        construction_params,
-        planets,
-        planet_entities,
-        hull_registry,
-        module_registry,
-        design_registry,
-        building_registry,
-        job_registry,
-        colony_panel_tab,
-        dispatches,
-        is_local_system,
-        k_data,
-        clock.elapsed,
-        viewed_empire,
-        is_observer,
-        faction_owners,
-        deliverable_avail,
-    );
+        draw_planet_window(
+            ctx,
+            sel_entity,
+            selected_planet,
+            &colonized_planets,
+            stars,
+            colonies,
+            colony_pop_view,
+            system_stockpiles,
+            ships_query,
+            construction_params,
+            planets,
+            planet_entities,
+            hull_registry,
+            module_registry,
+            design_registry,
+            building_registry,
+            job_registry,
+            colony_panel_tab,
+            dispatches,
+            is_local_system,
+            k_data,
+            clock.elapsed,
+            viewed_empire,
+            is_observer,
+            faction_owners,
+            deliverable_avail,
+        );
     } // show_planet_window
 }
 
@@ -865,10 +865,7 @@ fn draw_right_panel(
     hull_registry: &crate::ship_design::HullRegistry,
     module_registry: &crate::ship_design::ModuleRegistry,
     design_registry: &crate::ship_design::ShipDesignRegistry,
-    system_buildings_q: &mut Query<(
-        Option<&SystemBuildings>,
-        Option<&mut SystemBuildingQueue>,
-    )>,
+    system_buildings_q: &mut Query<(Option<&SystemBuildings>, Option<&mut SystemBuildingQueue>)>,
     station_ships_q: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     sys_mods_q: &Query<&crate::galaxy::SystemModifiers>,
     construction_params: &ConstructionParams,
@@ -1063,10 +1060,7 @@ fn draw_right_panel(
                             .unwrap_or_else(|| bid.0.clone())
                     })
                     .unwrap_or_else(|| "?".to_string());
-                let label = format!(
-                    "[Up] slot {} {} → {}",
-                    o.slot_index, src_name, target_name
-                );
+                let label = format!("[Up] slot {} {} → {}", o.slot_index, src_name, target_name);
                 combined.push((o.order_id, label, o.build_time_remaining));
             }
             for o in &bq.demolition_queue {
@@ -1204,9 +1198,9 @@ fn draw_right_panel(
                                     let base_time = up.build_time.unwrap_or_else(|| {
                                         target_def.map(|d| d.build_time / 2).unwrap_or(5)
                                     });
-                                    let eff_time = (base_time as f64
-                                        * sys_bldg_time_mod.to_f64())
-                                    .ceil() as i64;
+                                    let eff_time = (base_time as f64 * sys_bldg_time_mod.to_f64())
+                                        .ceil()
+                                        as i64;
                                     let prereq_ok = target_def
                                         .and_then(|d| d.prerequisites.as_ref())
                                         .map(|c| c.evaluate(&eval_ctx).is_satisfied())
@@ -1233,13 +1227,8 @@ fn draw_right_panel(
                                         egui::Button::new(format!("-> {}", target_name)).small(),
                                     );
                                     if response.on_hover_text(tooltip).clicked() {
-                                        sys_upgrade_request = Some((
-                                            i,
-                                            up.target_id.clone(),
-                                            eff_m,
-                                            eff_e,
-                                            eff_time,
-                                        ));
+                                        sys_upgrade_request =
+                                            Some((i, up.target_id.clone(), eff_m, eff_e, eff_time));
                                     }
                                 }
                             }

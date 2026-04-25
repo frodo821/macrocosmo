@@ -83,8 +83,7 @@ impl Plugin for ColonyPlugin {
                         // The surrounding sync_* + aggregate_job_contributions
                         // systems intentionally remain ungated — UI depends on
                         // them producing fresh numbers even while paused.
-                        tick_timed_effects
-                            .run_if(in_state(crate::game_state::GameState::InGame)),
+                        tick_timed_effects.run_if(in_state(crate::game_state::GameState::InGame)),
                         tick_authority.run_if(in_state(crate::game_state::GameState::InGame)),
                         sync_building_modifiers,
                         crate::species::sync_job_assignment,
@@ -125,8 +124,7 @@ impl Plugin for ColonyPlugin {
             // now carry SlotAssignment components directly.
             .add_systems(
                 Update,
-                sync_system_capability_modifiers
-                    .after(crate::time_system::advance_game_time),
+                sync_system_capability_modifiers.after(crate::time_system::advance_game_time),
             )
             .add_systems(
                 Update,

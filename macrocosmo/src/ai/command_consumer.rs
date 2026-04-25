@@ -22,7 +22,10 @@ use crate::ai::convert::{from_ai_system, to_ai_faction};
 use crate::ai::emit::AiBusDrainer;
 use crate::ai::schema::ids::command as cmd_ids;
 use crate::amount::Amt;
-use crate::colony::building_queue::{BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings};
+use crate::colony::building_queue::{
+    BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings,
+};
+use crate::colony::system_buildings::SlotAssignment;
 use crate::colony::{BuildingRegistry, Colony};
 use crate::components::Position;
 use crate::galaxy::{AtSystem, Hostile, Planet, Sovereignty, StarSystem};
@@ -33,7 +36,6 @@ use crate::ship::command_events::{
 };
 use crate::ship::{CommandQueue, Owner, Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
-use crate::colony::system_buildings::SlotAssignment;
 use crate::technology::{ResearchQueue, TechId, TechTree};
 use crate::time_system::GameClock;
 
@@ -55,10 +57,28 @@ pub struct BuildResearchParams<'w, 's> {
     design_registry: Option<Res<'w, ShipDesignRegistry>>,
     building_registry: Option<Res<'w, BuildingRegistry>>,
     build_queues: Query<'w, 's, &'static mut BuildQueue>,
-    station_ships: Query<'w, 's, (Entity, &'static Ship, &'static ShipState, &'static SlotAssignment)>,
+    station_ships: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static Ship,
+            &'static ShipState,
+            &'static SlotAssignment,
+        ),
+    >,
     sys_mods_q: Query<'w, 's, &'static crate::galaxy::SystemModifiers>,
     empire_tech: Query<'w, 's, (&'static mut TechTree, &'static mut ResearchQueue), With<Empire>>,
-    colonies: Query<'w, 's, (Entity, &'static Colony, &'static Buildings, &'static mut BuildingQueue)>,
+    colonies: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static Colony,
+            &'static Buildings,
+            &'static mut BuildingQueue,
+        ),
+    >,
     planets: Query<'w, 's, &'static Planet>,
     /// System-level building queues + slot state, used by the system-
     /// building branch of `handle_build_structure` to route shipyard /
@@ -76,8 +96,7 @@ pub struct BuildResearchParams<'w, 's> {
     /// Tracks which systems host a Core-equipped ship. Required gate for
     /// system-building construction (#370): shipyard / port / lab are only
     /// buildable in systems with an Infrastructure Core.
-    core_at_system:
-        Query<'w, 's, &'static crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
+    core_at_system: Query<'w, 's, &'static crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
 }
 
 /// Drain AI commands from the bus and apply them to the game world.
@@ -169,12 +188,7 @@ pub fn drain_ai_commands(
                 &mut build_research,
             );
         } else if kind_str == cmd_ids::research_focus().as_str() {
-            handle_research_focus(
-                &cmd.issuer,
-                &cmd.params,
-                &empires,
-                &mut build_research,
-            );
+            handle_research_focus(&cmd.issuer, &cmd.params, &empires, &mut build_research);
         } else if kind_str == cmd_ids::build_structure().as_str() {
             handle_build_structure(
                 &cmd.issuer,
@@ -249,9 +263,7 @@ fn extract_ship_list(params: &macrocosmo_ai::CommandParams) -> Vec<Entity> {
         .filter_map(|i| {
             let key = format!("ship_{i}");
             match params.get(key.as_str()) {
-                Some(CommandValue::Entity(r)) => {
-                    Some(crate::ai::convert::from_ai_entity(*r))
-                }
+                Some(CommandValue::Entity(r)) => Some(crate::ai::convert::from_ai_entity(*r)),
                 _ => None,
             }
         })
@@ -488,7 +500,10 @@ fn queue_ship_at_shipyard(
     };
 
     let Some(sys_entity) = shipyard_system else {
-        debug!("build_ship/fortify: no system with shipyard found for empire {:?}", empire_entity);
+        debug!(
+            "build_ship/fortify: no system with shipyard found for empire {:?}",
+            empire_entity
+        );
         return false;
     };
 
@@ -514,16 +529,16 @@ fn queue_ship_at_shipyard(
         );
         true
     } else {
-        debug!("build_ship/fortify: system {:?} has no BuildQueue component", sys_entity);
+        debug!(
+            "build_ship/fortify: system {:?} has no BuildQueue component",
+            sys_entity
+        );
         false
     }
 }
 
 /// Check if a system has a shipyard capability via `SystemModifiers`.
-fn has_shipyard_check(
-    system: Entity,
-    sys_mods_q: &Query<&crate::galaxy::SystemModifiers>,
-) -> bool {
+fn has_shipyard_check(system: Entity, sys_mods_q: &Query<&crate::galaxy::SystemModifiers>) -> bool {
     sys_mods_q
         .get(system)
         .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
@@ -559,12 +574,10 @@ fn handle_build_ship(
         }
     };
 
-    let target_system = params
-        .get("target_system")
-        .and_then(|v| match v {
-            CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
-            _ => None,
-        });
+    let target_system = params.get("target_system").and_then(|v| match v {
+        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
+        _ => None,
+    });
 
     queue_ship_at_shipyard(empire_entity, &design_id, target_system, sovereignty, br);
 }
@@ -592,12 +605,10 @@ fn handle_fortify_system(
         }
     };
 
-    let target_system = params
-        .get("target_system")
-        .and_then(|v| match v {
-            CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
-            _ => None,
-        });
+    let target_system = params.get("target_system").and_then(|v| match v {
+        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
+        _ => None,
+    });
 
     // Determine which design to build
     let design_id = match params.get("design_id") {
@@ -742,12 +753,10 @@ fn handle_build_structure(
     let is_system_building = building_def.is_system_building;
 
     // Determine target system for ownership check
-    let target_system = params
-        .get("target_system")
-        .and_then(|v| match v {
-            CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
-            _ => None,
-        });
+    let target_system = params.get("target_system").and_then(|v| match v {
+        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
+        _ => None,
+    });
 
     // Collect owned systems
     let owned_systems: std::collections::HashSet<Entity> = sovereignty
@@ -896,7 +905,16 @@ fn handle_reposition(
     next_cmd_id: &mut NextCommandId,
     now: i64,
 ) {
-    dispatch_ships_to_target("reposition", issuer, params, ships, empires, move_writer, next_cmd_id, now);
+    dispatch_ships_to_target(
+        "reposition",
+        issuer,
+        params,
+        ships,
+        empires,
+        move_writer,
+        next_cmd_id,
+        now,
+    );
 }
 
 /// Handle `blockade`: move specified ships to a target system (tactical positioning).
@@ -913,7 +931,16 @@ fn handle_blockade(
     next_cmd_id: &mut NextCommandId,
     now: i64,
 ) {
-    dispatch_ships_to_target("blockade", issuer, params, ships, empires, move_writer, next_cmd_id, now);
+    dispatch_ships_to_target(
+        "blockade",
+        issuer,
+        params,
+        ships,
+        empires,
+        move_writer,
+        next_cmd_id,
+        now,
+    );
 }
 
 /// Shared logic for reposition / blockade: dispatch listed ships to a
@@ -1018,8 +1045,7 @@ fn handle_retreat(
     }
 
     // 2. Build set of systems with hostile presence.
-    let hostile_set: std::collections::HashSet<Entity> =
-        hostiles.iter().map(|at| at.0).collect();
+    let hostile_set: std::collections::HashSet<Entity> = hostiles.iter().map(|at| at.0).collect();
 
     // 3. Safe rally candidates = owned systems without hostiles.
     let safe_systems: Vec<Entity> = owned_systems
@@ -1288,23 +1314,25 @@ mod tests {
             ))
             .id();
 
-        let ship_entity = world.spawn((
-            Ship {
-                name: "NPC Scout".into(),
-                design_id: "scout".into(),
-                hull_id: "corvette".into(),
-                modules: vec![],
-                owner: Owner::Empire(empire_entity),
-                sublight_speed: 0.1,
-                ftl_range: 5.0,
-                ruler_aboard: false,
-                home_port: origin_sys,
-                design_revision: 0,
-                fleet: None,
-            },
-            ShipState::InSystem { system: origin_sys },
-            CommandQueue::default(),
-        )).id();
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "NPC Scout".into(),
+                    design_id: "scout".into(),
+                    hull_id: "corvette".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire_entity),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: origin_sys,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system: origin_sys },
+                CommandQueue::default(),
+            ))
+            .id();
 
         let target_ref = crate::ai::convert::to_ai_system(target_sys);
         let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
@@ -1316,10 +1344,7 @@ mod tests {
 
         // Add a counting system that reads MoveRequested messages.
         app.insert_resource(MoveCount(0));
-        app.add_systems(
-            Update,
-            (drain_ai_commands, count_moves).chain(),
-        );
+        app.add_systems(Update, (drain_ai_commands, count_moves).chain());
         app.update();
 
         let count = app.world().resource::<MoveCount>().0;
@@ -1403,10 +1428,7 @@ mod tests {
         app.update();
 
         app.insert_resource(MoveCount(0));
-        app.add_systems(
-            Update,
-            (drain_ai_commands, count_moves).chain(),
-        );
+        app.add_systems(Update, (drain_ai_commands, count_moves).chain());
         app.update();
 
         let count = app.world().resource::<MoveCount>().0;
@@ -1490,15 +1512,16 @@ mod tests {
             on_built: None,
             on_upgraded: None,
             dismantlable: true,
-            ship_design_id: None, colony_slots: None,
+            ship_design_id: None,
+            colony_slots: None,
         });
         registry
     }
 
     #[test]
     fn build_ship_queues_order_at_shipyard_system() {
-        use std::collections::HashMap;
         use crate::scripting::building_api::{BuildingDefinition, BuildingId, CapabilityParams};
+        use std::collections::HashMap;
 
         let mut app = test_app();
         // Insert design + building registries
@@ -1518,14 +1541,12 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
-            modifiers: vec![
-                crate::modifier::ParsedModifier {
-                    target: "system.shipyard_capacity".into(),
-                    base_add: 1.0,
-                    multiplier: 0.0,
-                    add: 0.0,
-                },
-            ],
+            modifiers: vec![crate::modifier::ParsedModifier {
+                target: "system.shipyard_capacity".into(),
+                base_add: 1.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
             is_system_building: true,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
@@ -1543,7 +1564,9 @@ mod tests {
 
         let empire_entity = world
             .spawn((
-                Empire { name: "Test NPC".into() },
+                Empire {
+                    name: "Test NPC".into(),
+                },
                 Faction::new("test_npc", "Test NPC"),
             ))
             .id();
@@ -1552,15 +1575,17 @@ mod tests {
 
         // SystemModifiers with shipyard_capacity seeded so has_shipyard check passes.
         let mut sys_mods = crate::galaxy::SystemModifiers::default();
-        sys_mods.shipyard_capacity.push_modifier(crate::modifier::Modifier {
-            id: "test_shipyard".into(),
-            label: "Test Shipyard".into(),
-            base_add: crate::amount::SignedAmt::units(1),
-            multiplier: crate::amount::SignedAmt::ZERO,
-            add: crate::amount::SignedAmt::ZERO,
-            expires_at: None,
-            on_expire_event: None,
-        });
+        sys_mods
+            .shipyard_capacity
+            .push_modifier(crate::modifier::Modifier {
+                id: "test_shipyard".into(),
+                label: "Test Shipyard".into(),
+                base_add: crate::amount::SignedAmt::units(1),
+                multiplier: crate::amount::SignedAmt::ZERO,
+                add: crate::amount::SignedAmt::ZERO,
+                expires_at: None,
+                on_expire_event: None,
+            });
 
         let sys_entity = world
             .spawn((
@@ -1637,7 +1662,9 @@ mod tests {
 
         let empire_entity = world
             .spawn((
-                Empire { name: "Test NPC".into() },
+                Empire {
+                    name: "Test NPC".into(),
+                },
                 Faction::new("test_npc", "Test NPC"),
                 tech_tree,
                 ResearchQueue::default(),
@@ -1684,7 +1711,9 @@ mod tests {
 
         let empire_entity = world
             .spawn((
-                Empire { name: "Test NPC".into() },
+                Empire {
+                    name: "Test NPC".into(),
+                },
                 Faction::new("test_npc", "Test NPC"),
                 tech_tree,
                 ResearchQueue::default(),
@@ -1713,7 +1742,9 @@ mod tests {
 
         let empire_entity = world
             .spawn((
-                Empire { name: "Test NPC".into() },
+                Empire {
+                    name: "Test NPC".into(),
+                },
                 Faction::new("test_npc", "Test NPC"),
             ))
             .id();
@@ -1764,7 +1795,11 @@ mod tests {
 
         // Verify a building order was queued
         let mut found = false;
-        for (_, _, _, bq) in app.world_mut().query::<(Entity, &Colony, &Buildings, &BuildingQueue)>().iter(app.world()) {
+        for (_, _, _, bq) in app
+            .world_mut()
+            .query::<(Entity, &Colony, &Buildings, &BuildingQueue)>()
+            .iter(app.world())
+        {
             if !bq.queue.is_empty() {
                 assert_eq!(bq.queue[0].building_id.as_str(), "mine");
                 assert_eq!(bq.queue[0].target_slot, 0);
@@ -1781,7 +1816,9 @@ mod tests {
 
         let empire_entity = world
             .spawn((
-                Empire { name: "Test NPC".into() },
+                Empire {
+                    name: "Test NPC".into(),
+                },
                 Faction::new("test_npc", "Test NPC"),
             ))
             .id();
@@ -1855,7 +1892,9 @@ mod tests {
 
         let empire_entity = world
             .spawn((
-                Empire { name: "Test NPC".into() },
+                Empire {
+                    name: "Test NPC".into(),
+                },
                 Faction::new("test_npc", "Test NPC"),
             ))
             .id();
@@ -1924,8 +1963,8 @@ mod tests {
 
     #[test]
     fn fortify_system_auto_picks_combat_design() {
-        use std::collections::HashMap;
         use crate::scripting::building_api::{BuildingDefinition, CapabilityParams};
+        use std::collections::HashMap;
 
         let mut app = test_app();
         app.insert_resource(test_design_registry());
@@ -1944,14 +1983,12 @@ mod tests {
             production_bonus_energy: Amt::ZERO,
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
-            modifiers: vec![
-                crate::modifier::ParsedModifier {
-                    target: "system.shipyard_capacity".into(),
-                    base_add: 1.0,
-                    multiplier: 0.0,
-                    add: 0.0,
-                },
-            ],
+            modifiers: vec![crate::modifier::ParsedModifier {
+                target: "system.shipyard_capacity".into(),
+                base_add: 1.0,
+                multiplier: 0.0,
+                add: 0.0,
+            }],
             is_system_building: true,
             capabilities: HashMap::new(),
             upgrade_to: Vec::new(),
@@ -1969,7 +2006,9 @@ mod tests {
 
         let empire_entity = world
             .spawn((
-                Empire { name: "Test NPC".into() },
+                Empire {
+                    name: "Test NPC".into(),
+                },
                 Faction::new("test_npc", "Test NPC"),
             ))
             .id();
@@ -1977,15 +2016,17 @@ mod tests {
         let faction_id = to_ai_faction(empire_entity);
 
         let mut sys_mods = crate::galaxy::SystemModifiers::default();
-        sys_mods.shipyard_capacity.push_modifier(crate::modifier::Modifier {
-            id: "test_shipyard".into(),
-            label: "Test Shipyard".into(),
-            base_add: crate::amount::SignedAmt::units(1),
-            multiplier: crate::amount::SignedAmt::ZERO,
-            add: crate::amount::SignedAmt::ZERO,
-            expires_at: None,
-            on_expire_event: None,
-        });
+        sys_mods
+            .shipyard_capacity
+            .push_modifier(crate::modifier::Modifier {
+                id: "test_shipyard".into(),
+                label: "Test Shipyard".into(),
+                base_add: crate::amount::SignedAmt::units(1),
+                multiplier: crate::amount::SignedAmt::ZERO,
+                add: crate::amount::SignedAmt::ZERO,
+                expires_at: None,
+                on_expire_event: None,
+            });
 
         let sys_entity = world
             .spawn((
@@ -2053,12 +2094,7 @@ mod tests {
     }
 
     /// Helper: spawn a ship owned by `empire` at `system`.
-    fn spawn_ship_at(
-        world: &mut World,
-        empire: Entity,
-        system: Entity,
-        name: &str,
-    ) -> Entity {
+    fn spawn_ship_at(world: &mut World, empire: Entity, system: Entity, name: &str) -> Entity {
         world
             .spawn((
                 Ship {
@@ -2097,7 +2133,10 @@ mod tests {
                     star_type: "yellow_dwarf".into(),
                 },
                 Position::from(pos),
-                Sovereignty { owner, control_score: 1.0 },
+                Sovereignty {
+                    owner,
+                    control_score: 1.0,
+                },
             ))
             .id()
     }
@@ -2108,10 +2147,7 @@ mod tests {
         let world = app.world_mut();
 
         let empire = world
-            .spawn((
-                Empire { name: "E".into() },
-                Faction::new("e", "E"),
-            ))
+            .spawn((Empire { name: "E".into() }, Faction::new("e", "E")))
             .id();
 
         // Hostile system where ship is located (at origin).
@@ -2137,7 +2173,11 @@ mod tests {
 
         let targets = app.world().resource::<MoveTargets>();
         assert_eq!(targets.0.len(), 1, "should retreat 1 ship");
-        assert_eq!(targets.0[0], (ship, near_safe), "should pick nearest safe system");
+        assert_eq!(
+            targets.0[0],
+            (ship, near_safe),
+            "should pick nearest safe system"
+        );
     }
 
     #[test]
@@ -2146,10 +2186,7 @@ mod tests {
         let world = app.world_mut();
 
         let empire = world
-            .spawn((
-                Empire { name: "E".into() },
-                Faction::new("e", "E"),
-            ))
+            .spawn((Empire { name: "E".into() }, Faction::new("e", "E")))
             .id();
 
         // Two hostile systems at different locations.
@@ -2178,10 +2215,26 @@ mod tests {
         assert_eq!(targets.0.len(), 2, "should retreat 2 ships");
 
         // Each ship goes to its nearest safe system.
-        let ship_a_target = targets.0.iter().find(|(s, _)| *s == ship_a).map(|(_, t)| *t);
-        let ship_b_target = targets.0.iter().find(|(s, _)| *s == ship_b).map(|(_, t)| *t);
-        assert_eq!(ship_a_target, Some(safe_left), "ship_a should go to safe_left");
-        assert_eq!(ship_b_target, Some(safe_right), "ship_b should go to safe_right");
+        let ship_a_target = targets
+            .0
+            .iter()
+            .find(|(s, _)| *s == ship_a)
+            .map(|(_, t)| *t);
+        let ship_b_target = targets
+            .0
+            .iter()
+            .find(|(s, _)| *s == ship_b)
+            .map(|(_, t)| *t);
+        assert_eq!(
+            ship_a_target,
+            Some(safe_left),
+            "ship_a should go to safe_left"
+        );
+        assert_eq!(
+            ship_b_target,
+            Some(safe_right),
+            "ship_b should go to safe_right"
+        );
     }
 
     #[test]
@@ -2190,10 +2243,7 @@ mod tests {
         let world = app.world_mut();
 
         let empire = world
-            .spawn((
-                Empire { name: "E".into() },
-                Faction::new("e", "E"),
-            ))
+            .spawn((Empire { name: "E".into() }, Faction::new("e", "E")))
             .id();
 
         let hostile_sys = spawn_system_with_sov(world, "Hostile", [0.0, 0.0, 0.0], Some(empire));
@@ -2234,7 +2284,11 @@ mod tests {
         app.update();
 
         let targets = app.world().resource::<MoveTargets>();
-        assert_eq!(targets.0.len(), 0, "should not retreat ships already in transit");
+        assert_eq!(
+            targets.0.len(),
+            0,
+            "should not retreat ships already in transit"
+        );
     }
 
     #[test]
@@ -2243,10 +2297,7 @@ mod tests {
         let world = app.world_mut();
 
         let empire = world
-            .spawn((
-                Empire { name: "E".into() },
-                Faction::new("e", "E"),
-            ))
+            .spawn((Empire { name: "E".into() }, Faction::new("e", "E")))
             .id();
 
         // All owned systems have hostiles.
@@ -2269,7 +2320,15 @@ mod tests {
         let targets = app.world().resource::<MoveTargets>();
         // Should still retreat — falls back to the nearest owned system (hostile_b,
         // since ship is already at hostile_a).
-        assert_eq!(targets.0.len(), 1, "should retreat even when all systems are hostile");
-        assert_eq!(targets.0[0], (ship, hostile_b), "should pick nearest owned system as fallback");
+        assert_eq!(
+            targets.0.len(),
+            1,
+            "should retreat even when all systems are hostile"
+        );
+        assert_eq!(
+            targets.0[0],
+            (ship, hostile_b),
+            "should pick nearest owned system as fallback"
+        );
     }
 }

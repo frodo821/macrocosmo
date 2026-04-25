@@ -15,9 +15,9 @@ use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
 use super::{
-    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption,
-    LastProductionTick, MaintenanceCost, Production, ProductionFocus, ResourceCapacity,
-    ResourceStockpile, SlotAssignment, SystemBuildingQueue, SystemBuildings,
+    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption, LastProductionTick,
+    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
+    SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
 
 /// #114: Default cost/time to colonize a new planet from an existing colony in the same system.
@@ -271,9 +271,7 @@ pub fn tick_colonization_queue(
                     &design_registry,
                 );
                 // Assign the first free slot (or slot 0 if no SystemBuildings yet).
-                commands
-                    .entity(ship_entity)
-                    .insert(SlotAssignment(0));
+                commands.entity(ship_entity).insert(SlotAssignment(0));
                 info!(
                     "Auto-spawned Shipyard station at {} on colonization",
                     planet_name

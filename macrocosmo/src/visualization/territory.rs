@@ -290,8 +290,11 @@ fn sync_territory_material(
 
             let garrison_hp = garrison_by_system.get(&system).copied().unwrap_or(0.0);
             let freshness = authority_freshness(knowledge.info_age(system, clock.elapsed));
-            let authority_ly2 =
-                colony_effective_authority(col_pop.map(|p| p.total() as f32).unwrap_or(0.0), garrison_hp, freshness);
+            let authority_ly2 = colony_effective_authority(
+                col_pop.map(|p| p.total() as f32).unwrap_or(0.0),
+                garrison_hp,
+                freshness,
+            );
             // Convert ly² authority to world-unit² authority so that the
             // shader's `strength / dist_sq` comparison (which runs in
             // world coordinates) has matching units.

@@ -382,14 +382,17 @@ fn format_queued_command(
 /// #395: Immobile ships (stations) are excluded — use `stations_docked_at` for those.
 pub(super) fn ships_docked_at(
     system: Entity,
-    ships: &Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships: &Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
@@ -412,14 +415,17 @@ pub(super) fn ships_docked_at(
 /// #395: Collect immobile ships (stations) docked at a given system.
 pub(super) fn stations_docked_at(
     system: Entity,
-    ships: &Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships: &Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
@@ -501,14 +507,17 @@ struct ShipPanelData {
 fn draw_multi_select_panel(
     ctx: &egui::Context,
     selected_ships: &mut SelectedShips,
-    ships_query: &mut Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     fleets: &Query<&crate::ship::Fleet>,
     fleet_members: &Query<&crate::ship::FleetMembers>,
     design_registry: &ShipDesignRegistry,
@@ -592,14 +601,17 @@ pub fn draw_ship_panel(
     ctx: &egui::Context,
     selected_ship: &mut SelectedShip,
     selected_ships: &mut SelectedShips,
-    ships_query: &mut Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     clock: &GameClock,
     colonies: &mut Query<(
         Entity,
@@ -1188,370 +1200,371 @@ pub fn draw_ship_panel(
             // #57: Rules of Engagement selector
             // #432: All command sections below are gated on ship ownership.
             if is_own_ship {
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("ROE:");
-                for roe_option in RulesOfEngagement::ALL {
-                    let is_selected = current_roe == roe_option;
-                    let label = roe_option.label();
-                    if ui.selectable_label(is_selected, label).clicked() && !is_selected {
-                        actions.set_roe = Some((ship_entity, roe_option, roe_command_delay));
-                    }
-                }
-            });
-            if roe_command_delay > 0 {
-                ui.label(
-                    egui::RichText::new(format!("ROE change delay: {} hd", roe_command_delay))
-                        .small()
-                        .color(egui::Color32::from_rgb(255, 200, 100)),
-                );
-            }
-
-            // #99: Pending command in transit display
-            if let Some(arrives_at) = pending_arrives_at {
-                let remaining = (arrives_at - clock.elapsed).max(0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Command in transit... arrives in {} hd",
-                        remaining
-                    ))
-                    .color(egui::Color32::from_rgb(255, 191, 0)),
-                );
-            }
-
-            // #99: Cancel current action button (surveying/settling)
-            if is_cancellable {
-                if ui.button("Cancel Current Action").clicked() {
-                    actions.cancel_current = true;
-                }
-            }
-
-            // #62/#99: Command queue display with cancel buttons
-            if !queued_cmds.is_empty() {
                 ui.separator();
-                ui.label(egui::RichText::new("Command Queue").strong());
-                for (i, cmd_str) in queued_cmds.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        if ui.small_button("X").clicked() {
-                            actions.cancel_command_index = Some(i);
-                        }
-                        ui.label(format!("{}. {}", i + 1, cmd_str));
-                    });
-                }
-                if ui.button("Clear All").clicked() {
-                    actions.clear_commands = true;
-                }
-            }
-
-            ui.label(
-                egui::RichText::new("Click a star to issue commands")
-                    .weak()
-                    .italics(),
-            );
-
-            // Cargo section for Courier ships docked at a colony
-            if let Some(_docked_system) = docked_system {
-                if design_id == "courier_mk1" {
-                    if let Some((cargo_m, cargo_e)) = cargo_data {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Cargo").strong());
-                        ui.label(format!("Minerals: {}", cargo_m.display_compact()));
-                        ui.label(format!("Energy: {}", cargo_e.display_compact()));
-
-                        if system_entity_at_dock.is_some() {
-                            ui.horizontal(|ui| {
-                                if ui.button("Load M +100").clicked() {
-                                    cargo_action.load_minerals = crate::amount::Amt::units(100);
-                                }
-                                if ui.button("Load E +100").clicked() {
-                                    cargo_action.load_energy = crate::amount::Amt::units(100);
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                if ui.button("Unload M").clicked() {
-                                    cargo_action.unload_minerals = cargo_m;
-                                }
-                                if ui.button("Unload E").clicked() {
-                                    cargo_action.unload_energy = cargo_e;
-                                }
-                            });
-                        }
-                    }
-                }
-            }
-
-            // #229: Deliverable pipeline actions — shown whenever the ship
-            // either carries a deployable item or has a nearby structure
-            // to interact with. Positioned directly after the Cargo section
-            // per the #229 UX design.
-            let has_items = !cargo_items.is_empty();
-            let platforms: Vec<&NearbyStructure> =
-                nearby_structures.iter().filter(|s| s.is_platform).collect();
-            let scrapyards: Vec<&NearbyStructure> = nearby_structures
-                .iter()
-                .filter(|s| s.is_scrapyard)
-                .collect();
-
-            if has_items || !platforms.is_empty() || !scrapyards.is_empty() {
-                ui.separator();
-                ui.label(
-                    egui::RichText::new("Deliverable Actions")
-                        .strong()
-                        .color(egui::Color32::from_rgb(180, 220, 180)),
-                );
-
-                // --- Cargo items with Deploy buttons ---
-                if has_items {
-                    ui.label(egui::RichText::new("Carried items").small());
-                    for (i, item) in cargo_items.iter().enumerate() {
-                        let def_id = item.definition_id();
-                        ui.horizontal(|ui| {
-                            ui.label(format!("  #{}: {}", i, def_id));
-                            if ui.small_button("Deploy").clicked() {
-                                actions.deploy_mode_request = Some((ship_entity, i));
-                            }
-                        });
-                    }
-                    ui.label(
-                        egui::RichText::new(
-                            "Click Deploy then click a star to place the structure.",
-                        )
-                        .small()
-                        .italics()
-                        .weak(),
-                    );
-                }
-
-                // --- Transfer Resources to ConstructionPlatform ---
-                if !platforms.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new("Transfer to platform").small());
-                    // Amounts applied by ALL transfer buttons this frame. Simple
-                    // fixed steps — fine for V1. A slider UI is future work.
-                    let step_m = Amt::units(100);
-                    let step_e = Amt::units(100);
-                    let (have_m, have_e) = cargo_data.unwrap_or((Amt::ZERO, Amt::ZERO));
-                    for p in &platforms {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("  {} ({:.2} ly)", p.name, p.distance_ly,));
-                            let can_m = have_m > Amt::ZERO;
-                            if ui.add_enabled(can_m, egui::Button::new("+100 M")).clicked() {
-                                let m = step_m.min(have_m);
-                                actions.transfer_request =
-                                    Some((ship_entity, p.entity, m, Amt::ZERO));
-                            }
-                            let can_e = have_e > Amt::ZERO;
-                            if ui.add_enabled(can_e, egui::Button::new("+100 E")).clicked() {
-                                let e = step_e.min(have_e);
-                                actions.transfer_request =
-                                    Some((ship_entity, p.entity, Amt::ZERO, e));
-                            }
-                        });
-                    }
-                }
-
-                // --- Load from Scrapyard ---
-                if !scrapyards.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new("Salvage from scrapyard").small());
-                    for s in &scrapyards {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("  {} ({:.2} ly)", s.name, s.distance_ly,));
-                            if ui.button("Load").clicked() {
-                                actions.load_from_scrapyard_request = Some((ship_entity, s.entity));
-                            }
-                        });
-                    }
-                }
-            }
-
-            // #117: Courier route automation panel (couriers only)
-            if design_id == "courier_mk1" {
-                ui.separator();
-                ui.label(egui::RichText::new("Courier Route").strong());
-                let route_opt = courier_routes.get(ship_entity).ok();
-                let current_mode = route_opt
-                    .map(|r| r.mode)
-                    .unwrap_or(CourierMode::ResourceTransport);
-
-                // Mode selector
                 ui.horizontal(|ui| {
-                    ui.label("Mode:");
-                    for mode in [
-                        CourierMode::ResourceTransport,
-                        CourierMode::KnowledgeRelay,
-                        CourierMode::MessageDelivery,
-                    ] {
-                        let selected = current_mode == mode;
-                        if ui.selectable_label(selected, mode.label()).clicked() && !selected {
-                            actions.courier_set_mode = Some((ship_entity, mode));
+                    ui.label("ROE:");
+                    for roe_option in RulesOfEngagement::ALL {
+                        let is_selected = current_roe == roe_option;
+                        let label = roe_option.label();
+                        if ui.selectable_label(is_selected, label).clicked() && !is_selected {
+                            actions.set_roe = Some((ship_entity, roe_option, roe_command_delay));
                         }
                     }
                 });
-
-                // Waypoints list
-                if let Some(route) = route_opt {
-                    if route.waypoints.is_empty() {
-                        ui.label("(no waypoints)");
-                    } else {
-                        for (i, wp) in route.waypoints.iter().enumerate() {
-                            let name = system_name(*wp, stars);
-                            let marker = if i == route.current_index { "->" } else { "  " };
-                            ui.label(format!("{} {}. {}", marker, i + 1, name));
-                        }
-                    }
-                    ui.horizontal(|ui| {
-                        let label = if route.paused {
-                            "Resume Route"
-                        } else {
-                            "Pause Route"
-                        };
-                        if ui.button(label).clicked() {
-                            actions.courier_toggle_pause = Some(ship_entity);
-                        }
-                        if ui.button("Stop Route").clicked() {
-                            actions.courier_clear_route = Some(ship_entity);
-                        }
-                    });
-                } else {
-                    ui.label("(no active route)");
-                }
-
-                // Add waypoint button (uses current selection)
-                if let Some(sel_sys) = selected_system {
-                    let sel_name = system_name(sel_sys, stars);
-                    let label = format!("Add waypoint: {}", sel_name);
-                    if ui.button(label).clicked() {
-                        actions.courier_add_waypoint = Some((ship_entity, sel_sys, current_mode));
-                    }
-                } else {
+                if roe_command_delay > 0 {
                     ui.label(
-                        egui::RichText::new("Select a star to add it as a waypoint")
+                        egui::RichText::new(format!("ROE change delay: {} hd", roe_command_delay))
                             .small()
-                            .weak(),
+                            .color(egui::Color32::from_rgb(255, 200, 100)),
                     );
                 }
-            }
 
-            // #59: Board / Disembark buttons
-            if can_board {
-                if ui.button("Board Ship").clicked() {
-                    actions.board_ship = Some(ship_entity);
-                }
-            }
-            if can_disembark {
-                if ui.button("Disembark").clicked() {
-                    actions.disembark = true;
-                }
-            }
-
-            // #123: Design-based Refit UI. The ship is refit-eligible when its
-            // recorded `design_revision` is behind the current registered
-            // ShipDesignDefinition (i.e. somebody edited the design via the
-            // Ship Designer). Module selection lives in the Ship Designer
-            // exclusively — this panel only shows the cost summary and
-            // dispatches the apply.
-            if !is_refitting {
-                if let Some(info) = refit_info.as_ref() {
-                    ui.separator();
-                    ui.label(egui::RichText::new("Refit Available").strong());
-                    let revisions_behind =
-                        info.target_revision.saturating_sub(info.current_revision);
+                // #99: Pending command in transit display
+                if let Some(arrives_at) = pending_arrives_at {
+                    let remaining = (arrives_at - clock.elapsed).max(0);
                     ui.label(
                         egui::RichText::new(format!(
-                            "Design '{}' updated ({} revision{} behind)",
-                            info.design_name,
-                            revisions_behind,
-                            if revisions_behind == 1 { "" } else { "s" },
+                            "Command in transit... arrives in {} hd",
+                            remaining
                         ))
-                        .small()
-                        .italics(),
+                        .color(egui::Color32::from_rgb(255, 191, 0)),
                     );
-                    ui.label(format!(
-                        "Refit cost: M:{} E:{} | {} hd",
-                        info.cost_minerals.display_compact(),
-                        info.cost_energy.display_compact(),
-                        info.refit_time
-                    ));
-                    if let Some(dock_system) = docked_at_colony {
-                        if ui.button("Apply Refit").clicked() {
-                            actions.refit = Some(ShipRefitAction {
-                                ship_entity,
-                                system_entity: dock_system,
-                            });
-                        }
-                    } else {
-                        ui.add_enabled(false, egui::Button::new("Apply Refit"))
-                            .on_disabled_hover_text(
-                                "Ship must be docked at a colony to apply refit.",
-                            );
+                }
+
+                // #99: Cancel current action button (surveying/settling)
+                if is_cancellable {
+                    if ui.button("Cancel Current Action").clicked() {
+                        actions.cancel_current = true;
                     }
                 }
-            } else {
-                ui.separator();
-                ui.label(
-                    egui::RichText::new("Refitting in progress...")
-                        .color(egui::Color32::from_rgb(255, 220, 80)),
-                );
-            }
 
-            // #123: Fleet-wide refit button (only when the ship belongs to a
-            // fleet that has at least one refit-eligible docked member).
-            if let Some(ref summary) = fleet_refit_summary {
-                if summary.eligible_count > 0 {
+                // #62/#99: Command queue display with cancel buttons
+                if !queued_cmds.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Command Queue").strong());
+                    for (i, cmd_str) in queued_cmds.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            if ui.small_button("X").clicked() {
+                                actions.cancel_command_index = Some(i);
+                            }
+                            ui.label(format!("{}. {}", i + 1, cmd_str));
+                        });
+                    }
+                    if ui.button("Clear All").clicked() {
+                        actions.clear_commands = true;
+                    }
+                }
+
+                ui.label(
+                    egui::RichText::new("Click a star to issue commands")
+                        .weak()
+                        .italics(),
+                );
+
+                // Cargo section for Courier ships docked at a colony
+                if let Some(_docked_system) = docked_system {
+                    if design_id == "courier_mk1" {
+                        if let Some((cargo_m, cargo_e)) = cargo_data {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Cargo").strong());
+                            ui.label(format!("Minerals: {}", cargo_m.display_compact()));
+                            ui.label(format!("Energy: {}", cargo_e.display_compact()));
+
+                            if system_entity_at_dock.is_some() {
+                                ui.horizontal(|ui| {
+                                    if ui.button("Load M +100").clicked() {
+                                        cargo_action.load_minerals = crate::amount::Amt::units(100);
+                                    }
+                                    if ui.button("Load E +100").clicked() {
+                                        cargo_action.load_energy = crate::amount::Amt::units(100);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    if ui.button("Unload M").clicked() {
+                                        cargo_action.unload_minerals = cargo_m;
+                                    }
+                                    if ui.button("Unload E").clicked() {
+                                        cargo_action.unload_energy = cargo_e;
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // #229: Deliverable pipeline actions — shown whenever the ship
+                // either carries a deployable item or has a nearby structure
+                // to interact with. Positioned directly after the Cargo section
+                // per the #229 UX design.
+                let has_items = !cargo_items.is_empty();
+                let platforms: Vec<&NearbyStructure> =
+                    nearby_structures.iter().filter(|s| s.is_platform).collect();
+                let scrapyards: Vec<&NearbyStructure> = nearby_structures
+                    .iter()
+                    .filter(|s| s.is_scrapyard)
+                    .collect();
+
+                if has_items || !platforms.is_empty() || !scrapyards.is_empty() {
                     ui.separator();
                     ui.label(
-                        egui::RichText::new(format!("Fleet '{}'", summary.fleet_name)).strong(),
+                        egui::RichText::new("Deliverable Actions")
+                            .strong()
+                            .color(egui::Color32::from_rgb(180, 220, 180)),
                     );
-                    ui.label(format!(
-                        "{} member(s) refit-eligible | M:{} E:{} | up to {} hd",
-                        summary.eligible_count,
-                        summary.total_cost_minerals.display_compact(),
-                        summary.total_cost_energy.display_compact(),
-                        summary.max_refit_time,
-                    ));
-                    if ui.button("Apply Refit to Fleet").clicked() {
-                        actions.fleet_refit = Some(FleetRefitAction {
-                            fleet_entity: summary.fleet_entity,
-                        });
+
+                    // --- Cargo items with Deploy buttons ---
+                    if has_items {
+                        ui.label(egui::RichText::new("Carried items").small());
+                        for (i, item) in cargo_items.iter().enumerate() {
+                            let def_id = item.definition_id();
+                            ui.horizontal(|ui| {
+                                ui.label(format!("  #{}: {}", i, def_id));
+                                if ui.small_button("Deploy").clicked() {
+                                    actions.deploy_mode_request = Some((ship_entity, i));
+                                }
+                            });
+                        }
+                        ui.label(
+                            egui::RichText::new(
+                                "Click Deploy then click a star to place the structure.",
+                            )
+                            .small()
+                            .italics()
+                            .weak(),
+                        );
+                    }
+
+                    // --- Transfer Resources to ConstructionPlatform ---
+                    if !platforms.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Transfer to platform").small());
+                        // Amounts applied by ALL transfer buttons this frame. Simple
+                        // fixed steps — fine for V1. A slider UI is future work.
+                        let step_m = Amt::units(100);
+                        let step_e = Amt::units(100);
+                        let (have_m, have_e) = cargo_data.unwrap_or((Amt::ZERO, Amt::ZERO));
+                        for p in &platforms {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("  {} ({:.2} ly)", p.name, p.distance_ly,));
+                                let can_m = have_m > Amt::ZERO;
+                                if ui.add_enabled(can_m, egui::Button::new("+100 M")).clicked() {
+                                    let m = step_m.min(have_m);
+                                    actions.transfer_request =
+                                        Some((ship_entity, p.entity, m, Amt::ZERO));
+                                }
+                                let can_e = have_e > Amt::ZERO;
+                                if ui.add_enabled(can_e, egui::Button::new("+100 E")).clicked() {
+                                    let e = step_e.min(have_e);
+                                    actions.transfer_request =
+                                        Some((ship_entity, p.entity, Amt::ZERO, e));
+                                }
+                            });
+                        }
+                    }
+
+                    // --- Load from Scrapyard ---
+                    if !scrapyards.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Salvage from scrapyard").small());
+                        for s in &scrapyards {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("  {} ({:.2} ly)", s.name, s.distance_ly,));
+                                if ui.button("Load").clicked() {
+                                    actions.load_from_scrapyard_request =
+                                        Some((ship_entity, s.entity));
+                                }
+                            });
+                        }
                     }
                 }
-            }
 
-            // #64: Set Home Port button (only when docked at a colony)
-            if let Some(dock_system) = docked_at_colony {
-                if ui.button("Set Home Port").clicked() {
-                    set_home_port = Some(dock_system);
-                }
-            }
+                // #117: Courier route automation panel (couriers only)
+                if design_id == "courier_mk1" {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Courier Route").strong());
+                    let route_opt = courier_routes.get(ship_entity).ok();
+                    let current_mode = route_opt
+                        .map(|r| r.mode)
+                        .unwrap_or(CourierMode::ResourceTransport);
 
-            // #79: Scrap Ship button (only when docked at a colony)
-            if let Some(dock_system) = docked_at_colony {
-                let (refund_m, refund_e) =
-                    design_registry.scrap_refund(&design_id, &ship_modules, module_registry);
-                let scrap_label = format!("Scrap Ship (+{} M, +{} E)", refund_m, refund_e);
-                let response = ui.button(&scrap_label).on_hover_text(
-                    "Dismantle this ship and recover 50% of total value (hull + modules)",
-                );
-                if response.clicked() {
-                    // Use system entity for stockpile refund
-                    if let Some(sys_e) = system_entity_at_dock {
-                        let system_name = stars
-                            .get(dock_system)
-                            .map(|(_, s, _, _)| s.name.clone())
-                            .unwrap_or_else(|_| "Unknown".to_string());
-                        actions.scrap = Some(ShipScrapAction {
-                            ship_entity,
-                            colony_entity: sys_e,
-                            ship_name: name.clone(),
-                            system_name,
-                            minerals_refund: refund_m,
-                            energy_refund: refund_e,
+                    // Mode selector
+                    ui.horizontal(|ui| {
+                        ui.label("Mode:");
+                        for mode in [
+                            CourierMode::ResourceTransport,
+                            CourierMode::KnowledgeRelay,
+                            CourierMode::MessageDelivery,
+                        ] {
+                            let selected = current_mode == mode;
+                            if ui.selectable_label(selected, mode.label()).clicked() && !selected {
+                                actions.courier_set_mode = Some((ship_entity, mode));
+                            }
+                        }
+                    });
+
+                    // Waypoints list
+                    if let Some(route) = route_opt {
+                        if route.waypoints.is_empty() {
+                            ui.label("(no waypoints)");
+                        } else {
+                            for (i, wp) in route.waypoints.iter().enumerate() {
+                                let name = system_name(*wp, stars);
+                                let marker = if i == route.current_index { "->" } else { "  " };
+                                ui.label(format!("{} {}. {}", marker, i + 1, name));
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            let label = if route.paused {
+                                "Resume Route"
+                            } else {
+                                "Pause Route"
+                            };
+                            if ui.button(label).clicked() {
+                                actions.courier_toggle_pause = Some(ship_entity);
+                            }
+                            if ui.button("Stop Route").clicked() {
+                                actions.courier_clear_route = Some(ship_entity);
+                            }
                         });
+                    } else {
+                        ui.label("(no active route)");
+                    }
+
+                    // Add waypoint button (uses current selection)
+                    if let Some(sel_sys) = selected_system {
+                        let sel_name = system_name(sel_sys, stars);
+                        let label = format!("Add waypoint: {}", sel_name);
+                        if ui.button(label).clicked() {
+                            actions.courier_add_waypoint =
+                                Some((ship_entity, sel_sys, current_mode));
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Select a star to add it as a waypoint")
+                                .small()
+                                .weak(),
+                        );
                     }
                 }
-            }
 
+                // #59: Board / Disembark buttons
+                if can_board {
+                    if ui.button("Board Ship").clicked() {
+                        actions.board_ship = Some(ship_entity);
+                    }
+                }
+                if can_disembark {
+                    if ui.button("Disembark").clicked() {
+                        actions.disembark = true;
+                    }
+                }
+
+                // #123: Design-based Refit UI. The ship is refit-eligible when its
+                // recorded `design_revision` is behind the current registered
+                // ShipDesignDefinition (i.e. somebody edited the design via the
+                // Ship Designer). Module selection lives in the Ship Designer
+                // exclusively — this panel only shows the cost summary and
+                // dispatches the apply.
+                if !is_refitting {
+                    if let Some(info) = refit_info.as_ref() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Refit Available").strong());
+                        let revisions_behind =
+                            info.target_revision.saturating_sub(info.current_revision);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Design '{}' updated ({} revision{} behind)",
+                                info.design_name,
+                                revisions_behind,
+                                if revisions_behind == 1 { "" } else { "s" },
+                            ))
+                            .small()
+                            .italics(),
+                        );
+                        ui.label(format!(
+                            "Refit cost: M:{} E:{} | {} hd",
+                            info.cost_minerals.display_compact(),
+                            info.cost_energy.display_compact(),
+                            info.refit_time
+                        ));
+                        if let Some(dock_system) = docked_at_colony {
+                            if ui.button("Apply Refit").clicked() {
+                                actions.refit = Some(ShipRefitAction {
+                                    ship_entity,
+                                    system_entity: dock_system,
+                                });
+                            }
+                        } else {
+                            ui.add_enabled(false, egui::Button::new("Apply Refit"))
+                                .on_disabled_hover_text(
+                                    "Ship must be docked at a colony to apply refit.",
+                                );
+                        }
+                    }
+                } else {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Refitting in progress...")
+                            .color(egui::Color32::from_rgb(255, 220, 80)),
+                    );
+                }
+
+                // #123: Fleet-wide refit button (only when the ship belongs to a
+                // fleet that has at least one refit-eligible docked member).
+                if let Some(ref summary) = fleet_refit_summary {
+                    if summary.eligible_count > 0 {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("Fleet '{}'", summary.fleet_name)).strong(),
+                        );
+                        ui.label(format!(
+                            "{} member(s) refit-eligible | M:{} E:{} | up to {} hd",
+                            summary.eligible_count,
+                            summary.total_cost_minerals.display_compact(),
+                            summary.total_cost_energy.display_compact(),
+                            summary.max_refit_time,
+                        ));
+                        if ui.button("Apply Refit to Fleet").clicked() {
+                            actions.fleet_refit = Some(FleetRefitAction {
+                                fleet_entity: summary.fleet_entity,
+                            });
+                        }
+                    }
+                }
+
+                // #64: Set Home Port button (only when docked at a colony)
+                if let Some(dock_system) = docked_at_colony {
+                    if ui.button("Set Home Port").clicked() {
+                        set_home_port = Some(dock_system);
+                    }
+                }
+
+                // #79: Scrap Ship button (only when docked at a colony)
+                if let Some(dock_system) = docked_at_colony {
+                    let (refund_m, refund_e) =
+                        design_registry.scrap_refund(&design_id, &ship_modules, module_registry);
+                    let scrap_label = format!("Scrap Ship (+{} M, +{} E)", refund_m, refund_e);
+                    let response = ui.button(&scrap_label).on_hover_text(
+                        "Dismantle this ship and recover 50% of total value (hull + modules)",
+                    );
+                    if response.clicked() {
+                        // Use system entity for stockpile refund
+                        if let Some(sys_e) = system_entity_at_dock {
+                            let system_name = stars
+                                .get(dock_system)
+                                .map(|(_, s, _, _)| s.name.clone())
+                                .unwrap_or_else(|_| "Unknown".to_string());
+                            actions.scrap = Some(ShipScrapAction {
+                                ship_entity,
+                                colony_entity: sys_e,
+                                ship_name: name.clone(),
+                                system_name,
+                                minerals_refund: refund_m,
+                                energy_refund: refund_e,
+                            });
+                        }
+                    }
+                }
             } // #432: end if is_own_ship — command sections
 
             if ui.button("Deselect ship").clicked() {

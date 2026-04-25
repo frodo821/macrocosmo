@@ -375,36 +375,35 @@ pub(crate) fn default_choose_faction_capitals(
 
     // #182: if Phase A tagged any system with `capital_for_faction` (via a
     // predefined system definition), pick the first such system as capital.
-    let player_capital_idx = if let Some(idx) =
-        systems.iter().position(|s| s.capital_for_faction.is_some())
-    {
-        systems.swap(0, idx);
-        0
-    } else {
-        let target_capital_radius = 20.0_f64;
-        let capital_idx = systems
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                let ra = (a.position[0] * a.position[0]
-                    + a.position[1] * a.position[1]
-                    + a.position[2] * a.position[2])
-                    .sqrt();
-                let rb = (b.position[0] * b.position[0]
-                    + b.position[1] * b.position[1]
-                    + b.position[2] * b.position[2])
-                    .sqrt();
-                let da = (ra - target_capital_radius).abs();
-                let db = (rb - target_capital_radius).abs();
-                da.partial_cmp(&db).unwrap()
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+    let player_capital_idx =
+        if let Some(idx) = systems.iter().position(|s| s.capital_for_faction.is_some()) {
+            systems.swap(0, idx);
+            0
+        } else {
+            let target_capital_radius = 20.0_f64;
+            let capital_idx = systems
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let ra = (a.position[0] * a.position[0]
+                        + a.position[1] * a.position[1]
+                        + a.position[2] * a.position[2])
+                        .sqrt();
+                    let rb = (b.position[0] * b.position[0]
+                        + b.position[1] * b.position[1]
+                        + b.position[2] * b.position[2])
+                        .sqrt();
+                    let da = (ra - target_capital_radius).abs();
+                    let db = (rb - target_capital_radius).abs();
+                    da.partial_cmp(&db).unwrap()
+                })
+                .map(|(i, _)| i)
+                .unwrap_or(0);
 
-        // Swap capital to index 0 so the rest of the code treats systems[0] as capital
-        systems.swap(0, capital_idx);
-        0
-    };
+            // Swap capital to index 0 so the rest of the code treats systems[0] as capital
+            systems.swap(0, capital_idx);
+            0
+        };
 
     // Track assigned indices: player capital is always assigned first.
     let mut assigned_indices: Vec<usize> = vec![player_capital_idx];

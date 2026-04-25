@@ -8,7 +8,9 @@ use crate::colony::{
 use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard};
 use crate::faction::FactionOwner;
-use crate::galaxy::{Anomalies, AtSystem, HomeSystem, Hostile, Planet, StarSystem, SystemAttributes};
+use crate::galaxy::{
+    Anomalies, AtSystem, HomeSystem, Hostile, Planet, StarSystem, SystemAttributes,
+};
 use crate::ship::{
     CoreShip, CourierRoute, DockedAt, Fleet, FleetMembers, PendingShipCommand, RulesOfEngagement,
     Ship, ShipModifiers, ShipStats,

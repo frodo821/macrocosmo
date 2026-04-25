@@ -50,14 +50,17 @@ pub(super) fn draw_planet_window(
         (&mut ResourceStockpile, Option<&ResourceCapacity>),
         With<StarSystem>,
     >,
-    ships_query: &mut Query<(
-        Entity,
-        &mut Ship,
-        &mut ShipState,
-        Option<&mut Cargo>,
-        &ShipHitpoints,
-        Option<&SurveyData>,
-    ), Without<SlotAssignment>>,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
     construction_params: &ConstructionParams,
     planets: &Query<&Planet>,
     planet_entities: &Query<(Entity, &Planet, Option<&SystemAttributes>)>,
@@ -153,11 +156,21 @@ pub(super) fn draw_planet_window(
                 let is_own_colony = if is_observer {
                     true
                 } else {
-                    colonies.iter().find_map(|(ce, c, _, _, _, _, _, _)| {
-                        if c.planet == sel_planet_entity { Some(ce) } else { None }
-                    }).map_or(false, |ce| {
-                        faction_owners.get(ce).map(|fo| fo.0 == viewed_empire).unwrap_or(false)
-                    })
+                    colonies
+                        .iter()
+                        .find_map(|(ce, c, _, _, _, _, _, _)| {
+                            if c.planet == sel_planet_entity {
+                                Some(ce)
+                            } else {
+                                None
+                            }
+                        })
+                        .map_or(false, |ce| {
+                            faction_owners
+                                .get(ce)
+                                .map(|fo| fo.0 == viewed_empire)
+                                .unwrap_or(false)
+                        })
                 };
 
                 egui::ScrollArea::vertical()

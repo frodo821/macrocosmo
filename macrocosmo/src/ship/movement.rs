@@ -318,7 +318,11 @@ impl PortParams {
             PortParams {
                 has_port: true,
                 ftl_range_bonus: sys_mods.port_ftl_range_bonus.value().final_value().to_f64(),
-                travel_time_factor: sys_mods.port_travel_time_factor.value().final_value().to_f64(),
+                travel_time_factor: sys_mods
+                    .port_travel_time_factor
+                    .value()
+                    .final_value()
+                    .to_f64(),
             }
         } else {
             Self::NONE

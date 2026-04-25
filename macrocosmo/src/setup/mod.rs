@@ -2,9 +2,9 @@ use bevy::prelude::*;
 
 use crate::amount::Amt;
 use crate::colony::{
-    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption,
-    MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
-    SlotAssignment, SystemBuildingQueue, SystemBuildings,
+    BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption, MaintenanceCost, Production,
+    ProductionFocus, ResourceCapacity, ResourceStockpile, SlotAssignment, SystemBuildingQueue,
+    SystemBuildings,
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
@@ -427,9 +427,7 @@ fn spawn_npc_ruler(world: &mut World, faction_id: &str, faction_name: &str) {
                 .iter(world)
                 .find(|(_, fo)| fo.0 == empire_entity)
                 .map(|(c, _)| c.planet);
-            colony_planet.and_then(|planet_e| {
-                planet_q.get(world, planet_e).ok().map(|p| p.system)
-            })
+            colony_planet.and_then(|planet_e| planet_q.get(world, planet_e).ok().map(|p| p.system))
         })
         .or_else(|| {
             let mut sys_q = world.query::<(Entity, &StarSystem)>();
@@ -458,13 +456,8 @@ fn spawn_npc_ruler(world: &mut World, faction_id: &str, faction_name: &str) {
             },
         ))
         .id();
-    world
-        .entity_mut(empire_entity)
-        .insert(EmpireRuler(ruler));
-    info!(
-        "Setup: spawned Ruler for NPC faction '{}'",
-        faction_id
-    );
+    world.entity_mut(empire_entity).insert(EmpireRuler(ruler));
+    info!("Setup: spawned Ruler for NPC faction '{}'", faction_id);
 }
 
 /// Shared helper: look up `on_game_start` for the given faction id and,
@@ -969,24 +962,25 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
             }
 
             // For each system building, find the ship_design_id and spawn.
-            let building_to_design: std::collections::HashMap<String, (String, String)> = if let Some(building_registry) = world.get_resource::<crate::colony::BuildingRegistry>() {
-                building_registry
-                    .buildings
-                    .values()
-                    .filter_map(|def| {
-                        def.ship_design_id
-                            .as_ref()
-                            .map(|did| (def.id.clone(), (did.clone(), def.name.clone())))
-                    })
-                    .collect()
-            } else {
-                std::collections::HashMap::new()
-            };
+            let building_to_design: std::collections::HashMap<String, (String, String)> =
+                if let Some(building_registry) =
+                    world.get_resource::<crate::colony::BuildingRegistry>()
+                {
+                    building_registry
+                        .buildings
+                        .values()
+                        .filter_map(|def| {
+                            def.ship_design_id
+                                .as_ref()
+                                .map(|did| (def.id.clone(), (did.clone(), def.name.clone())))
+                        })
+                        .collect()
+                } else {
+                    std::collections::HashMap::new()
+                };
 
             let mut next_slot = 0usize;
-            let owner = faction_entity
-                .map(Owner::Empire)
-                .unwrap_or(Owner::Neutral);
+            let owner = faction_entity.map(Owner::Empire).unwrap_or(Owner::Neutral);
 
             for building_id in &actions.system_buildings {
                 // Find next free slot.
@@ -1021,7 +1015,9 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
                             owner,
                             &registry,
                         );
-                        commands.entity(ship_entity).insert(SlotAssignment(slot_idx));
+                        commands
+                            .entity(ship_entity)
+                            .insert(SlotAssignment(slot_idx));
                     }
                     state.apply(world);
                 } else {
@@ -1147,9 +1143,8 @@ mod tests {
     use super::*;
     use crate::amount::Amt;
     use crate::colony::{
-        BuildQueue, BuildingQueue, Colony, FoodConsumption,
-        MaintenanceCost, Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
-        SystemBuildingQueue,
+        BuildQueue, BuildingQueue, Colony, FoodConsumption, MaintenanceCost, Production,
+        ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
     };
     use crate::components::Position;
     use crate::condition::ScopedFlags;

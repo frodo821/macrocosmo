@@ -75,8 +75,16 @@ pub fn ship_to_building_id(ship: &Ship, registry: &BuildingRegistry) -> Option<B
 // ---------------------------------------------------------------------------
 
 /// The query type used by most helper functions to find station ships.
-pub type StationShipQuery<'w, 's> =
-    Query<'w, 's, (Entity, &'static Ship, &'static ShipState, &'static SlotAssignment)>;
+pub type StationShipQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Ship,
+        &'static ShipState,
+        &'static SlotAssignment,
+    ),
+>;
 
 /// Find all station ships at a system with their slot assignments.
 pub fn station_ships_at_system<'a>(
@@ -87,9 +95,7 @@ pub fn station_ships_at_system<'a>(
         .iter()
         .filter_map(|(entity, ship, state, slot)| match state {
             ShipState::InSystem { system: s } if *s == system => Some((entity, ship, slot.0)),
-            ShipState::Refitting { system: s, .. } if *s == system => {
-                Some((entity, ship, slot.0))
-            }
+            ShipState::Refitting { system: s, .. } if *s == system => Some((entity, ship, slot.0)),
             _ => None,
         })
         .collect()
@@ -306,17 +312,19 @@ pub fn ship_in_slot(
     slot: usize,
     ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
 ) -> Option<Entity> {
-    ships.iter().find_map(|(entity, _ship, state, slot_assign)| {
-        if slot_assign.0 != slot {
-            return None;
-        }
-        let in_system = match state {
-            ShipState::InSystem { system: s } => *s == system,
-            ShipState::Refitting { system: s, .. } => *s == system,
-            _ => false,
-        };
-        if in_system { Some(entity) } else { None }
-    })
+    ships
+        .iter()
+        .find_map(|(entity, _ship, state, slot_assign)| {
+            if slot_assign.0 != slot {
+                return None;
+            }
+            let in_system = match state {
+                ShipState::InSystem { system: s } => *s == system,
+                ShipState::Refitting { system: s, .. } => *s == system,
+                _ => false,
+            };
+            if in_system { Some(entity) } else { None }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -645,8 +653,7 @@ pub fn tick_system_building_queue(
                     available_energy = available_energy.sub(energy_transfer);
                     energy_consumed = energy_consumed.add(energy_transfer);
 
-                    let transferred =
-                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
                     let no_more_needed = order.minerals_remaining == Amt::ZERO
                         && order.energy_remaining == Amt::ZERO;
                     super::build_tick::maybe_tick_build_time(
@@ -672,10 +679,8 @@ pub fn tick_system_building_queue(
                             payload.insert("cause".to_string(), "construction".to_string());
                             payload.insert("building_id".to_string(), completed_id.clone());
                             payload.insert("slot".to_string(), completed_slot.to_string());
-                            payload.insert(
-                                "system".to_string(),
-                                system_entity.to_bits().to_string(),
-                            );
+                            payload
+                                .insert("system".to_string(), system_entity.to_bits().to_string());
                             event_system.fire_event_with_payload(
                                 Some(system_entity),
                                 clock.elapsed,
@@ -728,8 +733,7 @@ pub fn tick_system_building_queue(
                     available_energy = available_energy.sub(energy_transfer);
                     energy_consumed = energy_consumed.add(energy_transfer);
 
-                    let transferred =
-                        minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
+                    let transferred = minerals_transfer > Amt::ZERO || energy_transfer > Amt::ZERO;
                     let no_more_needed = upgrade.minerals_remaining == Amt::ZERO
                         && upgrade.energy_remaining == Amt::ZERO;
                     super::build_tick::maybe_tick_build_time(
@@ -761,9 +765,7 @@ pub fn tick_system_building_queue(
                                 commands.entity(old_ship).despawn();
                             }
                             // Spawn the new station ship for the upgraded building.
-                            if let Some(def) =
-                                building_registry.get(completed.target_id.as_str())
-                            {
+                            if let Some(def) = building_registry.get(completed.target_id.as_str()) {
                                 if let Some(ref design_id) = def.ship_design_id {
                                     let owner = faction_q
                                         .get(system_entity)
@@ -796,19 +798,12 @@ pub fn tick_system_building_queue(
                             );
                             let mut payload = std::collections::HashMap::new();
                             payload.insert("cause".to_string(), "upgrade".to_string());
-                            payload.insert(
-                                "building_id".to_string(),
-                                completed.target_id.0.clone(),
-                            );
+                            payload
+                                .insert("building_id".to_string(), completed.target_id.0.clone());
                             payload.insert("previous_id".to_string(), old_name);
-                            payload.insert(
-                                "slot".to_string(),
-                                completed.slot_index.to_string(),
-                            );
-                            payload.insert(
-                                "system".to_string(),
-                                system_entity.to_bits().to_string(),
-                            );
+                            payload.insert("slot".to_string(), completed.slot_index.to_string());
+                            payload
+                                .insert("system".to_string(), system_entity.to_bits().to_string());
                             event_system.fire_event_with_payload(
                                 Some(system_entity),
                                 clock.elapsed,
