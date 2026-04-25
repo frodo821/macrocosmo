@@ -1,7 +1,10 @@
 use bevy::prelude::*;
 
 /// Position in 3D space, measured in light-years.
-#[derive(Component, Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component, Reflect, Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize,
+)]
+#[reflect(Component)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
@@ -34,7 +37,8 @@ impl From<[f64; 3]> for Position {
 }
 
 /// Describes the movement state of a ship or mobile entity.
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Reflect, Debug, Clone)]
+#[reflect(Component)]
 pub enum MovementState {
     /// Docked at a star system.
     Docked { system: Entity },

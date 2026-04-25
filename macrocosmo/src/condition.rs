@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
-use bevy::prelude::Component;
+use bevy::prelude::{Component, ReflectComponent};
+use bevy::reflect::Reflect;
 
 /// Scope for condition evaluation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub enum ConditionScope {
     /// Search all scopes: ship -> planet -> system -> empire (backward-compatible default)
     Any,
@@ -14,7 +15,7 @@ pub enum ConditionScope {
 }
 
 /// The kind of atomic condition check.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub enum AtomKind {
     HasTech(String),
     HasModifier(String),
@@ -59,7 +60,7 @@ pub enum AtomKind {
 }
 
 /// Atomic condition that checks a single game-state predicate with an optional scope.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub struct ConditionAtom {
     pub kind: AtomKind,
     pub scope: ConditionScope,
@@ -159,7 +160,7 @@ impl ConditionAtom {
 }
 
 /// Composable condition tree. Used by structure prerequisites, event triggers, etc.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub enum Condition {
     Atom(ConditionAtom),
     /// All children must be satisfied.
@@ -169,7 +170,17 @@ pub enum Condition {
     /// Exactly one child must be satisfied.
     OneOf(Vec<Condition>),
     /// The child must NOT be satisfied.
-    Not(Box<Condition>),
+    /// `Box<T>` is not `Reflect` in `bevy_reflect` 0.18 even when `T:
+    /// Reflect`, so the inner condition is opaque; the outer `Not`
+    /// variant tag is still visible.
+    Not(#[reflect(ignore, default = "default_boxed_condition")] Box<Condition>),
+}
+
+/// Default value used by `#[reflect(ignore)]` on `Condition::Not`'s
+/// boxed child. The reflection layer never reads this — it exists only
+/// so `FromReflect` can synthesise an enum variant.
+fn default_boxed_condition() -> Box<Condition> {
+    Box::new(Condition::All(Vec::new()))
 }
 
 /// Scope-specific data for condition evaluation (buildings and flags at a particular scope).
@@ -431,7 +442,8 @@ impl ConditionResult {
 
 /// Flags attached to a specific entity scope (empire, system, planet, ship).
 /// Used for scoped condition evaluation.
-#[derive(Component, Default, Debug, Clone)]
+#[derive(Component, Default, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct ScopedFlags {
     pub flags: HashSet<String>,
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 /// A UI-displayable effect command. Returned by Lua callbacks (on_researched, on_chosen, etc.)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub enum DescriptiveEffect {
     PushModifier {
         target: String,
@@ -24,8 +24,23 @@ pub enum DescriptiveEffect {
     },
     Hidden {
         label: String,
+        // `Box<T>` is not `Reflect` in `bevy_reflect` 0.18 even when `T:
+        // Reflect`, so the boxed inner effect is opaque to reflection.
+        // The outer `Hidden` variant remains discoverable.
+        #[reflect(ignore, default = "default_hidden_inner")]
         inner: Box<DescriptiveEffect>,
     },
+}
+
+/// Default for `Hidden.inner` when `FromReflect` reconstructs the
+/// variant. The reflection layer never reads this — it exists only so
+/// `derive(Reflect)` can synthesise the enum variant.
+fn default_hidden_inner() -> Box<DescriptiveEffect> {
+    Box::new(DescriptiveEffect::SetFlag {
+        name: String::new(),
+        value: false,
+        description: None,
+    })
 }
 
 impl DescriptiveEffect {

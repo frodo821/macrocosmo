@@ -10,7 +10,7 @@ use crate::amount::{Amt, SignedAmt};
 /// - `colony.<job>_slot` — job slot capacity (e.g. `colony.miner_slot`)
 /// - `job:<job_id>::<target>` — per-job rate bucket (e.g.
 ///   `job:miner::colony.minerals_per_hexadies`)
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect, serde::Serialize, serde::Deserialize)]
 pub struct ParsedModifier {
     pub target: String,
     pub base_add: f64,
@@ -55,7 +55,7 @@ impl ParsedModifier {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, bevy::reflect::Reflect, serde::Serialize, serde::Deserialize)]
 pub struct Modifier {
     pub id: String,
     pub label: String,
@@ -75,7 +75,7 @@ impl Modifier {
     }
 }
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect, serde::Serialize, serde::Deserialize)]
 pub struct ModifiedValue {
     base: Amt,
     modifiers: Vec<Modifier>,
@@ -195,7 +195,7 @@ impl ModifiedValue {
 
 /// A ModifiedValue with a generation counter for cache invalidation.
 /// Generation increments on any push/pop, signaling downstream caches to recompute.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, bevy::reflect::Reflect, serde::Serialize, serde::Deserialize)]
 pub struct ScopedModifiers {
     value: ModifiedValue,
     generation: u64,
@@ -291,7 +291,7 @@ impl ScopedModifiers {
 
 /// Caches a computed value derived from multiple ScopedModifiers.
 /// Recomputes only when any scope's generation changes.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bevy::reflect::Reflect)]
 pub struct CachedValue {
     cached: Amt,
     generations: Vec<u64>,

@@ -15,6 +15,7 @@ const SCALE: u64 = 1000;
     PartialOrd,
     Ord,
     Hash,
+    bevy::reflect::Reflect,
     serde::Serialize,
     serde::Deserialize,
 )]
@@ -202,6 +203,7 @@ const SIGNED_SCALE: i64 = 1000;
     PartialOrd,
     Ord,
     Hash,
+    bevy::reflect::Reflect,
     serde::Serialize,
     serde::Deserialize,
 )]
