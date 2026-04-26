@@ -32,7 +32,8 @@ use crate::galaxy::{AtSystem, Hostile, Planet, Sovereignty, StarSystem};
 use crate::physics::distance_ly;
 use crate::player::{AboardShip, Empire, EmpireRuler, Faction, Ruler, StationedAt};
 use crate::ship::command_events::{
-    ColonizeRequested, CommandId, MoveRequested, NextCommandId, SurveyRequested,
+    ColonizeRequested, CommandId, DeployDeliverableRequested, LoadDeliverableRequested,
+    MoveRequested, NextCommandId, SurveyRequested,
 };
 use crate::ship::{CommandQueue, Owner, Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
@@ -100,6 +101,45 @@ pub struct BuildResearchParams<'w, 's> {
     core_at_system: Query<'w, 's, &'static crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
 }
 
+/// #446: Writers + helper queries for the deliverable-family handlers
+/// (`build_deliverable`, `load_deliverable`, `unload_deliverable`,
+/// `colonize_planet`). Bundled to keep `drain_ai_commands` under Bevy's
+/// 16-param limit; the new message writers tap the **existing** events
+/// (`LoadDeliverableRequested`, `DeployDeliverableRequested`,
+/// `ColonizeRequested`) — the Lua path in `gamestate_scope.rs` keeps its
+/// own writer so AI emits don't displace player / mod commands.
+#[derive(SystemParam)]
+pub struct DeliverableParams<'w, 's> {
+    load_writer: Option<MessageWriter<'w, LoadDeliverableRequested>>,
+    deploy_writer: Option<MessageWriter<'w, DeployDeliverableRequested>>,
+    /// Lookup of which system contains a given planet entity. Used by
+    /// `handle_colonize_planet` to resolve `target_system` from `planet`.
+    planet_lookup: Query<'w, 's, &'static Planet>,
+    /// Used to read a courier ship's current world-space position when
+    /// emitting `unload_deliverable` (the deploy event takes a `[f64; 3]`).
+    ship_positions: Query<'w, 's, &'static Position>,
+    /// Used to read a courier ship's `Cargo` contents to find the index
+    /// of a deliverable to deploy. Optional so headless tests without
+    /// Cargo components don't fail to construct the SystemParam.
+    ship_cargo: Query<'w, 's, &'static crate::ship::Cargo>,
+    /// Per-system deliverable stockpile lookup for `load_deliverable`.
+    deliverable_stockpiles:
+        Query<'w, 's, &'static crate::colony::DeliverableStockpile, With<StarSystem>>,
+}
+
+/// #446: Bundle of "stamp the new ECS message" infrastructure (writers,
+/// command-id allocator, clock) used by every dispatch arm in
+/// `drain_ai_commands`. Bundling these into a single `SystemParam` keeps
+/// the system under Bevy's 16-param limit when new arms are added.
+#[derive(SystemParam)]
+pub struct CommandStamp<'w> {
+    move_writer: MessageWriter<'w, MoveRequested>,
+    survey_writer: Option<MessageWriter<'w, SurveyRequested>>,
+    colonize_writer: Option<MessageWriter<'w, ColonizeRequested>>,
+    next_cmd_id: ResMut<'w, NextCommandId>,
+    clock: Res<'w, GameClock>,
+}
+
 /// Drain AI commands from the bus and apply them to the game world.
 pub fn drain_ai_commands(
     mut commands_buf: Commands,
@@ -109,20 +149,18 @@ pub fn drain_ai_commands(
     hostiles: Query<&AtSystem, With<Hostile>>,
     empires: Query<(Entity, &Faction), With<Empire>>,
     positions: Query<&Position>,
-    mut move_writer: MessageWriter<MoveRequested>,
-    mut survey_writer: Option<MessageWriter<SurveyRequested>>,
-    mut colonize_writer: Option<MessageWriter<ColonizeRequested>>,
-    mut next_cmd_id: ResMut<NextCommandId>,
-    clock: Res<GameClock>,
+    mut stamp: CommandStamp,
     mut build_research: BuildResearchParams,
     empire_rulers: Query<&EmpireRuler, With<Empire>>,
     ruler_q: Query<(&StationedAt, Option<&AboardShip>), With<Ruler>>,
     mut pending_boarding: ResMut<PendingRulerBoarding>,
+    mut deliverable: DeliverableParams,
 ) {
     let commands = drainer.drain_commands();
     if commands.is_empty() {
         return;
     }
+    let now = stamp.clock.elapsed;
 
     for cmd in commands {
         let kind_str = cmd.kind.as_str();
@@ -133,9 +171,9 @@ pub fn drain_ai_commands(
                 &cmd.params,
                 &ships,
                 &empires,
-                &mut move_writer,
-                &mut next_cmd_id,
-                clock.elapsed,
+                &mut stamp.move_writer,
+                &mut stamp.next_cmd_id,
+                now,
             );
         } else if kind_str == cmd_ids::retreat().as_str() {
             handle_retreat(
@@ -145,33 +183,33 @@ pub fn drain_ai_commands(
                 &sovereignty,
                 &empires,
                 &positions,
-                &mut move_writer,
-                &mut next_cmd_id,
-                clock.elapsed,
+                &mut stamp.move_writer,
+                &mut stamp.next_cmd_id,
+                now,
             );
         } else if kind_str == cmd_ids::survey_system().as_str() {
-            if let Some(ref mut w) = survey_writer {
+            if let Some(ref mut w) = stamp.survey_writer {
                 handle_survey_system(
                     &cmd.issuer,
                     &cmd.params,
                     &ships,
                     &empires,
                     w,
-                    &mut next_cmd_id,
-                    clock.elapsed,
+                    &mut stamp.next_cmd_id,
+                    now,
                     &mut commands_buf,
                 );
             }
         } else if kind_str == cmd_ids::colonize_system().as_str() {
-            if let Some(ref mut w) = colonize_writer {
+            if let Some(ref mut w) = stamp.colonize_writer {
                 handle_colonize_system(
                     &cmd.issuer,
                     &cmd.params,
                     &ships,
                     &empires,
                     w,
-                    &mut next_cmd_id,
-                    clock.elapsed,
+                    &mut stamp.next_cmd_id,
+                    now,
                 );
             }
         } else if kind_str == cmd_ids::build_ship().as_str() {
@@ -206,9 +244,9 @@ pub fn drain_ai_commands(
                 &cmd.params,
                 &ships,
                 &empires,
-                &mut move_writer,
-                &mut next_cmd_id,
-                clock.elapsed,
+                &mut stamp.move_writer,
+                &mut stamp.next_cmd_id,
+                now,
             );
         } else if kind_str == cmd_ids::move_ruler().as_str() {
             handle_move_ruler(
@@ -219,9 +257,9 @@ pub fn drain_ai_commands(
                 &empire_rulers,
                 &ruler_q,
                 &mut pending_boarding,
-                &mut move_writer,
-                &mut next_cmd_id,
-                clock.elapsed,
+                &mut stamp.move_writer,
+                &mut stamp.next_cmd_id,
+                now,
             );
         } else if kind_str == cmd_ids::blockade().as_str() {
             handle_blockade(
@@ -229,9 +267,60 @@ pub fn drain_ai_commands(
                 &cmd.params,
                 &ships,
                 &empires,
-                &mut move_writer,
-                &mut next_cmd_id,
-                clock.elapsed,
+                &mut stamp.move_writer,
+                &mut stamp.next_cmd_id,
+                now,
+            );
+        } else if kind_str == cmd_ids::build_deliverable().as_str() {
+            handle_build_deliverable(
+                &cmd.issuer,
+                &cmd.params,
+                &sovereignty,
+                &empires,
+                &mut build_research,
+            );
+        } else if kind_str == cmd_ids::load_deliverable().as_str() {
+            handle_load_deliverable(
+                &cmd.issuer,
+                &cmd.params,
+                &ships,
+                &empires,
+                &mut deliverable,
+                &mut stamp.next_cmd_id,
+                now,
+            );
+        } else if kind_str == cmd_ids::unload_deliverable().as_str() {
+            handle_unload_deliverable(
+                &cmd.issuer,
+                &cmd.params,
+                &ships,
+                &empires,
+                &mut deliverable,
+                &mut stamp.next_cmd_id,
+                now,
+            );
+        } else if kind_str == cmd_ids::colonize_planet().as_str() {
+            if let Some(ref mut w) = stamp.colonize_writer {
+                handle_colonize_planet(
+                    &cmd.issuer,
+                    &cmd.params,
+                    &ships,
+                    &empires,
+                    &deliverable,
+                    w,
+                    &mut stamp.next_cmd_id,
+                    now,
+                );
+            }
+        } else if kind_str == cmd_ids::deploy_deliverable().as_str() {
+            // Macro command — decomposed by the Short layer (#447). The
+            // consumer-side arm exists so an undecomposed `deploy_deliverable`
+            // doesn't slip past the dispatcher silently; if we ever see one
+            // here it indicates the Short layer didn't pick it up.
+            debug!(
+                "deploy_deliverable from faction {:?} reached consumer undecomposed; \
+                 expected the Short layer to expand this macro into primitives",
+                cmd.issuer
             );
         } else {
             debug!(
@@ -966,6 +1055,425 @@ fn handle_blockade(
     );
 }
 
+// ---------------------------------------------------------------------------
+// Deliverable family handlers (#446)
+// ---------------------------------------------------------------------------
+//
+// These handlers bridge AI bus commands to the existing ECS event surface.
+// They do **not** add new game mechanics — the underlying flow (queue a
+// deliverable in a colony BuildingQueue, board it onto a ship via
+// `LoadDeliverableRequested`, drop it via `DeployDeliverableRequested`) is
+// already exercised by the player-controlled and Lua-controlled paths. The
+// AI handlers reuse the same events so all three command sources converge
+// on a single set of authoritative system handlers.
+
+/// Handle `build_deliverable`: queue a deliverable for construction at a
+/// colony owned by the issuing faction.
+///
+/// Params:
+/// - `definition_id` (Str, required): the deliverable definition to build
+///   (e.g. `"infrastructure_core"`).
+/// - `target_system` (System, optional): preferred system to build at; if
+///   absent, picks the first owned colony with a free queue.
+fn handle_build_deliverable(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    br: &mut BuildResearchParams,
+) {
+    let definition_id = match params.get("definition_id") {
+        Some(CommandValue::Str(s)) => s.to_string(),
+        _ => {
+            warn!("build_deliverable command missing definition_id param");
+            return;
+        }
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => {
+            warn!(
+                "build_deliverable: no empire found for faction {:?}",
+                issuer
+            );
+            return;
+        }
+    };
+
+    let target_system = params.get("target_system").and_then(|v| match v {
+        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
+        _ => None,
+    });
+
+    // Owned-systems gate (mirrors handle_build_ship). The deliverable build
+    // queue lives on the StarSystem (BuildQueue), not on the colony — same
+    // queue used by ship orders, just with `BuildKind::Deliverable`.
+    let owned_systems: Vec<Entity> = sovereignty
+        .iter()
+        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
+        .map(|(e, _)| e)
+        .collect();
+
+    let chosen_system = match target_system {
+        Some(t) if owned_systems.contains(&t) => Some(t),
+        Some(_) | None => owned_systems.first().copied(),
+    };
+
+    let Some(sys_entity) = chosen_system else {
+        debug!(
+            "build_deliverable: faction {:?} has no owned system for '{}'",
+            issuer, definition_id
+        );
+        return;
+    };
+
+    // Resolve cost / build_time from the design registry. Deliverables
+    // share the design registry with ships (both flow through the
+    // shipyard `BuildQueue`); a missing entry means the Lua definition
+    // hasn't been loaded — we surface a warn and skip.
+    let Some(ref registry) = br.design_registry else {
+        warn!("build_deliverable: ShipDesignRegistry not available");
+        return;
+    };
+    let Some(design) = registry.get(&definition_id) else {
+        warn!(
+            "build_deliverable: unknown deliverable definition '{}'",
+            definition_id
+        );
+        return;
+    };
+
+    let build_time = registry.build_time(&definition_id);
+    let order = BuildOrder {
+        order_id: 0,
+        kind: BuildKind::Deliverable { cargo_size: 1 },
+        design_id: definition_id.clone(),
+        display_name: design.name.clone(),
+        minerals_cost: design.build_cost_minerals,
+        minerals_invested: Amt::ZERO,
+        energy_cost: design.build_cost_energy,
+        energy_invested: Amt::ZERO,
+        build_time_total: build_time,
+        build_time_remaining: build_time,
+    };
+
+    if let Ok(mut bq) = br.build_queues.get_mut(sys_entity) {
+        // Dedup: skip if the same deliverable is already queued at this
+        // system. Mirrors the system-building dedup in handle_build_structure
+        // — without it, AI re-emits the same build_deliverable every tick
+        // until the metric flips, stacking duplicates in the queue.
+        if bq.queue.iter().any(|o| {
+            matches!(o.kind, BuildKind::Deliverable { .. }) && o.design_id == definition_id
+        }) {
+            debug!(
+                "build_deliverable: '{}' already queued at system {:?}, skipping",
+                definition_id, sys_entity
+            );
+            return;
+        }
+        bq.push_order(order);
+        info!(
+            "build_deliverable: queued '{}' at system {:?} for empire {:?}",
+            definition_id, sys_entity, empire_entity
+        );
+    } else {
+        debug!(
+            "build_deliverable: system {:?} has no BuildQueue component",
+            sys_entity
+        );
+    }
+}
+
+/// Handle `load_deliverable`: dispatch a courier ship to load a deliverable
+/// from a system's `DeliverableStockpile` onto its Cargo. Bridges to the
+/// existing `LoadDeliverableRequested` ECS event.
+///
+/// Params:
+/// - `ship` (Entity, required): the courier ship.
+/// - `target_system` (System, required): system whose stockpile holds the item.
+/// - `stockpile_index` (I64, optional): index of the item in the stockpile.
+///   Defaults to 0.
+#[allow(clippy::too_many_arguments)]
+fn handle_load_deliverable(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    deliverable: &mut DeliverableParams,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let Some(ref mut writer) = deliverable.load_writer else {
+        warn!("load_deliverable: LoadDeliverableRequested writer unavailable");
+        return;
+    };
+
+    let target_system = match params.get("target_system") {
+        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
+        _ => {
+            warn!("load_deliverable command missing target_system param");
+            return;
+        }
+    };
+
+    let ship_entity = match params.get("ship") {
+        Some(CommandValue::Entity(eref)) => crate::ai::convert::from_ai_entity(*eref),
+        _ => {
+            // Fall back to ship_0 (matches the indexed convention used by
+            // attack_target / survey_system).
+            match params.get("ship_0") {
+                Some(CommandValue::Entity(eref)) => crate::ai::convert::from_ai_entity(*eref),
+                _ => {
+                    warn!("load_deliverable command missing ship / ship_0 param");
+                    return;
+                }
+            }
+        }
+    };
+
+    let stockpile_index = match params.get("stockpile_index") {
+        Some(CommandValue::I64(n)) => *n as usize,
+        _ => 0,
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => return,
+    };
+
+    // Validate ownership / state — mirrors the eligibility checks used by
+    // attack_target / colonize_system handlers above.
+    let Ok((_, ship, _, _)) = ships.get(ship_entity) else {
+        debug!(
+            "load_deliverable: ship {:?} not found (despawned?)",
+            ship_entity
+        );
+        return;
+    };
+    if ship.owner != Owner::Empire(empire_entity) {
+        debug!(
+            "load_deliverable: ship {:?} not owned by faction {:?}",
+            ship_entity, issuer
+        );
+        return;
+    }
+
+    // Sanity-check the stockpile actually has something at that index, so
+    // we don't dispatch a courier toward an empty system. Optional in
+    // tests where the stockpile component is absent — fall through.
+    if let Ok(stockpile) = deliverable.deliverable_stockpiles.get(target_system) {
+        if stockpile.items.get(stockpile_index).is_none() {
+            debug!(
+                "load_deliverable: stockpile at system {:?} has no item at index {}",
+                target_system, stockpile_index
+            );
+            return;
+        }
+    }
+
+    writer.write(LoadDeliverableRequested {
+        command_id: next_cmd_id.allocate(),
+        ship: ship_entity,
+        system: target_system,
+        stockpile_index,
+        issued_at: now,
+    });
+
+    info!(
+        "load_deliverable: ship {:?} → system {:?} (idx {}) for faction {:?}",
+        ship_entity, target_system, stockpile_index, issuer
+    );
+}
+
+/// Handle `unload_deliverable`: deploy a deliverable already loaded on a
+/// courier ship into world space. Bridges to the existing
+/// `DeployDeliverableRequested` ECS event.
+///
+/// The deploy event takes a `[f64; 3]` position (deep-space structures
+/// live at arbitrary galactic coordinates, not parented to a system); we
+/// use the ship's current `Position` if no explicit one is provided.
+///
+/// Params:
+/// - `ship` (Entity, required): the courier ship holding the deliverable.
+/// - `item_index` (I64, optional): index in the ship's Cargo.items. Defaults
+///   to 0 (the first deliverable).
+/// - `position` (Raw, optional): future hook for an explicit deploy point.
+///   Today we just use the ship's current position.
+#[allow(clippy::too_many_arguments)]
+fn handle_unload_deliverable(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    deliverable: &mut DeliverableParams,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let Some(ref mut writer) = deliverable.deploy_writer else {
+        warn!("unload_deliverable: DeployDeliverableRequested writer unavailable");
+        return;
+    };
+
+    let ship_entity = match params.get("ship") {
+        Some(CommandValue::Entity(eref)) => crate::ai::convert::from_ai_entity(*eref),
+        _ => match params.get("ship_0") {
+            Some(CommandValue::Entity(eref)) => crate::ai::convert::from_ai_entity(*eref),
+            _ => {
+                warn!("unload_deliverable command missing ship / ship_0 param");
+                return;
+            }
+        },
+    };
+
+    let item_index = match params.get("item_index") {
+        Some(CommandValue::I64(n)) => *n as usize,
+        _ => 0,
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => return,
+    };
+
+    let Ok((_, ship, _, _)) = ships.get(ship_entity) else {
+        debug!(
+            "unload_deliverable: ship {:?} not found (despawned?)",
+            ship_entity
+        );
+        return;
+    };
+    if ship.owner != Owner::Empire(empire_entity) {
+        debug!(
+            "unload_deliverable: ship {:?} not owned by faction {:?}",
+            ship_entity, issuer
+        );
+        return;
+    }
+
+    // Sanity-check the cargo holds an item at that index — otherwise the
+    // downstream handler will reject and we just spam the log. Optional
+    // in tests where the Cargo component is absent.
+    if let Ok(cargo) = deliverable.ship_cargo.get(ship_entity) {
+        if cargo.items.get(item_index).is_none() {
+            debug!(
+                "unload_deliverable: ship {:?} has no item at cargo index {}",
+                ship_entity, item_index
+            );
+            return;
+        }
+    }
+
+    let position = deliverable
+        .ship_positions
+        .get(ship_entity)
+        .map(|p| p.as_array())
+        .unwrap_or([0.0, 0.0, 0.0]);
+
+    writer.write(DeployDeliverableRequested {
+        command_id: next_cmd_id.allocate(),
+        ship: ship_entity,
+        position,
+        item_index,
+        issued_at: now,
+    });
+
+    info!(
+        "unload_deliverable: ship {:?} dropping item {} at {:?} for faction {:?}",
+        ship_entity, item_index, position, issuer
+    );
+}
+
+/// Handle `colonize_planet`: settle a specific planet using a colony ship.
+/// Bridges to the existing `ColonizeRequested` event with `planet =
+/// Some(...)`. The Short-layer macro `colonize_system` lowers into this
+/// after `deploy_deliverable(infra_core)` succeeds.
+///
+/// Params:
+/// - `target_planet` (Entity, required): the planet to settle.
+/// - `ship` / `ship_0` (Entity, required): the colony ship.
+/// - `target_system` (System, optional): if absent, resolved from the
+///   planet's `Planet::system` field.
+#[allow(clippy::too_many_arguments)]
+fn handle_colonize_planet(
+    issuer: &macrocosmo_ai::FactionId,
+    params: &macrocosmo_ai::CommandParams,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    empires: &Query<(Entity, &Faction), With<Empire>>,
+    deliverable: &DeliverableParams,
+    colonize_writer: &mut MessageWriter<ColonizeRequested>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let target_planet = match params.get("target_planet") {
+        Some(CommandValue::Entity(eref)) => crate::ai::convert::from_ai_entity(*eref),
+        _ => {
+            warn!("colonize_planet command missing target_planet param");
+            return;
+        }
+    };
+
+    let ship_entity = match params.get("ship") {
+        Some(CommandValue::Entity(eref)) => crate::ai::convert::from_ai_entity(*eref),
+        _ => match params.get("ship_0") {
+            Some(CommandValue::Entity(eref)) => crate::ai::convert::from_ai_entity(*eref),
+            _ => {
+                warn!("colonize_planet command missing ship / ship_0 param");
+                return;
+            }
+        },
+    };
+
+    // Resolve target_system: prefer explicit param, fall back to the
+    // planet's parent system.
+    let target_system = match params.get("target_system") {
+        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
+        _ => match deliverable.planet_lookup.get(target_planet) {
+            Ok(planet) => planet.system,
+            Err(_) => {
+                warn!(
+                    "colonize_planet: planet {:?} not found and no target_system param",
+                    target_planet
+                );
+                return;
+            }
+        },
+    };
+
+    let empire_entity = match find_empire_entity(issuer, empires) {
+        Some(e) => e,
+        None => return,
+    };
+
+    let Ok((_, ship, _, _)) = ships.get(ship_entity) else {
+        debug!(
+            "colonize_planet: ship {:?} not found (despawned?)",
+            ship_entity
+        );
+        return;
+    };
+    if ship.owner != Owner::Empire(empire_entity) {
+        debug!(
+            "colonize_planet: ship {:?} not owned by faction {:?}",
+            ship_entity, issuer
+        );
+        return;
+    }
+
+    colonize_writer.write(ColonizeRequested {
+        command_id: next_cmd_id.allocate(),
+        ship: ship_entity,
+        target_system,
+        planet: Some(target_planet),
+        issued_at: now,
+    });
+
+    info!(
+        "colonize_planet: ship {:?} → planet {:?} (system {:?}) for faction {:?}",
+        ship_entity, target_planet, target_system, issuer
+    );
+}
+
 /// Shared logic for reposition / blockade: dispatch listed ships to a
 /// target system (same pattern as `handle_attack_target`).
 fn dispatch_ships_to_target(
@@ -1293,6 +1801,14 @@ mod tests {
         app.insert_resource(AiBusResource::with_warning_mode(WarningMode::Silent));
         app.init_resource::<PendingRulerBoarding>();
         app.add_message::<MoveRequested>();
+        // #446: deliverable handlers tap the existing pre-Phase-2 events.
+        // Register them up front so the SystemParam writers in
+        // `DeliverableParams` and the `colonize_writer` for
+        // `colonize_planet` resolve cleanly even in the minimal headless
+        // test app.
+        app.add_message::<LoadDeliverableRequested>();
+        app.add_message::<DeployDeliverableRequested>();
+        app.add_message::<ColonizeRequested>();
         app.add_systems(Startup, schema::declare_all);
         app.update();
         app
@@ -2354,6 +2870,478 @@ mod tests {
             targets.0[0],
             (ship, hostile_b),
             "should pick nearest owned system as fallback"
+        );
+    }
+
+    // ── #446: deliverable family handlers ───────────────────────────────
+
+    // The wrapped event types don't implement `Reflect` (they're plain
+    // `Message` skeletons), so these collector resources stay
+    // non-reflective — they only exist inside the test module.
+    #[derive(Resource, Default)]
+    struct LoadEvents(Vec<LoadDeliverableRequested>);
+
+    #[derive(Resource, Default)]
+    struct DeployEvents(Vec<DeployDeliverableRequested>);
+
+    #[derive(Resource, Default)]
+    struct ColonizeEvents(Vec<ColonizeRequested>);
+
+    fn collect_load_events(
+        mut reader: MessageReader<LoadDeliverableRequested>,
+        mut events: ResMut<LoadEvents>,
+    ) {
+        for ev in reader.read() {
+            events.0.push(ev.clone());
+        }
+    }
+
+    fn collect_deploy_events(
+        mut reader: MessageReader<DeployDeliverableRequested>,
+        mut events: ResMut<DeployEvents>,
+    ) {
+        for ev in reader.read() {
+            events.0.push(ev.clone());
+        }
+    }
+
+    fn collect_colonize_events(
+        mut reader: MessageReader<ColonizeRequested>,
+        mut events: ResMut<ColonizeEvents>,
+    ) {
+        for ev in reader.read() {
+            events.0.push(ev.clone());
+        }
+    }
+
+    /// Helper: a minimal deliverable definition in the design registry.
+    /// Mirrors the shape used by `infrastructure_core` in the production
+    /// Lua scripts (cost / build_time small enough that tests don't
+    /// have to advance the queue).
+    fn test_deliverable_design_registry() -> ShipDesignRegistry {
+        use crate::ship_design::ShipDesignDefinition;
+        let mut registry = ShipDesignRegistry::default();
+        registry.insert(ShipDesignDefinition {
+            id: "infra_core".into(),
+            name: "Infrastructure Core".into(),
+            description: String::new(),
+            hull_id: "deliverable_hull".into(),
+            modules: vec![],
+            can_survey: false,
+            can_colonize: false,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: Amt::units(20),
+            build_cost_energy: Amt::units(10),
+            build_time: 5,
+            hp: 1.0,
+            sublight_speed: 0.0,
+            ftl_range: 0.0,
+            revision: 0,
+            is_direct_buildable: true,
+        });
+        registry
+    }
+
+    #[test]
+    fn build_deliverable_queues_order_at_owned_system() {
+        let mut app = test_app();
+        app.insert_resource(test_deliverable_design_registry());
+
+        let world = app.world_mut();
+        let empire_entity = world
+            .spawn((
+                Empire {
+                    name: "Test NPC".into(),
+                },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Home".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+                Sovereignty {
+                    owner: Some(Owner::Empire(empire_entity)),
+                    control_score: 1.0,
+                },
+                BuildQueue::default(),
+            ))
+            .id();
+
+        let cmd = Command::new(cmd_ids::build_deliverable(), faction_id, 10)
+            .with_param("definition_id", CommandValue::Str("infra_core".into()));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.add_systems(Update, drain_ai_commands);
+        app.update();
+
+        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        assert_eq!(queue.queue.len(), 1, "should have queued 1 deliverable");
+        assert_eq!(queue.queue[0].design_id, "infra_core");
+        assert!(
+            matches!(queue.queue[0].kind, BuildKind::Deliverable { .. }),
+            "kind should be Deliverable, got {:?}",
+            queue.queue[0].kind
+        );
+    }
+
+    #[test]
+    fn build_deliverable_dedups_same_definition_per_system() {
+        let mut app = test_app();
+        app.insert_resource(test_deliverable_design_registry());
+
+        let world = app.world_mut();
+        let empire_entity = world
+            .spawn((
+                Empire {
+                    name: "Test NPC".into(),
+                },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Home".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+                Sovereignty {
+                    owner: Some(Owner::Empire(empire_entity)),
+                    control_score: 1.0,
+                },
+                BuildQueue::default(),
+            ))
+            .id();
+
+        // Emit twice — second emit should be skipped by dedup.
+        for _ in 0..2 {
+            let cmd = Command::new(cmd_ids::build_deliverable(), faction_id.clone(), 10)
+                .with_param("definition_id", CommandValue::Str("infra_core".into()));
+            world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+        }
+
+        app.add_systems(Update, drain_ai_commands);
+        app.update();
+
+        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        assert_eq!(
+            queue.queue.len(),
+            1,
+            "second build_deliverable should be deduped"
+        );
+    }
+
+    #[test]
+    fn load_deliverable_emits_event_with_explicit_index() {
+        use crate::colony::DeliverableStockpile;
+        use crate::ship::CargoItem;
+
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire {
+                    name: "Test NPC".into(),
+                },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Home".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+                DeliverableStockpile {
+                    items: vec![CargoItem::Deliverable {
+                        definition_id: "infra_core".into(),
+                    }],
+                },
+            ))
+            .id();
+
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "Courier".into(),
+                    design_id: "courier".into(),
+                    hull_id: "courier".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire_entity),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: sys_entity,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system: sys_entity },
+                CommandQueue::default(),
+            ))
+            .id();
+
+        let sys_ref = crate::ai::convert::to_ai_system(sys_entity);
+        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
+        let cmd = Command::new(cmd_ids::load_deliverable(), faction_id, 10)
+            .with_param("target_system", CommandValue::System(sys_ref))
+            .with_param("ship", CommandValue::Entity(ship_ref))
+            .with_param("stockpile_index", CommandValue::I64(0));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<LoadEvents>();
+        app.add_systems(Update, (drain_ai_commands, collect_load_events).chain());
+        app.update();
+
+        let events = app.world().resource::<LoadEvents>();
+        assert_eq!(events.0.len(), 1, "should emit 1 LoadDeliverableRequested");
+        assert_eq!(events.0[0].ship, ship_entity);
+        assert_eq!(events.0[0].system, sys_entity);
+        assert_eq!(events.0[0].stockpile_index, 0);
+    }
+
+    #[test]
+    fn load_deliverable_skipped_when_stockpile_empty() {
+        use crate::colony::DeliverableStockpile;
+
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire {
+                    name: "Test NPC".into(),
+                },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Home".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+                DeliverableStockpile { items: vec![] }, // empty!
+            ))
+            .id();
+
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "Courier".into(),
+                    design_id: "courier".into(),
+                    hull_id: "courier".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire_entity),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: sys_entity,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system: sys_entity },
+                CommandQueue::default(),
+            ))
+            .id();
+
+        let sys_ref = crate::ai::convert::to_ai_system(sys_entity);
+        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
+        let cmd = Command::new(cmd_ids::load_deliverable(), faction_id, 10)
+            .with_param("target_system", CommandValue::System(sys_ref))
+            .with_param("ship", CommandValue::Entity(ship_ref))
+            .with_param("stockpile_index", CommandValue::I64(0));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<LoadEvents>();
+        app.add_systems(Update, (drain_ai_commands, collect_load_events).chain());
+        app.update();
+
+        let events = app.world().resource::<LoadEvents>();
+        assert_eq!(
+            events.0.len(),
+            0,
+            "should skip load_deliverable when stockpile is empty"
+        );
+    }
+
+    #[test]
+    fn unload_deliverable_emits_deploy_event_at_ship_position() {
+        use crate::ship::{Cargo, CargoItem};
+
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire {
+                    name: "Test NPC".into(),
+                },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Target".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([7.0, 8.0, 9.0]),
+            ))
+            .id();
+
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "Courier".into(),
+                    design_id: "courier".into(),
+                    hull_id: "courier".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire_entity),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: sys_entity,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system: sys_entity },
+                CommandQueue::default(),
+                Position::from([7.0, 8.0, 9.0]),
+                Cargo {
+                    minerals: Amt::ZERO,
+                    energy: Amt::ZERO,
+                    items: vec![CargoItem::Deliverable {
+                        definition_id: "infra_core".into(),
+                    }],
+                },
+            ))
+            .id();
+
+        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
+        let cmd = Command::new(cmd_ids::unload_deliverable(), faction_id, 10)
+            .with_param("ship", CommandValue::Entity(ship_ref))
+            .with_param("item_index", CommandValue::I64(0));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<DeployEvents>();
+        app.add_systems(Update, (drain_ai_commands, collect_deploy_events).chain());
+        app.update();
+
+        let events = app.world().resource::<DeployEvents>();
+        assert_eq!(
+            events.0.len(),
+            1,
+            "should emit 1 DeployDeliverableRequested"
+        );
+        assert_eq!(events.0[0].ship, ship_entity);
+        assert_eq!(events.0[0].item_index, 0);
+        assert_eq!(events.0[0].position, [7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn colonize_planet_emits_colonize_with_explicit_planet() {
+        let mut app = test_app();
+        let world = app.world_mut();
+
+        let empire_entity = world
+            .spawn((
+                Empire {
+                    name: "Test NPC".into(),
+                },
+                Faction::new("test_npc", "Test NPC"),
+            ))
+            .id();
+        let faction_id = to_ai_faction(empire_entity);
+
+        let sys_entity = world
+            .spawn((
+                StarSystem {
+                    name: "Target".into(),
+                    is_capital: false,
+                    surveyed: true,
+                    star_type: "yellow_dwarf".into(),
+                },
+                Position::from([0.0, 0.0, 0.0]),
+            ))
+            .id();
+
+        let planet_entity = world
+            .spawn(Planet {
+                name: "Test Planet".into(),
+                planet_type: "terran".into(),
+                system: sys_entity,
+            })
+            .id();
+
+        let ship_entity = world
+            .spawn((
+                Ship {
+                    name: "Colony Ship".into(),
+                    design_id: "colony".into(),
+                    hull_id: "colony".into(),
+                    modules: vec![],
+                    owner: Owner::Empire(empire_entity),
+                    sublight_speed: 0.1,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: sys_entity,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InSystem { system: sys_entity },
+                CommandQueue::default(),
+            ))
+            .id();
+
+        let planet_ref = crate::ai::convert::to_ai_entity(planet_entity);
+        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
+        let cmd = Command::new(cmd_ids::colonize_planet(), faction_id, 10)
+            .with_param("target_planet", CommandValue::Entity(planet_ref))
+            .with_param("ship", CommandValue::Entity(ship_ref));
+        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+
+        app.init_resource::<ColonizeEvents>();
+        app.add_systems(
+            Update,
+            (drain_ai_commands, collect_colonize_events).chain(),
+        );
+        app.update();
+
+        let events = app.world().resource::<ColonizeEvents>();
+        assert_eq!(events.0.len(), 1, "should emit 1 ColonizeRequested");
+        assert_eq!(events.0[0].ship, ship_entity);
+        assert_eq!(events.0[0].target_system, sys_entity);
+        assert_eq!(
+            events.0[0].planet,
+            Some(planet_entity),
+            "colonize_planet should set planet=Some(...) (vs colonize_system which sets None)"
         );
     }
 }
