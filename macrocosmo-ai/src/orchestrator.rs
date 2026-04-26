@@ -25,6 +25,7 @@ use crate::ai_params::AiParamsExt;
 use crate::bus::AiBus;
 use crate::campaign::{Campaign, CampaignState};
 use crate::command::Command;
+use crate::decomposition::DecompositionRegistry;
 use crate::dispatcher::{DispatchResult, IntentDispatcher};
 use crate::eval::EvalContext;
 use crate::ids::{FactionId, IntentId, IntentKindId, IntentTargetRef, ShortContext};
@@ -148,6 +149,12 @@ pub struct Orchestrator<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> {
     pub config: OrchestratorConfig,
     pub state: OrchestratorState,
     pub faction: FactionId,
+    /// Optional decomposition registry. `None` (the default) leaves
+    /// the orchestrator at legacy behavior — `ShortTermInput.decomp`
+    /// is `None`, so any agent that respects the optionality skips
+    /// decomposition entirely. Game integrations install one via
+    /// [`Self::with_decomposition`].
+    pub decomposition: Option<Box<dyn DecompositionRegistry>>,
 }
 
 impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S> {
@@ -159,11 +166,26 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             config: OrchestratorConfig::default(),
             state: OrchestratorState::default(),
             faction,
+            decomposition: None,
         }
     }
 
     pub fn with_config(mut self, config: OrchestratorConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Install a decomposition registry. The orchestrator threads
+    /// `&dyn DecompositionRegistry` to every short tick via
+    /// `ShortTermInput.decomp`. Pass any type implementing
+    /// [`DecompositionRegistry`] (typically a
+    /// [`crate::decomposition::StaticDecompositionRegistry`]).
+    ///
+    /// Calling this twice replaces the previous registry. Pass
+    /// `None` indirectly by omitting the call — the default is
+    /// `None`.
+    pub fn with_decomposition<R: DecompositionRegistry + 'static>(mut self, registry: R) -> Self {
+        self.decomposition = Some(Box::new(registry));
         self
     }
 
@@ -472,6 +494,11 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             .plan_states
             .entry(self.config.short_context.clone())
             .or_default();
+        // `as_deref()` turns `Option<Box<dyn ...>>` into
+        // `Option<&dyn ...>` without unboxing — the short agent gets
+        // a borrowed reference to the same registry the orchestrator
+        // owns.
+        let decomp = self.decomposition.as_deref();
         let input = ShortTermInput {
             bus,
             faction: self.faction,
@@ -479,6 +506,7 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             active_campaigns: &active,
             now,
             plan_state,
+            decomp,
         };
         let short_out = self.short.tick(input);
         out.short_fired = true;
@@ -684,5 +712,83 @@ mod tests {
             .get(&ctx)
             .expect("plan_state present");
         assert_eq!(plan_after_1.pending.get(&key).map(|v| v.len()), Some(2));
+    }
+
+    /// Short stub that records whether `decomp` was present during
+    /// the most recent tick. Used to verify that
+    /// `Orchestrator::with_decomposition` threads the registry into
+    /// `ShortTermInput`.
+    struct DecompProbeShort {
+        last_seen_some: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+        last_lookup_hit: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+    }
+    impl ShortTermAgent for DecompProbeShort {
+        fn tick(&mut self, input: ShortTermInput<'_>) -> ShortTermOutput {
+            *self.last_seen_some.lock().unwrap() = Some(input.decomp.is_some());
+            // If the registry is present, also probe a known kind.
+            if let Some(reg) = input.decomp {
+                let kind = crate::ids::CommandKindId::from("colonize_system");
+                *self.last_lookup_hit.lock().unwrap() = Some(reg.lookup(&kind).is_some());
+            } else {
+                *self.last_lookup_hit.lock().unwrap() = Some(false);
+            }
+            ShortTermOutput::default()
+        }
+    }
+
+    #[test]
+    fn short_input_threads_decomposition_registry() {
+        use crate::decomposition::{DecompositionRule, StaticDecompositionRegistry};
+        use crate::ids::CommandKindId;
+
+        // Build a registry with one rule and install it on the
+        // orchestrator.
+        let mut reg = StaticDecompositionRegistry::new();
+        fn expand_one(_cmd: &Command, _ps: &PlanState, _now: Tick) -> Vec<Command> {
+            Vec::new()
+        }
+        reg.register(DecompositionRule::new(
+            CommandKindId::from("colonize_system"),
+            expand_one,
+        ));
+
+        let last_seen_some = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let last_lookup_hit = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let probe = DecompProbeShort {
+            last_seen_some: last_seen_some.clone(),
+            last_lookup_hit: last_lookup_hit.clone(),
+        };
+
+        let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let victory = always_ongoing_victory();
+        let mut orch = Orchestrator::new(FactionId(0), NoopLong, StartCampaignOnIntent, probe)
+            .with_decomposition(reg);
+        orch.config.long_cadence = 1;
+        orch.config.mid_cadence = 1;
+        let mut d = FixedDelayDispatcher::zero_delay();
+
+        let _ = orch.tick(&mut bus, &mut d, &victory, None, 0);
+        assert_eq!(*last_seen_some.lock().unwrap(), Some(true));
+        assert_eq!(*last_lookup_hit.lock().unwrap(), Some(true));
+    }
+
+    #[test]
+    fn short_input_decomposition_is_none_by_default() {
+        let last_seen_some = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let last_lookup_hit = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let probe = DecompProbeShort {
+            last_seen_some: last_seen_some.clone(),
+            last_lookup_hit: last_lookup_hit.clone(),
+        };
+        let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let victory = always_ongoing_victory();
+        let mut orch = Orchestrator::new(FactionId(0), NoopLong, StartCampaignOnIntent, probe);
+        orch.config.long_cadence = 1;
+        orch.config.mid_cadence = 1;
+        let mut d = FixedDelayDispatcher::zero_delay();
+
+        let _ = orch.tick(&mut bus, &mut d, &victory, None, 0);
+        assert_eq!(*last_seen_some.lock().unwrap(), Some(false));
+        assert_eq!(*last_lookup_hit.lock().unwrap(), Some(false));
     }
 }

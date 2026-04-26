@@ -213,6 +213,12 @@ pub struct ShortTermInput<'a> {
     /// extend its queued primitive commands. Default agents that do
     /// not decompose commands simply ignore the field.
     pub plan_state: &'a mut PlanState,
+    /// Optional decomposition registry. When present, decomposition-
+    /// aware short agents can `lookup` a `DecompositionRule` for a
+    /// macro `CommandKindId` and expand it into primitive commands.
+    /// `None` (the default) preserves legacy no-decomposition behavior;
+    /// agents that do not implement decomposition simply ignore it.
+    pub decomp: Option<&'a dyn crate::decomposition::DecompositionRegistry>,
 }
 
 #[derive(Debug, Default)]

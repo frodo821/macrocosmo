@@ -19,6 +19,7 @@ pub mod bus;
 pub mod campaign;
 pub mod command;
 pub mod condition;
+pub mod decomposition;
 pub mod dispatcher;
 pub mod eval;
 pub mod evidence;
@@ -73,6 +74,9 @@ pub use assessment::{
     critical_violation_penalty, gather_trajectory_metric_ids, objective_kind,
 };
 pub use command::{Command, CommandParams, CommandValue, SerializedCommand};
+pub use decomposition::{
+    DecompositionRegistry, DecompositionRule, EmptyRegistry, ExpandFn, StaticDecompositionRegistry,
+};
 pub use dispatcher::{DispatchResult, FixedDelayDispatcher, IntentDispatcher};
 pub use evidence::StandingEvidence;
 pub use ids::{

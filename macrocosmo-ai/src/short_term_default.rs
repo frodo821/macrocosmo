@@ -101,10 +101,11 @@ impl CampaignReactiveShort {
 impl ShortTermAgent for CampaignReactiveShort {
     fn tick(&mut self, input: ShortTermInput<'_>) -> ShortTermOutput {
         // CampaignReactiveShort is the legacy default — it does not
-        // decompose macro commands, so the new `plan_state` mutable
-        // borrow is intentionally discarded. F2+ adds decomposition-
-        // aware agents that consume it.
+        // decompose macro commands, so the new `plan_state` and
+        // `decomp` borrows are intentionally discarded. F2+ adds
+        // decomposition-aware agents that consume them.
         let _ = input.plan_state;
+        let _ = input.decomp;
 
         let mut commands = Vec::new();
 
@@ -170,6 +171,7 @@ mod tests {
             active_campaigns: &active,
             now: 5,
             plan_state: &mut plan,
+            decomp: None,
         });
         assert_eq!(out.commands.len(), 2);
         assert_eq!(out.commands[0].issuer, FactionId(7));
@@ -195,6 +197,7 @@ mod tests {
             active_campaigns: &active,
             now: 1,
             plan_state: &mut plan,
+            decomp: None,
         });
         assert_eq!(out.commands[0].kind.as_str(), "default_short:expand");
     }
@@ -211,6 +214,7 @@ mod tests {
             active_campaigns: &[],
             now: 1,
             plan_state: &mut plan,
+            decomp: None,
         });
         assert_eq!(out.commands.len(), 0);
     }
