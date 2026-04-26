@@ -11,6 +11,7 @@ local orbital_research_lab = define_building {
         { target = "job:researcher::colony.research_per_hexadies", multiplier = 0.15 },
     },
     is_system_building = true,
+    capabilities = { research = {} },
     ship_design_id = "station_research_lab_v1",
 }
 
@@ -22,6 +23,7 @@ local shipyard = define_building {
     build_time = 30,
     maintenance = 1.0,
     is_system_building = true,
+    capabilities = { shipyard = {} },
     modifiers = {
         { target = "system.shipyard_capacity", base_add = 1 },
     },
@@ -36,6 +38,7 @@ local port = define_building {
     build_time = 40,
     maintenance = 0.5,
     is_system_building = true,
+    capabilities = { port = {} },
     modifiers = {
         { target = "system.port_ftl_range_bonus", base_add = 10.0 },
         { target = "system.port_travel_time_factor", base_add = -0.2 },
