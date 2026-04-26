@@ -27,19 +27,23 @@
 //! 2. [`sweep_resolved_survey_assignments`] — every tick, checks the
 //!    issuing empire's `KnowledgeStore`. If the target system is now
 //!    `surveyed = true` from that empire's perspective (success arrived
-//!    via fact propagation) → remove. Future extension: also remove
-//!    when the ship is `KnowledgeFact::ShipDestroyed` from that
-//!    perspective ("we now know we lost the scout").
-//! 3. [`sweep_stale_assignments`] fallback — `stale_at` past
-//!    (`SURVEY_ASSIGNMENT_LIFETIME` covers worst-case light-speed
-//!    propagation across the galaxy + survey duration + slack).
+//!    via fact propagation) → remove.
+//! 3. Bevy's automatic component cleanup — when the carrying ship is
+//!    despawned (combat loss, scuttling, etc.) the marker goes with it.
+//!
+//! There is intentionally **no** time-based fallback sweeper: the previous
+//! `SURVEY_ASSIGNMENT_LIFETIME = 200` was shorter than a realistic sublight
+//! survey round-trip (~1700 hex observed) and would prematurely strip the
+//! marker mid-flight, re-opening the double-dispatch race the marker exists
+//! to prevent. The "ship is alive but never returns" corner case is
+//! deferred until `KnowledgeFact::ShipDestroyed` gains per-faction
+//! propagation, at which point a knowledge-driven sweep can clear the
+//! marker the moment the issuer learns the ship is lost.
 //!
 //! The marker is **per faction** — when observer mode runs multiple
 //! factions, each faction only sees its own pending dispatches.
 
 use bevy::prelude::*;
-
-use crate::time_system::GameClock;
 
 /// What kind of work has been queued. Reserved for future expansion (#189
 /// follow-up: Colonize, Scout, Repair, etc.).
@@ -63,7 +67,8 @@ pub enum AssignmentTarget {
 /// this thing — don't re-assign another ship to the same task next tick."
 ///
 /// Attached to the **ship** entity. Removed when the underlying handler
-/// resolves the request (Ok / Rejected) or when stale.
+/// resolves the request (Ok / Rejected) or via knowledge-driven cleanup
+/// once the issuing empire learns the result.
 ///
 /// Per-faction so observer-mode multi-faction works: each NPC sees only its
 /// own pending assignments, not other factions'.
@@ -78,52 +83,16 @@ pub struct PendingAssignment {
     pub target: AssignmentTarget,
     /// Hexadies tick at which the assignment was created.
     pub since: i64,
-    /// Sweeper removes the marker after `clock.elapsed > stale_at`.
-    pub stale_at: i64,
 }
 
 impl PendingAssignment {
-    /// Convenience constructor for a survey-system assignment that grants
-    /// `lifetime` hexadies before the sweeper considers it stale.
-    pub fn survey_system(faction: Entity, target: Entity, now: i64, lifetime: i64) -> Self {
+    /// Convenience constructor for a survey-system assignment.
+    pub fn survey_system(faction: Entity, target: Entity, now: i64) -> Self {
         Self {
             faction,
             kind: AssignmentKind::Survey,
             target: AssignmentTarget::System(target),
             since: now,
-            stale_at: now + lifetime,
-        }
-    }
-}
-
-/// Fallback lifetime for a `survey_system` `PendingAssignment` —
-/// pathological pruning only. Knowledge-driven removal via
-/// [`sweep_resolved_survey_assignments`] handles the common path
-/// (success-known / failure-known via `KnowledgeStore`). This stale
-/// window must cover **worst-case** light-speed propagation
-/// (issuer Ruler → survey target → back to issuer Ruler) plus the
-/// survey duration plus slack so that a marker in flight does not
-/// get prematurely garbage-collected if the success fact happens to
-/// propagate slowly.
-///
-/// 200 hexadies ≈ 3.3 game years — generous enough for a ~30 ly
-/// galaxy radius (light delay ≈ 30 hexadies one-way, 60 round-trip)
-/// + 30-hexadies survey + 110 slack.
-pub const SURVEY_ASSIGNMENT_LIFETIME: i64 = 200;
-
-/// Sweep `PendingAssignment` markers whose `stale_at` tick has passed.
-/// Bevy's despawn already drops the component for vanished ships; this
-/// system handles the "handler never fired but ship still exists" path
-/// (e.g. message reader queue overran, ship state mutated externally).
-pub fn sweep_stale_assignments(
-    mut commands: Commands,
-    clock: Res<GameClock>,
-    q: Query<(Entity, &PendingAssignment)>,
-) {
-    let now = clock.elapsed;
-    for (entity, pa) in &q {
-        if now > pa.stale_at {
-            commands.entity(entity).remove::<PendingAssignment>();
         }
     }
 }
@@ -137,11 +106,11 @@ pub fn sweep_stale_assignments(
 /// surveyor loops every 30 hexadies.
 ///
 /// Failure path (ship lost to hostiles before completion) is currently
-/// handled by Bevy's automatic component cleanup on `despawn` plus the
-/// `sweep_stale_assignments` fallback. A future extension may also drop
-/// the marker when `KnowledgeStore` records a `ShipDestroyed` fact for
-/// the carrying ship — then the NPC explicitly knows "scout was lost"
-/// and can re-emit immediately rather than waiting `stale_at`.
+/// handled by Bevy's automatic component cleanup on `despawn`. A future
+/// extension may also drop the marker when `KnowledgeStore` records a
+/// `ShipDestroyed` fact for the carrying ship — then the NPC explicitly
+/// knows "scout was lost" and can re-emit immediately rather than waiting
+/// for the ship entity itself to vanish.
 pub fn sweep_resolved_survey_assignments(
     mut commands: Commands,
     assignments: Query<(Entity, &PendingAssignment)>,
@@ -172,43 +141,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn survey_system_constructor_sets_lifetime() {
+    fn survey_system_constructor_sets_fields() {
         let faction = Entity::from_raw_u32(1).unwrap();
         let target = Entity::from_raw_u32(2).unwrap();
-        let pa = PendingAssignment::survey_system(faction, target, 100, 90);
+        let pa = PendingAssignment::survey_system(faction, target, 100);
         assert_eq!(pa.faction, faction);
         assert!(matches!(pa.kind, AssignmentKind::Survey));
         match pa.target {
             AssignmentTarget::System(e) => assert_eq!(e, target),
         }
         assert_eq!(pa.since, 100);
-        assert_eq!(pa.stale_at, 190);
-    }
-
-    #[test]
-    fn sweep_stale_assignments_removes_only_expired() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.insert_resource(GameClock::new(200));
-        app.add_systems(Update, sweep_stale_assignments);
-
-        let faction = Entity::from_raw_u32(1).unwrap();
-        let target = Entity::from_raw_u32(99).unwrap();
-
-        let fresh = app
-            .world_mut()
-            .spawn(PendingAssignment::survey_system(faction, target, 150, 90))
-            .id();
-        let expired = app
-            .world_mut()
-            .spawn(PendingAssignment::survey_system(faction, target, 50, 90))
-            .id();
-
-        app.update();
-
-        // Fresh marker survives (stale_at = 240 > now = 200).
-        assert!(app.world().get::<PendingAssignment>(fresh).is_some());
-        // Expired marker is swept (stale_at = 140 < now = 200).
-        assert!(app.world().get::<PendingAssignment>(expired).is_none());
     }
 }

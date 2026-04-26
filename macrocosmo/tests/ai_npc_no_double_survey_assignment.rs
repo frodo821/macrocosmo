@@ -34,8 +34,13 @@
 //!   would clear it. Then directly populate the empire's
 //!   `KnowledgeStore` with `surveyed = true` for the target and one
 //!   more tick must let `sweep_resolved_survey_assignments` clear it.
-//! - `sweep_stale_assignments_removes_expired_markers`: the time-based
-//!   fallback sweeper still works on its own.
+//! - `pending_assignment_clears_when_ship_despawns` (Round 10 Bug C
+//!   fix): the time-based `sweep_stale_assignments` was removed
+//!   because its 200-hex lifetime was shorter than realistic sublight
+//!   round-trips and would prematurely strip the marker mid-flight,
+//!   re-opening the double-dispatch race. Bevy's automatic component
+//!   cleanup handles ship loss instead — verify a despawned ship's
+//!   marker is gone the next tick.
 
 mod common;
 
@@ -473,36 +478,45 @@ fn pending_assignment_outlives_handler_ok_until_knowledge_arrives() {
     );
 }
 
+/// Round 10 Bug C fix: the time-based `sweep_stale_assignments` system was
+/// deleted because `SURVEY_ASSIGNMENT_LIFETIME = 200` hex was shorter than
+/// realistic sublight survey round-trips (~1700 hex observed) and would
+/// prematurely strip the marker mid-flight, re-opening the double-dispatch
+/// race the marker exists to prevent. Ship-loss cleanup is now handled by
+/// Bevy's automatic component cleanup on despawn — this test pins that
+/// guarantee so a future refactor can't silently lose it.
 #[test]
-fn sweep_stale_assignments_removes_expired_markers() {
-    use macrocosmo::ai::assignments::sweep_stale_assignments;
-    use macrocosmo::time_system::GameClock;
-
+fn pending_assignment_clears_when_ship_despawns() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
-    app.insert_resource(GameClock::new(0));
-    app.add_systems(Update, sweep_stale_assignments);
 
     let faction = Entity::from_raw_u32(1).unwrap();
     let target = Entity::from_raw_u32(99).unwrap();
     let ship = app
         .world_mut()
-        .spawn(PendingAssignment::survey_system(faction, target, 0, 30))
+        .spawn(PendingAssignment::survey_system(faction, target, 0))
         .id();
 
-    // Tick at hexadies = 10 — marker is still valid (stale_at = 30).
-    app.world_mut().resource_mut::<GameClock>().elapsed = 10;
-    app.update();
+    // Marker is attached.
     assert!(
         app.world().get::<PendingAssignment>(ship).is_some(),
-        "marker swept too early"
+        "marker should be attached after spawn",
     );
 
-    // Tick at hexadies = 31 — marker should be swept.
-    app.world_mut().resource_mut::<GameClock>().elapsed = 31;
-    app.update();
+    // Despawn the ship — Bevy drops every component on the entity.
+    app.world_mut().entity_mut(ship).despawn();
+
+    // The entity is gone, so the component is gone with it. Querying for
+    // PendingAssignment must turn up zero rows for this ship.
+    let mut q = app.world_mut().query::<(Entity, &PendingAssignment)>();
+    let still_attached: Vec<Entity> = q
+        .iter(app.world())
+        .map(|(e, _)| e)
+        .filter(|e| *e == ship)
+        .collect();
     assert!(
-        app.world().get::<PendingAssignment>(ship).is_none(),
-        "marker survived past stale_at"
+        still_attached.is_empty(),
+        "PendingAssignment survived ship despawn — automatic component \
+         cleanup regression",
     );
 }

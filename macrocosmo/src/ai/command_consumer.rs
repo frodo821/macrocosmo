@@ -438,10 +438,10 @@ fn handle_attack_target(
 /// Stamps each dispatched ship with a [`crate::ai::assignments::PendingAssignment`]
 /// so subsequent NPC decision ticks can dedup against in-flight surveys
 /// (Round 9 PR #2 Step 4). The marker is removed by
-/// [`crate::ship::handlers::handle_survey_requested`] on terminal results
-/// (Ok / Rejected) and swept after `SURVEY_ASSIGNMENT_LIFETIME` hexadies
-/// by [`crate::ai::assignments::sweep_stale_assignments`] in case the
-/// handler never fires.
+/// [`crate::ship::handlers::handle_survey_requested`] on terminal Rejected
+/// results and by [`crate::ai::assignments::sweep_resolved_survey_assignments`]
+/// once the issuing empire's `KnowledgeStore` learns the target is surveyed.
+/// Bevy's automatic component cleanup handles ship despawn (combat loss).
 #[allow(clippy::too_many_arguments)]
 fn handle_survey_system(
     issuer: &macrocosmo_ai::FactionId,
@@ -453,7 +453,7 @@ fn handle_survey_system(
     now: i64,
     commands_buf: &mut Commands,
 ) {
-    use crate::ai::assignments::{PendingAssignment, SURVEY_ASSIGNMENT_LIFETIME};
+    use crate::ai::assignments::PendingAssignment;
 
     let target_system = match params.get("target_system") {
         Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
@@ -493,7 +493,6 @@ fn handle_survey_system(
                 empire_entity,
                 target_system,
                 now,
-                SURVEY_ASSIGNMENT_LIFETIME,
             ));
         dispatched += 1;
     }
@@ -3328,10 +3327,7 @@ mod tests {
         world.resource_mut::<AiBusResource>().0.emit_command(cmd);
 
         app.init_resource::<ColonizeEvents>();
-        app.add_systems(
-            Update,
-            (drain_ai_commands, collect_colonize_events).chain(),
-        );
+        app.add_systems(Update, (drain_ai_commands, collect_colonize_events).chain());
         app.update();
 
         let events = app.world().resource::<ColonizeEvents>();

@@ -1636,7 +1636,6 @@ pub struct SavedPendingAssignment {
     pub target_tag: u8,
     pub target_bits: u64,
     pub since: i64,
-    pub stale_at: i64,
 }
 
 impl SavedPendingAssignment {
@@ -1653,7 +1652,6 @@ impl SavedPendingAssignment {
             target_tag,
             target_bits,
             since: v.since,
-            stale_at: v.stale_at,
         }
     }
     pub fn into_live(self, map: &EntityMap) -> crate::ai::assignments::PendingAssignment {
@@ -1675,7 +1673,6 @@ impl SavedPendingAssignment {
             kind,
             target,
             since: self.since,
-            stale_at: self.stale_at,
         }
     }
 }

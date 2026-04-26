@@ -198,8 +198,8 @@ impl Plugin for AiPlugin {
             // pulls from it.
             // `process_ruler_boarding` runs after `drain_ai_commands` to handle
             // deferred ruler boarding (needs mutable Ship access).
-            // `sweep_stale_assignments` runs alongside the consumer in the
-            // same set so the sweep happens at the natural "AI command
+            // `sweep_resolved_survey_assignments` runs alongside the consumer
+            // in the same set so the sweep happens at the natural "AI command
             // resolution" boundary; it has no data dependency on
             // `drain_ai_commands`.
             .add_systems(
@@ -210,7 +210,6 @@ impl Plugin for AiPlugin {
                         .after(super::command_outbox::process_ai_pending_commands),
                     super::command_consumer::process_ruler_boarding
                         .after(super::command_consumer::drain_ai_commands),
-                    super::assignments::sweep_stale_assignments,
                     super::assignments::sweep_resolved_survey_assignments,
                 )
                     .in_set(AiTickSet::CommandDrain)

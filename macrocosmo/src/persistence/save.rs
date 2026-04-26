@@ -95,7 +95,12 @@ use super::savebag::*;
 /// (mirror of `crate::ai::command_outbox::AiCommandOutbox`) so AI
 /// commands in flight at save time reload with their light-speed
 /// delay still ticking.
-pub const SAVE_VERSION: u32 = 11;
+/// Round 10 Bug C fix: removed `stale_at` field from
+/// `SavedPendingAssignment` — the time-based sweeper was deleted in
+/// favour of knowledge-driven cleanup, so the field is no longer
+/// reachable from anywhere. Postcard's positional encoding makes this a
+/// breaking change.
+pub const SAVE_VERSION: u32 = 12;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.

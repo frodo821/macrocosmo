@@ -57,8 +57,10 @@ pub fn handle_survey_requested(
             // Round 9 PR #2 Step 4: ship unavailable means despawned or
             // missing required components — Bevy already drops the
             // `PendingAssignment` component with the entity; nothing to do.
-            // The sweeper handles the rare "ship still exists but unqueryable"
-            // case via `stale_at`.
+            // The "ship still exists but unqueryable" path is rare enough
+            // that we accept the marker leaking until the ship is despawned
+            // or the target is observed surveyed (Round 10 Bug C: removed
+            // the time-based fallback sweeper).
             continue;
         };
 
@@ -157,10 +159,10 @@ pub fn handle_survey_requested(
                 // here. The marker is the NPC's *decision memory* — it must
                 // outlive the dispatch and stay attached until the issuing
                 // empire's `KnowledgeStore` reflects the survey completion
-                // (success path) or the ship is known lost (failure path).
-                // The knowledge-driven `sweep_resolved_survey_assignments`
-                // system handles both cases; `sweep_stale_assignments`
-                // catches anything pathological via `stale_at`.
+                // (success path) or the ship is despawned (failure path).
+                // `sweep_resolved_survey_assignments` clears the marker on
+                // success once the survey fact reaches the issuer; Bevy's
+                // automatic component cleanup handles ship loss.
             }
             Err(e) => {
                 warn!("Queue: Survey failed for {}: {}", ship.name, e);
