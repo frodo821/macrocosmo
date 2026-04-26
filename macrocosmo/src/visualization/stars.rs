@@ -9,12 +9,35 @@ use crate::components::Position;
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureHitpoints};
 use crate::galaxy::{AtSystem, GalaxyConfig, Hostile, Planet, StarSystem};
 use crate::knowledge::{KnowledgeStore, SystemVisibilityMap, SystemVisibilityTier};
-use crate::player::{Empire, Player, PlayerEmpire, StationedAt};
+use crate::player::{Empire, EmpireRuler, Player, PlayerEmpire, Ruler, StationedAt};
 use crate::ship::{Ship, ShipState};
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
 
 use super::{SelectedShip, SelectedSystem};
+
+/// Bundle: viewer empire → its Ruler's stationed system. Used by
+/// `draw_galaxy_overlay` to place the capital pulse ring on the
+/// **viewer's** ruler, not whichever capital `stars.iter().find(...)`
+/// happens to return first.
+#[derive(SystemParam)]
+pub(super) struct ViewerRulerLookup<'w, 's> {
+    empire_rulers: Query<'w, 's, &'static EmpireRuler, With<Empire>>,
+    rulers_stationed: Query<'w, 's, &'static StationedAt, With<Ruler>>,
+}
+
+impl<'w, 's> ViewerRulerLookup<'w, 's> {
+    /// Resolve the system the given empire's ruler is currently
+    /// stationed at, if the chain Empire→EmpireRuler→Ruler is intact
+    /// (it always should be for any spawned empire).
+    pub(super) fn stationed_system(&self, empire: Entity) -> Option<Entity> {
+        self.empire_rulers
+            .get(empire)
+            .ok()
+            .and_then(|er| self.rulers_stationed.get(er.0).ok())
+            .map(|s| s.system)
+    }
+}
 
 /// BRP type-registration hook. The four star-visual `Component`s below
 /// are `pub(super)` (private to the visualization module), so they can
@@ -451,7 +474,6 @@ impl<'w, 's> ViewingEmpireResolver<'w, 's> {
 
 pub fn draw_galaxy_overlay(
     mut gizmos: Gizmos,
-    player_q: Query<&StationedAt, With<Player>>,
     stars: Query<(Entity, &StarSystem, &Position)>,
     view: Res<GalaxyView>,
     clock: Res<GameClock>,
@@ -477,6 +499,7 @@ pub fn draw_galaxy_overlay(
     galaxy_config: Option<Res<GalaxyConfig>>,
     hostiles: Query<(&AtSystem, Option<&crate::faction::FactionOwner>), With<Hostile>>,
     faction_relations: Res<crate::faction::FactionRelations>,
+    ruler_lookup: ViewerRulerLookup,
 ) {
     // Galaxy outline: center marker and boundary circle
     if let Some(ref config) = galaxy_config {
@@ -513,19 +536,14 @@ pub fn draw_galaxy_overlay(
     else {
         return;
     };
-    // Player ruler location: normal mode reads it from the Player-tagged
-    // Ruler. Observer mode has no Player entity; fall back to the galaxy
-    // capital so the pulse ring still lands somewhere visible.
-    let stationed_system = player_q.iter().next().map(|s| s.system).or_else(|| {
-        if viewer.is_god_view() {
-            stars
-                .iter()
-                .find(|(_, s, _)| s.is_capital)
-                .map(|(e, _, _)| e)
-        } else {
-            None
-        }
-    });
+    // Viewer's ruler location: derive from the viewer empire's Ruler
+    // (Empire→EmpireRuler→Ruler.StationedAt). #421 unified player + NPC
+    // under Ruler, so this works for both. The previous fallback used
+    // `stars.iter().find(is_capital)` which returned whichever capital
+    // appeared first in the iteration — usually a different empire's —
+    // and was the cause of the observer-mode "ruler position is wrong"
+    // bug.
+    let stationed_system = ruler_lookup.stationed_system(viewer_entity);
     let Some(stationed_system) = stationed_system else {
         return;
     };
