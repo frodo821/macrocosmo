@@ -11,7 +11,6 @@ use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::galaxy::{AtSystem, Hostile, StarSystem, SystemAttributes};
 use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
-use crate::player::{AboardShip, Player, StationedAt};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
 
@@ -23,17 +22,18 @@ use super::{Ship, ShipState};
 /// Retained as fallback for helpers/tests without ECS access.
 pub const SETTLING_DURATION_HEXADIES: i64 = 60;
 
-/// Bundled player-related queries to keep `process_settling` under Bevy's
-/// 16-parameter limit for `IntoSystemSet`.
+/// Bundled queries for `process_settling` to stay under Bevy's 16-parameter
+/// limit for `IntoSystemSet`.
 ///
-/// Round 9 PR #1 Step 3: also embeds [`FactionVantageQueries`] so callers
-/// can route facts through `record_for` without bumping into the param
-/// limit when adding the per-empire vantage queries.
+/// Round 9 PR #1 Step 3: embeds [`FactionVantageQueries`] so callers can
+/// route facts through `record_for` without bumping into the param limit.
+///
+/// Round 9 follow-up: dropped the player-only `empire_entity_q` /
+/// `player_q` / `ruler_aboard_q` fields. `process_settling` is per-faction
+/// — the settling ship's `FactionOwner` (or `Ship.owner`) drives the
+/// hostile-relations gate, not whichever empire happens to be the player.
 #[derive(SystemParam)]
 pub struct SettlementPlayerQueries<'w, 's> {
-    pub empire_entity_q: Query<'w, 's, Entity, With<crate::player::PlayerEmpire>>,
-    pub player_q: Query<'w, 's, &'static StationedAt, Without<Ship>>,
-    pub ruler_aboard_q: Query<'w, 's, &'static AboardShip, With<Player>>,
     pub vantage_q: FactionVantageQueries<'w, 's>,
 }
 
@@ -99,17 +99,35 @@ pub fn process_settling(
             };
             let sys_pos_arr = sys_pos.as_array();
 
+            // Resolve the settling ship's faction once — used both for the
+            // hostile-relations gate below AND the Core sovereignty check
+            // further down. Prefer the `FactionOwner` component; fall back
+            // to `Ship.owner = Owner::Empire(e)` for legacy/test ships.
+            let settling_faction: Option<Entity> =
+                ship_faction_owner
+                    .map(|fo| fo.0)
+                    .or_else(|| match ship.owner {
+                        crate::ship::Owner::Empire(e) => Some(e),
+                        crate::ship::Owner::Neutral => None,
+                    });
+
             // #52/#56: Check for hostile presence — cannot colonize while hostiles remain
-            // #293: Only block on hostiles the viewing empire considers
-            // aggressive. Hostiles without `FactionOwner` (tests that skip
+            // #293: Only block on hostiles the settling ship's empire
+            // considers aggressive. Pre-Round-9 this used the player empire
+            // as the viewer, which meant NPC ships could be incorrectly
+            // blocked (or wrongly permitted to settle) based on the
+            // *player's* relations with the hostile, not their own.
+            //
+            // Hostiles without `FactionOwner` (tests that skip
             // `setup_test_hostile_factions`, or pre-faction-backfill frames)
-            // default to blocking — preserves legacy behavior.
-            let viewer = player_queries.empire_entity_q.iter().next();
+            // default to blocking — preserves legacy behavior. Same applies
+            // to Neutral ships (no settling_faction) since they have no
+            // relations table to consult.
             let has_hostile = hostiles.iter().any(|(at_system, owner)| {
                 if at_system.0 != system_entity {
                     return false;
                 }
-                match (viewer, owner) {
+                match (settling_faction, owner) {
                     (Some(v), Some(o)) => faction_relations
                         .get_or_default(v, o.0)
                         .can_attack_aggressive(),
@@ -153,13 +171,6 @@ pub fn process_settling(
             // Core was destroyed mid-settle, abort and return to Docked.
             // Neutral ships (no faction) bypass the gate for backward
             // compatibility with pre-faction test setups.
-            let settling_faction: Option<Entity> =
-                ship_faction_owner
-                    .map(|fo| fo.0)
-                    .or_else(|| match ship.owner {
-                        crate::ship::Owner::Empire(e) => Some(e),
-                        crate::ship::Owner::Neutral => None,
-                    });
             if let Some(faction) = settling_faction {
                 let has_own_core = cores
                     .iter()
@@ -217,19 +228,13 @@ pub fn process_settling(
             let (num_slots, hub_building) =
                 crate::colony::hub_slots_for_new_colony(&building_registry, || planet_max);
 
-            // #297 (S-2): Resolve administrative owner for the new colony /
-            // SystemBuildings. Prefer the `FactionOwner` component on the
-            // settling ship; fall back to `Ship.owner = Owner::Empire(e)`
-            // so pre-S-2 test ships still produce an owned colony. Neutral
-            // ships spawn an un-owned colony (matches "no diplomatic
-            // identity" semantics on the ship side).
-            let new_owner: Option<Entity> =
-                ship_faction_owner
-                    .map(|fo| fo.0)
-                    .or_else(|| match ship.owner {
-                        crate::ship::Owner::Empire(e) => Some(e),
-                        crate::ship::Owner::Neutral => None,
-                    });
+            // #297 (S-2): Administrative owner for the new colony /
+            // SystemBuildings is the same `settling_faction` we resolved
+            // above (FactionOwner component, falling back to
+            // `Ship.owner = Owner::Empire(e)`). Neutral ships spawn an
+            // un-owned colony (matches "no diplomatic identity" semantics
+            // on the ship side).
+            let new_owner: Option<Entity> = settling_faction;
 
             // #280: Build slots vec with hub pre-placed at slot 0.
             let mut slots = vec![None; num_slots];

@@ -322,6 +322,153 @@ fn process_settling_neutral_ship_produces_unowned_colony() {
 }
 
 // ---------------------------------------------------------------------------
+// Round 9 follow-up: process_settling consults the *settling ship's*
+// faction relations, not the player empire's. Pre-fix, an NPC ship
+// settling at a system co-located with a hostile that the NPC was
+// neutral-friendly toward (but the player was at war with) was wrongly
+// blocked because the gate consumed `With<PlayerEmpire>` for the viewer.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn process_settling_uses_ship_faction_for_hostile_gate_not_player() {
+    use macrocosmo::faction::{
+        FactionOwner, FactionRelations, FactionView, HostileFactions, RelationState,
+    };
+
+    let mut app = test_app();
+
+    // A separate NPC empire (not the test PlayerEmpire). The test_app
+    // helper does not spawn a PlayerEmpire by default for this file —
+    // explicit empire entity is enough for `Ship.owner = Empire(npc)` and
+    // FactionOwner-based settlement.
+    let npc_empire = app
+        .world_mut()
+        .spawn((
+            macrocosmo::player::Empire { name: "NPC".into() },
+            macrocosmo::player::Faction::new("npc_faction", "NPC Faction"),
+        ))
+        .id();
+
+    let (sys, _planet) = spawn_test_system_with_planet(
+        app.world_mut(),
+        "Friendly-Hostile-Sys",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+    );
+
+    // Sovereignty: the settling faction needs a Core ship of its own at
+    // the target system (#299 S-5 safety net). Borrow the existing
+    // helper to spawn one for the NPC empire.
+    common::spawn_mock_core_ship(app.world_mut(), sys, npc_empire);
+
+    // Initialise the hostile-faction registry so the relation we override
+    // below targets a real entity.
+    {
+        let world = app.world_mut();
+        let needs_setup = {
+            let hf = world.resource::<HostileFactions>();
+            hf.space_creature.is_none()
+        };
+        if needs_setup {
+            let sc_faction = world
+                .spawn(macrocosmo::player::Faction::new(
+                    "space_creature_faction",
+                    "Space Creatures",
+                ))
+                .id();
+            let mut hf = world.resource_mut::<HostileFactions>();
+            hf.space_creature = Some(sc_faction);
+        }
+    }
+
+    // Spawn a passive hostile owned by `space_creature` faction.
+    let _hostile = common::spawn_raw_hostile(
+        app.world_mut(),
+        sys,
+        500.0,
+        500.0,
+        0.0, // strength = 0 so combat doesn't kill the colony ship
+        0.0,
+        "space_creature",
+    );
+
+    // Override the NPC↔space_creature relation to friendly Neutral so
+    // `can_attack_aggressive()` returns false from the NPC's perspective.
+    // The default `seed_npc_relations` would set standing -100; we want
+    // the explicit non-blocking case to verify the gate consults the NPC,
+    // not the player.
+    {
+        let space_creature = app
+            .world()
+            .resource::<HostileFactions>()
+            .space_creature
+            .expect("space_creature faction should be initialised");
+        let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+        rel.set(
+            npc_empire,
+            space_creature,
+            FactionView::new(RelationState::Neutral, 50.0),
+        );
+        rel.set(
+            space_creature,
+            npc_empire,
+            FactionView::new(RelationState::Neutral, 50.0),
+        );
+    }
+
+    // Spawn a colony ship owned by the NPC empire and put it in
+    // `Settling` state at this system.
+    let ship = common::spawn_test_ship(
+        app.world_mut(),
+        "NPC-Colonist",
+        "colony_ship_mk1",
+        sys,
+        [0.0, 0.0, 0.0],
+    );
+    {
+        let mut s = app.world_mut().get_mut::<Ship>(ship).unwrap();
+        s.owner = Owner::Empire(npc_empire);
+    }
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(FactionOwner(npc_empire));
+    {
+        let mut state = app.world_mut().get_mut::<ShipState>(ship).unwrap();
+        *state = ShipState::Settling {
+            system: sys,
+            planet: None,
+            started_at: 0,
+            completes_at: 1,
+        };
+    }
+
+    app.world_mut().resource_mut::<GameClock>().elapsed = 2;
+    app.update();
+
+    // Pre-fix: the gate would have used `With<PlayerEmpire>` and (since
+    // there is no player empire spawned in this test) defaulted to
+    // blocking ALL hostiles regardless of NPC relations — the colony
+    // would never spawn. Post-fix: the gate uses the NPC ship's own
+    // faction, sees the friendly relation, and lets the ship settle.
+    let colony_count = app.world_mut().query::<&Colony>().iter(app.world()).count();
+    assert_eq!(
+        colony_count, 1,
+        "NPC ship friendly toward the co-located hostile must be allowed to settle \
+         (pre-fix this used PlayerEmpire as the relations viewer, defaulting to block)"
+    );
+
+    // The colony also carries the NPC's FactionOwner (sanity check on
+    // the existing #297 path).
+    let mut q = app.world_mut().query::<(&Colony, &FactionOwner)>();
+    let (_, owner) = q
+        .iter(app.world())
+        .next()
+        .expect("the spawned colony must carry FactionOwner");
+    assert_eq!(owner.0, npc_empire);
+}
+
+// ---------------------------------------------------------------------------
 // spawn_ship — Commit 3
 // ---------------------------------------------------------------------------
 
