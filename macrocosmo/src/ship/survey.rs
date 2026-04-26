@@ -7,7 +7,7 @@ use crate::knowledge::{
     SystemKnowledge, SystemSnapshot,
 };
 use crate::physics::{distance_ly_arr, light_delay_hexadies};
-use crate::player::{Player, PlayerEmpire, StationedAt};
+use crate::player::{Empire, EmpireRuler, Player, PlayerEmpire, Ruler, StationedAt};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
@@ -130,6 +130,11 @@ pub fn process_surveys(
     mut fact_sys: FactSysParam,
     // Round 9 PR #1 Step 3: per-faction fact routing.
     vantage_q: FactionVantageQueries,
+    // Round 9: per-ship-owner auto-return target lookup. NPC ships
+    // (#428) need to return to their own empire's home system, not the
+    // player's. Resolved via Empire → EmpireRuler → Ruler.StationedAt.
+    empire_rulers: Query<&EmpireRuler, With<Empire>>,
+    rulers_stationed: Query<&StationedAt, With<Ruler>>,
 ) {
     let initial_ftl_speed_c = balance.initial_ftl_speed_c();
     let mut rng = rand::rng();
@@ -346,18 +351,37 @@ pub fn process_surveys(
                             .map(|q| q.commands.is_empty())
                             .unwrap_or(true);
                         if queue_empty {
-                            if let Some(player_sys) = player_system {
-                                if player_sys != target_system {
-                                    if let Some(ref mut queue) = cmd_queue {
-                                        queue
-                                            .commands
-                                            .push(QueuedCommand::MoveTo { system: player_sys });
-                                        info!(
-                                            "Auto-queued FTL return to player system for {}",
-                                            ship.name
-                                        );
-                                    }
-                                }
+                            // Round 9: per-ship-owner auto-return. NPC ships
+                            // (#428) return to their own empire's Ruler
+                            // stationed system, not the player's. Player
+                            // ships still resolve via the same chain
+                            // (player Empire → EmpireRuler → Ruler).
+                            let owner_home = match ship.owner {
+                                crate::ship::Owner::Empire(e) => empire_rulers
+                                    .get(e)
+                                    .ok()
+                                    .and_then(|er| rulers_stationed.get(er.0).ok())
+                                    .map(|s| s.system),
+                                crate::ship::Owner::Neutral => None,
+                            };
+                            // Legacy fallback: tests / old saves that attach
+                            // Player+StationedAt directly without the
+                            // Empire→EmpireRuler→Ruler chain still get player
+                            // auto-return. Production NPC ships resolve via
+                            // owner_home (the chain is always populated for
+                            // spawned empires).
+                            let return_target = owner_home.or(player_system);
+                            if let Some(home) = return_target
+                                && home != target_system
+                                && let Some(ref mut queue) = cmd_queue
+                            {
+                                queue
+                                    .commands
+                                    .push(QueuedCommand::MoveTo { system: home });
+                                info!(
+                                    "Auto-queued FTL return to home system for {}",
+                                    ship.name
+                                );
                             }
                         }
                     }
