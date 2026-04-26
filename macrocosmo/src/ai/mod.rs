@@ -43,6 +43,7 @@ pub mod command_outbox;
 pub mod convert;
 #[cfg(feature = "ai-log")]
 pub mod debug_log;
+pub mod decomposition_rules;
 pub mod emit;
 pub mod emitters;
 pub mod npc_decision;
