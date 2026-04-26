@@ -49,7 +49,7 @@ use macrocosmo::knowledge::{
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{Owner, Ship, ShipState};
 
-use common::{advance_time, spawn_test_ship, spawn_test_system, test_app};
+use common::{advance_time, spawn_test_ruler, spawn_test_ship, spawn_test_system, test_app};
 
 /// Spawn a fresh AI-controlled empire with two scout ships at a shared
 /// home and `n_targets` distinct unsurveyed-but-catalogued frontier
@@ -87,6 +87,14 @@ fn setup_surveyors(
         .id();
 
     let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+
+    // Round 9 PR #3: AiCommandOutbox needs an `Empire → EmpireRuler →
+    // Ruler` chain to resolve the issuer's origin position for the
+    // light-speed arrival plan; without it the dispatcher drops every
+    // command with a `warn!`. Spawn a Ruler stationed at home so the
+    // origin resolves to `[0,0,0]` and survey commands flow through to
+    // `drain_ai_commands` after their light-speed window elapses.
+    spawn_test_ruler(app.world_mut(), empire, home);
 
     // Spread frontiers along the unit circle in XY at ~0.5 LY so they're
     // close enough that a sublight leg from home reaches them in a
@@ -173,9 +181,18 @@ fn setup_surveyors(
 }
 
 /// Drive the AI long enough for `npc_decision_tick` to emit
-/// `survey_system` commands, `drain_ai_commands` to translate them into
-/// `SurveyRequested` events + `PendingAssignment` markers, and
-/// `handle_survey_requested` to absorb the events.
+/// `survey_system` commands, `dispatch_ai_pending_commands` to land them
+/// in `AiCommandOutbox`, the light-speed window to elapse,
+/// `process_ai_pending_commands` to release them, `drain_ai_commands` to
+/// translate them into `SurveyRequested` events + `PendingAssignment`
+/// markers, and `handle_survey_requested` to absorb the events.
+///
+/// Round 9 PR #3: the survey targets sit ~0.5 ly from home so AI
+/// commands incur a ~30-hexadies light-speed delay through the new
+/// `AiCommandOutbox` shim. Callers that want to observe post-dispatch
+/// state must therefore drive at least `light_delay(0.5 ly) ≈ 30`
+/// hexadies past the AI emit tick. We default `ticks` to a value that
+/// always clears that window for the local test setup.
 fn drive_ai(app: &mut App, ticks: i64) {
     use macrocosmo::ship::command_events::SurveyRequested;
     // Required by Bevy's message reader bookkeeping in headless tests.
@@ -186,6 +203,11 @@ fn drive_ai(app: &mut App, ticks: i64) {
         advance_time(app, 1);
     }
 }
+
+/// Light-speed delay for the test frontier distance (~0.5 ly), in
+/// hexadies. Plus a few-tick margin for `npc_decision_tick` cadence
+/// + dispatch / process scheduling boundaries.
+const SURVEY_DISPATCH_LIGHT_DELAY_TICKS: i64 = 35;
 
 fn collect_pending_for(app: &mut App, empire: Entity) -> Vec<(Entity, Entity)> {
     let mut q = app.world_mut().query::<(Entity, &PendingAssignment)>();
@@ -216,7 +238,10 @@ fn ai_does_not_double_assign_two_ships_to_same_survey_target() {
     let mut app = test_app();
     let (empire, scouts, _home, frontiers) = setup_surveyors(&mut app, 2, 2);
 
-    drive_ai(&mut app, 5);
+    // Round 9 PR #3: AI commands are now light-speed-delayed through
+    // `AiCommandOutbox`. Drive past the courier window so the markers
+    // are actually attached by the time we read them.
+    drive_ai(&mut app, SURVEY_DISPATCH_LIGHT_DELAY_TICKS);
 
     let pending = collect_pending_for(&mut app, empire);
 
@@ -278,8 +303,9 @@ fn ai_second_tick_does_not_re_emit_when_all_ships_and_targets_are_pending() {
     let mut app = test_app();
     let (empire, _scouts, _home, _frontiers) = setup_surveyors(&mut app, 2, 2);
 
-    // First batch of ticks: AI dispatches surveyors.
-    drive_ai(&mut app, 5);
+    // First batch of ticks: AI dispatches surveyors. Round 9 PR #3:
+    // includes the light-speed delay window for `AiCommandOutbox`.
+    drive_ai(&mut app, SURVEY_DISPATCH_LIGHT_DELAY_TICKS);
     let first_pending = collect_pending_for(&mut app, empire);
     assert!(
         !first_pending.is_empty(),

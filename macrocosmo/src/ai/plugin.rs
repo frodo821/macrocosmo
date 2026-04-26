@@ -104,6 +104,10 @@ impl Plugin for AiPlugin {
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .init_resource::<DeclaredFactionSlots>()
             .init_resource::<super::orchestrator_runtime::OrchestratorRegistry>()
+            // Round 9 PR #3: AI command light-speed delay shim. Outbox
+            // resource is initialised here so save/load round-trips see
+            // a consistent type-registered Resource even on fresh runs.
+            .init_resource::<super::command_outbox::AiCommandOutbox>()
             .add_systems(Startup, schema::declare_all)
             // #439 Phase 3: `declare_foreign_slots_for_existing_factions`
             // must run after NPC empires have spawned, so it moves with
@@ -172,7 +176,26 @@ impl Plugin for AiPlugin {
                     .in_set(AiTickSet::Reason)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
+            // Round 9 PR #3: AI command light-speed delay shim. The
+            // dispatcher runs at the **end** of `Reason` (after both
+            // producers `npc_decision_tick` and `run_orchestrators`)
+            // so it sees every command emitted this tick before the
+            // bus reaches `CommandDrain`. The processor runs at the
+            // **start** of `CommandDrain`, before `drain_ai_commands`,
+            // and re-pushes mature outbox entries via
+            // `bus.push_command_already_dispatched` so the consumer
+            // sees them at the right tick.
+            .add_systems(
+                Update,
+                super::command_outbox::dispatch_ai_pending_commands
+                    .after(super::orchestrator_runtime::run_orchestrators)
+                    .in_set(AiTickSet::Reason)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
             // Command consumer — drains AI commands and converts to ECS actions.
+            // `process_ai_pending_commands` runs first so mature outbox
+            // entries are released to the bus before `drain_ai_commands`
+            // pulls from it.
             // `process_ruler_boarding` runs after `drain_ai_commands` to handle
             // deferred ruler boarding (needs mutable Ship access).
             // `sweep_stale_assignments` runs alongside the consumer in the
@@ -182,7 +205,9 @@ impl Plugin for AiPlugin {
             .add_systems(
                 Update,
                 (
-                    super::command_consumer::drain_ai_commands,
+                    super::command_outbox::process_ai_pending_commands,
+                    super::command_consumer::drain_ai_commands
+                        .after(super::command_outbox::process_ai_pending_commands),
                     super::command_consumer::process_ruler_boarding
                         .after(super::command_consumer::drain_ai_commands),
                     super::assignments::sweep_stale_assignments,

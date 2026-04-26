@@ -261,7 +261,7 @@ pub fn command_targets_system(kind: &str) -> bool {
 /// the `warn! + drop` behaviour of malformed origin lookups.
 pub fn destination_pos_from_target_system(
     cmd: &Command,
-    star_positions: &Query<&Position, With<StarSystem>>,
+    star_positions: &Query<&Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
 ) -> Option<[f64; 3]> {
     use macrocosmo_ai::CommandValue;
     let sys_ref = match cmd.params.get("target_system") {
@@ -287,7 +287,7 @@ pub fn destination_pos_from_target_system(
 pub fn resolve_destination_pos(
     cmd: &Command,
     issuer_empire: Entity,
-    star_positions: &Query<&Position, With<StarSystem>>,
+    star_positions: &Query<&Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
     home_systems: &Query<&HomeSystem>,
     factions: &Query<&Faction, With<Empire>>,
     home_assignments: Option<&HomeSystemAssignments>,
@@ -377,6 +377,170 @@ pub fn split_outbox_at(
         }
     }
     (mature, remaining)
+}
+
+// ---------------------------------------------------------------------------
+// Bevy systems
+// ---------------------------------------------------------------------------
+
+/// SystemParam bundle for the dispatch system. Bundled because the
+/// system already needs eight other params plus the bus + outbox + clock,
+/// which would push it past Bevy's 16-param limit if expanded inline.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct DispatchParams<'w, 's> {
+    /// Empire entities — used to resolve a `FactionId` back to its
+    /// `Entity` so we can look up the Ruler and capital.
+    pub empires: Query<'w, 's, Entity, With<Empire>>,
+    /// `Empire → Ruler` chain.
+    pub empire_rulers: Query<'w, 's, &'static EmpireRuler, With<Empire>>,
+    /// Ruler location: `StationedAt` for system-bound, `AboardShip`
+    /// for ship-bound. Both are read; `resolve_ruler_position` picks
+    /// the live one.
+    pub rulers:
+        Query<'w, 's, (Option<&'static StationedAt>, Option<&'static AboardShip>), With<Ruler>>,
+    /// World-space positions for any entity that may serve as a Ruler
+    /// reference (StarSystem for stationed, ship entity for aboard).
+    pub positions: Query<'w, 's, &'static Position>,
+    /// Capital fallback chain — `HomeSystem` Component on the empire.
+    pub home_systems: Query<'w, 's, &'static HomeSystem>,
+    /// Capital fallback chain — `Faction.id` keyed lookup into
+    /// `HomeSystemAssignments`.
+    pub factions: Query<'w, 's, &'static Faction, With<Empire>>,
+    /// Capital fallback chain — last-resort scan for the first
+    /// `is_capital` system in the galaxy. The query is constrained
+    /// to `&Position` so it doesn't conflict with mutable Position
+    /// queries elsewhere in the schedule.
+    pub star_systems: Query<'w, 's, (Entity, &'static StarSystem)>,
+    /// Per-system positions used to read the destination half of the
+    /// arrival plan when a command carries a `target_system` param.
+    pub star_positions:
+        Query<'w, 's, &'static Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
+    /// Resource fallback for capital resolution.
+    pub home_assignments: Option<Res<'w, HomeSystemAssignments>>,
+    /// Per-empire `CommsParams` — fed into `compute_fact_arrival` so
+    /// the AI courier delay reflects the *issuing* empire's tech /
+    /// modifier bonuses (matches Round 9 PR #1's pending TODO #4
+    /// note about per-empire CommsParams in fact arrival).
+    pub empire_comms: Query<'w, 's, &'static CommsParams, With<Empire>>,
+    /// Active relay network snapshot for the relay-aware planner.
+    /// `Option` because the resource is created by `KnowledgePlugin`,
+    /// which not every test app installs (`ai_integration` and friends
+    /// build a minimal `App` to test bus wiring in isolation). When
+    /// absent the dispatcher treats the relay set as empty — the
+    /// arrival plan falls back to pure light-speed direct path.
+    pub relay_network: Option<Res<'w, crate::knowledge::RelayNetwork>>,
+}
+
+/// End-of-`Reason` system: drain the AI bus's pending command queue,
+/// compute each command's `arrives_at` from the issuing empire's
+/// Ruler position to the command's destination, and stow the entries
+/// into [`AiCommandOutbox`].
+///
+/// Commands whose origin or destination cannot be resolved are
+/// dropped with a `warn!`. This matches the "soft assertion" tone
+/// of the rest of the AI integration layer — a malformed command
+/// indicates an upstream bug, not a recoverable runtime condition.
+pub fn dispatch_ai_pending_commands(
+    mut bus: ResMut<crate::ai::plugin::AiBusResource>,
+    mut outbox: ResMut<AiCommandOutbox>,
+    clock: Res<crate::time_system::GameClock>,
+    params: DispatchParams,
+) {
+    let now = clock.elapsed;
+    let drained = bus.drain_commands();
+    if drained.is_empty() {
+        return;
+    }
+
+    // Relay set defaults to empty when no `RelayNetwork` resource is
+    // installed (minimal headless test apps); `compute_fact_arrival`
+    // then falls back to pure light-speed direct path.
+    let relays_owned: Vec<crate::knowledge::RelaySnapshot> = params
+        .relay_network
+        .as_deref()
+        .map(|n| n.relays.clone())
+        .unwrap_or_default();
+    let relays: &[crate::knowledge::RelaySnapshot] = &relays_owned;
+
+    for cmd in drained {
+        let issuer = cmd.issuer;
+        let Some(empire_entity) = find_empire_for_faction_id(issuer, &params.empires) else {
+            warn!(
+                "AI command outbox: dropping command kind={} from unknown faction {:?}",
+                cmd.kind.as_str(),
+                issuer,
+            );
+            continue;
+        };
+
+        let Some(origin_pos) = resolve_ruler_position(
+            empire_entity,
+            &params.empire_rulers,
+            &params.rulers,
+            &params.positions,
+        ) else {
+            warn!(
+                "AI command outbox: dropping command kind={} — could not resolve Ruler position for empire {:?}",
+                cmd.kind.as_str(),
+                empire_entity,
+            );
+            continue;
+        };
+
+        let Some(destination_pos) = resolve_destination_pos(
+            &cmd,
+            empire_entity,
+            &params.star_positions,
+            &params.home_systems,
+            &params.factions,
+            params.home_assignments.as_deref(),
+            &params.star_systems,
+        ) else {
+            warn!(
+                "AI command outbox: dropping command kind={} — could not resolve destination for empire {:?}",
+                cmd.kind.as_str(),
+                empire_entity,
+            );
+            continue;
+        };
+
+        // Per-empire CommsParams: matches the per-faction
+        // generalization arc of Round 9 PR #1. Falls back to the
+        // default-bonus CommsParams when an empire spawns without
+        // one (legacy / observer-mode edge cases).
+        let comms = params
+            .empire_comms
+            .get(empire_entity)
+            .cloned()
+            .unwrap_or_default();
+
+        let pending = build_pending_command(cmd, now, origin_pos, destination_pos, relays, &comms);
+        outbox.entries.push(pending);
+    }
+}
+
+/// Start-of-`CommandDrain` system: walk the outbox, partition into
+/// mature and pending entries via [`split_outbox_at`], and re-push
+/// the mature commands to the bus via
+/// [`AiBus::push_command_already_dispatched`](macrocosmo_ai::AiBus::push_command_already_dispatched).
+/// `drain_ai_commands` then consumes them in the same tick.
+pub fn process_ai_pending_commands(
+    mut bus: ResMut<crate::ai::plugin::AiBusResource>,
+    mut outbox: ResMut<AiCommandOutbox>,
+    clock: Res<crate::time_system::GameClock>,
+) {
+    let now = clock.elapsed;
+    if outbox.entries.is_empty() {
+        return;
+    }
+
+    let entries = std::mem::take(&mut outbox.entries);
+    let (mature, remaining) = split_outbox_at(now, entries);
+    outbox.entries = remaining;
+
+    for cmd in mature {
+        bus.push_command_already_dispatched(cmd);
+    }
 }
 
 #[cfg(test)]

@@ -10,8 +10,8 @@ use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{Owner, Ship, ShipState};
 
 use common::{
-    advance_time, spawn_mock_core_ship, spawn_raw_hostile, spawn_test_colony, spawn_test_ship,
-    spawn_test_system, test_app,
+    advance_time, spawn_mock_core_ship, spawn_raw_hostile, spawn_test_colony, spawn_test_ruler,
+    spawn_test_ship, spawn_test_system, test_app,
 };
 
 /// With hostiles present and enough ships, the AI should issue attack_target
@@ -186,6 +186,13 @@ fn ai_dispatches_surveyor_to_unsurveyed_systems() {
         false,
     );
 
+    // Round 9 PR #3: AiCommandOutbox needs an `Empire → EmpireRuler →
+    // Ruler` chain to resolve the issuer's origin position; without a
+    // Ruler the dispatcher drops every command. Place the Ruler at home
+    // so the survey command's destination (frontier) carries the full
+    // ~3-ly light-speed delay.
+    spawn_test_ruler(app.world_mut(), empire, home);
+
     // Seed the visibility map so both systems are at least Catalogued —
     // this matches what `initialize_visibility_tiers` does at game start.
     app.world_mut()
@@ -221,7 +228,11 @@ fn ai_dispatches_surveyor_to_unsurveyed_systems() {
         .resource_mut::<Messages<SurveyRequested>>()
         .update();
 
-    for _ in 0..5 {
+    // Round 9 PR #3: 3 ly between home and frontier means a survey
+    // command emitted at tick 0 only reaches `drain_ai_commands` after
+    // ~180 hexadies of light-speed delay. Drive enough ticks to clear
+    // that window before reading post-dispatch state.
+    for _ in 0..200 {
         advance_time(&mut app, 1);
     }
 
@@ -358,7 +369,26 @@ fn ai_builds_shipyard_when_core_present_and_no_shipyard() {
     );
     spawn_mock_core_ship(app.world_mut(), home, empire);
 
-    for _ in 0..6 {
+    // Round 9 PR #3: AiCommandOutbox needs a Ruler to resolve the
+    // issuer's origin position. `build_structure` is a spatial-less
+    // command that resolves to the empire's capital — tag the empire
+    // with `HomeSystem(home)` explicitly so the capital fallback
+    // chain finds it (the test helper spawns systems with
+    // `is_capital = false`, defeating the global is_capital scan
+    // that the outbox uses as a last resort). Then station the
+    // Ruler at home so origin == destination and the command lands
+    // with zero light-speed delay.
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+    spawn_test_ruler(app.world_mut(), empire, home);
+
+    // A few extra ticks beyond the original 6 to absorb the AI tick
+    // cadence, schema-declare boundary, and the dispatch ↔ process
+    // schedule split — origin == destination means light delay is 0
+    // but the schedule still needs one full Update for the dispatch
+    // and one for the process to release the entry.
+    for _ in 0..15 {
         advance_time(&mut app, 1);
     }
 

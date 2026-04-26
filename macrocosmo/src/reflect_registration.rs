@@ -47,6 +47,8 @@ pub fn register_all_types(app: &mut App) {
     app.register_type::<crate::ai::npc_decision::AiControlled>();
     app.register_type::<crate::ai::npc_decision::AiPlayerMode>();
     app.register_type::<crate::ai::npc_decision::LastAiDecisionTick>();
+    // crate::ai::command_outbox
+    app.register_type::<crate::ai::command_outbox::AiCommandOutbox>();
     // crate::ai::orchestrator_runtime
     app.register_type::<crate::ai::orchestrator_runtime::OrchestratorRegistry>();
     // crate::ai::plugin
