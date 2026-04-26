@@ -23,7 +23,8 @@ use bevy::prelude::*;
 use macrocosmo_ai::{Command, CommandValue};
 
 use crate::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
-use crate::ai::convert::{to_ai_faction, to_ai_system};
+use crate::ai::command_outbox::AiCommandOutbox;
+use crate::ai::convert::{from_ai_system, to_ai_faction, to_ai_system};
 use crate::ai::plugin::AiBusResource;
 use crate::ai::schema::ids::{command as cmd_ids, metric};
 use crate::knowledge::KnowledgeStore;
@@ -470,6 +471,14 @@ pub fn npc_decision_tick(
     // we don't double-assign two surveyors to the same target across
     // overlapping decision ticks. Marker is per-faction.
     pending_assignments: Query<(Entity, &PendingAssignment)>,
+    // Round 11 Bug A: also dedup against commands sitting in the
+    // light-speed outbox — between `bus.emit_command` (here) and
+    // handler insert (`drain_ai_commands` → `PendingAssignment`),
+    // a `survey_system` / `colonize_system` may live in
+    // `AiCommandOutbox.entries` for hundreds of hexadies. Without
+    // this, `mid_cadence=2` re-fires every other tick onto the same
+    // target. See `tests/ai_npc_outbox_dedup.rs` for the regression.
+    outbox: Res<AiCommandOutbox>,
     // #299 / #446 short-term loop fix: only systems hosting one of the
     // empire's own Cores are colonizable. Without this filter the AI
     // re-emits `colonize_system` every tick for systems where the
@@ -507,6 +516,63 @@ pub fn npc_decision_tick(
             .insert(at.0);
     }
 
+    // Round 11 Bug A: precompute per-empire "in-flight survey /
+    // colonize targets" from the light-speed outbox. The handler
+    // insert path (`PendingAssignment` marker) only covers commands
+    // that have already arrived; a command emitted on tick N with a
+    // 30-hex light delay sits in `outbox.entries` until tick N+30,
+    // and without this scan a `mid_cadence=2` `npc_decision_tick`
+    // would happily re-fire onto the same target every other tick
+    // for the entire delay window. The scan is a single pass over
+    // outbox entries (typically small — only commands currently in
+    // flight), so the cost is bounded and amortised across all
+    // empires in the loop below.
+    let survey_kind = cmd_ids::survey_system();
+    let colonize_kind = cmd_ids::colonize_system();
+    let mut outbox_survey_per_empire: std::collections::HashMap<
+        Entity,
+        std::collections::HashSet<Entity>,
+    > = std::collections::HashMap::new();
+    let mut outbox_colonize_per_empire: std::collections::HashMap<
+        Entity,
+        std::collections::HashSet<Entity>,
+    > = std::collections::HashMap::new();
+    // Both maps are mutated only inside the next block (single pass over
+    // outbox.entries); the empire loop below reads via shared `&` only.
+    if !outbox.entries.is_empty() {
+        // Build issuer FactionId → empire Entity once (faction_id
+        // encodes only `Entity::index()`, see `to_ai_faction`); then
+        // each entry is an O(1) hashmap lookup instead of an O(empires)
+        // scan.
+        let mut faction_to_empire: std::collections::HashMap<macrocosmo_ai::FactionId, Entity> =
+            std::collections::HashMap::new();
+        for (entity, _, _, _) in &npcs {
+            faction_to_empire.insert(to_ai_faction(entity), entity);
+        }
+        for entry in &outbox.entries {
+            let cmd = &entry.command;
+            let Some(&empire_entity) = faction_to_empire.get(&cmd.issuer) else {
+                continue;
+            };
+            let target_set = if cmd.kind.as_str() == survey_kind.as_str() {
+                Some(&mut outbox_survey_per_empire)
+            } else if cmd.kind.as_str() == colonize_kind.as_str() {
+                Some(&mut outbox_colonize_per_empire)
+            } else {
+                None
+            };
+            let Some(target_set) = target_set else {
+                continue;
+            };
+            if let Some(macrocosmo_ai::CommandValue::System(s)) = cmd.params.get("target_system") {
+                target_set
+                    .entry(empire_entity)
+                    .or_default()
+                    .insert(from_ai_system(*s));
+            }
+        }
+    }
+
     for (entity, faction, knowledge, vis_map_opt) in &npcs {
         // Round 9 PR #2 Step 4: pre-collect this faction's in-flight
         // assignments so we can filter both ship and target candidates.
@@ -530,6 +596,18 @@ pub fn npc_decision_tick(
                 }
             }
         }
+        // Round 11 Bug A: union in outbox-resident in-flight commands
+        // (handler hasn't inserted markers yet because the light-speed
+        // window hasn't elapsed). Covers both decision-tick paths the
+        // handler-side dedup misses.
+        if let Some(set) = outbox_survey_per_empire.get(&entity) {
+            pending_survey_targets.extend(set.iter().copied());
+        }
+        let pending_colonize_targets: std::collections::HashSet<Entity> =
+            outbox_colonize_per_empire
+                .get(&entity)
+                .cloned()
+                .unwrap_or_default();
 
         // Extract system intel. Hostile / colonizable signals still come
         // from the KnowledgeStore (those require detailed snapshots),
@@ -565,6 +643,11 @@ pub fn npc_decision_tick(
                 if !k.data.colonized
                     && !k.data.has_hostile
                     && owned_core_systems.contains(&k.system)
+                    // Round 11 Bug A: skip targets with a `colonize_system`
+                    // already in the light-speed outbox — without this,
+                    // the policy re-emits onto the same target every
+                    // mid_cadence tick until the command lands.
+                    && !pending_colonize_targets.contains(&k.system)
                 {
                     colonizable_systems.push(k.system);
                 }
