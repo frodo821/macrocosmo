@@ -186,6 +186,7 @@ impl Plugin for AiPlugin {
                     super::command_consumer::process_ruler_boarding
                         .after(super::command_consumer::drain_ai_commands),
                     super::assignments::sweep_stale_assignments,
+                    super::assignments::sweep_resolved_survey_assignments,
                 )
                     .in_set(AiTickSet::CommandDrain)
                     .run_if(in_state(crate::game_state::GameState::InGame)),

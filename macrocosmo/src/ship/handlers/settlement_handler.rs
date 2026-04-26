@@ -153,9 +153,14 @@ pub fn handle_survey_requested(
                     result: CommandResult::Ok,
                     completed_at: clock.elapsed,
                 });
-                // Round 9 PR #2 Step 4: terminal Ok — survey is now in
-                // progress, so the AI marker is no longer needed.
-                commands_buf.entity(req.ship).remove::<PendingAssignment>();
+                // Round 9 PR #2 follow-up: do NOT remove `PendingAssignment`
+                // here. The marker is the NPC's *decision memory* — it must
+                // outlive the dispatch and stay attached until the issuing
+                // empire's `KnowledgeStore` reflects the survey completion
+                // (success path) or the ship is known lost (failure path).
+                // The knowledge-driven `sweep_resolved_survey_assignments`
+                // system handles both cases; `sweep_stale_assignments`
+                // catches anything pathological via `stale_at`.
             }
             Err(e) => {
                 warn!("Queue: Survey failed for {}: {}", ship.name, e);

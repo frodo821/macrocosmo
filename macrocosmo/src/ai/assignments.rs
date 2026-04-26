@@ -17,10 +17,22 @@
 //!    faction's surveyors.
 //! 2. Ships that are themselves already carrying a `PendingAssignment`.
 //!
-//! The marker is removed by [`crate::ship::handlers::handle_survey_requested`]
-//! on terminal results (Ok / Rejected) and swept after [`PendingAssignment::stale_at`]
-//! by [`sweep_stale_assignments`] in case a handler never fires (ship
-//! despawned mid-flight, etc.).
+//! The marker is the NPC's **decision memory** — it lives from the moment
+//! `handle_survey_system` dispatches the command until the issuing empire
+//! actually *knows* the assignment is resolved. Removal paths:
+//!
+//! 1. `handle_survey_requested` Rejected (start_survey failed at handler
+//!    time, e.g. ship gone) — immediate remove (emit failed; AI is free
+//!    to re-emit next tick).
+//! 2. [`sweep_resolved_survey_assignments`] — every tick, checks the
+//!    issuing empire's `KnowledgeStore`. If the target system is now
+//!    `surveyed = true` from that empire's perspective (success arrived
+//!    via fact propagation) → remove. Future extension: also remove
+//!    when the ship is `KnowledgeFact::ShipDestroyed` from that
+//!    perspective ("we now know we lost the scout").
+//! 3. [`sweep_stale_assignments`] fallback — `stale_at` past
+//!    (`SURVEY_ASSIGNMENT_LIFETIME` covers worst-case light-speed
+//!    propagation across the galaxy + survey duration + slack).
 //!
 //! The marker is **per faction** — when observer mode runs multiple
 //! factions, each faction only sees its own pending dispatches.
@@ -84,13 +96,20 @@ impl PendingAssignment {
     }
 }
 
-/// Default lifetime granted to a freshly-issued `survey_system`
-/// `PendingAssignment`. Chosen to cover worst-case courier delay
-/// (commands traverse light-speed) plus the survey itself
-/// (`survey_duration_base = 30` hexadies in the default balance) plus
-/// slack for hostile re-routing. If a handler resolves earlier — and it
-/// almost always does — the marker is removed cleanly.
-pub const SURVEY_ASSIGNMENT_LIFETIME: i64 = 90;
+/// Fallback lifetime for a `survey_system` `PendingAssignment` —
+/// pathological pruning only. Knowledge-driven removal via
+/// [`sweep_resolved_survey_assignments`] handles the common path
+/// (success-known / failure-known via `KnowledgeStore`). This stale
+/// window must cover **worst-case** light-speed propagation
+/// (issuer Ruler → survey target → back to issuer Ruler) plus the
+/// survey duration plus slack so that a marker in flight does not
+/// get prematurely garbage-collected if the success fact happens to
+/// propagate slowly.
+///
+/// 200 hexadies ≈ 3.3 game years — generous enough for a ~30 ly
+/// galaxy radius (light delay ≈ 30 hexadies one-way, 60 round-trip)
+/// + 30-hexadies survey + 110 slack.
+pub const SURVEY_ASSIGNMENT_LIFETIME: i64 = 200;
 
 /// Sweep `PendingAssignment` markers whose `stale_at` tick has passed.
 /// Bevy's despawn already drops the component for vanished ships; this
@@ -105,6 +124,47 @@ pub fn sweep_stale_assignments(
     for (entity, pa) in &q {
         if now > pa.stale_at {
             commands.entity(entity).remove::<PendingAssignment>();
+        }
+    }
+}
+
+/// Knowledge-driven cleanup: remove a `PendingAssignment` once the issuing
+/// empire's `KnowledgeStore` reflects the survey completion. This is the
+/// AI memory dissolving as the empire *learns* the result, not when the
+/// handler fires (which is too eager — the success fact still has to
+/// propagate at light speed back to the issuing Ruler). Without this, NPC
+/// AI re-emits the same target for the entire propagation window and the
+/// surveyor loops every 30 hexadies.
+///
+/// Failure path (ship lost to hostiles before completion) is currently
+/// handled by Bevy's automatic component cleanup on `despawn` plus the
+/// `sweep_stale_assignments` fallback. A future extension may also drop
+/// the marker when `KnowledgeStore` records a `ShipDestroyed` fact for
+/// the carrying ship — then the NPC explicitly knows "scout was lost"
+/// and can re-emit immediately rather than waiting `stale_at`.
+pub fn sweep_resolved_survey_assignments(
+    mut commands: Commands,
+    assignments: Query<(Entity, &PendingAssignment)>,
+    knowledge: Query<&crate::knowledge::KnowledgeStore>,
+) {
+    for (ship_entity, pa) in &assignments {
+        if !matches!(pa.kind, AssignmentKind::Survey) {
+            continue;
+        }
+        let target = match pa.target {
+            AssignmentTarget::System(t) => t,
+        };
+        let Ok(store) = knowledge.get(pa.faction) else {
+            continue;
+        };
+        if store
+            .get(target)
+            .map(|sk| sk.data.surveyed)
+            .unwrap_or(false)
+        {
+            commands
+                .entity(ship_entity)
+                .remove::<PendingAssignment>();
         }
     }
 }
