@@ -39,6 +39,7 @@
 pub mod assignments;
 pub mod combat_projection;
 pub mod command_consumer;
+pub mod command_outbox;
 pub mod convert;
 #[cfg(feature = "ai-log")]
 pub mod debug_log;
