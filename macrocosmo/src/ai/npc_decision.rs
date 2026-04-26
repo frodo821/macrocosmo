@@ -470,6 +470,16 @@ pub fn npc_decision_tick(
     // we don't double-assign two surveyors to the same target across
     // overlapping decision ticks. Marker is per-faction.
     pending_assignments: Query<(Entity, &PendingAssignment)>,
+    // #299 / #446 short-term loop fix: only systems hosting one of the
+    // empire's own Cores are colonizable. Without this filter the AI
+    // re-emits `colonize_system` every tick for systems where the
+    // settling handler will reject the order on Core sovereignty grounds.
+    // Long-term plan (#446 / #447): give the AI explicit `deploy_core`
+    // commands and let the Short layer decompose colonize → deploy + colonize.
+    core_ships: Query<
+        (&crate::galaxy::AtSystem, &crate::faction::FactionOwner),
+        With<crate::ship::CoreShip>,
+    >,
     mut policy: Local<SimpleNpcPolicy>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
@@ -480,6 +490,22 @@ pub fn npc_decision_tick(
         return;
     }
     last_tick.0 = now;
+
+    // #299 / #446: precompute per-empire "systems with our own Core"
+    // before the empire loop. Used to filter `colonizable_systems` —
+    // without this gate, NPCs re-emit `colonize_system` every tick for
+    // targets that the settling handler will reject on Core sovereignty
+    // grounds (Bug 4 in handoff doc).
+    let mut core_systems_per_empire: std::collections::HashMap<
+        Entity,
+        std::collections::HashSet<Entity>,
+    > = std::collections::HashMap::new();
+    for (at, owner) in &core_ships {
+        core_systems_per_empire
+            .entry(owner.0)
+            .or_default()
+            .insert(at.0);
+    }
 
     for (entity, faction, knowledge, vis_map_opt) in &npcs {
         // Round 9 PR #2 Step 4: pre-collect this faction's in-flight
@@ -514,13 +540,23 @@ pub fn npc_decision_tick(
         let mut hostile_systems = Vec::new();
         let mut colonizable_systems = Vec::new();
         let mut surveyed_ids: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+        // #299 / #446 short-term: limit colonization candidates to
+        // systems where this empire already has a Core deployed. Without
+        // an empty set this collapses to "no colonization possible" —
+        // matching the settling handler's reject behavior, so the AI
+        // stops looping on impossible orders. Once #446 lands and the AI
+        // can issue `deploy_core`, this gate falls away naturally.
+        let empty_core_set: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+        let owned_core_systems = core_systems_per_empire
+            .get(&entity)
+            .unwrap_or(&empty_core_set);
         for (_, k) in knowledge.iter() {
             if k.data.has_hostile {
                 hostile_systems.push(k.system);
             }
             if k.data.surveyed {
                 surveyed_ids.insert(k.system);
-                if !k.data.colonized {
+                if !k.data.colonized && owned_core_systems.contains(&k.system) {
                     colonizable_systems.push(k.system);
                 }
             }
