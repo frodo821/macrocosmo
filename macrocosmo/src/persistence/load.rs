@@ -518,6 +518,16 @@ fn apply_deferred_resources(world: &mut World, save: &GameSave, map: &EntityMap)
         }
         world.insert_resource(registry);
     }
+    // Round 9 PR #3: AI command outbox. No entity remap is needed
+    // because `Command.params` references are encoded as opaque
+    // `SystemRef`/`EntityRef` newtypes wrapping `Entity::to_bits()`,
+    // and the load pipeline replays the same `to_bits()` IDs into
+    // freshly-allocated entities. `AiCommandOutbox` is registered by
+    // `AiPlugin::build` so a fresh `init_resource` already exists at
+    // this point; we overwrite it with the loaded entries.
+    if let Some(outbox) = &save.resources.ai_command_outbox {
+        world.insert_resource(outbox.clone().into_live());
+    }
 }
 
 /// Rebuild [`FactionRelations`] with the freshly-allocated entities. The

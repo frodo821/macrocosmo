@@ -91,7 +91,11 @@ use super::savebag::*;
 /// version bump.
 /// Round 9 PR #2 Step 4: added `pending_assignment` field to
 /// `SavedComponentBag` (mirror of `crate::ai::assignments::PendingAssignment`).
-pub const SAVE_VERSION: u32 = 10;
+/// Round 9 PR #3: added `ai_command_outbox` field to `SavedResources`
+/// (mirror of `crate::ai::command_outbox::AiCommandOutbox`) so AI
+/// commands in flight at save time reload with their light-speed
+/// delay still ticking.
+pub const SAVE_VERSION: u32 = 11;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -149,6 +153,13 @@ pub struct SavedResources {
     /// #409: Ships destroyed but whose destruction info hasn't reached the player yet.
     #[serde(default)]
     pub destroyed_ship_registry: Option<Vec<SavedDestroyedShipRecord>>,
+    /// Round 9 PR #3: AI commands in flight at save time. The field is
+    /// `#[serde(default)]` so saves predating this field round-trip to
+    /// an empty outbox on load — equivalent to "every in-flight AI
+    /// order was lost mid-courier," which is acceptable for the
+    /// upgrade path.
+    #[serde(default)]
+    pub ai_command_outbox: Option<SavedAiCommandOutbox>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +293,9 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
     let event_log = world.get_resource::<EventLog>();
     let notifications = world.get_resource::<NotificationQueue>();
     let destroyed_registry = world.get_resource::<DestroyedShipRegistry>();
+    // Round 9 PR #3: persist in-flight AI commands so light-speed delays
+    // survive save/load round-trips.
+    let ai_outbox = world.get_resource::<crate::ai::command_outbox::AiCommandOutbox>();
 
     Ok(SavedResources {
         game_clock_elapsed: clock.map(|c| c.elapsed).unwrap_or(0),
@@ -337,6 +351,7 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
                 })
                 .collect()
         }),
+        ai_command_outbox: ai_outbox.map(SavedAiCommandOutbox::from_live),
     })
 }
 

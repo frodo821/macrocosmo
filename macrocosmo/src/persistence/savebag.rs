@@ -4603,6 +4603,113 @@ impl SavedDestroyedShipRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Round 9 PR #3: AiCommandOutbox + PendingAiCommand
+// ---------------------------------------------------------------------------
+
+/// Wire format for one [`PendingAiCommand`](crate::ai::command_outbox::PendingAiCommand).
+///
+/// `Command` carries an `AHashMap` of params with non-deterministic
+/// iteration order. We round-trip through `macrocosmo_ai::SerializedCommand`
+/// (a `BTreeMap` mirror) so postcard's encoded bytes stay stable across
+/// runs — important for `tests/fixtures/minimal_game.bin` byte-identity.
+///
+/// `target_system` references inside command params survive the
+/// `Command → SerializedCommand → Command` round trip already (it's
+/// just a map key/value transcode); they don't need an extra
+/// `EntityMap` remap because the raw `Entity::to_bits()` value is
+/// what `SystemRef`/`EntityRef` wrap, and the load pipeline replays
+/// the same `to_bits()` IDs into freshly-allocated entities. If a
+/// spawned `Entity` ever drifts from its save id this assumption
+/// breaks; the save pipeline today asserts the equivalence by
+/// using `Entity::to_bits()` as the save id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPendingAiCommand {
+    pub command: macrocosmo_ai::SerializedCommand,
+    pub arrives_at: i64,
+    pub sent_at: i64,
+    pub origin_pos: [f64; 3],
+    pub destination_pos: Option<[f64; 3]>,
+    pub source_tag: u8,
+}
+
+/// `ObservationSource` → wire `u8`. Mirrors the layout used elsewhere
+/// in the savebag for compact enum encoding.
+fn observation_source_to_tag(s: crate::knowledge::ObservationSource) -> u8 {
+    match s {
+        crate::knowledge::ObservationSource::Direct => 0,
+        crate::knowledge::ObservationSource::Relay => 1,
+        crate::knowledge::ObservationSource::Scout => 2,
+        crate::knowledge::ObservationSource::Stale => 3,
+    }
+}
+
+fn observation_source_from_tag(t: u8) -> crate::knowledge::ObservationSource {
+    match t {
+        1 => crate::knowledge::ObservationSource::Relay,
+        2 => crate::knowledge::ObservationSource::Scout,
+        3 => crate::knowledge::ObservationSource::Stale,
+        // `Direct` covers tag 0 and any unknown tag — defensive against
+        // future enum additions or load-time corruption.
+        _ => crate::knowledge::ObservationSource::Direct,
+    }
+}
+
+impl SavedPendingAiCommand {
+    pub fn from_live(v: &crate::ai::command_outbox::PendingAiCommand) -> Self {
+        Self {
+            command: v.command.clone().into(),
+            arrives_at: v.arrives_at,
+            sent_at: v.sent_at,
+            origin_pos: v.origin_pos,
+            destination_pos: v.destination_pos,
+            source_tag: observation_source_to_tag(v.source),
+        }
+    }
+
+    pub fn into_live(self) -> crate::ai::command_outbox::PendingAiCommand {
+        crate::ai::command_outbox::PendingAiCommand {
+            command: self.command.into(),
+            arrives_at: self.arrives_at,
+            sent_at: self.sent_at,
+            origin_pos: self.origin_pos,
+            destination_pos: self.destination_pos,
+            source: observation_source_from_tag(self.source_tag),
+        }
+    }
+}
+
+/// Wire format for [`AiCommandOutbox`](crate::ai::command_outbox::AiCommandOutbox).
+/// A flat `Vec<SavedPendingAiCommand>` is enough — the resource has no
+/// other state and the entries' relative order is the FIFO release
+/// order so we preserve it as-stored.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedAiCommandOutbox {
+    pub entries: Vec<SavedPendingAiCommand>,
+}
+
+impl SavedAiCommandOutbox {
+    pub fn from_live(v: &crate::ai::command_outbox::AiCommandOutbox) -> Self {
+        Self {
+            entries: v
+                .entries
+                .iter()
+                .map(SavedPendingAiCommand::from_live)
+                .collect(),
+        }
+    }
+
+    pub fn into_live(self) -> crate::ai::command_outbox::AiCommandOutbox {
+        crate::ai::command_outbox::AiCommandOutbox {
+            entries: self
+                .entries
+                .into_iter()
+                .map(SavedPendingAiCommand::into_live)
+                .collect(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SavedComponentBag (Phase A + Phase B)
 // ---------------------------------------------------------------------------
 
@@ -4852,5 +4959,81 @@ mod tests {
         };
         let focus_back = SavedRemoteCommand::from(&focus).into_live(&map);
         assert_eq!(format!("{:?}", focus), format!("{:?}", focus_back));
+    }
+
+    #[test]
+    fn ai_command_outbox_postcard_roundtrip() {
+        // End-to-end roundtrip through postcard: builds an outbox with
+        // two heterogeneous entries (one spatial, one capital-bound),
+        // encodes via `SavedAiCommandOutbox`, decodes, and checks every
+        // observable field. The test pins the wire format so a future
+        // change to either `Command` (in macrocosmo-ai) or the shim
+        // here triggers a CI failure rather than a silent loss of
+        // in-flight AI orders across save/load.
+        use crate::ai::command_outbox::{AiCommandOutbox, PendingAiCommand};
+        use crate::knowledge::ObservationSource;
+        use macrocosmo_ai::{Command, CommandKindId, CommandValue, FactionId, SystemRef};
+
+        let cmd_survey = Command::new(CommandKindId::from("survey_system"), FactionId(7), 100)
+            .with_priority(0.5)
+            .with_param(
+                "target_system",
+                CommandValue::System(SystemRef(0xDEAD_BEEF_C0DE_F00D)),
+            )
+            .with_param("ship_count", CommandValue::I64(1));
+
+        let cmd_research = Command::new(CommandKindId::from("research_focus"), FactionId(7), 110);
+
+        let live = AiCommandOutbox {
+            entries: vec![
+                PendingAiCommand {
+                    command: cmd_survey.clone(),
+                    arrives_at: 130,
+                    sent_at: 100,
+                    origin_pos: [0.0, 0.0, 0.0],
+                    destination_pos: Some([3.0, 0.0, 0.0]),
+                    source: ObservationSource::Direct,
+                },
+                PendingAiCommand {
+                    command: cmd_research.clone(),
+                    arrives_at: 110,
+                    sent_at: 110,
+                    origin_pos: [0.0, 0.0, 0.0],
+                    destination_pos: Some([0.0, 0.0, 0.0]),
+                    source: ObservationSource::Relay,
+                },
+            ],
+        };
+
+        let saved = SavedAiCommandOutbox::from_live(&live);
+        let bytes = postcard::to_stdvec(&saved).expect("postcard encode");
+        let decoded: SavedAiCommandOutbox = postcard::from_bytes(&bytes).expect("postcard decode");
+        let restored = decoded.into_live();
+
+        assert_eq!(restored.entries.len(), 2);
+
+        // Entry 0: survey_system spatial command.
+        let e0 = &restored.entries[0];
+        assert_eq!(e0.command.kind.as_str(), "survey_system");
+        assert_eq!(e0.command.issuer, FactionId(7));
+        assert_eq!(e0.command.priority, 0.5);
+        assert_eq!(e0.arrives_at, 130);
+        assert_eq!(e0.sent_at, 100);
+        assert_eq!(e0.origin_pos, [0.0, 0.0, 0.0]);
+        assert_eq!(e0.destination_pos, Some([3.0, 0.0, 0.0]));
+        assert_eq!(e0.source, ObservationSource::Direct);
+        // Param map round-trips faithfully through SerializedCommand.
+        match e0.command.params.get("target_system") {
+            Some(CommandValue::System(SystemRef(bits))) => {
+                assert_eq!(*bits, 0xDEAD_BEEF_C0DE_F00D)
+            }
+            other => panic!("expected SystemRef param; got {other:?}"),
+        }
+
+        // Entry 1: research_focus capital-bound command.
+        let e1 = &restored.entries[1];
+        assert_eq!(e1.command.kind.as_str(), "research_focus");
+        assert_eq!(e1.arrives_at, 110);
+        assert_eq!(e1.source, ObservationSource::Relay);
     }
 }

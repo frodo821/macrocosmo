@@ -361,6 +361,7 @@ fn test_save_load_preserves_scripts_version_mismatch_warns() {
             event_log: None,
             notification_queue: None,
             destroyed_ship_registry: None,
+            ai_command_outbox: None,
         },
         entities: Vec::new(),
     };
