@@ -185,6 +185,40 @@ impl AiBus {
         self.commands.drain()
     }
 
+    /// Re-enqueue a command that has already been dispatched once and is
+    /// being released back to the bus from an external delay queue (e.g.
+    /// the game's `AiCommandOutbox` light-speed shim).
+    ///
+    /// Semantically identical to [`emit_command`] in terms of bookkeeping
+    /// (the command lands in the same `pending` list and will be drained
+    /// by the next [`drain_commands`] call). The separate entry point
+    /// exists so the caller's intent is unambiguous: "this command was
+    /// produced by an upstream layer at an earlier tick, held back to
+    /// model courier / light-speed delay, and is now being released to
+    /// the consumer for application this tick."
+    ///
+    /// Concretely the game-side flow is:
+    ///
+    /// 1. Producer (`npc_decision_tick`, `run_orchestrators`, …) calls
+    ///    [`emit_command`] in `AiTickSet::Reason`.
+    /// 2. A `dispatch_ai_pending_commands` system at the end of `Reason`
+    ///    drains those commands and stows them in the game's outbox
+    ///    Resource together with a computed `arrives_at`.
+    /// 3. A `process_ai_pending_commands` system at the start of
+    ///    `CommandDrain` releases mature outbox entries back to the bus
+    ///    via this method, so `drain_ai_commands` (which only knows
+    ///    about the bus) sees them at exactly the right tick.
+    ///
+    /// The command kind is **not** re-validated against the declared
+    /// command specs — the producer-side `emit_command` already accepted
+    /// (or rejected) it, and re-validating here would either spam
+    /// warnings on legitimate re-pushes if the spec changed or silently
+    /// drop in-flight commands across save/load boundaries. The bus
+    /// stays neutral on what the outbox is doing.
+    pub fn push_command_already_dispatched(&mut self, cmd: Command) {
+        self.commands.pending.push(cmd);
+    }
+
     /// Non-draining peek at the pending command queue.
     pub fn pending_commands(&self) -> &[Command] {
         &self.commands.pending
@@ -424,6 +458,59 @@ mod tests {
             FactionId(1),
             0,
         ));
+        assert!(bus.drain_commands().is_empty());
+    }
+
+    #[test]
+    fn push_command_already_dispatched_lands_in_pending_queue() {
+        // Re-pushing a previously-dispatched command via the outbox-aware
+        // entry point must put it on the same pending list as `emit_command`,
+        // so the next `drain_commands` call returns it.
+        let mut bus = AiBus::new();
+        let kind = CommandKindId::from("survey_system");
+        bus.declare_command(kind.clone(), CommandSpec::new("survey"));
+        let cmd = Command::new(kind.clone(), FactionId(1), 100).with_priority(0.5);
+        bus.push_command_already_dispatched(cmd.clone());
+        let drained = bus.drain_commands();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].kind, kind);
+        assert_eq!(drained[0].at, 100);
+        assert_eq!(drained[0].priority, 0.5);
+    }
+
+    #[test]
+    fn push_command_already_dispatched_skips_kind_validation() {
+        // The outbox replay path must not re-check the declared command
+        // catalogue: a command may be in flight across a schema change
+        // (or simply never-declared in tests), and dropping it here would
+        // silently lose work that the producer already committed to.
+        let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let kind = CommandKindId::from("never_declared");
+        let cmd = Command::new(kind.clone(), FactionId(1), 0);
+        bus.push_command_already_dispatched(cmd);
+        let drained = bus.drain_commands();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].kind, kind);
+    }
+
+    #[test]
+    fn emit_command_and_already_dispatched_share_pending_queue() {
+        // Mixed producers (a freshly-emitted command + a replayed one
+        // from the outbox) must both surface in a single `drain_commands`
+        // call, in push order.
+        let mut bus = AiBus::new();
+        let k1 = CommandKindId::from("survey_system");
+        let k2 = CommandKindId::from("attack_target");
+        bus.declare_command(k1.clone(), CommandSpec::new("s"));
+        bus.declare_command(k2.clone(), CommandSpec::new("a"));
+
+        bus.emit_command(Command::new(k1.clone(), FactionId(1), 10));
+        bus.push_command_already_dispatched(Command::new(k2.clone(), FactionId(2), 20));
+
+        let drained = bus.drain_commands();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].kind, k1);
+        assert_eq!(drained[1].kind, k2);
         assert!(bus.drain_commands().is_empty());
     }
 
