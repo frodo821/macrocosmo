@@ -375,13 +375,8 @@ pub fn process_surveys(
                                 && home != target_system
                                 && let Some(ref mut queue) = cmd_queue
                             {
-                                queue
-                                    .commands
-                                    .push(QueuedCommand::MoveTo { system: home });
-                                info!(
-                                    "Auto-queued FTL return to home system for {}",
-                                    ship.name
-                                );
+                                queue.commands.push(QueuedCommand::MoveTo { system: home });
+                                info!("Auto-queued FTL return to home system for {}", ship.name);
                             }
                         }
                     }

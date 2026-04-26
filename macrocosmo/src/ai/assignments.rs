@@ -162,9 +162,7 @@ pub fn sweep_resolved_survey_assignments(
             .map(|sk| sk.data.surveyed)
             .unwrap_or(false)
         {
-            commands
-                .entity(ship_entity)
-                .remove::<PendingAssignment>();
+            commands.entity(ship_entity).remove::<PendingAssignment>();
         }
     }
 }
