@@ -27,6 +27,7 @@ use macrocosmo_ai::{
 };
 
 use crate::ai::convert::to_ai_faction;
+use crate::ai::decomposition_rules::build_default_registry;
 use crate::ai::plugin::AiBusResource;
 use crate::player::{Empire, PlayerEmpire};
 use crate::scripting::victory_api::parse_ai_victory_condition;
@@ -73,7 +74,14 @@ impl FactionOrchestrator {
             long_cadence: 5,
             mid_cadence: 2,
             ..Default::default()
-        });
+        })
+        // Install game-side decomposition rules so the short layer
+        // expands `colonize_system` / `deploy_deliverable` macros
+        // into primitive commands the consumer pipeline understands.
+        // Without this attach, the short layer falls back to the
+        // legacy "emit campaign id verbatim" path and macros reach
+        // the consumer undecomposed.
+        .with_decomposition(build_default_registry());
 
         // 2-hexadies courier delay — tiny, but non-zero so the
         // demo exercises the in-flight intent queue.
@@ -257,5 +265,31 @@ mod tests {
         let reg = OrchestratorRegistry::default();
         assert!(reg.by_entity.is_empty());
         assert_eq!(reg.by_entity.len(), 0);
+    }
+
+    #[test]
+    fn new_demo_attaches_decomposition_registry() {
+        // F4: the orchestrator must carry a decomposition registry so
+        // the short layer can expand `colonize_system` / `deploy_deliverable`
+        // macros into primitive commands. Without this attach, the
+        // short layer falls back to legacy behavior and the consumer
+        // pipeline never sees the decomposed primitives.
+        let fo = FactionOrchestrator::new_demo(FactionId(0));
+        assert!(
+            fo.orchestrator.decomposition.is_some(),
+            "FactionOrchestrator::new_demo must install a decomposition registry",
+        );
+        // Sanity: both expected macros are looked up successfully.
+        let reg = fo.orchestrator.decomposition.as_deref().unwrap();
+        assert!(
+            reg.lookup(&crate::ai::schema::ids::command::colonize_system())
+                .is_some(),
+            "registry should have colonize_system rule",
+        );
+        assert!(
+            reg.lookup(&crate::ai::schema::ids::command::deploy_deliverable())
+                .is_some(),
+            "registry should have deploy_deliverable rule",
+        );
     }
 }

@@ -97,7 +97,9 @@ pub use projection::{
     project_metric, volatility,
 };
 pub use retention::Retention;
-pub use short_term_default::{CampaignReactiveShort, ShortTermDefaultConfig};
+pub use short_term_default::{
+    CampaignReactiveShort, PreconditionGate, ShortTermDefaultConfig, always_allow_gate,
+};
 pub use spec::{CommandSpec, EvidenceSpec, MetricSpec, MetricType};
 pub use standing::{
     EvidenceContribution, EvidenceKindConfig, PerceivedStanding, StandingConfig, StandingLevel,
