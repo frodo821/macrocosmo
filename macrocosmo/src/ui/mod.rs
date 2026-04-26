@@ -1318,6 +1318,7 @@ fn draw_main_panels_system(
             refit.system_entity,
             &mut ships_query,
             &mut world.stockpiles,
+            &world.sys_mods,
             &registries.design_registry,
             &registries.hull_registry,
             &registries.module_registry,
@@ -1360,6 +1361,7 @@ fn draw_main_panels_system(
                     sys,
                     &mut ships_query,
                     &mut world.stockpiles,
+                    &world.sys_mods,
                     &registries.design_registry,
                     &registries.hull_registry,
                     &registries.module_registry,
@@ -2271,9 +2273,10 @@ fn draw_map_tooltips(
 /// Apply the current registered design to a single ship: deduct the refit
 /// cost from the system's stockpile and put the ship into the `Refitting`
 /// state. No-op if the ship is not eligible (already in sync, design or
-/// hull missing, not docked at the given system, etc.).
+/// hull missing, not docked at the given system, system lacks a shipyard,
+/// etc.).
 #[allow(clippy::too_many_arguments)]
-fn apply_design_refit(
+pub fn apply_design_refit(
     ship_entity: Entity,
     system_entity: Entity,
     ships_query: &mut Query<
@@ -2288,6 +2291,7 @@ fn apply_design_refit(
         Without<SlotAssignment>,
     >,
     stockpiles: &mut Query<(&mut ResourceStockpile, Option<&ResourceCapacity>), With<StarSystem>>,
+    sys_mods_q: &Query<&'static crate::galaxy::SystemModifiers>,
     design_registry: &ShipDesignRegistry,
     hull_registry: &HullRegistry,
     module_registry: &ModuleRegistry,
@@ -2299,6 +2303,16 @@ fn apply_design_refit(
     // Must be docked at the given system (not in transit, not refitting).
     let docked_here = matches!(&*state, ShipState::InSystem { system } if *system == system_entity);
     if !docked_here {
+        return;
+    }
+    // Refit requires a shipyard at the system (matches new-build gating in
+    // `building_queue.rs:425-432`). Without this, players could refit at
+    // any colony — inconsistent with construction rules.
+    let has_shipyard = sys_mods_q
+        .get(system_entity)
+        .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+        .unwrap_or(false);
+    if !has_shipyard {
         return;
     }
     let Some(design) = design_registry.get(&ship.design_id) else {
