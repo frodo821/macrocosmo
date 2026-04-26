@@ -241,6 +241,15 @@ pub(super) fn star_color(star: &StarSystem, colonized: bool) -> Color {
 // #17: Enhanced update_star_colors with KnowledgeStore-based alpha fading
 // #40: Also handles zoom-responsive sizing and glow color updates
 // #176: Uses KnowledgeStore for remote system colonized status
+//
+// Round 9 follow-up: viewer-aware. In normal play the viewer is the
+// `PlayerEmpire`; in observer mode it's the empire selected via
+// `ObserverView` (top-bar selector). The "local system" gate (which
+// drops the knowledge filter for ground truth) follows the viewer's
+// Ruler.StationedAt rather than the player's, matching
+// `draw_galaxy_overlay`. Without this, observer mode rendered remote
+// star data through a stale player-only knowledge store and the
+// "local" highlight tracked the wrong empire.
 pub fn update_star_colors(
     stars: Query<(Entity, &StarSystem)>,
     mut visuals: Query<
@@ -253,28 +262,31 @@ pub fn update_star_colors(
         Without<StarLabel>,
     >,
     mut labels: Query<(&StarVisual, &mut TextColor), With<StarLabel>>,
-    empire_q: Query<(&KnowledgeStore, Option<&SystemVisibilityMap>), With<PlayerEmpire>>,
+    empire_q: Query<(Entity, &KnowledgeStore, Option<&SystemVisibilityMap>), With<Empire>>,
     colonies: Query<&Colony>,
     planets: Query<&Planet>,
     clock: Res<GameClock>,
     camera_q: Query<&Projection, With<Camera2d>>,
-    player_q: Query<&StationedAt, With<Player>>,
-    // See `spawn_star_visuals` for the observer-mode rationale. In god
-    // view we skip the knowledge gate entirely and drive visuals off the
-    // live `StarSystem` / colony state.
-    observer_mode: Res<crate::observer::ObserverMode>,
+    viewer: ViewingEmpireResolver,
+    ruler_lookup: ViewerRulerLookup,
 ) {
     crate::prof_span!("update_star_colors");
-    let god_view = observer_mode.enabled;
-    let empire_row = empire_q.single().ok();
+    let god_view = viewer.is_god_view();
+    // Resolve the viewing empire's KnowledgeStore + SystemVisibilityMap.
+    // In observer mode without a selected empire we still fall through
+    // and render ground truth (god view).
+    let viewer_entity = viewer.resolve();
+    let empire_row = viewer_entity.and_then(|e| empire_q.get(e).ok());
     if empire_row.is_none() && !god_view {
-        // Normal-mode: no PlayerEmpire → nothing to update. Observer mode
-        // still needs to fall through to refresh colors from ground truth.
+        // Normal-mode: no viewable empire → nothing to update. Observer
+        // mode falls through to refresh colors from ground truth.
         return;
     }
-    let knowledge = empire_row.map(|(k, _)| k);
-    let vis_map_opt = empire_row.and_then(|(_, v)| v);
-    let player_system = player_q.iter().next().map(|s| s.system);
+    let knowledge = empire_row.map(|(_, k, _)| k);
+    let vis_map_opt = empire_row.and_then(|(_, _, v)| v);
+    // The "local" system gets ground-truth visuals (skip the knowledge
+    // gate). For the viewer this is their Ruler's stationed system.
+    let player_system = viewer_entity.and_then(|e| ruler_lookup.stationed_system(e));
 
     // Build colonized systems set for local system only (real-time)
     let local_colonized: std::collections::HashSet<Entity> =
