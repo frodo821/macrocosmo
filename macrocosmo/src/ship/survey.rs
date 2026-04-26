@@ -468,7 +468,9 @@ pub fn process_surveys(
 }
 
 /// #103: Deliver survey results when an FTL ship carrying survey data docks
-/// at the player's StationedAt system.
+/// at its owner empire's home system (Ruler stationed system). Player ships
+/// fall back to the legacy `Player`/`StationedAt` chain when no Empire→Ruler
+/// path is available.
 #[allow(clippy::too_many_arguments)]
 pub fn deliver_survey_results(
     mut commands: Commands,
@@ -476,26 +478,17 @@ pub fn deliver_survey_results(
     ships: Query<(Entity, &Ship, &ShipState, &SurveyData)>,
     mut systems: Query<(&mut StarSystem, &crate::components::Position), Without<Ship>>,
     player_q: Query<&StationedAt, With<Player>>,
-    mut empire_q: Query<&mut KnowledgeStore, With<PlayerEmpire>>,
+    // Round 9: every empire (player + NPC) — the docking ship's owner
+    // gets the surveyed knowledge updated, not always PlayerEmpire.
+    mut empire_stores: Query<&mut KnowledgeStore, With<Empire>>,
+    empire_rulers: Query<&EmpireRuler, With<Empire>>,
+    rulers_stationed: Query<&StationedAt, With<Ruler>>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
     // Round 9 PR #1 Step 3: per-faction routing.
     vantage_q: FactionVantageQueries,
 ) {
-    let player_system = match player_q.iter().next() {
-        Some(s) => s.system,
-        None => return,
-    };
-
-    // #249: Player vantage — delivered at player's docked system, so origin
-    // matches player_pos → local path in `record_fact_or_local`.
-    // Round 9 PR #1 Step 3: also collect every other empire's vantage so
-    // the FTL-delivery banner does not skip NPC observers entirely. NPC
-    // empires already see the surveyed flag via the light-speed path in
-    // `process_surveys`, but routing through `record_for` keeps every
-    // empire's `PendingFactQueue` aware of the formal `SurveyComplete`
-    // fact (with its own arrival time per vantage).
-    let player_pos: Option<[f64; 3]> = systems.get(player_system).ok().map(|(_, p)| p.as_array());
+    let player_system_legacy = player_q.iter().next().map(|s| s.system);
     let vantages = vantage_q.collect();
 
     for (ship_entity, ship, state, survey_data) in &ships {
@@ -503,14 +496,35 @@ pub fn deliver_survey_results(
             continue;
         };
 
-        if *docked_at != player_system {
+        // Resolve ship's home system via owner empire → Ruler → StationedAt.
+        // Legacy tests / saves without the chain fall back to player_system.
+        let owner_empire = match ship.owner {
+            crate::ship::Owner::Empire(e) => Some(e),
+            crate::ship::Owner::Neutral => None,
+        };
+        let owner_home = owner_empire.and_then(|e| {
+            empire_rulers
+                .get(e)
+                .ok()
+                .and_then(|er| rulers_stationed.get(er.0).ok())
+                .map(|s| s.system)
+        });
+        let Some(home) = owner_home.or(player_system_legacy) else {
+            continue;
+        };
+        if *docked_at != home {
             continue;
         }
 
-        // Ship is docked at the player's system — deliver results
+        // Ship is docked at its owner's home — deliver results.
         let target = survey_data.target_system;
 
-        // Mark the target system as surveyed and update KnowledgeStore
+        // Mark the target system as surveyed (global ground truth) and
+        // update the owner empire's KnowledgeStore directly. This is
+        // immediate propagation: the ship physically carried the data
+        // home, no light-speed delay applies for the owner's perspective.
+        // Other empires still receive the SurveyComplete fact via the
+        // record_for path below with light-speed delay from `home`.
         if let Ok((mut star_system, pos)) = systems.get_mut(target) {
             star_system.surveyed = true;
             info!(
@@ -518,8 +532,9 @@ pub fn deliver_survey_results(
                 survey_data.system_name, ship.name
             );
 
-            // Update KnowledgeStore
-            if let Ok(mut store) = empire_q.single_mut() {
+            if let Some(e) = owner_empire
+                && let Ok(mut store) = empire_stores.get_mut(e)
+            {
                 store.update(SystemKnowledge {
                     system: target,
                     observed_at: survey_data.surveyed_at,
@@ -548,14 +563,15 @@ pub fn deliver_survey_results(
             description: desc.clone(),
             related_system: Some(target),
         });
-        if let Some(pp) = player_pos {
+        let home_pos: Option<[f64; 3]> = systems.get(home).ok().map(|(_, p)| p.as_array());
+        if let Some(hp) = home_pos {
             let fact = KnowledgeFact::SurveyComplete {
                 event_id: Some(event_id),
                 system: target,
                 system_name: survey_data.system_name.clone(),
                 detail: desc,
             };
-            fact_sys.record_for(fact, &vantages, pp, clock.elapsed);
+            fact_sys.record_for(fact, &vantages, hp, clock.elapsed);
         }
 
         // #127: If anomaly was discovered, fire AnomalyDiscovered event on delivery
@@ -572,14 +588,14 @@ pub fn deliver_survey_results(
                 description: desc.clone(),
                 related_system: Some(target),
             });
-            if let Some(pp) = player_pos {
+            if let Some(hp) = home_pos {
                 let fact = KnowledgeFact::AnomalyDiscovered {
                     event_id: Some(event_id),
                     system: target,
                     anomaly_id: anomaly_id.clone(),
                     detail: desc,
                 };
-                fact_sys.record_for(fact, &vantages, pp, clock.elapsed);
+                fact_sys.record_for(fact, &vantages, hp, clock.elapsed);
             }
         }
 
