@@ -293,6 +293,43 @@ pub mod command {
         CommandKindId::from("survey_system")
     }
 
+    // Deliverable family (#446) — primitives + macro for the
+    // `colonize_system` decomposition plan in #447 / #448.
+    //
+    // - `build_deliverable` (primitive): queue a deliverable in a colony's
+    //   `BuildingQueue`. The colony already supports `BuildKind::Deliverable`
+    //   completions; this command kind is the AI-bus-side handle.
+    // - `load_deliverable` (primitive): board a finished deliverable from a
+    //   system's `DeliverableStockpile` onto a courier ship. Bridges to the
+    //   existing `LoadDeliverableRequested` ECS event.
+    // - `unload_deliverable` (primitive): the actual deploy action — drop a
+    //   loaded deliverable into world space at the courier's current
+    //   position. Bridges to the existing `DeployDeliverableRequested`
+    //   event.
+    // - `deploy_deliverable` (macro): expanded by the Short layer's
+    //   decomposition rules into [build → load → move → unload], or a
+    //   six-step variant when no courier ship exists yet.
+    // - `colonize_planet` (primitive): the bare planet-settlement step that
+    //   the existing `colonize_system` macro decomposes into, after
+    //   `deploy_deliverable(infra_core)` has succeeded. Bridges to the
+    //   existing `ColonizeRequested` event with an explicit `planet`
+    //   parameter.
+    pub fn build_deliverable() -> CommandKindId {
+        CommandKindId::from("build_deliverable")
+    }
+    pub fn load_deliverable() -> CommandKindId {
+        CommandKindId::from("load_deliverable")
+    }
+    pub fn unload_deliverable() -> CommandKindId {
+        CommandKindId::from("unload_deliverable")
+    }
+    pub fn deploy_deliverable() -> CommandKindId {
+        CommandKindId::from("deploy_deliverable")
+    }
+    pub fn colonize_planet() -> CommandKindId {
+        CommandKindId::from("colonize_planet")
+    }
+
     // Research
     pub fn research_focus() -> CommandKindId {
         CommandKindId::from("research_focus")

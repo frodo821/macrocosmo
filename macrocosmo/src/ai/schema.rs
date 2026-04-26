@@ -552,6 +552,33 @@ fn declare_commands(bus: &mut AiBus) {
         CommandSpec::new("dispatch a surveyor to an unexplored system"),
     );
 
+    // Deliverable family (#446) — primitives + macros for the
+    // colonize_system decomposition plan. See `ids::command` for
+    // semantics. `deploy_deliverable` is a *macro* command kind: the
+    // Short layer's decomposition registry expands it into a sequence
+    // of primitives. `colonize_planet` is the post-deploy primitive
+    // that the existing `colonize_system` macro lowers into.
+    bus.declare_command(
+        c::build_deliverable(),
+        CommandSpec::new("queue a deliverable for construction at a colony"),
+    );
+    bus.declare_command(
+        c::load_deliverable(),
+        CommandSpec::new("board a deliverable from a system stockpile onto a courier ship"),
+    );
+    bus.declare_command(
+        c::unload_deliverable(),
+        CommandSpec::new("deploy a loaded deliverable into world space at the courier's position"),
+    );
+    bus.declare_command(
+        c::deploy_deliverable(),
+        CommandSpec::new("macro: build → load → move → unload a deliverable to a target"),
+    );
+    bus.declare_command(
+        c::colonize_planet(),
+        CommandSpec::new("settle a specific planet using a colony ship at its parent system"),
+    );
+
     // Research
     bus.declare_command(
         c::research_focus(),
@@ -739,6 +766,20 @@ mod tests {
         assert!(bus.has_command_kind(&ids::command::colonize_system()));
         assert!(bus.has_command_kind(&ids::command::research_focus()));
         assert!(bus.has_command_kind(&ids::command::declare_war()));
+    }
+
+    /// #446: deliverable family (build / load / unload / deploy macro)
+    /// + colonize_planet primitive must all be declared so the bus-side
+    /// emit / decomposition logic in #447 / #448 finds the topics.
+    #[test]
+    fn deliverable_family_commands_are_declared() {
+        let a = app();
+        let bus = a.world().resource::<AiBusResource>();
+        assert!(bus.has_command_kind(&ids::command::build_deliverable()));
+        assert!(bus.has_command_kind(&ids::command::load_deliverable()));
+        assert!(bus.has_command_kind(&ids::command::unload_deliverable()));
+        assert!(bus.has_command_kind(&ids::command::deploy_deliverable()));
+        assert!(bus.has_command_kind(&ids::command::colonize_planet()));
     }
 
     #[test]
