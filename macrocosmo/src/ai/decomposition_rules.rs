@@ -370,6 +370,70 @@ mod tests {
         );
     }
 
+    /// End-to-end gameplay-value smoke test (F4): drive the
+    /// `colonize_system` macro through `CampaignReactiveShort` against
+    /// the production registry and observe the primitives that come
+    /// out, tick by tick. Covers the full chain
+    /// build → load → reposition → unload → colonize_planet.
+    #[test]
+    fn colonize_system_macro_decomposes_full_chain_via_short_agent() {
+        use macrocosmo_ai::{
+            AiBus, CampaignReactiveShort, ShortContext, ShortTermAgent, ShortTermInput, WarningMode,
+        };
+
+        let bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let registry = build_default_registry();
+        let mut agent = CampaignReactiveShort::new();
+        let mut plan = macrocosmo_ai::PlanState::default();
+
+        // Active campaign whose ObjectiveId == "colonize_system" so
+        // `make_command` synthesizes a macro the registry intercepts.
+        // Note: `Campaign::new` defaults to `Pending`, but the short
+        // agent only iterates `active_campaigns` — we pass the
+        // already-active list directly so we don't need a state
+        // transition here.
+        let mut camp = macrocosmo_ai::campaign::Campaign::new(
+            macrocosmo_ai::ObjectiveId::from("colonize_system"),
+            0,
+        );
+        camp.state = macrocosmo_ai::campaign::CampaignState::Active;
+        let active = [&camp];
+
+        let mut emitted = Vec::new();
+        for tick in 0..5 {
+            let out = agent.tick(ShortTermInput {
+                bus: &bus,
+                faction: faction(),
+                context: ShortContext::from("faction"),
+                active_campaigns: &active,
+                now: tick,
+                plan_state: &mut plan,
+                decomp: Some(&registry),
+            });
+            for cmd in out.commands {
+                emitted.push(cmd.kind.clone());
+            }
+        }
+
+        // The macro chain must surface as 5 primitives in this order:
+        // build → load → reposition → unload → colonize_planet.
+        // Note `make_command` doesn't carry `target_system`, so the
+        // expansion runs on a bare macro — the kinds are still the
+        // contract we test against (param transfer is covered by the
+        // unit tests above).
+        let expected = [
+            cmd_ids::build_deliverable(),
+            cmd_ids::load_deliverable(),
+            cmd_ids::reposition(),
+            cmd_ids::unload_deliverable(),
+            cmd_ids::colonize_planet(),
+        ];
+        assert_eq!(emitted.len(), 5, "expected 5 primitives, got {emitted:?}");
+        for (i, want) in expected.iter().enumerate() {
+            assert_eq!(&emitted[i], want, "primitive #{i} mismatch");
+        }
+    }
+
     #[test]
     fn colonize_system_children_inherit_issuer_priority_target() {
         let mut macro_cmd = make_colonize_system_macro();
