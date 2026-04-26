@@ -430,7 +430,6 @@ pub fn test_app() -> App {
     app.insert_resource(macrocosmo::notifications::NotificationQueue::new());
     // advance_game_time is a no-op in tests (we manually set clock.elapsed)
     // but must be registered because other systems use .after(advance_game_time)
-    app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
     // #268: Courier command relay resources.
     app.init_resource::<macrocosmo::communication::AppliedCommandIds>();
     app.init_resource::<macrocosmo::communication::NextRemoteCommandId>();
@@ -805,8 +804,6 @@ pub fn full_test_app() -> App {
     // --- Technology resources (only LastResearchTick remains as a global resource) ---
     app.insert_resource(technology::LastResearchTick(0));
 
-    // --- Routing resource ---
-    app.init_resource::<macrocosmo::ship::routing::RouteCalculationsPending>();
     // #268: Courier command relay resources.
     app.init_resource::<macrocosmo::communication::AppliedCommandIds>();
     app.init_resource::<macrocosmo::communication::NextRemoteCommandId>();

@@ -46,7 +46,6 @@ use macrocosmo::knowledge::{
 };
 use macrocosmo::notifications::NotificationQueue;
 use macrocosmo::persistence::SaveableMarker;
-use macrocosmo::ship::routing::RouteCalculationsPending;
 use macrocosmo::technology::LastResearchTick;
 use macrocosmo::time_system::{GameClock, GameSpeed};
 
@@ -118,7 +117,6 @@ fn seed_tick_resources(world: &mut World) {
 
     world.insert_resource(NextRemoteCommandId(99));
     world.insert_resource(AppliedCommandIds::default());
-    world.insert_resource(RouteCalculationsPending::default());
 
     world.insert_resource(FactionRelations::default());
     world.insert_resource(HostileFactions::default());

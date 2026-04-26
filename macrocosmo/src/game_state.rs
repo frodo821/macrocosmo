@@ -180,9 +180,6 @@ pub fn reset_ingame_resources(world: &mut World) {
     world.insert_resource(crate::communication::NextRemoteCommandId::default());
     world.insert_resource(crate::communication::AppliedCommandIds::default());
 
-    // --- Ship routing (async task bookkeeping) ---
-    world.insert_resource(crate::ship::routing::RouteCalculationsPending::default());
-
     // --- Faction diplomacy state ---
     world.insert_resource(crate::faction::FactionRelations::default());
     world.insert_resource(crate::faction::HostileFactions::default());

@@ -89,13 +89,6 @@ pub struct PendingRoute {
     pub command_id: Option<super::command_events::CommandId>,
 }
 
-/// Resource: count of pending route computations. When > 0, game time is paused.
-#[derive(Resource, Default, Reflect)]
-#[reflect(Resource)]
-pub struct RouteCalculationsPending {
-    pub count: u32,
-}
-
 // --- A* internals ---
 
 #[derive(Clone)]
@@ -541,7 +534,6 @@ pub fn poll_pending_routes(
     mut pending_q: Query<&mut PendingRoute>,
     systems: Query<(Entity, &StarSystem, &Position), Without<Ship>>,
     sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
-    mut pending_count: ResMut<RouteCalculationsPending>,
     // #334 Phase 1: emit the terminal CommandExecuted for the MoveRequested
     // that spawned this async route. `CommandId` is threaded via
     // `PendingRoute.command_id`; `None` is tolerated for in-flight ships
@@ -570,9 +562,10 @@ pub fn poll_pending_routes(
         // #334: preserve the CommandId for terminal `CommandExecuted` below.
         let maybe_cmd_id = pending.command_id;
 
-        // Remove PendingRoute component and decrement counter.
+        // Remove PendingRoute component (existence-based gate in
+        // `advance_game_time` resumes time naturally when the last
+        // PendingRoute disappears — see #128 leak fix).
         commands.entity(ship_entity).remove::<PendingRoute>();
-        pending_count.count = pending_count.count.saturating_sub(1);
 
         let Ok((_, ship, mut state, mut queue, ship_pos)) = ships.get_mut(ship_entity) else {
             // Ship despawned while waiting — emit Rejected.

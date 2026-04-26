@@ -208,7 +208,6 @@ pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<routing::RouteCalculationsPending>();
         // #334 Phase 2 (Commit 2): `PendingCoreDeploys` was retired in favour
         // of the `CoreDeployRequested` message bus registered via
         // `CommandEventsPlugin`.

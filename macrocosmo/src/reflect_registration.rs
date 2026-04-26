@@ -248,8 +248,6 @@ pub fn register_all_types(app: &mut App) {
     app.register_type::<crate::ship::harbour::AppliedDockedModifiers>();
     // crate::ship::pursuit
     app.register_type::<crate::ship::pursuit::DetectedHostiles>();
-    // crate::ship::routing
-    app.register_type::<crate::ship::routing::RouteCalculationsPending>();
     // crate::ship::scout
     app.register_type::<crate::ship::scout::ScoutReport>();
     // crate::ship::transit_events

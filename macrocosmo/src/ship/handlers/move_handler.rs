@@ -63,7 +63,6 @@ pub fn handle_move_requested(
         With<crate::galaxy::Hostile>,
     >,
     relations: Res<crate::faction::FactionRelations>,
-    mut pending_count: ResMut<routing::RouteCalculationsPending>,
     design_registry: Res<ShipDesignRegistry>,
     regions: Query<&crate::galaxy::ForbiddenRegion>,
     mut executed: MessageWriter<CommandExecuted>,
@@ -241,7 +240,6 @@ pub fn handle_move_requested(
             target_system: target,
             command_id: Some(req.command_id),
         });
-        pending_count.count += 1;
         info!(
             "handle_move: ship {} spawned async route to target (cmd {})",
             ship.name, req.command_id.0

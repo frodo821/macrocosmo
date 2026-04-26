@@ -98,13 +98,16 @@ pub fn advance_game_time(
     real_time: Res<Time>,
     mut clock: ResMut<GameClock>,
     speed: Res<GameSpeed>,
-    pending_routes: Option<Res<crate::ship::routing::RouteCalculationsPending>>,
+    pending_routes: Query<(), With<crate::ship::routing::PendingRoute>>,
 ) {
     if speed.hexadies_per_second <= 0.0 {
         return;
     }
     // #128: Suppress time advancement while route calculations are pending.
-    if pending_routes.is_some_and(|r| r.count > 0) {
+    // Existence-based check (no counter) — structurally leak-proof: if every
+    // ship holding a `PendingRoute` despawns, the query is empty regardless
+    // of what tore them down.
+    if !pending_routes.is_empty() {
         return;
     }
     clock.accumulator += real_time.delta_secs_f64() * speed.hexadies_per_second;
