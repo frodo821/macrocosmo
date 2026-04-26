@@ -12,13 +12,17 @@
 //! in sibling modules (`long_term_default`, `mid_term_default`,
 //! `short_term_default`).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ai_params::AiParamsExt;
 use crate::bus::AiBus;
 use crate::campaign::{Campaign, CampaignState};
 use crate::command::Command;
-use crate::ids::{FactionId, IntentId, IntentKindId, IntentTargetRef, ObjectiveId, ShortContext};
+use crate::ids::{
+    CommandKindId, FactionId, IntentId, IntentKindId, IntentTargetRef, ObjectiveId, ShortContext,
+};
 use crate::intent::{Intent, IntentSpec};
 use crate::time::Tick;
 use crate::victory::{VictoryCondition, VictoryStatus};
@@ -148,6 +152,44 @@ pub enum OverrideReason {
 // Short-term
 // ---------------------------------------------------------------------------
 
+/// Per-`ShortContext` persistent execution state for the short-term agent.
+///
+/// `PlanState` is a small store of *not-yet-issued* primitive commands
+/// produced by decomposing a higher-level (macro) command into a sequence
+/// of executable steps. Today it is a deterministic `BTreeMap` keyed by
+/// `(macro_kind, ObjectiveId)` whose values are the queued primitives
+/// waiting to be drained. Decomposition logic itself lands in F2+ — F1
+/// only introduces the type and its plumbing through `ShortTermInput`.
+///
+/// The default impl in `short_term_default` discards `plan_state`
+/// entirely, so the field is purely additive and does not change
+/// behavior for existing agents.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanState {
+    /// Queued primitive commands per `(macro_kind, objective)` slot.
+    /// `BTreeMap` is chosen over `AHashMap` so `serde` round-trips and
+    /// `Debug` snapshots are deterministic — record/replay scenarios
+    /// rely on stable iteration order.
+    pub pending: BTreeMap<(CommandKindId, ObjectiveId), Vec<Command>>,
+}
+
+impl PlanState {
+    /// Construct an empty `PlanState` (same as `Default::default()`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `true` if no slot has any queued primitive commands.
+    pub fn is_empty(&self) -> bool {
+        self.pending.values().all(|v| v.is_empty())
+    }
+
+    /// Number of queued primitives across all slots.
+    pub fn total_len(&self) -> usize {
+        self.pending.values().map(|v| v.len()).sum()
+    }
+}
+
 /// Execution layer. Emits commands reacting to active campaigns.
 ///
 /// A single `faction` may host several short-term agents simultaneously
@@ -165,6 +207,12 @@ pub struct ShortTermInput<'a> {
     pub context: ShortContext,
     pub active_campaigns: &'a [&'a Campaign],
     pub now: Tick,
+    /// Per-`ShortContext` persistent plan state. The orchestrator owns
+    /// one `PlanState` per `ShortContext` and threads a mutable
+    /// borrow in here every short tick so the agent can drain or
+    /// extend its queued primitive commands. Default agents that do
+    /// not decompose commands simply ignore the field.
+    pub plan_state: &'a mut PlanState,
 }
 
 #[derive(Debug, Default)]
@@ -215,5 +263,33 @@ mod tests {
     #[test]
     fn target_faction_wide_is_canonical_string() {
         assert_eq!(target_faction_wide().as_str(), "faction");
+    }
+
+    #[test]
+    fn plan_state_default_is_empty() {
+        let ps = PlanState::default();
+        assert!(ps.pending.is_empty());
+        assert!(ps.is_empty());
+        assert_eq!(ps.total_len(), 0);
+    }
+
+    #[test]
+    fn plan_state_tracks_pending_primitives() {
+        let mut ps = PlanState::new();
+        let key = (
+            CommandKindId::from("colonize_system"),
+            ObjectiveId::from("expand"),
+        );
+        ps.pending
+            .entry(key.clone())
+            .or_default()
+            .push(Command::new(
+                CommandKindId::from("build_deliverable"),
+                FactionId(0),
+                0,
+            ));
+        assert!(!ps.is_empty());
+        assert_eq!(ps.total_len(), 1);
+        assert_eq!(ps.pending.get(&key).unwrap().len(), 1);
     }
 }

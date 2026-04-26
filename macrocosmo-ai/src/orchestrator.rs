@@ -14,10 +14,11 @@
 
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{
-    CampaignOp, LongTermAgent, LongTermInput, MidTermAgent, MidTermInput, OverrideEntry,
+    CampaignOp, LongTermAgent, LongTermInput, MidTermAgent, MidTermInput, OverrideEntry, PlanState,
     ShortTermAgent, ShortTermInput,
 };
 use crate::ai_params::AiParamsExt;
@@ -129,6 +130,14 @@ pub struct OrchestratorState {
     /// tick begins. Lets long agents see only the drops that happened
     /// since their previous tick, without re-presenting old ones.
     pub drops_seen_by_long_until: usize,
+    /// Per-`ShortContext` persistent plan state. The orchestrator
+    /// owns the map, fetches (or inserts default) the entry for the
+    /// configured `short_context` every short tick, and threads a
+    /// mutable borrow into `ShortTermInput`. Today there is one
+    /// orchestrator per faction with a single `short_context`, so the
+    /// map has at most one entry — the keyed shape is in place for
+    /// future per-fleet / per-colony short agents.
+    pub plan_states: AHashMap<ShortContext, PlanState>,
 }
 
 /// Drives one faction's three-layer AI loop.
@@ -454,12 +463,22 @@ impl<L: LongTermAgent, M: MidTermAgent, S: ShortTermAgent> Orchestrator<L, M, S>
             .iter()
             .filter(|c| c.state == CampaignState::Active)
             .collect();
+        // Fetch-or-insert per-context plan state. `entry().or_default()`
+        // gives us a `&mut PlanState` that persists across ticks: the
+        // orchestrator owns the storage, the short agent borrows it
+        // mutably for the duration of one tick.
+        let plan_state = self
+            .state
+            .plan_states
+            .entry(self.config.short_context.clone())
+            .or_default();
         let input = ShortTermInput {
             bus,
             faction: self.faction,
             context: self.config.short_context.clone(),
             active_campaigns: &active,
             now,
+            plan_state,
         };
         let short_out = self.short.tick(input);
         out.short_fired = true;
@@ -603,5 +622,67 @@ mod tests {
         // tick 1: long does not re-emit (EmitOneIntent). Mid has no new inbox.
         let _ = orch.tick(&mut bus, &mut disp, &victory, None, 1);
         assert_eq!(orch.state.campaigns.len(), 1);
+    }
+
+    /// Short stub that pushes one primitive into the `plan_state` slot
+    /// `(macro_kind="m", objective="o")` on every tick. Used to verify
+    /// that the orchestrator threads the same `PlanState` across ticks.
+    struct PlanStatePushingShort;
+    impl ShortTermAgent for PlanStatePushingShort {
+        fn tick(&mut self, input: ShortTermInput<'_>) -> ShortTermOutput {
+            use crate::ids::{CommandKindId, FactionId, ObjectiveId};
+            let key = (CommandKindId::from("m"), ObjectiveId::from("o"));
+            input
+                .plan_state
+                .pending
+                .entry(key)
+                .or_default()
+                .push(Command::new(
+                    CommandKindId::from("primitive"),
+                    FactionId(0),
+                    input.now,
+                ));
+            ShortTermOutput::default()
+        }
+    }
+
+    #[test]
+    fn plan_state_persists_across_ticks() {
+        let mut bus = AiBus::with_warning_mode(WarningMode::Silent);
+        let victory = always_ongoing_victory();
+        let mut orch = Orchestrator::new(
+            FactionId(0),
+            NoopLong,
+            StartCampaignOnIntent,
+            PlanStatePushingShort,
+        );
+        orch.config.long_cadence = 1;
+        orch.config.mid_cadence = 1;
+        let mut d = FixedDelayDispatcher::zero_delay();
+
+        // Tick 0: short pushes one primitive.
+        let _ = orch.tick(&mut bus, &mut d, &victory, None, 0);
+        let key = (
+            crate::ids::CommandKindId::from("m"),
+            crate::ids::ObjectiveId::from("o"),
+        );
+        let ctx = orch.config.short_context.clone();
+        let plan_after_0 = orch
+            .state
+            .plan_states
+            .get(&ctx)
+            .expect("plan_state present");
+        assert_eq!(plan_after_0.pending.get(&key).map(|v| v.len()), Some(1));
+
+        // Tick 1: short pushes again — because the orchestrator persists
+        // PlanState, the new primitive is appended (length 2), not
+        // overwritten.
+        let _ = orch.tick(&mut bus, &mut d, &victory, None, 1);
+        let plan_after_1 = orch
+            .state
+            .plan_states
+            .get(&ctx)
+            .expect("plan_state present");
+        assert_eq!(plan_after_1.pending.get(&key).map(|v| v.len()), Some(2));
     }
 }

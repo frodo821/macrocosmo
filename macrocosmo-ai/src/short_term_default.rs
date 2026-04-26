@@ -100,6 +100,12 @@ impl CampaignReactiveShort {
 
 impl ShortTermAgent for CampaignReactiveShort {
     fn tick(&mut self, input: ShortTermInput<'_>) -> ShortTermOutput {
+        // CampaignReactiveShort is the legacy default — it does not
+        // decompose macro commands, so the new `plan_state` mutable
+        // borrow is intentionally discarded. F2+ adds decomposition-
+        // aware agents that consume it.
+        let _ = input.plan_state;
+
         let mut commands = Vec::new();
 
         if !self.config.priority_weighted {
@@ -141,6 +147,7 @@ impl ShortTermAgent for CampaignReactiveShort {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::PlanState;
     use crate::bus::AiBus;
     use crate::campaign::{Campaign, CampaignState};
     use crate::ids::{FactionId, ObjectiveId, ShortContext};
@@ -155,12 +162,14 @@ mod tests {
         c2.state = CampaignState::Active;
         let active = [&c1, &c2];
         let mut agent = CampaignReactiveShort::new();
+        let mut plan = PlanState::default();
         let out = agent.tick(ShortTermInput {
             bus: &bus,
             faction: FactionId(7),
             context: ShortContext::from("faction"),
             active_campaigns: &active,
             now: 5,
+            plan_state: &mut plan,
         });
         assert_eq!(out.commands.len(), 2);
         assert_eq!(out.commands[0].issuer, FactionId(7));
@@ -178,12 +187,14 @@ mod tests {
             kind_prefix: "default_short".to_string(),
             ..ShortTermDefaultConfig::default()
         });
+        let mut plan = PlanState::default();
         let out = agent.tick(ShortTermInput {
             bus: &bus,
             faction: FactionId(0),
             context: ShortContext::from("faction"),
             active_campaigns: &active,
             now: 1,
+            plan_state: &mut plan,
         });
         assert_eq!(out.commands[0].kind.as_str(), "default_short:expand");
     }
@@ -192,12 +203,14 @@ mod tests {
     fn no_commands_when_no_active_campaigns() {
         let bus = AiBus::with_warning_mode(WarningMode::Silent);
         let mut agent = CampaignReactiveShort::new();
+        let mut plan = PlanState::default();
         let out = agent.tick(ShortTermInput {
             bus: &bus,
             faction: FactionId(0),
             context: ShortContext::from("faction"),
             active_campaigns: &[],
             now: 1,
+            plan_state: &mut plan,
         });
         assert_eq!(out.commands.len(), 0);
     }

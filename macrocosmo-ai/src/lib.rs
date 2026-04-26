@@ -61,8 +61,8 @@ pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
 pub use agent::{
     CampaignOp, LongTermAgent, LongTermInput, LongTermOutput, MidTermAgent, MidTermInput,
-    MidTermOutput, OverrideEntry, OverrideReason, ShortTermAgent, ShortTermInput, ShortTermOutput,
-    target_faction_wide,
+    MidTermOutput, OverrideEntry, OverrideReason, PlanState, ShortTermAgent, ShortTermInput,
+    ShortTermOutput, target_faction_wide,
 };
 pub use assessment::{
     Assessment, AssessmentConfig, EconomicBaseline, EconomicCapacityWeights, EconomicSnapshot,
