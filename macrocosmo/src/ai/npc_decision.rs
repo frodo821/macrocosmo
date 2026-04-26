@@ -538,6 +538,8 @@ pub fn npc_decision_tick(
         // otherwise freshly-spawned empires never find survey targets
         // because their KnowledgeStore is empty aside from the capital.
         let mut hostile_systems = Vec::new();
+        let mut hostile_systems_set: std::collections::HashSet<Entity> =
+            std::collections::HashSet::new();
         let mut colonizable_systems = Vec::new();
         let mut surveyed_ids: std::collections::HashSet<Entity> = std::collections::HashSet::new();
         // #299 / #446 short-term: limit colonization candidates to
@@ -553,10 +555,17 @@ pub fn npc_decision_tick(
         for (_, k) in knowledge.iter() {
             if k.data.has_hostile {
                 hostile_systems.push(k.system);
+                hostile_systems_set.insert(k.system);
             }
             if k.data.surveyed {
                 surveyed_ids.insert(k.system);
-                if !k.data.colonized && owned_core_systems.contains(&k.system) {
+                // Bug B fix: skip systems known-hostile so the AI doesn't
+                // ferry colonists into a meat grinder. Rule 1 (attack)
+                // still consumes `hostile_systems` separately.
+                if !k.data.colonized
+                    && !k.data.has_hostile
+                    && owned_core_systems.contains(&k.system)
+                {
                     colonizable_systems.push(k.system);
                 }
             }
@@ -596,6 +605,10 @@ pub fn npc_decision_tick(
             // Scout-1" double dispatch the handler-side dedup couldn't
             // catch from prior commits.
             .filter(|(e, _)| !pending_survey_targets.contains(e))
+            // Bug B fix: skip systems we already know are hostile;
+            // re-surveying a confirmed-hostile system loses scouts in a
+            // tight loop. ROE-based engagement still flows through Rule 1.
+            .filter(|(e, _)| !hostile_systems_set.contains(e))
             .filter(|(e, _)| {
                 vis_map_opt
                     .map(|vm| vm.get(*e) >= SystemVisibilityTier::Catalogued)
