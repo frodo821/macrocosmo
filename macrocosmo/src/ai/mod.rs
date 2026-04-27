@@ -47,6 +47,7 @@ pub mod decomposition_rules;
 pub mod emit;
 pub mod emitters;
 pub mod mid_adapter;
+pub mod mid_stance;
 pub mod npc_decision;
 pub mod orchestrator_runtime;
 pub mod plugin;

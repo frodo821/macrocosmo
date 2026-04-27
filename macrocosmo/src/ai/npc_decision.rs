@@ -774,17 +774,40 @@ pub fn npc_decision_tick(
             ruler_aboard,
         };
 
-        // #448 PR2b: AiPolicyMode gate. Today Layered is a noop
-        // (returns empty). PR2c/2d fill it with rule ports while a
-        // parity test keeps Legacy and Layered in lock-step. Default
-        // = Legacy → all existing tests + production paths unchanged.
+        // #448 PR2c: AiPolicyMode gate. Layered now routes through
+        // `MidStanceAgent::decide` which ports Rules 1 + 5a; the
+        // remaining Rules (2/3/4/5b/6/7/8) still land in PR2d. Until
+        // every rule is ported the parity test
+        // (`tests/ai_layered_parity.rs`) restricts itself to fixtures
+        // where only Rule 1 / 5a fire. Default = Legacy → all
+        // existing production paths and tests untouched.
         let commands: Vec<Command> = match *policy_mode {
             crate::ai::mid_adapter::AiPolicyMode::Legacy => {
                 policy.decide(&faction.id, entity, now, &bus.0, &context)
             }
             crate::ai::mid_adapter::AiPolicyMode::Layered => {
-                let adapter = crate::ai::mid_adapter::BevyMidGameAdapter { faction: entity };
-                let proposals = crate::ai::mid_adapter::layered_decide_noop(&adapter);
+                // Pre-compute idle_combat with the same expression
+                // `SimpleNpcPolicy::decide` uses (Rule 1) so the
+                // adapter can hand it straight to MidStanceAgent
+                // without re-scanning the ship list.
+                let idle_combat: Vec<Entity> = context
+                    .ships
+                    .iter()
+                    .filter(|s| s.is_idle && s.is_combat)
+                    .map(|s| s.entity)
+                    .collect();
+                let adapter = crate::ai::mid_adapter::BevyMidGameAdapter {
+                    faction: entity,
+                    context: &context,
+                    bus: &bus.0,
+                    idle_combat: &idle_combat,
+                };
+                let proposals = crate::ai::mid_adapter::layered_decide(
+                    &adapter,
+                    &macrocosmo_ai::Stance::default(),
+                    &faction.id,
+                    now,
+                );
                 crate::ai::mid_adapter::arbitrate(proposals)
             }
         };

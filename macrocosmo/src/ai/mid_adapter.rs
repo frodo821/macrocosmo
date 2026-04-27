@@ -1,24 +1,27 @@
 //! Mid-layer game adapter — bridges Bevy world state into the
 //! engine-agnostic Mid logic (#448 PR2b scaffold).
 //!
-//! [`MidGameAdapter`] is the read-only interface a future
-//! `MidStanceAgent` (#448 PR2c+) consumes. Today the trait exists
-//! and a Bevy implementation is wired through `npc_decision_tick`
-//! behind the [`AiPolicyMode::Layered`] flag, but the Layered branch
-//! emits an empty `Vec<Proposal>` — no behavior change vs. the
-//! Legacy [`super::npc_decision::SimpleNpcPolicy`] path.
+//! [`MidGameAdapter`] is the read-only interface
+//! [`super::mid_stance::MidStanceAgent`] consumes. PR2c ports Rules 1
+//! and 5a from [`super::npc_decision::SimpleNpcPolicy`] behind the
+//! [`AiPolicyMode::Layered`] flag while a parity test
+//! (`tests/ai_layered_parity.rs`) keeps both paths in lock-step.
 //!
 //! The identity arbiter ([`arbitrate`]) strips [`Locality`] and
 //! returns the inner [`Command`]s; #467 phase 2 replaces it with a
 //! real FCFS arbiter.
 
 use bevy::prelude::*;
-use macrocosmo_ai::{Command, Proposal};
+use macrocosmo_ai::{Command, FactionId, Proposal, Stance};
+
+use super::npc_decision::NpcContext;
+use crate::ai::convert::to_ai_faction;
+use crate::ai::plugin::AiBusResource;
 
 /// Runtime gate selecting between the legacy
 /// [`super::npc_decision::SimpleNpcPolicy`] (today's NPC behavior,
 /// all 8 rules in `npc_decision.rs`) and the new layered
-/// `MidStanceAgent` path (#448 PR2c+ — empty today). Default
+/// `MidStanceAgent` path (#448 PR2c+ — Rules 1 + 5a today). Default
 /// [`AiPolicyMode::Legacy`] so all production paths and existing
 /// tests are untouched until the parity period closes in PR3.
 #[derive(Resource, Debug, Clone, Copy, Reflect, Default, PartialEq, Eq)]
@@ -28,44 +31,124 @@ pub enum AiPolicyMode {
     /// unchanged. Default until PR3 flips the switch.
     #[default]
     Legacy,
-    /// New layered `MidStanceAgent` path. PR2b emits zero
-    /// proposals; PR2c/2d port the rules from
-    /// [`super::npc_decision::SimpleNpcPolicy`] one at a time.
+    /// New layered `MidStanceAgent` path. PR2c emits Rules 1 + 5a
+    /// only; PR2d ports the remaining rules. Behind the parity test
+    /// until PR3.
     Layered,
 }
 
 /// What the Mid layer can read about the game world. Bevy-agnostic
-/// — keeps the future engine-agnostic Mid logic decoupled from
-/// `Query` / `Resource` details. [`BevyMidGameAdapter`] provides
-/// the concrete Bevy implementation; tests can stub the trait
-/// directly.
+/// in spirit — the trait stays decoupled from `Query` / `Resource`
+/// internals, so future engine-agnostic Mid logic can be tested with
+/// stub adapters. [`BevyMidGameAdapter`] is the concrete production
+/// impl.
 ///
-/// Methods deliberately return owned data so the trait stays
-/// object-safe and the future `MidStanceAgent` can be tested
-/// without an `App`. The cost is one allocation per call site per
-/// faction per tick — negligible vs. the per-tick metric scan.
+/// All read-only. Returning slices keeps the trait allocation-free
+/// at the call site for the common "iterate this list" pattern.
 pub trait MidGameAdapter {
     /// Faction the adapter is currently scoped to.
     fn faction(&self) -> Entity;
-    // PR2c+ adds methods like:
-    //   fn hostile_systems(&self) -> Vec<Entity>;
-    //   fn unsurveyed_systems(&self) -> Vec<Entity>;
-    //   fn idle_ships(&self) -> Vec<ShipInfo>;
-    // For PR2b we leave the trait near-empty — the Layered branch
-    // emits no proposals so it has nothing to read yet.
+
+    /// Systems known-hostile from this faction's perspective. Mirrors
+    /// `NpcContext.hostile_systems`. Used by Rule 1 (attack target).
+    fn hostile_systems(&self) -> &[Entity];
+
+    /// Idle ship entities currently flagged as `is_combat`. Rule 1
+    /// fires only when both `hostile_systems` and this list are
+    /// non-empty.
+    fn idle_combat_ships(&self) -> Vec<Entity>;
+
+    /// `true` when the empire's Ruler is **not** aboard a ship —
+    /// i.e. eligible for a `move_ruler` follow-up emit. Mirrors
+    /// `NpcContext.ruler_aboard == false && ruler_entity.is_some()`.
+    fn ruler_movable(&self) -> bool;
+
+    /// Per-faction `can_build_ships` metric (0.0 / 1.0 today). Rule
+    /// 5a fires only when this is below 1.0 — i.e. the empire still
+    /// lacks a usable shipyard.
+    fn can_build_ships(&self) -> f64;
+
+    /// Per-faction `systems_with_core` metric. Rule 5a's #370 gate:
+    /// without a Core deployed somewhere, the build_structure handler
+    /// has nowhere to emplace the shipyard, so we keep the policy
+    /// silent.
+    fn systems_with_core(&self) -> f64;
+
+    /// Per-faction `colony_count` metric. Rule 5a additionally
+    /// requires at least one colony — a Core-only empire with no
+    /// colony is not yet ready for a shipyard.
+    fn colony_count(&self) -> f64;
 }
 
-/// Bevy implementation of [`MidGameAdapter`]. Today carries only
-/// the faction handle; PR2c expands it to wrap the same data
-/// `npc_decision_tick`'s
-/// [`super::npc_decision::NpcContext`] already exposes.
-pub struct BevyMidGameAdapter {
+/// Bevy implementation of [`MidGameAdapter`]. Wraps a borrow of the
+/// per-tick `NpcContext` and the bus so Rule ports can read the same
+/// signals the legacy `SimpleNpcPolicy::decide` reads, without
+/// duplicating the ECS scan.
+///
+/// Lifetimes are explicit because `NpcContext` and `AiBus` are both
+/// owned higher up the call stack (in `npc_decision_tick`); the
+/// adapter just hands views into them.
+pub struct BevyMidGameAdapter<'a> {
     pub faction: Entity,
+    pub context: &'a NpcContext,
+    pub bus: &'a macrocosmo_ai::AiBus,
+    /// Pre-computed `idle_combat` set (matches the same expression
+    /// `SimpleNpcPolicy::decide` builds). Borrowed so the adapter
+    /// stays cheap to construct per-empire.
+    pub idle_combat: &'a [Entity],
 }
 
-impl MidGameAdapter for BevyMidGameAdapter {
+impl<'a> BevyMidGameAdapter<'a> {
+    /// Convenience: faction id derived from the faction entity. Used
+    /// by `MidStanceAgent::decide` to look up per-faction metrics on
+    /// the bus.
+    pub fn faction_id(&self) -> FactionId {
+        to_ai_faction(self.faction)
+    }
+}
+
+impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
     fn faction(&self) -> Entity {
         self.faction
+    }
+
+    fn hostile_systems(&self) -> &[Entity] {
+        &self.context.hostile_systems
+    }
+
+    fn idle_combat_ships(&self) -> Vec<Entity> {
+        self.idle_combat.to_vec()
+    }
+
+    fn ruler_movable(&self) -> bool {
+        !self.context.ruler_aboard && self.context.ruler_entity.is_some()
+    }
+
+    fn can_build_ships(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "can_build_ships",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
+    }
+
+    fn systems_with_core(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "systems_with_core",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
+    }
+
+    fn colony_count(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "colony_count",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
     }
 }
 
@@ -79,13 +162,25 @@ pub fn arbitrate(proposals: Vec<Proposal>) -> Vec<Command> {
     proposals.into_iter().map(|p| p.command).collect()
 }
 
-/// Layered-mode decision entry-point. PR2b is a no-op gate —
-/// Layered mode emits zero proposals until PR2c starts porting
-/// rules. Keeping this function present (rather than inlining the
-/// `match` in `npc_decision_tick`) gives PR2c a clean extension
-/// point.
-pub fn layered_decide_noop(_adapter: &BevyMidGameAdapter) -> Vec<Proposal> {
-    Vec::new()
+/// Layered-mode decision entry-point. PR2c routes through
+/// [`super::mid_stance::MidStanceAgent::decide`]; the `Stance`
+/// argument is `Stance::default()` until PR3 wires
+/// [`macrocosmo_ai::MidTermState`] persistence into the tick system
+/// (Plan agent micro-decision 5).
+pub fn layered_decide<A: MidGameAdapter>(
+    adapter: &A,
+    stance: &Stance,
+    faction_id: &str,
+    now: i64,
+) -> Vec<Proposal> {
+    super::mid_stance::MidStanceAgent::decide(adapter, stance, faction_id, now)
+}
+
+/// Helper used by `npc_decision_tick`'s Layered branch to materialise
+/// the bus reference (the system holds a `ResMut<AiBusResource>` and
+/// would otherwise need an explicit re-borrow at the call site).
+pub fn bus_from_resource(bus: &AiBusResource) -> &macrocosmo_ai::AiBus {
+    &bus.0
 }
 
 #[cfg(test)]
@@ -120,23 +215,5 @@ mod tests {
         assert_eq!(commands[0], cmd_a, "order must match input order");
         assert_eq!(commands[1], cmd_b);
         assert_eq!(commands[2], cmd_c);
-    }
-
-    #[test]
-    fn layered_decide_noop_returns_empty() {
-        let adapter = BevyMidGameAdapter {
-            faction: Entity::from_raw_u32(1).unwrap(),
-        };
-        assert!(
-            layered_decide_noop(&adapter).is_empty(),
-            "PR2b Layered branch must emit zero proposals"
-        );
-    }
-
-    #[test]
-    fn bevy_mid_game_adapter_exposes_faction() {
-        let e = Entity::from_raw_u32(99).unwrap();
-        let adapter = BevyMidGameAdapter { faction: e };
-        assert_eq!(adapter.faction(), e);
     }
 }
