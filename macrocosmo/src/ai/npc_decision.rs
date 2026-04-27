@@ -179,7 +179,7 @@ pub fn npc_decision_tick(
         ),
         With<AiControlled>,
     >,
-    // SimpleNpcPolicy needs to know which systems exist at all — the
+    // The Mid layer needs to know which systems exist at all — the
     // KnowledgeStore only carries entries the empire has already
     // surveyed / been told about (one entry per owned capital at spawn),
     // so `unsurveyed_systems` derived from it was always empty for

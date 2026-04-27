@@ -71,15 +71,14 @@ pub trait MidGameAdapter {
 
     /// Idle ship entities flagged as `can_colonize`. Rule 3 zips this
     /// against `colonizable_systems` and emits one `colonize_system`
-    /// command per pair — same expression
-    /// `SimpleNpcPolicy::decide` builds.
+    /// command per pair.
     fn idle_colonizers(&self) -> Vec<Entity>;
 
     /// Per-faction `my_fleet_ready` metric (0..=1). Rule 7's retreat
     /// gate fires only when `0.0 < fleet_ready < 0.3` — the lower
-    /// bound is intentional, matching `SimpleNpcPolicy`: a value of
-    /// exactly 0.0 means "no fleet at all" (no metric emitted yet),
-    /// not "fleet wiped", so retreat is silent.
+    /// bound is intentional: a value of exactly 0.0 means "no fleet
+    /// at all" (no metric emitted yet), not "fleet wiped", so
+    /// retreat is silent.
     fn fleet_ready_ratio(&self) -> f64;
 
     /// Per-faction `my_total_ships` metric. Rule 8's gate compares
@@ -118,44 +117,32 @@ pub trait MidGameAdapter {
     /// final filtered list before the adapter is constructed.
     fn unsurveyed_systems(&self) -> &[Entity];
 
-    /// Idle ship entities flagged as `can_survey`. Pre-computed in
-    /// `npc_decision_tick`'s Layered branch with the same expression
-    /// `SimpleNpcPolicy::decide` builds for Rule 2:
-    /// `s.is_idle && s.can_survey`. Returned as a slice (rather than
-    /// `Vec`) so the adapter stays allocation-free per call — matches
-    /// the [`Self::colonizable_systems`] / [`Self::hostile_systems`]
-    /// pattern.
+    /// Idle ship entities flagged as `can_survey`
+    /// (`s.is_idle && s.can_survey`), pre-computed in
+    /// `npc_decision_tick`'s Layered branch. Returned as a slice
+    /// (rather than `Vec`) so the adapter stays allocation-free per
+    /// call — matches the [`Self::colonizable_systems`] /
+    /// [`Self::hostile_systems`] pattern.
     fn idle_surveyors(&self) -> &[Entity];
 
     // ---- PR3b additions (Rule 5b — slot fill / building) ----
 
     /// Empire-wide free building slot count (sum across all colonies).
     /// Rule 5b's fire gate: `> 0.0` opens the rule, `0.0` keeps it
-    /// silent. Sourced from the same `free_building_slots` per-faction
-    /// metric `SimpleNpcPolicy::decide` reads (emitted by the empire
-    /// metrics emitter in `emitters.rs`).
+    /// silent. Sourced from the `free_building_slots` per-faction
+    /// metric (emitted by the empire metrics emitter in `emitters.rs`).
     fn free_building_slots(&self) -> f64;
 
     /// Empire-wide net energy production (income − upkeep). Rule 5b's
-    /// power_plant branch fires when this is `< 0.0`. Same metric the
-    /// legacy policy reads (`net_production_energy`).
+    /// power_plant branch fires when this is `< 0.0`.
     fn net_production_energy(&self) -> f64;
 
     /// Empire-wide net food production. Rule 5b's farm branch fires
-    /// when `net_production_energy >= 0.0` AND this is `< 0.0`. Same
-    /// metric the legacy policy reads (`net_production_food`).
+    /// when `net_production_energy >= 0.0` AND this is `< 0.0`.
     fn net_production_food(&self) -> f64;
 }
 
-/// Three counts Rule 6 needs to pick the next ship to build. Matches
-/// the legacy expression in `SimpleNpcPolicy::decide`'s Rule 6 block
-/// exactly:
-///
-/// ```ignore
-/// let survey_count        = context.ships.iter().filter(|s| s.can_survey).count();
-/// let colony_count_ships  = context.ships.iter().filter(|s| s.can_colonize).count();
-/// let combat_count        = context.ships.iter().filter(|s| s.is_combat).count();
-/// ```
+/// Three counts Rule 6 needs to pick the next ship to build.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FleetComposition {
     pub survey_count: usize,
@@ -164,9 +151,8 @@ pub struct FleetComposition {
 }
 
 /// Bevy implementation of [`MidGameAdapter`]. Wraps a borrow of the
-/// per-tick `NpcContext` and the bus so Rule ports can read the same
-/// signals the legacy `SimpleNpcPolicy::decide` reads, without
-/// duplicating the ECS scan.
+/// per-tick `NpcContext` and the bus so Rule ports can read game
+/// signals without duplicating the ECS scan.
 ///
 /// Lifetimes are explicit because `NpcContext` and `AiBus` are both
 /// owned higher up the call stack (in `npc_decision_tick`); the
@@ -175,9 +161,8 @@ pub struct BevyMidGameAdapter<'a> {
     pub faction: Entity,
     pub context: &'a NpcContext,
     pub bus: &'a macrocosmo_ai::AiBus,
-    /// Pre-computed `idle_combat` set (matches the same expression
-    /// `SimpleNpcPolicy::decide` builds). Borrowed so the adapter
-    /// stays cheap to construct per-empire.
+    /// Pre-computed `idle_combat` set. Borrowed so the adapter stays
+    /// cheap to construct per-empire.
     pub idle_combat: &'a [Entity],
     /// Pre-computed `idle_colonizers` set — `s.is_idle &&
     /// s.can_colonize` filtered over `context.ships`. Owned by the
@@ -185,9 +170,8 @@ pub struct BevyMidGameAdapter<'a> {
     /// per `idle_colonizers()` call.
     pub idle_colonizers: &'a [Entity],
     /// Pre-computed `idle_surveyors` set — `s.is_idle && s.can_survey`
-    /// filtered over `context.ships`. Same expression
-    /// `SimpleNpcPolicy::decide` builds for Rule 2. Borrowed (not
-    /// owned) for the same reason `idle_colonizers` is.
+    /// filtered over `context.ships`. Borrowed (not owned) for the
+    /// same reason `idle_colonizers` is.
     pub idle_surveyors: &'a [Entity],
 }
 
@@ -271,12 +255,10 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
     }
 
     fn fleet_composition(&self) -> FleetComposition {
-        // Mirrors `SimpleNpcPolicy::decide`'s Rule 6 block exactly:
-        // three independent passes over `context.ships` with the same
-        // predicates. Three passes (rather than one fused pass) is
-        // intentional — preserves the legacy semantics if any predicate
-        // ever overlaps (e.g. a future ship that is both `can_survey`
-        // and `is_combat`).
+        // Three independent passes (rather than one fused pass) is
+        // intentional — a future ship that satisfies multiple
+        // predicates (e.g. both `can_survey` and `is_combat`) must be
+        // counted in every matching bucket.
         let ships = &self.context.ships;
         FleetComposition {
             survey_count: ships.iter().filter(|s| s.can_survey).count(),

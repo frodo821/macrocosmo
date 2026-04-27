@@ -124,7 +124,7 @@ pub fn write_decision_log(
     let line = json!({
         "tick": tick,
         "faction_id": faction_id,
-        "decisions": [],  // NoOpPolicy emits nothing; future policies populate this
+        "decisions": [],  // today decisions stay empty; future policies populate this
         "metrics_snapshot": snapshot,
     });
 

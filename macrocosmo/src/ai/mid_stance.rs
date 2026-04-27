@@ -1,23 +1,15 @@
 //! Mid-layer rule logic — emits Proposals based on game adapter
-//! input and the current Stance. PR2c (#448) covered Rules 1 + 5a;
-//! PR2d extended to Rules 3 (colonize), 6 (build_ship composition),
-//! 7 (retreat — early-return), and 8 (fortify_system); PR3a adds
-//! Rule 2 (survey); PR3b adds Rule 5b (slot fill / building).
-//! With Rule 5b ported every legacy `SimpleNpcPolicy` rule except
-//! Rule 4 (research_focus) is now mirrored here — PR3c flips the
-//! default policy mode and PR3d removes the legacy path.
+//! input and the current Stance. Implements Rules 1 (attack), 2
+//! (survey), 3 (colonize), 5a (shipyard), 5b (slot fill), 6
+//! (build_ship composition), 7 (retreat — early-return), and 8
+//! (fortify_system). Rule 4 (research_focus) is intentionally not
+//! handled here — research is empire-wide and best handled by a
+//! dedicated Mid track once we have one.
 //!
 //! `MidStanceAgent` is parallel to `macrocosmo_ai::IntentDrivenMidTerm`
 //! by design (Plan agent micro-decision 3): different responsibility
 //! (raw game state vs. parsed Intents). PR4 of #448 unifies them
 //! under a single Agent trait.
-//!
-//! Strict-parity rule: every emit here must mirror the corresponding
-//! branch in `super::npc_decision::SimpleNpcPolicy::decide` byte-for-byte
-//! (command kind, params, issuer, `at`). The parity test
-//! (`tests/ai_layered_parity.rs`) compares canonical command sets
-//! between Legacy and Layered modes; introducing a differential here
-//! breaks it.
 
 use bevy::prelude::Entity;
 use macrocosmo_ai::{Command, CommandValue, Proposal, Stance};
@@ -56,9 +48,8 @@ impl MidStanceAgent {
         let faction_id = to_ai_faction(faction_entity);
 
         // ----- Rule 1: Attack hostiles + follow-up move_ruler.
-        // Mirrors `SimpleNpcPolicy::decide` Rule 1 exactly: requires
-        // both a known hostile system and at least one idle combat
-        // ship; targets `hostile_systems[0]`; param shape is
+        // Requires both a known hostile system and at least one idle
+        // combat ship; targets `hostile_systems[0]`; param shape is
         // `target_system` + `ship_count` + `ship_<i>` per ship.
         let idle_combat = adapter.idle_combat_ships();
         if let Some(&target) = adapter.hostile_systems().first()
@@ -87,22 +78,21 @@ impl MidStanceAgent {
                 proposals.push(Proposal::at_system(ruler_cmd, to_ai_system(target)));
             }
 
-            // Legacy `SimpleNpcPolicy::decide` early-returns after
-            // Rule 1 — combat takes priority over every later rule.
+            // Combat takes priority over every later rule — early
+            // return so Rules 2-8 stay silent this tick.
             return proposals;
         }
 
         // ----- Rule 2: Survey unsurveyed systems.
-        // Mirrors `SimpleNpcPolicy::decide` Rule 2 byte-for-byte
-        // (`npc_decision.rs` lines 247–266): zips `idle_surveyors`
-        // against `unsurveyed_systems` (one ship per target, up to
-        // whichever runs out first), emits `survey_system` with
-        // `target_system` + `ship_count = 1` + `ship_0`. The adapter's
-        // `unsurveyed_systems` is the final Rule 2 input —
-        // `npc_decision_tick` already unioned `PendingAssignment` and
-        // outbox-resident commands (Round 11 Bug A) into
-        // `pending_survey_targets` and filtered the candidate list
-        // before `rank_survey_targets`, so Mid does **not** re-dedup.
+        // Zips `idle_surveyors` against `unsurveyed_systems` (one
+        // ship per target, up to whichever runs out first), emits
+        // `survey_system` with `target_system` + `ship_count = 1` +
+        // `ship_0`. The adapter's `unsurveyed_systems` is the final
+        // Rule 2 input — `npc_decision_tick` already unioned
+        // `PendingAssignment` and outbox-resident commands (Round 11
+        // Bug A) into `pending_survey_targets` and filtered the
+        // candidate list before `rank_survey_targets`, so Mid does
+        // **not** re-dedup.
         let idle_surveyors = adapter.idle_surveyors();
         let unsurveyed = adapter.unsurveyed_systems();
         if !unsurveyed.is_empty() && !idle_surveyors.is_empty() {
@@ -116,9 +106,8 @@ impl MidStanceAgent {
         }
 
         // ----- Rule 3: Colonize surveyed uncolonized systems.
-        // Mirrors `SimpleNpcPolicy::decide` Rule 3 exactly: zips
-        // `idle_colonizers` against `colonizable_systems` (one ship
-        // per target up to whichever runs out first), emits
+        // Zips `idle_colonizers` against `colonizable_systems` (one
+        // ship per target up to whichever runs out first), emits
         // `colonize_system` with `ship_count = 1` + `ship_0`. The
         // adapter's `colonizable_systems` already has the Bug B
         // filter chain applied (no hostile, own Core, no in-flight
@@ -140,10 +129,9 @@ impl MidStanceAgent {
         // dedicated Mid track once we have one.
 
         // ----- Rule 5a: System building (shipyard).
-        // Mirrors `SimpleNpcPolicy::decide` Rule 5a exactly: gated on
-        // `can_build_ships < 1.0 && systems_with_core > 0 &&
-        // colony_count > 0`. The handler-side dedup absorbs per-tick
-        // re-emission while the queue drains.
+        // Gated on `can_build_ships < 1.0 && systems_with_core > 0
+        // && colony_count > 0`. The handler-side dedup absorbs
+        // per-tick re-emission while the queue drains.
         let can_build = adapter.can_build_ships();
         let systems_with_core = adapter.systems_with_core();
         let colony_count = adapter.colony_count();
@@ -157,14 +145,12 @@ impl MidStanceAgent {
         }
 
         // ----- Rule 5b: Slot fill — pick a building based on net
-        // production deficits. Mirrors `SimpleNpcPolicy::decide` Rule
-        // 5b byte-for-byte (`npc_decision.rs` lines 316–339): gated on
-        // `free_building_slots > 0.0`, then a three-branch priority
-        // (`net_production_energy < 0` → power_plant, else
-        // `net_production_food < 0` → farm, else → mine). The handler
-        // picks which colony gets the building, so the proposal is
-        // empire-wide — colony-locality lands with the Short-per-fleet
-        // migration (#449).
+        // production deficits. Gated on `free_building_slots > 0.0`,
+        // then a three-branch priority (`net_production_energy < 0`
+        // → power_plant, else `net_production_food < 0` → farm, else
+        // → mine). The handler picks which colony gets the building,
+        // so the proposal is empire-wide — colony-locality lands
+        // with the Short-per-fleet migration (#449).
         if adapter.free_building_slots() > 0.0 {
             let building_id = if adapter.net_production_energy() < 0.0 {
                 "power_plant"
@@ -179,8 +165,7 @@ impl MidStanceAgent {
         }
 
         // ----- Rule 6: Fleet composition gap → build_ship.
-        // Mirrors `SimpleNpcPolicy::decide` Rule 6 exactly. Gated on
-        // `can_build_ships >= 1.0`; then the same three-branch
+        // Gated on `can_build_ships >= 1.0`; then a three-branch
         // priority order (survey → colony → combat<3) emits at most
         // one `build_ship` proposal per tick.
         if can_build >= 1.0 {
@@ -202,10 +187,9 @@ impl MidStanceAgent {
         }
 
         // ----- Rule 7: Retreat when fleet is weak.
-        // Mirrors `SimpleNpcPolicy::decide` Rule 7 exactly — the
-        // strict `> 0.0` lower bound means an unset / never-emitted
-        // metric (default 0.0) keeps the policy silent. Early-return
-        // skips Rule 8.
+        // The strict `> 0.0` lower bound means an unset /
+        // never-emitted metric (default 0.0) keeps the policy
+        // silent. Early-return skips Rule 8.
         let fleet_ready = adapter.fleet_ready_ratio();
         if fleet_ready > 0.0 && fleet_ready < 0.3 {
             let cmd = Command::new(cmd_ids::retreat(), faction_id, now);
@@ -214,8 +198,8 @@ impl MidStanceAgent {
         }
 
         // ----- Rule 8: Fortify when shipyard exists but few ships.
-        // Mirrors `SimpleNpcPolicy::decide` Rule 8 exactly:
-        // `can_build_ships >= 1.0 && total_ships < colony_count * 2`.
+        // Gated on `can_build_ships >= 1.0 && total_ships <
+        // colony_count * 2`.
         let total_ships = adapter.total_ships();
         if can_build >= 1.0 && total_ships < colony_count * 2.0 {
             let cmd = Command::new(cmd_ids::fortify_system(), faction_id, now);
@@ -448,8 +432,7 @@ mod tests {
     #[test]
     fn rule_1_preempts_rule_5a_via_early_return() {
         // Both conditions hit: Rule 1 should fire and Rule 5a should
-        // be silent (matching `SimpleNpcPolicy::decide`'s
-        // `return commands;` after Rule 1).
+        // be silent (Rule 1's early-return skips later rules).
         let target = Entity::from_raw_u32(42).unwrap();
         let ship = Entity::from_raw_u32(100).unwrap();
         let stub = StubAdapter {
@@ -474,8 +457,8 @@ mod tests {
     #[test]
     fn rule_2_emits_one_per_zip_pair() {
         // 2 unsurveyed targets + 2 idle surveyors → 2 emits, each
-        // with `ship_count = 1`. Mirrors `SimpleNpcPolicy::decide`'s
-        // zip semantics: one ship per system, in slice order.
+        // with `ship_count = 1`. One ship per system, in slice
+        // order.
         let target_a = Entity::from_raw_u32(50).unwrap();
         let target_b = Entity::from_raw_u32(51).unwrap();
         let surveyor_a = Entity::from_raw_u32(200).unwrap();
@@ -513,7 +496,7 @@ mod tests {
     #[test]
     fn rule_2_zip_min_when_more_targets_than_surveyors() {
         // 3 targets, 1 surveyor → 1 emit. zip terminates at the
-        // shorter iterator — this is the legacy semantics.
+        // shorter iterator.
         let target_a = Entity::from_raw_u32(50).unwrap();
         let target_b = Entity::from_raw_u32(51).unwrap();
         let target_c = Entity::from_raw_u32(52).unwrap();
@@ -571,10 +554,10 @@ mod tests {
 
     #[test]
     fn rule_1_preempts_rule_2_via_early_return() {
-        // Rule 1 conditions hit + Rule 2 conditions hit. Legacy
-        // `SimpleNpcPolicy::decide` returns immediately after Rule 1,
-        // so survey_system must NOT be emitted. Mirrors the
-        // `rule_1_preempts_rule_5a_via_early_return` shape.
+        // Rule 1 conditions hit + Rule 2 conditions hit. Rule 1
+        // returns immediately, so survey_system must NOT be emitted.
+        // Mirrors the `rule_1_preempts_rule_5a_via_early_return`
+        // shape.
         let hostile = Entity::from_raw_u32(42).unwrap();
         let combat_ship = Entity::from_raw_u32(100).unwrap();
         let target = Entity::from_raw_u32(50).unwrap();
@@ -844,7 +827,7 @@ mod tests {
     fn rule_7_silent_when_fleet_ready_zero() {
         // Strict `> 0.0` lower bound: a value of exactly 0.0 means
         // "no fleet metric ever emitted" and must NOT trigger
-        // retreat, matching `SimpleNpcPolicy`.
+        // retreat.
         let stub = StubAdapter {
             fleet_ready: 0.0,
             ..StubAdapter::empty()
@@ -876,8 +859,8 @@ mod tests {
     #[test]
     fn rule_7_preempts_rule_8_via_early_return() {
         // Conditions for both fire: weak fleet + can_build >= 1 +
-        // total_ships < colony_count * 2. SimpleNpcPolicy returns
-        // immediately after retreat — Rule 8 must not emit.
+        // total_ships < colony_count * 2. Rule 7 returns immediately
+        // after retreat — Rule 8 must not emit.
         let stub = StubAdapter {
             fleet_ready: 0.2,
             can_build: 1.0,
@@ -902,9 +885,9 @@ mod tests {
 
     #[test]
     fn rule_7_does_not_preempt_earlier_rules_5a_or_6() {
-        // Rule 7 sits *after* Rules 5a / 6 in the legacy ordering,
-        // so a weak-fleet empire with shipyard-needs and a build
-        // target should still emit those before retreating.
+        // Rule 7 sits *after* Rules 5a / 6, so a weak-fleet empire
+        // with shipyard-needs and a build target should still emit
+        // those before retreating.
         let stub = StubAdapter {
             fleet_ready: 0.2,
             can_build: 0.0,

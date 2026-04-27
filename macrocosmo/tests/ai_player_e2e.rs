@@ -1,7 +1,7 @@
 //! End-to-end test: AI controls player empire, makes decisions, issues commands.
 //!
 //! Verifies that the full AI pipeline works in headless mode:
-//! emitters → bus → SimpleNpcPolicy → command → CommandDrain → ship movement.
+//! emitters → bus → Mid policy → command → CommandDrain → ship movement.
 
 mod common;
 
@@ -49,7 +49,7 @@ fn ai_player_attacks_hostiles_when_strong_enough() {
         spawn_test_system(app.world_mut(), "Hostile", hostile_pos, 0.5, true, false);
 
     // Spawn 5 ships at home system owned by the player empire.
-    // SimpleNpcPolicy requires my_total_ships >= 3 to attack.
+    // The AI requires my_total_ships >= 3 to attack.
     for i in 0..5 {
         let ship = spawn_test_ship(
             app.world_mut(),
@@ -80,7 +80,7 @@ fn ai_player_attacks_hostiles_when_strong_enough() {
     // Advance time several ticks for the AI to:
     // 1. Mark player empire as AiControlled
     // 2. Emit metrics (including systems_with_hostiles)
-    // 3. Run SimpleNpcPolicy (should see hostiles + enough ships)
+    // 3. Run the Mid policy (should see hostiles + enough ships)
     // 4. Emit attack_target command
     // 5. CommandDrain dispatches MoveTo
     for _ in 0..5 {
@@ -145,8 +145,8 @@ fn ai_player_attacks_hostiles_when_strong_enough() {
 /// Regression: AI explorers sat in dock because `npc_decision_tick` pulled
 /// `unsurveyed_systems` from `KnowledgeStore.iter()`, which only contains
 /// surveyed entries (plus the empire's capital at spawn). A fresh NPC's
-/// store therefore yielded zero unsurveyed targets and `SimpleNpcPolicy`
-/// never emitted a `survey_system` command. The fix walks the galaxy-wide
+/// store therefore yielded zero unsurveyed targets and Rule 2 never
+/// emitted a `survey_system` command. The fix walks the galaxy-wide
 /// `StarSystem` query instead, filtered against the empire's surveyed set,
 /// so Rule 2 fires for every unsurveyed system the empire can see.
 #[test]
@@ -321,7 +321,7 @@ fn ai_ranks_home_closer_target_as_tiebreak() {
 // ---------------------------------------------------------------------------
 // System-building AI (Rule 5a): previously the AI never emitted a shipyard
 // order. `handle_build_structure` treated `is_system_building == true` as a
-// silent drop, and `SimpleNpcPolicy` only ever asked for planet buildings
+// silent drop, and the Mid layer only ever asked for planet buildings
 // (mine / farm / power plant). The result was a soft-locked empire stuck
 // at `can_build_ships == 0` — no ships, no fleet composition, no fortify.
 // ---------------------------------------------------------------------------
