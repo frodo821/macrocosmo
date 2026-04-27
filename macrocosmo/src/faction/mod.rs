@@ -584,6 +584,12 @@ pub const DIPLO_PROPOSE_PEACE: &str = "propose_peace";
 pub const DIPLO_PROPOSE_ALLIANCE: &str = "propose_alliance";
 pub const DIPLO_ACCEPT_PEACE: &str = "accept_peace";
 pub const DIPLO_ACCEPT_ALLIANCE: &str = "accept_alliance";
+/// Forced peace — used by [`crate::casus_belli::end_war`] to flip the
+/// receiver's view to `Peace` after light-speed delay. Unlike
+/// [`DIPLO_PROPOSE_PEACE`] this is one-way (no return-leg auto-accept):
+/// the sender already applied peace immediately, the event only carries
+/// the peace transition to the receiver (#460).
+pub const DIPLO_FORCED_PEACE: &str = "forced_peace";
 
 /// Sender-side immediate war declaration plus a delayed receiver-side war
 /// transition.
@@ -1118,6 +1124,13 @@ pub fn tick_diplomatic_events(
             }
             DIPLO_ACCEPT_ALLIANCE => {
                 relations.make_alliance(evt.to, evt.from);
+                commands.entity(entity).despawn();
+                continue;
+            }
+            DIPLO_FORCED_PEACE => {
+                // #460: Casus Belli end_war forced peace — receiver-side
+                // war→peace transition. Sender already applied immediately.
+                relations.make_peace(evt.to, evt.from);
                 commands.entity(entity).despawn();
                 continue;
             }

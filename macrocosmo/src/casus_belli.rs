@@ -19,13 +19,39 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::components::Position;
 use crate::event_system::{EventSystem, LuaDefinedEventContext};
 use crate::events::{GameEvent, GameEventKind};
-use crate::faction::FactionRelations;
+use crate::faction::{DIPLO_DECLARE_WAR, DIPLO_FORCED_PEACE, DiplomaticEvent, FactionRelations};
+use crate::galaxy::HomeSystem;
 use crate::knowledge::NextEventId;
+use crate::physics::light_delay_hexadies;
 use crate::player::{Empire, Faction};
 use crate::scripting::ScriptEngine;
 use crate::time_system::GameClock;
+
+/// Compute the light-speed delay in hexadies between two empires, based on
+/// the positions of their [`HomeSystem`] capitals (#460). Returns `0` if
+/// either empire is missing a `HomeSystem` or its star system has no
+/// `Position` (e.g. headless tests with no galaxy generation) — the
+/// delayed `DiplomaticEvent` then arrives at the very next
+/// `tick_diplomatic_events` run, preserving the asymmetric mutate path
+/// even without a real map.
+fn capital_to_capital_delay(world: &World, a: Entity, b: Entity) -> i64 {
+    let Some(home_a) = world.get::<HomeSystem>(a) else {
+        return 0;
+    };
+    let Some(home_b) = world.get::<HomeSystem>(b) else {
+        return 0;
+    };
+    let Some(pos_a) = world.get::<Position>(home_a.0) else {
+        return 0;
+    };
+    let Some(pos_b) = world.get::<Position>(home_b.0) else {
+        return 0;
+    };
+    light_delay_hexadies(pos_a.distance_to(pos_b))
+}
 
 /// Definition of a Casus Belli loaded from Lua.
 #[derive(Debug, Clone, bevy::reflect::Reflect)]
@@ -280,12 +306,28 @@ pub fn evaluate_casus_belli(world: &mut World) {
             continue;
         }
 
-        // Declare war in FactionRelations (both directions, immediate)
+        // #460: Sender (attacker) flips immediately, receiver (defender)
+        // flips after light-speed delay between capitals. Mirrors
+        // `declare_war_with_delay` semantics: between `clock_elapsed` and
+        // `clock_elapsed + delay` the defender's view of the attacker is
+        // still Peace/Neutral, opening the surprise-attack window.
+        let delay = capital_to_capital_delay(world, attacker, defender);
+
+        // Sender-side immediate war declaration (attacker -> defender).
         {
             let mut relations = world.resource_mut::<FactionRelations>();
             relations.declare_war(attacker, defender);
-            relations.declare_war(defender, attacker);
         }
+
+        // Receiver-side war declaration delivered via DiplomaticEvent so
+        // tick_diplomatic_events flips defender->attacker after `delay`.
+        world.spawn(DiplomaticEvent {
+            from: attacker,
+            to: defender,
+            option_id: DIPLO_DECLARE_WAR.into(),
+            payload: HashMap::new(),
+            arrives_at: clock_elapsed + delay,
+        });
 
         // Record in ActiveWars
         world.resource_mut::<ActiveWars>().wars.push(ActiveWar {
@@ -295,7 +337,11 @@ pub fn evaluate_casus_belli(world: &mut World) {
             started_at: clock_elapsed,
         });
 
-        // Emit WarDeclared GameEvent
+        // Emit WarDeclared GameEvent on the sender side immediately. This
+        // mirrors `declare_war_with_delay`'s emit policy (sender knows it
+        // declared war the moment it does so); the receiver-side
+        // observation is implicit in the delayed relations flip handled
+        // by `tick_diplomatic_events`.
         let event_id = world.resource_mut::<NextEventId>().allocate();
         let desc = format!(
             "War declared: {} vs {} (casus belli: {})",
@@ -310,28 +356,44 @@ pub fn evaluate_casus_belli(world: &mut World) {
         });
 
         info!(
-            "Auto-war declared via CB '{}': {} -> {}",
-            cb_id, attacker_id, defender_id
+            "Auto-war declared via CB '{}': {} -> {} (defender flip in {} hd)",
+            cb_id, attacker_id, defender_id, delay
         );
     }
 }
 
-/// End a war between two factions. Removes the [`ActiveWar`], transitions
-/// both sides to Peace in [`FactionRelations`], and emits a
+/// End a war between two factions. Removes the [`ActiveWar`] and emits a
 /// [`GameEventKind::WarEnded`] event.
+///
+/// `a` is treated as the **forced-peace initiator** (sender). Sender's view
+/// of `b` flips to Peace immediately. The reverse direction is delivered
+/// via a [`DiplomaticEvent`] with [`DIPLO_FORCED_PEACE`] that arrives after
+/// the light-speed delay between capitals — mirroring the sender-immediate /
+/// receiver-delayed semantics of the rest of the diplomacy pipeline (#460).
 ///
 /// Returns the removed [`ActiveWar`] if one existed, or `None` otherwise.
 pub fn end_war(world: &mut World, a: Entity, b: Entity) -> Option<ActiveWar> {
     let removed = world.resource_mut::<ActiveWars>().remove_war_between(a, b);
     if let Some(ref war) = removed {
-        // Make peace both directions
+        // #460: Sender (a) flips immediately, receiver (b) flips after
+        // light-speed delay via DIPLO_FORCED_PEACE.
+        let delay = capital_to_capital_delay(world, a, b);
+
         {
             let mut relations = world.resource_mut::<FactionRelations>();
             relations.make_peace(a, b);
-            relations.make_peace(b, a);
         }
 
         let clock_elapsed = world.resource::<GameClock>().elapsed;
+
+        world.spawn(DiplomaticEvent {
+            from: a,
+            to: b,
+            option_id: DIPLO_FORCED_PEACE.into(),
+            payload: HashMap::new(),
+            arrives_at: clock_elapsed + delay,
+        });
+
         let event_id = world.resource_mut::<NextEventId>().allocate();
         let desc = format!("War ended (casus belli: {})", war.cb_id);
         world.write_message(GameEvent {
