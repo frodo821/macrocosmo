@@ -2,9 +2,10 @@
 //! input and the current Stance. PR2c (#448) covered Rules 1 + 5a;
 //! PR2d extended to Rules 3 (colonize), 6 (build_ship composition),
 //! 7 (retreat — early-return), and 8 (fortify_system); PR3a adds
-//! Rule 2 (survey). Rule 5b (slot fill) is intentionally **not**
-//! ported here — it lives in `SimpleNpcPolicy` until the
-//! Short-per-fleet migration (#449) gives it a proper home.
+//! Rule 2 (survey); PR3b adds Rule 5b (slot fill / building).
+//! With Rule 5b ported every legacy `SimpleNpcPolicy` rule except
+//! Rule 4 (research_focus) is now mirrored here — PR3c flips the
+//! default policy mode and PR3d removes the legacy path.
 //!
 //! `MidStanceAgent` is parallel to `macrocosmo_ai::IntentDrivenMidTerm`
 //! by design (Plan agent micro-decision 3): different responsibility
@@ -155,9 +156,27 @@ impl MidStanceAgent {
             proposals.push(Proposal::faction_wide(cmd));
         }
 
-        // ----- Rule 5b (slot fill): NOT ported — stays in legacy.
-        // The "build power_plant / farm / mine based on net
-        // production" policy is Short-per-colony scope, not Mid.
+        // ----- Rule 5b: Slot fill — pick a building based on net
+        // production deficits. Mirrors `SimpleNpcPolicy::decide` Rule
+        // 5b byte-for-byte (`npc_decision.rs` lines 316–339): gated on
+        // `free_building_slots > 0.0`, then a three-branch priority
+        // (`net_production_energy < 0` → power_plant, else
+        // `net_production_food < 0` → farm, else → mine). The handler
+        // picks which colony gets the building, so the proposal is
+        // empire-wide — colony-locality lands with the Short-per-fleet
+        // migration (#449).
+        if adapter.free_building_slots() > 0.0 {
+            let building_id = if adapter.net_production_energy() < 0.0 {
+                "power_plant"
+            } else if adapter.net_production_food() < 0.0 {
+                "farm"
+            } else {
+                "mine"
+            };
+            let cmd = Command::new(cmd_ids::build_structure(), faction_id, now)
+                .with_param("building_id", CommandValue::Str(building_id.into()));
+            proposals.push(Proposal::faction_wide(cmd));
+        }
 
         // ----- Rule 6: Fleet composition gap → build_ship.
         // Mirrors `SimpleNpcPolicy::decide` Rule 6 exactly. Gated on
@@ -233,6 +252,9 @@ mod tests {
         has_colonizable_targets: bool,
         unsurveyed_systems: Vec<Entity>,
         idle_surveyors: Vec<Entity>,
+        free_building_slots: f64,
+        net_production_energy: f64,
+        net_production_food: f64,
     }
 
     impl StubAdapter {
@@ -254,6 +276,9 @@ mod tests {
                 has_colonizable_targets: false,
                 unsurveyed_systems: vec![],
                 idle_surveyors: vec![],
+                free_building_slots: 0.0,
+                net_production_energy: 0.0,
+                net_production_food: 0.0,
             }
         }
     }
@@ -306,6 +331,15 @@ mod tests {
         }
         fn idle_surveyors(&self) -> &[Entity] {
             &self.idle_surveyors
+        }
+        fn free_building_slots(&self) -> f64 {
+            self.free_building_slots
+        }
+        fn net_production_energy(&self) -> f64 {
+            self.net_production_energy
+        }
+        fn net_production_food(&self) -> f64 {
+            self.net_production_food
         }
     }
 
@@ -612,6 +646,86 @@ mod tests {
                 .all(|p| p.command.kind.as_str() != "colonize_system"),
             "no idle colonizer → no colonize emit",
         );
+    }
+
+    // ---- Rule 5b (slot fill / building) ----
+
+    #[test]
+    fn rule_5b_silent_when_free_slots_zero() {
+        // Default `free_building_slots == 0` → Rule 5b silent even
+        // when both deficits are present.
+        let stub = StubAdapter {
+            net_production_energy: -5.0,
+            net_production_food: -3.0,
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.command.kind.as_str() != "build_structure"),
+            "free_building_slots == 0 → no build_structure emit",
+        );
+    }
+
+    #[test]
+    fn rule_5b_picks_power_plant_when_energy_negative() {
+        // Energy negative beats food negative — power_plant has top
+        // priority in the legacy chain.
+        let stub = StubAdapter {
+            free_building_slots: 2.0,
+            net_production_energy: -5.0,
+            net_production_food: -3.0,
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let build = proposals
+            .iter()
+            .find(|p| p.command.kind.as_str() == "build_structure")
+            .expect("Rule 5b must emit build_structure");
+        match build.command.params.get("building_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "power_plant"),
+            _ => panic!("expected building_id=power_plant"),
+        }
+    }
+
+    #[test]
+    fn rule_5b_picks_farm_when_only_food_negative() {
+        let stub = StubAdapter {
+            free_building_slots: 2.0,
+            net_production_energy: 5.0,
+            net_production_food: -3.0,
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let build = proposals
+            .iter()
+            .find(|p| p.command.kind.as_str() == "build_structure")
+            .expect("Rule 5b must emit build_structure");
+        match build.command.params.get("building_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "farm"),
+            _ => panic!("expected building_id=farm"),
+        }
+    }
+
+    #[test]
+    fn rule_5b_falls_back_to_mine() {
+        // Both production rates non-negative + free slots → mine.
+        let stub = StubAdapter {
+            free_building_slots: 1.0,
+            net_production_energy: 5.0,
+            net_production_food: 5.0,
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let build = proposals
+            .iter()
+            .find(|p| p.command.kind.as_str() == "build_structure")
+            .expect("Rule 5b must emit build_structure");
+        match build.command.params.get("building_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "mine"),
+            _ => panic!("expected building_id=mine"),
+        }
     }
 
     // ---- Rule 6 (build_ship composition) ----

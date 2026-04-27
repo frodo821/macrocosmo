@@ -2,10 +2,12 @@
 //!
 //! Asserts that on a one-tick fixture, [`AiPolicyMode::Legacy`] and
 //! [`AiPolicyMode::Layered`] emit the **same** canonical Command set.
-//! Today (PR2c) only Rules 1 and 5a are ported; PR2d adds the rest.
-//! Each fixture below is built so **only** Rules 1 and/or 5a fire in
-//! Legacy mode — any other rule firing would diverge from Layered's
-//! still-empty branch and break parity.
+//! PR2c covered Rules 1 + 5a; PR2d covered 3 / 6 / 7 / 8; PR3a covered
+//! Rule 2 (single + zip); PR3b covers Rule 5b (energy / food / mine).
+//! Each fixture below is built so the rule(s) under test fire
+//! identically in Legacy and Layered modes — any other rule firing
+//! must also fire the same way under both, which the canonical-set
+//! comparison covers automatically.
 //!
 //! Canonical comparison goes through [`CanonicalCommand`] which sorts
 //! the param map before serialising — `CommandParams` is an
@@ -1271,6 +1273,245 @@ fn rule_5a_build_shipyard_parity() {
     assert_eq!(
         legacy, layered,
         "Rule 5a (build_structure shipyard) parity broken: \
+         Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+// ---- Rule 5b (slot fill / building) -------------------------------
+
+/// Per-empire production overrides applied **after**
+/// `emit_economic_metrics` writes the natural values, so Rule 5b sees
+/// our chosen sign for `net_production_energy` / `net_production_food`.
+/// `Amt` (the production component's storage) is unsigned and
+/// `final_value()` clamps to zero, so a colony cannot produce a
+/// negative rate — but Rule 5b's branches are gated on negative values.
+/// The override system below runs in `MetricProduce` after the natural
+/// emitter so the latest value wins (`MetricStore::push` accepts
+/// equal-tick re-emission and `current()` returns the newest sample —
+/// see `bus/metric.rs::push`).
+#[derive(Resource, Clone, Copy)]
+struct Rule5bMetricOverride {
+    energy: f64,
+    food: f64,
+}
+
+/// Override system — mirrors the `bus_with_metrics` shortcut the
+/// legacy unit tests use, but for the integration fixture. Walks every
+/// empire and re-emits the two metrics with the override values.
+/// `free_building_slots` is left to the natural emitter (the fixture
+/// builds colonies with empty slots so the natural value is already
+/// positive).
+fn override_rule_5b_metrics(
+    mut writer: macrocosmo::ai::emit::AiBusWriter,
+    empires: Query<Entity, With<Empire>>,
+    over: Res<Rule5bMetricOverride>,
+) {
+    for empire_entity in &empires {
+        let fid = macrocosmo::ai::convert::to_ai_faction(empire_entity);
+        writer.emit(
+            &macrocosmo::ai::schema::ids::metric::for_faction("net_production_energy", fid),
+            over.energy,
+        );
+        writer.emit(
+            &macrocosmo::ai::schema::ids::metric::for_faction("net_production_food", fid),
+            over.food,
+        );
+    }
+}
+
+/// Shared base for the Rule 5b parity fixtures. Spawns an empire with
+/// one colony at home whose four planet slots are **all empty** —
+/// that's what makes `free_building_slots > 0` and arms Rule 5b. The
+/// caller picks the (energy, food) overrides via
+/// [`Rule5bMetricOverride`]. Mirrors `setup_rule_5a_scenario`'s shape
+/// so any extra rule that fires (Rule 5a is also armed: Core present,
+/// no shipyard, colony present) fires identically in both modes — the
+/// canonical-set comparison absorbs that without false positives.
+fn setup_rule_5b_base(app: &mut App, override_metrics: Rule5bMetricOverride) -> (Entity, Entity) {
+    use macrocosmo::amount::Amt;
+
+    app.insert_resource(AiPlayerMode(true));
+    app.insert_resource(override_metrics);
+    // Re-emit metrics after the natural emitter so the override is the
+    // value Rule 5b reads. Same set + chain as `emit_economic_metrics`
+    // (`AiTickSet::MetricProduce`) — see plugin.rs's emitter wiring.
+    app.add_systems(
+        Update,
+        override_rule_5b_metrics
+            .after(macrocosmo::ai::emitters::emit_economic_metrics)
+            .in_set(AiTickSet::MetricProduce),
+    );
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Aurelian".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "aurelian".into(),
+                name: "Aurelian".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+
+    // Colony with **all four planet slots empty** so
+    // `free_building_slots == 4` (positive) → Rule 5b armed. The
+    // helper auto-attaches `FactionOwner(empire)` so `colony_count`
+    // also lands at 1.
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        home,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![None, None, None, None],
+    );
+    // `test_app()` already spawned a "Test Empire", so
+    // `spawn_test_colony`'s `With<Empire>` picks non-deterministically.
+    // Force ownership onto our test empire — same pattern Rule 3 / 6
+    // / 8 setups use.
+    app.world_mut()
+        .entity_mut(colony)
+        .insert(macrocosmo::faction::FactionOwner(empire));
+
+    spawn_mock_core_ship(app.world_mut(), home, empire);
+
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+    spawn_test_ruler(app.world_mut(), empire, home);
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+    }
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: home,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Home".into(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                colonized: true,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+    }
+
+    (empire, home)
+}
+
+#[test]
+fn rule_5b_energy_negative_builds_power_plant_parity() {
+    // 15 ticks mirrors the Rule 5a fixture's light-delay budget —
+    // `build_structure` is spatial-less so origin == destination == capital
+    // and the outbox just needs one Update for dispatch + one for process.
+    let over = Rule5bMetricOverride {
+        energy: -5.0,
+        food: 10.0,
+    };
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 15, |app| {
+        setup_rule_5b_base(app, over);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 15, |app| {
+        setup_rule_5b_base(app, over);
+    });
+
+    // Sanity guard against vacuous parity. The string match looks
+    // inside `params_canonical` — `Debug` on `CommandValue::Str(...)`
+    // emits `Str("power_plant")` so any `build_structure(power_plant)`
+    // shows up here. (The fixture also fires Rule 5a, which emits
+    // `Str("shipyard")`; we deliberately match `power_plant` to pin
+    // 5b specifically.)
+    assert!(
+        legacy
+            .iter()
+            .any(|c| c.kind == "build_structure" && c.params_canonical.contains("power_plant")),
+        "Rule 5b fixture (energy negative) broken: \
+         Legacy must emit build_structure(power_plant); got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 5b (build_structure power_plant) parity broken: \
+         Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_5b_food_negative_builds_farm_parity() {
+    // Energy non-negative, food negative → farm branch.
+    let over = Rule5bMetricOverride {
+        energy: 5.0,
+        food: -3.0,
+    };
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 15, |app| {
+        setup_rule_5b_base(app, over);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 15, |app| {
+        setup_rule_5b_base(app, over);
+    });
+
+    assert!(
+        legacy
+            .iter()
+            .any(|c| c.kind == "build_structure" && c.params_canonical.contains("farm")),
+        "Rule 5b fixture (food negative) broken: \
+         Legacy must emit build_structure(farm); got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 5b (build_structure farm) parity broken: \
+         Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_5b_both_positive_builds_mine_parity() {
+    // Both production rates non-negative + free slots → mine fallback.
+    let over = Rule5bMetricOverride {
+        energy: 5.0,
+        food: 5.0,
+    };
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 15, |app| {
+        setup_rule_5b_base(app, over);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 15, |app| {
+        setup_rule_5b_base(app, over);
+    });
+
+    assert!(
+        legacy
+            .iter()
+            .any(|c| c.kind == "build_structure" && c.params_canonical.contains("mine")),
+        "Rule 5b fixture (mine fallback) broken: \
+         Legacy must emit build_structure(mine); got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 5b (build_structure mine) parity broken: \
          Legacy = {:?}, Layered = {:?}",
         legacy, layered,
     );

@@ -144,6 +144,25 @@ pub trait MidGameAdapter {
     /// the [`Self::colonizable_systems`] / [`Self::hostile_systems`]
     /// pattern.
     fn idle_surveyors(&self) -> &[Entity];
+
+    // ---- PR3b additions (Rule 5b — slot fill / building) ----
+
+    /// Empire-wide free building slot count (sum across all colonies).
+    /// Rule 5b's fire gate: `> 0.0` opens the rule, `0.0` keeps it
+    /// silent. Sourced from the same `free_building_slots` per-faction
+    /// metric `SimpleNpcPolicy::decide` reads (emitted by the empire
+    /// metrics emitter in `emitters.rs`).
+    fn free_building_slots(&self) -> f64;
+
+    /// Empire-wide net energy production (income − upkeep). Rule 5b's
+    /// power_plant branch fires when this is `< 0.0`. Same metric the
+    /// legacy policy reads (`net_production_energy`).
+    fn net_production_energy(&self) -> f64;
+
+    /// Empire-wide net food production. Rule 5b's farm branch fires
+    /// when `net_production_energy >= 0.0` AND this is `< 0.0`. Same
+    /// metric the legacy policy reads (`net_production_food`).
+    fn net_production_food(&self) -> f64;
 }
 
 /// Three counts Rule 6 needs to pick the next ship to build. Matches
@@ -304,6 +323,33 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
 
     fn idle_surveyors(&self) -> &[Entity] {
         self.idle_surveyors
+    }
+
+    fn free_building_slots(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "free_building_slots",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
+    }
+
+    fn net_production_energy(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "net_production_energy",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
+    }
+
+    fn net_production_food(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "net_production_food",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
     }
 }
 
