@@ -43,6 +43,8 @@ pub fn register_all_types(app: &mut App) {
     // crate::ai::debug_log
     #[cfg(feature = "ai-log")]
     app.register_type::<crate::ai::debug_log::AiLogConfig>();
+    // crate::ai::mid_adapter
+    app.register_type::<crate::ai::mid_adapter::AiPolicyMode>();
     // crate::ai::npc_decision
     app.register_type::<crate::ai::npc_decision::AiControlled>();
     app.register_type::<crate::ai::npc_decision::AiPlayerMode>();

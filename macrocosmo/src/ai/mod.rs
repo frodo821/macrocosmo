@@ -46,11 +46,13 @@ pub mod debug_log;
 pub mod decomposition_rules;
 pub mod emit;
 pub mod emitters;
+pub mod mid_adapter;
 pub mod npc_decision;
 pub mod orchestrator_runtime;
 pub mod plugin;
 pub mod schema;
 
+pub use mid_adapter::{AiPolicyMode, BevyMidGameAdapter, MidGameAdapter};
 pub use npc_decision::{AiControlled, AiPlayerMode};
 pub use plugin::{AiBusResource, AiPlugin, AiTickSet};
 

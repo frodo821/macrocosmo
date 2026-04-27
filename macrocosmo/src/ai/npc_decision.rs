@@ -490,6 +490,12 @@ pub fn npc_decision_tick(
         With<crate::ship::CoreShip>,
     >,
     mut policy: Local<SimpleNpcPolicy>,
+    // #448 PR2b: AiPolicyMode gate. Default `Legacy` runs the
+    // existing `SimpleNpcPolicy` path; `Layered` runs a no-op
+    // scaffold that PR2c/2d fill with rule ports. The branch lives
+    // inside the per-empire loop below so swapping modes per tick
+    // takes effect on the next decision.
+    policy_mode: Res<crate::ai::mid_adapter::AiPolicyMode>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
     use crate::knowledge::SystemVisibilityTier;
@@ -768,7 +774,20 @@ pub fn npc_decision_tick(
             ruler_aboard,
         };
 
-        let commands = policy.decide(&faction.id, entity, now, &bus.0, &context);
+        // #448 PR2b: AiPolicyMode gate. Today Layered is a noop
+        // (returns empty). PR2c/2d fill it with rule ports while a
+        // parity test keeps Legacy and Layered in lock-step. Default
+        // = Legacy → all existing tests + production paths unchanged.
+        let commands: Vec<Command> = match *policy_mode {
+            crate::ai::mid_adapter::AiPolicyMode::Legacy => {
+                policy.decide(&faction.id, entity, now, &bus.0, &context)
+            }
+            crate::ai::mid_adapter::AiPolicyMode::Layered => {
+                let adapter = crate::ai::mid_adapter::BevyMidGameAdapter { faction: entity };
+                let proposals = crate::ai::mid_adapter::layered_decide_noop(&adapter);
+                crate::ai::mid_adapter::arbitrate(proposals)
+            }
+        };
         for cmd in commands {
             bus.0.emit_command(cmd);
         }

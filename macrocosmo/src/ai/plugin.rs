@@ -104,6 +104,12 @@ impl Plugin for AiPlugin {
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .init_resource::<DeclaredFactionSlots>()
             .init_resource::<super::orchestrator_runtime::OrchestratorRegistry>()
+            // #448 PR2b: AiPolicyMode gate. Legacy = today's
+            // SimpleNpcPolicy path. Layered = noop scaffold; PR2c/2d
+            // fill it with rule ports while a parity test keeps both
+            // in lock-step. Default `Legacy` keeps every existing
+            // production path and test untouched.
+            .init_resource::<super::mid_adapter::AiPolicyMode>()
             // Round 9 PR #3: AI command light-speed delay shim. Outbox
             // resource is initialised here so save/load round-trips see
             // a consistent type-registered Resource even on fresh runs.
