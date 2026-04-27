@@ -1155,7 +1155,13 @@ pub(crate) mod views {
 // ======================================================================
 // apply: &mut World mutators (write path, NEVER touches Lua).
 // ======================================================================
-pub(crate) mod apply {
+//
+// Visibility: `pub` so integration tests (outside the crate) can drive
+// `request_command` / `dispatch_pending_scripted_commands` directly
+// without round-tripping through the Lua scope closure. The body still
+// holds the «no `&Lua` here» invariant — public exposure does not
+// weaken that contract.
+pub mod apply {
     use super::*;
     use crate::amount::SignedAmt;
     use crate::condition::ScopedFlags;
@@ -1678,10 +1684,42 @@ pub(crate) mod apply {
             .map(|c| c.elapsed)
             .unwrap_or(0);
 
-        // Emit the request on the matching Bevy message queue. Using
-        // `resource_mut::<Messages<_>>()` + `write` mirrors what Bevy's
-        // `MessageWriter` param does internally, without needing a full
-        // SystemParam context.
+        // #461: Route remote commands through a delayed queue so
+        // Lua-issued typed messages incur light-speed delay just like
+        // `send_remote_command` does for colony commands. Local issuers
+        // (or worlds that lack a PlayerEmpire / target Position — typical
+        // unit tests) fall through to the immediate-emit legacy path.
+        let target_ship = parsed_request_ship(&req);
+        if let Some(d) = compute_request_light_delay(world, target_ship)
+            && d > 0
+        {
+            let arrives_at = issued_at.saturating_add(d);
+            world.spawn(PendingScriptedCommand {
+                command_id,
+                request: req,
+                sent_at: issued_at,
+                arrives_at,
+            });
+            return Ok(command_id.0);
+        }
+
+        emit_typed_message(world, command_id, req, issued_at);
+        Ok(command_id.0)
+    }
+
+    /// Helper used by both [`request_command`] (immediate path) and the
+    /// arrival drainer ([`dispatch_pending_scripted_commands`]) to emit
+    /// the typed `*Requested` message corresponding to a [`ParsedRequest`].
+    ///
+    /// `issued_at` is the original Lua-call-time clock; we preserve it
+    /// across the in-flight delay so downstream handlers see the
+    /// authoring tick (mirrors `PendingCommand.sent_at` semantics).
+    pub(crate) fn emit_typed_message(
+        world: &mut World,
+        command_id: CommandId,
+        req: ParsedRequest,
+        issued_at: i64,
+    ) {
         match req {
             ParsedRequest::Move { ship, target } => {
                 world
@@ -1806,7 +1844,123 @@ pub(crate) mod apply {
                     });
             }
         }
-        Ok(command_id.0)
+    }
+
+    /// Extract the `ship` field common to every [`ParsedRequest`] variant.
+    /// Used to look up the target ship's `Position` for light-delay
+    /// computation.
+    pub(crate) fn parsed_request_ship(req: &ParsedRequest) -> Entity {
+        match req {
+            ParsedRequest::Move { ship, .. }
+            | ParsedRequest::MoveToCoordinates { ship, .. }
+            | ParsedRequest::Scout { ship, .. }
+            | ParsedRequest::LoadDeliverable { ship, .. }
+            | ParsedRequest::DeployDeliverable { ship, .. }
+            | ParsedRequest::TransferToStructure { ship, .. }
+            | ParsedRequest::LoadFromScrapyard { ship, .. }
+            | ParsedRequest::Colonize { ship, .. }
+            | ParsedRequest::Survey { ship, .. } => *ship,
+        }
+    }
+
+    /// Compute light-speed delay between the issuer (PlayerEmpire ruler
+    /// vantage) and the target ship's current `Position`. Returns
+    /// `Some(0)` when issuer and target coincide; `None` when locality
+    /// cannot be determined (no PlayerEmpire / target ship lacks
+    /// `Position`) — callers fall back to the legacy immediate-emit
+    /// path so unit tests with bare-bones worlds keep working.
+    pub(crate) fn compute_request_light_delay(
+        world: &mut World,
+        target_ship: Entity,
+    ) -> Option<i64> {
+        use crate::components::Position;
+        use crate::physics;
+        use crate::player::{AboardShip, EmpireRuler, PlayerEmpire, StationedAt};
+
+        // Issuer position: PlayerEmpire's Ruler — aboard a ship if any,
+        // else the system the Ruler is StationedAt. Mirrors the
+        // resolution used by `send_remote_command` (#268) so scripted
+        // and player-issued remote commands incur identical light-delay
+        // accounting.
+        let mut player_empire_q = world.query_filtered::<&EmpireRuler, With<PlayerEmpire>>();
+        let ruler_entity = player_empire_q
+            .iter(world)
+            .next()
+            .map(|empire_ruler| empire_ruler.0)?;
+
+        let aboard_ship = world.get::<AboardShip>(ruler_entity).map(|a| a.ship);
+        let stationed_system = world.get::<StationedAt>(ruler_entity).map(|s| s.system);
+        let issuer_pos = if let Some(ship) = aboard_ship {
+            world.get::<Position>(ship).map(|p| p.as_array())?
+        } else if let Some(system) = stationed_system {
+            world.get::<Position>(system).map(|p| p.as_array())?
+        } else {
+            return None;
+        };
+
+        // Target position: the ship's own `Position`.
+        let target_pos = world.get::<Position>(target_ship).map(|p| p.as_array())?;
+
+        let distance = physics::distance_ly_arr(issuer_pos, target_pos);
+        Some(physics::light_delay_hexadies(distance))
+    }
+
+    // ==================================================================
+    // #461: PendingScriptedCommand — in-flight Lua-issued typed command.
+    //
+    // Mirrors `communication::PendingCommand` (RemoteCommand/colony) but
+    // for the per-variant `*Requested` event-bus pipeline. Spawned by
+    // `request_command` when the issuer→target light-delay is > 0;
+    // drained by `dispatch_pending_scripted_commands` once the arrival
+    // tick elapses, at which point the typed message is finally emitted.
+    //
+    // Runtime-only: not persisted (no `Reflect`, not in `SaveableMarker`).
+    // In-flight scripted commands are frame-transient — surviving
+    // save/load is not a goal, matching how typed `*Requested` messages
+    // themselves do not persist.
+    // ==================================================================
+
+    /// In-flight Lua-issued typed command awaiting light-speed arrival.
+    #[derive(Component, Debug)]
+    pub struct PendingScriptedCommand {
+        pub command_id: CommandId,
+        pub request: ParsedRequest,
+        /// The clock tick when `gs:request_command` was called.
+        pub sent_at: i64,
+        /// The clock tick at which the typed message must be emitted.
+        pub arrives_at: i64,
+    }
+
+    /// System: drain `PendingScriptedCommand` entries whose `arrives_at`
+    /// has elapsed and emit the corresponding typed `*Requested` message.
+    /// Wired into `ScriptingPlugin` (Update, after `advance_game_time`).
+    /// Exclusive `&mut World` to keep the emit-then-despawn loop simple.
+    pub fn dispatch_pending_scripted_commands(world: &mut World) {
+        let now = world
+            .get_resource::<GameClock>()
+            .map(|c| c.elapsed)
+            .unwrap_or(0);
+
+        // Two-phase to satisfy the borrow checker: collect ready
+        // entries first, then emit + despawn.
+        let mut ready: Vec<(Entity, CommandId, ParsedRequest, i64)> = Vec::new();
+        {
+            let mut q = world.query::<(Entity, &PendingScriptedCommand)>();
+            for (entity, pending) in q.iter(world) {
+                if now >= pending.arrives_at {
+                    ready.push((
+                        entity,
+                        pending.command_id,
+                        pending.request.clone(),
+                        pending.sent_at,
+                    ));
+                }
+            }
+        }
+        for (entity, command_id, request, sent_at) in ready {
+            emit_typed_message(world, command_id, request, sent_at);
+            world.entity_mut(entity).despawn();
+        }
     }
 
     // ==================================================================

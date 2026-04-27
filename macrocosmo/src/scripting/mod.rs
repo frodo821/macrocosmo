@@ -143,6 +143,14 @@ impl Plugin for ScriptingPlugin {
                 knowledge_dispatch::dispatch_knowledge_recorded
                     .after(crate::time_system::advance_game_time),
             )
+            // #461: Drain in-flight Lua-issued typed commands once the
+            // issuer→target light-delay has elapsed. Mirrors how
+            // `process_pending_commands` handles colony `RemoteCommand`s.
+            .add_systems(
+                Update,
+                gamestate_scope::apply::dispatch_pending_scripted_commands
+                    .after(crate::time_system::advance_game_time),
+            )
             // #353 K-4 / #354 K-5: drain ALL ready facts (core +
             // scripted) whose arrival time has elapsed, fire
             // `<kind>@observed` subscribers, and push banners for core
