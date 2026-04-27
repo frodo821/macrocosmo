@@ -459,7 +459,7 @@ pub fn process_surveys(
                     }
 
                     // #127: Roll anomaly discovery (with fallback to legacy exploration events)
-                    roll_and_apply_anomaly(
+                    let anomaly_id = roll_and_apply_anomaly(
                         &anomaly_registry,
                         &mut rng,
                         &system_name,
@@ -471,6 +471,23 @@ pub fn process_surveys(
                         target_system,
                         &mut events,
                     );
+                    // #463: Dual-write the umbrella AnomalyDiscovered fact for
+                    // the non-FTL path so distant empires only learn about the
+                    // discovery once light reaches them. The per-effect
+                    // GameEvents written by `roll_and_apply_anomaly` remain on
+                    // the omniscient audit channel; the player-facing banner
+                    // is delivered through this fact pipeline.
+                    if let (Some(aid), Some(origin_pos)) = (anomaly_id, sys_pos_arr) {
+                        let event_id = fact_sys.allocate_event_id();
+                        let desc = format!("Anomaly '{}' discovered at {}", aid, system_name);
+                        let fact = KnowledgeFact::AnomalyDiscovered {
+                            event_id: Some(event_id),
+                            system: target_system,
+                            anomaly_id: aid,
+                            detail: desc,
+                        };
+                        fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
+                    }
                 }
             }
 

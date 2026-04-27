@@ -349,6 +349,7 @@ pub const CORE_KIND_IDS: &[&str] = &[
     "core:colony_established",
     "core:colony_failed",
     "core:ship_arrived",
+    "core:core_conquered",
 ];
 
 /// Full payload schema catalog for `core:*` kinds. The schema mirrors the
@@ -444,6 +445,15 @@ pub fn core_kind_catalog() -> &'static [(&'static str, &'static [(&'static str, 
                 // Same Option<Entity> note as `core:structure_built`.
                 ("system", PayloadFieldType::Entity),
                 ("name", PayloadFieldType::String),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            "core:core_conquered",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("conquered_by", PayloadFieldType::Entity),
+                ("original_owner", PayloadFieldType::Entity),
                 ("detail", PayloadFieldType::String),
             ],
         ),

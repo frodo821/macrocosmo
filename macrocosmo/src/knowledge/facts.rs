@@ -264,6 +264,18 @@ pub enum KnowledgeFact {
         name: String,
         detail: String,
     },
+    /// #463: An Infrastructure Core was conquered (hull dropped to 1.0). The
+    /// `conquered_by` faction is the attacker; `original_owner` is the
+    /// defender whose Core entered the lock. Empires receive this fact via
+    /// light-speed propagation from the conquered system, mirroring the
+    /// observation contract used by combat / settlement events.
+    CoreConquered {
+        event_id: Option<EventId>,
+        system: Entity,
+        conquered_by: Entity,
+        original_owner: Entity,
+        detail: String,
+    },
     /// #351 (K-2): Lua-defined knowledge kind. The payload is captured as a
     /// [`PayloadSnapshot`](super::payload::PayloadSnapshot) so the fact
     /// survives being queued without keeping Lua references alive.
@@ -298,6 +310,7 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { .. } => "Colony Established",
             KnowledgeFact::ColonyFailed { .. } => "Colony Failed",
             KnowledgeFact::ShipArrived { .. } => "Ship Arrived",
+            KnowledgeFact::CoreConquered { .. } => "Core Conquered",
             KnowledgeFact::Scripted { .. } => "Knowledge",
         }
     }
@@ -316,6 +329,7 @@ impl KnowledgeFact {
                 format!("Colony '{}' failed: {}", name, reason)
             }
             KnowledgeFact::ShipArrived { detail, .. } => detail.clone(),
+            KnowledgeFact::CoreConquered { detail, .. } => detail.clone(),
             KnowledgeFact::Scripted {
                 kind_id,
                 payload_snapshot,
@@ -344,6 +358,7 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { .. } => High,
             KnowledgeFact::ColonyFailed { .. } => High,
             KnowledgeFact::ShipArrived { .. } => Low,
+            KnowledgeFact::CoreConquered { .. } => High,
             KnowledgeFact::Scripted { .. } => Medium,
         }
     }
@@ -360,6 +375,7 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { system, .. } => Some(*system),
             KnowledgeFact::ColonyFailed { system, .. } => Some(*system),
             KnowledgeFact::ShipArrived { system, .. } => *system,
+            KnowledgeFact::CoreConquered { system, .. } => Some(*system),
             KnowledgeFact::Scripted { origin_system, .. } => *origin_system,
         }
     }
@@ -377,6 +393,7 @@ impl KnowledgeFact {
             | KnowledgeFact::ColonyEstablished { event_id, .. }
             | KnowledgeFact::ColonyFailed { event_id, .. }
             | KnowledgeFact::ShipArrived { event_id, .. }
+            | KnowledgeFact::CoreConquered { event_id, .. }
             | KnowledgeFact::Scripted { event_id, .. } => *event_id,
         }
     }
@@ -400,6 +417,7 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyEstablished { .. } => Some("core:colony_established"),
             KnowledgeFact::ColonyFailed { .. } => Some("core:colony_failed"),
             KnowledgeFact::ShipArrived { .. } => Some("core:ship_arrived"),
+            KnowledgeFact::CoreConquered { .. } => Some("core:core_conquered"),
             KnowledgeFact::Scripted { .. } => None,
         }
     }
@@ -541,6 +559,24 @@ impl KnowledgeFact {
                     fields.insert("system".into(), PayloadValue::Entity(s.to_bits()));
                 }
                 fields.insert("name".into(), PayloadValue::String(name.clone()));
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::CoreConquered {
+                system,
+                conquered_by,
+                original_owner,
+                detail,
+                ..
+            } => {
+                fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
+                fields.insert(
+                    "conquered_by".into(),
+                    PayloadValue::Entity(conquered_by.to_bits()),
+                );
+                fields.insert(
+                    "original_owner".into(),
+                    PayloadValue::Entity(original_owner.to_bits()),
+                );
                 fields.insert("detail".into(), PayloadValue::String(detail.clone()));
             }
             KnowledgeFact::Scripted { .. } => return None,
@@ -1558,6 +1594,13 @@ mod tests {
                 event_id: None,
                 system: None,
                 name: "".into(),
+                detail: "".into(),
+            },
+            KnowledgeFact::CoreConquered {
+                event_id: None,
+                system: Entity::PLACEHOLDER,
+                conquered_by: Entity::PLACEHOLDER,
+                original_owner: Entity::PLACEHOLDER,
                 detail: "".into(),
             },
         ];

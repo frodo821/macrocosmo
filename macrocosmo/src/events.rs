@@ -1,3 +1,43 @@
+//! # `GameEvent` semantic contract (#463)
+//!
+//! [`GameEvent`] is the **omniscient simulation / audit channel**. Each event
+//! is fired at the moment a world happening occurs at its origin, with no
+//! light-speed delay applied — the event log therefore sees ground truth as
+//! soon as the simulation produces it.
+//!
+//! Player- and AI-facing notification of remote happenings **must not** be
+//! sourced from this channel directly. The canonical observation pipeline is
+//! [`crate::knowledge::KnowledgeFact`] / [`crate::knowledge::PendingFactQueue`]:
+//! `FactSysParam::record_for(fact, vantages, origin, at)` routes a single
+//! world event into every empire's per-faction queue with the correct
+//! light-speed (or relay-shortened) arrival time, then surfaces a single
+//! deduped notification banner via the shared [`EventId`].
+//!
+//! ## Contract for new emit sites
+//!
+//! For any happening that originates at a star system or deep-space
+//! coordinate and that an empire might learn about remotely, the emitting
+//! system **must dual-write**:
+//!
+//! 1. A `GameEvent` (this channel) — audit-only, fired at observation time.
+//! 2. A `KnowledgeFact` routed through `FactSysParam::record_for(...)` — the
+//!    delayed observation path that respects `physics::light_delay_hexadies`
+//!    between the origin and each empire's
+//!    [`crate::player::EmpireViewerSystem`] (with optional FTL relay
+//!    shortcut). Both must share a freshly-allocated [`EventId`] so the
+//!    `NotifiedEventIds` dedupe table collapses the legacy banner path and
+//!    the fact-pipeline banner into a single notification.
+//!
+//! See `ship/movement.rs::write_ship_arrived_dual` and
+//! `ship/conquered.rs::check_conquered_transition` for canonical
+//! implementations of the dual-write pattern.
+//!
+//! Local-only happenings (e.g. UI-internal speed change confirmations)
+//! that are never visible from another empire's vantage may stay
+//! `GameEvent`-only — but a happening that can be observed from a distance
+//! and that lacks a `KnowledgeFact` counterpart is a **remote information
+//! leak** and should be treated as a bug.
+
 use bevy::prelude::*;
 
 use crate::knowledge::{EventId, NextEventId};

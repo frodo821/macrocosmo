@@ -19,10 +19,11 @@
 
 use bevy::prelude::*;
 
+use crate::components::Position;
 use crate::events::{GameEvent, GameEventKind};
 use crate::faction::{FactionOwner, FactionRelations};
 use crate::galaxy::AtSystem;
-use crate::knowledge::FactSysParam;
+use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::time_system::GameClock;
 
 use super::{CoreShip, Owner, Ship, ShipHitpoints, ShipState};
@@ -55,9 +56,14 @@ pub fn check_conquered_transition(
         (With<CoreShip>, Without<ConqueredCore>),
     >,
     hostiles: Query<(&AtSystem, &FactionOwner), With<crate::galaxy::Hostile>>,
+    system_pos_q: Query<&Position, (With<crate::galaxy::StarSystem>, Without<crate::ship::Ship>)>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
+    // #463: per-faction routing so the `CoreConquered` fact reaches every
+    // empire via light-speed propagation from the conquered system.
+    vantage_q: FactionVantageQueries,
 ) {
+    let vantages = vantage_q.collect();
     for (entity, ship, hp, at_system) in &cores {
         if hp.hull > 1.0 || hp.hull <= 0.0 {
             continue;
@@ -76,14 +82,39 @@ pub fn check_conquered_transition(
             .entity(entity)
             .insert(ConqueredCore { attacker_faction });
         let event_id = fact_sys.allocate_event_id();
-        let desc = format!("Infrastructure Core '{}' has been conquered!", ship.name,);
+        let desc = format!("Infrastructure Core '{}' has been conquered!", ship.name);
+        // #463: GameEvent is the omniscient audit-side record; the
+        // player-facing notification is delivered via the paired
+        // `KnowledgeFact::CoreConquered` below, which respects light-speed
+        // propagation from the conquered system to each empire's viewer.
         events.write(GameEvent {
             id: event_id,
             timestamp: clock.elapsed,
             kind: GameEventKind::CoreConquered,
-            description: desc,
+            description: desc.clone(),
             related_system: Some(at_system.0),
         });
+        // Resolve the system's world position; bail on the fact emit if the
+        // system entity has no Position (defensive — every StarSystem in
+        // production carries one, but tests sometimes spawn bare entities).
+        let Ok(system_pos) = system_pos_q.get(at_system.0) else {
+            continue;
+        };
+        let original_owner = match ship.owner {
+            Owner::Empire(e) => e,
+            Owner::Neutral => continue,
+        };
+        let fact = KnowledgeFact::CoreConquered {
+            event_id: Some(event_id),
+            system: at_system.0,
+            conquered_by: attacker_faction,
+            original_owner,
+            detail: desc,
+        };
+        // vantages = every empire with a viewer; light-speed delay from the
+        // conquered system's position decides arrival per empire. Distant
+        // empires therefore only see the banner once light has reached them.
+        fact_sys.record_for(fact, &vantages, system_pos.as_array(), clock.elapsed);
     }
 }
 

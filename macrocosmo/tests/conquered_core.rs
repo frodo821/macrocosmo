@@ -8,6 +8,8 @@
 //! - Peacetime recovery blocked while attacker fleet present
 //! - Normal ship repair skips conquered cores
 //! - Casus belli event on peacetime Core attack
+//! - #463: CoreConquered KnowledgeFact arrives only after light reaches a
+//!   distant empire (omniscient `GameEvent` is audit-only)
 
 mod common;
 
@@ -16,6 +18,7 @@ use common::{advance_time, empire_entity, spawn_raw_hostile, spawn_test_system, 
 use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionRelations, FactionView, RelationState};
 use macrocosmo::galaxy::AtSystem;
+use macrocosmo::knowledge::{KnowledgeFact, PendingFactQueue};
 use macrocosmo::ship::{ConqueredCore, CoreShip, Owner, Ship, ShipHitpoints, ShipState};
 
 /// Helper: spawn a Core ship with given hull HP. Returns (core_entity, faction_entity).
@@ -414,5 +417,88 @@ fn port_repair_skips_conquered_core() {
         (hp.hull - 1.0).abs() < f64::EPSILON,
         "Port repair should NOT heal conquered Core, got hull={}",
         hp.hull
+    );
+}
+
+/// #463: A `KnowledgeFact::CoreConquered` is enqueued when the Core enters
+/// the lock state, and its `arrives_at` is gated by light-speed propagation
+/// from the conquered system to the empire's viewer. Distant empires must
+/// not learn about the conquest before light reaches them — the omniscient
+/// `GameEvent::CoreConquered` is audit-only.
+#[test]
+fn core_conquered_fact_delayed_by_light_speed_for_distant_empire() {
+    let mut app = test_app();
+    // Two systems 10 ly apart on the X axis.
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, false);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [10.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let empire = empire_entity(app.world_mut());
+
+    // Establish the empire's light-speed reference at `home` — without a
+    // Ruler/StationedAt or EmpireViewerSystem the FactionVantage list is
+    // empty and `record_for` falls through (see Round 9 PR #1 docs).
+    common::spawn_test_ruler(app.world_mut(), empire, home);
+    common::set_empire_viewer_system(app.world_mut(), empire, home);
+
+    // Core ship at the frontier system.
+    let core = spawn_core_at(app.world_mut(), frontier, 5.0, 100.0, empire);
+
+    // Hostile attacks the Core at the frontier — strong enough to drop hull
+    // to 1.0 in a single combat tick (the conquered_lock test pattern).
+    let _hostile = spawn_raw_hostile(
+        app.world_mut(),
+        frontier,
+        100.0,
+        100.0,
+        1000.0,
+        0.0,
+        "space_creature",
+    );
+
+    advance_time(&mut app, 1);
+
+    // Core should now be conquered.
+    assert!(
+        app.world().get::<ConqueredCore>(core).is_some(),
+        "ConqueredCore marker should be attached after combat"
+    );
+
+    // The fact must have been enqueued with a non-zero arrival delay tied
+    // to the 10 ly light-speed gap (10 ly × 60 hd/ly = 600 hd). Permit
+    // some slack: any positive delay is the desired regression signal —
+    // immediate (`arrives_at == observed_at`) is the leak we're guarding.
+    let queue = app.world().resource::<PendingFactQueue>();
+    let pending: Vec<_> = queue
+        .facts
+        .iter()
+        .filter(|pf| matches!(pf.fact, KnowledgeFact::CoreConquered { .. }))
+        .collect();
+    assert_eq!(
+        pending.len(),
+        1,
+        "exactly one CoreConquered fact should be queued, got {}",
+        pending.len()
+    );
+    let pf = pending[0];
+    assert!(
+        pf.arrives_at > pf.observed_at,
+        "CoreConquered fact must be light-delayed (arrives_at={} observed_at={})",
+        pf.arrives_at,
+        pf.observed_at,
+    );
+    // 10 ly → 600 hd light delay; with the test's GameClock starting at 0
+    // and advance_time(1) tick, observed_at == clock.elapsed (1) and
+    // arrives_at must equal observed_at + 600.
+    assert_eq!(
+        pf.arrives_at - pf.observed_at,
+        600,
+        "expected exactly 600 hd of light-speed delay across 10 ly, got {}",
+        pf.arrives_at - pf.observed_at,
     );
 }

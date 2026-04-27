@@ -105,7 +105,14 @@ use super::savebag::*;
 /// packets credit only the originating empire after a save/load round-trip.
 /// Postcard's positional encoding requires a version bump (12 → 13) and a
 /// fixture regeneration.
-pub const SAVE_VERSION: u32 = 13;
+/// #463: added `SavedKnowledgeFact::CoreConquered` variant so the new
+/// `KnowledgeFact::CoreConquered` (light-speed observation pair for the
+/// existing `GameEvent::CoreConquered` audit event) survives save/load.
+/// Appending an enum variant tail is wire-compatible with postcard, but
+/// SAVE_VERSION still bumps (13 → 14) so saves recorded before the variant
+/// existed are rejected explicitly via the version check rather than being
+/// silently misread.
+pub const SAVE_VERSION: u32 = 14;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.

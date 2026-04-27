@@ -3263,6 +3263,18 @@ pub enum SavedKnowledgeFact {
         #[serde(default)]
         event_id: Option<u64>,
     },
+    /// #463: CoreConquered fact persisted to disk. Adding a new variant tail
+    /// is wire-compatible with postcard's enum encoding (existing variants
+    /// keep their indices) and `SAVE_VERSION` is bumped in lockstep so old
+    /// saves are rejected explicitly rather than silently misread.
+    CoreConquered {
+        system_bits: u64,
+        conquered_by_bits: u64,
+        original_owner_bits: u64,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
 }
 
 impl SavedKnowledgeFact {
@@ -3370,6 +3382,19 @@ impl SavedKnowledgeFact {
             } => Self::ShipArrived {
                 system_bits: system.map(|e| e.to_bits()),
                 name: name.clone(),
+                detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
+            },
+            KnowledgeFact::CoreConquered {
+                event_id,
+                system,
+                conquered_by,
+                original_owner,
+                detail,
+            } => Self::CoreConquered {
+                system_bits: system.to_bits(),
+                conquered_by_bits: conquered_by.to_bits(),
+                original_owner_bits: original_owner.to_bits(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
@@ -3486,6 +3511,19 @@ impl SavedKnowledgeFact {
                 event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
                 name,
+                detail,
+            },
+            Self::CoreConquered {
+                system_bits,
+                conquered_by_bits,
+                original_owner_bits,
+                detail,
+                event_id,
+            } => KnowledgeFact::CoreConquered {
+                event_id: event_id.map(EventId),
+                system: remap_entity(system_bits, map),
+                conquered_by: remap_entity(conquered_by_bits, map),
+                original_owner: remap_entity(original_owner_bits, map),
                 detail,
             },
         }
