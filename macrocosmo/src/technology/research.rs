@@ -5,9 +5,9 @@ use bevy::prelude::*;
 use crate::amount::Amt;
 use crate::colony::{Colony, Production, ProductionFocus};
 use crate::components::Position;
-use crate::galaxy::StarSystem;
+use crate::faction::FactionOwner;
+use crate::galaxy::{HomeSystem, StarSystem};
 use crate::physics;
-use crate::player::{Player, StationedAt};
 use crate::time_system::GameClock;
 
 use super::tree::{TechId, TechTree};
@@ -59,9 +59,14 @@ pub struct ResearchPool {
 pub struct LastResearchTick(pub i64);
 
 /// A research packet in transit from a colony to the capital at light speed.
+///
+/// `owner` is the empire entity that produced the research; `receive_research`
+/// uses it to credit only that empire's `ResearchPool`, preventing one empire's
+/// colony output from leaking into other empires' pools (#458).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
 pub struct PendingResearch {
+    pub owner: Entity,
     pub amount: f64,
     pub arrives_at: i64,
 }
@@ -82,22 +87,37 @@ pub struct RecentlyResearched {
 }
 
 /// A technology propagating from the capital to a target system at light speed.
+///
+/// `owner` is the empire entity that researched the tech; the propagation is
+/// scoped to that empire's territory (#458 — parallel to `PendingResearch`).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
 pub struct PendingKnowledgePropagation {
+    pub owner: Entity,
     pub tech_id: TechId,
     pub target_system: Entity,
     pub arrives_at: i64,
 }
 
-/// Each tick, colonies emit research points as PendingResearch entities that
-/// travel at light speed to the capital. Capital colonies contribute instantly.
+/// Each tick, colonies emit research points as `PendingResearch` entities that
+/// travel at light speed to the **owner empire's** capital (`HomeSystem`).
+/// Same-system colonies contribute instantly.
+///
+/// The packet carries `owner` so `receive_research` credits only that empire's
+/// `ResearchPool`. Colonies without `FactionOwner`, or empires without a
+/// resolvable `HomeSystem`, are skipped (no packet emitted) — their research is
+/// effectively dropped, which is preferable to leaking points across empires.
 pub fn emit_research(
     mut commands: Commands,
     clock: Res<GameClock>,
     last_tick: Res<LastResearchTick>,
-    colonies: Query<(&Colony, &Production, Option<&ProductionFocus>)>,
-    player_q: Query<&StationedAt, With<Player>>,
+    colonies: Query<(
+        &Colony,
+        &Production,
+        Option<&ProductionFocus>,
+        &FactionOwner,
+    )>,
+    home_systems: Query<&HomeSystem>,
     positions: Query<&Position>,
     planets: Query<&crate::galaxy::Planet>,
 ) {
@@ -107,11 +127,7 @@ pub fn emit_research(
     }
     let d = delta as f64;
 
-    // Find capital system position
-    let capital_system = player_q.single().ok().map(|s| s.system);
-    let capital_pos = capital_system.and_then(|sys| positions.get(sys).ok());
-
-    for (colony, prod, focus) in &colonies {
+    for (colony, prod, focus, owner) in &colonies {
         let rw = match focus {
             Some(f) => f.research_weight,
             None => Amt::units(1),
@@ -128,55 +144,60 @@ pub fn emit_research(
             continue;
         }
 
+        // Owner empire reference system (capital). Without it we can't
+        // anchor the light-delay calculation, so the packet is skipped.
+        let Ok(home) = home_systems.get(owner.0) else {
+            continue;
+        };
+        let capital_system = home.0;
+
         let colony_sys = colony.system(&planets);
 
         // Calculate light delay from colony to capital
-        let delay = match (capital_system, capital_pos) {
-            (Some(cap_sys), Some(_)) if colony_sys == Some(cap_sys) => 0,
-            (Some(_), Some(cap_pos)) => {
-                if let Some(sys) = colony_sys {
-                    if let Ok(colony_pos) = positions.get(sys) {
-                        let dist = physics::distance_ly(colony_pos, cap_pos);
-                        physics::light_delay_hexadies(dist)
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                }
+        let delay = if colony_sys == Some(capital_system) {
+            0
+        } else if let (Some(sys), Ok(cap_pos)) = (colony_sys, positions.get(capital_system)) {
+            if let Ok(colony_pos) = positions.get(sys) {
+                let dist = physics::distance_ly(colony_pos, cap_pos);
+                physics::light_delay_hexadies(dist)
+            } else {
+                0
             }
-            _ => 0,
+        } else {
+            0
         };
 
         commands.spawn(PendingResearch {
+            owner: owner.0,
             amount,
             arrives_at: clock.elapsed + delay,
         });
     }
 }
 
-/// Receives PendingResearch entities that have arrived and adds them to the pool.
+/// Receives PendingResearch entities that have arrived and adds them to the
+/// pool of the **owning** empire only. Packets whose owner empire was
+/// despawned (or otherwise lacks a `ResearchPool`) are dropped with a warning.
 pub fn receive_research(
     mut commands: Commands,
     clock: Res<GameClock>,
     mut empire_q: Query<&mut ResearchPool, With<crate::player::Empire>>,
     pending: Query<(Entity, &PendingResearch)>,
 ) {
-    // Collect arrived research first, then distribute to all empires and
-    // despawn each entity exactly once.
-    // TODO: PendingResearch should carry an owner empire so points go to the
-    // correct empire only.
-    let arrived: Vec<(Entity, f64)> = pending
-        .iter()
-        .filter(|(_, pr)| clock.elapsed >= pr.arrives_at)
-        .map(|(e, pr)| (e, pr.amount))
-        .collect();
-
-    for (entity, amount) in &arrived {
-        for mut pool in &mut empire_q {
-            pool.points += *amount;
+    for (entity, pr) in pending.iter() {
+        if clock.elapsed < pr.arrives_at {
+            continue;
         }
-        commands.entity(*entity).despawn();
+        match empire_q.get_mut(pr.owner) {
+            Ok(mut pool) => pool.points += pr.amount,
+            Err(_) => {
+                warn!(
+                    "PendingResearch arrived for missing empire {:?}; dropping {} points",
+                    pr.owner, pr.amount
+                );
+            }
+        }
+        commands.entity(entity).despawn();
     }
 }
 
@@ -262,19 +283,21 @@ pub fn flush_research(mut empire_q: Query<&mut ResearchPool, With<crate::player:
 pub fn propagate_tech_knowledge(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut empire_q: Query<&mut RecentlyResearched, With<crate::player::Empire>>,
+    mut empire_q: Query<(Entity, &mut RecentlyResearched), With<crate::player::Empire>>,
     colonies: Query<&Colony>,
     stars: Query<(Entity, &StarSystem, &Position)>,
     mut tech_knowledge: Query<&mut TechKnowledge>,
     planets: Query<&crate::galaxy::Planet>,
 ) {
-    for mut recently_researched in &mut empire_q {
+    for (empire_entity, mut recently_researched) in &mut empire_q {
         if recently_researched.techs.is_empty() {
             continue;
         }
 
         // Find capital system
-        // TODO(#418): capital should be per-empire, not a global flag on StarSystem
+        // TODO(#418): capital should be per-empire, not a global flag on StarSystem.
+        // For #458 we just stamp `owner` on the spawned packet so the field is
+        // available; per-empire capital resolution is a separate fix.
         let capital = stars.iter().find(|(_, s, _)| s.is_capital);
         let Some((capital_entity, _, capital_pos)) = capital else {
             recently_researched.techs.clear();
@@ -303,6 +326,7 @@ pub fn propagate_tech_knowledge(
                 let distance = physics::distance_ly(&capital_pos, sys_pos);
                 let delay = physics::light_delay_hexadies(distance);
                 commands.spawn(PendingKnowledgePropagation {
+                    owner: empire_entity,
                     tech_id: tech_id.clone(),
                     target_system: sys_entity,
                     arrives_at: clock.elapsed + delay,

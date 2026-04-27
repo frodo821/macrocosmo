@@ -470,7 +470,7 @@ fn apply_component_bag(
         ec.insert(p.clone().into_live(map));
     }
     if let Some(p) = &bag.pending_research {
-        ec.insert(p.clone().into_live());
+        ec.insert(p.clone().into_live(map));
     }
     if let Some(p) = &bag.pending_knowledge_propagation {
         ec.insert(p.clone().into_live(map));

@@ -100,7 +100,12 @@ use super::savebag::*;
 /// favour of knowledge-driven cleanup, so the field is no longer
 /// reachable from anywhere. Postcard's positional encoding makes this a
 /// breaking change.
-pub const SAVE_VERSION: u32 = 12;
+/// #458: added `owner_bits` to `SavedPendingResearch` and
+/// `SavedPendingKnowledgePropagation` so that arrived research/tech-knowledge
+/// packets credit only the originating empire after a save/load round-trip.
+/// Postcard's positional encoding requires a version bump (12 → 13) and a
+/// fixture regeneration.
+pub const SAVE_VERSION: u32 = 13;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.

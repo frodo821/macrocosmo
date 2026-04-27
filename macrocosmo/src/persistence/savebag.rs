@@ -4126,18 +4126,24 @@ impl SavedRecentlyResearched {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPendingResearch {
+    /// #458: owner empire entity (round-tripped via `Entity::to_bits` and
+    /// `EntityMap`). Allows `receive_research` to credit the correct empire's
+    /// `ResearchPool` after a save/load round-trip.
+    pub owner_bits: u64,
     pub amount: f64,
     pub arrives_at: i64,
 }
 impl SavedPendingResearch {
     pub fn from_live(v: &PendingResearch) -> Self {
         Self {
+            owner_bits: v.owner.to_bits(),
             amount: v.amount,
             arrives_at: v.arrives_at,
         }
     }
-    pub fn into_live(self) -> PendingResearch {
+    pub fn into_live(self, map: &EntityMap) -> PendingResearch {
         PendingResearch {
+            owner: remap_entity(self.owner_bits, map),
             amount: self.amount,
             arrives_at: self.arrives_at,
         }
@@ -4163,6 +4169,9 @@ impl SavedTechKnowledge {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPendingKnowledgePropagation {
+    /// #458: owner empire entity (round-tripped via `Entity::to_bits` and
+    /// `EntityMap`). Parallels `SavedPendingResearch.owner_bits`.
+    pub owner_bits: u64,
     pub tech_id: String,
     pub target_system_bits: u64,
     pub arrives_at: i64,
@@ -4170,6 +4179,7 @@ pub struct SavedPendingKnowledgePropagation {
 impl SavedPendingKnowledgePropagation {
     pub fn from_live(v: &PendingKnowledgePropagation) -> Self {
         Self {
+            owner_bits: v.owner.to_bits(),
             tech_id: v.tech_id.0.clone(),
             target_system_bits: v.target_system.to_bits(),
             arrives_at: v.arrives_at,
@@ -4177,6 +4187,7 @@ impl SavedPendingKnowledgePropagation {
     }
     pub fn into_live(self, map: &EntityMap) -> PendingKnowledgePropagation {
         PendingKnowledgePropagation {
+            owner: remap_entity(self.owner_bits, map),
             tech_id: TechId(self.tech_id),
             target_system: remap_entity(self.target_system_bits, map),
             arrives_at: self.arrives_at,
