@@ -280,6 +280,82 @@ impl Default for Stance {
 - `macrocosmo/tests/fixtures/minimal_game.bin` (Bug C で regen、 798 B、 PR3 では touch せず)
 - `macrocosmo/tests/common/mod.rs` (PR2d で capabilities fix)
 
+## 後半: Post-#448 fix sweep + per-empire 化 (同セッション継続)
+
+#448 完了後、 user 指示で 0.3.1 milestone の単発 fix と per-empire 化系を一気に潰す。 計 9 commits + 9 issues close。
+
+### Category 3: priority:high 単発 fix (4 commits)
+
+| Commit | # | 内容 |
+|---|---|---|
+| `b62048a` | #461 | Lua `request_command` を local/remote 自動 routing 化。 issuer-target 異 system は `PendingScriptedCommand` で光速遅延、 `dispatch_pending_scripted_commands` system で arrival 時に typed message emit。 4 regression tests |
+| `b66b60b` | #460 | CB auto-war / forced peace に sender-immediate / receiver-delayed semantics 適用。 `DIPLO_FORCED_PEACE` event kind 新設 (DIPLO_PROPOSE_PEACE は round-trip auto-accept のため再利用不可)。 5 regression tests |
+| `97be643` | #462 | `context_menu` の direct `ShipState` write を `apply_local_ship_command` helper でラップ、 `debug_assert_eq!(expected_delay, 0)` で local-only invariant 強制。 `ShipState` に `Clone` derive 追加。 3 tests |
+| `d5e248d` | #440 | Observer mode `read_only` を全 UI write path に展開。 4 chokepoint gate (`gate_diplomacy_action`/`gate_research_action`/`gate_ship_designer_action`/`gate_system_panel_writes`) で system_panel の 全 write を 3 sink (PendingColonyDispatches / colonization_actions / SystemPanelActions) で集約 truncation。 8 tests。 issue body 過大計上 (situation_center は既に display-only、 context_menu は既存 gate あり) |
+
+### Category 2: per-empire 化 sweep (5 commits)
+
+Round 9 PR #1/#2 で始まった per-faction 化の継続: 「player-only 経路 → per-empire 経路」 の sweep。
+
+| Commit | # | 内容 | SAVE |
+|---|---|---|---|
+| `e8275d9` | #456 | `process_surveys` の light/FTL 判定を ship owner 基準に。 `Owner::Empire(e) → EmpireRuler → Ruler.StationedAt` で reference position 解決、 owner empire の `GlobalParams.ftl_speed_multiplier` 使用 (was: PlayerEmpire 固定)。 3 tests | 12 維持 |
+| `0246c9e` | #457 | `sensor_buoy_detect_system` / `relay_knowledge_propagate_system` を per-empire viewer 化。 各 empire の `EmpireViewerSystem` から距離計算 → per-empire `observed_at`。 receiver-keyed `hostile_map` を `FactionRelations::get_or_default(receiver, hostile_owner)` で構築 (was: 最初の empire の view を全 empire に spray)。 3 tests | 12 維持 |
+| `c266f98` | #458 | `PendingResearch` / `PendingKnowledgePropagation` に `owner: Entity` field 追加。 `emit_research` が colony `FactionOwner → HomeSystem` で delay anchor、 `receive_research` は owner 限定 ResearchPool に加算 (was: 全 empire pool に加算 = 経済漏洩 critical bug)。 3 tests | **12 → 13 + fixture regen** |
+| `6b128dd` | #463 | `events.rs` module docstring で `GameEvent = omniscient simulation/audit only` を契約明文化。 `KnowledgeFact::CoreConquered` 新 variant 追加 (`record_for` で全 empire 光速遅延 propagation)、 non-FTL survey 完了時の `AnomalyDiscovered` emit 修正 (FTL path のみ wired だった bug)。 4 tests + 1 doc-presence guard | **13 → 14 + fixture regen** |
+| `8b31b51` | #464 | `KnownFactions` を Resource → Component (per-empire) に migrate。 `detect_faction_discovery` を 全 Empire 対象に (Co-location + FactionRelations 経由)。 UI が viewer empire 参照に切替。 `KnownFactions::is_known(target)` + `find_known_factions(world, empire)` helper API。 7 tests | **14 → 15 + fixture regen** |
+
+### Issues 整理 (本 session 全体)
+
+```
+Closed:
+  #448 (8 sub-PRs landed)
+  #443 (Round 10 deploy_core で実装済)
+  #454 (Bug A 7d8f089 で fix)
+  #465 (#453 の dup)
+  #461 #460 #462 #440 (category 3 全件)
+  #456 #457 #458 #463 #464 (category 2 全件)
+合計 13 close。
+
+Filed (new this session, not closed):
+  #466 ThreatState 機構
+  #467 Mid-Mid 競合解決 (FCFS arbiter + rejection 通知 設計)
+両方 0.3.1 milestone。
+```
+
+### SAVE_VERSION の遷移
+
+`11 → 12 (Bug C) → 13 (#458) → 14 (#463) → 15 (#464)`
+
+各 bump は postcard positional encoding の wire-break または schema 拡張に対応。 fixture (`tests/fixtures/minimal_game.bin`) を SAVE bump ごとに regen、 最終 803 B (v15)。
+
+### Test status (最終)
+
+- `cargo test --workspace --tests`: 全 binary green (`survey_command_outbox_holds_until_light_delay_elapses` #453/#465 既知 flaky のみ偶発、 isolation で pass、 並列実行下のみ)
+- 23 commits ahead of `origin/main`、 `5d65a83` (前 handoff commit) → `8b31b51`
+
+## 次セッション最優先 (再確認)
+
+### Top: #449 Region 概念導入
+
+AI architecture 中核。 #450/#451/#452/#467 全ての前提。 単一 Mid → N Mid 化 + Short の per-fleet/per-colony 化。 PR3 で Mid 暫定 host にした Rules 2/5b の Short 再移植 もここ。 Plan agent → sub-PR 分解推奨 (`docs/session-handoff-2026-04-27-ai-decomposition.md` line 211-242 + 本 doc 「#467 Mid-Mid 競合解決」 section が確定済 spec)。
+
+### 中位
+
+| # | priority | 内容 |
+|---|---|---|
+| #466 | medium | ThreatState 機構 (依存: per-empire ShipDestroyed propagation の続編) |
+| #347 | medium | In-game keybinding manager + UI |
+| #455 | low | clippy 警告整理 |
+| #411 | medium | 戦闘 report 可視化 |
+| #445 | medium | shipyard_capacity 値活用 |
+| #467 | medium | Mid-Mid 競合解決 (#449/#450 後) |
+| #459 | low | CommandLog 意図確定 |
+| #453 | high | flaky outbox test 修正 (root cause 困難) |
+
+### Skip 候補
+- #394 crate 分割 (icebox)
+
 ## 次セッション再開プロンプト例
 
 ```
