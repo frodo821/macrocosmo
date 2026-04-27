@@ -1532,12 +1532,14 @@ fn test_ftl_survey_uses_light_speed_when_faster() {
         false,
     );
 
-    app.world_mut()
-        .spawn((Player, StationedAt { system: sys_a }));
+    // #456: light/FTL comparison resolves the reference home + multiplier
+    // from the ship's owner empire (Empire→EmpireRuler→Ruler.StationedAt).
+    // Set up the player empire's Ruler at sys_a and own the FTL scout.
+    let empire = empire_entity(app.world_mut());
+    common::spawn_test_ruler(app.world_mut(), empire, sys_a);
 
     // Set ftl_speed_multiplier very low so FTL is slower than light
     // At 0.05x, effective FTL speed = 0.5c, FTL return at 2 ly = 240 hd, light delay = 120 hd
-    let empire = empire_entity(app.world_mut());
     {
         let mut params = app
             .world_mut()
@@ -1547,6 +1549,7 @@ fn test_ftl_survey_uses_light_speed_when_faster() {
     }
 
     let ship = spawn_ftl_explorer(app.world_mut(), "FTL-Scout", sys_b, [2.0, 0.0, 0.0]);
+    app.world_mut().get_mut::<Ship>(ship).unwrap().owner = Owner::Empire(empire);
     *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
         target_system: sys_b,
         started_at: 0,
@@ -1611,6 +1614,172 @@ fn test_ftl_survey_uses_carry_back_when_ftl_faster() {
     assert!(
         survey_data.is_some(),
         "Ship should carry survey data for FTL carry-back"
+    );
+}
+
+// --- #456 regressions: light/FTL comparison must use the ship's owner empire ---
+
+/// Spawn a minimal NPC empire (no `PlayerEmpire`) with the
+/// `Empire→EmpireRuler→Ruler.StationedAt` chain rooted at `home_system`.
+/// Returns the empire entity.
+fn spawn_npc_empire_with_ruler(world: &mut World, home_system: Entity) -> Entity {
+    let empire = world
+        .spawn((
+            Empire {
+                name: "NPC Test".into(),
+            },
+            Faction::new("npc_test_456", "NPC Test"),
+            technology::GlobalParams::default(),
+        ))
+        .id();
+    let ruler = world
+        .spawn((
+            Ruler {
+                name: "NPC Ruler".into(),
+                empire,
+            },
+            StationedAt {
+                system: home_system,
+            },
+        ))
+        .id();
+    world.entity_mut(empire).insert(EmpireRuler(ruler));
+    empire
+}
+
+/// #456 regression: an NPC FTL survey in observer mode (no `Player`,
+/// no `PlayerEmpire`) must consult the NPC's own `Empire→EmpireRuler→
+/// Ruler.StationedAt` for the light-vs-FTL comparison. Before the fix
+/// `process_surveys` looked up `Query<&StationedAt, With<Player>>` and
+/// `Query<&GlobalParams, With<PlayerEmpire>>`, which return nothing in
+/// observer mode — so `use_light_speed` was always false and the ship
+/// always carried back, even when the NPC home was so close that light
+/// would arrive first.
+#[test]
+fn test_npc_ftl_survey_uses_light_speed_when_owner_home_close() {
+    let mut app = common::test_app();
+
+    let sys_a = common::spawn_test_system(
+        app.world_mut(),
+        "NPC-Home",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let sys_b = common::spawn_test_system(
+        app.world_mut(),
+        "Survey-Target",
+        [2.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
+    );
+
+    // No Player / no StationedAt → simulates observer mode for this test.
+    let npc = spawn_npc_empire_with_ruler(app.world_mut(), sys_a);
+
+    // NPC ftl_speed_multiplier 0.05 → effective 0.5c → 240 hd over 2 LY,
+    // light delay = 120 hd → light wins.
+    {
+        let mut params = app
+            .world_mut()
+            .get_mut::<technology::GlobalParams>(npc)
+            .unwrap();
+        params.ftl_speed_multiplier = 0.05;
+    }
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "NPC-Scout", sys_b, [2.0, 0.0, 0.0]);
+    app.world_mut().get_mut::<Ship>(ship).unwrap().owner = Owner::Empire(npc);
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
+        target_system: sys_b,
+        started_at: 0,
+        completes_at: SURVEY_DURATION_HEXADIES,
+    };
+
+    common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
+
+    let star = app.world().get::<StarSystem>(sys_b).unwrap();
+    assert!(
+        star.surveyed,
+        "NPC survey should be marked surveyed via light propagation when owner home is closer than FTL return"
+    );
+    assert!(
+        app.world().get::<SurveyData>(ship).is_none(),
+        "NPC ship must not carry survey data when light path was used"
+    );
+}
+
+/// #456 regression: an NPC FTL survey must read the NPC's *own*
+/// `GlobalParams.ftl_speed_multiplier`, not the player empire's. We
+/// arrange a player empire whose multiplier would force light-speed
+/// (very slow FTL) and an NPC empire with default multiplier whose FTL
+/// is fast — the NPC must carry back, proving the system did not pick
+/// up the player multiplier.
+#[test]
+fn test_npc_ftl_survey_uses_owner_ftl_speed_multiplier() {
+    let mut app = common::test_app();
+
+    let player_home = common::spawn_test_system(
+        app.world_mut(),
+        "Player-Home",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let npc_home = common::spawn_test_system(
+        app.world_mut(),
+        "NPC-Home",
+        [50.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let target = common::spawn_test_system(
+        app.world_mut(),
+        "Survey-Target",
+        [52.0, 0.0, 0.0],
+        0.7,
+        false,
+        false,
+    );
+
+    // Player empire (auto-spawned by test_app) gets a very slow FTL
+    // multiplier — if process_surveys mistakenly read this, light would win
+    // for the NPC ship at npc_home<->target.
+    let player_empire = empire_entity(app.world_mut());
+    common::spawn_test_ruler(app.world_mut(), player_empire, player_home);
+    {
+        let mut params = app
+            .world_mut()
+            .get_mut::<technology::GlobalParams>(player_empire)
+            .unwrap();
+        params.ftl_speed_multiplier = 0.001;
+    }
+
+    // NPC empire keeps default multiplier (1.0) → FTL is fast (~12 hd over
+    // 2 LY) compared to light (120 hd) → carry back wins.
+    let npc = spawn_npc_empire_with_ruler(app.world_mut(), npc_home);
+
+    let ship = spawn_ftl_explorer(app.world_mut(), "NPC-Scout", target, [52.0, 0.0, 0.0]);
+    app.world_mut().get_mut::<Ship>(ship).unwrap().owner = Owner::Empire(npc);
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::Surveying {
+        target_system: target,
+        started_at: 0,
+        completes_at: SURVEY_DURATION_HEXADIES,
+    };
+
+    common::advance_time(&mut app, SURVEY_DURATION_HEXADIES);
+
+    let star = app.world().get::<StarSystem>(target).unwrap();
+    assert!(
+        !star.surveyed,
+        "NPC survey must NOT be marked surveyed via light when NPC's own FTL multiplier makes carry-back faster"
+    );
+    assert!(
+        app.world().get::<SurveyData>(ship).is_some(),
+        "NPC ship should carry survey data home (NPC's own multiplier was used, not player's)"
     );
 }
 

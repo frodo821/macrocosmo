@@ -7,7 +7,7 @@ use crate::knowledge::{
     SystemKnowledge, SystemSnapshot,
 };
 use crate::physics::{distance_ly_arr, light_delay_hexadies};
-use crate::player::{Empire, EmpireRuler, Player, PlayerEmpire, Ruler, StationedAt};
+use crate::player::{Empire, EmpireRuler, Player, Ruler, StationedAt};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 
@@ -97,9 +97,16 @@ pub fn start_survey_with_bonus(
 /// when the survey duration has elapsed. Rolls an exploration event on completion.
 ///
 /// #103: FTL-capable ships store survey data internally instead of publishing
-/// immediately. They auto-queue an FTL return to the player's StationedAt system
-/// if no commands are pending. Non-FTL ships publish results immediately via
-/// light-speed propagation (existing behavior).
+/// immediately. They auto-queue an FTL return to their owner empire's home
+/// system (Ruler stationed system) if no commands are pending. Non-FTL ships
+/// publish results immediately via light-speed propagation (existing behavior).
+///
+/// #456: light-vs-FTL comparison and the FTL speed multiplier are resolved
+/// per-ship from the ship's `Owner::Empire(e)` via `Empire → EmpireRuler →
+/// Ruler.StationedAt`, not from a single `PlayerEmpire`. This makes NPC FTL
+/// surveys and observer-mode (no-player) games behave correctly. The legacy
+/// `Player`/`StationedAt` fallback is retained only when the owner chain
+/// cannot be resolved (legacy saves / minimal tests).
 #[allow(clippy::too_many_arguments)]
 pub fn process_surveys(
     mut commands: Commands,
@@ -123,7 +130,9 @@ pub fn process_surveys(
     >,
     hostiles: Query<&AtSystem, With<Hostile>>,
     player_q: Query<&StationedAt, With<Player>>,
-    empire_params_q: Query<&crate::technology::GlobalParams, With<PlayerEmpire>>,
+    // #456: per-empire GlobalParams (was PlayerEmpire-only). Looked up per-ship
+    // by owner so NPC FTL ships use their own ftl_speed_multiplier.
+    empire_params_q: Query<&crate::technology::GlobalParams, With<Empire>>,
     balance: Res<crate::technology::GameBalance>,
     anomaly_registry: Option<Res<crate::scripting::anomaly_api::AnomalyRegistry>>,
     mut events: MessageWriter<GameEvent>,
@@ -139,17 +148,10 @@ pub fn process_surveys(
     let initial_ftl_speed_c = balance.initial_ftl_speed_c();
     let mut rng = rand::rng();
 
-    // Collect player's stationed-at system for auto-return
+    // Legacy fallback: tests / saves that attach Player+StationedAt directly
+    // without the Empire→EmpireRuler→Ruler chain. Production NPC and player
+    // ships resolve their reference home via `owner` instead (see below).
     let player_system = player_q.iter().next().map(|s| s.system);
-
-    // #110: Pre-compute player system position and FTL speed for light-vs-FTL comparison
-    let player_system_pos: Option<[f64; 3]> =
-        player_system.and_then(|sys| systems.get(sys).ok().map(|(_, _, pos, _)| pos.as_array()));
-    let ftl_speed_multiplier = empire_params_q
-        .iter()
-        .next()
-        .map(|p| p.ftl_speed_multiplier)
-        .unwrap_or(1.0);
 
     // Round 9 PR #1 Step 3: collect every empire's vantage so the
     // dual-write below routes a survey discovery into ALL empires'
@@ -170,10 +172,40 @@ pub fn process_surveys(
             let has_ftl = ship.ftl_range > 0.0;
 
             if has_ftl {
+                // #456: Resolve the light/FTL comparison reference from the
+                // ship's owner empire (Empire → EmpireRuler → Ruler.StationedAt)
+                // and read that empire's `ftl_speed_multiplier`. Falls back to
+                // the legacy `Player`/`StationedAt` chain only when no owner
+                // chain is available (e.g. minimal tests, legacy saves with no
+                // Empire/Ruler topology). When neither resolves, skip the
+                // comparison entirely — there's no reference home to send to.
+                let owner_empire = match ship.owner {
+                    crate::ship::Owner::Empire(e) => Some(e),
+                    crate::ship::Owner::Neutral => None,
+                };
+                let owner_home = owner_empire.and_then(|e| {
+                    empire_rulers
+                        .get(e)
+                        .ok()
+                        .and_then(|er| rulers_stationed.get(er.0).ok())
+                        .map(|s| s.system)
+                });
+                let reference_system = owner_home.or(player_system);
+                let reference_pos: Option<[f64; 3]> = reference_system
+                    .and_then(|sys| systems.get(sys).ok().map(|(_, _, pos, _)| pos.as_array()));
+                // Owner empire's FTL speed multiplier; fall back to default
+                // (1.0) only if owner empire isn't resolvable. Note: we
+                // intentionally do NOT scan PlayerEmpire here — an NPC FTL
+                // survey must use the NPC's own multiplier.
+                let ftl_speed_multiplier = owner_empire
+                    .and_then(|e| empire_params_q.get(e).ok())
+                    .map(|p| p.ftl_speed_multiplier)
+                    .unwrap_or(1.0);
+
                 // #110: Compare light-speed propagation vs FTL return time
-                let use_light_speed = player_system_pos
-                    .map(|player_pos| {
-                        let distance = distance_ly_arr(ship_pos.as_array(), player_pos);
+                let use_light_speed = reference_pos
+                    .map(|ref_pos| {
+                        let distance = distance_ly_arr(ship_pos.as_array(), ref_pos);
                         let light_delay = light_delay_hexadies(distance);
                         let effective_ftl_speed = initial_ftl_speed_c * ftl_speed_multiplier;
                         let ftl_return_time = (distance * HEXADIES_PER_YEAR as f64
@@ -351,27 +383,14 @@ pub fn process_surveys(
                             .map(|q| q.commands.is_empty())
                             .unwrap_or(true);
                         if queue_empty {
-                            // Round 9: per-ship-owner auto-return. NPC ships
-                            // (#428) return to their own empire's Ruler
-                            // stationed system, not the player's. Player
-                            // ships still resolve via the same chain
-                            // (player Empire → EmpireRuler → Ruler).
-                            let owner_home = match ship.owner {
-                                crate::ship::Owner::Empire(e) => empire_rulers
-                                    .get(e)
-                                    .ok()
-                                    .and_then(|er| rulers_stationed.get(er.0).ok())
-                                    .map(|s| s.system),
-                                crate::ship::Owner::Neutral => None,
-                            };
-                            // Legacy fallback: tests / old saves that attach
-                            // Player+StationedAt directly without the
-                            // Empire→EmpireRuler→Ruler chain still get player
-                            // auto-return. Production NPC ships resolve via
-                            // owner_home (the chain is always populated for
-                            // spawned empires).
-                            let return_target = owner_home.or(player_system);
-                            if let Some(home) = return_target
+                            // Round 9 / #456: per-ship-owner auto-return. NPC
+                            // ships (#428) return to their own empire's Ruler
+                            // stationed system, not the player's. Reuses the
+                            // `reference_system` resolved at the top of the
+                            // FTL branch (owner Ruler home, with legacy
+                            // Player/StationedAt fallback) so the carry-back
+                            // target matches the light/FTL comparison anchor.
+                            if let Some(home) = reference_system
                                 && home != target_system
                                 && let Some(ref mut queue) = cmd_queue
                             {
