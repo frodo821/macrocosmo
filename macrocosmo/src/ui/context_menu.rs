@@ -22,6 +22,64 @@ pub struct HarbourInfo {
     pub can_dock: bool,
 }
 
+/// Apply a command directly to a ship's [`ShipState`].
+///
+/// **Pre-condition**: caller has verified the command target ship is at
+/// zero light-delay distance from the issuer (= same system, docked, or
+/// otherwise locally addressable). This is the local-write path used by
+/// `draw_context_menu` after the delay calculation has resolved to 0.
+///
+/// **NEVER** call this for remote commands — the [`PendingShipCommand`]
+/// path is mandatory for nonzero delay, otherwise the empire's command
+/// would bypass light-speed transport.
+///
+/// The `expected_delay` argument exists purely to encode that
+/// pre-condition in the type system: it is checked via
+/// [`debug_assert_eq!`] so dev/test builds catch any regression where a
+/// nonzero-delay command is routed through the local path.
+///
+/// Visibility is `pub` (rather than `pub(crate)`) so integration tests
+/// can exercise the assertion directly without going through the full
+/// egui pipeline. Treat it as an internal helper — production callers
+/// outside this module should not exist.
+///
+/// Returns `true` iff the ship entity was found and its state was
+/// written. Callers use this to gate dependent side effects (e.g.
+/// clearing `SelectedShip`) so a despawn mid-frame leaves selection
+/// untouched, matching pre-#462 behavior.
+///
+/// [`PendingShipCommand`]: crate::ship::PendingShipCommand
+#[doc(hidden)]
+pub fn apply_local_ship_command(
+    ship: Entity,
+    new_state: ShipState,
+    expected_delay: i64,
+    ships_query: &mut Query<
+        (
+            Entity,
+            &mut Ship,
+            &mut ShipState,
+            Option<&mut Cargo>,
+            &ShipHitpoints,
+            Option<&SurveyData>,
+        ),
+        Without<SlotAssignment>,
+    >,
+) -> bool {
+    debug_assert_eq!(
+        expected_delay, 0,
+        "apply_local_ship_command called with non-zero delay {} \
+         — must use PendingShipCommand path instead",
+        expected_delay
+    );
+    if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(ship) {
+        *state = new_state;
+        true
+    } else {
+        false
+    }
+}
+
 /// #389: Actions that come out of the context menu requiring Commands access.
 pub struct ContextMenuActions {
     /// Dock ship at harbour. Payload: (ship, harbour).
@@ -304,9 +362,7 @@ pub fn draw_context_menu(
             context_menu.target_system = None;
             context_menu.execute_default = false;
             if let Some(new_state) = command {
-                if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(ship_entity) {
-                    *state = new_state;
-                }
+                apply_local_ship_command(ship_entity, new_state, command_delay, ships_query);
             }
             if let Some(ship_cmd) = delayed_command {
                 info!(
@@ -348,8 +404,7 @@ pub fn draw_context_menu(
         context_menu.execute_default = false;
 
         if let Some(new_state) = command {
-            if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(ship_entity) {
-                *state = new_state;
+            if apply_local_ship_command(ship_entity, new_state, command_delay, ships_query) {
                 selected_ship.0 = None;
             }
         }
@@ -590,10 +645,12 @@ pub fn draw_context_menu(
         context_menu.target_system = None;
     }
 
-    // Apply immediate command (docked ships, no delay)
+    // Apply immediate command (docked ships, no delay).
+    // The same-system / docked precondition is enforced by
+    // `apply_local_ship_command` via `debug_assert_eq!(command_delay, 0)`
+    // — see #462.
     if let Some(new_state) = command {
-        if let Ok((_, _, mut state, _, _, _)) = ships_query.get_mut(ship_entity) {
-            *state = new_state;
+        if apply_local_ship_command(ship_entity, new_state, command_delay, ships_query) {
             selected_ship.0 = None;
         }
     }

@@ -676,7 +676,7 @@ pub struct UndockedForCombat(pub Entity);
 #[reflect(Component)]
 pub struct DockedAt(pub Entity);
 
-#[derive(Component, Reflect)]
+#[derive(Component, Clone, Reflect)]
 #[reflect(Component)]
 pub enum ShipState {
     InSystem {
