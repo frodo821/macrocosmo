@@ -21,8 +21,9 @@
 //!   — `SystemParam` helpers wrapping write / read / drain access to the
 //!   bus with automatic tick stamping from `GameClock`.
 //! - [`convert`] — `Entity`/`GameClock` ↔ `macrocosmo-ai` type helpers.
-//! - [`npc_decision`] — #173 hook point for per-faction NPC AI. Today the
-//!   production policy is a hand-written [`npc_decision::NoOpPolicy`];
+//! - [`npc_decision`] — #173 hook point for per-faction NPC AI. Routes
+//!   each empire's per-tick decision through the layered
+//!   [`mid_stance::MidStanceAgent`] via [`mid_adapter::BevyMidGameAdapter`];
 //!   future issues under #189 will swap in `macrocosmo-ai`-backed
 //!   policies without touching the tick-system wiring. The
 //!   `macrocosmo-ai::mock` feature is activated **only** as a
@@ -53,7 +54,7 @@ pub mod orchestrator_runtime;
 pub mod plugin;
 pub mod schema;
 
-pub use mid_adapter::{AiPolicyMode, BevyMidGameAdapter, MidGameAdapter};
+pub use mid_adapter::{BevyMidGameAdapter, MidGameAdapter};
 pub use npc_decision::{AiControlled, AiPlayerMode};
 pub use plugin::{AiBusResource, AiPlugin, AiTickSet};
 

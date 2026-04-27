@@ -1,41 +1,23 @@
 //! Mid-layer game adapter — bridges Bevy world state into the
-//! engine-agnostic Mid logic (#448 PR2b scaffold).
+//! engine-agnostic Mid logic (#448).
 //!
 //! [`MidGameAdapter`] is the read-only interface
-//! [`super::mid_stance::MidStanceAgent`] consumes. PR2c ports Rules 1
-//! and 5a from [`super::npc_decision::SimpleNpcPolicy`] behind the
-//! [`AiPolicyMode::Layered`] flag while a parity test
-//! (`tests/ai_layered_parity.rs`) keeps both paths in lock-step.
+//! [`super::mid_stance::MidStanceAgent`] consumes. All 8 decision
+//! rules (Rule 1 attack, 2 survey, 3 colonize, 4 research, 5a
+//! shipyard, 5b slot fill, 6 fleet composition, 7 retreat, 8
+//! fortify) are sourced from this trait — `npc_decision_tick` builds
+//! a [`BevyMidGameAdapter`] per empire per tick and hands it to
+//! [`super::mid_stance::MidStanceAgent::decide`].
 //!
 //! The identity arbiter ([`arbitrate`]) strips [`Locality`] and
 //! returns the inner [`Command`]s; #467 phase 2 replaces it with a
 //! real FCFS arbiter.
 
 use bevy::prelude::*;
-use macrocosmo_ai::{Command, FactionId, Proposal, Stance};
+use macrocosmo_ai::{Command, FactionId, Proposal};
 
 use super::npc_decision::NpcContext;
 use crate::ai::convert::to_ai_faction;
-use crate::ai::plugin::AiBusResource;
-
-/// Runtime gate selecting between the new
-/// [`super::mid_stance::MidStanceAgent`] (default since #448 PR3c —
-/// all 8 rules ported and parity-verified) and the legacy
-/// [`super::npc_decision::SimpleNpcPolicy`] still callable for
-/// regression comparison. Both paths exist until PR3d removes
-/// Legacy entirely.
-#[derive(Resource, Debug, Clone, Copy, Reflect, Default, PartialEq, Eq)]
-#[reflect(Resource)]
-pub enum AiPolicyMode {
-    /// Legacy [`super::npc_decision::SimpleNpcPolicy`] path —
-    /// reachable only by explicit `insert_resource` until PR3d
-    /// deletes it.
-    Legacy,
-    /// New layered `MidStanceAgent` path — covers all 8 rules.
-    /// Default since #448 PR3c.
-    #[default]
-    Layered,
-}
 
 /// What the Mid layer can read about the game world. Bevy-agnostic
 /// in spirit — the trait stays decoupled from `Query` / `Resource`
@@ -363,36 +345,10 @@ pub fn arbitrate(proposals: Vec<Proposal>) -> Vec<Command> {
     proposals.into_iter().map(|p| p.command).collect()
 }
 
-/// Layered-mode decision entry-point. PR2c routes through
-/// [`super::mid_stance::MidStanceAgent::decide`]; the `Stance`
-/// argument is `Stance::default()` until PR3 wires
-/// [`macrocosmo_ai::MidTermState`] persistence into the tick system
-/// (Plan agent micro-decision 5).
-pub fn layered_decide<A: MidGameAdapter>(
-    adapter: &A,
-    stance: &Stance,
-    faction_id: &str,
-    now: i64,
-) -> Vec<Proposal> {
-    super::mid_stance::MidStanceAgent::decide(adapter, stance, faction_id, now)
-}
-
-/// Helper used by `npc_decision_tick`'s Layered branch to materialise
-/// the bus reference (the system holds a `ResMut<AiBusResource>` and
-/// would otherwise need an explicit re-borrow at the call site).
-pub fn bus_from_resource(bus: &AiBusResource) -> &macrocosmo_ai::AiBus {
-    &bus.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use macrocosmo_ai::{CommandKindId, FactionId, Locality, SystemRef};
-
-    #[test]
-    fn ai_policy_mode_defaults_to_layered() {
-        assert_eq!(AiPolicyMode::default(), AiPolicyMode::Layered);
-    }
 
     #[test]
     fn arbitrate_strips_locality_and_preserves_order() {

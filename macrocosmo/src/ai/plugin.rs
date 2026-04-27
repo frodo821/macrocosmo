@@ -104,12 +104,6 @@ impl Plugin for AiPlugin {
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .init_resource::<DeclaredFactionSlots>()
             .init_resource::<super::orchestrator_runtime::OrchestratorRegistry>()
-            // #448 PR2b: AiPolicyMode gate. Legacy = today's
-            // SimpleNpcPolicy path. Layered = noop scaffold; PR2c/2d
-            // fill it with rule ports while a parity test keeps both
-            // in lock-step. Default `Legacy` keeps every existing
-            // production path and test untouched.
-            .init_resource::<super::mid_adapter::AiPolicyMode>()
             // Round 9 PR #3: AI command light-speed delay shim. Outbox
             // resource is initialised here so save/load round-trips see
             // a consistent type-registered Resource even on fresh runs.
@@ -162,7 +156,7 @@ impl Plugin for AiPlugin {
                     .after(crate::time_system::advance_game_time)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
-            // NPC decision tick — SimpleNpcPolicy reads metrics and emits commands.
+            // NPC decision tick — MidStanceAgent reads metrics and emits commands.
             .add_systems(
                 Update,
                 super::npc_decision::npc_decision_tick
@@ -170,7 +164,7 @@ impl Plugin for AiPlugin {
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // Three-layer orchestrator tick — runs alongside (not instead
-            // of) `SimpleNpcPolicy`. Ordered `.after(npc_decision_tick)`
+            // of) `MidStanceAgent`. Ordered `.after(npc_decision_tick)`
             // to avoid `ResMut<AiBusResource>` contention within the same
             // schedule step. Both write the bus; the orchestrator only
             // emits `pursue_metric:*` kinds which `drain_ai_commands`
