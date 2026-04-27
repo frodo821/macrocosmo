@@ -1,10 +1,10 @@
 //! Mid-layer rule logic — emits Proposals based on game adapter
 //! input and the current Stance. PR2c (#448) covered Rules 1 + 5a;
-//! PR2d extends to Rules 3 (colonize), 6 (build_ship composition),
-//! 7 (retreat — early-return), and 8 (fortify_system). Rules 2
-//! (survey) and 5b (slot fill) are intentionally **not** ported
-//! here — they live in `SimpleNpcPolicy` until the Short-per-fleet
-//! migration (#449) gives them a proper home.
+//! PR2d extended to Rules 3 (colonize), 6 (build_ship composition),
+//! 7 (retreat — early-return), and 8 (fortify_system); PR3a adds
+//! Rule 2 (survey). Rule 5b (slot fill) is intentionally **not**
+//! ported here — it lives in `SimpleNpcPolicy` until the
+//! Short-per-fleet migration (#449) gives it a proper home.
 //!
 //! `MidStanceAgent` is parallel to `macrocosmo_ai::IntentDrivenMidTerm`
 //! by design (Plan agent micro-decision 3): different responsibility
@@ -91,8 +91,28 @@ impl MidStanceAgent {
             return proposals;
         }
 
-        // ----- Rule 2 (survey): NOT ported — stays in legacy.
-        // Will be owned by the Short layer per-fleet (#449).
+        // ----- Rule 2: Survey unsurveyed systems.
+        // Mirrors `SimpleNpcPolicy::decide` Rule 2 byte-for-byte
+        // (`npc_decision.rs` lines 247–266): zips `idle_surveyors`
+        // against `unsurveyed_systems` (one ship per target, up to
+        // whichever runs out first), emits `survey_system` with
+        // `target_system` + `ship_count = 1` + `ship_0`. The adapter's
+        // `unsurveyed_systems` is the final Rule 2 input —
+        // `npc_decision_tick` already unioned `PendingAssignment` and
+        // outbox-resident commands (Round 11 Bug A) into
+        // `pending_survey_targets` and filtered the candidate list
+        // before `rank_survey_targets`, so Mid does **not** re-dedup.
+        let idle_surveyors = adapter.idle_surveyors();
+        let unsurveyed = adapter.unsurveyed_systems();
+        if !unsurveyed.is_empty() && !idle_surveyors.is_empty() {
+            for (ship, &target) in idle_surveyors.iter().zip(unsurveyed.iter()) {
+                let cmd = Command::new(cmd_ids::survey_system(), faction_id, now)
+                    .with_param("target_system", CommandValue::System(to_ai_system(target)))
+                    .with_param("ship_count", CommandValue::I64(1))
+                    .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
+                proposals.push(Proposal::at_system(cmd, to_ai_system(target)));
+            }
+        }
 
         // ----- Rule 3: Colonize surveyed uncolonized systems.
         // Mirrors `SimpleNpcPolicy::decide` Rule 3 exactly: zips
@@ -211,6 +231,8 @@ mod tests {
         fleet_composition: FleetComposition,
         has_unsurveyed_targets: bool,
         has_colonizable_targets: bool,
+        unsurveyed_systems: Vec<Entity>,
+        idle_surveyors: Vec<Entity>,
     }
 
     impl StubAdapter {
@@ -230,6 +252,8 @@ mod tests {
                 fleet_composition: FleetComposition::default(),
                 has_unsurveyed_targets: false,
                 has_colonizable_targets: false,
+                unsurveyed_systems: vec![],
+                idle_surveyors: vec![],
             }
         }
     }
@@ -276,6 +300,12 @@ mod tests {
         }
         fn has_colonizable_targets(&self) -> bool {
             self.has_colonizable_targets
+        }
+        fn unsurveyed_systems(&self) -> &[Entity] {
+            &self.unsurveyed_systems
+        }
+        fn idle_surveyors(&self) -> &[Entity] {
+            &self.idle_surveyors
         }
     }
 
@@ -402,6 +432,138 @@ mod tests {
                 .iter()
                 .all(|p| p.command.kind.as_str() != "build_structure"),
             "Rule 1 must early-return before Rule 5a runs",
+        );
+    }
+
+    // ---- Rule 2 (survey_system) ----
+
+    #[test]
+    fn rule_2_emits_one_per_zip_pair() {
+        // 2 unsurveyed targets + 2 idle surveyors → 2 emits, each
+        // with `ship_count = 1`. Mirrors `SimpleNpcPolicy::decide`'s
+        // zip semantics: one ship per system, in slice order.
+        let target_a = Entity::from_raw_u32(50).unwrap();
+        let target_b = Entity::from_raw_u32(51).unwrap();
+        let surveyor_a = Entity::from_raw_u32(200).unwrap();
+        let surveyor_b = Entity::from_raw_u32(201).unwrap();
+        let stub = StubAdapter {
+            unsurveyed_systems: vec![target_a, target_b],
+            idle_surveyors: vec![surveyor_a, surveyor_b],
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let surveys: Vec<_> = proposals
+            .iter()
+            .filter(|p| p.command.kind.as_str() == "survey_system")
+            .collect();
+        assert_eq!(surveys.len(), 2, "one survey_system per zip pair");
+        // Targets are emitted in slice order (zip iterates in lock-step).
+        match surveys[0].command.params.get("target_system") {
+            Some(CommandValue::System(sys_ref)) => assert_eq!(from_ai_system(*sys_ref), target_a),
+            _ => panic!("expected target_system param"),
+        }
+        match surveys[0].command.params.get("ship_count") {
+            Some(CommandValue::I64(n)) => assert_eq!(*n, 1),
+            _ => panic!("expected ship_count=1"),
+        }
+        match surveys[0].command.params.get("ship_0") {
+            Some(CommandValue::Entity(_)) => {}
+            _ => panic!("expected ship_0 entity"),
+        }
+        match surveys[1].command.params.get("target_system") {
+            Some(CommandValue::System(sys_ref)) => assert_eq!(from_ai_system(*sys_ref), target_b),
+            _ => panic!("expected target_system param"),
+        }
+    }
+
+    #[test]
+    fn rule_2_zip_min_when_more_targets_than_surveyors() {
+        // 3 targets, 1 surveyor → 1 emit. zip terminates at the
+        // shorter iterator — this is the legacy semantics.
+        let target_a = Entity::from_raw_u32(50).unwrap();
+        let target_b = Entity::from_raw_u32(51).unwrap();
+        let target_c = Entity::from_raw_u32(52).unwrap();
+        let surveyor = Entity::from_raw_u32(200).unwrap();
+        let stub = StubAdapter {
+            unsurveyed_systems: vec![target_a, target_b, target_c],
+            idle_surveyors: vec![surveyor],
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let surveys: Vec<_> = proposals
+            .iter()
+            .filter(|p| p.command.kind.as_str() == "survey_system")
+            .collect();
+        assert_eq!(surveys.len(), 1, "min(targets, surveyors) emits");
+        match surveys[0].command.params.get("target_system") {
+            Some(CommandValue::System(sys_ref)) => assert_eq!(from_ai_system(*sys_ref), target_a),
+            _ => panic!("first target consumed first"),
+        }
+    }
+
+    #[test]
+    fn rule_2_silent_when_no_surveyors() {
+        let target = Entity::from_raw_u32(50).unwrap();
+        let stub = StubAdapter {
+            unsurveyed_systems: vec![target],
+            idle_surveyors: vec![],
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.command.kind.as_str() != "survey_system"),
+            "no idle surveyor → no survey emit",
+        );
+    }
+
+    #[test]
+    fn rule_2_silent_when_no_targets() {
+        let surveyor = Entity::from_raw_u32(200).unwrap();
+        let stub = StubAdapter {
+            unsurveyed_systems: vec![],
+            idle_surveyors: vec![surveyor],
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.command.kind.as_str() != "survey_system"),
+            "no unsurveyed system → no survey emit",
+        );
+    }
+
+    #[test]
+    fn rule_1_preempts_rule_2_via_early_return() {
+        // Rule 1 conditions hit + Rule 2 conditions hit. Legacy
+        // `SimpleNpcPolicy::decide` returns immediately after Rule 1,
+        // so survey_system must NOT be emitted. Mirrors the
+        // `rule_1_preempts_rule_5a_via_early_return` shape.
+        let hostile = Entity::from_raw_u32(42).unwrap();
+        let combat_ship = Entity::from_raw_u32(100).unwrap();
+        let target = Entity::from_raw_u32(50).unwrap();
+        let surveyor = Entity::from_raw_u32(200).unwrap();
+        let stub = StubAdapter {
+            hostile_systems: vec![hostile],
+            idle_combat: vec![combat_ship],
+            unsurveyed_systems: vec![target],
+            idle_surveyors: vec![surveyor],
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.command.kind.as_str() != "survey_system"),
+            "Rule 1 must early-return before Rule 2 runs",
+        );
+        assert!(
+            proposals
+                .iter()
+                .any(|p| p.command.kind.as_str() == "attack_target"),
+            "Rule 1 still fires",
         );
     }
 

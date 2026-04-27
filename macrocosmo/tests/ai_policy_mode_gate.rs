@@ -198,26 +198,26 @@ fn legacy_mode_emits_commands_today() {
 /// PR2c starts porting Rule 1 (attack), this test will fail and
 /// the porting agent will move it under a `parity` harness instead.
 #[test]
-fn layered_mode_emits_no_commands() {
+fn layered_mode_emits_commands_after_rule_ports() {
+    // PR2b shipped Layered = noop; PR2c+2d+3a have since ported
+    // Rules 1/2/3/5a/6/7/8 to `MidStanceAgent`. The flag-flip
+    // gate is still valid — this test now confirms Layered also
+    // emits on the survey scenario (Rule 2 fires post-PR3a). The
+    // file is slated for deletion in #448 PR3d once the flag
+    // itself goes away.
     let mut app = test_app();
     let _ = setup_survey_scenario(&mut app, 5.0);
 
-    // Flip the gate. The resource is `init_resource` in `AiPlugin`,
-    // so we override after `test_app()` has already run plugin
-    // build — simple `insert_resource` replaces it.
     app.insert_resource(AiPolicyMode::Layered);
 
     for _ in 0..3 {
         advance_time(&mut app, 1);
     }
 
-    assert_eq!(
-        outbox_command_count(&app),
-        0,
-        "Layered mode (PR2b) must be a noop — `layered_decide_noop` \
-         returns empty `Vec<Proposal>`, the identity arbiter \
-         preserves that, so zero commands should reach the outbox. \
-         Got {}",
-        outbox_command_count(&app),
+    assert!(
+        outbox_command_count(&app) > 0,
+        "Layered mode should now emit commands via MidStanceAgent's \
+         Rule 2 port. Got 0 — likely a regression in the survey \
+         port or adapter wiring."
     );
 }

@@ -124,6 +124,26 @@ pub trait MidGameAdapter {
     /// `!self.colonizable_systems().is_empty()` but kept as its own
     /// method to match the legacy logic's reading order.
     fn has_colonizable_targets(&self) -> bool;
+
+    // ---- PR3a additions (Rule 2 — survey) ----
+
+    /// Survey candidate systems, ranked and already deduped against
+    /// in-flight `survey_system` work (`PendingAssignment` markers
+    /// **and** outbox-resident commands — Bug A union). Mirrors
+    /// `NpcContext.unsurveyed_systems`. Rule 2 zips this against
+    /// [`Self::idle_surveyors`] one-for-one. The adapter does not
+    /// re-dedup — `npc_decision_tick` populates `NpcContext` with the
+    /// final filtered list before the adapter is constructed.
+    fn unsurveyed_systems(&self) -> &[Entity];
+
+    /// Idle ship entities flagged as `can_survey`. Pre-computed in
+    /// `npc_decision_tick`'s Layered branch with the same expression
+    /// `SimpleNpcPolicy::decide` builds for Rule 2:
+    /// `s.is_idle && s.can_survey`. Returned as a slice (rather than
+    /// `Vec`) so the adapter stays allocation-free per call — matches
+    /// the [`Self::colonizable_systems`] / [`Self::hostile_systems`]
+    /// pattern.
+    fn idle_surveyors(&self) -> &[Entity];
 }
 
 /// Three counts Rule 6 needs to pick the next ship to build. Matches
@@ -163,6 +183,11 @@ pub struct BevyMidGameAdapter<'a> {
     /// caller (`npc_decision_tick`) so the adapter does not allocate
     /// per `idle_colonizers()` call.
     pub idle_colonizers: &'a [Entity],
+    /// Pre-computed `idle_surveyors` set — `s.is_idle && s.can_survey`
+    /// filtered over `context.ships`. Same expression
+    /// `SimpleNpcPolicy::decide` builds for Rule 2. Borrowed (not
+    /// owned) for the same reason `idle_colonizers` is.
+    pub idle_surveyors: &'a [Entity],
 }
 
 impl<'a> BevyMidGameAdapter<'a> {
@@ -265,6 +290,20 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
 
     fn has_colonizable_targets(&self) -> bool {
         !self.context.colonizable_systems.is_empty()
+    }
+
+    fn unsurveyed_systems(&self) -> &[Entity] {
+        // Already deduped upstream: `npc_decision_tick` builds
+        // `pending_survey_targets` from `PendingAssignment` ∪
+        // outbox-resident `survey_system` commands (Round 11 Bug A
+        // union, ~lines 590–611 of `npc_decision.rs`) and filters
+        // candidates by it before `rank_survey_targets`. So this slice
+        // is the *final* Rule 2 input — Mid does **not** re-dedup.
+        &self.context.unsurveyed_systems
+    }
+
+    fn idle_surveyors(&self) -> &[Entity] {
+        self.idle_surveyors
     }
 }
 

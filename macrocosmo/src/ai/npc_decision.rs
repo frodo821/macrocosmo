@@ -774,25 +774,24 @@ pub fn npc_decision_tick(
             ruler_aboard,
         };
 
-        // #448 PR2c: AiPolicyMode gate. Layered now routes through
-        // `MidStanceAgent::decide` which ports Rules 1 + 5a; the
-        // remaining Rules (2/3/4/5b/6/7/8) still land in PR2d. Until
-        // every rule is ported the parity test
-        // (`tests/ai_layered_parity.rs`) restricts itself to fixtures
-        // where only Rule 1 / 5a fire. Default = Legacy → all
-        // existing production paths and tests untouched.
+        // #448 PR2c+: AiPolicyMode gate. Layered routes through
+        // `MidStanceAgent::decide`, which ports Rules 1 + 5a (PR2c),
+        // 3 + 6 + 7 + 8 (PR2d), and 2 (PR3a). Rules 4 (research_focus)
+        // and 5b (slot fill) still land in legacy until the Short
+        // layer migration (#449). Until every rule is ported the
+        // parity test (`tests/ai_layered_parity.rs`) restricts itself
+        // to fixtures where only ported rules fire. Default = Legacy
+        // → all existing production paths and tests untouched.
         let commands: Vec<Command> = match *policy_mode {
             crate::ai::mid_adapter::AiPolicyMode::Legacy => {
                 policy.decide(&faction.id, entity, now, &bus.0, &context)
             }
             crate::ai::mid_adapter::AiPolicyMode::Layered => {
-                // Pre-compute idle_combat / idle_colonizers with the
-                // same expressions `SimpleNpcPolicy::decide` uses
-                // (Rule 1 / Rule 3) so the adapter can hand them
-                // straight to MidStanceAgent without re-scanning the
-                // ship list. Rule 2 (`idle_surveyors`) stays in the
-                // legacy path until the Short layer migration in
-                // #449 — see `MidStanceAgent::decide` rule comments.
+                // Pre-compute idle_combat / idle_colonizers /
+                // idle_surveyors with the same expressions
+                // `SimpleNpcPolicy::decide` uses (Rules 1 / 3 / 2) so
+                // the adapter can hand them straight to MidStanceAgent
+                // without re-scanning the ship list.
                 let idle_combat: Vec<Entity> = context
                     .ships
                     .iter()
@@ -805,12 +804,19 @@ pub fn npc_decision_tick(
                     .filter(|s| s.is_idle && s.can_colonize)
                     .map(|s| s.entity)
                     .collect();
+                let idle_surveyors: Vec<Entity> = context
+                    .ships
+                    .iter()
+                    .filter(|s| s.is_idle && s.can_survey)
+                    .map(|s| s.entity)
+                    .collect();
                 let adapter = crate::ai::mid_adapter::BevyMidGameAdapter {
                     faction: entity,
                     context: &context,
                     bus: &bus.0,
                     idle_combat: &idle_combat,
                     idle_colonizers: &idle_colonizers,
+                    idle_surveyors: &idle_surveyors,
                 };
                 let proposals = crate::ai::mid_adapter::layered_decide(
                     &adapter,

@@ -242,6 +242,203 @@ fn setup_rule_1_scenario(app: &mut App) -> (Entity, Entity, Entity) {
     (empire, home, target)
 }
 
+/// Empire with one home system (Local visibility, surveyed), one
+/// idle survey ship at home, and a single unsurveyed target system
+/// known to the empire only via the default `Catalogued` tier (no
+/// `KnowledgeStore` entry → not in `surveyed_ids` → eligible Rule 2
+/// candidate). No colony / Core / shipyard so Rules 3 / 5a / 5b /
+/// 6 / 8 stay silent. No combat ship + no hostile snapshot keeps
+/// Rule 1 silent. `fleet_ready` falls back to 0.0 → Rule 7's strict
+/// `> 0.0` lower bound silences retreat. Rule 2 is the only emit.
+fn setup_rule_2_single_scenario(app: &mut App) -> (Entity, Entity, Entity) {
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Aurelian".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "aurelian".into(),
+                name: "Aurelian".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    // Survey target close enough that the `survey_system` outbox
+    // entry matures within a few decision cycles. We deliberately
+    // omit a `KnowledgeStore` entry for this system — that's what
+    // makes it Rule 2-eligible (`surveyed_ids` does not contain it,
+    // default visibility is `Catalogued`).
+    let target = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [0.5, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    spawn_test_ruler(app.world_mut(), empire, home);
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+        // Leave `target` at default Catalogued so it passes the
+        // `vm.get(*e) >= Catalogued` filter inside `npc_decision_tick`.
+    }
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: home,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Home".into(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                colonized: true,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+    }
+
+    // Idle survey ship — `explorer_mk1` carries a survey module so
+    // `can_survey == true` in the ShipInfo builder.
+    let surveyor = spawn_test_ship(
+        app.world_mut(),
+        "Scout-1",
+        "explorer_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    {
+        let mut s = app.world_mut().entity_mut(surveyor);
+        let mut ship = s.get_mut::<Ship>().unwrap();
+        ship.owner = Owner::Empire(empire);
+    }
+
+    (empire, home, target)
+}
+
+/// Same as [`setup_rule_2_single_scenario`] but with 3 unsurveyed
+/// targets and only 1 idle surveyor — covers the `zip` semantics
+/// (`min(targets, surveyors)` = 1 emit). The surplus targets stay
+/// in `unsurveyed_systems` for future ticks; the parity test only
+/// asserts canonical equality, which is robust to this.
+fn setup_rule_2_zip_scenario(app: &mut App) -> Entity {
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Aurelian".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "aurelian".into(),
+                name: "Aurelian".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    // Three unsurveyed targets at increasing distance. The
+    // `rank_survey_targets` call in `npc_decision_tick` orders them
+    // deterministically against the empire's reference position (the
+    // ruler's stationed system) so Legacy and Layered see the same
+    // first-position target → same single-emit.
+    let _t1 = spawn_test_system(
+        app.world_mut(),
+        "Frontier-A",
+        [0.5, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let _t2 = spawn_test_system(
+        app.world_mut(),
+        "Frontier-B",
+        [0.7, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let _t3 = spawn_test_system(
+        app.world_mut(),
+        "Frontier-C",
+        [0.9, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    spawn_test_ruler(app.world_mut(), empire, home);
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+    }
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: home,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Home".into(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                colonized: true,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+    }
+
+    // Single surveyor → `idle_surveyors.len() == 1`, zip terminates
+    // after one pair regardless of target count.
+    let surveyor = spawn_test_ship(
+        app.world_mut(),
+        "Scout-1",
+        "explorer_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    {
+        let mut s = app.world_mut().entity_mut(surveyor);
+        let mut ship = s.get_mut::<Ship>().unwrap();
+        ship.owner = Owner::Empire(empire);
+    }
+
+    empire
+}
+
 /// Spawn an empire with one colony + a deployed Core at home, no
 /// shipyard, no idle ships. Drives Rule 5a in Legacy mode, identity
 /// in Layered.
@@ -892,6 +1089,63 @@ fn rule_1_attack_hostile_parity() {
     assert_eq!(
         legacy, layered,
         "Rule 1 (attack_target + move_ruler) parity broken: \
+         Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_2_survey_single_target_parity() {
+    // 3 ticks: target is 0.5 ly away — same light-delay budget the
+    // Rule 1 fixture uses, so the `survey_system` outbox entry
+    // matures within one decision cycle.
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 3, |app| {
+        setup_rule_2_single_scenario(app);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 3, |app| {
+        setup_rule_2_single_scenario(app);
+    });
+
+    // Sanity guard against vacuous parity (both modes silent).
+    assert!(
+        legacy.iter().any(|c| c.kind == "survey_system"),
+        "Rule 2 fixture broken: Legacy must emit survey_system; got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 2 (survey_system, 1 target / 1 ship) parity broken: \
+         Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_2_survey_zip_more_targets_than_surveyors_parity() {
+    // 3 ticks; the closest of three unsurveyed targets is 0.5 ly,
+    // matching the single-target fixture's light-delay budget. Both
+    // modes follow the legacy `zip(idle_surveyors, unsurveyed)`
+    // semantics: with 1 ship vs 3 targets, exactly one
+    // `survey_system` per tick is emitted (and the same target is
+    // chosen since `rank_survey_targets` is deterministic and the
+    // pending-target dedup gates re-emission of the in-flight one).
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 3, |app| {
+        setup_rule_2_zip_scenario(app);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 3, |app| {
+        setup_rule_2_zip_scenario(app);
+    });
+
+    assert!(
+        legacy.iter().any(|c| c.kind == "survey_system"),
+        "Rule 2 zip fixture broken: Legacy must emit survey_system; got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 2 (survey_system, 3 targets / 1 ship — zip semantics) parity broken: \
          Legacy = {:?}, Layered = {:?}",
         legacy, layered,
     );
