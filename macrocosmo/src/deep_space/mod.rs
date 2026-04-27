@@ -692,7 +692,7 @@ impl Plugin for DeepSpacePlugin {
     }
 }
 
-/// #118: Sensor Buoy detection.
+/// #118 / #457: Sensor Buoy detection.
 ///
 /// Each `DeepSpaceStructure` whose definition exposes the `detect_sublight`
 /// capability scans for sublight-traveling and idle (docked/surveying/etc.)
@@ -700,13 +700,16 @@ impl Plugin for DeepSpacePlugin {
 /// invisible to base sensor buoys (FTL wake detection is gated behind a
 /// future tech, #120).
 ///
-/// Detection events are pushed into the player empire's `KnowledgeStore`
-/// as `ShipSnapshot`s with an `observed_at` timestamp delayed by
-/// `distance(buoy → player) / c`. Existing snapshots with newer
-/// `observed_at` are preserved by `KnowledgeStore::update_ship`. When a
-/// courier with a `KnowledgeRelay` route visits the buoy's owner system
-/// (#117), the relay delivers the same data faster than light — both
-/// pathways coexist and the freshest observation wins.
+/// Per #457 this is a per-empire viewer model. For every empire, we resolve
+/// a viewer position (via `EmpireViewerSystem`, falling back to any ruler /
+/// player `StationedAt`) and compute the buoy → empire-viewer light delay
+/// independently. Each empire therefore gets its own `observed_at` for the
+/// same buoy detection. In observer mode (no Player), other empires still
+/// receive the data via `EmpireViewerSystem`.
+///
+/// Detection events become `ShipSnapshot`s with an `observed_at` timestamp
+/// delayed by `distance(buoy → empire viewer) / c`. Existing snapshots with
+/// newer `observed_at` are preserved by `KnowledgeStore::update_ship`.
 pub fn sensor_buoy_detect_system(
     clock: Res<crate::time_system::GameClock>,
     registry: Res<StructureRegistry>,
@@ -721,35 +724,59 @@ pub fn sensor_buoy_detect_system(
         &crate::components::Position,
         &crate::ship::ShipHitpoints,
     )>,
-    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    // Fallback viewer source for empires without `EmpireViewerSystem`
+    // (mirrors `propagate_knowledge`'s ruler-aware resolution).
+    ruler_q: Query<
+        &crate::player::StationedAt,
+        Or<(With<crate::player::Ruler>, With<crate::player::Player>)>,
+    >,
     positions: Query<&crate::components::Position>,
-    mut empire_q: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::Empire>>,
+    mut empire_q: Query<
+        (
+            Entity,
+            &mut crate::knowledge::KnowledgeStore,
+            Option<&crate::player::EmpireViewerSystem>,
+        ),
+        With<crate::player::Empire>,
+    >,
 ) {
     use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
-    // TODO(#418): sensor buoy observations should be scoped per-empire based on
-    // structure ownership. For now, all empires receive observations from all
-    // sensor buoys (matching the pre-#418 single-empire behaviour).
-    let Some(stationed) = player_q.iter().next() else {
-        return;
-    };
-    let Ok(player_pos) = positions.get(stationed.system) else {
-        return;
-    };
+    // Per-empire viewer fallback: any ruler / player stationed system.
+    let ruler_fallback = ruler_q.iter().next().map(|s| s.system);
 
-    // Pre-collect ship snapshots so we can write to multiple empire stores.
-    struct BuoySnapshot {
+    // Resolve every empire's viewer position once. Empires without a
+    // resolvable viewer are skipped (they cannot receive light-speed
+    // observations). Observer mode (no Player) still works as long as
+    // each empire carries `EmpireViewerSystem`.
+    let empire_viewers: Vec<(Entity, [f64; 3])> = empire_q
+        .iter()
+        .filter_map(|(e, _, viewer_opt)| {
+            let system = viewer_opt.map(|v| v.0).or(ruler_fallback)?;
+            let pos = positions.get(system).ok()?;
+            Some((e, pos.as_array()))
+        })
+        .collect();
+
+    if empire_viewers.is_empty() {
+        return;
+    }
+
+    // Pre-build per-buoy ship detection list, keyed by buoy position so
+    // each empire's delay computation reuses the same `(ship, snapshot)`
+    // payload. observed_at is computed per empire below.
+    struct BuoyDetection {
+        buoy_pos: [f64; 3],
         ship_entity: Entity,
         name: String,
         design_id: String,
         snapshot_state: ShipSnapshotState,
         last_system: Option<Entity>,
-        observed_at: i64,
         hp: f64,
         hp_max: f64,
     }
 
-    let mut snapshots: Vec<BuoySnapshot> = Vec::new();
+    let mut detections: Vec<BuoyDetection> = Vec::new();
 
     for (structure, buoy_pos) in &structures {
         let Some(def) = registry.get(&structure.definition_id) else {
@@ -760,14 +787,6 @@ pub fn sensor_buoy_detect_system(
         };
         let detect_range = cap.range;
         if detect_range <= 0.0 {
-            continue;
-        }
-
-        // Light-speed delay from buoy to player observer.
-        let buoy_to_player = crate::physics::distance_ly(buoy_pos, player_pos);
-        let delay = crate::physics::light_delay_hexadies(buoy_to_player);
-        let observed_at = clock.elapsed - delay;
-        if observed_at < 0 {
             continue;
         }
 
@@ -815,37 +834,52 @@ pub fn sensor_buoy_detect_system(
                 }
             };
 
-            snapshots.push(BuoySnapshot {
+            detections.push(BuoyDetection {
+                buoy_pos: buoy_pos.as_array(),
                 ship_entity,
                 name: ship.name.clone(),
                 design_id: ship.design_id.clone(),
                 snapshot_state,
                 last_system,
-                observed_at,
                 hp: hp.hull,
                 hp_max: hp.hull_max,
             });
         }
     }
 
-    // Write snapshots to all empire knowledge stores.
-    for mut store in &mut empire_q {
-        for snap in &snapshots {
+    if detections.is_empty() {
+        return;
+    }
+
+    // Per #457: each empire computes its own light-speed delay from each
+    // buoy → its viewer, so observed_at is per-empire.
+    for (empire_entity, viewer_pos_arr) in &empire_viewers {
+        let Ok((_, mut store, _)) = empire_q.get_mut(*empire_entity) else {
+            continue;
+        };
+        for det in &detections {
+            let buoy_to_viewer =
+                crate::physics::distance_ly_arr(det.buoy_pos, *viewer_pos_arr);
+            let delay = crate::physics::light_delay_hexadies(buoy_to_viewer);
+            let observed_at = clock.elapsed - delay;
+            if observed_at < 0 {
+                continue;
+            }
             if store
-                .get_ship(snap.ship_entity)
-                .is_some_and(|existing| existing.observed_at >= snap.observed_at)
+                .get_ship(det.ship_entity)
+                .is_some_and(|existing| existing.observed_at >= observed_at)
             {
                 continue;
             }
             store.update_ship(ShipSnapshot {
-                entity: snap.ship_entity,
-                name: snap.name.clone(),
-                design_id: snap.design_id.clone(),
-                last_known_state: snap.snapshot_state.clone(),
-                last_known_system: snap.last_system,
-                observed_at: snap.observed_at,
-                hp: snap.hp,
-                hp_max: snap.hp_max,
+                entity: det.ship_entity,
+                name: det.name.clone(),
+                design_id: det.design_id.clone(),
+                last_known_state: det.snapshot_state.clone(),
+                last_known_system: det.last_system,
+                observed_at,
+                hp: det.hp,
+                hp_max: det.hp_max,
                 source: ObservationSource::Direct,
             });
         }
@@ -871,8 +905,8 @@ pub fn verify_relay_pairings_system(
     }
 }
 
-/// #119: Relay ship knowledge between paired FTL Comm Relays at FTL speed
-/// (effectively instant — `observed_at = clock.elapsed`).
+/// #119 / #457: Relay ship knowledge between paired FTL Comm Relays at FTL
+/// speed (effectively instant — `observed_at = clock.elapsed`).
 ///
 /// For each paired relay `(source, target)`:
 ///   - If `source` has direction `OneWay`, it relays from source → target.
@@ -881,17 +915,25 @@ pub fn verify_relay_pairings_system(
 ///     same tick because every relay iterates independently).
 ///
 /// "Relaying" means: for every ship within the `source` relay's `range_ly`
-/// (`ftl_comm_relay` capability range), IF the player is within the `target`
-/// relay's `range_ly`, write a fresh `ShipSnapshot` into the player empire's
-/// `KnowledgeStore` with `observed_at = clock.elapsed`. Existing snapshots
-/// with newer `observed_at` are preserved by `KnowledgeStore::update_ship`
-/// ("newer wins"), so chains (A→B→C) emerge naturally: if A relays to B and
-/// B relays to C, and the player is in C's range, the player hears about
-/// ships in A's range via the two independent pair runs.
+/// (`ftl_comm_relay` capability range), the snapshot is forwarded to every
+/// empire whose viewer position is within the `target` relay's `range_ly`.
+/// Existing snapshots with newer `observed_at` are preserved by
+/// `KnowledgeStore::update_ship` ("newer wins"), so chains (A→B→C) emerge
+/// naturally.
 ///
-/// If `range_ly == 0`, the relay's capability is considered infinite on that
-/// side (matches the default Lua value until operators configure a real
-/// range). Callers should set a sensible range in Lua.
+/// Per #457:
+///   - The receive-side range check is computed against **each empire's**
+///     viewer position, not just the player's `StationedAt`. Observer mode
+///     and NPC empires both receive relay knowledge through their own
+///     `EmpireViewerSystem`.
+///   - The hostile map fed into `build_system_snapshot` is built per
+///     receiver empire using `FactionRelations::get_or_default(receiver, …)`
+///     so directional relations matter (an empire at war with X sees X as
+///     hostile, an empire at peace with X does not).
+///
+/// If `range_ly == 0`, the relay's capability is considered infinite on
+/// that side (matches the default Lua value until operators configure a
+/// real range). Callers should set a sensible range in Lua.
 pub fn relay_knowledge_propagate_system(
     clock: Res<crate::time_system::GameClock>,
     registry: Res<StructureRegistry>,
@@ -918,10 +960,19 @@ pub fn relay_knowledge_propagate_system(
         &crate::ship::ShipHitpoints,
         Option<&crate::colony::SlotAssignment>,
     )>,
-    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    // #457: Fallback viewer for empires lacking `EmpireViewerSystem`
+    // (mirrors `propagate_knowledge`'s ruler-aware resolution).
+    ruler_q: Query<
+        &crate::player::StationedAt,
+        Or<(With<crate::player::Ruler>, With<crate::player::Player>)>,
+    >,
     positions: Query<&crate::components::Position>,
     mut empire_q: Query<
-        (Entity, &mut crate::knowledge::KnowledgeStore),
+        (
+            Entity,
+            &mut crate::knowledge::KnowledgeStore,
+            Option<&crate::player::EmpireViewerSystem>,
+        ),
         With<crate::player::Empire>,
     >,
     // #145: Forbidden regions that block FTL comm propagation.
@@ -959,14 +1010,23 @@ pub fn relay_knowledge_propagate_system(
         .collect();
     use crate::knowledge::{ObservationSource, ShipSnapshot, ShipSnapshotState};
 
-    // TODO(#418): relay knowledge should be scoped per-empire based on
-    // structure ownership. For now, all empires receive relay observations.
-    let Some(stationed) = player_q.iter().next() else {
+    // #457: Resolve every empire's viewer position. Empires without a
+    // resolvable viewer are skipped — they cannot receive relay-routed
+    // observations. Observer mode (no Player) still works as long as each
+    // empire carries `EmpireViewerSystem`.
+    let ruler_fallback = ruler_q.iter().next().map(|s| s.system);
+    let empire_viewers: Vec<(Entity, [f64; 3])> = empire_q
+        .iter()
+        .filter_map(|(e, _, viewer_opt)| {
+            let system = viewer_opt.map(|v| v.0).or(ruler_fallback)?;
+            let pos = positions.get(system).ok()?;
+            Some((e, pos.as_array()))
+        })
+        .collect();
+
+    if empire_viewers.is_empty() {
         return;
-    };
-    let Ok(player_pos) = positions.get(stationed.system) else {
-        return;
-    };
+    }
 
     // Helper: extract the ftl_comm_relay range for a given structure.
     let relay_range_for = |structure: &DeepSpaceStructure| -> Option<f64> {
@@ -975,19 +1035,47 @@ pub fn relay_knowledge_propagate_system(
         Some(cap.range)
     };
 
-    // Pre-collect ship snapshots and system knowledge for later writing to all empires.
-    let mut ship_snapshots: Vec<ShipSnapshot> = Vec::new();
+    // #457: Pre-built hostile map per receiver empire (directional relations
+    // matter — receiver X may treat owner Y as hostile while receiver Z does
+    // not). Built once per system call, not once per buoy/relay.
+    let hostile_maps: std::collections::HashMap<Entity, std::collections::HashMap<Entity, f64>> = {
+        let mut out = std::collections::HashMap::new();
+        for (empire_entity, _) in &empire_viewers {
+            let mut hm: std::collections::HashMap<Entity, f64> =
+                std::collections::HashMap::new();
+            for (at_system, stats, owner) in &hostiles {
+                let include = match owner {
+                    Some(o) => faction_relations
+                        .get_or_default(*empire_entity, o.0)
+                        .can_attack_aggressive(),
+                    None => true,
+                };
+                if include {
+                    *hm.entry(at_system.0).or_insert(0.0) += stats.strength;
+                }
+            }
+            out.insert(*empire_entity, hm);
+        }
+        out
+    };
 
+    // #457: Per-empire snapshot accumulators. Each entry will be flushed to
+    // exactly one empire's `KnowledgeStore` after the relay-iteration loop
+    // (so the borrow checker sees only one `&mut KnowledgeStore` at a time).
     struct SystemKnowledgeEntry {
         system: Entity,
         observed_at: i64,
         received_at: i64,
         data: crate::knowledge::SystemSnapshot,
     }
-    let mut system_snapshots: Vec<SystemKnowledgeEntry> = Vec::new();
+    let mut per_empire_ships: std::collections::HashMap<Entity, Vec<ShipSnapshot>> =
+        std::collections::HashMap::new();
+    let mut per_empire_systems: std::collections::HashMap<Entity, Vec<SystemKnowledgeEntry>> =
+        std::collections::HashMap::new();
 
-    // Collect empire entities for per-empire hostile map filtering.
-    let empire_entities: Vec<Entity> = empire_q.iter().map(|(e, _)| e).collect();
+    // Reverse design lookup is invariant across the loop body.
+    let reverse =
+        crate::colony::system_buildings::build_reverse_design_map(&building_registry);
 
     for (_source_entity, source_structure, source_pos, relay) in &relays {
         let _ = relay.direction;
@@ -1004,11 +1092,6 @@ pub fn relay_knowledge_propagate_system(
             continue;
         };
 
-        let player_to_partner = crate::physics::distance_ly(player_pos, partner_pos);
-        if partner_range > 0.0 && player_to_partner > partner_range {
-            continue;
-        }
-
         let source_arr = source_pos.as_array();
         let partner_arr = partner_pos.as_array();
         if comm_blockers
@@ -1018,14 +1101,32 @@ pub fn relay_knowledge_propagate_system(
             continue;
         }
 
+        // #457: Identify which empires can receive from this relay pair —
+        // their viewer must be inside the partner relay's range.
+        let receiving_empires: Vec<Entity> = empire_viewers
+            .iter()
+            .filter(|(_, viewer_pos_arr)| {
+                if partner_range <= 0.0 {
+                    return true; // 0 = infinite range
+                }
+                let dist =
+                    crate::physics::distance_ly_arr(*viewer_pos_arr, partner_arr);
+                dist <= partner_range
+            })
+            .map(|(e, _)| *e)
+            .collect();
+
+        if receiving_empires.is_empty() {
+            continue;
+        }
+
         // For each ship, check it's in the source relay's range and snapshot it.
+        let observed_at = clock.elapsed;
         for (ship_entity, ship, state, ship_pos, hp, _slot) in &ships {
             let dist = crate::physics::distance_ly(source_pos, ship_pos);
             if source_range > 0.0 && dist > source_range {
                 continue;
             }
-
-            let observed_at = clock.elapsed;
 
             let (snapshot_state, last_system) = match state {
                 crate::ship::ShipState::InSystem { system } => {
@@ -1057,7 +1158,7 @@ pub fn relay_knowledge_propagate_system(
                 }
             };
 
-            ship_snapshots.push(ShipSnapshot {
+            let snap = ShipSnapshot {
                 entity: ship_entity,
                 name: ship.name.clone(),
                 design_id: ship.design_id.clone(),
@@ -1067,37 +1168,22 @@ pub fn relay_knowledge_propagate_system(
                 hp: hp.hull,
                 hp_max: hp.hull_max,
                 source: ObservationSource::Relay,
-            });
-        }
-
-        // #216: FTL-relayed SystemKnowledge.
-        let observed_at = clock.elapsed;
-        // #293: Build hostile map using the first empire entity for faction
-        // relations filtering. TODO(#418): per-empire hostile maps.
-        let mut hostile_map: std::collections::HashMap<Entity, f64> =
-            std::collections::HashMap::new();
-        if let Some(&first_empire) = empire_entities.first() {
-            for (at_system, stats, owner) in &hostiles {
-                let include = match owner {
-                    Some(o) => faction_relations
-                        .get_or_default(first_empire, o.0)
-                        .can_attack_aggressive(),
-                    None => true,
-                };
-                if include {
-                    *hostile_map.entry(at_system.0).or_insert(0.0) += stats.strength;
-                }
+            };
+            for empire_entity in &receiving_empires {
+                per_empire_ships
+                    .entry(*empire_entity)
+                    .or_default()
+                    .push(snap.clone());
             }
         }
 
+        // #216: FTL-relayed SystemKnowledge.
         for (sys_entity, star, sys_pos, stockpile) in &system_q {
             let dist = crate::physics::distance_ly(source_pos, sys_pos);
             if source_range > 0.0 && dist > source_range {
                 continue;
             }
 
-            let reverse =
-                crate::colony::system_buildings::build_reverse_design_map(&building_registry);
             let relay_has_port = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
                 slot.is_some()
                     && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
@@ -1108,53 +1194,70 @@ pub fn relay_knowledge_propagate_system(
                     && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
                     && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("shipyard"))
             });
-            let snapshot = crate::knowledge::build_system_snapshot(
-                sys_entity,
-                star,
-                sys_pos,
-                stockpile,
-                relay_has_port,
-                relay_has_shipyard,
-                &colonies,
-                &planets,
-                &planet_attrs,
-                &hostile_map,
-            );
 
-            system_snapshots.push(SystemKnowledgeEntry {
-                system: sys_entity,
-                observed_at,
-                received_at: clock.elapsed,
-                data: snapshot,
-            });
+            // #457: Build a snapshot per receiving empire because hostile_map
+            // is receiver-specific (directional faction relations).
+            for empire_entity in &receiving_empires {
+                let empty: std::collections::HashMap<Entity, f64> =
+                    std::collections::HashMap::new();
+                let hostile_map = hostile_maps.get(empire_entity).unwrap_or(&empty);
+                let snapshot = crate::knowledge::build_system_snapshot(
+                    sys_entity,
+                    star,
+                    sys_pos,
+                    stockpile,
+                    relay_has_port,
+                    relay_has_shipyard,
+                    &colonies,
+                    &planets,
+                    &planet_attrs,
+                    hostile_map,
+                );
+                per_empire_systems
+                    .entry(*empire_entity)
+                    .or_default()
+                    .push(SystemKnowledgeEntry {
+                        system: sys_entity,
+                        observed_at,
+                        received_at: clock.elapsed,
+                        data: snapshot,
+                    });
+            }
         }
     }
 
-    // Write collected snapshots to all empire knowledge stores.
-    for (_empire_entity, mut store) in &mut empire_q {
-        for snap in &ship_snapshots {
-            if store
-                .get_ship(snap.entity)
-                .is_some_and(|existing| existing.observed_at >= snap.observed_at)
-            {
-                continue;
+    // #457: Flush per-empire accumulators directly to each empire's store.
+    for (empire_entity, _) in &empire_viewers {
+        let Ok((_, mut store, _)) = empire_q.get_mut(*empire_entity) else {
+            continue;
+        };
+        if let Some(ships_for_empire) = per_empire_ships.get(empire_entity) {
+            for snap in ships_for_empire {
+                if store
+                    .get_ship(snap.entity)
+                    .is_some_and(|existing| existing.observed_at >= snap.observed_at)
+                {
+                    continue;
+                }
+                store.update_ship(snap.clone());
             }
-            store.update_ship(snap.clone());
         }
-        for sys_snap in &system_snapshots {
-            if store
-                .get(sys_snap.system)
-                .is_some_and(|existing| existing.observed_at >= sys_snap.observed_at)
-            {
-                continue;
+        if let Some(systems_for_empire) = per_empire_systems.get(empire_entity) {
+            for sys_snap in systems_for_empire {
+                if store
+                    .get(sys_snap.system)
+                    .is_some_and(|existing| existing.observed_at >= sys_snap.observed_at)
+                {
+                    continue;
+                }
+                store.update(crate::knowledge::SystemKnowledge {
+                    system: sys_snap.system,
+                    observed_at: sys_snap.observed_at,
+                    received_at: sys_snap.received_at,
+                    data: sys_snap.data.clone(),
+                    source: ObservationSource::Relay,
+                });
             }
-            store.update(crate::knowledge::SystemKnowledge {
-                system: sys_snap.system,
-                observed_at: sys_snap.observed_at,
-                received_at: sys_snap.received_at,
-                data: sys_snap.data.clone(),
-                source: ObservationSource::Relay,
-            });
         }
     }
 }

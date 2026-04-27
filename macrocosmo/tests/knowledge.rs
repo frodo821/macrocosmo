@@ -2886,3 +2886,284 @@ fn test_build_system_snapshot_includes_is_capital() {
     let entry2 = store2.get(sys_entity2).unwrap();
     assert!(!entry2.data.is_capital);
 }
+
+// ---------------------------------------------------------------------------
+// #457: Sensor buoy / FTL relay → per-empire viewer + per-empire delay
+// ---------------------------------------------------------------------------
+//
+// Pre-#457 the sensor_buoy and relay propagation systems early-returned when
+// no `Player` entity was present, computed light delay relative to that
+// single player, and built the relay `hostile_map` from the first empire
+// only. The fix below generalises both systems to iterate every empire's
+// `EmpireViewerSystem` (with a player/ruler fallback) and to build the
+// hostile map per receiver empire so directional `FactionRelations` matter.
+
+/// Spawn a second empire entity with `EmpireViewerSystem` set to `viewer`.
+/// Returns the empire entity. Mirrors `spawn_test_empire` minus the
+/// `PlayerEmpire` marker so observer-mode tests can have multiple empires.
+fn spawn_secondary_empire_457(
+    world: &mut World,
+    faction_id: &'static str,
+    name: &str,
+    viewer: Entity,
+) -> Entity {
+    use macrocosmo::colony::{AuthorityParams, ConstructionParams};
+    use macrocosmo::communication::CommandLog;
+    use macrocosmo::condition::ScopedFlags;
+    use macrocosmo::empire::CommsParams;
+    use macrocosmo::knowledge::SystemVisibilityMap;
+    use macrocosmo::player::{Empire, EmpireViewerSystem, Faction};
+    use macrocosmo::technology::{
+        EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
+        ResearchPool, ResearchQueue, TechTree,
+    };
+    world
+        .spawn((
+            (
+                Empire { name: name.into() },
+                Faction::new(faction_id, name),
+                TechTree::default(),
+                ResearchQueue::default(),
+                ResearchPool::default(),
+                RecentlyResearched::default(),
+                AuthorityParams::default(),
+                ConstructionParams::default(),
+            ),
+            (
+                EmpireModifiers::default(),
+                GameFlags::default(),
+                GlobalParams::default(),
+                PendingColonyTechModifiers::default(),
+                KnowledgeStore::default(),
+                SystemVisibilityMap::default(),
+                CommandLog::default(),
+                ScopedFlags::default(),
+                CommsParams::default(),
+                EmpireViewerSystem(viewer),
+            ),
+        ))
+        .id()
+}
+
+/// #457: Observer mode — no Player. Two empires with disjoint viewers must
+/// both see a sensor-buoy detection in their own KnowledgeStore.
+#[test]
+fn test_sensor_buoy_observer_mode_two_empires_both_receive() {
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    // Capital systems for two empires.
+    let sys_a = spawn_test_system(app.world_mut(), "Cap-A", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys_b = spawn_test_system(app.world_mut(), "Cap-B", [10.0, 0.0, 0.0], 1.0, true, true);
+    // Wire the auto-spawned PlayerEmpire's viewer to sys_a — no Player /
+    // Ruler entity is spawned for it, mirroring observer mode.
+    let empire_a = empire_entity(app.world_mut());
+    common::set_empire_viewer_system(app.world_mut(), empire_a, sys_a);
+    // Spawn a second non-PlayerEmpire empire with viewer at sys_b.
+    let empire_b =
+        spawn_secondary_empire_457(app.world_mut(), "obs_b_faction", "Empire B", sys_b);
+
+    // Buoy + ship — within range so both empires can observe.
+    spawn_sensor_buoy(app.world_mut(), [3.0, 0.0, 0.0]);
+    let sys_target =
+        spawn_test_system(app.world_mut(), "Target", [3.5, 0.0, 0.0], 0.5, true, false);
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Probe-457",
+        "courier_mk1",
+        sys_target,
+        [3.5, 0.0, 0.0],
+    );
+
+    // Advance well past either empire's max delay so observed_at is non-negative.
+    advance_time(&mut app, 1000);
+
+    let store_a = app
+        .world()
+        .get::<KnowledgeStore>(empire_a)
+        .expect("empire A KnowledgeStore");
+    assert!(
+        store_a.get_ship(ship_entity).is_some(),
+        "Empire A (no Player) must still receive the buoy detection in observer mode"
+    );
+
+    let store_b = app
+        .world()
+        .get::<KnowledgeStore>(empire_b)
+        .expect("empire B KnowledgeStore");
+    assert!(
+        store_b.get_ship(ship_entity).is_some(),
+        "Empire B must receive the buoy detection at its own viewer"
+    );
+}
+
+/// #457: Different viewer positions must produce different `observed_at`
+/// from the same buoy (per-empire light-speed delay, not a shared player
+/// delay).
+#[test]
+fn test_sensor_buoy_per_empire_observed_at_differs() {
+    let mut app = test_app();
+    install_sensor_buoy_definition(&mut app);
+
+    // Two empire viewers at very different distances from the buoy.
+    let sys_near = spawn_test_system(
+        app.world_mut(),
+        "Near",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let sys_far = spawn_test_system(
+        app.world_mut(),
+        "Far",
+        [20.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let empire_near = empire_entity(app.world_mut());
+    common::set_empire_viewer_system(app.world_mut(), empire_near, sys_near);
+    let empire_far =
+        spawn_secondary_empire_457(app.world_mut(), "far_faction", "Far Empire", sys_far);
+
+    // Buoy at [3,0,0] — 3 ly from near (delay 180), 17 ly from far (delay 1020).
+    spawn_sensor_buoy(app.world_mut(), [3.0, 0.0, 0.0]);
+    let sys_target =
+        spawn_test_system(app.world_mut(), "Target", [3.5, 0.0, 0.0], 0.5, true, false);
+    let ship_entity = common::spawn_test_ship(
+        app.world_mut(),
+        "Probe-457b",
+        "courier_mk1",
+        sys_target,
+        [3.5, 0.0, 0.0],
+    );
+
+    // Advance past the far empire's delay (1020) so both empires have
+    // received the detection.
+    advance_time(&mut app, 1100);
+
+    let store_near = app.world().get::<KnowledgeStore>(empire_near).unwrap();
+    let store_far = app.world().get::<KnowledgeStore>(empire_far).unwrap();
+    let snap_near = store_near
+        .get_ship(ship_entity)
+        .expect("near empire must have buoy snapshot");
+    let snap_far = store_far
+        .get_ship(ship_entity)
+        .expect("far empire must have buoy snapshot");
+    assert_ne!(
+        snap_near.observed_at, snap_far.observed_at,
+        "per-empire light-speed delays must produce different observed_at"
+    );
+    // The empire closer to the buoy hears about the detection more recently
+    // (smaller delay → larger observed_at relative to the same clock tick).
+    assert!(
+        snap_near.observed_at > snap_far.observed_at,
+        "near empire's observed_at must be more recent than far empire's"
+    );
+}
+
+/// #457: Two empires with different `FactionRelations` toward the same
+/// hostile owner must receive different `has_hostile` snapshots through an
+/// FTL relay (directional faction relations).
+#[test]
+fn test_relay_hostile_map_uses_receiver_relations() {
+    use macrocosmo::deep_space::{CommDirection, pair_relay_command};
+    use macrocosmo::faction::{FactionRelations, FactionView, RelationState};
+    use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
+
+    let mut app = test_app();
+    install_ftl_comm_relay_definition(&mut app, 5.0);
+
+    // Both empires share the same capital position so partner-range checks
+    // are identical for both — the only thing that changes between them is
+    // the faction relation toward the hostile faction.
+    let sys_a = spawn_test_system(app.world_mut(), "Cap-A", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys_b = spawn_test_system(app.world_mut(), "Cap-B", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys_remote = spawn_test_system(
+        app.world_mut(),
+        "Remote",
+        [30.0, 0.0, 0.0],
+        0.5,
+        true,
+        false,
+    );
+    let empire_a = empire_entity(app.world_mut());
+    common::set_empire_viewer_system(app.world_mut(), empire_a, sys_a);
+    let empire_b =
+        spawn_secondary_empire_457(app.world_mut(), "b_faction_457", "Empire B", sys_b);
+
+    // Spawn a hostile-owning faction entity (NOT the player empires) and a
+    // hostile entity owned by it sitting at the remote system.
+    let hostile_faction = app
+        .world_mut()
+        .spawn(macrocosmo::player::Faction::new(
+            "h_faction_457",
+            "Hostile X",
+        ))
+        .id();
+    app.world_mut().spawn((
+        AtSystem(sys_remote),
+        HostileHitpoints {
+            hp: 100.0,
+            max_hp: 100.0,
+        },
+        HostileStats {
+            strength: 50.0,
+            evasion: 0.0,
+        },
+        Hostile,
+        macrocosmo::faction::FactionOwner(hostile_faction),
+    ));
+
+    // Empire A is at war with the hostile faction (hostile_map should pick
+    // it up). Empire B is at peace with it (must NOT show as hostile).
+    {
+        let mut rel = app.world_mut().resource_mut::<FactionRelations>();
+        rel.set(
+            empire_a,
+            hostile_faction,
+            FactionView::new(RelationState::War, -100.0),
+        );
+        rel.set(
+            empire_b,
+            hostile_faction,
+            FactionView::new(RelationState::Peace, 50.0),
+        );
+    }
+
+    // Set up the relay chain so both empires can receive system snapshots.
+    let relay_a = spawn_ftl_comm_relay(app.world_mut(), "Relay-A", [28.0, 0.0, 0.0]);
+    let relay_b = spawn_ftl_comm_relay(app.world_mut(), "Relay-B", [1.0, 0.0, 0.0]);
+    pair_relay_command(
+        app.world_mut(),
+        relay_a,
+        relay_b,
+        CommDirection::Bidirectional,
+    )
+    .unwrap();
+
+    // FTL is instant — the relay snapshot should arrive on the very first
+    // tick. We advance a small amount so other state settles.
+    advance_time(&mut app, 100);
+
+    let store_a = app.world().get::<KnowledgeStore>(empire_a).unwrap();
+    let entry_a = store_a
+        .get(sys_remote)
+        .expect("empire A must receive a relay-delivered remote snapshot");
+    assert!(
+        entry_a.data.has_hostile,
+        "empire A (war w/ hostile) must see hostile present"
+    );
+    assert!(entry_a.data.hostile_strength > 0.0);
+
+    let store_b = app.world().get::<KnowledgeStore>(empire_b).unwrap();
+    let entry_b = store_b
+        .get(sys_remote)
+        .expect("empire B must receive a relay-delivered remote snapshot");
+    assert!(
+        !entry_b.data.has_hostile,
+        "empire B (peace w/ same faction) must NOT see hostile present — \
+         hostile_map is built per-receiver-empire (#457)"
+    );
+}
