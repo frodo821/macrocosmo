@@ -271,11 +271,7 @@ impl CampaignReactiveShort {
                 // skip re-expansion — let the existing slot drain
                 // first. This avoids re-pushing the entire chain
                 // every tick the campaign re-emits the macro.
-                if plan_state
-                    .pending
-                    .get(&key)
-                    .is_some_and(|v| !v.is_empty())
-                {
+                if plan_state.pending.get(&key).is_some_and(|v| !v.is_empty()) {
                     continue;
                 }
 

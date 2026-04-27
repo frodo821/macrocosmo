@@ -21,7 +21,8 @@ use crate::bus::AiBus;
 use crate::campaign::{Campaign, CampaignState};
 use crate::command::Command;
 use crate::ids::{
-    CommandKindId, FactionId, IntentId, IntentKindId, IntentTargetRef, ObjectiveId, ShortContext,
+    CampaignPhase, CommandKindId, FactionId, IntentId, IntentKindId, IntentTargetRef, MetricId,
+    ObjectiveId, RegionId, ShortContext, StanceId, VictoryAxisId,
 };
 use crate::intent::{Intent, IntentSpec};
 use crate::time::Tick;
@@ -30,6 +31,32 @@ use crate::victory::{VictoryCondition, VictoryStatus};
 // ---------------------------------------------------------------------------
 // Long-term
 // ---------------------------------------------------------------------------
+
+/// Empire-wide strategic memory threaded across long ticks.
+///
+/// Today the default long agent (`ObjectiveDrivenLongTerm`) holds its
+/// own internal state (`drop_counts`, `last_id_by_key`); this struct is
+/// the *layer-level* memory the orchestrator owns and will hand to the
+/// layer through the unified `Agent` trait once #448 PR4 lands. Until
+/// then it is purely additive — no existing agent reads from it.
+///
+/// The fields are scaffolding for #449+: their concrete schemas will
+/// be filled in as long-term re-evaluation, campaign-phase tracking,
+/// and victory-axis decomposition land in subsequent rounds.
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LongTermState {
+    /// Metrics the long agent is currently pursuing, keyed by the
+    /// concrete `IntentId` it minted to chase that metric. Seeds the
+    /// next long-tick re-evaluation: a metric already present here is
+    /// "in flight" and should not be re-emitted as a fresh pursuit.
+    pub pursued_metrics: BTreeMap<MetricId, IntentId>,
+    /// Optional empire-level campaign phase — schema TBD in #449. Set
+    /// to `None` today.
+    pub current_campaign_phase: Option<CampaignPhase>,
+    /// Per-axis progress toward victory in `[0.0, 1.0]`. Lets the long
+    /// agent prioritize axes that are stalled. Schema TBD in #449.
+    pub victory_progress: BTreeMap<VictoryAxisId, f32>,
+}
 
 /// Strategic layer. Reads the bus + victory condition, emits
 /// `IntentSpec`s targeting mid-term agents.
@@ -64,6 +91,53 @@ pub struct LongTermOutput {
 // ---------------------------------------------------------------------------
 // Mid-term
 // ---------------------------------------------------------------------------
+
+/// Region-scoped tactical memory threaded across mid ticks.
+///
+/// Mid-term agents today operate empire-wide (one Mid per faction);
+/// `region_id` is reserved for the multi-Mid split in #449 and is
+/// always `None` until then. Like `LongTermState`, this struct is
+/// purely additive in PR1 — the orchestrator will start handing it to
+/// the layer once the unified `Agent` trait lands in PR4.
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MidTermState {
+    /// Current stance. Drives downstream priority weighting and
+    /// proposal filtering once #467 phase 1 lands.
+    pub stance: Stance,
+    /// Active operations the mid agent is currently driving. PR2
+    /// will split this into pending / committed sets backed by the
+    /// new Proposal / ProposalOutcome types (#467 phase 1); a single
+    /// `Vec` is sufficient for PR1's state-only scope.
+    pub active_operations: Vec<ObjectiveId>,
+    /// Region this Mid agent is bound to. Reserved for the multi-Mid
+    /// split in #449; always `None` while every faction runs a single
+    /// empire-wide Mid agent.
+    pub region_id: Option<RegionId>,
+}
+
+/// Region-level posture the Mid agent operates under.
+///
+/// Four core variants cover the common case so the orchestrator and
+/// tests can `match` exhaustively. `Custom(StanceId)` is the
+/// extension hook: Lua / scenario layers can register richer stances
+/// without touching the enum (mirrors the open-id pattern used
+/// throughout `ids.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Stance {
+    Expanding,
+    Consolidating,
+    Defending,
+    Withdrawing,
+    Custom(StanceId),
+}
+
+impl Default for Stance {
+    /// `Consolidating` matches empire startup — early game leans on
+    /// build-up before expansion or defense becomes appropriate.
+    fn default() -> Self {
+        Self::Consolidating
+    }
+}
 
 /// Planning layer. Consumes arrived intents, drives the campaign
 /// state machine, logs overrides.
@@ -297,5 +371,40 @@ mod tests {
         assert!(!ps.is_empty());
         assert_eq!(ps.total_len(), 1);
         assert_eq!(ps.pending.get(&key).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn long_term_state_default_is_empty() {
+        let s = LongTermState::default();
+        assert!(s.pursued_metrics.is_empty());
+        assert!(s.current_campaign_phase.is_none());
+        assert!(s.victory_progress.is_empty());
+    }
+
+    #[test]
+    fn mid_term_state_defaults_to_consolidating_with_no_region() {
+        let s = MidTermState::default();
+        assert_eq!(s.stance, Stance::Consolidating);
+        assert!(s.active_operations.is_empty());
+        assert!(s.region_id.is_none());
+    }
+
+    #[test]
+    fn stance_custom_round_trips_through_serde() {
+        let s = Stance::Custom(StanceId::from("aggressive_raid"));
+        let json = serde_json::to_string(&s).expect("serialize Custom");
+        let back: Stance = serde_json::from_str(&json).expect("deserialize Custom");
+        assert_eq!(s, back);
+        // Sanity: the four core variants also round-trip.
+        for v in [
+            Stance::Expanding,
+            Stance::Consolidating,
+            Stance::Defending,
+            Stance::Withdrawing,
+        ] {
+            let j = serde_json::to_string(&v).expect("serialize core");
+            let r: Stance = serde_json::from_str(&j).expect("deserialize core");
+            assert_eq!(v, r);
+        }
     }
 }

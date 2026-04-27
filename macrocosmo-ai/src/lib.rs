@@ -61,9 +61,9 @@ pub use precondition_cache::{CacheStats, PreconditionCacheRegistry};
 pub use value_expr::{Dependencies, MetricRef, ScriptRef, Value, ValueExpr};
 
 pub use agent::{
-    CampaignOp, LongTermAgent, LongTermInput, LongTermOutput, MidTermAgent, MidTermInput,
-    MidTermOutput, OverrideEntry, OverrideReason, PlanState, ShortTermAgent, ShortTermInput,
-    ShortTermOutput, target_faction_wide,
+    CampaignOp, LongTermAgent, LongTermInput, LongTermOutput, LongTermState, MidTermAgent,
+    MidTermInput, MidTermOutput, MidTermState, OverrideEntry, OverrideReason, PlanState,
+    ShortTermAgent, ShortTermInput, ShortTermOutput, Stance, target_faction_wide,
 };
 pub use assessment::{
     Assessment, AssessmentConfig, EconomicBaseline, EconomicCapacityWeights, EconomicSnapshot,
@@ -80,8 +80,9 @@ pub use decomposition::{
 pub use dispatcher::{DispatchResult, FixedDelayDispatcher, IntentDispatcher};
 pub use evidence::StandingEvidence;
 pub use ids::{
-    CommandKindId, DeliveryHintId, EntityRef, EvidenceKindId, FactionId, FactionRef, IntentId,
-    IntentKindId, IntentTargetRef, MetricId, ObjectiveId, ShortContext, SystemRef,
+    CampaignPhase, CommandKindId, DeliveryHintId, EntityRef, EvidenceKindId, FactionId, FactionRef,
+    IntentId, IntentKindId, IntentTargetRef, MetricId, ObjectiveId, RegionId, ShortContext,
+    StanceId, SystemRef, VictoryAxisId,
 };
 pub use intent::{Intent, IntentParams, IntentSpec, RationaleSnapshot};
 pub use long_term_default::{LongTermDefaultConfig, ObjectiveDrivenLongTerm};

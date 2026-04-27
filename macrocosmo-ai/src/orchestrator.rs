@@ -18,8 +18,8 @@ use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{
-    CampaignOp, LongTermAgent, LongTermInput, MidTermAgent, MidTermInput, OverrideEntry, PlanState,
-    ShortTermAgent, ShortTermInput,
+    CampaignOp, LongTermAgent, LongTermInput, LongTermState, MidTermAgent, MidTermInput,
+    MidTermState, OverrideEntry, PlanState, ShortTermAgent, ShortTermInput,
 };
 use crate::ai_params::AiParamsExt;
 use crate::bus::AiBus;
@@ -139,6 +139,15 @@ pub struct OrchestratorState {
     /// map has at most one entry — the keyed shape is in place for
     /// future per-fleet / per-colony short agents.
     pub plan_states: AHashMap<ShortContext, PlanState>,
+    /// Empire-wide strategic memory. Threaded across long ticks once
+    /// PR4 unifies the agent traits; in PR1 the orchestrator owns
+    /// storage but does not yet read from it (existing default agents
+    /// keep their own internal state).
+    pub long_state: LongTermState,
+    /// Region-scoped tactical memory. Single-instance today (one
+    /// empire-wide Mid per faction); the multi-Mid split lands in
+    /// #449.
+    pub mid_state: MidTermState,
 }
 
 /// Drives one faction's three-layer AI loop.

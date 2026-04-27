@@ -149,6 +149,40 @@ arc_str_id! {
     ShortContext
 }
 
+arc_str_id! {
+    /// Open-kind label for a Mid-term agent stance extension. Used as
+    /// the payload of `Stance::Custom` so Lua / scenario layers can
+    /// register stances beyond the four core variants without touching
+    /// the enum. The four core variants stay typed so the orchestrator
+    /// (and tests) can `match` exhaustively on the common case.
+    StanceId
+}
+
+arc_str_id! {
+    /// Placeholder identifier for the region a Mid-term agent is bound
+    /// to. Today every faction has a single empire-wide Mid agent so
+    /// `MidTermState::region_id` is always `None`; the type exists to
+    /// reserve the binding shape for the multi-Mid split landing in
+    /// #449.
+    RegionId
+}
+
+arc_str_id! {
+    /// Placeholder for one axis of a faction's victory decomposition
+    /// (e.g. `"economic"`, `"military"`). Used as the key shape of
+    /// `LongTermState::victory_progress`; concrete axis schema TBD in
+    /// #449.
+    VictoryAxisId
+}
+
+arc_str_id! {
+    /// Placeholder tag for the empire-level campaign phase carried in
+    /// `LongTermState::current_campaign_phase`. Free-form today;
+    /// promotion to a typed enum is deferred to #449 (mirrors the
+    /// `Stance` extension hook in the Mid layer).
+    CampaignPhase
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
