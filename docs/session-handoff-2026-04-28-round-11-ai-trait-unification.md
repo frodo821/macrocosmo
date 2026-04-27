@@ -1,0 +1,295 @@
+# Session handoff — 2026-04-27/28 Round 11 AI trait unification + dispatch correctness
+
+## TL;DR
+
+最大級の単発セッション。 commit 範囲 `5d65a83 → 8e5a825` で **12 commits** landing。 主な成果:
+
+- **Round 11 dispatch correctness** (Bug A/B/C): 前セッションハンドオフ末尾の最優先 3 bugs を全 fix。 `npc_decision_tick` が hostile-known system / outbox-resident in-flight commands も dedup 入力に union。 SAVE_VERSION 11 → 12 (PendingAssignment.stale_at field 削除)
+- **#448 完了** (8 sub-PRs): AI 3 layer trait 統一の本丸。 `MidStanceAgent` に 8 rules 全移植 + AiPolicyMode flag default 反転 + SimpleNpcPolicy / NpcPolicy / NoOpPolicy / parity scaffolding 一括削除。 `npc_decision.rs` 1641 → 550 LoC、 全体 -2889 LoC 純減
+- **新規 issue 3 件起票**: #466 ThreatState 機構、 #467 Mid-Mid 競合解決 (FCFS arbiter + rejection 通知 設計)、 #465 (#453 の dup として close)
+- **既存 issue 整理**: #448 / #443 / #454 / #465 close、 #466 #467 を 0.3.1 milestone へ
+
+`cargo test --workspace --tests` 全 green (#465/#453 既知 flaky のみ偶発)、 SAVE_VERSION 12、 fixture (`tests/fixtures/minimal_game.bin`) 不変。
+
+前段: `docs/session-handoff-2026-04-27-ai-decomposition.md` (Round 10 + spec phase)。
+
+## Commit 順 (新しい順)
+
+```
+8e5a825 refactor(ai): delete SimpleNpcPolicy + parity scaffolding (#448 PR3d)
+cb21d10 feat(ai): flip AiPolicyMode default Legacy → Layered
+82f0959 feat(ai): port Rule 5b (slot fill) to MidStanceAgent + parity coverage
+ae9d19b feat(ai): port Rule 2 (survey) to MidStanceAgent + parity coverage
+bbc2459 feat(ai): port Rules 3/6/7/8 to MidStanceAgent + parity coverage complete
+d66107f feat(ai): port Rule 1 + Rule 5a to MidStanceAgent + parity test infra
+913dcc2 feat(ai): MidGameAdapter trait + AiPolicyMode flag (Layered = noop)
+1c22fcd feat(ai-core): introduce Proposal / ProposalOutcome / ConflictKind / Locality
+a9c9b81 feat(ai-core): introduce LongTermState/MidTermState + extensible Stance
+7d8f089 fix(ai): dedup NPC decision against outbox-resident in-flight commands (Bug A)
+43bb9df refactor(ai): drop time-based PendingAssignment sweep, rely on knowledge cleanup (Bug C)
+cbb2a17 fix(ai): skip known-hostile systems in survey/colonize candidates (Bug B)
+```
+
+## Round 11 内訳
+
+### A. Dispatch correctness sweep (Bug B/C/A)
+
+前セッションハンドオフで指定された「最優先 3 bug」 を順次 fix。
+
+#### Bug B (cbb2a17) — hostile filter in survey/colonize
+- 症状: NPC が `KnowledgeStore.has_hostile=true` の system に scout / colonizer を再派遣して全滅ループ
+- Fix: `npc_decision.rs` で `hostile_systems_set: HashSet<Entity>` を構築、 `colonizable_systems` push と `candidates` filter の両方に `!has_hostile` 条件追加
+- regression: `tests/ai_npc_avoid_hostile_systems.rs` 2 件
+
+#### Bug C (43bb9df) — `sweep_stale_assignments` 削除
+- 症状: `SURVEY_ASSIGNMENT_LIFETIME = 200` hex が短すぎ (実観察 ~1700 hex)、 marker mid-flight expire → Bug A の race を誘発
+- Fix Option A 採用 (full cleanup): `sweep_stale_assignments` system + `SURVEY_ASSIGNMENT_LIFETIME` const + `PendingAssignment.stale_at` field + `survey_system` constructor の `lifetime` 引数 一括削除
+- knowledge-driven cleanup (`sweep_resolved_survey_assignments`) + Bevy automatic despawn cleanup の 2 経路に依存
+- SAVE_VERSION 11 → 12、 fixture regen (732 → 798 B)
+
+#### Bug A (7d8f089) — outbox-aware dedup (approach b)
+- 症状: AI bus emit 後 outbox 滞留中の in-flight command が `npc_decision_tick` の dedup 入力に含まれず、 mid_cadence=2 で 2 tick 毎に同 target へ重複 emit (Vesk Scout-1, Scout-2 が同 system に 163 hex 差で派遣)
+- Fix: `Res<AiCommandOutbox>` を SystemParam に追加、 empire-loop 前に `outbox_survey_per_empire` / `outbox_colonize_per_empire` HashMap を pre-build (`FactionId → Entity` 1 段、 outbox.entries 1 段の合計 O(empires + outbox))、 各 empire の dedup set に union
+- regression: `tests/ai_npc_outbox_dedup.rs` 2 件 (survey + colonize variants)
+- SystemParam 数 13 → 14 (16 limit 内)
+- 既存 issue **#454 を close** (description 完全一致)
+
+### B. #448 「AI 3 layer trait 統一」 (8 sub-PRs)
+
+ハンドオフの spec phase で確定済の architectural design を 4-stage Plan agent で更に sub-decompose、 計 8 sub-PRs で landing。
+
+#### PR1 (a9c9b81) — ai-core State 構造体
+- `LongTermState { pursued_metrics, current_campaign_phase, victory_progress }`
+- `MidTermState { stance, active_operations, region_id }` (region_id は #449 placeholder)
+- `Stance` enum: 4 core (`Expanding/Consolidating/Defending/Withdrawing`) + `Custom(StanceId)` extension hook (Lua-extensible 設計)
+- `OrchestratorState.long_state` / `.mid_state` field 追加
+- 新 placeholder type: `StanceId`, `RegionId`, `VictoryAxisId`, `CampaignPhase` (`arc_str_id!` パターン)
+- macrocosmo-ai 単独、 SAVE bump 不要 (`OrchestratorRegistry` は `#[reflect(ignore)]`)
+
+#### PR2a (1c22fcd) — Proposal types (#467 Phase 1)
+- `Proposal { command, locality }`、 `ProposalOutcome { Accepted | Rejected { reason } }`、 `ConflictKind { AlreadyClaimed | OutOfRegion | ResourceExhausted | StaleAtArrival }`、 `Locality { FactionWide | System(SystemRef) | Region(RegionId) }`
+- `MidId = FactionId` alias (#449 で newtype 化予定)
+- ai-core 単独、 dependency なし
+
+#### PR2b (913dcc2) — MidGameAdapter trait + AiPolicyMode flag
+- `MidGameAdapter` trait (read-only interface for Mid logic)、 `BevyMidGameAdapter` 構造体 (`&NpcContext` 借用)
+- `AiPolicyMode { Legacy, Layered }` Bevy Resource、 default `Legacy`
+- `npc_decision_tick` に `match policy_mode { Legacy => SimpleNpcPolicy.decide, Layered => layered_decide_noop }` gate 挿入
+- Layered 分岐は noop (空 Vec 返す)、 Legacy default で既存挙動完全保持
+
+#### PR2c (d66107f) — Rule 1/5a + parity infra
+- `MidStanceAgent::decide(adapter, stance, faction_id, now) -> Vec<Proposal>` を新設 (parallel to `IntentDrivenMidTerm`、 unification は PR4 候補)
+- Rule 1 (attack hostile + move_ruler) と Rule 5a (build shipyard) を mirror byte-for-byte
+- parity test infra: `tests/ai_layered_parity.rs` で `BTreeSet<CanonicalCommand>` 比較 (HashMap iter 非決定性回避)
+- 観測点は `bus.pending_commands()` (outbox では zero-delay command が drained で見えない発見)
+
+#### PR2d (bbc2459) — Rules 3/6/7/8
+- Rule 3 (colonize)、 Rule 6 (build_ship 3-branch composition gap)、 Rule 7 (retreat、 strict `0.0 < ratio < 0.3` early-return)、 Rule 8 (fortify)
+- Rule 7 early-return が Rule 8 を preempt する仕様を `rule_7_preempts_rule_8_via_early_return` で pin
+- parity scenarios 計 6 件
+- `tests/common/create_test_building_registry` の capabilities = empty を fix (`{"shipyard": {}}`/`{"port": {}}`) — production Lua 整合
+
+#### PR3a (ae9d19b) — Rule 2 (survey)
+- adapter に `unsurveyed_systems()` + `idle_surveyors()` 追加
+- **dedup は upstream で完結** — `npc_decision_tick` が `pending_survey_targets` (PendingAssignment + outbox 由来、 Bug A の合算) を build してから `NpcContext.unsurveyed_systems` を作る、 adapter は as-is
+- parity scenarios +2 (single + zip-with-fewer-surveyors)
+- 既存 `ai_policy_mode_gate.rs::layered_mode_emits_no_commands` test (PR2b 由来 noop assertion) を `..._emits_commands_after_rule_ports` に flip
+
+#### PR3b (82f0959) — Rule 5b (slot fill)
+- adapter に `free_building_slots()` + `net_production_energy/food()` 追加 (per-faction metric topics)
+- 3-branch `power_plant`/`farm`/`mine` を mirror、 strict `< 0.0` threshold、 `Proposal::faction_wide` (target_system なし、 handler が colony pick)
+- parity scenarios +3 (energy-negative / food-negative / both-positive)
+- 注意: `Amt` が unsigned のため fixture で metric 直接 override 必要 — `AiTickSet::MetricProduce` 後に system 注入で signed 値再 emit (`MetricStore::push` 同 tick 上書き OK)
+
+#### PR3c (cb21d10) — default flip
+- `#[default]` annotation を `AiPolicyMode::Legacy` → `AiPolicyMode::Layered` に
+- `mid_adapter.rs::ai_policy_mode_defaults_to_legacy` → `..._defaults_to_layered`
+- `tests/ai_policy_mode_gate::legacy_mode_emits_commands_today` を explicit `insert_resource(AiPolicyMode::Legacy)` に変更
+- **Moment of truth**: 全 NPC integration test (`ai_npc_*`、 `ai_player_e2e`、 `ai_command_lightspeed`、 `ai_layered_parity` 11/11) green
+
+#### PR3d (8e5a825) — Legacy 一括削除
+- 削除: `SimpleNpcPolicy` + Rules 1-8 impl + `NpcPolicy` trait + `NoOpPolicy` + 14 inline unit tests + `AiPolicyMode` enum + `layered_decide` helper + `bus_from_resource` helper
+- 削除 file: `tests/ai_policy_mode_gate.rs` (223 LoC) + `tests/ai_layered_parity.rs` (1518 LoC)
+- `npc_decision.rs` 1641 → 550 LoC (= -1091 LoC 単独)
+- npc_decision_tick の `match policy_mode` collapse → 単一 Layered call
+- SystemParam 15 → 13 (14 with `ai-log` cfg)
+- **SAVE_VERSION bump 不要** — `AiPolicyMode` は `register_type` で BRP に出てたが persist されてなかった、 `OrchestratorRegistry` は `#[reflect(ignore)]`、 fixture 不変
+
+### C. PR4 skip 判断
+- Plan agent が「飛ばしても良い (Q1=(c) なら本質ではない)」と明言
+- 共通 `Agent` super-trait を ai-core に置く cosmetic refactor、 既存 trait は blanket impl で互換維持
+- CLAUDE.md「不要な抽象化を入れない」 + 価値が小さい (~200 LoC) ため skip
+- #448 は PR3d 完了で close
+
+## 起票・整理した issues
+
+### 新規 (本セッション起票)
+| # | 内容 | 状態 | milestone |
+|---|---|---|---|
+| #465 | flaky `survey_command_outbox_holds_until_light_delay_elapses` | **closed (#453 の dup)** | — |
+| #466 | ThreatState 機構 (Suspected/Confirmed) | open | 0.3.1 |
+| #467 | Mid-Mid 競合解決 (FCFS arbiter + rejection 通知) | open、 blocked-by #449 #450 | 0.3.1 |
+
+### 整理 (close)
+| # | 理由 |
+|---|---|
+| #448 | 8 sub-PRs landed、 PR4 skip |
+| #454 | Bug A (7d8f089) で fix、 description 完全一致 |
+| #443 | Round 10 E-track + F-track で実装済 (e56cd20, 0302395, d8de79e, 8950ba8, ca5fcd6) |
+| #465 | #453 の dup |
+
+## 確定済 architectural design (本セッションで concrete 化)
+
+### Mid-Mid 競合解決 (#467)
+
+光速遅延下では Long が「全 Mid proposal を待ってから最適選択」 不可能 (infinite buffering NG)。 因果整合戦略は **First-Come-First-Served (FCFS)** のみ。 衝突は防げない前提で、 失敗を Mid に通知して re-plan させる構造:
+
+```rust
+pub struct Proposal { command, locality }  // priority/weight は FCFS では無意味
+pub enum ProposalOutcome { Accepted, Rejected { reason: ConflictKind } }
+pub enum ConflictKind {
+    AlreadyClaimed { by_mid, claimed_at },  // FCFS で負け
+    OutOfRegion,                            // 自 region 外への越権 emit
+    ResourceExhausted,                      // budget cap
+    StaleAtArrival,                         // 到着時には状況変化
+}
+```
+
+`MidTermState` 拡張:
+- `pending_proposals: BTreeMap<ProposalId, PendingProposal>` (送信済 outcome 待ち)
+- `committed: BTreeMap<...>` (Accepted で active になったもの)
+- `expected_outcome_by: i64` で 2*light delay 過ぎたら故障扱い (timeout retry は別 issue)
+
+Failure modes:
+- timeout (outcome 不着)、 oscillation (Reject → 即再 emit ループ)、 starvation (常に他 Mid に先着される) — backoff / stance 変化 / authority weight (将来) で緩和
+
+PR2a で型定義 land 済。 arbiter 実装は #467 (#449/#450 依存)。
+
+### Mid Stance 拡張可能設計 (PR1 で land)
+
+```rust
+pub enum Stance {
+    Expanding,
+    Consolidating,
+    Defending,
+    Withdrawing,
+    Custom(StanceId),  // Lua/scenario 拡張用 hook
+}
+
+impl Default for Stance {
+    fn default() -> Self { Self::Consolidating }  // 序盤 build-up が自然
+}
+```
+
+`StanceRegistry` (Lua-defined) は将来追加。 PR3 までは 4 core variants のみ使用、 stance modulation は noop (= 全 stance で同挙動)。 PR3+ で stance-dependent priority weighting。
+
+### Rules 2/5b の Mid 暫定 host (user 承認)
+
+- Plan agent 元案: Rule 2 (survey) と Rule 5b (slot fill) は per-fleet/per-colony Short が natural owner (#449 Region 化後)
+- 但し PR3 で Legacy 削除する必要があり、 user は Mid に **暫定移植** を承認
+- 手戻り: #449 で Mid → Short へ再移植 (許容済)
+
+## 次セッション最優先
+
+### Top-3 候補
+
+#### 1. #449 Region 概念導入 + Mid/Short 地理的 instance 化 ⭐️ **強く推奨**
+- AI architecture 中核、 #450/#451/#452/#467 全ての前提
+- 単一 Mid (per faction) → N Mid (per region) への分割
+- Short も per-fleet / per-colony 化
+- Rules 2/5b の Mid → Short 再移植もここで実施 (PR3 暫定の解消)
+- 推定 規模 大 (~15 file)、 Plan agent → sub-PR 分解推奨
+- handoff `docs/session-handoff-2026-04-27-ai-decomposition.md` line 211-242 に確定済 architectural design あり
+
+#### 2. Per-empire 化 sweep (priority:high 系)
+複数 issues で「player-only 経路 → per-empire 化」 のテーマ:
+- #456 process_surveys owner empire 基準 (priority:high)
+- #458 PendingResearch owner-scope (priority:high)
+- #457 sensor buoy / relay knowledge per-empire (priority:high)
+- #464 KnownFactions per-empire (priority:medium、 theme:ai)
+- #463 GameEvent 意味契約 (priority:medium)
+- 個々は中小規模、 並列化で高効率
+- ThreatState (#466) の前提として `KnowledgeFact::ShipDestroyed` per-faction propagation 必要 → 関連性高い
+
+#### 3. #461 request_command local/remote 分離 (priority:high、 theme:modding)
+- Lua scripting 経由の命令が遅延 transport を bypass する bug
+- 単独 fix 可能、 比較的小規模
+
+### 中位
+
+| # | 内容 | 規模 |
+|---|---|---|
+| #460 | Casus Belli auto-war / forced peace の遅延 bypass | 中 |
+| #440 | observer mode read_only が ship panel 以外に効かない | 小 |
+| #462 | context_menu の ShipState 直接書き込みを gate | 小 |
+| #466 | ThreatState 機構 (依存: per-empire ShipDestroyed propagation = #457 等) | 大 |
+| #347 | In-game keybinding manager + rebinding UI | 中 |
+| #455 | clippy 警告整理 (段階的) | 小 |
+| #411 | 戦闘 report 可視化 + アノマリー調査統合 | 中 |
+| #445 | shipyard_capacity 値が活用されてない | 小 |
+
+### Skip 候補
+- #394 crate 分割 (icebox)
+- #459 CommandLog (priority:low)
+- #453 flaky test (priority:high だが reproducible 困難、 別問題で stuck)
+
+## Known issues / 注意点
+
+### 既知 flaky test
+- `survey_command_outbox_holds_until_light_delay_elapses` (#453) — ~40% intermittent fail。 dispatch→process timing の over-gating が root cause、 Bug A 修正後も改善せず。 isolation single-test では 8/8 pass、 並列実行下のみ顕在化。 #465 を dup として close 済
+- `cascade_ack_propagates_to_children` (`esc_notification_pipeline`) — 並列下のみ稀に flake、 isolation で 3/3 pass
+
+### Code cleanup 残り
+- `mid_adapter.rs` / `mid_stance.rs` / `npc_decision.rs` / `debug_log.rs` / `ai_player_e2e.rs` の doc comment に `Mirrors SimpleNpcPolicy::decide ...` 系の stale reference (~25 箇所) — 本セッション最後に cleanup pass 予定 (background agent)、 完了後 commit
+
+### #448 PR4 (skipped、 deletable)
+- 共通 `Agent` super-trait via blanket impl
+- ai-core 単独 ~200 LoC、 cosmetic
+- 必要になったら別 issue で再起票推奨
+
+### `AiPolicyMode` 削除後の戻り道
+- `AiPolicyMode` enum を削除済 → 代替 policy が必要になったら新 enum 作成 (1-variant の dead code を残さない原則)
+- BRP 経由で AI policy を runtime 切替したいなら別 mechanism 検討
+
+### `ai-log` feature
+- 別 PR (前 round) で `BufWriter<File>: !Reflect` の build error 残存。 production path には影響しないが `cargo build --features ai-log` で error。 別 issue 化候補
+
+## ファイル別主な変更点 (sessoin span)
+
+### 新規作成
+- `macrocosmo-ai/src/proposal.rs` (PR2a)
+- `macrocosmo-ai/tests/proposal_types.rs` (PR2a)
+- `macrocosmo/src/ai/mid_adapter.rs` (PR2b → PR3d で `AiPolicyMode` 削除)
+- `macrocosmo/src/ai/mid_stance.rs` (PR2c)
+- `macrocosmo/tests/ai_npc_avoid_hostile_systems.rs` (Bug B)
+- `macrocosmo/tests/ai_npc_outbox_dedup.rs` (Bug A)
+
+### 削除
+- `macrocosmo/tests/ai_layered_parity.rs` (PR2c で created → PR3d で deleted)
+- `macrocosmo/tests/ai_policy_mode_gate.rs` (PR2b で created → PR3d で deleted)
+
+### 大規模変更
+- `macrocosmo/src/ai/npc_decision.rs` 1641 → 550 LoC (PR3d で SimpleNpcPolicy + tests 削除)
+- `macrocosmo-ai/src/agent.rs` (PR1 で State 構造体追加)
+- `macrocosmo-ai/src/orchestrator.rs` (PR1 で OrchestratorState に thread)
+- `macrocosmo-ai/src/ids.rs` (PR1 で 4 placeholder id 追加)
+- `macrocosmo-ai/src/lib.rs` (re-export)
+- `macrocosmo/src/ai/plugin.rs` (`AiPolicyMode` 登録 → 削除)
+- `macrocosmo/src/persistence/save.rs` (Bug C で SAVE 11→12)
+- `macrocosmo/src/persistence/savebag.rs` (Bug C で `SavedPendingAssignment.stale_at` 削除)
+- `macrocosmo/tests/fixtures/minimal_game.bin` (Bug C で regen、 798 B、 PR3 では touch せず)
+- `macrocosmo/tests/common/mod.rs` (PR2d で capabilities fix)
+
+## 次セッション再開プロンプト例
+
+```
+2026-04-28 ハンドオフ参照。 まず docs/session-handoff-2026-04-28-round-11-ai-trait-unification.md
+読んで全体像把握。 今日は #449 Region 概念導入 → AI architecture を本格的に
+geographic-distributed に拡張。 Plan agent → sub-PR 分解 → 順次実装の流れで。
+
+設計確定事項: docs/session-handoff-2026-04-27-ai-decomposition.md line 211-242
++ 本ハンドオフの「Mid-Mid 競合解決 (#467)」 section。
+
+Region 内 1 Mid + 1 Short という単純構成から始める。 Rules 2/5b を Mid → Short
+に再移植 (PR3 で Mid に暫定 host 中)。 Player UI は #452 (別 PR) で。
+```
