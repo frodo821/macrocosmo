@@ -367,6 +367,77 @@ fn resolve_ui_empire(obs: &ObserverUiState) -> Option<Entity> {
 }
 
 // ---------------------------------------------------------------------------
+// #440: observer read-only gates for write paths in panels.
+// Extracted as small pure helpers so tests can verify gating without
+// running the egui draw pipeline.
+// ---------------------------------------------------------------------------
+
+/// Drop every system-panel write captured during the current frame when
+/// observer mode is read-only. Mirrors the inline gate at the top of the
+/// system-panel section of `draw_main_panels_system`.
+///
+/// `pre_dispatch_len` must be the queue length before the panel ran so we
+/// can truncate any newly-pushed `PendingColonyDispatch` entries without
+/// losing pre-existing ones (e.g., dispatches enqueued by a different
+/// system this frame).
+pub fn gate_system_panel_writes(
+    read_only: bool,
+    dispatches: &mut crate::communication::PendingColonyDispatches,
+    pre_dispatch_len: usize,
+    colonization_actions: &mut Vec<system_panel::ColonizationAction>,
+    system_actions: &mut system_panel::SystemPanelActions,
+) {
+    if !read_only {
+        return;
+    }
+    dispatches.queue.truncate(pre_dispatch_len);
+    colonization_actions.clear();
+    *system_actions = system_panel::SystemPanelActions::default();
+}
+
+/// Replace a returned [`diplomacy_panel::DiplomacyAction`] with `None`
+/// when observer mode is read-only. Mirrors the early-return at the top
+/// of `draw_diplomacy_overlay_system`.
+pub fn gate_diplomacy_action(
+    read_only: bool,
+    action: diplomacy_panel::DiplomacyAction,
+) -> diplomacy_panel::DiplomacyAction {
+    if read_only {
+        diplomacy_panel::DiplomacyAction::None
+    } else {
+        action
+    }
+}
+
+/// Replace a returned [`overlays::ResearchAction`] with `None` when
+/// observer mode is read-only. Mirrors the inline match guards in
+/// `draw_overlays_system`.
+pub fn gate_research_action(
+    read_only: bool,
+    action: overlays::ResearchAction,
+) -> overlays::ResearchAction {
+    if read_only {
+        overlays::ResearchAction::None
+    } else {
+        action
+    }
+}
+
+/// Replace a returned [`overlays::ShipDesignerAction`] with `None` when
+/// observer mode is read-only. Mirrors the inline match guard in
+/// `draw_overlays_system`.
+pub fn gate_ship_designer_action(
+    read_only: bool,
+    action: overlays::ShipDesignerAction,
+) -> overlays::ShipDesignerAction {
+    if read_only {
+        overlays::ShipDesignerAction::None
+    } else {
+        action
+    }
+}
+
+// ---------------------------------------------------------------------------
 // System 1: compute_ui_state — pre-compute player info and resource totals
 // ---------------------------------------------------------------------------
 
@@ -1050,6 +1121,12 @@ fn draw_main_panels_system(
     };
 
     // --- System panel ---
+    // #440: observer read_only — capture pre-draw queue length so any
+    // PendingColonyDispatch the panel pushes can be truncated below.
+    // The panel still renders for inspection, but its write actions
+    // (build/demolish/upgrade/cancel/colonize) are dropped.
+    let read_only = selection.observer_mode.read_only;
+    let pre_dispatch_len = deliverables_res.colony_dispatches.queue.len();
     let mut colonization_actions = Vec::new();
     let mut system_actions = system_panel::SystemPanelActions::default();
     // #370: Compute whether the selected system has a Core for the
@@ -1112,6 +1189,17 @@ fn draw_main_panels_system(
         empire_entity,
         selection.observer_mode.enabled,
         &world.faction_owners,
+    );
+
+    // #440: observer read_only — drop every system-panel write before any
+    // command/dispatch lands. `colonization_actions`, `system_actions.*`,
+    // and any newly-pushed `PendingColonyDispatch` entries are discarded.
+    gate_system_panel_writes(
+        read_only,
+        &mut deliverables_res.colony_dispatches,
+        pre_dispatch_len,
+        &mut colonization_actions,
+        &mut system_actions,
     );
 
     for action in colonization_actions {
@@ -1692,6 +1780,11 @@ fn draw_overlays_system(
         clock.elapsed,
     );
 
+    // #440: observer read_only — drop research/designer write actions
+    // returned by the panel so the player can view but cannot mutate.
+    let read_only = obs.observer_mode.read_only;
+    let research_action = gate_research_action(read_only, research_action);
+
     match research_action {
         overlays::ResearchAction::StartResearch(tech_id) => {
             if let Some(tech) = tech_tree.get(&tech_id) {
@@ -1723,6 +1816,7 @@ fn draw_overlays_system(
         &module_registry,
         &design_registry,
     );
+    let designer_action = gate_ship_designer_action(read_only, designer_action);
 
     match designer_action {
         overlays::ShipDesignerAction::SaveDesign(design) => {
@@ -1844,6 +1938,11 @@ fn draw_diplomacy_overlay_system(
         &factions,
         &clock,
     );
+
+    // #440: observer read_only — drop diplomatic write actions so the
+    // panel renders for inspection but cannot declare war / propose
+    // peace / send arbitrary DiplomaticEvents.
+    let action = gate_diplomacy_action(obs.observer_mode.read_only, action);
 
     // Execute returned actions.
     match action {
