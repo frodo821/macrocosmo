@@ -161,23 +161,23 @@ fn outbox_command_count(app: &App) -> usize {
     app.world().resource::<AiCommandOutbox>().entries.len()
 }
 
-/// Default mode is `Legacy` — `SimpleNpcPolicy` Rule 2 fires a
-/// `survey_system` at the catalogued frontier, dropping at least
-/// one entry into the light-speed outbox.
+/// Default mode is `Layered` since #448 PR3c — `MidStanceAgent`
+/// Rule 2 fires a `survey_system` at the catalogued frontier,
+/// dropping at least one entry into the light-speed outbox.
 #[test]
 fn legacy_mode_emits_commands_today() {
     let mut app = test_app();
-    // No explicit `AiPolicyMode` insert — `Default` (= `Legacy`) is
-    // exactly what the production game ships with.
+    // Force Legacy mode for this regression — production now ships
+    // with `Layered` as `Default` (#448 PR3c).
+    app.insert_resource(AiPolicyMode::Legacy);
     let _ = setup_survey_scenario(&mut app, 5.0);
 
-    // Confirm the resource is present and at its default before
-    // exercising any tick — guards against an accidental future
-    // refactor that silently drops the `init_resource` call.
+    // Confirm the resource was overridden — guards against an
+    // accidental future refactor that silently drops the override.
     assert_eq!(
         *app.world().resource::<AiPolicyMode>(),
         AiPolicyMode::Legacy,
-        "AiPolicyMode default must be Legacy",
+        "Test must run under Legacy mode",
     );
 
     for _ in 0..3 {

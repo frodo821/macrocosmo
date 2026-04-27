@@ -18,22 +18,22 @@ use super::npc_decision::NpcContext;
 use crate::ai::convert::to_ai_faction;
 use crate::ai::plugin::AiBusResource;
 
-/// Runtime gate selecting between the legacy
-/// [`super::npc_decision::SimpleNpcPolicy`] (today's NPC behavior,
-/// all 8 rules in `npc_decision.rs`) and the new layered
-/// `MidStanceAgent` path (#448 PR2c+ — Rules 1 + 5a today). Default
-/// [`AiPolicyMode::Legacy`] so all production paths and existing
-/// tests are untouched until the parity period closes in PR3.
+/// Runtime gate selecting between the new
+/// [`super::mid_stance::MidStanceAgent`] (default since #448 PR3c —
+/// all 8 rules ported and parity-verified) and the legacy
+/// [`super::npc_decision::SimpleNpcPolicy`] still callable for
+/// regression comparison. Both paths exist until PR3d removes
+/// Legacy entirely.
 #[derive(Resource, Debug, Clone, Copy, Reflect, Default, PartialEq, Eq)]
 #[reflect(Resource)]
 pub enum AiPolicyMode {
-    /// Existing [`super::npc_decision::SimpleNpcPolicy`] path runs
-    /// unchanged. Default until PR3 flips the switch.
-    #[default]
+    /// Legacy [`super::npc_decision::SimpleNpcPolicy`] path —
+    /// reachable only by explicit `insert_resource` until PR3d
+    /// deletes it.
     Legacy,
-    /// New layered `MidStanceAgent` path. PR2c emits Rules 1 + 5a
-    /// only; PR2d ports the remaining rules. Behind the parity test
-    /// until PR3.
+    /// New layered `MidStanceAgent` path — covers all 8 rules.
+    /// Default since #448 PR3c.
+    #[default]
     Layered,
 }
 
@@ -390,8 +390,8 @@ mod tests {
     use macrocosmo_ai::{CommandKindId, FactionId, Locality, SystemRef};
 
     #[test]
-    fn ai_policy_mode_defaults_to_legacy() {
-        assert_eq!(AiPolicyMode::default(), AiPolicyMode::Legacy);
+    fn ai_policy_mode_defaults_to_layered() {
+        assert_eq!(AiPolicyMode::default(), AiPolicyMode::Layered);
     }
 
     #[test]
