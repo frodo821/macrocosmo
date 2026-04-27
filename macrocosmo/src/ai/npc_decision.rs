@@ -786,14 +786,23 @@ pub fn npc_decision_tick(
                 policy.decide(&faction.id, entity, now, &bus.0, &context)
             }
             crate::ai::mid_adapter::AiPolicyMode::Layered => {
-                // Pre-compute idle_combat with the same expression
-                // `SimpleNpcPolicy::decide` uses (Rule 1) so the
-                // adapter can hand it straight to MidStanceAgent
-                // without re-scanning the ship list.
+                // Pre-compute idle_combat / idle_colonizers with the
+                // same expressions `SimpleNpcPolicy::decide` uses
+                // (Rule 1 / Rule 3) so the adapter can hand them
+                // straight to MidStanceAgent without re-scanning the
+                // ship list. Rule 2 (`idle_surveyors`) stays in the
+                // legacy path until the Short layer migration in
+                // #449 — see `MidStanceAgent::decide` rule comments.
                 let idle_combat: Vec<Entity> = context
                     .ships
                     .iter()
                     .filter(|s| s.is_idle && s.is_combat)
+                    .map(|s| s.entity)
+                    .collect();
+                let idle_colonizers: Vec<Entity> = context
+                    .ships
+                    .iter()
+                    .filter(|s| s.is_idle && s.can_colonize)
                     .map(|s| s.entity)
                     .collect();
                 let adapter = crate::ai::mid_adapter::BevyMidGameAdapter {
@@ -801,6 +810,7 @@ pub fn npc_decision_tick(
                     context: &context,
                     bus: &bus.0,
                     idle_combat: &idle_combat,
+                    idle_colonizers: &idle_colonizers,
                 };
                 let proposals = crate::ai::mid_adapter::layered_decide(
                     &adapter,

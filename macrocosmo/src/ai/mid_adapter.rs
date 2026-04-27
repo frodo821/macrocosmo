@@ -78,6 +78,68 @@ pub trait MidGameAdapter {
     /// requires at least one colony — a Core-only empire with no
     /// colony is not yet ready for a shipyard.
     fn colony_count(&self) -> f64;
+
+    // ---- PR2d additions (Rules 3/6/7/8) ----
+
+    /// Surveyed-but-uncolonized systems that already pass the Bug B
+    /// filter chain (`!has_hostile`, own Core present, no in-flight
+    /// `colonize_system` outbox entry). Mirrors
+    /// `NpcContext.colonizable_systems`. Rule 3 input.
+    fn colonizable_systems(&self) -> &[Entity];
+
+    /// Idle ship entities flagged as `can_colonize`. Rule 3 zips this
+    /// against `colonizable_systems` and emits one `colonize_system`
+    /// command per pair — same expression
+    /// `SimpleNpcPolicy::decide` builds.
+    fn idle_colonizers(&self) -> Vec<Entity>;
+
+    /// Per-faction `my_fleet_ready` metric (0..=1). Rule 7's retreat
+    /// gate fires only when `0.0 < fleet_ready < 0.3` — the lower
+    /// bound is intentional, matching `SimpleNpcPolicy`: a value of
+    /// exactly 0.0 means "no fleet at all" (no metric emitted yet),
+    /// not "fleet wiped", so retreat is silent.
+    fn fleet_ready_ratio(&self) -> f64;
+
+    /// Per-faction `my_total_ships` metric. Rule 8's gate compares
+    /// `total_ships < colony_count * 2`.
+    fn total_ships(&self) -> f64;
+
+    /// Per-Rule-6 fleet composition snapshot — counts of survey,
+    /// colony-capable, and combat-capable ships across the empire's
+    /// owned fleet. Returned as a struct rather than three methods so
+    /// the call site can copy a single value (matches the legacy
+    /// `let survey_count = … let colony_count_ships = … let
+    /// combat_count = …` block).
+    fn fleet_composition(&self) -> FleetComposition;
+
+    /// Whether the empire has any unsurveyed systems known to it.
+    /// Rule 6's first branch (`build_ship explorer_mk1`) fires only
+    /// when `survey_count == 0 && unsurveyed_systems is non-empty` —
+    /// the second condition lives here so the trait does not have to
+    /// expose the full list.
+    fn has_unsurveyed_targets(&self) -> bool;
+
+    /// Whether `colonizable_systems` is non-empty. Used by Rule 6's
+    /// second branch (`build_ship colony_ship_mk1`) — equivalent to
+    /// `!self.colonizable_systems().is_empty()` but kept as its own
+    /// method to match the legacy logic's reading order.
+    fn has_colonizable_targets(&self) -> bool;
+}
+
+/// Three counts Rule 6 needs to pick the next ship to build. Matches
+/// the legacy expression in `SimpleNpcPolicy::decide`'s Rule 6 block
+/// exactly:
+///
+/// ```ignore
+/// let survey_count        = context.ships.iter().filter(|s| s.can_survey).count();
+/// let colony_count_ships  = context.ships.iter().filter(|s| s.can_colonize).count();
+/// let combat_count        = context.ships.iter().filter(|s| s.is_combat).count();
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FleetComposition {
+    pub survey_count: usize,
+    pub colony_count: usize,
+    pub combat_count: usize,
 }
 
 /// Bevy implementation of [`MidGameAdapter`]. Wraps a borrow of the
@@ -96,6 +158,11 @@ pub struct BevyMidGameAdapter<'a> {
     /// `SimpleNpcPolicy::decide` builds). Borrowed so the adapter
     /// stays cheap to construct per-empire.
     pub idle_combat: &'a [Entity],
+    /// Pre-computed `idle_colonizers` set — `s.is_idle &&
+    /// s.can_colonize` filtered over `context.ships`. Owned by the
+    /// caller (`npc_decision_tick`) so the adapter does not allocate
+    /// per `idle_colonizers()` call.
+    pub idle_colonizers: &'a [Entity],
 }
 
 impl<'a> BevyMidGameAdapter<'a> {
@@ -149,6 +216,55 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
                 self.faction_id(),
             ))
             .unwrap_or(0.0)
+    }
+
+    fn colonizable_systems(&self) -> &[Entity] {
+        &self.context.colonizable_systems
+    }
+
+    fn idle_colonizers(&self) -> Vec<Entity> {
+        self.idle_colonizers.to_vec()
+    }
+
+    fn fleet_ready_ratio(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "my_fleet_ready",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
+    }
+
+    fn total_ships(&self) -> f64 {
+        self.bus
+            .current(&crate::ai::schema::ids::metric::for_faction(
+                "my_total_ships",
+                self.faction_id(),
+            ))
+            .unwrap_or(0.0)
+    }
+
+    fn fleet_composition(&self) -> FleetComposition {
+        // Mirrors `SimpleNpcPolicy::decide`'s Rule 6 block exactly:
+        // three independent passes over `context.ships` with the same
+        // predicates. Three passes (rather than one fused pass) is
+        // intentional — preserves the legacy semantics if any predicate
+        // ever overlaps (e.g. a future ship that is both `can_survey`
+        // and `is_combat`).
+        let ships = &self.context.ships;
+        FleetComposition {
+            survey_count: ships.iter().filter(|s| s.can_survey).count(),
+            colony_count: ships.iter().filter(|s| s.can_colonize).count(),
+            combat_count: ships.iter().filter(|s| s.is_combat).count(),
+        }
+    }
+
+    fn has_unsurveyed_targets(&self) -> bool {
+        !self.context.unsurveyed_systems.is_empty()
+    }
+
+    fn has_colonizable_targets(&self) -> bool {
+        !self.context.colonizable_systems.is_empty()
     }
 }
 

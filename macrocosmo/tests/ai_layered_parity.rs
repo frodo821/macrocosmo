@@ -38,6 +38,29 @@ use common::{
     spawn_test_system, test_app,
 };
 
+/// Spawn a station ship that the AI emitter counts as an
+/// operational shipyard for the given empire. The emitter walks
+/// `Query<(Entity, &Ship, &ShipState, &SlotAssignment)>` and
+/// resolves `ship.design_id` → `BuildingDefinition` via the
+/// reverse-id map, then checks
+/// `def.capabilities.contains_key("shipyard")` —
+/// `create_test_building_registry` (#448 PR2d) tags the
+/// shipyard def with that capability so this spawn lands in
+/// `shipyard_counts` for `empire`.
+fn spawn_test_shipyard_ship(world: &mut bevy::ecs::world::World, system: Entity, empire: Entity) {
+    use macrocosmo::colony::SlotAssignment;
+    let ship_e = common::spawn_test_ship(
+        world,
+        "Shipyard-1",
+        "station_shipyard_v1",
+        system,
+        [0.0, 0.0, 0.0],
+    );
+    let mut s = world.entity_mut(ship_e);
+    s.get_mut::<Ship>().unwrap().owner = Owner::Empire(empire);
+    s.insert(SlotAssignment(0));
+}
+
 /// Canonical projection of [`macrocosmo_ai::Command`] for parity
 /// comparison. `kind` and `issuer` round-trip directly; the param
 /// map is serialized after sorting by key so equality is order-free.
@@ -308,6 +331,545 @@ fn setup_rule_5a_scenario(app: &mut App) -> (Entity, Entity) {
     (empire, home)
 }
 
+/// Spawn an empire with one colony at home, a deployed Core at a
+/// **target** system (so `colonizable_systems` clears the Bug B
+/// gate), no shipyard, and one idle colony ship at home. Rule 3
+/// fires once before the outbox dedup kicks in. Rule 5a also fires
+/// (no shipyard, Core present at target). Rule 6/7/8 stay silent
+/// because `can_build < 1.0`.
+fn setup_rule_3_scenario(app: &mut App) -> (Entity, Entity, Entity) {
+    use macrocosmo::amount::Amt;
+
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Aurelian".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "aurelian".into(),
+                name: "Aurelian".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    // Target very close — light delay for the `colonize_system`
+    // outbox entry must elapse within the test window for the
+    // command to mature; 0.5 ly mirrors the Rule 1 fixture.
+    let target = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [0.5, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    // Colony at home with all four slots filled — keeps
+    // `free_building_slots == 0`, silencing Rule 5b.
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        home,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+        ],
+    );
+    // `test_app()` boilerplate already spawned a "Test Empire" so
+    // `spawn_test_colony`'s `With<Empire>` query picks one of two
+    // entities non-deterministically. Force ownership onto our test
+    // empire so `colony_count` registers.
+    app.world_mut()
+        .entity_mut(colony)
+        .insert(macrocosmo::faction::FactionOwner(empire));
+
+    // Core at the target system — colonize candidate gate
+    // (`owned_core_systems.contains(&k.system)`) only admits
+    // systems where the empire has a Core deployed. Without this
+    // the Layered + Legacy paths both drop `colonize_system`.
+    spawn_mock_core_ship(app.world_mut(), target, empire);
+
+    spawn_test_ruler(app.world_mut(), empire, home);
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+        // Surveyed visibility on target so it's not classified as
+        // unsurveyed (otherwise Rule 2 fires and diverges Layered).
+        vis.set(target, SystemVisibilityTier::Surveyed);
+    }
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: home,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Home".into(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                colonized: true,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+        store.update(SystemKnowledge {
+            system: target,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Frontier".into(),
+                position: [0.5, 0.0, 0.0],
+                surveyed: true,
+                colonized: false,
+                has_hostile: false,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+    }
+
+    // Idle colony ship at home. `colony_ship_mk1` has the
+    // `colony_module` utility, so `can_colonize == true` in the
+    // ShipInfo builder.
+    let colonizer = spawn_test_ship(
+        app.world_mut(),
+        "Settler-1",
+        "colony_ship_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    {
+        let mut s = app.world_mut().entity_mut(colonizer);
+        let mut ship = s.get_mut::<Ship>().unwrap();
+        ship.owner = Owner::Empire(empire);
+    }
+
+    (empire, home, target)
+}
+
+/// Empire with a working shipyard (`can_build_ships == 1.0`),
+/// 3 combat ships and one survey ship + one colony ship to keep
+/// Rule 6's first two branches silent. Combat count = 3 so
+/// `combat_count < 3` is **false** in legacy — no, we want Rule 6
+/// to **fire**, so combat_count = 1. The fleet has total_ships=3,
+/// `colony_count*2 = 2`, so `total_ships >= colony_count*2` →
+/// Rule 8 silent. fleet_ready = ships_in_system / total = 1.0 →
+/// Rule 7 silent.
+fn setup_rule_6_scenario(app: &mut App) -> Entity {
+    use macrocosmo::amount::Amt;
+
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Aurelian".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "aurelian".into(),
+                name: "Aurelian".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+
+    // Colony with three mines + one shipyard (so `can_build_ships
+    // == 1.0` immediately and Rule 5a stays silent). Slots all
+    // filled → `free_building_slots == 0`, silencing Rule 5b.
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        home,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![
+            Some(BuildingId("shipyard".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+        ],
+    );
+    app.world_mut()
+        .entity_mut(colony)
+        .insert(macrocosmo::faction::FactionOwner(empire));
+
+    spawn_mock_core_ship(app.world_mut(), home, empire);
+    // Operational shipyard ship → `shipyard_counts[empire] = 1` →
+    // `can_build_ships == 1.0` so Rule 5a stays silent and Rule 6
+    // is gated open.
+    spawn_test_shipyard_ship(app.world_mut(), home, empire);
+
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+    spawn_test_ruler(app.world_mut(), empire, home);
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+    }
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: home,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Home".into(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                colonized: true,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+    }
+
+    // 1 survey + 1 colony ship → Rule 6's first two branches
+    // (explorer / colony_ship) are silent because the counts are
+    // already non-zero. 1 combat ship → `combat_count == 1 < 3` so
+    // the corvette branch fires. We deliberately leave the survey
+    // ship's design as an unknown id so the `can_survey` /
+    // `can_colonize` heuristic returns false-false-false → it
+    // counts as `is_combat`. To get a proper `can_survey == true`
+    // we keep the explorer design.
+    let surveyor = spawn_test_ship(
+        app.world_mut(),
+        "Scout-1",
+        "explorer_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    let settler = spawn_test_ship(
+        app.world_mut(),
+        "Settler-1",
+        "colony_ship_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    let combat = spawn_test_ship(
+        app.world_mut(),
+        "Corvette-1",
+        "explorer_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    for ship_e in [surveyor, settler, combat] {
+        let mut s = app.world_mut().entity_mut(ship_e);
+        let mut ship = s.get_mut::<Ship>().unwrap();
+        ship.owner = Owner::Empire(empire);
+    }
+    // Re-id the corvette to drop survey/colony classification.
+    {
+        let mut s = app.world_mut().entity_mut(combat);
+        let mut ship = s.get_mut::<Ship>().unwrap();
+        ship.design_id = "patrol_corvette_test".to_string();
+    }
+
+    empire
+}
+
+/// Empire with no shipyard (so Rule 5a may fire), one combat ship
+/// in transit (so `fleet_ready < 0.3`), and no other rule
+/// conditions. Rule 7 emits `retreat` and early-returns. We accept
+/// Rule 5a alongside — Layered also emits it, so parity holds.
+fn setup_rule_7_scenario(app: &mut App) -> Entity {
+    use macrocosmo::amount::Amt;
+    use macrocosmo::ship::ShipState;
+
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Aurelian".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "aurelian".into(),
+                name: "Aurelian".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+
+    let colony = spawn_test_colony(
+        app.world_mut(),
+        home,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+        ],
+    );
+    app.world_mut()
+        .entity_mut(colony)
+        .insert(macrocosmo::faction::FactionOwner(empire));
+
+    spawn_mock_core_ship(app.world_mut(), home, empire);
+
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+    spawn_test_ruler(app.world_mut(), empire, home);
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+    }
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: home,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Home".into(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                colonized: true,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+    }
+
+    // 4 combat ships, 3 in transit (NotInSystem), 1 docked.
+    // `fleet_ready = 1/4 = 0.25` ∈ (0.0, 0.3) → Rule 7 fires.
+    // The single docked ship has no hostiles to attack, so
+    // Rule 1 stays silent.
+    for i in 0..4 {
+        let ship_e = spawn_test_ship(
+            app.world_mut(),
+            &format!("Corvette-{i}"),
+            "explorer_mk1",
+            home,
+            [0.0, 0.0, 0.0],
+        );
+        let mut s = app.world_mut().entity_mut(ship_e);
+        let mut ship = s.get_mut::<Ship>().unwrap();
+        ship.owner = Owner::Empire(empire);
+        // Unknown design id → `can_survey == can_colonize == false`
+        // so the ship is classified as `is_combat`.
+        ship.design_id = "patrol_corvette_test".to_string();
+        if i > 0 {
+            // Three of them in transit. The `fleet_ready` emitter
+            // counts ships that are `InSystem` toward the
+            // numerator; `SubLight` (any non-`InSystem` state)
+            // keeps them out, dragging fleet_ready to 1/4 = 0.25.
+            *s.get_mut::<ShipState>().unwrap() = ShipState::SubLight {
+                origin: [0.0, 0.0, 0.0],
+                destination: [10.0, 0.0, 0.0],
+                target_system: None,
+                departed_at: 0,
+                arrival_at: 1000,
+            };
+        }
+    }
+
+    empire
+}
+
+/// Empire with a working shipyard (so `can_build_ships == 1.0`),
+/// 3 combat ships docked at home (so `fleet_ready == 1.0` → Rule 7
+/// silent), and `colony_count == 3` so `total_ships(3) <
+/// colony_count*2(6)` → Rule 8 fires. Composition is balanced
+/// (1 survey, 1 colony, 3 combat) so Rule 6 stays silent.
+fn setup_rule_8_scenario(app: &mut App) -> Entity {
+    use macrocosmo::amount::Amt;
+
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Aurelian".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "aurelian".into(),
+                name: "Aurelian".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    // Two extra colonies in distinct systems so `colony_count == 3`.
+    // Each colony is at its own system to keep stockpile / sovereignty
+    // bookkeeping simple.
+    let colony_b_sys = spawn_test_system(
+        app.world_mut(),
+        "Colony-B",
+        [0.5, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let colony_c_sys = spawn_test_system(
+        app.world_mut(),
+        "Colony-C",
+        [1.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+
+    // `test_app()` already spawned a "Test Empire" entity — so when
+    // `spawn_test_colony` queries `With<Empire>` the result is
+    // non-deterministic between our Aurelian empire and the test
+    // boilerplate one. Override `FactionOwner` after each call so
+    // every colony lands under our test empire.
+    let colony_a = spawn_test_colony(
+        app.world_mut(),
+        home,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![
+            Some(BuildingId("shipyard".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+        ],
+    );
+    let colony_b = spawn_test_colony(
+        app.world_mut(),
+        colony_b_sys,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+        ],
+    );
+    let colony_c = spawn_test_colony(
+        app.world_mut(),
+        colony_c_sys,
+        Amt::units(1000),
+        Amt::units(1000),
+        vec![
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+            Some(BuildingId("mine".to_string())),
+        ],
+    );
+    for c in [colony_a, colony_b, colony_c] {
+        app.world_mut()
+            .entity_mut(c)
+            .insert(macrocosmo::faction::FactionOwner(empire));
+    }
+
+    spawn_mock_core_ship(app.world_mut(), home, empire);
+    // Operational shipyard so `can_build_ships == 1.0`. Rule 8
+    // requires this gate open + `total_ships < colony_count * 2`.
+    spawn_test_shipyard_ship(app.world_mut(), home, empire);
+
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(home));
+    spawn_test_ruler(app.world_mut(), empire, home);
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+        vis.set(colony_b_sys, SystemVisibilityTier::Local);
+        vis.set(colony_c_sys, SystemVisibilityTier::Local);
+    }
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        for (sys, name, pos) in [
+            (home, "Home", [0.0, 0.0, 0.0]),
+            (colony_b_sys, "Colony-B", [0.5, 0.0, 0.0]),
+            (colony_c_sys, "Colony-C", [1.0, 0.0, 0.0]),
+        ] {
+            store.update(SystemKnowledge {
+                system: sys,
+                observed_at: 0,
+                received_at: 0,
+                data: SystemSnapshot {
+                    name: name.into(),
+                    position: pos,
+                    surveyed: true,
+                    colonized: true,
+                    ..Default::default()
+                },
+                source: ObservationSource::Direct,
+            });
+        }
+    }
+
+    // 3 combat ships + 1 immobile shipyard ship = 4 ships < 6
+    // (`colony_count*2`) → Rule 8 fires. No survey / colony ships
+    // and no unsurveyed / colonizable targets, so Rule 6's first
+    // two branches stay silent; `combat_count == 3` keeps the
+    // corvette branch silent too.
+    for i in 0..3 {
+        let combat = spawn_test_ship(
+            app.world_mut(),
+            &format!("Corvette-{i}"),
+            "explorer_mk1",
+            home,
+            [0.0, 0.0, 0.0],
+        );
+        let mut s = app.world_mut().entity_mut(combat);
+        let mut ship = s.get_mut::<Ship>().unwrap();
+        ship.owner = Owner::Empire(empire);
+        ship.design_id = "patrol_corvette_test".to_string();
+    }
+
+    empire
+}
+
 #[test]
 fn rule_1_attack_hostile_parity() {
     // 3 ticks: target is 0.5 ly away, so the `attack_target` outbox
@@ -331,6 +893,99 @@ fn rule_1_attack_hostile_parity() {
         legacy, layered,
         "Rule 1 (attack_target + move_ruler) parity broken: \
          Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_3_colonize_parity() {
+    // 3 ticks: target is 0.5 ly away, matching the Rule 1 fixture's
+    // light-delay budget. Rule 3 fires once per fixture (the outbox
+    // dedup gates re-emission after the first tick) but the
+    // canonical-set comparison is order-/multiplicity-agnostic.
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 3, |app| {
+        setup_rule_3_scenario(app);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 3, |app| {
+        setup_rule_3_scenario(app);
+    });
+
+    assert!(
+        legacy.iter().any(|c| c.kind == "colonize_system"),
+        "Rule 3 fixture broken: Legacy must emit colonize_system; got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 3 (colonize_system) parity broken: Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_6_build_ship_composition_parity() {
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 5, |app| {
+        setup_rule_6_scenario(app);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 5, |app| {
+        setup_rule_6_scenario(app);
+    });
+
+    assert!(
+        legacy.iter().any(|c| c.kind == "build_ship"),
+        "Rule 6 fixture broken: Legacy must emit build_ship; got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 6 (build_ship composition) parity broken: \
+         Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_7_retreat_parity() {
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 5, |app| {
+        setup_rule_7_scenario(app);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 5, |app| {
+        setup_rule_7_scenario(app);
+    });
+
+    assert!(
+        legacy.iter().any(|c| c.kind == "retreat"),
+        "Rule 7 fixture broken: Legacy must emit retreat; got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 7 (retreat) parity broken: Legacy = {:?}, Layered = {:?}",
+        legacy, layered,
+    );
+}
+
+#[test]
+fn rule_8_fortify_parity() {
+    let legacy = run_for_ticks(AiPolicyMode::Legacy, 5, |app| {
+        setup_rule_8_scenario(app);
+    });
+    let layered = run_for_ticks(AiPolicyMode::Layered, 5, |app| {
+        setup_rule_8_scenario(app);
+    });
+
+    assert!(
+        legacy.iter().any(|c| c.kind == "fortify_system"),
+        "Rule 8 fixture broken: Legacy must emit fortify_system; got {:?}",
+        legacy,
+    );
+
+    assert_eq!(
+        legacy, layered,
+        "Rule 8 (fortify_system) parity broken: Legacy = {:?}, Layered = {:?}",
         legacy, layered,
     );
 }

@@ -117,6 +117,20 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         ship_design_id: Some("station_research_lab_v1".into()),
         colony_slots: None,
     });
+    // Helper for capability-tagged buildings: the AI emitters rely
+    // on `def.capabilities.contains_key("shipyard")` /
+    // `contains_key("port")` to count operational system buildings;
+    // production Lua sets these via `capability "shipyard" {}`.
+    let cap_shipyard: HashMap<String, CapabilityParams> = {
+        let mut m = HashMap::new();
+        m.insert("shipyard".into(), CapabilityParams::default());
+        m
+    };
+    let cap_port: HashMap<String, CapabilityParams> = {
+        let mut m = HashMap::new();
+        m.insert("port".into(), CapabilityParams::default());
+        m
+    };
     registry.insert(BuildingDefinition {
         id: "shipyard".into(),
         name: "Shipyard".into(),
@@ -131,7 +145,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_food: Amt::ZERO,
         modifiers: vec![pm("system.shipyard_capacity", 1.0)],
         is_system_building: true,
-        capabilities: HashMap::new(),
+        capabilities: cap_shipyard,
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
@@ -159,7 +173,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
             pm("system.port_repair", 1.0),
         ],
         is_system_building: true,
-        capabilities: HashMap::new(),
+        capabilities: cap_port,
         upgrade_to: Vec::new(),
         is_direct_buildable: true,
         prerequisites: None,
