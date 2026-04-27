@@ -45,7 +45,8 @@ use crate::deep_space::{
 use crate::empire::CommsParams;
 use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::{
-    DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionView, PendingInboxItem, RelationState,
+    DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionView, KnownFactions, PendingInboxItem,
+    RelationState,
 };
 use crate::galaxy::{
     Anomalies, Anomaly, AtSystem, Biome, ForbiddenRegion, Hostile, HostileHitpoints, HostileStats,
@@ -3588,6 +3589,30 @@ impl SavedPendingFactQueue {
     }
 }
 
+/// #464: Per-empire faction-discovery state (Component form).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedKnownFactions {
+    /// Save-id bits of every discovered faction entity. Translated through
+    /// [`EntityMap`] on load.
+    pub faction_bits: Vec<u64>,
+}
+
+impl SavedKnownFactions {
+    pub fn from_live(v: &KnownFactions) -> Self {
+        Self {
+            faction_bits: v.factions.iter().map(|e| e.to_bits()).collect(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> KnownFactions {
+        let factions = self
+            .faction_bits
+            .into_iter()
+            .map(|b| remap_entity(b, map))
+            .collect();
+        KnownFactions { factions }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedCommsParams {
     pub empire_relay_range: ModifiedValue,
@@ -4830,6 +4855,13 @@ pub struct SavedComponentBag {
     /// to `None` (load treats absent as empty queue).
     #[serde(default)]
     pub pending_fact_queue: Option<SavedPendingFactQueue>,
+    /// #464: Per-empire faction-discovery state. The legacy global
+    /// `KnownFactions` resource is removed in this PR; saves now persist
+    /// per-empire components instead. `#[serde(default)]` so absent fields
+    /// from older saves load as `None` (no discoveries — the detection
+    /// system will rebuild on the next tick).
+    #[serde(default)]
+    pub known_factions: Option<SavedKnownFactions>,
     // Ship
     pub ship: Option<SavedShip>,
     pub ship_state: Option<SavedShipState>,

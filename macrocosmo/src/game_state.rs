@@ -183,7 +183,8 @@ pub fn reset_ingame_resources(world: &mut World) {
     // --- Faction diplomacy state ---
     world.insert_resource(crate::faction::FactionRelations::default());
     world.insert_resource(crate::faction::HostileFactions::default());
-    world.insert_resource(crate::faction::KnownFactions::default());
+    // #464: KnownFactions is now a per-empire Component; nothing to reset
+    // at the resource level — empire spawn paths attach the component.
 
     // --- AI bus state ---
     // Reset only when present so tests that build without AiPlugin still

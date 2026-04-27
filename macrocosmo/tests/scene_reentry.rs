@@ -36,7 +36,7 @@ use macrocosmo::ai::plugin::DeclaredFactionSlots;
 use macrocosmo::colony::LastProductionTick;
 use macrocosmo::communication::{AppliedCommandIds, NextRemoteCommandId};
 use macrocosmo::events::EventLog;
-use macrocosmo::faction::{FactionRelations, HostileFactions, KnownFactions};
+use macrocosmo::faction::{FactionRelations, HostileFactions};
 use macrocosmo::galaxy::{GalaxyConfig, HomeSystemAssignments};
 use macrocosmo::game_state::{
     GameState, GameStatePlugin, cleanup_ingame_entities, reset_ingame_resources,
@@ -120,7 +120,8 @@ fn seed_tick_resources(world: &mut World) {
 
     world.insert_resource(FactionRelations::default());
     world.insert_resource(HostileFactions::default());
-    world.insert_resource(KnownFactions::default());
+    // #464: KnownFactions is now a per-empire Component, not a Resource —
+    // scene_reentry.rs does not spawn empires so nothing to insert.
 
     // EventLog: push a fake entry so we can assert the reset wipes it.
     let mut log = EventLog::default();

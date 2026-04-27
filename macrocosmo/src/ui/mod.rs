@@ -1900,7 +1900,7 @@ fn draw_diplomacy_overlay_system(
     cb_registry: Res<CasusBelliRegistry>,
     option_registry: Res<DiplomaticOptionRegistry>,
     faction_registry: Res<crate::scripting::faction_api::FactionRegistry>,
-    known_factions: Res<crate::faction::KnownFactions>,
+    known_factions_q: Query<&crate::faction::KnownFactions>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
     obs: ObserverUiState,
 ) {
@@ -1913,10 +1913,15 @@ fn draw_diplomacy_overlay_system(
         return;
     };
 
-    // #405: Build sorted FactionEntry list filtered to discovered factions only.
+    // #405 / #464: Build sorted FactionEntry list filtered to factions
+    // discovered by the *viewing* empire (active in observer mode it can
+    // be any empire).
+    let known_factions = known_factions_q.get(player_entity).ok();
     let mut factions: Vec<diplomacy_panel::FactionEntry> = factions_q
         .iter()
-        .filter(|(e, _)| *e == player_entity || known_factions.is_known(*e))
+        .filter(|(e, _)| {
+            *e == player_entity || known_factions.map(|kf| kf.is_known(*e)).unwrap_or(false)
+        })
         .map(|(e, f)| diplomacy_panel::FactionEntry {
             entity: e,
             name: f.name.clone(),

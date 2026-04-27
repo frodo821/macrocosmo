@@ -41,7 +41,9 @@ use crate::deep_space::{
 };
 use crate::empire::CommsParams;
 use crate::events::EventLog;
-use crate::faction::{DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionRelations};
+use crate::faction::{
+    DiplomaticEvent, DiplomaticInbox, FactionOwner, FactionRelations, KnownFactions,
+};
 use crate::galaxy::{
     Anomalies, AtSystem, Biome, ForbiddenRegion, GalaxyConfig, Hostile, HostileHitpoints,
     HostileStats, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
@@ -112,7 +114,11 @@ use super::savebag::*;
 /// SAVE_VERSION still bumps (13 → 14) so saves recorded before the variant
 /// existed are rejected explicitly via the version check rather than being
 /// silently misread.
-pub const SAVE_VERSION: u32 = 14;
+/// #464: removed the global `KnownFactions` resource and added the
+/// `known_factions` field on `SavedComponentBag` so per-empire faction
+/// discovery survives save/load. Postcard's positional encoding requires
+/// a version bump (14 → 15) and a fixture regeneration.
+pub const SAVE_VERSION: u32 = 15;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -573,6 +579,10 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     // Round 9 PR #1 Step 2: per-empire fact queue Component.
     if let Some(pq) = e_ref.get::<PendingFactQueue>() {
         bag.pending_fact_queue = Some(SavedPendingFactQueue::from_live(pq));
+    }
+    // #464: per-empire faction discovery Component.
+    if let Some(kf) = e_ref.get::<KnownFactions>() {
+        bag.known_factions = Some(SavedKnownFactions::from_live(kf));
     }
     if let Some(cl) = e_ref.get::<CommandLog>() {
         bag.command_log = Some(SavedCommandLog::from_live(cl));

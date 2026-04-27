@@ -80,6 +80,8 @@ pub fn spawn_player_empire(mut commands: Commands) {
             // migrate from the legacy `Resource<PendingFactQueue>` to
             // per-faction routing in Step 3.
             PendingFactQueue::default(),
+            // #464: Per-empire faction discovery (was global resource).
+            crate::faction::KnownFactions::default(),
         ),
     ));
     info!("Player empire entity spawned");

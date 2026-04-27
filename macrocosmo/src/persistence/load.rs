@@ -398,6 +398,10 @@ fn apply_component_bag(
     if let Some(pq) = &bag.pending_fact_queue {
         ec.insert(pq.clone().into_live(map));
     }
+    // #464: per-empire faction discovery Component.
+    if let Some(kf) = &bag.known_factions {
+        ec.insert(kf.clone().into_live(map));
+    }
     if let Some(cl) = &bag.command_log {
         ec.insert(cl.clone().into_live());
     }

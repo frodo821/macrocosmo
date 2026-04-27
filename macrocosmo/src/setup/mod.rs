@@ -282,6 +282,9 @@ fn empire_bundle(
             // to `record_for` so the queue actually fills.
             crate::empire::CommsParams::default(),
             crate::knowledge::PendingFactQueue::default(),
+            // #464: Per-empire faction discovery — every NPC empire
+            // builds its own KnownFactions independently.
+            crate::faction::KnownFactions::default(),
         ),
     )
 }
