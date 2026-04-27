@@ -34,6 +34,7 @@ pub mod orchestrator;
 pub mod precondition;
 pub mod precondition_cache;
 pub mod projection;
+pub mod proposal;
 pub mod retention;
 pub mod short_term_default;
 pub mod spec;
@@ -97,6 +98,7 @@ pub use projection::{
     detect_windows, effective_strategic_window, emit_projections_to_bus, fit_linear, project,
     project_metric, volatility,
 };
+pub use proposal::{ConflictKind, Locality, MidId, Proposal, ProposalOutcome};
 pub use retention::Retention;
 pub use short_term_default::{
     CampaignReactiveShort, PreconditionGate, ShortTermDefaultConfig, always_allow_gate,
