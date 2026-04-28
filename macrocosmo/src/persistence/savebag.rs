@@ -3273,6 +3273,10 @@ pub enum SavedKnowledgeFact {
         detail: String,
         #[serde(default)]
         event_id: Option<u64>,
+        /// #483: Ship that completed the survey, persisted so post-load
+        /// `PendingFactQueue` entries reconcile against the dispatcher's
+        /// `ShipProjection` instead of being dropped on PLACEHOLDER.
+        ship_bits: u64,
     },
     AnomalyDiscovered {
         system_bits: u64,
@@ -3317,6 +3321,8 @@ pub enum SavedKnowledgeFact {
         detail: String,
         #[serde(default)]
         event_id: Option<u64>,
+        /// #483: Ship that arrived. See `SurveyComplete::ship_bits` note.
+        ship_bits: u64,
     },
     /// #463: CoreConquered fact persisted to disk. Adding a new variant tail
     /// is wire-compatible with postcard's enum encoding (existing variants
@@ -3339,6 +3345,8 @@ pub enum SavedKnowledgeFact {
         detail: String,
         #[serde(default)]
         event_id: Option<u64>,
+        /// #483: Destroyed ship entity. See `SurveyComplete::ship_bits` note.
+        ship_bits: u64,
     },
     /// #472: per-empire epistemic "missing" perception. No `event_id`
     /// counterpart on the wire — the live variant holds an `Option<EventId>`
@@ -3349,6 +3357,9 @@ pub enum SavedKnowledgeFact {
         detail: String,
         #[serde(default)]
         event_id: Option<u64>,
+        /// #483: Presumed-missing ship entity. See
+        /// `SurveyComplete::ship_bits` note.
+        ship_bits: u64,
     },
 }
 
@@ -3379,23 +3390,23 @@ impl SavedKnowledgeFact {
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            // #476: The live `ship: Entity` field is dropped on serialize
-            // (the saved variant predates #476 and stays wire-compatible).
-            // On deserialize it is rehydrated to `Entity::PLACEHOLDER`,
-            // which the projection reconciler treats as "no projection
-            // match" — facts loaded from disk therefore do not retroactively
-            // reconcile projections.
+            // #483: The live `ship: Entity` field is now persisted via
+            // `ship_bits` and remapped through `EntityMap` on load so
+            // post-load `PendingFactQueue` entries reconcile against the
+            // dispatcher's `ShipProjection`. Pre-#483 saves are strict-
+            // rejected via the SAVE_VERSION 18 → 19 bump.
             KnowledgeFact::SurveyComplete {
                 event_id,
                 system,
                 system_name,
                 detail,
-                ship: _,
+                ship,
             } => Self::SurveyComplete {
                 system_bits: system.to_bits(),
                 system_name: system_name.clone(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
+                ship_bits: ship.to_bits(),
             },
             KnowledgeFact::AnomalyDiscovered {
                 event_id,
@@ -3456,18 +3467,19 @@ impl SavedKnowledgeFact {
                 reason: reason.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            // #476: see SurveyComplete ship-field note above.
+            // #483: see SurveyComplete ship-field note above.
             KnowledgeFact::ShipArrived {
                 event_id,
                 system,
                 name,
                 detail,
-                ship: _,
+                ship,
             } => Self::ShipArrived {
                 system_bits: system.map(|e| e.to_bits()),
                 name: name.clone(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
+                ship_bits: ship.to_bits(),
             },
             KnowledgeFact::CoreConquered {
                 event_id,
@@ -3482,33 +3494,35 @@ impl SavedKnowledgeFact {
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
-            // #476: see SurveyComplete ship-field note above.
+            // #483: see SurveyComplete ship-field note above.
             KnowledgeFact::ShipDestroyed {
                 event_id,
                 system,
                 ship_name,
                 destroyed_at,
                 detail,
-                ship: _,
+                ship,
             } => Self::ShipDestroyed {
                 system_bits: system.map(|e| e.to_bits()),
                 ship_name: ship_name.clone(),
                 destroyed_at: *destroyed_at,
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
+                ship_bits: ship.to_bits(),
             },
-            // #476: see SurveyComplete ship-field note above.
+            // #483: see SurveyComplete ship-field note above.
             KnowledgeFact::ShipMissing {
                 event_id,
                 system,
                 ship_name,
                 detail,
-                ship: _,
+                ship,
             } => Self::ShipMissing {
                 system_bits: system.map(|e| e.to_bits()),
                 ship_name: ship_name.clone(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
+                ship_bits: ship.to_bits(),
             },
             // #351: Scripted facts are not persisted in v1. The queue
             // serializer filters them out before calling from_live.
@@ -3549,14 +3563,15 @@ impl SavedKnowledgeFact {
                 system_name,
                 detail,
                 event_id,
+                ship_bits,
             } => KnowledgeFact::SurveyComplete {
                 event_id: event_id.map(EventId),
                 system: remap_entity(system_bits, map),
                 system_name,
                 detail,
-                // #476: ship not on the wire — projection reconciler
-                // skips PLACEHOLDER-keyed facts loaded from disk.
-                ship: bevy::prelude::Entity::PLACEHOLDER,
+                // #483: remapped through `EntityMap` so the projection
+                // reconciler can match this fact post-load.
+                ship: remap_entity(ship_bits, map),
             },
             Self::AnomalyDiscovered {
                 system_bits,
@@ -3622,13 +3637,14 @@ impl SavedKnowledgeFact {
                 name,
                 detail,
                 event_id,
+                ship_bits,
             } => KnowledgeFact::ShipArrived {
                 event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
                 name,
                 detail,
-                // #476: ship not on the wire — see SurveyComplete note above.
-                ship: bevy::prelude::Entity::PLACEHOLDER,
+                // #483: ship remapped through `EntityMap`.
+                ship: remap_entity(ship_bits, map),
             },
             Self::CoreConquered {
                 system_bits,
@@ -3649,27 +3665,29 @@ impl SavedKnowledgeFact {
                 destroyed_at,
                 detail,
                 event_id,
+                ship_bits,
             } => KnowledgeFact::ShipDestroyed {
                 event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
                 ship_name,
                 destroyed_at,
                 detail,
-                // #476: ship not on the wire — see SurveyComplete note above.
-                ship: bevy::prelude::Entity::PLACEHOLDER,
+                // #483: ship remapped through `EntityMap`.
+                ship: remap_entity(ship_bits, map),
             },
             Self::ShipMissing {
                 system_bits,
                 ship_name,
                 detail,
                 event_id,
+                ship_bits,
             } => KnowledgeFact::ShipMissing {
                 event_id: event_id.map(EventId),
                 system: system_bits.map(|b| remap_entity(b, map)),
                 ship_name,
                 detail,
-                // #476: ship not on the wire — see SurveyComplete note above.
-                ship: bevy::prelude::Entity::PLACEHOLDER,
+                // #483: ship remapped through `EntityMap`.
+                ship: remap_entity(ship_bits, map),
             },
         }
     }

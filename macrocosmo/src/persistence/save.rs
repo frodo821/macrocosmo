@@ -136,7 +136,15 @@ use super::savebag::*;
 /// see an empty Vec, but postcard's positional encoding still requires
 /// a version bump (17 → 18) and a fixture regeneration. v17 saves are
 /// strictly rejected at load (matches existing policy).
-pub const SAVE_VERSION: u32 = 18;
+/// #483: added `ship_bits: u64` to `SavedKnowledgeFact::{ShipArrived,
+/// SurveyComplete, ShipDestroyed, ShipMissing}` so the live `ship: Entity`
+/// field added in #476 round-trips through save/load. Without this, in-flight
+/// `PendingFactQueue` entries rehydrated to `Entity::PLACEHOLDER` and were
+/// silently skipped by the `ShipProjection` reconciler — leaving the
+/// dispatcher's `intended_*` projection layer set indefinitely. Postcard's
+/// positional encoding requires a version bump (18 → 19) and a fixture
+/// regeneration. v18 saves are strictly rejected at load.
+pub const SAVE_VERSION: u32 = 19;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.

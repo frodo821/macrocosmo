@@ -417,37 +417,35 @@ fn two_region_empire_round_trips_cross_region_refs() {
 
 /// #449 PR2e bumped SAVE_VERSION 15 → 16 for Region / MidAgent / ShortAgent
 /// fields. #472 then bumped 16 → 17 to cover the
-/// `SavedGameEventKind::ShipMissing` retirement. #474 bumps 17 → 18 to add
+/// `SavedGameEventKind::ShipMissing` retirement. #474 bumped 17 → 18 to add
 /// `SavedKnowledgeStore::projections` (per-empire ship trajectory
-/// projections, epic #473) — postcard's positional encoding requires the
-/// version bump even though the new field is `#[serde(default)]`. The
-/// strict-reject policy in `load.rs` continues to refuse decoding any prior
-/// version so the fixture-regen workflow stays the only path forward.
+/// projections, epic #473). #483 bumps 18 → 19 to add `ship_bits` to the
+/// four ship-keyed `SavedKnowledgeFact` variants so in-flight
+/// `PendingFactQueue` entries reconcile against `ShipProjection` post-load.
+/// The strict-reject policy in `load.rs` continues to refuse decoding any
+/// prior version so the fixture-regen workflow stays the only path forward.
 #[test]
 fn save_version_strictly_rejects_previous_version() {
     assert_eq!(
-        SAVE_VERSION, 18,
-        "#474 bumps SAVE_VERSION 17 → 18 (SavedKnowledgeStore::projections \
-         added for epic #473)"
+        SAVE_VERSION, 19,
+        "#483 bumps SAVE_VERSION 18 → 19 (ship_bits added to \
+         SavedKnowledgeFact::{{ShipArrived, SurveyComplete, ShipDestroyed, \
+         ShipMissing}})"
     );
 
-    // Hand-craft a minimal byte stream that begins with a v15 version
+    // Hand-craft a minimal byte stream that begins with a v18 version
     // header and confirm `load_game_from_reader` rejects it via
     // `LoadError::VersionMismatch`. The rest of the bytes don't need to
     // form a valid GameSave — the version check must trigger first.
     //
-    // postcard's varint encoding for `15` is a single byte `0x0F`, which
-    // gives us a stable preamble we can hand-emit without depending on
-    // a SavedResources literal that itself drifts with each PR.
-    //
-    // We construct a real v15-styled GameSave by serializing a fresh
+    // We construct a real v18-styled GameSave by serializing a fresh
     // GameSave with version forcibly overwritten — this is more
     // robust than poking bytes by hand and proves the strict-reject
     // path triggers on real-shape inputs.
     use macrocosmo::persistence::save::GameSave;
     use macrocosmo::persistence::save::SavedResources;
-    let v15 = GameSave {
-        version: 15,
+    let v18 = GameSave {
+        version: 18,
         scripts_version: "0.1".into(),
         resources: SavedResources {
             game_clock_elapsed: 0,
@@ -466,17 +464,17 @@ fn save_version_strictly_rejects_previous_version() {
         },
         entities: Vec::new(),
     };
-    let bytes = postcard::to_stdvec(&v15).expect("encode forged v15 save");
+    let bytes = postcard::to_stdvec(&v18).expect("encode forged v18 save");
 
     let mut world = World::new();
     let result = load_game_from_reader(&mut world, &bytes[..]);
     match result {
         Err(LoadError::VersionMismatch { saved, expected }) => {
-            assert_eq!(saved, 15, "saved version field must surface to caller");
+            assert_eq!(saved, 18, "saved version field must surface to caller");
             assert_eq!(expected, SAVE_VERSION);
         }
         other => panic!(
-            "v15 save must be strictly rejected at load; got {:?}",
+            "v18 save must be strictly rejected at load; got {:?}",
             other
         ),
     }
