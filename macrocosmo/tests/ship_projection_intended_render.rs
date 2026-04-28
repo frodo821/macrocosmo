@@ -21,6 +21,7 @@ use macrocosmo::knowledge::{KnowledgeStore, ShipProjection, ShipSnapshotState};
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::visualization::ships::{
     OwnShipMetadata, compute_intended_render_inputs, intended_layer_alpha,
+    intended_layer_dash_pattern,
 };
 
 use common::{spawn_test_system, test_app};
@@ -123,8 +124,9 @@ fn intended_layer_renders_when_diverged() {
     assert_eq!(item.entity, ship);
     assert_eq!(item.projected_system, Some(a));
     assert_eq!(item.intended_system, Some(b));
+    // #489: widened curve — at dispatch, alpha rides the ceiling (1.0).
     assert!(
-        item.alpha > 0.4,
+        item.alpha > 0.3,
         "alpha at dispatch tick must be elevated above the floor (got {})",
         item.alpha
     );
@@ -275,14 +277,16 @@ fn intended_alpha_fades_with_clock() {
         alpha_t5,
         alpha_t10
     );
+    // #489: floor widened from 0.4 to 0.3 to expand the perceptible
+    // delta against the dark Galaxy Map background.
     assert!(
-        (alpha_t10 - 0.4).abs() < 1e-4,
-        "alpha at takes_effect_at must reach the floor 0.4 (got {})",
+        (alpha_t10 - 0.3).abs() < 1e-4,
+        "alpha at takes_effect_at must reach the floor 0.3 (got {})",
         alpha_t10
     );
     assert!(
-        (alpha_t20 - 0.4).abs() < 1e-4,
-        "alpha after takes_effect_at must hold at the floor 0.4 (got {})",
+        (alpha_t20 - 0.3).abs() < 1e-4,
+        "alpha after takes_effect_at must hold at the floor 0.3 (got {})",
         alpha_t20
     );
 
@@ -391,5 +395,144 @@ fn foreign_or_despawned_filtered() {
     assert!(
         items.is_empty(),
         "foreign + despawned ships must be filtered from the intended overlay"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7. alpha_curve_widened_range (#489)
+// ---------------------------------------------------------------------------
+
+/// #489: The dispatch-window alpha range was widened from `0.4 → 0.8` to
+/// `0.3 → 1.0` so the three phases (dispatch / mid / takes-effect) are
+/// visually distinguishable against the dark Galaxy Map background.
+///
+/// Pin both endpoints so a regression that re-narrows the curve fails CI.
+#[test]
+fn alpha_curve_widened_range() {
+    let mut app = test_app();
+    let ship = app.world_mut().spawn_empty().id();
+    let proj = projection_with_intent(
+        ship,
+        None,
+        ShipSnapshotState::InSystem,
+        None,
+        Some(ShipSnapshotState::Surveying),
+        0,
+        Some(10),
+    );
+
+    // Top of the new range (dispatch tick): alpha must be ≥ 0.9 — the
+    // pre-#489 ceiling of 0.8 is no longer enough.
+    let alpha_dispatch = intended_layer_alpha(&proj, 0);
+    assert!(
+        alpha_dispatch >= 0.9,
+        "alpha at dispatch must hit the widened ceiling (got {})",
+        alpha_dispatch
+    );
+
+    // Bottom of the new range (post-takes-effect): alpha must be ≤ 0.4
+    // — the pre-#489 floor of 0.4 is now 0.3.
+    let alpha_after = intended_layer_alpha(&proj, 30);
+    assert!(
+        alpha_after <= 0.4,
+        "alpha after takes_effect_at must sit at the widened floor (got {})",
+        alpha_after
+    );
+
+    // Cross-check: total span (ceiling - floor) is now ≥ 0.6 (was 0.4
+    // pre-#489).
+    let span = alpha_dispatch - alpha_after;
+    assert!(
+        span >= 0.6,
+        "alpha curve span must be widened (got {} = {} - {})",
+        span,
+        alpha_dispatch,
+        alpha_after
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 8. dash_pattern_varies_with_clock (#489)
+// ---------------------------------------------------------------------------
+
+/// #489: The dashed-line dash/gap pattern is the second perceptible
+/// channel — short urgent dashes at dispatch, long settled dashes once
+/// the command has reached the ship.
+///
+/// Pin: dash_length at dispatch < dash_length post-takes-effect, and
+/// the helper agrees with `compute_intended_render_inputs` outputs.
+#[test]
+fn dash_pattern_varies_with_clock() {
+    let mut app = test_app();
+    let empire = spawn_minimal_empire(&mut app);
+
+    let a = spawn_test_system(app.world_mut(), "A", [0.0, 0.0, 0.0], 1.0, true, true);
+    let b = spawn_test_system(app.world_mut(), "B", [10.0, 0.0, 0.0], 1.0, true, true);
+
+    let ship = app.world_mut().spawn_empty().id();
+    let proj = projection_with_intent(
+        ship,
+        Some(a),
+        ShipSnapshotState::InSystem,
+        Some(b),
+        Some(ShipSnapshotState::Surveying),
+        0,
+        Some(10),
+    );
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(proj.clone());
+    }
+
+    let mut metadata = HashMap::new();
+    metadata.insert(ship, meta("explorer_mk1", true));
+
+    let store = app
+        .world()
+        .entity(empire)
+        .get::<KnowledgeStore>()
+        .expect("empire has KnowledgeStore");
+
+    let item_dispatch = &compute_intended_render_inputs(store, &metadata, 0)[0];
+    let item_settled = &compute_intended_render_inputs(store, &metadata, 20)[0];
+
+    let (dash_dispatch, gap_dispatch) = item_dispatch.dash_pattern;
+    let (dash_settled, gap_settled) = item_settled.dash_pattern;
+
+    assert!(
+        dash_dispatch < dash_settled,
+        "dispatch dashes must be shorter than settled dashes \
+         (dispatch={}, settled={})",
+        dash_dispatch,
+        dash_settled
+    );
+    assert!(
+        gap_dispatch < gap_settled,
+        "dispatch gaps must be shorter than settled gaps \
+         (dispatch={}, settled={})",
+        gap_dispatch,
+        gap_settled
+    );
+
+    // Pure helper agreement (mirrors the alpha-helper agreement check
+    // in `intended_alpha_fades_with_clock`).
+    let helper_dispatch = intended_layer_dash_pattern(&proj, 0);
+    let helper_settled = intended_layer_dash_pattern(&proj, 20);
+    assert!((helper_dispatch.0 - dash_dispatch).abs() < 1e-6);
+    assert!((helper_dispatch.1 - gap_dispatch).abs() < 1e-6);
+    assert!((helper_settled.0 - dash_settled).abs() < 1e-6);
+    assert!((helper_settled.1 - gap_settled).abs() < 1e-6);
+
+    // Mid-window must lie strictly between the two endpoints — proves
+    // the linear interpolation, not just two discrete states.
+    let helper_mid = intended_layer_dash_pattern(&proj, 5);
+    assert!(
+        helper_mid.0 > dash_dispatch && helper_mid.0 < dash_settled,
+        "mid-window dash length must interpolate between endpoints \
+         (mid={}, dispatch={}, settled={})",
+        helper_mid.0,
+        dash_dispatch,
+        dash_settled
     );
 }

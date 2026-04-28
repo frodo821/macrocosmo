@@ -35,8 +35,9 @@
 //!    far realtime ECS state has drifted.
 //! 2. `projected_intended_divergence_during_dispatch_window` — the
 //!    intended overlay layer renders for the full dispatch window with
-//!    the documented alpha curve (0.4..0.8) and disappears once the
-//!    reconciler converges projected and intended.
+//!    the documented alpha curve (0.3..1.0, #489 widened from #478's
+//!    0.4..0.8) and disappears once the reconciler converges projected
+//!    and intended.
 //! 3. `reconcile_advances_each_fact_kind` — for each of the four
 //!    reconciling fact kinds (`ShipArrived` / `SurveyComplete` /
 //!    `ShipDestroyed` / `ShipMissing`), end-to-end fact-emit-then-
@@ -357,10 +358,11 @@ fn ftl_leak_guard_galaxy_map_during_dispatch_window() {
 /// dispatcher's home system, so the dispatch-time `light_delay_to_ship`
 /// is 0 and `intended_takes_effect_at == dispatched_at`. That puts every
 /// observable tick on the post-takes-effect branch of
-/// `intended_layer_alpha`, which holds the floor 0.4. The (0.4, 0.8]
-/// curve only meaningfully decays when there is non-zero light delay
-/// between the Ruler and the ship — that's covered as a sub-case below
-/// using a synthetic projection (`intended_layer_alpha` is a pure helper).
+/// `intended_layer_alpha`, which holds the floor 0.3 (#489 widened from
+/// the original #478 value of 0.4). The (0.3, 1.0] curve only meaningfully
+/// decays when there is non-zero light delay between the Ruler and the
+/// ship — that's covered as a sub-case below using a synthetic projection
+/// (`intended_layer_alpha` is a pure helper).
 #[test]
 fn projected_intended_divergence_during_dispatch_window() {
     let mut app = test_app();
@@ -388,8 +390,9 @@ fn projected_intended_divergence_during_dispatch_window() {
     );
 
     // (a) At dispatch tick — overlay renders (projected != intended) at
-    // the floor alpha 0.4 (= command has locally reached the ship; the
-    // projected state hasn't yet caught up because no fact has come back).
+    // the floor alpha 0.3 (#489: widened from 0.4) — command has locally
+    // reached the ship; the projected state hasn't yet caught up because
+    // no fact has come back.
     {
         app.world_mut().resource_mut::<GameClock>().elapsed = t0;
         let store = app
@@ -403,17 +406,17 @@ fn projected_intended_divergence_during_dispatch_window() {
         assert_eq!(item.projected_system, Some(s.home));
         assert_eq!(item.intended_system, Some(s.frontier));
         assert!(
-            (item.alpha - 0.4).abs() < 1e-4,
-            "at-home dispatch alpha ({}) must equal the 0.4 floor — \
+            (item.alpha - 0.3).abs() < 1e-4,
+            "at-home dispatch alpha ({}) must equal the 0.3 floor — \
              takes_effect_at == dispatched_at",
             item.alpha,
         );
     }
 
     // (b) Across the entire dispatch window — overlay continues to
-    // render at the 0.4 floor. The projection is *not* yet reconciled
-    // (the survey-complete fact's light hasn't reached us), so the
-    // dashed line stays visible.
+    // render at the 0.3 floor (#489: widened from 0.4). The projection
+    // is *not* yet reconciled (the survey-complete fact's light hasn't
+    // reached us), so the dashed line stays visible.
     let samples = [
         1,
         s.light_delay / 4,
@@ -436,8 +439,8 @@ fn projected_intended_divergence_during_dispatch_window() {
             "overlay must continue rendering at tick {tick} until reconcile",
         );
         assert!(
-            (items[0].alpha - 0.4).abs() < 1e-4,
-            "alpha must hold at 0.4 floor at tick {tick} (got {})",
+            (items[0].alpha - 0.3).abs() < 1e-4,
+            "alpha must hold at 0.3 floor at tick {tick} (got {})",
             items[0].alpha,
         );
         assert_eq!(items[0].projected_system, Some(s.home));
@@ -445,11 +448,12 @@ fn projected_intended_divergence_during_dispatch_window() {
     }
 
     // (c) Pure-helper agreement: `intended_layer_alpha` produces the
-    // (0.4, 0.8] decay curve when there IS non-zero light delay between
-    // dispatcher and ship. Synthesize a projection with span = 10 to
-    // exercise the curve directly. This pins the #478 contract end-to-
-    // end without depending on a remote-dispatch scenario the at-home
-    // setup_scenario can't produce.
+    // (0.3, 1.0] decay curve when there IS non-zero light delay between
+    // dispatcher and ship (#489 widened from #478's (0.4, 0.8]).
+    // Synthesize a projection with span = 10 to exercise the curve
+    // directly. This pins the contract end-to-end without depending on
+    // a remote-dispatch scenario the at-home setup_scenario can't
+    // produce.
     let spanning = ShipProjection {
         entity: s.ship,
         dispatched_at: 0,
@@ -466,8 +470,8 @@ fn projected_intended_divergence_during_dispatch_window() {
     let alpha_t10 = intended_layer_alpha(&spanning, 10);
     let alpha_t20 = intended_layer_alpha(&spanning, 20);
     assert!(
-        alpha_t0 > 0.4 && alpha_t0 <= 0.8 + 1e-4,
-        "synthetic-span dispatch alpha ({alpha_t0}) must be in (0.4, 0.8]",
+        alpha_t0 > 0.3 && alpha_t0 <= 1.0 + 1e-4,
+        "synthetic-span dispatch alpha ({alpha_t0}) must be in (0.3, 1.0]",
     );
     assert!(
         alpha_t0 > alpha_t5 && alpha_t5 > alpha_t10,
@@ -475,11 +479,11 @@ fn projected_intended_divergence_during_dispatch_window() {
          (t0={alpha_t0}, t5={alpha_t5}, t10={alpha_t10})",
     );
     assert!(
-        (alpha_t10 - 0.4).abs() < 1e-4,
-        "alpha at takes_effect_at must equal 0.4 floor (got {alpha_t10})",
+        (alpha_t10 - 0.3).abs() < 1e-4,
+        "alpha at takes_effect_at must equal 0.3 floor (got {alpha_t10})",
     );
     assert!(
-        (alpha_t20 - 0.4).abs() < 1e-4,
+        (alpha_t20 - 0.3).abs() < 1e-4,
         "alpha must hold at floor past takes_effect_at (got {alpha_t20})",
     );
 

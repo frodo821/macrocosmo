@@ -27,14 +27,31 @@ fn ship_color(design_id: &str) -> Color {
 }
 
 fn draw_dashed_line(gizmos: &mut Gizmos, start: Vec2, end: Vec2, color: Color) {
+    draw_dashed_line_with_pattern(gizmos, start, end, color, 4.0, 4.0);
+}
+
+/// #489: Dashed-line drawer with caller-controlled dash/gap lengths.
+/// `dash_len`/`gap_len` are in the same screen-space units as `start` /
+/// `end`. The intended-trajectory overlay varies these via
+/// [`intended_layer_dash_pattern`] so dispatch-fresh commands render as
+/// short urgent dashes and settled (post-takes-effect) commands render as
+/// longer relaxed dashes.
+fn draw_dashed_line_with_pattern(
+    gizmos: &mut Gizmos,
+    start: Vec2,
+    end: Vec2,
+    color: Color,
+    dash_len: f32,
+    gap_len: f32,
+) {
     let diff = end - start;
     let length = diff.length();
     if length <= 0.0 {
         return;
     }
     let dir = diff / length;
-    let dash_len = 4.0;
-    let gap_len = 4.0;
+    let dash_len = dash_len.max(0.5);
+    let gap_len = gap_len.max(0.5);
     let mut d = 0.0;
     while d < length {
         let seg_start = start + dir * d;
@@ -163,34 +180,100 @@ pub struct IntendedRenderItem {
     pub projected_system: Option<Entity>,
     pub intended_system: Option<Entity>,
     pub alpha: f32,
+    /// #489: (dash_length, gap_length) in screen-space pixels. Varies
+    /// with the clock to give the player a second perceptible channel
+    /// (urgency-vs-settled) on top of the alpha curve.
+    pub dash_pattern: (f32, f32),
 }
 
-/// #478: Compute the alpha for the intended-trajectory dashed overlay.
+/// Alpha floor for the intended-trajectory overlay once the command has
+/// reached the ship (`now >= takes_effect_at`). Kept low so a "settled"
+/// dashed trail is visible but recedes to background. Widened from the
+/// #478 value of 0.4 to 0.3 (#489) to expand the perceptible delta
+/// against the dark Galaxy Map background.
+const INTENDED_ALPHA_FLOOR: f32 = 0.3;
+/// Alpha ceiling for the intended-trajectory overlay at the dispatch
+/// tick — fresh commands render at near-full opacity so the player can
+/// instantly tell "I just sent that, it hasn't arrived yet". Widened
+/// from #478's 0.8 to 1.0 (#489).
+const INTENDED_ALPHA_CEIL: f32 = 1.0;
+
+/// Dash/gap pattern at the dispatch tick — short urgent dashes signal
+/// "command in flight". (#489)
+const INTENDED_DASH_AT_DISPATCH: (f32, f32) = (4.0, 2.0);
+/// Dash/gap pattern once the command has taken effect — long relaxed
+/// dashes signal "settled / in transit / waiting for arrival
+/// confirmation". (#489)
+const INTENDED_DASH_AFTER_TAKES_EFFECT: (f32, f32) = (8.0, 4.0);
+
+/// #478 / #489: Compute the alpha for the intended-trajectory dashed
+/// overlay.
 ///
-/// Curve:
-/// * Right at dispatch → ~0.8 (full divergence; "command just sent").
-/// * Linearly fades toward 0.4 across `[dispatched_at, takes_effect_at]`.
+/// Curve (#489 widened from #478's 0.4→0.8 to 0.3→1.0):
+/// * Right at dispatch → 1.0 (full opacity; "command just sent").
+/// * Linearly fades toward 0.3 across `[dispatched_at, takes_effect_at]`.
 /// * After the command has reached the ship (`now >= takes_effect_at`),
-///   the layer holds at 0.4 — the dashed line still shows the ship is
+///   the layer holds at 0.3 — the dashed line still shows the ship is
 ///   *not yet at* the intended target, but is no longer "in flight to ship".
 /// * If the projection has no `intended_takes_effect_at`, falls back to
-///   the steady 0.4 value.
+///   the steady floor value.
 pub fn intended_layer_alpha(projection: &ShipProjection, now: i64) -> f32 {
     let Some(takes_effect_at) = projection.intended_takes_effect_at else {
-        return 0.4;
+        return INTENDED_ALPHA_FLOOR;
     };
     if now >= takes_effect_at {
-        return 0.4;
+        return INTENDED_ALPHA_FLOOR;
     }
     let span = takes_effect_at - projection.dispatched_at;
     if span <= 0 {
-        return 0.8;
+        return INTENDED_ALPHA_CEIL;
     }
     let remaining = (takes_effect_at - now) as f32;
     let total = span as f32;
     // fraction in [0, 1]: 1.0 at dispatch_tick, 0.0 at takes_effect_at
     let fraction = (remaining / total).clamp(0.0, 1.0);
-    0.4 + fraction * 0.4
+    INTENDED_ALPHA_FLOOR + fraction * (INTENDED_ALPHA_CEIL - INTENDED_ALPHA_FLOOR)
+}
+
+/// #489: Compute the (dash_length, gap_length) pattern for the
+/// intended-trajectory dashed overlay at the given clock tick.
+///
+/// Pattern interpolation mirrors [`intended_layer_alpha`]:
+/// * At dispatch tick → short urgent dashes (`(4.0, 2.0)`) — "fresh
+///   order".
+/// * At / after `takes_effect_at` → long settled dashes (`(8.0, 4.0)`).
+/// * Linearly interpolated in between.
+/// * Falls back to the post-takes-effect pattern when
+///   `intended_takes_effect_at` is missing — that codepath is the
+///   "steady-state divergence" case (no in-flight command tracking) and
+///   the relaxed pattern is the right visual.
+///
+/// The returned values are in screen-space pixels (same units the
+/// dashed-line drawer expects). Combined with the widened alpha curve
+/// this gives the player two independent visual channels that
+/// distinguish dispatch-fresh from settled commands against a dark
+/// background.
+pub fn intended_layer_dash_pattern(projection: &ShipProjection, now: i64) -> (f32, f32) {
+    let Some(takes_effect_at) = projection.intended_takes_effect_at else {
+        return INTENDED_DASH_AFTER_TAKES_EFFECT;
+    };
+    if now >= takes_effect_at {
+        return INTENDED_DASH_AFTER_TAKES_EFFECT;
+    }
+    let span = takes_effect_at - projection.dispatched_at;
+    if span <= 0 {
+        return INTENDED_DASH_AT_DISPATCH;
+    }
+    let remaining = (takes_effect_at - now) as f32;
+    let total = span as f32;
+    // fraction in [0, 1]: 1.0 at dispatch_tick, 0.0 at takes_effect_at
+    let fraction = (remaining / total).clamp(0.0, 1.0);
+    let (d0, g0) = INTENDED_DASH_AT_DISPATCH;
+    let (d1, g1) = INTENDED_DASH_AFTER_TAKES_EFFECT;
+    // fraction=1 → urgent (d0,g0); fraction=0 → settled (d1,g1).
+    let dash = d1 + fraction * (d0 - d1);
+    let gap = g1 + fraction * (g0 - g1);
+    (dash, gap)
 }
 
 /// #478: Pure helper — given a viewing empire's [`KnowledgeStore`], a
@@ -245,6 +328,7 @@ pub fn compute_intended_render_inputs(
             projected_system: projection.projected_system,
             intended_system: projection.intended_system,
             alpha: intended_layer_alpha(projection, now),
+            dash_pattern: intended_layer_dash_pattern(projection, now),
         });
     }
     out
@@ -545,7 +629,15 @@ pub fn draw_ships(
             continue;
         };
         let (r, g, b) = ship_color_rgb(&item.design_id);
-        draw_dashed_line(&mut gizmos, start, end, Color::srgba(r, g, b, item.alpha));
+        let (dash_len, gap_len) = item.dash_pattern;
+        draw_dashed_line_with_pattern(
+            &mut gizmos,
+            start,
+            end,
+            Color::srgba(r, g, b, item.alpha),
+            dash_len,
+            gap_len,
+        );
         // Subtle ring at the intended target so the player can see where
         // the command will land even at low alpha.
         gizmos.circle_2d(end, 4.5, Color::srgba(r, g, b, item.alpha * 0.7));
